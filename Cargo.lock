@@ -308,7 +308,10 @@ name = "calxgloss-reports"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "calxgloss-analysis",
+ "calxgloss-translator",
  "calxgloss-types",
+ "serde_json",
 ]
 
 [[package]]

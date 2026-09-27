@@ -6,4 +6,7 @@ description = "Terminal output formatting for human review of translation units"
 
 [dependencies]
 calxgloss-types = { path = "../calxgloss-types" }
+calxgloss-translator = { path = "../calxgloss-translator" }
+calxgloss-analysis = { path = "../calxgloss-analysis" }
+serde_json = { workspace = true }
 anyhow = { workspace = true }
