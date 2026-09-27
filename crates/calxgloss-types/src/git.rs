@@ -69,12 +69,7 @@ impl GitBranch {
         if function.is_empty() {
             return Err(TypesError::EmptyFunctionName);
         }
-        let branch_name = format!(
-            "re/{}/{}v{}",
-            dll.replace(".dll", ""),
-            function,
-            attempt
-        );
+        let branch_name = format!("re/{}/{}v{}", dll.replace(".dll", ""), function, attempt);
         Ok(GitBranch {
             name: branch_name,
             dll: dll.to_string(),

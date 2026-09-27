@@ -810,11 +810,7 @@ impl ApiMappings {
 
     /// Returns all available API categories that have mappings.
     pub fn available_categories(&self) -> Vec<&ApiCategory> {
-        let mut categories: Vec<&ApiCategory> = self
-            .0
-            .iter()
-            .map(|m| &m.category)
-            .collect();
+        let mut categories: Vec<&ApiCategory> = self.0.iter().map(|m| &m.category).collect();
         categories.dedup_by_key(|c| format!("{:?}", c));
         categories
     }
@@ -863,7 +859,9 @@ mod tests {
     #[test]
     fn test_lookup_win32_core() {
         let mappings = ApiMappings::default();
-        let mapping = mappings.lookup("CreateFileA").expect("CreateFileA should be in mappings");
+        let mapping = mappings
+            .lookup("CreateFileA")
+            .expect("CreateFileA should be in mappings");
         assert_eq!(mapping.category, ApiCategory::Win32Core);
         assert_eq!(mapping.windows_api, "CreateFileA");
         assert!(mapping.rust_equivalent.contains("std::fs::File::open"));
@@ -872,7 +870,9 @@ mod tests {
     #[test]
     fn test_lookup_gdi() {
         let mappings = ApiMappings::default();
-        let mapping = mappings.lookup("BitBlt").expect("BitBlt should be in mappings");
+        let mapping = mappings
+            .lookup("BitBlt")
+            .expect("BitBlt should be in mappings");
         assert_eq!(mapping.category, ApiCategory::Gdi);
         assert!(mapping.rust_equivalent.contains("tiny_skia"));
         assert!(mapping.notes.contains("PAL placeholder"));
@@ -951,8 +951,7 @@ mod tests {
             assert!(
                 is_valid,
                 "Win32Core API '{}' should map to std or RAII pattern, got: '{}'",
-                mapping.windows_api,
-                mapping.rust_equivalent
+                mapping.windows_api, mapping.rust_equivalent
             );
         }
     }
@@ -1026,9 +1025,8 @@ mod tests {
     }
 
     #[test]
-    fn test_len_and_is_empty() {
+    fn test_is_empty() {
         let mappings = ApiMappings::default();
         assert!(!mappings.is_empty());
-        assert!(mappings.len() > 0);
     }
 }

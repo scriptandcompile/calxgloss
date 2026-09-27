@@ -162,7 +162,10 @@ impl GhidraClient {
         if status != 200 {
             let body = response.text().await?;
             error!(status, body = %body, "Failed to list sessions");
-            return Err(GhidraError::ServerError { status, message: body });
+            return Err(GhidraError::ServerError {
+                status,
+                message: body,
+            });
         }
 
         let sessions: ListSessionsResponse = response.json().await.map_err(|e| {
@@ -171,7 +174,11 @@ impl GhidraClient {
         })?;
 
         info!(count = sessions.sessions.len(), "Listed sessions");
-        Ok(sessions.sessions.into_iter().map(|s| Session::new(&s.id, &s.target)).collect())
+        Ok(sessions
+            .sessions
+            .into_iter()
+            .map(|s| Session::new(&s.id, &s.target))
+            .collect())
     }
 
     /// Create a new analysis session for a target binary.
@@ -196,7 +203,10 @@ impl GhidraClient {
         if status != 201 {
             let body = response.text().await?;
             error!(status, target_exe, body = %body, "Failed to create session");
-            return Err(GhidraError::ServerError { status, message: body });
+            return Err(GhidraError::ServerError {
+                status,
+                message: body,
+            });
         }
 
         let session_data: CreateSessionResponse = response.json().await.map_err(|e| {
@@ -241,7 +251,10 @@ impl GhidraClient {
     pub async fn list_dlls(&self, target_exe: &str) -> Result<Vec<String>> {
         debug!(target_exe, "Listing DLLs");
 
-        let url = self.config.base_url.join(&format!("sessions/{target_exe}/dlls"))?;
+        let url = self
+            .config
+            .base_url
+            .join(&format!("sessions/{target_exe}/dlls"))?;
         let mut request = self.http.get(url);
         if let Some(ref api_key) = self.config.api_key {
             request = request.bearer_auth(api_key);
@@ -257,7 +270,10 @@ impl GhidraClient {
         if status != 200 {
             let body = response.text().await?;
             error!(status, target_exe, body = %body, "Failed to list DLLs");
-            return Err(GhidraError::ServerError { status, message: body });
+            return Err(GhidraError::ServerError {
+                status,
+                message: body,
+            });
         }
 
         let dll_list: ListDllsResponse = response.json().await.map_err(|e| {
@@ -293,7 +309,10 @@ impl GhidraClient {
         if status != 200 {
             let body = response.text().await?;
             error!(status, dll, target_exe, body = %body, "Failed to get DLL info");
-            return Err(GhidraError::ServerError { status, message: body });
+            return Err(GhidraError::ServerError {
+                status,
+                message: body,
+            });
         }
 
         let dll_response: DllInfoResponse = response.json().await.map_err(|e| {
@@ -329,7 +348,10 @@ impl GhidraClient {
         if status != 200 {
             let body = response.text().await?;
             error!(status, dll, target_exe, body = %body, "Failed to get imports");
-            return Err(GhidraError::ServerError { status, message: body });
+            return Err(GhidraError::ServerError {
+                status,
+                message: body,
+            });
         }
 
         let imports_response: ImportsResponse = response.json().await.map_err(|e| {
@@ -365,7 +387,10 @@ impl GhidraClient {
         if status != 200 {
             let body = response.text().await?;
             error!(status, dll, target_exe, body = %body, "Failed to get exports");
-            return Err(GhidraError::ServerError { status, message: body });
+            return Err(GhidraError::ServerError {
+                status,
+                message: body,
+            });
         }
 
         let exports_response: ExportsResponse = response.json().await.map_err(|e| {
@@ -428,12 +453,9 @@ impl GhidraClient {
     ) -> Result<String> {
         debug!(dll, function, target_exe, "Getting disassembly");
 
-        let url = self
-            .config
-            .base_url
-            .join(&format!(
-                "sessions/{target_exe}/dlls/{dll}/functions/{function}/disassembly"
-            ))?;
+        let url = self.config.base_url.join(&format!(
+            "sessions/{target_exe}/dlls/{dll}/functions/{function}/disassembly"
+        ))?;
         let mut request = self.http.get(url);
         if let Some(ref api_key) = self.config.api_key {
             request = request.bearer_auth(api_key);
@@ -452,7 +474,10 @@ impl GhidraClient {
         if status != 200 {
             let body = response.text().await?;
             error!(status, dll, function, body = %body, "Failed to get disassembly");
-            return Err(GhidraError::ServerError { status, message: body });
+            return Err(GhidraError::ServerError {
+                status,
+                message: body,
+            });
         }
 
         let disassembly_response: DisassemblyResponse = response.json().await.map_err(|e| {
@@ -462,9 +487,7 @@ impl GhidraClient {
 
         trace!(
             length = disassembly_response.disassembly.len(),
-            dll,
-            function,
-            "Got disassembly"
+            dll, function, "Got disassembly"
         );
         Ok(disassembly_response.disassembly)
     }
@@ -479,12 +502,9 @@ impl GhidraClient {
     ) -> Result<String> {
         debug!(dll, function, target_exe, "Getting decompiler output");
 
-        let url = self
-            .config
-            .base_url
-            .join(&format!(
-                "sessions/{target_exe}/dlls/{dll}/functions/{function}/decompiler"
-            ))?;
+        let url = self.config.base_url.join(&format!(
+            "sessions/{target_exe}/dlls/{dll}/functions/{function}/decompiler"
+        ))?;
         let mut request = self.http.get(url);
         if let Some(ref api_key) = self.config.api_key {
             request = request.bearer_auth(api_key);
@@ -501,7 +521,10 @@ impl GhidraClient {
         if status != 200 {
             let body = response.text().await?;
             error!(status, dll, function, body = %body, "Failed to get decompiler output");
-            return Err(GhidraError::ServerError { status, message: body });
+            return Err(GhidraError::ServerError {
+                status,
+                message: body,
+            });
         }
 
         let decompiler_response: DecompilerResponse = response.json().await.map_err(|e| {
@@ -511,9 +534,7 @@ impl GhidraClient {
 
         trace!(
             length = decompiler_response.pseudo_c.len(),
-            dll,
-            function,
-            "Got decompiler output"
+            dll, function, "Got decompiler output"
         );
         Ok(decompiler_response.pseudo_c)
     }
@@ -529,12 +550,9 @@ impl GhidraClient {
     ) -> Result<Vec<String>> {
         debug!(dll, function, target_exe, "Getting call graph");
 
-        let url = self
-            .config
-            .base_url
-            .join(&format!(
-                "sessions/{target_exe}/dlls/{dll}/functions/{function}/callgraph"
-            ))?;
+        let url = self.config.base_url.join(&format!(
+            "sessions/{target_exe}/dlls/{dll}/functions/{function}/callgraph"
+        ))?;
         let mut request = self.http.get(url);
         if let Some(ref api_key) = self.config.api_key {
             request = request.bearer_auth(api_key);
@@ -553,7 +571,10 @@ impl GhidraClient {
         if status != 200 {
             let body = response.text().await?;
             error!(status, dll, function, body = %body, "Failed to get call graph");
-            return Err(GhidraError::ServerError { status, message: body });
+            return Err(GhidraError::ServerError {
+                status,
+                message: body,
+            });
         }
 
         let callgraph_response: CallgraphResponse = response.json().await.map_err(|e| {
@@ -563,9 +584,7 @@ impl GhidraClient {
 
         trace!(
             count = callgraph_response.neighbors.len(),
-            dll,
-            function,
-            "Got call graph"
+            dll, function, "Got call graph"
         );
         Ok(callgraph_response.neighbors)
     }
@@ -589,12 +608,9 @@ impl GhidraClient {
     ) -> Result<FunctionInfo> {
         debug!(dll, function, target_exe, "Getting full function analysis");
 
-        let url = self
-            .config
-            .base_url
-            .join(&format!(
-                "sessions/{target_exe}/dlls/{dll}/functions/{function}"
-            ))?;
+        let url = self.config.base_url.join(&format!(
+            "sessions/{target_exe}/dlls/{dll}/functions/{function}"
+        ))?;
         let mut request = self.http.get(url);
         if let Some(ref api_key) = self.config.api_key {
             request = request.bearer_auth(api_key);
@@ -616,7 +632,10 @@ impl GhidraClient {
         if status != 200 {
             let body = response.text().await?;
             error!(status, dll, function, body = %body, "Failed to get function");
-            return Err(GhidraError::ServerError { status, message: body });
+            return Err(GhidraError::ServerError {
+                status,
+                message: body,
+            });
         }
 
         let full_response: FullFunctionResponse = response.json().await.map_err(|e| {

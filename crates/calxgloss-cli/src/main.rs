@@ -218,7 +218,11 @@ fn white_bold(text: &str) -> String {
 // Classify command handler
 // ============================================================
 
-async fn handle_classify(target: &Path, ghidra_url: &str, ghidra_api_key: Option<&str>) -> Result<()> {
+async fn handle_classify(
+    target: &Path,
+    ghidra_url: &str,
+    ghidra_api_key: Option<&str>,
+) -> Result<()> {
     info!(target = ?target, "Classifying target");
 
     // Initialize Ghidra client
@@ -293,7 +297,9 @@ async fn handle_translate(
     if let Some(key) = llm_api_key {
         llm_config = llm_config.with_api_key(key.to_string());
     }
-    llm_config = llm_config.with_max_tokens(max_tokens).with_temperature(temperature);
+    llm_config = llm_config
+        .with_max_tokens(max_tokens)
+        .with_temperature(temperature);
 
     let llm = LlmClient::new(llm_config).context("Failed to create LLM client")?;
 
@@ -302,8 +308,7 @@ async fn handle_translate(
     let testgen = TestGenerator::new(&output_dir);
 
     // Build translation pipeline
-    let pipeline = TranslationPipeline::new(ghidra, llm, api_mappings)
-        .with_testgen(testgen);
+    let pipeline = TranslationPipeline::new(ghidra, llm, api_mappings).with_testgen(testgen);
 
     // Git setup
     let mut git = if !skip_git {
@@ -340,14 +345,23 @@ async fn handle_translate(
         let output_path = modules_dir.join(function).join("translated.rs");
         std::fs::create_dir_all(output_path.parent().unwrap())
             .context("Failed to create output directory")?;
-        std::fs::write(&output_path, &translation.rust_code)
-            .with_context(|| format!("Failed to write translated code to {}", output_path.display()))?;
+        std::fs::write(&output_path, &translation.rust_code).with_context(|| {
+            format!(
+                "Failed to write translated code to {}",
+                output_path.display()
+            )
+        })?;
         info!(path = %output_path.display(), "Wrote translated code");
 
         // Verify
         let verifier = Verifier::new(&output_dir).context("Failed to create verifier")?;
         let verification = verifier
-            .verify(dll, function, &translation.rust_code, &translation.baseline_tests)
+            .verify(
+                dll,
+                function,
+                &translation.rust_code,
+                &translation.baseline_tests,
+            )
             .await
             .context("Verification failed")?;
 
@@ -376,17 +390,19 @@ async fn handle_translate(
                 .context("Failed to commit translated code")?;
 
             // Merge if all tests pass
-            if verification.tests_passed == verification.tests_total && verification.tests_total > 0 {
+            if verification.tests_passed == verification.tests_total && verification.tests_total > 0
+            {
                 let merge_result = git
                     .merge_to_main(branch_info)
                     .context("Failed to merge branch to main")?;
 
                 // Prompt for human acceptance if there were failures
-                let accepted = if verification.tests_total > 0 && !verification.failed_tests.is_empty() {
-                    prompt_acceptance()
-                } else {
-                    true
-                };
+                let accepted =
+                    if verification.tests_total > 0 && !verification.failed_tests.is_empty() {
+                        prompt_acceptance()
+                    } else {
+                        true
+                    };
 
                 if !accepted {
                     warn!("Translation rejected by human reviewer");
@@ -511,7 +527,10 @@ async fn handle_verify(
 ) -> Result<()> {
     info!(dll = %dll, function = %function, "Starting verification");
 
-    let target_dir = rust_source.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    let target_dir = rust_source
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
     let output_dir = baseline_path.map(PathBuf::from).unwrap_or(target_dir);
 
     // Read the translated Rust code
@@ -528,9 +547,11 @@ async fn handle_verify(
     let baseline_tests: Vec<calxgloss::TestCase> = match &baseline_path {
         Some(path) if path.exists() => {
             info!(path = %path.display(), "Loading baseline tests");
-            serde_json::from_str(&std::fs::read_to_string(path)
-                .with_context(|| format!("Failed to read baseline from {}", path.display()))?)
-                .with_context(|| format!("Failed to parse baseline from {}", path.display()))?
+            serde_json::from_str(
+                &std::fs::read_to_string(path)
+                    .with_context(|| format!("Failed to read baseline from {}", path.display()))?,
+            )
+            .with_context(|| format!("Failed to parse baseline from {}", path.display()))?
         }
         _ => {
             info!("No baseline found, proceeding without tests");
@@ -552,17 +573,9 @@ async fn handle_verify(
         cyan_bold(&"═".repeat(58)),
         cyan_bold(&"═".repeat(58))
     );
-    println!(
-        "  {}{}",
-        white_bold("  Function: "),
-        function
-    );
+    println!("  {}{}", white_bold("  Function: "), function);
     println!("  {}{}", white_bold("  DLL: "), dll);
-    println!(
-        "  {}{}",
-        white_bold("  Source: "),
-        rust_source.display()
-    );
+    println!("  {}{}", white_bold("  Source: "), rust_source.display());
     println!("{}", cyan_bold(&"═".repeat(58)));
     print_verification_results(&verification);
     println!("{}", cyan_bold(&"═".repeat(58)));
@@ -615,13 +628,15 @@ fn main() -> Result<()> {
             target,
             ghidra_url,
             ghidra_api_key,
-        } => {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create tokio runtime")?
-                .block_on(handle_classify(&target, &ghidra_url, ghidra_api_key.as_deref()))
-        }
+        } => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("Failed to create tokio runtime")?
+            .block_on(handle_classify(
+                &target,
+                &ghidra_url,
+                ghidra_api_key.as_deref(),
+            )),
         Command::Translate {
             target,
             dll,
@@ -635,38 +650,39 @@ fn main() -> Result<()> {
             temperature,
             skip_git,
             max_retries,
-        } => {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create tokio runtime")?
-                .block_on(handle_translate(
-                    &target,
-                    &dll,
-                    &function,
-                    &ghidra_url,
-                    &llm_url,
-                    &llm_model,
-                    llm_api_key.as_deref(),
-                    output_dir.as_deref(),
-                    max_tokens,
-                    temperature,
-                    skip_git,
-                    max_retries,
-                ))
-        }
+        } => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("Failed to create tokio runtime")?
+            .block_on(handle_translate(
+                &target,
+                &dll,
+                &function,
+                &ghidra_url,
+                &llm_url,
+                &llm_model,
+                llm_api_key.as_deref(),
+                output_dir.as_deref(),
+                max_tokens,
+                temperature,
+                skip_git,
+                max_retries,
+            )),
         Command::Verify {
             dll,
             function,
             rust_source,
             baseline_path,
-        } => {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create tokio runtime")?
-                .block_on(handle_verify(&dll, &function, &rust_source, baseline_path.as_deref()))
-        }
+        } => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("Failed to create tokio runtime")?
+            .block_on(handle_verify(
+                &dll,
+                &function,
+                &rust_source,
+                baseline_path.as_deref(),
+            )),
     };
 
     if let Err(ref e) = result {

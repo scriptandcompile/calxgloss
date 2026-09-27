@@ -44,9 +44,9 @@ pub mod error;
 pub use classify::*;
 pub use error::{AnalysisError, Result};
 
-use calxgloss_types::{DllCategory, DllInfo, FunctionInfo, Import, WindowsApiCall};
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_pal::ApiMappings;
+use calxgloss_types::{DllCategory, DllInfo, FunctionInfo, Import, WindowsApiCall};
 use tracing::{debug, info, instrument};
 
 // ============================================================
@@ -155,7 +155,10 @@ impl Analyzer {
     /// The analyzer uses the Ghidra client to fetch DLL/function metadata and
     /// the API mappings to tag Windows API calls with their PAL replacements.
     pub fn new(ghidra: GhidraClient, api_mappings: ApiMappings) -> Self {
-        Self { ghidra, api_mappings }
+        Self {
+            ghidra,
+            api_mappings,
+        }
     }
 
     /// Classifies a single DLL by fetching its metadata from Ghidra and
@@ -189,8 +192,16 @@ impl Analyzer {
         debug!(target_exe, dll, "Classifying DLL");
 
         // Fetch imports and exports from Ghidra
-        let imports = self.ghidra.get_imports(target_exe, dll).await.unwrap_or_default();
-        let exports = self.ghidra.get_exports(target_exe, dll).await.unwrap_or_default();
+        let imports = self
+            .ghidra
+            .get_imports(target_exe, dll)
+            .await
+            .unwrap_or_default();
+        let exports = self
+            .ghidra
+            .get_exports(target_exe, dll)
+            .await
+            .unwrap_or_default();
 
         // Classify based on DLL filename
         let category = classify_dll_name(dll);
@@ -268,7 +279,10 @@ impl Analyzer {
             classifications.push(classification);
         }
 
-        info!(count = classifications.len(), target_exe, "Classified all DLLs");
+        info!(
+            count = classifications.len(),
+            target_exe, "Classified all DLLs"
+        );
         Ok(classifications)
     }
 
@@ -312,7 +326,11 @@ impl Analyzer {
         let function_info = self.ghidra.get_function(target_exe, dll, function).await?;
 
         // Fetch imports to cross-reference with API mappings
-        let imports = self.ghidra.get_imports(target_exe, dll).await.unwrap_or_default();
+        let imports = self
+            .ghidra
+            .get_imports(target_exe, dll)
+            .await
+            .unwrap_or_default();
 
         // Tag Windows API calls in the function's imports
         let tagged_apis = self.tag_windows_apis(&function_info.disassembly, &imports)?;
@@ -367,7 +385,11 @@ impl Analyzer {
     /// assert_eq!(tagged.len(), 2);
     /// assert_eq!(tagged[0].name, "CreateFileA");
     /// ```
-    pub fn tag_windows_apis(&self, disassembly: &str, imports: &[Import]) -> Result<Vec<WindowsApiCall>> {
+    pub fn tag_windows_apis(
+        &self,
+        disassembly: &str,
+        imports: &[Import],
+    ) -> Result<Vec<WindowsApiCall>> {
         debug!(imports_count = imports.len(), "Tagging Windows APIs");
 
         // Collect function names from disassembly to check for direct API references
@@ -394,7 +416,7 @@ impl Analyzer {
             }
         }
 
-            // Also scan the disassembly for known API names that might not be in imports
+        // Also scan the disassembly for known API names that might not be in imports
         // (e.g., dynamically loaded via LoadLibrary/GetProcAddress)
         if !disassembly.is_empty() {
             let dis_lower = disassembly.to_lowercase();
@@ -463,9 +485,9 @@ impl Analyzer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calxgloss_types::{Export, Import};
     use calxgloss_ghidra::GhidraClient;
     use calxgloss_pal::ApiMappings;
+    use calxgloss_types::{Export, Import};
 
     fn test_analyzer() -> Analyzer {
         let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
@@ -606,7 +628,10 @@ mod tests {
             classification.strategy,
             Strategy::CrateReplacement { ref crate_name } if crate_name == "fmod-rs"
         ));
-        assert_eq!(classification.crate_replacement, Some("fmod-rs".to_string()));
+        assert_eq!(
+            classification.crate_replacement,
+            Some("fmod-rs".to_string())
+        );
     }
 
     #[test]
@@ -634,13 +659,30 @@ mod tests {
             version: None,
             category: DllCategory::ProjectSpecific,
             exports: vec![
-                Export { name: "Func1".to_string(), address: 0x1000, signature: "int __stdcall Func1()".to_string() },
-                Export { name: "Func2".to_string(), address: 0x2000, signature: "void __stdcall Func2()".to_string() },
+                Export {
+                    name: "Func1".to_string(),
+                    address: 0x1000,
+                    signature: "int __stdcall Func1()".to_string(),
+                },
+                Export {
+                    name: "Func2".to_string(),
+                    address: 0x2000,
+                    signature: "void __stdcall Func2()".to_string(),
+                },
             ],
             imports: vec![
-                Import { dll: "kernel32.dll".to_string(), function: "CreateFileA".to_string() },
-                Import { dll: "user32.dll".to_string(), function: "MessageBoxA".to_string() },
-                Import { dll: "user32.dll".to_string(), function: "DestroyWindow".to_string() },
+                Import {
+                    dll: "kernel32.dll".to_string(),
+                    function: "CreateFileA".to_string(),
+                },
+                Import {
+                    dll: "user32.dll".to_string(),
+                    function: "MessageBoxA".to_string(),
+                },
+                Import {
+                    dll: "user32.dll".to_string(),
+                    function: "DestroyWindow".to_string(),
+                },
             ],
         };
 

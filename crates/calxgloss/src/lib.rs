@@ -18,14 +18,18 @@ pub use calxgloss_types::error::TypesError;
 pub use calxgloss_types::function::*;
 pub use calxgloss_types::git::*;
 pub use calxgloss_types::test::*;
-pub use calxgloss_types::translation::{WindowsApiCall};
+pub use calxgloss_types::translation::WindowsApiCall;
 pub use calxgloss_types::verification::{FailedTest, VerificationResult};
 
 // ============================================================
 // calxgloss-ghidra — GhidraMCP HTTP client
 // ============================================================
 
+pub use calxgloss_ghidra::CallgraphResponse;
+pub use calxgloss_ghidra::CreateSessionResponse;
+pub use calxgloss_ghidra::DecompilerResponse;
 pub use calxgloss_ghidra::DisassemblyResponse;
+pub use calxgloss_ghidra::DllInfoResponse;
 pub use calxgloss_ghidra::ExportsResponse;
 pub use calxgloss_ghidra::FullFunctionResponse;
 pub use calxgloss_ghidra::GhidraClient;
@@ -35,10 +39,6 @@ pub use calxgloss_ghidra::ImportsResponse;
 pub use calxgloss_ghidra::ListDllsResponse;
 pub use calxgloss_ghidra::ListSessionsResponse;
 pub use calxgloss_ghidra::Session;
-pub use calxgloss_ghidra::CreateSessionResponse;
-pub use calxgloss_ghidra::DllInfoResponse;
-pub use calxgloss_ghidra::CallgraphResponse;
-pub use calxgloss_ghidra::DecompilerResponse;
 
 // ============================================================
 // calxgloss-llm — Local LLM client
@@ -56,10 +56,10 @@ pub use calxgloss_llm::strip_code_fences;
 // calxgloss-prompts — Prompt templates and rendering
 // ============================================================
 
-pub use calxgloss_prompts::error::PromptError;
 pub use calxgloss_prompts::TestCaseFormatted;
 pub use calxgloss_prompts::TranslateTemplate;
 pub use calxgloss_prompts::build_translate_prompt;
+pub use calxgloss_prompts::error::PromptError;
 
 // ============================================================
 // calxgloss-pal — Platform Abstraction Layer mappings
@@ -73,40 +73,40 @@ pub use calxgloss_pal::mapping_count;
 // calxgloss-analysis — DLL classification & API tagging
 // ============================================================
 
-pub use calxgloss_analysis::classify_dll_name;
-pub use calxgloss_analysis::crate_replacement_for;
+pub use calxgloss_analysis::AnalysisError;
+pub use calxgloss_analysis::Analyzer;
 pub use calxgloss_analysis::DllClassification;
 pub use calxgloss_analysis::FunctionAnalysis;
-pub use calxgloss_analysis::Strategy;
-pub use calxgloss_analysis::Analyzer;
-pub use calxgloss_analysis::AnalysisError;
 pub use calxgloss_analysis::Result as AnalysisResult;
+pub use calxgloss_analysis::Strategy;
+pub use calxgloss_analysis::classify_dll_name;
+pub use calxgloss_analysis::crate_replacement_for;
 
 // ============================================================
 // calxgloss-testgen — FFI stubs, test input generation
 // ============================================================
 
-pub use calxgloss_testgen::FfiStub;
-pub use calxgloss_testgen::FfiStubBuilder;
-pub use calxgloss_testgen::generate_ffi_stub;
-pub use calxgloss_testgen::parse_signature;
-pub use calxgloss_testgen::ParameterTypeInfo;
+pub use calxgloss_testgen::BaselineRunner;
 pub use calxgloss_testgen::DisassemblyEdgeCases;
 pub use calxgloss_testgen::EdgeCaseSource;
-pub use calxgloss_testgen::generate_test_inputs;
-pub use calxgloss_testgen::BaselineRunner;
+pub use calxgloss_testgen::FfiStub;
+pub use calxgloss_testgen::FfiStubBuilder;
+pub use calxgloss_testgen::ParameterTypeInfo;
 pub use calxgloss_testgen::TestContext;
 pub use calxgloss_testgen::TestGenerator;
+pub use calxgloss_testgen::generate_ffi_stub;
+pub use calxgloss_testgen::generate_test_inputs;
+pub use calxgloss_testgen::parse_signature;
 
 // ============================================================
 // calxgloss-translator — Translation pipeline
 // ============================================================
 
-pub use calxgloss_translator::Translator;
-pub use calxgloss_translator::TranslatorError;
+pub use calxgloss_translator::Result as TranslatorResult;
 pub use calxgloss_translator::Translation;
 pub use calxgloss_translator::TranslationPipeline;
-pub use calxgloss_translator::Result as TranslatorResult;
+pub use calxgloss_translator::Translator;
+pub use calxgloss_translator::TranslatorError;
 
 // ============================================================
 // calxgloss-verify — Compilation and behavioral verification
@@ -123,9 +123,9 @@ pub use calxgloss_verify::Stubs;
 // calxgloss-git — Git branch/commit/merge automation
 // ============================================================
 
+pub use calxgloss_git::BranchResult;
 pub use calxgloss_git::GitManager;
 pub use calxgloss_git::InitConfig;
-pub use calxgloss_git::BranchResult;
 pub use calxgloss_git::MergeResult;
 pub use calxgloss_git::PatchRecord;
 
@@ -133,10 +133,10 @@ pub use calxgloss_git::PatchRecord;
 // calxgloss-reports — Terminal output formatting
 // ============================================================
 
-pub use calxgloss_reports::print_translation_summary;
-pub use calxgloss_reports::print_verification_results;
+pub use calxgloss_reports::print_classification_report;
+pub use calxgloss_reports::print_failure;
 pub use calxgloss_reports::print_git_status;
 pub use calxgloss_reports::print_success;
-pub use calxgloss_reports::print_failure;
+pub use calxgloss_reports::print_translation_summary;
+pub use calxgloss_reports::print_verification_results;
 pub use calxgloss_reports::prompt_acceptance;
-pub use calxgloss_reports::print_classification_report;

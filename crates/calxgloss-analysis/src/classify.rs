@@ -180,23 +180,21 @@ const KNOWN_THIRD_PARTY_DLLS: &[(&str, &str)] = &[
 /// Returns `true` if the DLL is a known Windows OS DLL.
 pub fn is_windows_os_dll(dll_name: &str) -> bool {
     let lower = dll_name.to_lowercase();
-    WINDOWS_OS_DLLS
-        .iter()
-        .any(|known| lower == known.to_lowercase() || lower.starts_with(known.to_lowercase().as_str()))
+    WINDOWS_OS_DLLS.iter().any(|known| {
+        lower == known.to_lowercase() || lower.starts_with(known.to_lowercase().as_str())
+    })
 }
 
 /// Returns the recommended Rust crate for a known Microsoft SDK DLL, or `None`.
 pub fn microsoft_sdk_crate(dll_name: &str) -> Option<&'static str> {
     let lower = dll_name.to_lowercase();
-    MICROSOFT_SDK_DLLS
-        .iter()
-        .find_map(|(name, crate_name)| {
-            if lower == name.to_lowercase() {
-                Some(*crate_name)
-            } else {
-                None
-            }
-        })
+    MICROSOFT_SDK_DLLS.iter().find_map(|(name, crate_name)| {
+        if lower == name.to_lowercase() {
+            Some(*crate_name)
+        } else {
+            None
+        }
+    })
 }
 
 /// Returns the recommended Rust crate for a known third-party DLL, or `None`.
@@ -269,12 +267,8 @@ pub fn classify_dll_name(dll_name: &str) -> DllCategory {
 /// or `None` if the DLL should be reverse-engineered.
 pub fn crate_replacement_for(dll_name: &str, category: &DllCategory) -> Option<String> {
     match category {
-        DllCategory::KnownThirdParty => {
-            known_third_party_crate(dll_name).map(|s| s.to_string())
-        }
-        DllCategory::MicrosoftSdk => {
-            microsoft_sdk_crate(dll_name).map(|s| s.to_string())
-        }
+        DllCategory::KnownThirdParty => known_third_party_crate(dll_name).map(|s| s.to_string()),
+        DllCategory::MicrosoftSdk => microsoft_sdk_crate(dll_name).map(|s| s.to_string()),
         _ => None,
     }
 }
@@ -373,16 +367,31 @@ mod tests {
     #[test]
     fn test_classify_dll_name_known_third_party() {
         assert_eq!(classify_dll_name("fmod.dll"), DllCategory::KnownThirdParty);
-        assert_eq!(classify_dll_name("openal32.dll"), DllCategory::KnownThirdParty);
+        assert_eq!(
+            classify_dll_name("openal32.dll"),
+            DllCategory::KnownThirdParty
+        );
         assert_eq!(classify_dll_name("lua51.dll"), DllCategory::KnownThirdParty);
-        assert_eq!(classify_dll_name("msvbvm60.dll"), DllCategory::KnownThirdParty);
+        assert_eq!(
+            classify_dll_name("msvbvm60.dll"),
+            DllCategory::KnownThirdParty
+        );
     }
 
     #[test]
     fn test_classify_dll_name_project_specific() {
-        assert_eq!(classify_dll_name("my_app.dll"), DllCategory::ProjectSpecific);
-        assert_eq!(classify_dll_name("game_logic.dll"), DllCategory::ProjectSpecific);
-        assert_eq!(classify_dll_name("renderer.dll"), DllCategory::ProjectSpecific);
+        assert_eq!(
+            classify_dll_name("my_app.dll"),
+            DllCategory::ProjectSpecific
+        );
+        assert_eq!(
+            classify_dll_name("game_logic.dll"),
+            DllCategory::ProjectSpecific
+        );
+        assert_eq!(
+            classify_dll_name("renderer.dll"),
+            DllCategory::ProjectSpecific
+        );
     }
 
     #[test]
@@ -419,7 +428,10 @@ mod tests {
 
     #[test]
     fn test_dll_base_name() {
-        assert_eq!(dll_base_name("game_logic.dll"), Some("game_logic".to_string()));
+        assert_eq!(
+            dll_base_name("game_logic.dll"),
+            Some("game_logic".to_string())
+        );
         assert_eq!(dll_base_name("KERNEL32.DLL"), Some("kernel32".to_string()));
         assert_eq!(dll_base_name("not_a_dll"), None);
         assert_eq!(dll_base_name(""), None);
@@ -428,9 +440,18 @@ mod tests {
     #[test]
     fn test_imported_dll_names() {
         let imports = vec![
-            Import { dll: "kernel32.dll".to_string(), function: "CreateFileA".to_string() },
-            Import { dll: "user32.dll".to_string(), function: "MessageBoxA".to_string() },
-            Import { dll: "kernel32.dll".to_string(), function: "ReadFile".to_string() },
+            Import {
+                dll: "kernel32.dll".to_string(),
+                function: "CreateFileA".to_string(),
+            },
+            Import {
+                dll: "user32.dll".to_string(),
+                function: "MessageBoxA".to_string(),
+            },
+            Import {
+                dll: "kernel32.dll".to_string(),
+                function: "ReadFile".to_string(),
+            },
         ];
 
         let names = imported_dll_names(&imports);
@@ -448,8 +469,14 @@ mod tests {
     #[test]
     fn test_imported_dll_names_deduplication() {
         let imports = vec![
-            Import { dll: "advapi32.dll".to_string(), function: "RegOpenKeyExA".to_string() },
-            Import { dll: "ADVAPI32.DLL".to_string(), function: "RegQueryValueExA".to_string() },
+            Import {
+                dll: "advapi32.dll".to_string(),
+                function: "RegOpenKeyExA".to_string(),
+            },
+            Import {
+                dll: "ADVAPI32.DLL".to_string(),
+                function: "RegQueryValueExA".to_string(),
+            },
         ];
 
         let names = imported_dll_names(&imports);

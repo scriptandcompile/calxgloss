@@ -4,8 +4,8 @@
 //! within a DLL, including their disassembly, decompiler output, Windows API
 //! call sites, and call graph neighbors.
 
-use std::fmt;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 /// Platform-specific category for a Windows API call.
 ///

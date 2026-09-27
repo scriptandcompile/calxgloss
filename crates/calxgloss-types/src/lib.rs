@@ -28,7 +28,7 @@ pub use dll::{DllCategory, DllInfo, Export, Import};
 pub use error::TypesError;
 pub use function::{ApiCategory, FunctionInfo, WindowsApiCall};
 pub use git::{GitBranch, GitCommit};
-pub use test::{SideEffect, SideEffectKind, TestResult, TestCase};
+pub use test::{SideEffect, SideEffectKind, TestCase, TestResult};
 pub use translation::{TranslationRequest, TranslationResult};
 pub use verification::{FailedTest, VerificationResult};
 

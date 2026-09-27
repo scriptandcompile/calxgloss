@@ -30,7 +30,11 @@ pub enum AnalysisError {
 
     /// Function analysis failed.
     #[error("function analysis failed for '{function}' in '{dll}': {reason}")]
-    FunctionAnalysisFailed { dll: String, function: String, reason: String },
+    FunctionAnalysisFailed {
+        dll: String,
+        function: String,
+        reason: String,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, AnalysisError>;

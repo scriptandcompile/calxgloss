@@ -28,8 +28,8 @@ pub mod error;
 
 pub use error::PromptError;
 
-use calxgloss_types::TranslationRequest;
 use askama::Template;
+use calxgloss_types::TranslationRequest;
 use serde_json::json;
 
 // ============================================================
@@ -90,13 +90,12 @@ impl TranslateTemplate {
             .baseline_tests
             .iter()
             .enumerate()
-            .map(|(i, test)| {
-                TestCaseFormatted {
-                    index: i + 1,
-                    inputs: test.inputs.clone(),
-                    expected_return: test.expected_return.clone(),
-                    side_effects: serde_json::to_value(&test.expected_side_effects).unwrap_or_else(|_| json!([])),
-                }
+            .map(|(i, test)| TestCaseFormatted {
+                index: i + 1,
+                inputs: test.inputs.clone(),
+                expected_return: test.expected_return.clone(),
+                side_effects: serde_json::to_value(&test.expected_side_effects)
+                    .unwrap_or_else(|_| json!([])),
             })
             .collect();
 
@@ -124,7 +123,9 @@ impl TranslateTemplate {
 /// `"translate"` template.
 pub fn build_translate_prompt(req: &TranslationRequest) -> Result<String, PromptError> {
     let template = TranslateTemplate::from_request(req);
-    let rendered = template.render().map_err(|e| PromptError::Render(e.to_string()))?;
+    let rendered = template
+        .render()
+        .map_err(|e| PromptError::Render(e.to_string()))?;
     if rendered.trim().is_empty() {
         return Err(PromptError::EmptyPrompt);
     }
@@ -185,7 +186,7 @@ mod tests {
 
         assert_eq!(template.function_name, "DrawSprite");
         assert_eq!(template.dll_name, "game_logic.dll");
-        assert_eq!(template.no_windows_apis, false);
+        assert!(!template.no_windows_apis);
         assert_eq!(template.windows_apis.len(), 2);
         assert_eq!(template.test_cases.len(), 2);
     }
