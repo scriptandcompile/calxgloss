@@ -1,7 +1,8 @@
 [package]
 name = "calxgloss-types"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+description = "Shared data structures for the Calxgloss reverse engineering harness"
 
 [dependencies]
 serde = { workspace = true }

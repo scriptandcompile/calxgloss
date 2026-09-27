@@ -1,7 +1,8 @@
 [package]
 name = "calxgloss-reports"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+description = "Terminal output formatting for human review of translation units"
 
 [dependencies]
 calxgloss-types = { path = "../calxgloss-types" }

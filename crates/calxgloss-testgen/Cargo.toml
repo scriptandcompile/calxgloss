@@ -1,7 +1,8 @@
 [package]
 name = "calxgloss-testgen"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+description = "FFI stub generation, test input generation, and baseline test execution"
 
 [dependencies]
 calxgloss-types = { path = "../calxgloss-types" }

@@ -1,7 +1,8 @@
 [package]
 name = "calxgloss-analysis"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+description = "DLL classification, call graph analysis, and Windows API tagging"
 
 [dependencies]
 calxgloss-types = { path = "../calxgloss-types" }

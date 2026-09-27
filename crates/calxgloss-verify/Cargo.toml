@@ -1,7 +1,8 @@
 [package]
 name = "calxgloss-verify"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+description = "Compile Rust code, run tests, and compare against baseline behavior"
 
 [dependencies]
 calxgloss-types = { path = "../calxgloss-types" }

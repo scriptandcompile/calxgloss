@@ -1,7 +1,8 @@
 [package]
 name = "calxgloss-llm"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+description = "Local LLM client for sending prompts and receiving Rust code (Ollama/vLLM compatible)"
 
 [dependencies]
 calxgloss-types = { path = "../calxgloss-types" }

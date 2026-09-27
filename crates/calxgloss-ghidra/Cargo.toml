@@ -1,7 +1,8 @@
 [package]
 name = "calxgloss-ghidra"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+description = "GhidraMCP HTTP client for pulling disassembly, decompiler output, and symbol data"
 
 [dependencies]
 calxgloss-types = { path = "../calxgloss-types" }
