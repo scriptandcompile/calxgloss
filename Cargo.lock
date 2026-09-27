@@ -320,7 +320,9 @@ dependencies = [
  "calxgloss-prompts",
  "calxgloss-testgen",
  "calxgloss-types",
+ "thiserror",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
