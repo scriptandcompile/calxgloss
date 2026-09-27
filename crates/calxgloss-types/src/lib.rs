@@ -1,14 +1,132 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Shared data structures for the Calxgloss reverse engineering harness.
+//!
+//! This crate defines the core types used across all Calxgloss crates,
+//! including DLL analysis, function metadata, test cases, translation
+//! requests/responses, verification results, and Git automation.
+//!
+//! # Module Organization
+//!
+//! - [`dll`] — DLL classification and symbol information
+//! - [`function`] — Function disassembly, decompiler output, and API tagging
+//! - [`test`] — Test case generation and baseline execution
+//! - [`translation`] — LLM translation requests and results
+//! - [`verification`] — Compilation and behavioral verification results
+//! - [`git`] — Branch and commit tracking
+//! - [`error`] — Unified error type (`TypesError`)
+
+pub mod dll;
+pub mod error;
+pub mod function;
+pub mod git;
+pub mod test;
+pub mod translation;
+pub mod verification;
+
+// Re-export public types at the crate root for convenient access.
+
+pub use dll::{DllCategory, DllInfo, Export, Import};
+pub use error::TypesError;
+pub use function::{ApiCategory, FunctionInfo, WindowsApiCall};
+pub use git::{GitBranch, GitCommit};
+pub use test::{SideEffect, SideEffectKind, TestResult, TestCase};
+pub use translation::{TranslationRequest, TranslationResult};
+pub use verification::{FailedTest, VerificationResult};
+
+// ============================================================
+// Integration tests
+// ============================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+    fn test_dll_category_serialization() {
+        let category = DllCategory::MicrosoftSdk;
+        let json = serde_json::to_string(&category).unwrap();
+        assert_eq!(json, "\"MicrosoftSdk\"");
+        let deserialized: DllCategory = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, DllCategory::MicrosoftSdk);
+    }
+
+    #[test]
+    fn test_api_category_serialization() {
+        let category = ApiCategory::DirectX;
+        let json = serde_json::to_string(&category).unwrap();
+        assert_eq!(json, "\"DirectX\"");
+        let deserialized: ApiCategory = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, ApiCategory::DirectX);
+    }
+
+    #[test]
+    fn test_git_branch_new() {
+        let branch = GitBranch::new("game_logic.dll", "DrawSprite", 1).unwrap();
+        assert_eq!(branch.name, "re/game_logic/DrawSpritev1");
+        assert_eq!(branch.dll, "game_logic.dll");
+        assert_eq!(branch.function, "DrawSprite");
+        assert_eq!(branch.attempt, 1);
+    }
+
+    #[test]
+    fn test_git_branch_empty_dll() {
+        let result = GitBranch::new("", "DrawSprite", 1);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), TypesError::EmptyDllName));
+    }
+
+    #[test]
+    fn test_git_branch_empty_function() {
+        let result = GitBranch::new("game_logic.dll", "", 1);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), TypesError::EmptyFunctionName));
+    }
+
+    #[test]
+    fn test_test_case_serialization() {
+        let test_case = TestCase {
+            inputs: serde_json::json!({"x": 10, "y": 20}),
+            expected_return: serde_json::json!(30),
+            expected_side_effects: vec![],
+        };
+        let json = serde_json::to_string(&test_case).unwrap();
+        let deserialized: TestCase = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.inputs["x"], 10);
+        assert_eq!(deserialized.expected_return, 30);
+    }
+
+    #[test]
+    fn test_side_effect_kind_serialization() {
+        let kind = SideEffectKind::FileWrite;
+        let json = serde_json::to_string(&kind).unwrap();
+        assert_eq!(json, "\"FileWrite\"");
+        let deserialized: SideEffectKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, SideEffectKind::FileWrite);
+    }
+
+    #[test]
+    fn test_side_effect_other_serialization() {
+        let kind = SideEffectKind::Other("custom".to_string());
+        let json = serde_json::to_string(&kind).unwrap();
+        assert_eq!(json, "{\"Other\":\"custom\"}");
+        let deserialized: SideEffectKind = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            deserialized,
+            SideEffectKind::Other(ref s) if s == "custom"
+        ));
+    }
+
+    #[test]
+    fn test_translation_result_serialization() {
+        let result = TranslationResult {
+            rust_code: "fn hello() {}".to_string(),
+            prompt_used: "Translate this function...".to_string(),
+            model: "qwen3-235b".to_string(),
+            tokens_used: Some(4096),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let deserialized: TranslationResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.rust_code, "fn hello() {}");
+        assert_eq!(deserialized.model, "qwen3-235b");
+        assert_eq!(deserialized.tokens_used, Some(4096));
     }
 }

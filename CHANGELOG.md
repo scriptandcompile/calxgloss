@@ -11,7 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Project scaffolding with 14 workspace crates
 - Workspace root `Cargo.toml` with shared dependencies
-- `calxgloss-types` — shared data structures shell
+- `calxgloss-types` — shared data structures (scaffolded)
+- `calxgloss-types` — implemented all shared types with module organization: DLL analysis, function metadata, test cases, translation, verification, and Git automation (with `serde`/`thiserror` derive and doc comments)
 - `calxgloss-ghidra` — GhidraMCP HTTP client shell
 - `calxgloss-llm` — local LLM client shell
 - `calxgloss-prompts` — prompt template engine shell
