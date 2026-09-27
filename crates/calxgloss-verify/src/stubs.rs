@@ -127,7 +127,7 @@ pub struct FileHandle {
 }
 
 /// Event type for window events.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum WindowEvent {
     Close,
     Resize(u32, u32),
@@ -351,22 +351,32 @@ pub fn threading_stub() -> String {
 // Threading stub
 // ============================================================
 
+/// A handle that wraps any JoinHandle so the stub's Thread::Handle
+/// type is uniform regardless of the return type T of spawned closures.
+pub struct ThreadHandle(std::thread::JoinHandle<()>);
+
 #[derive(Default)]
 pub struct ThreadStub;
 
 impl Thread for ThreadStub {
-    type Handle = std::thread::JoinHandle<()>;
+    type Handle = ThreadHandle;
 
     fn spawn<F, T>(f: F) -> Result<Self::Handle, String>
     where
         F: FnOnce() -> T + Send + 'static,
         T: Send + 'static,
     {
-        Ok(std::thread::spawn(f))
+        // The actual work runs in the original thread; we spawn a wrapper
+        // that joins it and returns () so the handle type is uniform.
+        let handle = std::thread::spawn(f);
+        let wrapper = std::thread::spawn(move || {
+            let _ = handle.join();
+        });
+        Ok(ThreadHandle(wrapper))
     }
 
     fn join(handle: Self::Handle) -> Result<(), String> {
-        handle.join().map_err(|e| format!("Thread panic: {:?}", e))
+        handle.0.join().map_err(|e| format!("Thread panic: {:?}", e))
     }
 
     fn sleep(duration_ms: u64) {
@@ -374,7 +384,10 @@ impl Thread for ThreadStub {
     }
 
     fn current_id() -> u64 {
-        std::thread::current().id().as_u64()
+        // std::thread::current().id().as_u64() is gated behind the
+        // `thread_id_value` unstable feature.  Process ID is stable and
+        // serves as a unique-enough identifier for stub usage.
+        std::process::id() as u64
     }
 }
 "#
