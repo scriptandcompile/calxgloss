@@ -491,7 +491,7 @@ impl TranslationPipeline {
 
         let matches = self
             .ghidra
-            .search_functions(function, Some(1))
+            .search_functions(function, Some(10))
             .await
             .map_err(context)?;
         let found = matches.iter().find(|m| m.name == function).ok_or_else(|| {
