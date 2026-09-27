@@ -128,7 +128,7 @@ impl Translator {
     ///
     /// # Returns
     ///
-/// A [`Translation`] with the generated Rust code and metadata.
+    /// A [`Translation`] with the generated Rust code and metadata.
     pub async fn translate_raw(
         &self,
         dll: &str,
@@ -359,7 +359,12 @@ impl TranslationPipeline {
     /// # }
     /// ```
     #[instrument(skip(self), fields(target_exe, dll, function, base_url = %self.ghidra.base_url()))]
-    pub async fn translate(&self, target_exe: &str, dll: &str, function: &str) -> Result<Translation> {
+    pub async fn translate(
+        &self,
+        target_exe: &str,
+        dll: &str,
+        function: &str,
+    ) -> Result<Translation> {
         debug!(target_exe, dll, function, "Starting translation pipeline");
 
         // Step 1: Fetch function metadata from Ghidra
@@ -369,10 +374,17 @@ impl TranslationPipeline {
         // Step 2: Fetch imports and tag Windows APIs
         let imports = self.fetch_imports(target_exe, dll).await?;
         let tagged_apis = self.tag_windows_apis(&function_info.disassembly, &imports)?;
-        info!(dll, function, tagged_apis = tagged_apis.len(), "Tagged Windows APIs");
+        info!(
+            dll,
+            function,
+            tagged_apis = tagged_apis.len(),
+            "Tagged Windows APIs"
+        );
 
         // Step 3: Generate baseline test inputs
-        let baseline_tests = self.generate_baseline_tests(&function_info, &imports).await?;
+        let baseline_tests = self
+            .generate_baseline_tests(&function_info, &imports)
+            .await?;
         info!(
             dll,
             function,
@@ -389,7 +401,12 @@ impl TranslationPipeline {
             baseline_tests.clone(),
         );
         let prompt = build_translate_prompt(&request)?;
-        info!(dll, function, prompt_len = prompt.len(), "Built translation prompt");
+        info!(
+            dll,
+            function,
+            prompt_len = prompt.len(),
+            "Built translation prompt"
+        );
 
         // Step 5: Send to LLM
         let response = self.send_to_llm(&prompt).await?;
@@ -527,7 +544,7 @@ impl TranslationPipeline {
 
         // Generate test inputs from signature and disassembly
         let tests = calxgloss_testgen::generate_test_inputs(&signature, &function_info.disassembly)
-            .map_err(|e| TranslatorError::TestGen(e))?;
+            .map_err(TranslatorError::TestGen)?;
 
         Ok(tests)
     }
@@ -551,22 +568,24 @@ impl TranslationPipeline {
     /// Estimate the number of parameters a function takes.
     fn estimate_params(&self, function_info: &FunctionInfo, _imports: &[Import]) -> usize {
         // Heuristic: if we have exports, try to extract the real signature
-        if let Some(ref dll_name) = self.target_dll {
-            if dll_name == &function_info.dll {
-                if let Some(export) = self.exports.iter().find(|e| e.name == function_info.name) {
-                    // Try to parse parameters from the export signature
-                    if let Ok(parsed) = calxgloss_testgen::parse_signature(&export.signature) {
-                        return parsed.parameters.len();
-                    }
-                }
-            }
+        if let Some(ref dll_name) = self.target_dll
+            && dll_name == &function_info.dll
+            && let Some(export) = self.exports.iter().find(|e| e.name == function_info.name)
+            && let Ok(parsed) = calxgloss_testgen::parse_signature(&export.signature)
+        {
+            return parsed.parameters.len();
         }
 
         // Fallback: guess based on decompiler output or disassembly
-        if function_info.decompiler_output.contains('(') && function_info.decompiler_output.contains(')') {
+        if function_info.decompiler_output.contains('(')
+            && function_info.decompiler_output.contains(')')
+        {
             // Try to extract from pseudo-C
             let open = function_info.decompiler_output.find('(').unwrap_or(0);
-            let close = function_info.decompiler_output.rfind(')').unwrap_or(function_info.decompiler_output.len());
+            let close = function_info
+                .decompiler_output
+                .rfind(')')
+                .unwrap_or(function_info.decompiler_output.len());
             let params = &function_info.decompiler_output[open + 1..close];
             if !params.trim().is_empty() {
                 return params.split(',').count();
@@ -658,11 +677,12 @@ mod tests {
         let exports = vec![Export {
             name: "DrawSprite".to_string(),
             address: 0x1000,
-            signature: "int __stdcall DrawSprite(int x, int y, unsigned int texture_index)".to_string(),
+            signature: "int __stdcall DrawSprite(int x, int y, unsigned int texture_index)"
+                .to_string(),
         }];
 
-        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default())
-            .with_exports(exports);
+        let pipeline =
+            TranslationPipeline::new(ghidra, llm, ApiMappings::default()).with_exports(exports);
 
         assert!(!pipeline.exports.is_empty());
     }
@@ -672,7 +692,8 @@ mod tests {
         let translation = Translation {
             dll: "game_logic.dll".to_string(),
             function: "DrawSprite".to_string(),
-            rust_code: "fn draw_sprite(x: i32, y: i32, texture_index: u32) -> i32 { x + y }".to_string(),
+            rust_code: "fn draw_sprite(x: i32, y: i32, texture_index: u32) -> i32 { x + y }"
+                .to_string(),
             prompt_used: "Translate this...".to_string(),
             model: "qwen3".to_string(),
             tokens_used: Some(1024),
@@ -774,7 +795,10 @@ mod tests {
         assert_eq!(request.dll, "game_logic.dll");
         assert_eq!(request.function, "DrawSprite");
         assert_eq!(request.disassembly, "mov eax, [esp+4]\nret");
-        assert_eq!(request.decompiler_output, "int DrawSprite(int x) { return x; }");
+        assert_eq!(
+            request.decompiler_output,
+            "int DrawSprite(int x) { return x; }"
+        );
     }
 
     #[tokio::test]
@@ -785,7 +809,9 @@ mod tests {
         let translator = Translator::new(llm);
 
         // This will fail because there's no LLM server, but that's expected
-        let result = translator.translate_raw("test.dll", "TestFunc", "code", "").await;
+        let result = translator
+            .translate_raw("test.dll", "TestFunc", "code", "")
+            .await;
         assert!(result.is_err());
     }
 }

@@ -18,10 +18,10 @@ use std::io::{self, Write};
 
 use calxgloss_analysis::DllClassification;
 use calxgloss_analysis::Strategy;
+use calxgloss_translator::Translation;
 use calxgloss_types::FailedTest;
 use calxgloss_types::GitBranch;
 use calxgloss_types::VerificationResult;
-use calxgloss_translator::Translation;
 
 // ============================================================
 // ANSI color codes
@@ -115,20 +115,25 @@ pub fn print_translation_summary(translation: &Translation) {
 /// and details of any compilation errors or test failures.
 pub fn print_verification_results(result: &VerificationResult) {
     if result.compiled {
-        println!(
-            "  {}{}",
-            white_bold("Compiled: "),
-            green_bold("yes")
-        );
+        println!("  {}{}", white_bold("Compiled: "), green_bold("yes"));
 
         if result.tests_total > 0 {
             let pass_rate = result.tests_passed as f64 / result.tests_total as f64 * 100.0;
             let color = if result.tests_passed == result.tests_total {
-                green_bold(&format!("{}/{} passed ({:.0}%)", result.tests_passed, result.tests_total, pass_rate))
+                green_bold(&format!(
+                    "{}/{} passed ({:.0}%)",
+                    result.tests_passed, result.tests_total, pass_rate
+                ))
             } else if pass_rate >= 90.0 {
-                yellow_bold(&format!("{}/{} passed ({:.0}%)", result.tests_passed, result.tests_total, pass_rate))
+                yellow_bold(&format!(
+                    "{}/{} passed ({:.0}%)",
+                    result.tests_passed, result.tests_total, pass_rate
+                ))
             } else {
-                red_bold(&format!("{}/{} passed ({:.0}%)", result.tests_passed, result.tests_total, pass_rate))
+                red_bold(&format!(
+                    "{}/{} passed ({:.0}%)",
+                    result.tests_passed, result.tests_total, pass_rate
+                ))
             };
             println!("  {}", color);
         } else {
@@ -161,7 +166,11 @@ fn print_failed_test_detail(failed: &FailedTest) {
         serde_json::Value::Null => "null".to_string(),
         serde_json::Value::Number(n) => n.to_string(),
         serde_json::Value::Array(arr) => {
-            let strs: Vec<String> = arr.iter().filter_map(|v| v.as_i64()).map(|n| n.to_string()).collect();
+            let strs: Vec<String> = arr
+                .iter()
+                .filter_map(|v| v.as_i64())
+                .map(|n| n.to_string())
+                .collect();
             format!("[{}]", strs.join(", "))
         }
         serde_json::Value::String(s) => format!("\"{}\"", s),
@@ -219,7 +228,11 @@ pub fn print_git_status(branch: &GitBranch, merged: bool) {
 
     let status_color = if merged { green_bold } else { yellow_bold };
     let status_text = if merged { "MERGED" } else { "UNMERGED" };
-    println!("  {}{}", white_bold("  Status: "), status_color(status_text));
+    println!(
+        "  {}{}",
+        white_bold("  Status: "),
+        status_color(status_text)
+    );
 }
 
 // ============================================================
@@ -240,9 +253,8 @@ pub fn print_success(branch: &GitBranch, verification: &VerificationResult) -> b
     println!();
     println!("{}", cyan_bold(&"╔".repeat(60)));
     println!(
-        "  {}{}{}",
+        "  {}TRANSLATION COMPLETE{}",
         cyan_bold("║  "),
-        "TRANSLATION COMPLETE".to_string(),
         cyan_bold(" ║")
     );
     println!("{}", cyan_bold(&"║".repeat(60)));
@@ -261,11 +273,23 @@ pub fn print_success(branch: &GitBranch, verification: &VerificationResult) -> b
     // Overall status
     let all_passed = verification.tests_passed == verification.tests_total;
     if all_passed {
-        println!("  {}{}", white_bold("  Status: "), green_bold("PASS \u{2713}"));
+        println!(
+            "  {}{}",
+            white_bold("  Status: "),
+            green_bold("PASS \u{2713}")
+        );
     } else if verification.tests_passed > 0 && verification.failed_tests.len() <= 2 {
-        println!("  {}{}", white_bold("  Status: "), yellow_bold("PASS (with warnings)"));
+        println!(
+            "  {}{}",
+            white_bold("  Status: "),
+            yellow_bold("PASS (with warnings)")
+        );
     } else {
-        println!("  {}{}", white_bold("  Status: "), yellow_bold("PASS (with failures)"));
+        println!(
+            "  {}{}",
+            white_bold("  Status: "),
+            yellow_bold("PASS (with failures)")
+        );
     }
 
     println!("{}", cyan_bold(&"╚".repeat(60)));
@@ -289,9 +313,8 @@ pub fn print_failure(branch: &GitBranch, verification: &VerificationResult) {
     println!();
     println!("{}", cyan_bold(&"╔".repeat(60)));
     println!(
-        "  {}{}{}",
+        "  {}TRANSLATION FAILED{}",
         cyan_bold("║  "),
-        "TRANSLATION FAILED".to_string(),
         cyan_bold(" ║")
     );
     println!("{}", cyan_bold(&"║".repeat(60)));
@@ -308,7 +331,11 @@ pub fn print_failure(branch: &GitBranch, verification: &VerificationResult) {
     print_git_status(branch, false);
 
     // Overall status
-    println!("  {}{}", white_bold("  Status: "), red_bold("FAIL \u{2717} — fix required"));
+    println!(
+        "  {}{}",
+        white_bold("  Status: "),
+        red_bold("FAIL \u{2717} — fix required")
+    );
 
     println!("{}", cyan_bold(&"╚".repeat(60)));
 
@@ -372,11 +399,7 @@ pub fn print_classification_report(classifications: &[DllClassification]) {
             Strategy::ReverseEngineer => "Reverse Engineer".to_string(),
         };
 
-        println!(
-            "  {}{}",
-            white_bold("  DLL: "),
-            classification.dll
-        );
+        println!("  {}{}", white_bold("  DLL: "), classification.dll);
         println!(
             "  {}{}",
             white_bold("  Category: "),
@@ -402,9 +425,18 @@ pub fn print_classification_report(classifications: &[DllClassification]) {
     println!("{}", sep);
 
     // Summary counts
-    let pal_count = classifications.iter().filter(|c| matches!(c.strategy, Strategy::PalMapping)).count();
-    let crate_count = classifications.iter().filter(|c| matches!(c.strategy, Strategy::CrateReplacement { .. })).count();
-    let re_count = classifications.iter().filter(|c| matches!(c.strategy, Strategy::ReverseEngineer)).count();
+    let pal_count = classifications
+        .iter()
+        .filter(|c| matches!(c.strategy, Strategy::PalMapping))
+        .count();
+    let crate_count = classifications
+        .iter()
+        .filter(|c| matches!(c.strategy, Strategy::CrateReplacement { .. }))
+        .count();
+    let re_count = classifications
+        .iter()
+        .filter(|c| matches!(c.strategy, Strategy::ReverseEngineer))
+        .count();
 
     println!(
         "  {} Summary: {} PAL, {} crate replacement, {} reverse engineer",
@@ -436,11 +468,26 @@ mod tests {
 
     #[test]
     fn test_format_category() {
-        assert_eq!(format_category(&calxgloss_types::DllCategory::WindowsOs), "Windows OS");
-        assert_eq!(format_category(&calxgloss_types::DllCategory::MicrosoftSdk), "Microsoft SDK");
-        assert_eq!(format_category(&calxgloss_types::DllCategory::KnownThirdParty), "Known Third-Party");
-        assert_eq!(format_category(&calxgloss_types::DllCategory::ProjectSpecific), "Project-Specific");
-        assert_eq!(format_category(&calxgloss_types::DllCategory::UnknownThirdParty), "Unknown Third-Party");
+        assert_eq!(
+            format_category(&calxgloss_types::DllCategory::WindowsOs),
+            "Windows OS"
+        );
+        assert_eq!(
+            format_category(&calxgloss_types::DllCategory::MicrosoftSdk),
+            "Microsoft SDK"
+        );
+        assert_eq!(
+            format_category(&calxgloss_types::DllCategory::KnownThirdParty),
+            "Known Third-Party"
+        );
+        assert_eq!(
+            format_category(&calxgloss_types::DllCategory::ProjectSpecific),
+            "Project-Specific"
+        );
+        assert_eq!(
+            format_category(&calxgloss_types::DllCategory::UnknownThirdParty),
+            "Unknown Third-Party"
+        );
     }
 
     #[test]

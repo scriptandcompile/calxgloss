@@ -1,7 +1,7 @@
 //! Calxgloss Web — Web Review UI (scaffolded for post-MVP implementation)
 //!
 //! This crate will house the review UI for the Calxgloss reverse engineering harness.
-//! It uses **axum** + **leptos** for a reactive server-side rendered web interface.
+//! It will use **axum** + **leptos** for a reactive server-side rendered web interface.
 //!
 //! ## MVP Status
 //!
@@ -30,18 +30,16 @@
 //! ## Feature Flags
 //!
 //! - `server` — enables the axum HTTP server (default: off)
-//! - `leptos` — enables leptos SSR components (default: off)
 //!
 //! Run with a feature flag:
 //! ```bash
 //! cargo build --features server
-//! cargo build --features leptos
 //! ```
 //!
 //! ## Post-MVP Implementation Plan
 //!
 //! 1. Set up axum router with `/api/*` endpoints for review data
-//! 2. Implement leptos components for review dashboard, diff view, dependency graph
+//! 2. Add leptos and implement components for review dashboard, diff view, dependency graph
 //! 3. Wire endpoints to `calxgloss-types` and `calxgloss-git` data sources
 //! 4. Add WebSocket support for real-time translation progress streaming
 
@@ -339,7 +337,7 @@ impl ReviewDashboard {
         }
 
         // Sort queue by dependency order (roots first)
-        queue.sort_by(|a, b| a.dependencies.len().cmp(&b.dependencies.len()));
+        queue.sort_by_key(|a| a.dependencies.len());
 
         Self {
             dependency_graph: graph,
@@ -425,25 +423,27 @@ pub mod server {
         // TODO: Query units of work, return dashboard data
     }
 
-    async fn api_get_unit(axum::extract::Path(id): axum::extract::Path<String>) -> &'static str {
+    async fn api_get_unit(axum::extract::Path(_id): axum::extract::Path<String>) -> &'static str {
         "{}"
         // TODO: Query single unit of work by ID
     }
 
-    async fn api_accept_unit(axum::extract::Path(id): axum::extract::Path<String>) -> &'static str {
+    async fn api_accept_unit(
+        axum::extract::Path(_id): axum::extract::Path<String>,
+    ) -> &'static str {
         "{}"
         // TODO: Accept unit — merge branch to main
     }
 
     async fn api_send_back_unit(
-        axum::extract::Path(id): axum::extract::Path<String>,
+        axum::extract::Path(_id): axum::extract::Path<String>,
     ) -> &'static str {
         "{}"
         // TODO: Send back unit with reviewer comments
     }
 
     async fn api_request_patch(
-        axum::extract::Path(id): axum::extract::Path<String>,
+        axum::extract::Path(_id): axum::extract::Path<String>,
     ) -> &'static str {
         "{}"
         // TODO: Request patch for specific issue
@@ -460,34 +460,19 @@ pub mod server {
 }
 
 // ============================================================
-// Leptos component scaffolding (behind feature flag)
+// Leptos component scaffolding (planned, post-MVP)
 // ============================================================
-
-#[cfg(feature = "leptos")]
-pub mod components {
-    //! Leptos SSR components for the review dashboard.
-    //!
-    //! This module is only compiled when the `leptos` feature is enabled.
-
-    // Leptos components would go here:
-    // - DashboardView: main review dashboard page
-    // - DependencyGraphView: visual dependency graph
-    // - UnitOfWorkCard: individual unit card with diff/tests/actions
-    // - ReviewQueue: queue of pending units
-    // - RecentActivity: recent accept/send-back events
-
-    /// Renders the review dashboard view.
-    pub struct DashboardView;
-
-    /// Renders the dependency graph view.
-    pub struct DependencyGraphView;
-
-    /// Renders a single unit of work card.
-    pub struct UnitOfWorkCard;
-
-    /// Renders the review queue.
-    pub struct ReviewQueue;
-}
+//
+// The `leptos` dependency and feature are not wired up yet — re-add them
+// alongside the real implementation. The planned components are:
+//
+// - DashboardView: main review dashboard page
+// - DependencyGraphView: visual dependency graph
+// - UnitOfWorkCard: individual unit card with diff/tests/actions
+// - ReviewQueue: queue of pending units
+// - RecentActivity: recent accept/send-back events
+//
+// Each would live in a `#[cfg(feature = "leptos")] pub mod components` block.
 
 #[cfg(test)]
 mod tests {

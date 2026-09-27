@@ -45,8 +45,8 @@
 
 mod stubs;
 
-pub use stubs::Stubs;
 pub use calxgloss_types::{FailedTest, TestCase, VerificationResult};
+pub use stubs::Stubs;
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -115,17 +115,29 @@ impl Verifier {
     ///
     /// A [`CompileResult`] with compilation status and error details.
     #[instrument(skip(self, rust_code), fields(dll, function))]
-    pub async fn compile(&self, dll: &str, function: &str, rust_code: &str) -> Result<CompileResult> {
+    pub async fn compile(
+        &self,
+        dll: &str,
+        function: &str,
+        rust_code: &str,
+    ) -> Result<CompileResult> {
         debug!(dll, function, "Starting compilation check");
 
         let project = self.scaffold_project(dll, function, rust_code)?;
-        let output = run_cargo_check(&project).await.context("cargo check failed")?;
+        let output = run_cargo_check(&project)
+            .await
+            .context("cargo check failed")?;
         let (success, errors, warnings) = parse_cargo_output(&output);
 
         if success {
             info!(dll, function, "Compilation successful");
         } else {
-            error!(dll, function, error_count = errors.len(), "Compilation failed");
+            error!(
+                dll,
+                function,
+                error_count = errors.len(),
+                "Compilation failed"
+            );
         }
 
         Ok(CompileResult {
@@ -177,12 +189,18 @@ impl Verifier {
             });
         }
 
-        info!(dll, function, "Compilation passed, running behavioral tests");
+        info!(
+            dll,
+            function, "Compilation passed, running behavioral tests"
+        );
 
         let project = self.scaffold_test_project(dll, function, rust_code, baseline_tests)?;
-        let test_output = run_test_runner(&project).await.unwrap_or_else(|e| format!("Test execution failed: {}", e));
+        let test_output = run_test_runner(&project)
+            .await
+            .unwrap_or_else(|e| format!("Test execution failed: {}", e));
 
-        let (tests_passed, tests_total, failed_tests) = parse_test_results(&test_output, baseline_tests);
+        let (tests_passed, tests_total, failed_tests) =
+            parse_test_results(&test_output, baseline_tests);
 
         info!(
             dll,
@@ -365,7 +383,10 @@ fn call_function(inputs: &Value) -> Value {
                 }
                 serde_json::Value::Number(n) => {
                     if let Some(v) = n.as_i64() {
-                        code.push_str(&format!("        Number(n) if n.as_i64() == Some({}) => call_single_int({}),\n", v, v));
+                        code.push_str(&format!(
+                            "        Number(n) if n.as_i64() == Some({}) => call_single_int({}),\n",
+                            v, v
+                        ));
                     } else if let Some(v) = n.as_u64() {
                         code.push_str(&format!("        Number(n) if n.as_u64() == Some({}) => call_single_uint({}),\n", v, v));
                     } else if let Some(v) = n.as_f64() {
@@ -385,13 +406,18 @@ fn call_function(inputs: &Value) -> Value {
                 serde_json::Value::Array(arr) if arr.len() == 3 => {
                     code.push_str("        Array(arr) if arr.len() == 3 && arr.iter().all(|v| v.is_number()) => {\n");
                     code.push_str("            if let (Some(a), Some(b), Some(c)) = (arr[0].as_i64(), arr[1].as_i64(), arr[2].as_u64()) {\n");
-                    code.push_str("                call_three_ints(a as i32, b as i32, c as u32)\n");
+                    code.push_str(
+                        "                call_three_ints(a as i32, b as i32, c as u32)\n",
+                    );
                     code.push_str("            } else {\n");
                     code.push_str("                Value::String(\"type mismatch for 3-int pattern\".into())\n");
                     code.push_str("            }\n        }\n");
                 }
                 serde_json::Value::Array(arr) => {
-                    code.push_str(&format!("        Array(_) if arr.len() == {} => {{", arr.len()));
+                    code.push_str(&format!(
+                        "        Array(_) if arr.len() == {} => {{",
+                        arr.len()
+                    ));
                     code.push_str(" Value::String(format!(\"array of length {} not supported\", arr.len()))\n        }}\n");
                 }
                 serde_json::Value::Object(_) => {
@@ -400,13 +426,17 @@ fn call_function(inputs: &Value) -> Value {
                     code.push_str("        }\n");
                 }
                 _ => {
-                    code.push_str("        _ => Value::String(\"unrecognized input pattern\".into()),\n");
+                    code.push_str(
+                        "        _ => Value::String(\"unrecognized input pattern\".into()),\n",
+                    );
                 }
             }
         }
 
         // Fallback for unmatched patterns
-        code.push_str("        _ => Value::String(\"could not match input to function signature\".into()),\n");
+        code.push_str(
+            "        _ => Value::String(\"could not match input to function signature\".into()),\n",
+        );
         code.push_str("    }\n");
 
         code
@@ -516,8 +546,14 @@ fn parse_cargo_output(output: &str) -> (bool, Vec<String>, Vec<String>) {
 }
 
 /// Parse test runner output for pass/fail results.
-fn parse_test_results(output: &str, baseline_tests: &[TestCase]) -> (usize, usize, Vec<FailedTest>) {
-    if output.contains("SKIPPED") || output.contains("no baseline file") || output.contains("baseline.json not found") {
+fn parse_test_results(
+    output: &str,
+    baseline_tests: &[TestCase],
+) -> (usize, usize, Vec<FailedTest>) {
+    if output.contains("SKIPPED")
+        || output.contains("no baseline file")
+        || output.contains("baseline.json not found")
+    {
         warn!("Behavioral tests were skipped");
         return (0, baseline_tests.len(), Vec::new());
     }
@@ -525,35 +561,35 @@ fn parse_test_results(output: &str, baseline_tests: &[TestCase]) -> (usize, usiz
     // Try to parse test results from JSON output
     let test_output_lines: Vec<&str> = output.lines().filter(|l| l.starts_with('[')).collect();
 
-    if let Some(json_line) = test_output_lines.last() {
-        if let Ok(results) = serde_json::from_str::<Vec<serde_json::Value>>(json_line) {
-            let mut failed = Vec::new();
-            let mut passed = 0;
+    if let Some(json_line) = test_output_lines.last()
+        && let Ok(results) = serde_json::from_str::<Vec<serde_json::Value>>(json_line)
+    {
+        let mut failed = Vec::new();
+        let mut passed = 0;
 
-            for (i, result) in results.iter().enumerate() {
-                if let Some(passed_val) = result.get("passed").and_then(|v| v.as_bool()) {
-                    if passed_val {
-                        passed += 1;
-                    } else if let Some(error_msg) = result.get("error").and_then(|v| v.as_str()) {
-                        failed.push(FailedTest {
-                            test_index: i,
-                            inputs: baseline_tests
-                                .get(i)
-                                .map(|t| t.inputs.clone())
-                                .unwrap_or_default(),
-                            expected: baseline_tests
-                                .get(i)
-                                .map(|t| t.expected_return.clone())
-                                .unwrap_or_default(),
-                            actual: result.get("actual").cloned().unwrap_or_default(),
-                            error: error_msg.to_string(),
-                        });
-                    }
+        for (i, result) in results.iter().enumerate() {
+            if let Some(passed_val) = result.get("passed").and_then(|v| v.as_bool()) {
+                if passed_val {
+                    passed += 1;
+                } else if let Some(error_msg) = result.get("error").and_then(|v| v.as_str()) {
+                    failed.push(FailedTest {
+                        test_index: i,
+                        inputs: baseline_tests
+                            .get(i)
+                            .map(|t| t.inputs.clone())
+                            .unwrap_or_default(),
+                        expected: baseline_tests
+                            .get(i)
+                            .map(|t| t.expected_return.clone())
+                            .unwrap_or_default(),
+                        actual: result.get("actual").cloned().unwrap_or_default(),
+                        error: error_msg.to_string(),
+                    });
                 }
             }
-
-            return (passed, results.len(), failed);
         }
+
+        return (passed, results.len(), failed);
     }
 
     // Fallback: if we couldn't parse structured output, assume tests ran
@@ -581,10 +617,16 @@ fn sanitize_crate_name(name: &str) -> String {
 fn sanitize_identifier(name: &str) -> String {
     let sanitized: String = name
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
 
-    if sanitized.chars().next().map_or(true, |c| c.is_ascii_digit()) {
+    if sanitized.chars().next().is_none_or(|c| c.is_ascii_digit()) {
         format!("_{}", sanitized)
     } else {
         sanitized
@@ -771,13 +813,11 @@ error[E0308]: mismatched types
 
         let verifier = Verifier::new(&dir).unwrap();
 
-        let tests = vec![
-            TestCase {
-                inputs: serde_json::json!([1, 2, 3]),
-                expected_return: serde_json::json!(6),
-                expected_side_effects: vec![],
-            },
-        ];
+        let tests = vec![TestCase {
+            inputs: serde_json::json!([1, 2, 3]),
+            expected_return: serde_json::json!(6),
+            expected_side_effects: vec![],
+        }];
 
         let patterns = verifier.generate_input_patterns(&tests);
         assert!(patterns.contains("Array(arr) if arr.len() == 3"));
@@ -833,11 +873,13 @@ error[E0308]: mismatched types
         let _ = fs::create_dir_all(&dir);
         let verifier = Verifier::new(&dir).unwrap();
 
-        let result = verifier.compile(
-            "test.dll",
-            "SimpleFunc",
-            "pub fn simple_func(x: i32) -> i32 { x * 2 }",
-        ).await;
+        let result = verifier
+            .compile(
+                "test.dll",
+                "SimpleFunc",
+                "pub fn simple_func(x: i32) -> i32 { x * 2 }",
+            )
+            .await;
 
         if let Ok(cr) = result {
             assert!(cr.success, "Simple function should compile successfully");
@@ -855,14 +897,19 @@ error[E0308]: mismatched types
         let _ = fs::create_dir_all(&dir);
         let verifier = Verifier::new(&dir).unwrap();
 
-        let result = verifier.compile(
-            "test.dll",
-            "BadFunc",
-            "pub fn bad_func() -> i32 { \"not an int\" }",
-        ).await;
+        let result = verifier
+            .compile(
+                "test.dll",
+                "BadFunc",
+                "pub fn bad_func() -> i32 { \"not an int\" }",
+            )
+            .await;
 
         if let Ok(cr) = result {
-            assert!(!cr.success, "Function with type mismatch should not compile");
+            assert!(
+                !cr.success,
+                "Function with type mismatch should not compile"
+            );
             assert!(!cr.errors.is_empty());
         }
 
@@ -879,11 +926,13 @@ error[E0308]: mismatched types
 
         let verifier = Verifier::new(&project_dir).unwrap();
 
-        let project = verifier.scaffold_project(
-            "test.dll",
-            "MyFunc",
-            "pub fn my_func(x: i32) -> i32 { x + 1 }",
-        ).unwrap();
+        let project = verifier
+            .scaffold_project(
+                "test.dll",
+                "MyFunc",
+                "pub fn my_func(x: i32) -> i32 { x + 1 }",
+            )
+            .unwrap();
 
         assert!(project.exists());
         assert!(project.join("Cargo.toml").exists());
@@ -910,12 +959,14 @@ error[E0308]: mismatched types
             expected_side_effects: vec![],
         }];
 
-        let project = verifier.scaffold_test_project(
-            "test.dll",
-            "MyFunc",
-            "pub fn my_func(x: i32, y: i32) -> i32 { x + y }",
-            &tests,
-        ).unwrap();
+        let project = verifier
+            .scaffold_test_project(
+                "test.dll",
+                "MyFunc",
+                "pub fn my_func(x: i32, y: i32) -> i32 { x + y }",
+                &tests,
+            )
+            .unwrap();
 
         assert!(project.exists());
         assert!(project.join("Cargo.toml").exists());

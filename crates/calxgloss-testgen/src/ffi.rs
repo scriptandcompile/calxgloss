@@ -246,13 +246,17 @@ pub fn generate_ffi_stub(dll: &str, function: &str, signature: &str) -> Result<F
         .enumerate()
         .map(|(i, p)| {
             let rust_type = windows_type_to_rust(&p.r#type, &parsed.type_map);
-            let name = p.name.as_deref().map(|s| s.to_string()).unwrap_or_else(|| format!("arg_{}", i));
+            let name = p
+                .name
+                .as_deref()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("arg_{}", i));
             format!("{}: {}", name, rust_type)
         })
         .collect();
 
     code.push_str(&params.join(", "));
-    code.push_str(")");
+    code.push(')');
 
     if !is_void {
         code.push_str(" -> ");
@@ -343,7 +347,7 @@ impl FfiStubBuilder {
             .collect();
 
         code.push_str(&params.join(", "));
-        code.push_str(")");
+        code.push(')');
 
         if !is_void {
             code.push_str(" -> ");
@@ -388,14 +392,12 @@ pub fn windows_type_to_rust(type_name: &str, type_map: &HashMap<String, String>)
     // Check for pointer types
     if trimmed.ends_with('*') {
         let base = trimmed.trim_end_matches('*').trim();
-        let base_rust = type_map.get(base).cloned().unwrap_or_else(|| {
-            match base {
-                "char" | "i8" => "*mut i8".to_string(),
-                "const char" | "LPCSTR" | "LPCWSTR" | "i16" => "*const i8".to_string(),
-                "wchar_t" | "u16" => "*const u16".to_string(),
-                "void" => "*mut u8".to_string(),
-                _ => format!("*mut u8"),
-            }
+        let base_rust = type_map.get(base).cloned().unwrap_or_else(|| match base {
+            "char" | "i8" => "*mut i8".to_string(),
+            "const char" | "LPCSTR" | "LPCWSTR" | "i16" => "*const i8".to_string(),
+            "wchar_t" | "u16" => "*const u16".to_string(),
+            "void" => "*mut u8".to_string(),
+            _ => "*mut u8".to_string(),
         });
 
         if base_rust.starts_with('*') {
@@ -406,9 +408,9 @@ pub fn windows_type_to_rust(type_name: &str, type_map: &HashMap<String, String>)
             } else {
                 // Check if we need mut vs const
                 if type_name.starts_with("const ") {
-                    format!("*const u8")
+                    "*const u8".to_string()
                 } else {
-                    format!("*mut u8")
+                    "*mut u8".to_string()
                 }
             }
         } else {
@@ -419,14 +421,24 @@ pub fn windows_type_to_rust(type_name: &str, type_map: &HashMap<String, String>)
             }
         }
     } else {
-        type_map.get(trimmed).cloned().unwrap_or_else(|| trimmed.to_string())
+        type_map
+            .get(trimmed)
+            .cloned()
+            .unwrap_or_else(|| trimmed.to_string())
     }
 }
 
 /// Extract the calling convention from a signature.
 /// Returns the prefix before the convention and the convention itself.
 fn extract_calling_convention(sig: &str) -> (&str, Option<String>) {
-    let conventions = ["__stdcall", "__cdecl", "__fastcall", "__thiscall", "__naked", "__retpoline"];
+    let conventions = [
+        "__stdcall",
+        "__cdecl",
+        "__fastcall",
+        "__thiscall",
+        "__naked",
+        "__retpoline",
+    ];
     for conv in conventions {
         if let Some(pos) = sig.find(conv) {
             let before = sig[..pos].trim();
@@ -446,10 +458,11 @@ fn extract_return_type_from_rest(rest: &str) -> String {
     let words: Vec<&str> = rest.split_whitespace().collect();
     if words.len() == 1 {
         // Single word: either just a type or just a name
-        let known_types = ["int", "void", "char", "long", "short", "float", "double",
-                           "bool", "BOOL", "HRESULT", "UINT", "ULONG", "USHORT",
-                           "UINT32", "ULONG32", "INT32", "DWORD", "LPVOID", "HANDLE",
-                           "LPCSTR", "LPCWSTR", "WCHAR", "SIZE_T", "PTR"];
+        let known_types = [
+            "int", "void", "char", "long", "short", "float", "double", "bool", "BOOL", "HRESULT",
+            "UINT", "ULONG", "USHORT", "UINT32", "ULONG32", "INT32", "DWORD", "LPVOID", "HANDLE",
+            "LPCSTR", "LPCWSTR", "WCHAR", "SIZE_T", "PTR",
+        ];
         if known_types.iter().any(|t| t == &words[0]) {
             return words[0].to_string();
         }
@@ -475,7 +488,10 @@ fn extract_return_type_from_rest(rest: &str) -> String {
 }
 
 /// Parse individual parameters from a parameter string.
-fn parse_parameters(params_str: &str, type_map: &HashMap<String, String>) -> Result<Vec<ParameterTypeInfo>> {
+fn parse_parameters(
+    params_str: &str,
+    type_map: &HashMap<String, String>,
+) -> Result<Vec<ParameterTypeInfo>> {
     let params_str = params_str.trim();
     if params_str.is_empty() {
         return Ok(Vec::new());
@@ -537,8 +553,8 @@ fn split_parameters(params_str: &str) -> Vec<String> {
 /// Parse a single parameter into its type, name, and metadata.
 fn parse_single_parameter(
     param: &str,
-    index: usize,
-    type_map: &HashMap<String, String>,
+    _index: usize,
+    _type_map: &HashMap<String, String>,
 ) -> Result<ParameterTypeInfo> {
     let param = param.trim();
 
@@ -625,7 +641,15 @@ fn split_type_name(param: &str) -> (String, String) {
     }
 
     // Handle compound types: "unsigned int", "long long", "unsigned long long"
-    let compound_types = ["unsigned long long", "unsigned int", "long long", "signed int", "signed char", "signed short", "signed long"];
+    let compound_types = [
+        "unsigned long long",
+        "unsigned int",
+        "long long",
+        "signed int",
+        "signed char",
+        "signed short",
+        "signed long",
+    ];
     for compound in &compound_types {
         if param.starts_with(*compound) {
             let remainder = &param[compound.len()..].trim_start();
@@ -700,7 +724,8 @@ fn extract_bit_width(type_str: &str) -> Option<u32> {
     if t.contains("32") && (t.contains("int") || t.contains("long") || t.contains("dword")) {
         return Some(32);
     }
-    if t.contains("64") && (t.contains("long long") || t.contains("int64") || t.contains("lONGLONG"))
+    if t.contains("64")
+        && (t.contains("long long") || t.contains("int64") || t.contains("lONGLONG"))
     {
         return Some(64);
     }

@@ -26,7 +26,7 @@ use calxgloss_reports::{
 use calxgloss_testgen::TestGenerator;
 use calxgloss_translator::TranslationPipeline;
 use calxgloss_verify::Verifier;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use tracing::{debug, error, info, warn};
 
 // ============================================================
@@ -51,6 +51,58 @@ struct Cli {
     command: Command,
 }
 
+/// Arguments for the `translate` subcommand.
+#[derive(Args, Debug)]
+struct TranslateArgs {
+    /// Path to the target executable
+    #[arg(long)]
+    target: PathBuf,
+
+    /// DLL name containing the function
+    #[arg(long)]
+    dll: String,
+
+    /// Function name to translate
+    #[arg(long)]
+    function: String,
+
+    /// GhidraMCP server URL
+    #[arg(long, default_value = "http://localhost:8080")]
+    ghidra_url: String,
+
+    /// LLM server URL (OpenAI-compatible API)
+    #[arg(long, default_value = "http://localhost:8081/v1")]
+    llm_url: String,
+
+    /// LLM model name
+    #[arg(long, default_value = "qwen3-235b-a22b")]
+    llm_model: String,
+
+    /// API key for the LLM server (optional)
+    #[arg(long)]
+    llm_api_key: Option<String>,
+
+    /// Output directory for translated code (default: same as target directory)
+    #[arg(long)]
+    output_dir: Option<PathBuf>,
+
+    /// Maximum tokens for LLM generation
+    #[arg(long, default_value_t = 8192)]
+    max_tokens: usize,
+
+    /// LLM temperature (0.0 = deterministic, higher = more creative)
+    #[arg(long, default_value_t = 0.1)]
+    temperature: f32,
+
+    /// Skip git operations
+    #[arg(long)]
+    skip_git: bool,
+
+    /// Number of retry attempts on translation failure
+    #[arg(long, default_value_t = 3)]
+    max_retries: u32,
+}
+
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Classify DLLs for a target executable
@@ -69,55 +121,7 @@ enum Command {
     },
 
     /// Translate a single function from disassembly to Rust
-    Translate {
-        /// Path to the target executable
-        #[arg(long)]
-        target: PathBuf,
-
-        /// DLL name containing the function
-        #[arg(long)]
-        dll: String,
-
-        /// Function name to translate
-        #[arg(long)]
-        function: String,
-
-        /// GhidraMCP server URL
-        #[arg(long, default_value = "http://localhost:8080")]
-        ghidra_url: String,
-
-        /// LLM server URL (OpenAI-compatible API)
-        #[arg(long, default_value = "http://localhost:8081/v1")]
-        llm_url: String,
-
-        /// LLM model name
-        #[arg(long, default_value = "qwen3-235b-a22b")]
-        llm_model: String,
-
-        /// API key for the LLM server (optional)
-        #[arg(long)]
-        llm_api_key: Option<String>,
-
-        /// Output directory for translated code (default: same as target directory)
-        #[arg(long)]
-        output_dir: Option<PathBuf>,
-
-        /// Maximum tokens for LLM generation
-        #[arg(long, default_value = "8192")]
-        max_tokens: usize,
-
-        /// LLM temperature (0.0 = deterministic, higher = more creative)
-        #[arg(long, default_value = "0.1")]
-        temperature: f32,
-
-        /// Skip git operations
-        #[arg(long)]
-        skip_git: bool,
-
-        /// Number of retry attempts on translation failure
-        #[arg(long, default_value = "3")]
-        max_retries: u32,
-    },
+    Translate(TranslateArgs),
 
     /// Verify a previously translated function against baseline tests
     Verify {
@@ -255,20 +259,31 @@ async fn handle_classify(
 // Translate command handler
 // ============================================================
 
-async fn handle_translate(
-    target: &Path,
-    dll: &str,
-    function: &str,
-    ghidra_url: &str,
-    llm_url: &str,
-    llm_model: &str,
-    llm_api_key: Option<&str>,
-    output_dir: Option<&Path>,
-    max_tokens: usize,
-    temperature: f32,
-    skip_git: bool,
-    max_retries: u32,
-) -> Result<()> {
+async fn handle_translate(args: &TranslateArgs) -> Result<()> {
+    let TranslateArgs {
+        target,
+        dll,
+        function,
+        ghidra_url,
+        llm_url,
+        llm_model,
+        llm_api_key,
+        output_dir,
+        max_tokens,
+        temperature,
+        skip_git,
+        max_retries,
+    } = args;
+    let (target, dll, function) = (target.as_path(), dll.as_str(), function.as_str());
+    let (ghidra_url, llm_url, llm_model) =
+        (ghidra_url.as_str(), llm_url.as_str(), llm_model.as_str());
+    let llm_api_key = llm_api_key.as_deref();
+    let output_dir = output_dir.as_deref();
+    let max_tokens = *max_tokens;
+    let temperature = *temperature;
+    let skip_git = *skip_git;
+    let max_retries = *max_retries;
+
     info!(
         target = ?target,
         dll = %dll,
@@ -637,37 +652,11 @@ fn main() -> Result<()> {
                 &ghidra_url,
                 ghidra_api_key.as_deref(),
             )),
-        Command::Translate {
-            target,
-            dll,
-            function,
-            ghidra_url,
-            llm_url,
-            llm_model,
-            llm_api_key,
-            output_dir,
-            max_tokens,
-            temperature,
-            skip_git,
-            max_retries,
-        } => tokio::runtime::Builder::new_current_thread()
+        Command::Translate(args) => tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .context("Failed to create tokio runtime")?
-            .block_on(handle_translate(
-                &target,
-                &dll,
-                &function,
-                &ghidra_url,
-                &llm_url,
-                &llm_model,
-                llm_api_key.as_deref(),
-                output_dir.as_deref(),
-                max_tokens,
-                temperature,
-                skip_git,
-                max_retries,
-            )),
+            .block_on(handle_translate(&args)),
         Command::Verify {
             dll,
             function,

@@ -18,7 +18,7 @@
 
 use std::collections::HashSet;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use calxgloss_types::TestCase;
 use serde_json::json;
 use tracing::{debug, instrument};
@@ -123,7 +123,7 @@ impl DisassemblyEdgeCases {
         }
 
         // Deduplicate
-        cases.zero_checks = cases.zero_checks.drain().collect();
+        cases.zero_checks = std::mem::take(&mut cases.zero_checks);
 
         debug!(
             boundaries = cases.boundary_checks.len(),
@@ -142,37 +142,34 @@ impl DisassemblyEdgeCases {
         if let Some(cap) = regex::Regex::new(r"cmp\s+\w+,\s*(-?\d+)")
             .ok()
             .and_then(|r| r.captures(line))
+            && let Some(val_str) = cap.get(1)
+            && let Ok(val) = val_str.as_str().parse::<i64>()
         {
-            if let Some(val_str) = cap.get(1) {
-                if let Ok(val) = val_str.as_str().parse::<i64>() {
-                    match val {
-                        0 => {
-                            cases.zero_checks.insert("cmp_zero".to_string());
-                        }
-                        -1 => {
-                            cases.negative_checks.push(val);
-                        }
-                        1..=1000 => {
-                            // Likely a boundary check for small values
-                            if !cases.boundary_checks.contains(&val) {
-                                cases.boundary_checks.push(val);
-                            }
-                        }
-                        _ => {
-                            // Large values might be addresses or flags
-                            if !cases.boundary_checks.contains(&val)
-                                && !cases.max_value_checks.contains(&val)
-                            {
-                                cases.max_value_checks.push(val);
-                            }
-                        }
+            match val {
+                0 => {
+                    cases.zero_checks.insert("cmp_zero".to_string());
+                }
+                -1 => {
+                    cases.negative_checks.push(val);
+                }
+                1..=1000 => {
+                    // Likely a boundary check for small values
+                    if !cases.boundary_checks.contains(&val) {
+                        cases.boundary_checks.push(val);
+                    }
+                }
+                _ => {
+                    // Large values might be addresses or flags
+                    if !cases.boundary_checks.contains(&val)
+                        && !cases.max_value_checks.contains(&val)
+                    {
+                        cases.max_value_checks.push(val);
                     }
                 }
             }
         }
     }
 
-    /// Extract values from `test` instructions.
     fn extract_test_values(line: &str, cases: &mut Self) {
         // Match patterns like "test eax, eax" or "test ecx, 0FFh"
         if let Some(cap) = regex::Regex::new(r"test\s+(\w+),\s*(\w+)")
@@ -187,10 +184,8 @@ impl DisassemblyEdgeCases {
                 if let Ok(val) = i64::from_str_radix(&operand2[..operand2.len() - 1], 16) {
                     if val == 0 {
                         cases.zero_checks.insert("test_hex_zero".to_string());
-                    } else if val > 0 && val <= 1000 {
-                        if !cases.boundary_checks.contains(&val) {
-                            cases.boundary_checks.push(val);
-                        }
+                    } else if val > 0 && val <= 1000 && !cases.boundary_checks.contains(&val) {
+                        cases.boundary_checks.push(val);
                     }
                 }
             }
@@ -203,18 +198,19 @@ impl DisassemblyEdgeCases {
         if let Some(cap) = regex::Regex::new(r"j(e|z|nz|l|le|g|ge|be|ae|c|nc)\s+(\w+)")
             .ok()
             .and_then(|r| r.captures(line))
+            && let Some(target) = cap.get(2)
         {
-            if let Some(target) = cap.get(2) {
-                let target_lower = target.as_str().to_lowercase();
-                if target_lower.contains("zero")
-                    || target_lower.contains("null")
-                    || target_lower.contains("empty")
-                    || target_lower.contains("neg")
-                    || target_lower.contains("underflow")
-                    || target_lower.contains("overflow")
-                {
-                    cases.zero_checks.insert(format!("jump_{}", target.as_str()));
-                }
+            let target_lower = target.as_str().to_lowercase();
+            if target_lower.contains("zero")
+                || target_lower.contains("null")
+                || target_lower.contains("empty")
+                || target_lower.contains("neg")
+                || target_lower.contains("underflow")
+                || target_lower.contains("overflow")
+            {
+                cases
+                    .zero_checks
+                    .insert(format!("jump_{}", target.as_str()));
             }
         }
     }
@@ -300,7 +296,10 @@ pub fn generate_test_inputs(signature: &str, disassembly: &str) -> Result<Vec<Te
 }
 
 /// Generate test inputs based on the function signature.
-fn generate_signature_tests(parsed: &ParsedSignature, edge_cases: &DisassemblyEdgeCases) -> Vec<TestCase> {
+fn generate_signature_tests(
+    parsed: &ParsedSignature,
+    edge_cases: &DisassemblyEdgeCases,
+) -> Vec<TestCase> {
     let mut tests = Vec::new();
     let params = &parsed.parameters;
 
@@ -320,22 +319,16 @@ fn generate_signature_tests(parsed: &ParsedSignature, edge_cases: &DisassemblyEd
         .map(|p| param_boundary_values(p, edge_cases))
         .collect();
 
-    // Generate cross-product of first two params with remaining at default
-    let param_count = params.len();
-
     // Generate individual parameter boundary tests
-    for i in 0..param_count {
-        for boundary_value in &param_boundaries[i] {
+    for (i, param_boundaries_item) in param_boundaries.iter().enumerate() {
+        for boundary_value in param_boundaries_item {
             let mut inputs = serde_json::Map::new();
-            for j in 0..param_count {
+            for (j, param) in params.iter().enumerate() {
                 if j == i {
                     inputs.insert(format!("param_{}", j), boundary_value.clone());
                 } else {
                     // Use default value for other params
-                    inputs.insert(
-                        format!("param_{}", j),
-                        param_default_value(&params[j]),
-                    );
+                    inputs.insert(format!("param_{}", j), param_default_value(param));
                 }
             }
             tests.push(TestCase {
@@ -350,10 +343,7 @@ fn generate_signature_tests(parsed: &ParsedSignature, edge_cases: &DisassemblyEd
     if has_integer_params(params) {
         let mut inputs = serde_json::Map::new();
         for (i, param) in params.iter().enumerate() {
-            inputs.insert(
-                format!("param_{}", i),
-                param_zero_value(param),
-            );
+            inputs.insert(format!("param_{}", i), param_zero_value(param));
         }
         tests.push(TestCase {
             inputs: json!(inputs),
@@ -415,7 +405,11 @@ fn generate_disassembly_tests(
             if is_integer_type(&param.r#type) {
                 inputs.insert(
                     format!("param_{}", i),
-                    json!(if param.is_signed { *boundary as i64 } else { ((*boundary as u64).min(u32::MAX as u64) as i64) }),
+                    json!(if param.is_signed {
+                        *boundary
+                    } else {
+                        (*boundary as u64).min(u32::MAX as u64) as i64
+                    }),
                 );
                 break;
             }
@@ -445,10 +439,7 @@ fn generate_generic_tests(edge_cases: &DisassemblyEdgeCases) -> Vec<TestCase> {
 
     // Generate a few generic integer test inputs
     let generic_values = vec![0i64, -1, 1, 100, 1000];
-    let all_values: Vec<i64> = boundary_values
-        .into_iter()
-        .chain(generic_values.into_iter())
-        .collect();
+    let all_values: Vec<i64> = boundary_values.into_iter().chain(generic_values).collect();
 
     for value in all_values {
         let mut inputs = serde_json::Map::new();
@@ -467,7 +458,10 @@ fn generate_generic_tests(edge_cases: &DisassemblyEdgeCases) -> Vec<TestCase> {
 }
 
 /// Get boundary values for a single parameter type.
-fn param_boundary_values(param: &ParameterTypeInfo, edge_cases: &DisassemblyEdgeCases) -> Vec<serde_json::Value> {
+fn param_boundary_values(
+    param: &ParameterTypeInfo,
+    edge_cases: &DisassemblyEdgeCases,
+) -> Vec<serde_json::Value> {
     let mut values = Vec::new();
 
     match param.r#type.as_str() {
@@ -568,7 +562,11 @@ fn param_boundary_values(param: &ParameterTypeInfo, edge_cases: &DisassemblyEdge
     // Add edge cases from disassembly that apply to this parameter
     for boundary in edge_cases.get_boundary_values() {
         if is_integer_type(&param.r#type) {
-            values.push(json!(if param.is_signed { boundary as i64 } else { ((boundary as u64).min(u32::MAX as u64) as i64) }));
+            values.push(json!(if param.is_signed {
+                boundary
+            } else {
+                (boundary as u64).min(u32::MAX as u64) as i64
+            }));
         }
     }
 
@@ -684,9 +682,4 @@ fn deduplicate_tests(tests: Vec<TestCase>) -> Vec<TestCase> {
             seen.insert(key)
         })
         .collect()
-}
-
-/// Generate parameter names for a function with unnamed parameters.
-pub fn generate_param_names(param_count: usize) -> Vec<String> {
-    (0..param_count).map(|i| format!("param_{}", i)).collect()
 }

@@ -3,6 +3,8 @@ name = "calxgloss-llm"
 version.workspace = true
 edition.workspace = true
 description = "Local LLM client for sending prompts and receiving Rust code (Ollama/vLLM compatible)"
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 reqwest = { workspace = true }

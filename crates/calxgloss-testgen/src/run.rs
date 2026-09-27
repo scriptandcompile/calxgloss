@@ -29,14 +29,13 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use calxgloss_types::{SideEffect, SideEffectKind, TestResult, TestCase};
+use calxgloss_types::{SideEffect, TestCase, TestResult};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use crate::FfiStub;
 
@@ -131,7 +130,12 @@ impl BaselineRunner {
         // Cleanup test project
         self.cleanup(&project_dir)?;
 
-        info!(dll, function, count = results.len(), "Baseline execution complete");
+        info!(
+            dll,
+            function,
+            count = results.len(),
+            "Baseline execution complete"
+        );
 
         Ok(results)
     }
@@ -172,7 +176,7 @@ impl BaselineRunner {
     }
 
     /// Generate a Cargo.toml for the test project.
-    fn generate_cargo_toml(&self, dll: &str, project_name: &str) -> String {
+    fn generate_cargo_toml(&self, _dll: &str, project_name: &str) -> String {
         format!(
             r#"[package]
 name = "{project_name}"
@@ -221,7 +225,7 @@ struct TestOutput {{
 }}
 
 // The FFI module is included from ffi.rs
-include!("ffi_stub_path");
+include!("{ffi_stub_path}");
 
 fn main() {{
     // Read test cases from stdin
@@ -244,7 +248,7 @@ fn main() {{
 
     // Output results as JSON to stdout
     let output = serde_json::to_string_pretty(&results).expect("Failed to serialize results");
-    println!("{}", output);
+    println!("{{}}", output);
 }}
 "#,
             ffi_stub_path = "../src/ffi.rs",
@@ -277,7 +281,7 @@ fn main() {{
     fn execute(&self, project_dir: &Path, tests: &[TestCase]) -> Result<Vec<TestResult>> {
         debug!("Executing test binary");
 
-        let binary_path = project_dir
+        let _binary_path = project_dir
             .join("target")
             .join("release")
             .join("test_runner");
@@ -296,8 +300,8 @@ fn main() {{
             })
             .collect();
 
-        let input_json = serde_json::to_string(&test_inputs)
-            .context("Failed to serialize test inputs")?;
+        let _input_json =
+            serde_json::to_string(&test_inputs).context("Failed to serialize test inputs")?;
 
         // In the future, this would spawn the test_runner binary and
         // pipe the test inputs to its stdin, then parse JSON results from stdout.
@@ -305,11 +309,14 @@ fn main() {{
         // is not yet fully implemented.
         warn!("MVP: FFI execution is not yet fully implemented. Returning placeholder results.");
 
-        let results: Vec<TestResult> = tests
+        // Build the same wire format the compiled test_runner emits, then convert
+        // it to `TestResult`s through the real deserialization path.
+        let outputs: Vec<ExecutionOutput> = test_inputs
             .iter()
             .enumerate()
-            .map(|(i, test)| TestResult {
-                test_case: test.clone(),
+            .map(|(i, inputs)| ExecutionOutput {
+                test_index: i,
+                inputs: serde_json::Value::Object(inputs.clone().into_iter().collect()),
                 actual_return: serde_json::Value::Null,
                 actual_side_effects: Vec::new(),
                 passed: false,
@@ -319,20 +326,19 @@ fn main() {{
             })
             .collect();
 
-        Ok(results)
+        Ok(outputs_to_results(&outputs, tests))
     }
 
     /// Create stub failure results when the DLL is not available.
     fn create_stub_failures(
         &self,
         dll: &str,
-        function: &str,
+        _function: &str,
         tests: &[TestCase],
     ) -> Result<Vec<TestResult>> {
         let results: Vec<TestResult> = tests
             .iter()
-            .enumerate()
-            .map(|(i, test)| TestResult {
+            .map(|test| TestResult {
                 test_case: test.clone(),
                 actual_return: serde_json::Value::Null,
                 actual_side_effects: Vec::new(),

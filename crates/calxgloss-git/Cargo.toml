@@ -3,6 +3,8 @@ name = "calxgloss-git"
 version.workspace = true
 edition.workspace = true
 description = "Git branch, commit, and merge automation for translation units of work"
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 calxgloss-types = { path = "../calxgloss-types" }

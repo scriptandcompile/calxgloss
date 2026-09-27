@@ -3,6 +3,8 @@ name = "calxgloss-cli"
 version.workspace = true
 edition.workspace = true
 description = "CLI binary — wires all Calxgloss crates together"
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 calxgloss = { path = "../calxgloss" }

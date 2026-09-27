@@ -3,6 +3,8 @@ name = "calxgloss-types"
 version.workspace = true
 edition.workspace = true
 description = "Shared data structures for the Calxgloss reverse engineering harness"
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 serde = { workspace = true }

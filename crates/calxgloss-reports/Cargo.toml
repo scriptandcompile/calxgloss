@@ -3,6 +3,8 @@ name = "calxgloss-reports"
 version.workspace = true
 edition.workspace = true
 description = "Terminal output formatting for human review of translation units"
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 calxgloss-types = { path = "../calxgloss-types" }

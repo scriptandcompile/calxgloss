@@ -3,6 +3,8 @@ name = "calxgloss-prompts"
 version.workspace = true
 edition.workspace = true
 description = "Prompt templates and rendering for LLM translation tasks"
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 calxgloss-types = { path = "../calxgloss-types" }

@@ -3,6 +3,8 @@ name = "calxgloss-ghidra"
 version.workspace = true
 edition.workspace = true
 description = "GhidraMCP HTTP client for pulling disassembly, decompiler output, and symbol data"
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 calxgloss-types = { path = "../calxgloss-types" }

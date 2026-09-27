@@ -29,8 +29,8 @@ use std::path::{Path, PathBuf};
 
 use calxgloss_types::{GitBranch, GitCommit, TypesError};
 use chrono::Utc;
-use git2::{DiffOptions, Oid, Repository, ResetType, Signature};
 use git2::build::CheckoutBuilder;
+use git2::{DiffOptions, Oid, Repository, ResetType, Signature};
 use tracing::{debug, info, warn};
 
 /// Configuration for Git repository initialization.
@@ -70,7 +70,9 @@ pub struct BranchResult {
 /// Result of a merge operation.
 #[derive(Debug)]
 pub enum MergeResult {
-    Merged { merge_hash: String },
+    Merged {
+        merge_hash: String,
+    },
     AlreadyUpToDate,
     Conflicts {
         conflicted_files: Vec<String>,
@@ -92,7 +94,10 @@ pub struct PatchRecord {
     pub commit_hash: String,
 }
 
-fn make_signature(repo: &Repository, config: &InitConfig) -> Result<Signature<'static>, TypesError> {
+fn make_signature(
+    repo: &Repository,
+    config: &InitConfig,
+) -> Result<Signature<'static>, TypesError> {
     repo.signature()
         .or_else(|_| Signature::now(&config.author_name, &config.author_email))
         .map_err(|e| TypesError::InvalidBranchName(format!("Failed to create signature: {}", e)))
@@ -108,9 +113,8 @@ impl GitManager {
             TypesError::InvalidBranchName(format!("Cannot create directory: {}", e))
         })?;
 
-        let repo = Repository::init(repo_path).map_err(|e| {
-            TypesError::InvalidBranchName(format!("Git init failed: {}", e))
-        })?;
+        let repo = Repository::init(repo_path)
+            .map_err(|e| TypesError::InvalidBranchName(format!("Git init failed: {}", e)))?;
 
         let readme_path = repo_path.join("README.md");
         std::fs::write(
@@ -119,28 +123,34 @@ impl GitManager {
         )
         .map_err(|e| TypesError::InvalidBranchName(format!("Failed to write README: {}", e)))?;
 
-        let mut index = repo.index().map_err(|e| {
-            TypesError::InvalidBranchName(format!("Failed to get index: {}", e))
-        })?;
+        let mut index = repo
+            .index()
+            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to get index: {}", e)))?;
         index
             .add_path(Path::new("README.md"))
             .map_err(|e| TypesError::InvalidBranchName(format!("Failed to add README: {}", e)))?;
-        index.write().map_err(|e| {
-            TypesError::InvalidBranchName(format!("Failed to write index: {}", e))
-        })?;
+        index
+            .write()
+            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to write index: {}", e)))?;
 
         let sig = make_signature(&repo, &config)?;
-        let tree_id = index.write_tree().map_err(|e| {
-            TypesError::InvalidBranchName(format!("Failed to write tree: {}", e))
-        })?;
+        let tree_id = index
+            .write_tree()
+            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to write tree: {}", e)))?;
 
-        let tree = repo.find_tree(tree_id).map_err(|e| {
-            TypesError::InvalidBranchName(format!("Failed to find tree: {}", e))
-        })?;
-        let main_oid = match repo.commit(Some("refs/heads/main"), &sig, &sig, "Initial commit: setup translation target", &tree, &[]) {
-            Ok(oid) => Some(oid),
-            Err(_) => None,
-        };
+        let tree = repo
+            .find_tree(tree_id)
+            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to find tree: {}", e)))?;
+        let main_oid = repo
+            .commit(
+                Some("refs/heads/main"),
+                &sig,
+                &sig,
+                "Initial commit: setup translation target",
+                &tree,
+                &[],
+            )
+            .ok();
         drop(tree);
 
         // Set HEAD to point to main
@@ -148,23 +158,30 @@ impl GitManager {
             let _ = repo.set_head("refs/heads/main");
             let mut checkout_opts = CheckoutBuilder::new();
             checkout_opts.force();
-            if let Ok(obj) = repo.find_object(oid, None) {
-                if let Ok(tree) = obj.peel_to_tree() {
-                    let _ = repo.reset(&tree.as_object(), ResetType::Hard, Some(&mut checkout_opts));
-                }
+            if let Ok(obj) = repo.find_object(oid, None)
+                && let Ok(tree) = obj.peel_to_tree()
+            {
+                let _ = repo.reset(tree.as_object(), ResetType::Hard, Some(&mut checkout_opts));
             }
         }
 
-        Ok(Self { repo, init_config: config, repo_path: repo_path.to_path_buf() })
+        Ok(Self {
+            repo,
+            init_config: config,
+            repo_path: repo_path.to_path_buf(),
+        })
     }
 
     /// Opens an existing Git repository.
     pub fn open(repo_path: &Path) -> Result<Self, TypesError> {
-        let repo = Repository::open(repo_path).map_err(|e| {
-            TypesError::InvalidBranchName(format!("Not a Git repository: {}", e))
-        })?;
+        let repo = Repository::open(repo_path)
+            .map_err(|e| TypesError::InvalidBranchName(format!("Not a Git repository: {}", e)))?;
 
-        Ok(Self { repo, init_config: InitConfig::default(), repo_path: repo_path.to_path_buf() })
+        Ok(Self {
+            repo,
+            init_config: InitConfig::default(),
+            repo_path: repo_path.to_path_buf(),
+        })
     }
 
     /// Returns the path to the Git repository.
@@ -183,21 +200,35 @@ impl GitManager {
     }
 
     /// Creates a new branch for a translation attempt.
-    pub fn create_branch(&self, dll: &str, function: &str, attempt: u32) -> Result<BranchResult, TypesError> {
+    pub fn create_branch(
+        &self,
+        dll: &str,
+        function: &str,
+        attempt: u32,
+    ) -> Result<BranchResult, TypesError> {
         let branch = GitBranch::new(dll, function, attempt)?;
         let git_branch_name = format!("refs/heads/{}", branch.name);
 
-        if self.repo.find_branch(&branch.name, git2::BranchType::Local).is_ok() {
+        if self
+            .repo
+            .find_branch(&branch.name, git2::BranchType::Local)
+            .is_ok()
+        {
             info!("Branch '{}' already exists, reusing", branch.name);
-            return Ok(BranchResult { branch, created: false });
+            return Ok(BranchResult {
+                branch,
+                created: false,
+            });
         }
 
-        let main_ref = self.repo
+        let main_ref = self
+            .repo
             .find_branch("main", git2::BranchType::Local)
             .map_err(|_| TypesError::InvalidBranchName("main branch not found".to_string()))?;
-        let main_commit = main_ref.get().peel_to_commit().map_err(|e| {
-            TypesError::InvalidBranchName(format!("Failed to resolve main: {}", e))
-        })?;
+        let main_commit = main_ref
+            .get()
+            .peel_to_commit()
+            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to resolve main: {}", e)))?;
         let main_oid = main_commit.id();
 
         debug!("Creating branch '{}' from commit {}", branch.name, main_oid);
@@ -209,21 +240,25 @@ impl GitManager {
         let mut checkout_opts = CheckoutBuilder::new();
         checkout_opts.force();
 
-        self.repo.set_head(&git_branch_name).map_err(|e| {
-            TypesError::InvalidBranchName(format!("Failed to set HEAD: {}", e))
-        })?;
+        self.repo
+            .set_head(&git_branch_name)
+            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to set HEAD: {}", e)))?;
 
-        let main_commit = main_ref.get().peel_to_commit().map_err(|e| {
-            TypesError::InvalidBranchName(format!("Failed to peel main: {}", e))
-        })?;
+        let main_commit = main_ref
+            .get()
+            .peel_to_commit()
+            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to peel main: {}", e)))?;
         let main_obj = main_commit.as_object();
 
         self.repo
-            .reset(&main_obj, ResetType::Hard, Some(&mut checkout_opts))
+            .reset(main_obj, ResetType::Hard, Some(&mut checkout_opts))
             .map_err(|e| TypesError::InvalidBranchName(format!("Failed to reset: {}", e)))?;
 
         info!("Created branch '{}'", branch.name);
-        Ok(BranchResult { branch, created: true })
+        Ok(BranchResult {
+            branch,
+            created: true,
+        })
     }
 
     /// Commits files to the current branch.
@@ -233,16 +268,18 @@ impl GitManager {
         message: &str,
         files: &[&str],
     ) -> Result<GitCommit, TypesError> {
-        let mut index = self.repo.index().map_err(|e| {
-            TypesError::InvalidBranchName(format!("Failed to get index: {}", e))
-        })?;
+        let mut index = self
+            .repo
+            .index()
+            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to get index: {}", e)))?;
 
         let mut added_files = Vec::new();
 
         if files.is_empty() {
             let mut diff_options = DiffOptions::new();
-            let diff = self.repo
-                .diff_index_to_workdir(Some(&mut index), Some(&mut diff_options))
+            let diff = self
+                .repo
+                .diff_index_to_workdir(Some(&index), Some(&mut diff_options))
                 .map_err(|e| TypesError::InvalidBranchName(format!("Diff failed: {}", e)))?;
 
             diff.deltas().for_each(|delta| {
@@ -266,31 +303,39 @@ impl GitManager {
             }
         }
 
-        let tree_id = index.write_tree().map_err(|e| {
-            TypesError::InvalidBranchName(format!("Failed to write tree: {}", e))
-        })?;
-        let tree = self.repo.find_tree(tree_id).map_err(|e| {
-            TypesError::InvalidBranchName(format!("Failed to find tree: {}", e))
-        })?;
+        let tree_id = index
+            .write_tree()
+            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to write tree: {}", e)))?;
+        let tree = self
+            .repo
+            .find_tree(tree_id)
+            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to find tree: {}", e)))?;
 
-        let head = self.repo.head().map_err(|e| {
-            TypesError::InvalidBranchName(format!("Failed to get HEAD: {}", e))
-        })?;
+        let head = self
+            .repo
+            .head()
+            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to get HEAD: {}", e)))?;
         let parent_oid = head.target().ok_or_else(|| {
             TypesError::InvalidBranchName("HEAD does not point to a commit".to_string())
         })?;
-        let parent = self.repo.find_commit(parent_oid).map_err(|e| {
-            TypesError::InvalidBranchName(format!("Failed to find parent: {}", e))
-        })?;
+        let parent = self
+            .repo
+            .find_commit(parent_oid)
+            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to find parent: {}", e)))?;
 
         let sig = make_signature(&self.repo, &self.init_config)?;
 
-        let commit_oid = self.repo.commit(
-            Some(&head.name().unwrap().to_string()),
-            &sig, &sig, message, &tree, &[&parent],
-        ).map_err(|e| {
-            TypesError::InvalidBranchName(format!("Commit creation failed: {}", e))
-        })?;
+        let commit_oid = self
+            .repo
+            .commit(
+                Some(head.name().unwrap()),
+                &sig,
+                &sig,
+                message,
+                &tree,
+                &[&parent],
+            )
+            .map_err(|e| TypesError::InvalidBranchName(format!("Commit creation failed: {}", e)))?;
 
         Ok(GitCommit {
             branch: branch.name.clone(),
@@ -304,26 +349,31 @@ impl GitManager {
     pub fn merge_to_main(&self, branch: &GitBranch) -> Result<MergeResult, TypesError> {
         info!("Merging branch '{}' into main", branch.name);
 
-        let branch_ref = self.repo
+        let branch_ref = self
+            .repo
             .find_branch(&branch.name, git2::BranchType::Local)
-            .map_err(|_| TypesError::InvalidBranchName(format!("Branch '{}' not found", branch.name)))?;
+            .map_err(|_| {
+                TypesError::InvalidBranchName(format!("Branch '{}' not found", branch.name))
+            })?;
         let branch_commit = branch_ref.get().peel_to_commit().map_err(|e| {
             TypesError::InvalidBranchName(format!("Failed to resolve branch: {}", e))
         })?;
         let branch_oid = branch_commit.id();
 
-        let main_ref = self.repo
+        let main_ref = self
+            .repo
             .find_branch("main", git2::BranchType::Local)
             .map_err(|_| TypesError::InvalidBranchName("'main' branch not found".to_string()))?;
-        let main_commit = main_ref.get().peel_to_commit().map_err(|e| {
-            TypesError::InvalidBranchName(format!("Failed to resolve main: {}", e))
-        })?;
+        let main_commit = main_ref
+            .get()
+            .peel_to_commit()
+            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to resolve main: {}", e)))?;
         let main_oid = main_commit.id();
 
         // Check if branch is already up to date with main
         let (branch_ahead, _) = self.repo.graph_ahead_behind(branch_oid, main_oid).unwrap();
         let (main_ahead, main_behind) = self.repo.graph_ahead_behind(main_oid, branch_oid).unwrap();
-        
+
         if main_oid == branch_oid || branch_ahead == 0 {
             info!("Branch '{}' is already up to date with main", branch.name);
             return Ok(MergeResult::AlreadyUpToDate);
@@ -340,65 +390,81 @@ impl GitManager {
             debug!("Fast-forward merge {}", branch.name);
             debug!("Fast-forward merge {}", branch.name);
             self.repo
-                .reference("refs/heads/main", branch_oid, true, &format!("FF to {}", branch.name))
+                .reference(
+                    "refs/heads/main",
+                    branch_oid,
+                    true,
+                    &format!("FF to {}", branch.name),
+                )
                 .map_err(|e| TypesError::InvalidBranchName(format!("FF failed: {}", e)))?;
 
             let mut checkout_opts = CheckoutBuilder::new();
             checkout_opts.force();
-            let main_commit = main_ref.get().peel_to_commit().map_err(|e| {
-                TypesError::InvalidBranchName(format!("Peel main failed: {}", e))
-            })?;
+            let main_commit = main_ref
+                .get()
+                .peel_to_commit()
+                .map_err(|e| TypesError::InvalidBranchName(format!("Peel main failed: {}", e)))?;
             let main_obj = main_commit.as_object();
 
-            self.repo.set_head("refs/heads/main").map_err(|e| {
-                TypesError::InvalidBranchName(format!("Set HEAD failed: {}", e))
-            })?;
             self.repo
-                .reset(&main_obj, ResetType::Hard, Some(&mut checkout_opts))
+                .set_head("refs/heads/main")
+                .map_err(|e| TypesError::InvalidBranchName(format!("Set HEAD failed: {}", e)))?;
+            self.repo
+                .reset(main_obj, ResetType::Hard, Some(&mut checkout_opts))
                 .map_err(|e| TypesError::InvalidBranchName(format!("Reset failed: {}", e)))?;
 
-            return Ok(MergeResult::Merged { merge_hash: branch_oid.to_string() });
+            return Ok(MergeResult::Merged {
+                merge_hash: branch_oid.to_string(),
+            });
         }
 
         debug!("3-way merge {} + {} → main", main_oid, branch_oid);
 
-        let mut merge_index = self.repo.merge_commits(&main_commit, &branch_commit, None)
+        let mut merge_index = self
+            .repo
+            .merge_commits(&main_commit, &branch_commit, None)
             .map_err(|e| TypesError::InvalidBranchName(format!("Merge failed: {}", e)))?;
 
         let merge_tree_id = merge_index.write_tree().map_err(|e| {
             TypesError::InvalidBranchName(format!("Write merge tree failed: {}", e))
         })?;
-        let merge_tree = self.repo.find_tree(merge_tree_id).map_err(|e| {
-            TypesError::InvalidBranchName(format!("Get merge tree failed: {}", e))
-        })?;
+        let merge_tree = self
+            .repo
+            .find_tree(merge_tree_id)
+            .map_err(|e| TypesError::InvalidBranchName(format!("Get merge tree failed: {}", e)))?;
 
         let sig = make_signature(&self.repo, &self.init_config)?;
-        let merge_oid = self.repo.commit(
-            Some("refs/heads/main"),
-            &sig, &sig,
-            &format!("Merge branch '{}' into main", branch.name),
-            &merge_tree,
-            &[&main_commit, &branch_commit],
-        ).map_err(|e| {
-            TypesError::InvalidBranchName(format!("Merge commit failed: {}", e))
-        })?;
+        let merge_oid = self
+            .repo
+            .commit(
+                Some("refs/heads/main"),
+                &sig,
+                &sig,
+                &format!("Merge branch '{}' into main", branch.name),
+                &merge_tree,
+                &[&main_commit, &branch_commit],
+            )
+            .map_err(|e| TypesError::InvalidBranchName(format!("Merge commit failed: {}", e)))?;
 
         let mut checkout_opts = CheckoutBuilder::new();
         checkout_opts.force();
-        let main_commit = main_ref.get().peel_to_commit().map_err(|e| {
-            TypesError::InvalidBranchName(format!("Peel main failed: {}", e))
-        })?;
+        let main_commit = main_ref
+            .get()
+            .peel_to_commit()
+            .map_err(|e| TypesError::InvalidBranchName(format!("Peel main failed: {}", e)))?;
         let main_obj = main_commit.as_object();
 
-        self.repo.set_head("refs/heads/main").map_err(|e| {
-            TypesError::InvalidBranchName(format!("Set HEAD failed: {}", e))
-        })?;
         self.repo
-            .reset(&main_obj, ResetType::Hard, Some(&mut checkout_opts))
+            .set_head("refs/heads/main")
+            .map_err(|e| TypesError::InvalidBranchName(format!("Set HEAD failed: {}", e)))?;
+        self.repo
+            .reset(main_obj, ResetType::Hard, Some(&mut checkout_opts))
             .map_err(|e| TypesError::InvalidBranchName(format!("Reset failed: {}", e)))?;
 
         info!("Merged '{}' into main", branch.name);
-        Ok(MergeResult::Merged { merge_hash: merge_oid.to_string() })
+        Ok(MergeResult::Merged {
+            merge_hash: merge_oid.to_string(),
+        })
     }
 
     /// Stores failure details for a translation attempt.
@@ -429,10 +495,9 @@ impl GitManager {
             commit_hash: commit_hash.to_string(),
         };
 
-        let json = serde_json::to_string_pretty(&record).map_err(|e| TypesError::Serialization(e))?;
-        std::fs::write(&patch_path, json).map_err(|e| {
-            TypesError::InvalidBranchName(format!("Failed to write patch: {}", e))
-        })?;
+        let json = serde_json::to_string_pretty(&record).map_err(TypesError::Serialization)?;
+        std::fs::write(&patch_path, json)
+            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to write patch: {}", e)))?;
 
         info!("Stored failure record at {}", patch_path.display());
         Ok(patch_path)
@@ -440,9 +505,10 @@ impl GitManager {
 
     /// Returns the name of the current branch.
     pub fn current_branch(&self) -> Result<String, TypesError> {
-        let head = self.repo.head().map_err(|e| {
-            TypesError::InvalidBranchName(format!("Failed to get HEAD: {}", e))
-        })?;
+        let head = self
+            .repo
+            .head()
+            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to get HEAD: {}", e)))?;
 
         match head.shorthand() {
             Ok(name) => Ok(name.to_string()),
@@ -450,7 +516,10 @@ impl GitManager {
                 if e.message().contains("detached") {
                     Ok("(detached HEAD)".to_string())
                 } else {
-                    Err(TypesError::InvalidBranchName(format!("Branch name error: {}", e)))
+                    Err(TypesError::InvalidBranchName(format!(
+                        "Branch name error: {}",
+                        e
+                    )))
                 }
             }
         }
@@ -459,16 +528,18 @@ impl GitManager {
     /// Lists all local branches.
     pub fn list_branches(&self) -> Result<Vec<String>, TypesError> {
         let mut branches = Vec::new();
-        let mut iter = self.repo.branches(None).map_err(|e| {
+        let iter = self.repo.branches(None).map_err(|e| {
             TypesError::InvalidBranchName(format!("Failed to get branch iterator: {}", e))
         })?;
-        while let Some(branch_result) = iter.next() {
+        for branch_result in iter {
             let (branch, _type) = branch_result.map_err(|e| {
                 TypesError::InvalidBranchName(format!("Failed to list branch: {}", e))
             })?;
-            let name = branch.name().map_err(|e| {
-                TypesError::InvalidBranchName(format!("Invalid branch name: {}", e))
-            })?.unwrap_or("unknown").to_string();
+            let name = branch
+                .name()
+                .map_err(|e| TypesError::InvalidBranchName(format!("Invalid branch name: {}", e)))?
+                .unwrap_or("unknown")
+                .to_string();
             branches.push(name);
         }
         branches.sort();
@@ -477,18 +548,25 @@ impl GitManager {
 
     /// Returns the commit hash of the current HEAD.
     pub fn current_commit(&self) -> Result<String, TypesError> {
-        let head = self.repo.head().map_err(|e| {
-            TypesError::InvalidBranchName(format!("Failed to get HEAD: {}", e))
-        })?;
-        Ok(head.target().ok_or_else(|| {
-            TypesError::InvalidBranchName("HEAD does not point to a commit".to_string())
-        })?.to_string())
+        let head = self
+            .repo
+            .head()
+            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to get HEAD: {}", e)))?;
+        Ok(head
+            .target()
+            .ok_or_else(|| {
+                TypesError::InvalidBranchName("HEAD does not point to a commit".to_string())
+            })?
+            .to_string())
     }
 
     /// Returns the list of translation branches (branches under `re/`).
     pub fn list_translation_branches(&self) -> Result<Vec<String>, TypesError> {
         let all_branches = self.list_branches()?;
-        Ok(all_branches.into_iter().filter(|b| b.starts_with("re/")).collect())
+        Ok(all_branches
+            .into_iter()
+            .filter(|b| b.starts_with("re/"))
+            .collect())
     }
 
     /// Deletes a branch.
@@ -496,16 +574,21 @@ impl GitManager {
         debug!("Deleting branch '{}'", branch_name);
 
         if branch_name == "main" {
-            return Err(TypesError::InvalidBranchName("Cannot delete 'main'".to_string()));
+            return Err(TypesError::InvalidBranchName(
+                "Cannot delete 'main'".to_string(),
+            ));
         }
 
-        let mut branch = self.repo
+        let mut branch = self
+            .repo
             .find_branch(branch_name, git2::BranchType::Local)
-            .map_err(|_| TypesError::InvalidBranchName(format!("Branch '{}' not found", branch_name)))?;
+            .map_err(|_| {
+                TypesError::InvalidBranchName(format!("Branch '{}' not found", branch_name))
+            })?;
 
-        branch.delete().map_err(|e| {
-            TypesError::InvalidBranchName(format!("Delete failed: {}", e))
-        })?;
+        branch
+            .delete()
+            .map_err(|e| TypesError::InvalidBranchName(format!("Delete failed: {}", e)))?;
 
         info!("Deleted branch '{}'", branch_name);
         Ok(())
@@ -517,35 +600,42 @@ impl GitManager {
             TypesError::InvalidBranchName(format!("Invalid commit hash: {}", commit_hash))
         })?;
 
-        let commit = self.repo.find_commit(oid).map_err(|e| {
-            TypesError::InvalidBranchName(format!("Commit not found: {}", e))
-        })?;
+        let commit = self
+            .repo
+            .find_commit(oid)
+            .map_err(|e| TypesError::InvalidBranchName(format!("Commit not found: {}", e)))?;
 
         let merge_opts = git2::MergeOptions::new();
-        let mut revert_index = self.repo
+        let mut revert_index = self
+            .repo
             .revert_commit(&commit, &commit, 0, Some(&merge_opts))
             .map_err(|e| TypesError::InvalidBranchName(format!("Revert failed: {}", e)))?;
 
         let revert_tree_id = revert_index.write_tree().map_err(|e| {
             TypesError::InvalidBranchName(format!("Write revert tree failed: {}", e))
         })?;
-        let revert_tree = self.repo.find_tree(revert_tree_id).map_err(|e| {
-            TypesError::InvalidBranchName(format!("Get revert tree failed: {}", e))
-        })?;
+        let revert_tree = self
+            .repo
+            .find_tree(revert_tree_id)
+            .map_err(|e| TypesError::InvalidBranchName(format!("Get revert tree failed: {}", e)))?;
 
-        let head = self.repo.head().map_err(|e| {
-            TypesError::InvalidBranchName(format!("Get HEAD failed: {}", e))
-        })?;
+        let head = self
+            .repo
+            .head()
+            .map_err(|e| TypesError::InvalidBranchName(format!("Get HEAD failed: {}", e)))?;
 
         let sig = make_signature(&self.repo, &self.init_config)?;
-        let revert_oid = self.repo.commit(
-            Some(&head.name().unwrap().to_string()),
-            &sig, &sig,
-            &format!("Revert \"{}\"", commit.message().unwrap_or("unknown")),
-            &revert_tree, &[&commit],
-        ).map_err(|e| {
-            TypesError::InvalidBranchName(format!("Revert commit failed: {}", e))
-        })?;
+        let revert_oid = self
+            .repo
+            .commit(
+                Some(head.name().unwrap()),
+                &sig,
+                &sig,
+                &format!("Revert \"{}\"", commit.message().unwrap_or("unknown")),
+                &revert_tree,
+                &[&commit],
+            )
+            .map_err(|e| TypesError::InvalidBranchName(format!("Revert commit failed: {}", e)))?;
 
         info!("Created revert commit: {}", revert_oid);
         Ok(revert_oid.to_string())
@@ -557,9 +647,10 @@ impl GitManager {
         let mut opts = git2::StatusOptions::new();
         opts.include_untracked(true);
 
-        let status_list = self.repo.statuses(Some(&mut opts)).map_err(|e| {
-            TypesError::InvalidBranchName(format!("Get status failed: {}", e))
-        })?;
+        let status_list = self
+            .repo
+            .statuses(Some(&mut opts))
+            .map_err(|e| TypesError::InvalidBranchName(format!("Get status failed: {}", e)))?;
 
         for entry in status_list.iter() {
             if let Ok(path) = entry.path() {
@@ -574,14 +665,30 @@ impl GitManager {
 
 fn format_flags(status: git2::Status) -> String {
     let mut flags = Vec::new();
-    if status.is_index_new() { flags.push("added"); }
-    if status.is_index_modified() { flags.push("modified in index"); }
-    if status.is_index_deleted() { flags.push("deleted in index"); }
-    if status.is_wt_new() { flags.push("untracked"); }
-    if status.is_wt_modified() { flags.push("modified in working dir"); }
-    if status.is_wt_deleted() { flags.push("deleted in working dir"); }
-    if status.is_wt_renamed() { flags.push("renamed"); }
-    if status.is_conflicted() { flags.push("conflicted"); }
+    if status.is_index_new() {
+        flags.push("added");
+    }
+    if status.is_index_modified() {
+        flags.push("modified in index");
+    }
+    if status.is_index_deleted() {
+        flags.push("deleted in index");
+    }
+    if status.is_wt_new() {
+        flags.push("untracked");
+    }
+    if status.is_wt_modified() {
+        flags.push("modified in working dir");
+    }
+    if status.is_wt_deleted() {
+        flags.push("deleted in working dir");
+    }
+    if status.is_wt_renamed() {
+        flags.push("renamed");
+    }
+    if status.is_conflicted() {
+        flags.push("conflicted");
+    }
     if flags.is_empty() {
         "unmodified".to_string()
     } else {
@@ -614,7 +721,7 @@ mod tests {
 
     #[test]
     fn test_open_repo() {
-        let (tmp_dir, manager) = temp_git_repo();
+        let (tmp_dir, _manager) = temp_git_repo();
         let opened = GitManager::open(&tmp_dir).unwrap();
         assert_eq!(opened.repo_path(), tmp_dir.as_path());
         let _ = std::fs::remove_dir_all(&tmp_dir);
@@ -623,7 +730,9 @@ mod tests {
     #[test]
     fn test_create_branch() {
         let (_tmp_dir, manager) = temp_git_repo();
-        let result = manager.create_branch("game_logic.dll", "DrawSprite", 1).unwrap();
+        let result = manager
+            .create_branch("game_logic.dll", "DrawSprite", 1)
+            .unwrap();
         assert!(result.created);
         assert_eq!(result.branch.name, "re/game_logic/DrawSpritev1");
         assert_eq!(result.branch.dll, "game_logic.dll");
@@ -634,9 +743,13 @@ mod tests {
     #[test]
     fn test_create_branch_reuses_existing() {
         let (_tmp_dir, manager) = temp_git_repo();
-        let result1 = manager.create_branch("game_logic.dll", "DrawSprite", 1).unwrap();
+        let result1 = manager
+            .create_branch("game_logic.dll", "DrawSprite", 1)
+            .unwrap();
         assert!(result1.created);
-        let result2 = manager.create_branch("game_logic.dll", "DrawSprite", 1).unwrap();
+        let result2 = manager
+            .create_branch("game_logic.dll", "DrawSprite", 1)
+            .unwrap();
         assert!(!result2.created);
         assert_eq!(result2.branch.name, "re/game_logic/DrawSpritev1");
     }
@@ -644,11 +757,15 @@ mod tests {
     #[test]
     fn test_branch_naming() {
         assert_eq!(
-            GitBranch::new("game_logic.dll", "DrawSprite", 1).unwrap().name,
+            GitBranch::new("game_logic.dll", "DrawSprite", 1)
+                .unwrap()
+                .name,
             "re/game_logic/DrawSpritev1"
         );
         assert_eq!(
-            GitBranch::new("directx_render.dll", "Present", 3).unwrap().name,
+            GitBranch::new("directx_render.dll", "Present", 3)
+                .unwrap()
+                .name,
             "re/directx_render/Presentv3"
         );
     }
@@ -656,16 +773,26 @@ mod tests {
     #[test]
     fn test_commit() {
         let (_tmp_dir, manager) = temp_git_repo();
-        let branch_result = manager.create_branch("game_logic.dll", "DrawSprite", 1).unwrap();
+        let branch_result = manager
+            .create_branch("game_logic.dll", "DrawSprite", 1)
+            .unwrap();
         let branch = branch_result.branch;
 
-        let test_file = manager.repo_path().join("src").join("modules").join("test.rs");
+        let test_file = manager
+            .repo_path()
+            .join("src")
+            .join("modules")
+            .join("test.rs");
         std::fs::create_dir_all(test_file.parent().unwrap()).unwrap();
         std::fs::write(&test_file, "fn test() {}").unwrap();
 
-        let commit = manager.commit(&branch, "re/translation/DrawSprite: translate DrawSprite to Rust", &[
-            "src/modules/test.rs",
-        ]).unwrap();
+        let commit = manager
+            .commit(
+                &branch,
+                "re/translation/DrawSprite: translate DrawSprite to Rust",
+                &["src/modules/test.rs"],
+            )
+            .unwrap();
 
         assert!(!commit.hash.is_empty());
         assert_eq!(commit.branch, "re/game_logic/DrawSpritev1");
@@ -675,7 +802,9 @@ mod tests {
     #[test]
     fn test_merge_to_main() {
         let (tmp_dir, manager) = temp_git_repo();
-        let branch_result = manager.create_branch("game_logic.dll", "DrawSprite", 1).unwrap();
+        let branch_result = manager
+            .create_branch("game_logic.dll", "DrawSprite", 1)
+            .unwrap();
         let branch = branch_result.branch;
 
         // Create a file
@@ -685,7 +814,9 @@ mod tests {
         // Stage the file directly using git2 Index API
         let mut index = manager.repo().index().unwrap();
         // add_path uses git2's internal path resolution
-        index.add_path(std::path::Path::new("merged_test.rs")).unwrap();
+        index
+            .add_path(std::path::Path::new("merged_test.rs"))
+            .unwrap();
         let tree_id = index.write_tree().unwrap();
         let tree = manager.repo().find_tree(tree_id).unwrap();
 
@@ -694,13 +825,17 @@ mod tests {
         let parent = manager.repo().find_commit(parent_oid).unwrap();
         let sig = git2::Signature::now("Calxgloss", "calxgloss@system").unwrap();
 
-        let commit_oid = manager.repo().commit(
-            Some(&format!("refs/heads/{}", branch.name)),
-            &sig, &sig,
-            "re/translation: add merged test",
-            &tree,
-            &[&parent],
-        ).unwrap();
+        let commit_oid = manager
+            .repo()
+            .commit(
+                Some(&format!("refs/heads/{}", branch.name)),
+                &sig,
+                &sig,
+                "re/translation: add merged test",
+                &tree,
+                &[&parent],
+            )
+            .unwrap();
 
         let commit = GitCommit {
             branch: branch.name.clone(),
@@ -728,7 +863,9 @@ mod tests {
     #[test]
     fn test_merge_already_ancestor() {
         let (_tmp_dir, manager) = temp_git_repo();
-        let branch_result = manager.create_branch("game_logic.dll", "DrawSprite", 1).unwrap();
+        let branch_result = manager
+            .create_branch("game_logic.dll", "DrawSprite", 1)
+            .unwrap();
         let branch = branch_result.branch;
 
         let result = manager.merge_to_main(&branch).unwrap();
@@ -774,13 +911,19 @@ mod tests {
         let (_tmp_dir, manager) = temp_git_repo();
         manager.create_branch("test.dll", "FuncA", 1).unwrap();
         // Switch back to main before deleting
-        let main_ref = manager.repo().find_branch("main", git2::BranchType::Local).unwrap();
+        let main_ref = manager
+            .repo()
+            .find_branch("main", git2::BranchType::Local)
+            .unwrap();
         let main_commit = main_ref.get().peel_to_commit().unwrap();
         let main_obj = main_commit.as_object();
         let mut checkout_opts = git2::build::CheckoutBuilder::new();
         checkout_opts.force();
         manager.repo().set_head("refs/heads/main").unwrap();
-        manager.repo().reset(&main_obj, ResetType::Hard, Some(&mut checkout_opts)).unwrap();
+        manager
+            .repo()
+            .reset(main_obj, ResetType::Hard, Some(&mut checkout_opts))
+            .unwrap();
 
         let branches = manager.list_branches().unwrap();
         assert!(branches.contains(&"re/test/FuncAv1".to_string()));
@@ -800,23 +943,33 @@ mod tests {
     #[test]
     fn test_store_failure() {
         let (tmp_dir, manager) = temp_git_repo();
-        let branch_result = manager.create_branch("game_logic.dll", "DrawSprite", 1).unwrap();
+        let branch_result = manager
+            .create_branch("game_logic.dll", "DrawSprite", 1)
+            .unwrap();
         let branch = branch_result.branch;
 
-        let commit = manager.commit(&branch, "re/translation: failed attempt", &[]).unwrap();
+        let commit = manager
+            .commit(&branch, "re/translation: failed attempt", &[])
+            .unwrap();
 
-        let patch_path = manager.store_failure(
-            &branch,
-            "Compilation failed",
-            &["error[E0308]: mismatched types".to_string()],
-            &["test_input_3: expected 42, got 43".to_string()],
-            &commit.hash,
-        ).unwrap();
+        let patch_path = manager
+            .store_failure(
+                &branch,
+                "Compilation failed",
+                &["error[E0308]: mismatched types".to_string()],
+                &["test_input_3: expected 42, got 43".to_string()],
+                &commit.hash,
+            )
+            .unwrap();
 
         assert!(patch_path.exists());
         assert_eq!(
             patch_path.parent().unwrap(),
-            tmp_dir.join("re").join("patches").join("game_logic.dll").join("DrawSprite")
+            tmp_dir
+                .join("re")
+                .join("patches")
+                .join("game_logic.dll")
+                .join("DrawSprite")
         );
 
         let content = std::fs::read_to_string(&patch_path).unwrap();

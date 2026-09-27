@@ -249,16 +249,19 @@ pub struct LlmResponse {
 /// }
 /// ```
 #[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
 struct LlmStreamChunk {
     choices: Vec<StreamChoice>,
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
 struct StreamChoice {
     delta: Option<StreamDelta>,
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
 struct StreamDelta {
     #[serde(rename = "role")]
     role: Option<String>,

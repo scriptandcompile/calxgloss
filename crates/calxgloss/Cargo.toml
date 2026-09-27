@@ -3,6 +3,8 @@ name = "calxgloss"
 version.workspace = true
 edition.workspace = true
 description = "Meta-lib — re-exports all Calxgloss workspace crates"
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 calxgloss-types = { path = "../calxgloss-types" }

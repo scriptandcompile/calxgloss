@@ -35,18 +35,17 @@ mod ffi;
 mod inputs;
 mod run;
 
-pub use ffi::{FfiStub, FfiStubBuilder, generate_ffi_stub, parse_signature, ParsedSignature, ParameterTypeInfo};
-pub use inputs::{
-    DisassemblyEdgeCases, EdgeCaseSource, generate_test_inputs,
+pub use ffi::{
+    FfiStub, FfiStubBuilder, ParameterTypeInfo, ParsedSignature, generate_ffi_stub, parse_signature,
 };
+pub use inputs::{DisassemblyEdgeCases, EdgeCaseSource, generate_test_inputs};
 pub use run::{BaselineRunner, TestContext};
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 
 use anyhow::{Context, Result};
-use calxgloss_types::{Export, FunctionInfo, TestResult, TestCase};
-use tracing::{debug, error, info, instrument, warn};
+use calxgloss_types::{Export, FunctionInfo, TestCase, TestResult};
+use tracing::{debug, info, instrument, warn};
 
 // ============================================================
 // Test Generator (orchestrator)
@@ -152,7 +151,11 @@ impl TestGenerator {
         signature: &str,
         disassembly: &str,
     ) -> Result<Vec<TestCase>> {
-        debug!(signature, disassembly_len = disassembly.len(), "Generating test inputs");
+        debug!(
+            signature,
+            disassembly_len = disassembly.len(),
+            "Generating test inputs"
+        );
         let test_cases = generate_test_inputs(signature, disassembly)?;
         info!(count = test_cases.len(), "Generated test inputs");
         Ok(test_cases)
@@ -162,9 +165,17 @@ impl TestGenerator {
     ///
     /// Convenience method that extracts the disassembly from the function info
     /// and calls [`generate_test_inputs`](Self::generate_test_inputs).
-    pub async fn generate_test_inputs_from_function(&self, function_info: &FunctionInfo) -> Result<Vec<TestCase>> {
-        debug!(dll = function_info.dll, function = function_info.name, "Generating test inputs from function");
-        self.generate_test_inputs("", &function_info.disassembly).await
+    pub async fn generate_test_inputs_from_function(
+        &self,
+        function_info: &FunctionInfo,
+    ) -> Result<Vec<TestCase>> {
+        debug!(
+            dll = function_info.dll,
+            function = function_info.name,
+            "Generating test inputs from function"
+        );
+        self.generate_test_inputs("", &function_info.disassembly)
+            .await
     }
 
     /// Run baseline tests for a function by compiling and executing against the original DLL.
@@ -199,7 +210,9 @@ impl TestGenerator {
         debug!(dll, function, "Running baseline tests");
 
         let runner = BaselineRunner::new(&self.target_dir);
-        let results = runner.run(dll, function, signature, tests, dll_path).await?;
+        let results = runner
+            .run(dll, function, signature, tests, dll_path)
+            .await?;
 
         info!(
             dll,
@@ -230,7 +243,8 @@ impl TestGenerator {
             .map(|e| e.signature.clone())
             .ok_or_else(|| anyhow::anyhow!("Function '{}' not found in exports", function))?;
 
-        self.run_baseline_tests(dll, function, &signature, tests, dll_path).await
+        self.run_baseline_tests(dll, function, &signature, tests, dll_path)
+            .await
     }
 
     /// Run baseline tests from a [`FunctionInfo`] using Ghidra exports.
@@ -278,17 +292,16 @@ impl TestGenerator {
     /// * `dll` - The DLL filename.
     /// * `function` - The function name.
     /// * `results` - The test results to save.
-    pub fn save_baseline(
-        &self,
-        dll: &str,
-        function: &str,
-        results: &[TestResult],
-    ) -> Result<()> {
+    pub fn save_baseline(&self, dll: &str, function: &str, results: &[TestResult]) -> Result<()> {
         debug!(dll, function, "Saving baseline");
 
-        let baseline_dir = self.target_dir.join("re").join("baseline").join(dll).join(function);
-        std::fs::create_dir_all(&baseline_dir)
-            .context("Failed to create baseline directory")?;
+        let baseline_dir = self
+            .target_dir
+            .join("re")
+            .join("baseline")
+            .join(dll)
+            .join(function);
+        std::fs::create_dir_all(&baseline_dir).context("Failed to create baseline directory")?;
 
         let baseline_path = baseline_dir.join("baseline.json");
         let json = serde_json::to_string_pretty(results)
@@ -336,8 +349,9 @@ impl TestGenerator {
         let json = std::fs::read_to_string(&baseline_path)
             .with_context(|| format!("Failed to read baseline from {}", baseline_path.display()))?;
 
-        let results: Vec<TestResult> = serde_json::from_str(&json)
-            .with_context(|| format!("Failed to parse baseline from {}", baseline_path.display()))?;
+        let results: Vec<TestResult> = serde_json::from_str(&json).with_context(|| {
+            format!("Failed to parse baseline from {}", baseline_path.display())
+        })?;
 
         info!(
             path = %baseline_path.display(),
@@ -525,7 +539,9 @@ mod tests {
             error: None,
         };
 
-        generator.save_baseline("test.dll", "TestFunc", &[result]).unwrap();
+        generator
+            .save_baseline("test.dll", "TestFunc", &[result])
+            .unwrap();
 
         let loaded = generator.load_baseline("test.dll", "TestFunc").unwrap();
         assert_eq!(loaded.len(), 1);
@@ -541,7 +557,7 @@ mod tests {
 
     #[test]
     fn test_edge_case_source_all_variants() {
-        use calxgloss_types::SideEffectKind;
+        //use calxgloss_types::SideEffectKind;
 
         let sources = vec![
             EdgeCaseSource::Zero,

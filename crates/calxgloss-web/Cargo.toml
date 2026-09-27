@@ -3,21 +3,18 @@ name = "calxgloss-web"
 version.workspace = true
 edition.workspace = true
 description = "Web review UI — scaffolded (implemented post-MVP)"
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
-calxgloss-types = { path = "../calxgloss-types" }
 chrono = { workspace = true }
 
-# --- Future optional dependencies (post-MVP) ---
+# --- Optional dependencies (post-MVP) ---
 # Enable with: cargo build --features server
-# Enable with: cargo build --features leptos
 
 axum = { version = "0.8", optional = true }
-leptos = { version = "0.7", optional = true }
 
 [features]
 default = []
 # Enables the axum HTTP server for serving the review dashboard API.
 server = ["dep:axum"]
-# Enables leptos SSR components for the review dashboard frontend.
-leptos = ["dep:leptos"]

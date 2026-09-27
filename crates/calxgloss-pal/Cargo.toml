@@ -3,6 +3,8 @@ name = "calxgloss-pal"
 version.workspace = true
 edition.workspace = true
 description = "Platform Abstraction Layer — Windows API to cross-platform Rust equivalent mappings"
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 calxgloss-types = { path = "../calxgloss-types" }

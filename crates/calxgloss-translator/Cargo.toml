@@ -3,6 +3,8 @@ name = "calxgloss-translator"
 version.workspace = true
 edition.workspace = true
 description = "Translation pipeline — GhidraMCP + LLM + prompt orchestration"
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 calxgloss-types = { path = "../calxgloss-types" }

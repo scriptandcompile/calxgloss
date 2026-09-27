@@ -3,6 +3,8 @@ name = "calxgloss-analysis"
 version.workspace = true
 edition.workspace = true
 description = "DLL classification, call graph analysis, and Windows API tagging"
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 calxgloss-types = { path = "../calxgloss-types" }
