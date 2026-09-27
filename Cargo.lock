@@ -340,7 +340,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "calxgloss-types",
+ "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
