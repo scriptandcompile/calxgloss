@@ -828,6 +828,11 @@ impl ApiMappings {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// Returns an iterator over all API mappings.
+    pub fn iter(&self) -> impl Iterator<Item = &ApiMapping> {
+        self.0.iter()
+    }
 }
 
 impl Default for ApiMappings {

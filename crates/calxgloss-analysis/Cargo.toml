@@ -8,4 +8,5 @@ description = "DLL classification, call graph analysis, and Windows API tagging"
 calxgloss-types = { path = "../calxgloss-types" }
 calxgloss-ghidra = { path = "../calxgloss-ghidra" }
 calxgloss-pal = { path = "../calxgloss-pal" }
-anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

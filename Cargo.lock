@@ -203,10 +203,11 @@ dependencies = [
 name = "calxgloss-analysis"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "calxgloss-ghidra",
  "calxgloss-pal",
  "calxgloss-types",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]
