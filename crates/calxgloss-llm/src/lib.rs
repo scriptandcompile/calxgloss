@@ -530,9 +530,17 @@ impl LlmClient {
     // =========================================================
 
     fn completions_url(&self) -> String {
-        self.config
-            .endpoint
-            .join("chat/completions")
+        // Ensure the endpoint ends with a slash so `join` appends rather than
+        // replaces the last path segment (e.g. `…/v1` → `…/v1/chat/completions`,
+        // not `…/chat/completions`).
+        let base = if self.config.endpoint.path().ends_with('/') {
+            self.config.endpoint.clone()
+        } else {
+            let mut url = self.config.endpoint.clone();
+            url.set_path(&format!("{}/", url.path()));
+            url
+        };
+        base.join("chat/completions")
             .expect("invalid completions URL")
             .to_string()
     }
