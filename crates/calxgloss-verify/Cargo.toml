@@ -8,3 +8,5 @@ description = "Compile Rust code, run tests, and compare against baseline behavi
 calxgloss-types = { path = "../calxgloss-types" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
+tracing = { workspace = true }
+serde_json = { workspace = true }
