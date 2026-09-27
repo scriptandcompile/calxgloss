@@ -1,8 +1,8 @@
-/// Types for verifying translated Rust code against baseline behavior.
-///
-/// This module defines the data structures used to report compilation
-/// status, test pass/fail counts, and detailed failure information for
-/// each test case that diverges from the original binary's behavior.
+//! Types for verifying translated Rust code against baseline behavior.
+//!
+//! This module defines the data structures used to report compilation
+//! status, test pass/fail counts, and detailed failure information for
+//! each test case that diverges from the original binary's behavior.
 
 use serde::{Deserialize, Serialize};
 

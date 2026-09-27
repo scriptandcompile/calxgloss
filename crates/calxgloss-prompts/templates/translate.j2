@@ -1,0 +1,56 @@
+You are a reverse engineering specialist. Translate the following function from assembly to Rust that preserves its observable behavior.
+
+## FUNCTION: {{ function_name }}
+## SOURCE DLL: {{ dll_name }}
+## ADDRESS: {{ address }}
+
+---
+
+## DISASSEMBLY
+
+{{ disassembly }}
+
+---
+
+## DECOMPILER OUTPUT (pseudo-C)
+
+{{ decompiler_output }}
+
+---
+
+## WINDOWS API CALLS IDENTIFIED
+
+{% for api in windows_apis %}
+- {{ api.name }} → {{ api.category }} → {{ api.pal_mapping }}
+{% endfor %}
+
+{% if no_windows_apis %}
+No Windows API calls were identified in this function.
+{% endif %}
+
+---
+
+## BASELINE TESTS (translated Rust code must produce identical outputs)
+
+{% for test in test_cases %}
+Test #{{ test.index }}:
+  Inputs: {{ test.inputs }}
+  Expected return: {{ test.expected_return }}
+  Side effects: {% if test.side_effects == "[]" %}none{% else %}{{ test.side_effects }}{% endif %}
+{% endfor %}
+
+---
+
+## TRANSLATION REQUIREMENTS
+
+1. Output ONLY the Rust function — no explanations, no markdown fences, no code blocks.
+2. Use `std::` for Win32 Core mappings (std::fs, std::thread, std::sync, std::time, etc.).
+3. For DirectX/GDI/Audio calls, use PAL trait placeholders as shown in the mappings above.
+4. Preserve the function signature with FFI-compatible types.
+5. Do NOT include `mod` declarations, `extern` blocks, or imports outside the function body.
+6. Handle null pointers and invalid inputs gracefully (return error codes matching the original).
+7. If the function is self-contained, translate it directly. If it calls other functions,
+   assume those functions exist and will be translated separately.
+8. Do NOT guess at Windows API behaviors — follow the disassembly and decompiler output strictly.
+
+## RUST CODE:

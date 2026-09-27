@@ -1,9 +1,9 @@
-/// Domain errors for the calxgloss-types crate.
-///
-/// This module defines `TypesError`, the unified error type used throughout
-/// the shared types crate. It wraps serialization failures and domain-specific
-/// validation errors encountered when constructing or manipulating types
-/// such as [`GitBranch`](crate::GitBranch).
+//! Domain errors for the calxgloss-types crate.
+//!
+//! This module defines `TypesError`, the unified error type used throughout
+//! the shared types crate. It wraps serialization failures and domain-specific
+//! validation errors encountered when constructing or manipulating types
+//! such as [`GitBranch`](crate::GitBranch).
 
 use thiserror::Error;
 

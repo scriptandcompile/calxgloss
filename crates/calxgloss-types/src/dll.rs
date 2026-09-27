@@ -1,8 +1,8 @@
-/// Information about a target DLL and its classification.
-///
-/// This module provides types for representing DLL metadata extracted during
-/// the binary analysis phase, including exported/imported symbols and
-/// classification into strategy categories.
+//! Information about a target DLL and its classification.
+//!
+//! This module provides types for representing DLL metadata extracted during
+//! the binary analysis phase, including exported/imported symbols and
+//! classification into strategy categories.
 
 use serde::{Deserialize, Serialize};
 

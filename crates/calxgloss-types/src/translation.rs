@@ -1,7 +1,7 @@
-/// Types for the translation request/response cycle.
-///
-/// This module defines the data structures used to request a function
-/// translation from the LLM pipeline and to capture the result.
+//! Types for the translation request/response cycle.
+//!
+//! This module defines the data structures used to request a function
+//! translation from the LLM pipeline and to capture the result.
 
 use serde::{Deserialize, Serialize};
 

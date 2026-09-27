@@ -6,4 +6,7 @@ description = "Prompt templates and rendering for LLM translation tasks"
 
 [dependencies]
 calxgloss-types = { path = "../calxgloss-types" }
-anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+askama = { version = "0.16.1" }

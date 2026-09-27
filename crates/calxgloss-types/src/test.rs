@@ -1,8 +1,8 @@
-/// Types for test case generation and baseline execution.
-///
-/// This module defines the data structures used to represent test inputs,
-/// expected outputs, observed side effects, and test results captured from
-/// running the original binary.
+//! Types for test case generation and baseline execution.
+//!
+//! This module defines the data structures used to represent test inputs,
+//! expected outputs, observed side effects, and test results captured from
+//! running the original binary.
 
 use serde::{Deserialize, Serialize};
 

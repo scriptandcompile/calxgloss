@@ -1,8 +1,8 @@
-/// Git automation types for branch and commit tracking.
-///
-/// This module defines types representing the Git branches and commits
-/// created by the harness during translation, along with a constructor
-/// for generating canonical branch names.
+//! Git automation types for branch and commit tracking.
+//!
+//! This module defines types representing the Git branches and commits
+//! created by the harness during translation, along with a constructor
+//! for generating canonical branch names.
 
 use serde::{Deserialize, Serialize};
 

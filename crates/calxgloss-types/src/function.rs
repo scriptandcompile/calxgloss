@@ -1,9 +1,10 @@
-/// Function-level analysis types extracted from Ghidra disassembly.
-///
-/// This module defines types for representing individual functions found
-/// within a DLL, including their disassembly, decompiler output, Windows API
-/// call sites, and call graph neighbors.
+//! Function-level analysis types extracted from Ghidra disassembly.
+//!
+//! This module defines types for representing individual functions found
+//! within a DLL, including their disassembly, decompiler output, Windows API
+//! call sites, and call graph neighbors.
 
+use std::fmt;
 use serde::{Deserialize, Serialize};
 
 /// Platform-specific category for a Windows API call.
@@ -64,6 +65,28 @@ pub enum ApiCategory {
     /// VB6 runtime APIs (`msvbvm60.dll` — BSTR, VARIANT, form model).
     /// Maps to `vb6runtime` crate.
     Vb6Runtime,
+}
+
+impl fmt::Display for ApiCategory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ApiCategory::Win32Core => write!(f, "Win32Core"),
+            ApiCategory::DirectX => write!(f, "DirectX"),
+            ApiCategory::DirectX10 => write!(f, "DirectX10"),
+            ApiCategory::DirectX11 => write!(f, "DirectX11"),
+            ApiCategory::DirectX12 => write!(f, "DirectX12"),
+            ApiCategory::Gdi => write!(f, "GDI"),
+            ApiCategory::GdiPlus => write!(f, "GDI+"),
+            ApiCategory::Direct2D => write!(f, "Direct2D"),
+            ApiCategory::DirectWrite => write!(f, "DirectWrite"),
+            ApiCategory::Win32Gui => write!(f, "Win32Gui"),
+            ApiCategory::Audio => write!(f, "Audio"),
+            ApiCategory::Com => write!(f, "COM"),
+            ApiCategory::Win32Networking => write!(f, "Win32Networking"),
+            ApiCategory::Win32Registry => write!(f, "Win32Registry"),
+            ApiCategory::Vb6Runtime => write!(f, "VB6Runtime"),
+        }
+    }
 }
 
 /// A single Windows API call identified within a function's disassembly.

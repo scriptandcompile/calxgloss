@@ -75,9 +75,7 @@ impl LlmConfig {
     /// Returns [`LlmError::InvalidUrl`] if the endpoint is not a valid URL.
     pub fn new(endpoint: &str, model: &str) -> Result<Self> {
         Ok(Self {
-            endpoint: url::Url::parse(endpoint).map_err(|e| {
-                LlmError::InvalidUrl(e.to_string())
-            })?,
+            endpoint: url::Url::parse(endpoint).map_err(|e| LlmError::InvalidUrl(e.to_string()))?,
             model: model.to_string(),
             api_key: None,
             max_tokens: 8192,
@@ -364,7 +362,10 @@ impl LlmClient {
         if status != 200 {
             let body = response.text().await?;
             error!(status, body = %body, "LLM request failed");
-            return Err(LlmError::ServerError { status, message: body });
+            return Err(LlmError::ServerError {
+                status,
+                message: body,
+            });
         }
 
         let raw: LlmResponseRaw = response.json().await.map_err(|e| {
@@ -470,29 +471,31 @@ impl LlmClient {
         if status != 200 {
             let body = response.text().await?;
             error!(status, body = %body, "Streaming LLM request failed");
-            return Err(LlmError::ServerError { status, message: body });
+            return Err(LlmError::ServerError {
+                status,
+                message: body,
+            });
         }
 
         let body = response.bytes_stream();
 
-        Ok(Box::pin(futures::stream::unfold(body, |mut stream| async {
-            match stream.next().await {
-                Some(Ok(chunk)) => {
-                    let text = String::from_utf8_lossy(&chunk).to_string();
-                    let parsed = serde_json::from_str::<serde_json::Value>(&text);
-                    Some((
-                        parsed
-                            .map_err(|e| LlmError::StreamParseError(e.to_string())),
-                        stream,
-                    ))
+        Ok(Box::pin(futures::stream::unfold(
+            body,
+            |mut stream| async {
+                match stream.next().await {
+                    Some(Ok(chunk)) => {
+                        let text = String::from_utf8_lossy(&chunk).to_string();
+                        let parsed = serde_json::from_str::<serde_json::Value>(&text);
+                        Some((
+                            parsed.map_err(|e| LlmError::StreamParseError(e.to_string())),
+                            stream,
+                        ))
+                    }
+                    Some(Err(e)) => Some((Err(LlmError::Http(e)), stream)),
+                    None => None,
                 }
-                Some(Err(e)) => Some((
-                    Err(LlmError::Http(e)),
-                    stream,
-                )),
-                None => None,
-            }
-        })))
+            },
+        )))
     }
 
     // =========================================================

@@ -28,3 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `calxgloss` — meta-lib re-exporting all crates
 - `calxgloss-cli` — CLI entry point shell
 - `calxgloss-web` — web UI scaffold (not implemented in MVP)
+- `calxgloss-prompts` — full implementation with askama template engine: `TranslateTemplate` struct for building translation prompts, embedded `templates/translate.j2` covering disassembly, decompiler output, Windows API mappings, and baseline tests; `build_translate_prompt()` convenience function; `PromptError` type; `ApiCategory` implements `Display` for template rendering
+- `calxgloss-types` — all module-level doc comments converted to inner-doc-comments (`//!`) to fix clippy `empty_line_after_doc_comments` lint
+- `calxgloss-llm` — suppressed dead-code warnings on scaffolded streaming-struct fields with `#[allow(dead_code)]`
