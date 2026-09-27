@@ -1,0 +1,10 @@
+[package]
+name = "calxgloss-analysis"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+calxgloss-types = { path = "../calxgloss-types" }
+calxgloss-ghidra = { path = "../calxgloss-ghidra" }
+calxgloss-pal = { path = "../calxgloss-pal" }
+anyhow = { workspace = true }

@@ -1,0 +1,12 @@
+[package]
+name = "calxgloss-ghidra"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+calxgloss-types = { path = "../calxgloss-types" }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+url = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }

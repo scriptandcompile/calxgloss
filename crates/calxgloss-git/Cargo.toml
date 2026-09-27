@@ -1,0 +1,9 @@
+[package]
+name = "calxgloss-git"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+calxgloss-types = { path = "../calxgloss-types" }
+git2 = { workspace = true }
+anyhow = { workspace = true }

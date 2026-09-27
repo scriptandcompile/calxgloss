@@ -1,0 +1,31 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/calxgloss-types",
+    "crates/calxgloss-ghidra",
+    "crates/calxgloss-llm",
+    "crates/calxgloss-analysis",
+    "crates/calxgloss-testgen",
+    "crates/calxgloss-translator",
+    "crates/calxgloss-verify",
+    "crates/calxgloss-git",
+    "crates/calxgloss-prompts",
+    "crates/calxgloss-pal",
+    "crates/calxgloss-reports",
+    "crates/calxgloss",
+    "crates/calxgloss-cli",
+    "crates/calxgloss-web",
+]
+
+[workspace.dependencies]
+anyhow = "1.0.104"
+thiserror = "2.0.21"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+reqwest = { version = "0.13.5", features = ["json", "stream"] }
+tokio = { version = "1.53.1", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+git2 = "0.21.0"
+clap = { version = "4.6.7", features = ["derive"] }
+url = "2.5.8"

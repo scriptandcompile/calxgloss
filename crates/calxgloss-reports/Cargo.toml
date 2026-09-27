@@ -1,0 +1,8 @@
+[package]
+name = "calxgloss-reports"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+calxgloss-types = { path = "../calxgloss-types" }
+anyhow = { workspace = true }

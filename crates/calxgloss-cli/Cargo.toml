@@ -1,0 +1,18 @@
+[package]
+name = "calxgloss-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+calxgloss = { path = "../calxgloss" }
+calxgloss-ghidra = { path = "../calxgloss-ghidra" }
+calxgloss-analysis = { path = "../calxgloss-analysis" }
+calxgloss-testgen = { path = "../calxgloss-testgen" }
+calxgloss-translator = { path = "../calxgloss-translator" }
+calxgloss-verify = { path = "../calxgloss-verify" }
+calxgloss-git = { path = "../calxgloss-git" }
+calxgloss-reports = { path = "../calxgloss-reports" }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }

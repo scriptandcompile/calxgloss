@@ -1,0 +1,15 @@
+[package]
+name = "calxgloss-translator"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+calxgloss-types = { path = "../calxgloss-types" }
+calxgloss-ghidra = { path = "../calxgloss-ghidra" }
+calxgloss-llm = { path = "../calxgloss-llm" }
+calxgloss-prompts = { path = "../calxgloss-prompts" }
+calxgloss-pal = { path = "../calxgloss-pal" }
+calxgloss-testgen = { path = "../calxgloss-testgen" }
+calxgloss-analysis = { path = "../calxgloss-analysis" }
+tokio = { workspace = true }
+anyhow = { workspace = true }

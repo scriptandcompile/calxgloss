@@ -1,0 +1,22 @@
+/target
+
+# Cargo.lock (managed manually or per-project)
+# Cargo.lock
+
+# Environment variables
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Review data / generated artifacts
+re/
+recompiled_project/
