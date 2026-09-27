@@ -169,9 +169,11 @@ dependencies = [
 name = "calxgloss-ghidra"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "calxgloss-types",
  "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
  "tokio",
  "tracing",
  "url",

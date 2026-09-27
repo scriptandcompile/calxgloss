@@ -13,7 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Workspace root `Cargo.toml` with shared dependencies
 - `calxgloss-types` — shared data structures (scaffolded)
 - `calxgloss-types` — implemented all shared types with module organization: DLL analysis, function metadata, test cases, translation, verification, and Git automation (with `serde`/`thiserror` derive and doc comments)
-- `calxgloss-ghidra` — GhidraMCP HTTP client shell
+- `calxgloss-ghidra` — GhidraMCP HTTP client
+- `calxgloss-ghidra` — `GhidraClient` with session management, DLL queries (list, info, imports, exports), function queries (disassembly, decompiler, call graph, full analysis), error types, response mapping structs, and `Session` tracking
+- `calxgloss-ghidra` — tracing instrumentation and comprehensive test coverage (10 tests)
 - `calxgloss-llm` — local LLM client shell
 - `calxgloss-prompts` — prompt template engine shell
 - `calxgloss-pal` — platform abstraction layer shell
