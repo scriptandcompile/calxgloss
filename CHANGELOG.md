@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `calxgloss-ghidra` — GhidraMCP HTTP client
 - `calxgloss-ghidra` — `GhidraClient` with session management, DLL queries (list, info, imports, exports), function queries (disassembly, decompiler, call graph, full analysis), error types, response mapping structs, and `Session` tracking
 - `calxgloss-ghidra` — tracing instrumentation and comprehensive test coverage (10 tests)
-- `calxgloss-llm` — local LLM client shell
+- `calxgloss-llm` — local LLM client (Ollama/vLLM compatible): `LlmClient` with non-streaming and SSE streaming completions, `LlmConfig` with builder pattern, `LlmMessage` with System/User/Assistant roles, `strip_code_fences()` utility, OpenAI-compatible `chat/completions` API, serde request/response structs, `LlmError` with 6 variants, tracing instrumentation, and 13 tests
 - `calxgloss-prompts` — prompt template engine shell
 - `calxgloss-pal` — platform abstraction layer shell
 - `calxgloss-analysis` — DLL classification and API tagging shell
