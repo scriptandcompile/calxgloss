@@ -6,3 +6,5 @@ description = "Platform Abstraction Layer — Windows API to cross-platform Rust
 
 [dependencies]
 calxgloss-types = { path = "../calxgloss-types" }
+once_cell = { workspace = true }
+indexmap = "2"
