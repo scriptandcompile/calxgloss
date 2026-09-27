@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 /// Platform-specific category for a Windows API call.
 ///
 /// Each category maps to a cross-platform Rust equivalent via the PAL.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ApiCategory {
     /// Core Win32 APIs (`CreateFile`, `ReadFile`, `CreateThread`, etc.).
     /// Maps to `std::fs`, `std::thread`, `std::sync`, etc.
