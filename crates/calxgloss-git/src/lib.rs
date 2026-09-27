@@ -1,14 +1,854 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+//! Git branch, commit, and merge automation for translation units of work.
+//!
+//! This crate provides [`GitManager`], the central orchestrator for all Git operations
+//! performed during the translation pipeline. Every translation attempt gets its own
+//! branch following the naming convention `re/{dll}/{function}v{N}`.
+//!
+//! # Branching Strategy
+//!
+//! - **Success**: Branch created → files committed → merged to `main`
+//! - **Failure**: Branch created → files committed → branch retained (never deleted)
+//! - **Retries**: New attempt gets a new branch with incremented version number
+//!
+//! # Commit Message Convention
+//!
+//! Every commit follows a structured format for traceability:
+//!
+//! ```text
+//! re/translation/<function>: translate <function> to Rust
+//!
+//! Attempt: <N> of <total-attempts> (or "last" if not known)
+//! Dependencies: <list of merged branches this depends on>
+//! Tests: <count> baseline tests, <count> verification tests
+//! Passing: <yes/no>
+//! LLM model: <model name>
+//! Context size: <N> tokens
+//! ```
+
+use std::path::{Path, PathBuf};
+
+use calxgloss_types::{GitBranch, GitCommit, TypesError};
+use chrono::Utc;
+use git2::{DiffOptions, Oid, Repository, ResetType, Signature};
+use git2::build::CheckoutBuilder;
+use tracing::{debug, info, warn};
+
+/// Configuration for Git repository initialization.
+#[derive(Debug, Clone)]
+pub struct InitConfig {
+    pub author_name: String,
+    pub author_email: String,
+    pub committer_name: Option<String>,
+    pub committer_email: Option<String>,
+}
+
+impl Default for InitConfig {
+    fn default() -> Self {
+        Self {
+            author_name: "Calxgloss".to_string(),
+            author_email: "calxgloss@system".to_string(),
+            committer_name: None,
+            committer_email: None,
+        }
+    }
+}
+
+/// Manages all Git operations for the translation pipeline.
+pub struct GitManager {
+    repo: Repository,
+    init_config: InitConfig,
+    repo_path: PathBuf,
+}
+
+/// Result of a branch creation attempt.
+#[derive(Debug)]
+pub struct BranchResult {
+    pub branch: GitBranch,
+    pub created: bool,
+}
+
+/// Result of a merge operation.
+#[derive(Debug)]
+pub enum MergeResult {
+    Merged { merge_hash: String },
+    AlreadyUpToDate,
+    Conflicts {
+        conflicted_files: Vec<String>,
+        error: String,
+    },
+}
+
+/// Stores failure details for a translation attempt.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct PatchRecord {
+    pub dll: String,
+    pub function: String,
+    pub attempt: u32,
+    pub branch_name: String,
+    pub committed_at: String,
+    pub error_message: String,
+    pub compilation_errors: Vec<String>,
+    pub test_failures: Vec<String>,
+    pub commit_hash: String,
+}
+
+fn make_signature(repo: &Repository, config: &InitConfig) -> Result<Signature<'static>, TypesError> {
+    repo.signature()
+        .or_else(|_| Signature::now(&config.author_name, &config.author_email))
+        .map_err(|e| TypesError::InvalidBranchName(format!("Failed to create signature: {}", e)))
+}
+
+impl GitManager {
+    /// Initializes a new Git repository in the given directory.
+    pub fn init_repo(repo_path: &Path, config: Option<InitConfig>) -> Result<Self, TypesError> {
+        let config = config.unwrap_or_default();
+
+        info!("Initializing Git repository at {}", repo_path.display());
+        std::fs::create_dir_all(repo_path).map_err(|e| {
+            TypesError::InvalidBranchName(format!("Cannot create directory: {}", e))
+        })?;
+
+        let repo = Repository::init(repo_path).map_err(|e| {
+            TypesError::InvalidBranchName(format!("Git init failed: {}", e))
+        })?;
+
+        let readme_path = repo_path.join("README.md");
+        std::fs::write(
+            &readme_path,
+            "# Translation Target\n\nThis directory contains the reverse-engineered Rust translations.\n",
+        )
+        .map_err(|e| TypesError::InvalidBranchName(format!("Failed to write README: {}", e)))?;
+
+        let mut index = repo.index().map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to get index: {}", e))
+        })?;
+        index
+            .add_path(Path::new("README.md"))
+            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to add README: {}", e)))?;
+        index.write().map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to write index: {}", e))
+        })?;
+
+        let sig = make_signature(&repo, &config)?;
+        let tree_id = index.write_tree().map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to write tree: {}", e))
+        })?;
+
+        let tree = repo.find_tree(tree_id).map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to find tree: {}", e))
+        })?;
+        let main_oid = match repo.commit(Some("refs/heads/main"), &sig, &sig, "Initial commit: setup translation target", &tree, &[]) {
+            Ok(oid) => Some(oid),
+            Err(_) => None,
+        };
+        drop(tree);
+
+        // Set HEAD to point to main
+        if let Some(oid) = main_oid {
+            let _ = repo.set_head("refs/heads/main");
+            let mut checkout_opts = CheckoutBuilder::new();
+            checkout_opts.force();
+            if let Ok(obj) = repo.find_object(oid, None) {
+                if let Ok(tree) = obj.peel_to_tree() {
+                    let _ = repo.reset(&tree.as_object(), ResetType::Hard, Some(&mut checkout_opts));
+                }
+            }
+        }
+
+        Ok(Self { repo, init_config: config, repo_path: repo_path.to_path_buf() })
+    }
+
+    /// Opens an existing Git repository.
+    pub fn open(repo_path: &Path) -> Result<Self, TypesError> {
+        let repo = Repository::open(repo_path).map_err(|e| {
+            TypesError::InvalidBranchName(format!("Not a Git repository: {}", e))
+        })?;
+
+        Ok(Self { repo, init_config: InitConfig::default(), repo_path: repo_path.to_path_buf() })
+    }
+
+    /// Returns the path to the Git repository.
+    pub fn repo_path(&self) -> &Path {
+        &self.repo_path
+    }
+
+    /// Returns the underlying [`Repository`] reference.
+    pub fn repo(&self) -> &Repository {
+        &self.repo
+    }
+
+    /// Returns the author configuration used for commits.
+    pub fn config(&self) -> &InitConfig {
+        &self.init_config
+    }
+
+    /// Creates a new branch for a translation attempt.
+    pub fn create_branch(&self, dll: &str, function: &str, attempt: u32) -> Result<BranchResult, TypesError> {
+        let branch = GitBranch::new(dll, function, attempt)?;
+        let git_branch_name = format!("refs/heads/{}", branch.name);
+
+        if self.repo.find_branch(&branch.name, git2::BranchType::Local).is_ok() {
+            info!("Branch '{}' already exists, reusing", branch.name);
+            return Ok(BranchResult { branch, created: false });
+        }
+
+        let main_ref = self.repo
+            .find_branch("main", git2::BranchType::Local)
+            .map_err(|_| TypesError::InvalidBranchName("main branch not found".to_string()))?;
+        let main_commit = main_ref.get().peel_to_commit().map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to resolve main: {}", e))
+        })?;
+        let main_oid = main_commit.id();
+
+        debug!("Creating branch '{}' from commit {}", branch.name, main_oid);
+
+        self.repo
+            .reference(&git_branch_name, main_oid, false, &branch.name)
+            .map_err(|e| TypesError::InvalidBranchName(format!("Branch creation failed: {}", e)))?;
+
+        let mut checkout_opts = CheckoutBuilder::new();
+        checkout_opts.force();
+
+        self.repo.set_head(&git_branch_name).map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to set HEAD: {}", e))
+        })?;
+
+        let main_commit = main_ref.get().peel_to_commit().map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to peel main: {}", e))
+        })?;
+        let main_obj = main_commit.as_object();
+
+        self.repo
+            .reset(&main_obj, ResetType::Hard, Some(&mut checkout_opts))
+            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to reset: {}", e)))?;
+
+        info!("Created branch '{}'", branch.name);
+        Ok(BranchResult { branch, created: true })
+    }
+
+    /// Commits files to the current branch.
+    pub fn commit(
+        &self,
+        branch: &GitBranch,
+        message: &str,
+        files: &[&str],
+    ) -> Result<GitCommit, TypesError> {
+        let mut index = self.repo.index().map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to get index: {}", e))
+        })?;
+
+        let mut added_files = Vec::new();
+
+        if files.is_empty() {
+            let mut diff_options = DiffOptions::new();
+            let diff = self.repo
+                .diff_index_to_workdir(Some(&mut index), Some(&mut diff_options))
+                .map_err(|e| TypesError::InvalidBranchName(format!("Diff failed: {}", e)))?;
+
+            diff.deltas().for_each(|delta| {
+                if let Some(path) = delta.new_file().path() {
+                    let path_str = path.to_string_lossy().to_string();
+                    if let Err(e) = index.add_path(Path::new(&path_str)) {
+                        warn!("Failed to stage '{}': {}", path_str, e);
+                    } else {
+                        added_files.push(path_str);
+                    }
+                }
+            });
+        } else {
+            for file_path in files {
+                let path = Path::new(file_path);
+                if let Err(e) = index.add_path(path) {
+                    warn!("Failed to stage '{}': {}", file_path, e);
+                } else {
+                    added_files.push(file_path.to_string());
+                }
+            }
+        }
+
+        let tree_id = index.write_tree().map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to write tree: {}", e))
+        })?;
+        let tree = self.repo.find_tree(tree_id).map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to find tree: {}", e))
+        })?;
+
+        let head = self.repo.head().map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to get HEAD: {}", e))
+        })?;
+        let parent_oid = head.target().ok_or_else(|| {
+            TypesError::InvalidBranchName("HEAD does not point to a commit".to_string())
+        })?;
+        let parent = self.repo.find_commit(parent_oid).map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to find parent: {}", e))
+        })?;
+
+        let sig = make_signature(&self.repo, &self.init_config)?;
+
+        let commit_oid = self.repo.commit(
+            Some(&head.name().unwrap().to_string()),
+            &sig, &sig, message, &tree, &[&parent],
+        ).map_err(|e| {
+            TypesError::InvalidBranchName(format!("Commit creation failed: {}", e))
+        })?;
+
+        Ok(GitCommit {
+            branch: branch.name.clone(),
+            message: message.to_string(),
+            hash: commit_oid.to_string(),
+            files: added_files,
+        })
+    }
+
+    /// Merges a branch into `main`.
+    pub fn merge_to_main(&self, branch: &GitBranch) -> Result<MergeResult, TypesError> {
+        info!("Merging branch '{}' into main", branch.name);
+
+        let branch_ref = self.repo
+            .find_branch(&branch.name, git2::BranchType::Local)
+            .map_err(|_| TypesError::InvalidBranchName(format!("Branch '{}' not found", branch.name)))?;
+        let branch_commit = branch_ref.get().peel_to_commit().map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to resolve branch: {}", e))
+        })?;
+        let branch_oid = branch_commit.id();
+
+        let main_ref = self.repo
+            .find_branch("main", git2::BranchType::Local)
+            .map_err(|_| TypesError::InvalidBranchName("'main' branch not found".to_string()))?;
+        let main_commit = main_ref.get().peel_to_commit().map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to resolve main: {}", e))
+        })?;
+        let main_oid = main_commit.id();
+
+        // Check if branch is already up to date with main
+        let (branch_ahead, _) = self.repo.graph_ahead_behind(branch_oid, main_oid).unwrap();
+        let (main_ahead, main_behind) = self.repo.graph_ahead_behind(main_oid, branch_oid).unwrap();
+        
+        if main_oid == branch_oid || branch_ahead == 0 {
+            info!("Branch '{}' is already up to date with main", branch.name);
+            return Ok(MergeResult::AlreadyUpToDate);
+        }
+
+        // Check if branch is an ancestor of main (main already has branch's commits)
+        if main_ahead == 0 && main_behind == 0 {
+            info!("Branch '{}' is already an ancestor of main", branch.name);
+            return Ok(MergeResult::AlreadyUpToDate);
+        }
+
+        // Check if we can fast-forward (branch is a direct descendant of main)
+        if main_ahead == 0 && branch_ahead > 0 {
+            debug!("Fast-forward merge {}", branch.name);
+            debug!("Fast-forward merge {}", branch.name);
+            self.repo
+                .reference("refs/heads/main", branch_oid, true, &format!("FF to {}", branch.name))
+                .map_err(|e| TypesError::InvalidBranchName(format!("FF failed: {}", e)))?;
+
+            let mut checkout_opts = CheckoutBuilder::new();
+            checkout_opts.force();
+            let main_commit = main_ref.get().peel_to_commit().map_err(|e| {
+                TypesError::InvalidBranchName(format!("Peel main failed: {}", e))
+            })?;
+            let main_obj = main_commit.as_object();
+
+            self.repo.set_head("refs/heads/main").map_err(|e| {
+                TypesError::InvalidBranchName(format!("Set HEAD failed: {}", e))
+            })?;
+            self.repo
+                .reset(&main_obj, ResetType::Hard, Some(&mut checkout_opts))
+                .map_err(|e| TypesError::InvalidBranchName(format!("Reset failed: {}", e)))?;
+
+            return Ok(MergeResult::Merged { merge_hash: branch_oid.to_string() });
+        }
+
+        debug!("3-way merge {} + {} → main", main_oid, branch_oid);
+
+        let mut merge_index = self.repo.merge_commits(&main_commit, &branch_commit, None)
+            .map_err(|e| TypesError::InvalidBranchName(format!("Merge failed: {}", e)))?;
+
+        let merge_tree_id = merge_index.write_tree().map_err(|e| {
+            TypesError::InvalidBranchName(format!("Write merge tree failed: {}", e))
+        })?;
+        let merge_tree = self.repo.find_tree(merge_tree_id).map_err(|e| {
+            TypesError::InvalidBranchName(format!("Get merge tree failed: {}", e))
+        })?;
+
+        let sig = make_signature(&self.repo, &self.init_config)?;
+        let merge_oid = self.repo.commit(
+            Some("refs/heads/main"),
+            &sig, &sig,
+            &format!("Merge branch '{}' into main", branch.name),
+            &merge_tree,
+            &[&main_commit, &branch_commit],
+        ).map_err(|e| {
+            TypesError::InvalidBranchName(format!("Merge commit failed: {}", e))
+        })?;
+
+        let mut checkout_opts = CheckoutBuilder::new();
+        checkout_opts.force();
+        let main_commit = main_ref.get().peel_to_commit().map_err(|e| {
+            TypesError::InvalidBranchName(format!("Peel main failed: {}", e))
+        })?;
+        let main_obj = main_commit.as_object();
+
+        self.repo.set_head("refs/heads/main").map_err(|e| {
+            TypesError::InvalidBranchName(format!("Set HEAD failed: {}", e))
+        })?;
+        self.repo
+            .reset(&main_obj, ResetType::Hard, Some(&mut checkout_opts))
+            .map_err(|e| TypesError::InvalidBranchName(format!("Reset failed: {}", e)))?;
+
+        info!("Merged '{}' into main", branch.name);
+        Ok(MergeResult::Merged { merge_hash: merge_oid.to_string() })
+    }
+
+    /// Stores failure details for a translation attempt.
+    pub fn store_failure(
+        &self,
+        branch: &GitBranch,
+        error_message: &str,
+        compilation_errors: &[String],
+        test_failures: &[String],
+        commit_hash: &str,
+    ) -> Result<PathBuf, TypesError> {
+        let patch_dir = self.repo_path.join("re").join("patches").join(&branch.dll);
+        let function_dir = patch_dir.join(&branch.function);
+        std::fs::create_dir_all(&function_dir).map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to create patch dir: {}", e))
+        })?;
+
+        let patch_path = function_dir.join(format!("v{}.json", branch.attempt));
+        let record = PatchRecord {
+            dll: branch.dll.clone(),
+            function: branch.function.clone(),
+            attempt: branch.attempt,
+            branch_name: branch.name.clone(),
+            committed_at: Utc::now().to_rfc3339(),
+            error_message: error_message.to_string(),
+            compilation_errors: compilation_errors.to_vec(),
+            test_failures: test_failures.to_vec(),
+            commit_hash: commit_hash.to_string(),
+        };
+
+        let json = serde_json::to_string_pretty(&record).map_err(|e| TypesError::Serialization(e))?;
+        std::fs::write(&patch_path, json).map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to write patch: {}", e))
+        })?;
+
+        info!("Stored failure record at {}", patch_path.display());
+        Ok(patch_path)
+    }
+
+    /// Returns the name of the current branch.
+    pub fn current_branch(&self) -> Result<String, TypesError> {
+        let head = self.repo.head().map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to get HEAD: {}", e))
+        })?;
+
+        match head.shorthand() {
+            Ok(name) => Ok(name.to_string()),
+            Err(e) => {
+                if e.message().contains("detached") {
+                    Ok("(detached HEAD)".to_string())
+                } else {
+                    Err(TypesError::InvalidBranchName(format!("Branch name error: {}", e)))
+                }
+            }
+        }
+    }
+
+    /// Lists all local branches.
+    pub fn list_branches(&self) -> Result<Vec<String>, TypesError> {
+        let mut branches = Vec::new();
+        let mut iter = self.repo.branches(None).map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to get branch iterator: {}", e))
+        })?;
+        while let Some(branch_result) = iter.next() {
+            let (branch, _type) = branch_result.map_err(|e| {
+                TypesError::InvalidBranchName(format!("Failed to list branch: {}", e))
+            })?;
+            let name = branch.name().map_err(|e| {
+                TypesError::InvalidBranchName(format!("Invalid branch name: {}", e))
+            })?.unwrap_or("unknown").to_string();
+            branches.push(name);
+        }
+        branches.sort();
+        Ok(branches)
+    }
+
+    /// Returns the commit hash of the current HEAD.
+    pub fn current_commit(&self) -> Result<String, TypesError> {
+        let head = self.repo.head().map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to get HEAD: {}", e))
+        })?;
+        Ok(head.target().ok_or_else(|| {
+            TypesError::InvalidBranchName("HEAD does not point to a commit".to_string())
+        })?.to_string())
+    }
+
+    /// Returns the list of translation branches (branches under `re/`).
+    pub fn list_translation_branches(&self) -> Result<Vec<String>, TypesError> {
+        let all_branches = self.list_branches()?;
+        Ok(all_branches.into_iter().filter(|b| b.starts_with("re/")).collect())
+    }
+
+    /// Deletes a branch.
+    pub fn delete_branch(&self, branch_name: &str) -> Result<(), TypesError> {
+        debug!("Deleting branch '{}'", branch_name);
+
+        if branch_name == "main" {
+            return Err(TypesError::InvalidBranchName("Cannot delete 'main'".to_string()));
+        }
+
+        let mut branch = self.repo
+            .find_branch(branch_name, git2::BranchType::Local)
+            .map_err(|_| TypesError::InvalidBranchName(format!("Branch '{}' not found", branch_name)))?;
+
+        branch.delete().map_err(|e| {
+            TypesError::InvalidBranchName(format!("Delete failed: {}", e))
+        })?;
+
+        info!("Deleted branch '{}'", branch_name);
+        Ok(())
+    }
+
+    /// Creates a revert commit for the given commit hash.
+    pub fn revert_commit(&self, commit_hash: &str) -> Result<String, TypesError> {
+        let oid = Oid::from_str(commit_hash).map_err(|_| {
+            TypesError::InvalidBranchName(format!("Invalid commit hash: {}", commit_hash))
+        })?;
+
+        let commit = self.repo.find_commit(oid).map_err(|e| {
+            TypesError::InvalidBranchName(format!("Commit not found: {}", e))
+        })?;
+
+        let merge_opts = git2::MergeOptions::new();
+        let mut revert_index = self.repo
+            .revert_commit(&commit, &commit, 0, Some(&merge_opts))
+            .map_err(|e| TypesError::InvalidBranchName(format!("Revert failed: {}", e)))?;
+
+        let revert_tree_id = revert_index.write_tree().map_err(|e| {
+            TypesError::InvalidBranchName(format!("Write revert tree failed: {}", e))
+        })?;
+        let revert_tree = self.repo.find_tree(revert_tree_id).map_err(|e| {
+            TypesError::InvalidBranchName(format!("Get revert tree failed: {}", e))
+        })?;
+
+        let head = self.repo.head().map_err(|e| {
+            TypesError::InvalidBranchName(format!("Get HEAD failed: {}", e))
+        })?;
+
+        let sig = make_signature(&self.repo, &self.init_config)?;
+        let revert_oid = self.repo.commit(
+            Some(&head.name().unwrap().to_string()),
+            &sig, &sig,
+            &format!("Revert \"{}\"", commit.message().unwrap_or("unknown")),
+            &revert_tree, &[&commit],
+        ).map_err(|e| {
+            TypesError::InvalidBranchName(format!("Revert commit failed: {}", e))
+        })?;
+
+        info!("Created revert commit: {}", revert_oid);
+        Ok(revert_oid.to_string())
+    }
+
+    /// Gets the status of the working directory.
+    pub fn working_dir_status(&self) -> Result<Vec<(String, String)>, TypesError> {
+        let mut statuses = Vec::new();
+        let mut opts = git2::StatusOptions::new();
+        opts.include_untracked(true);
+
+        let status_list = self.repo.statuses(Some(&mut opts)).map_err(|e| {
+            TypesError::InvalidBranchName(format!("Get status failed: {}", e))
+        })?;
+
+        for entry in status_list.iter() {
+            if let Ok(path) = entry.path() {
+                let status_str = format_flags(entry.status());
+                statuses.push((path.to_string(), status_str));
+            }
+        }
+
+        Ok(statuses)
+    }
+}
+
+fn format_flags(status: git2::Status) -> String {
+    let mut flags = Vec::new();
+    if status.is_index_new() { flags.push("added"); }
+    if status.is_index_modified() { flags.push("modified in index"); }
+    if status.is_index_deleted() { flags.push("deleted in index"); }
+    if status.is_wt_new() { flags.push("untracked"); }
+    if status.is_wt_modified() { flags.push("modified in working dir"); }
+    if status.is_wt_deleted() { flags.push("deleted in working dir"); }
+    if status.is_wt_renamed() { flags.push("renamed"); }
+    if status.is_conflicted() { flags.push("conflicted"); }
+    if flags.is_empty() {
+        "unmodified".to_string()
+    } else {
+        flags.join(", ")
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
+
+    fn temp_git_repo() -> (PathBuf, GitManager) {
+        let thread = std::thread::current();
+        let thread_name = thread.name().unwrap_or("unknown");
+        let safe_name = thread_name.replace(|c: char| !c.is_alphanumeric(), "_");
+        let tmp_dir = env::temp_dir().join(format!("calxgloss-git-test-{}", safe_name));
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        let manager = GitManager::init_repo(&tmp_dir, None).unwrap();
+        (tmp_dir, manager)
+    }
 
     #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+    fn test_init_repo() {
+        let (tmp_dir, _manager) = temp_git_repo();
+        assert!(tmp_dir.join(".git").exists());
+        assert!(tmp_dir.join("README.md").exists());
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_open_repo() {
+        let (tmp_dir, manager) = temp_git_repo();
+        let opened = GitManager::open(&tmp_dir).unwrap();
+        assert_eq!(opened.repo_path(), tmp_dir.as_path());
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_create_branch() {
+        let (_tmp_dir, manager) = temp_git_repo();
+        let result = manager.create_branch("game_logic.dll", "DrawSprite", 1).unwrap();
+        assert!(result.created);
+        assert_eq!(result.branch.name, "re/game_logic/DrawSpritev1");
+        assert_eq!(result.branch.dll, "game_logic.dll");
+        assert_eq!(result.branch.function, "DrawSprite");
+        assert_eq!(result.branch.attempt, 1);
+    }
+
+    #[test]
+    fn test_create_branch_reuses_existing() {
+        let (_tmp_dir, manager) = temp_git_repo();
+        let result1 = manager.create_branch("game_logic.dll", "DrawSprite", 1).unwrap();
+        assert!(result1.created);
+        let result2 = manager.create_branch("game_logic.dll", "DrawSprite", 1).unwrap();
+        assert!(!result2.created);
+        assert_eq!(result2.branch.name, "re/game_logic/DrawSpritev1");
+    }
+
+    #[test]
+    fn test_branch_naming() {
+        assert_eq!(
+            GitBranch::new("game_logic.dll", "DrawSprite", 1).unwrap().name,
+            "re/game_logic/DrawSpritev1"
+        );
+        assert_eq!(
+            GitBranch::new("directx_render.dll", "Present", 3).unwrap().name,
+            "re/directx_render/Presentv3"
+        );
+    }
+
+    #[test]
+    fn test_commit() {
+        let (_tmp_dir, manager) = temp_git_repo();
+        let branch_result = manager.create_branch("game_logic.dll", "DrawSprite", 1).unwrap();
+        let branch = branch_result.branch;
+
+        let test_file = manager.repo_path().join("src").join("modules").join("test.rs");
+        std::fs::create_dir_all(test_file.parent().unwrap()).unwrap();
+        std::fs::write(&test_file, "fn test() {}").unwrap();
+
+        let commit = manager.commit(&branch, "re/translation/DrawSprite: translate DrawSprite to Rust", &[
+            "src/modules/test.rs",
+        ]).unwrap();
+
+        assert!(!commit.hash.is_empty());
+        assert_eq!(commit.branch, "re/game_logic/DrawSpritev1");
+        assert_eq!(commit.files, vec!["src/modules/test.rs".to_string()]);
+    }
+
+    #[test]
+    fn test_merge_to_main() {
+        let (tmp_dir, manager) = temp_git_repo();
+        let branch_result = manager.create_branch("game_logic.dll", "DrawSprite", 1).unwrap();
+        let branch = branch_result.branch;
+
+        // Create a file
+        let test_file = tmp_dir.join("merged_test.rs");
+        std::fs::write(&test_file, "fn merged() {}").unwrap();
+
+        // Stage the file directly using git2 Index API
+        let mut index = manager.repo().index().unwrap();
+        // add_path uses git2's internal path resolution
+        index.add_path(std::path::Path::new("merged_test.rs")).unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = manager.repo().find_tree(tree_id).unwrap();
+
+        let head = manager.repo().head().unwrap();
+        let parent_oid = head.target().unwrap();
+        let parent = manager.repo().find_commit(parent_oid).unwrap();
+        let sig = git2::Signature::now("Calxgloss", "calxgloss@system").unwrap();
+
+        let commit_oid = manager.repo().commit(
+            Some(&format!("refs/heads/{}", branch.name)),
+            &sig, &sig,
+            "re/translation: add merged test",
+            &tree,
+            &[&parent],
+        ).unwrap();
+
+        let commit = GitCommit {
+            branch: branch.name.clone(),
+            message: "re/translation: add merged test".to_string(),
+            hash: commit_oid.to_string(),
+            files: vec!["merged_test.rs".to_string()],
+        };
+
+        let result = manager.merge_to_main(&branch).unwrap();
+        match result {
+            MergeResult::Merged { merge_hash } => {
+                assert_eq!(merge_hash, commit.hash);
+            }
+            MergeResult::AlreadyUpToDate => {
+                panic!("Expected merge, got AlreadyUpToDate");
+            }
+            MergeResult::Conflicts { .. } => {
+                panic!("Unexpected merge conflicts");
+            }
+        }
+
+        assert_eq!(manager.current_branch().unwrap(), "main");
+    }
+
+    #[test]
+    fn test_merge_already_ancestor() {
+        let (_tmp_dir, manager) = temp_git_repo();
+        let branch_result = manager.create_branch("game_logic.dll", "DrawSprite", 1).unwrap();
+        let branch = branch_result.branch;
+
+        let result = manager.merge_to_main(&branch).unwrap();
+        assert!(matches!(result, MergeResult::AlreadyUpToDate));
+    }
+
+    #[test]
+    fn test_current_branch() {
+        let (_tmp_dir, manager) = temp_git_repo();
+        assert_eq!(manager.current_branch().unwrap(), "main");
+    }
+
+    #[test]
+    fn test_list_branches() {
+        let (_tmp_dir, manager) = temp_git_repo();
+        let branches = manager.list_branches().unwrap();
+        assert!(branches.contains(&"main".to_string()));
+
+        manager.create_branch("test.dll", "FuncA", 1).unwrap();
+        manager.create_branch("test.dll", "FuncB", 2).unwrap();
+
+        let branches = manager.list_branches().unwrap();
+        assert!(branches.contains(&"re/test/FuncAv1".to_string()));
+        assert!(branches.contains(&"re/test/FuncBv2".to_string()));
+        assert!(branches.contains(&"main".to_string()));
+    }
+
+    #[test]
+    fn test_list_translation_branches() {
+        let (_tmp_dir, manager) = temp_git_repo();
+        manager.create_branch("test.dll", "FuncA", 1).unwrap();
+        manager.create_branch("other.dll", "FuncB", 1).unwrap();
+
+        let translation_branches = manager.list_translation_branches().unwrap();
+        assert_eq!(translation_branches.len(), 2);
+        assert!(translation_branches.iter().any(|b| b == "re/test/FuncAv1"));
+        assert!(translation_branches.iter().any(|b| b == "re/other/FuncBv1"));
+        assert!(!translation_branches.iter().any(|b| b == "main"));
+    }
+
+    #[test]
+    fn test_delete_branch() {
+        let (_tmp_dir, manager) = temp_git_repo();
+        manager.create_branch("test.dll", "FuncA", 1).unwrap();
+        // Switch back to main before deleting
+        let main_ref = manager.repo().find_branch("main", git2::BranchType::Local).unwrap();
+        let main_commit = main_ref.get().peel_to_commit().unwrap();
+        let main_obj = main_commit.as_object();
+        let mut checkout_opts = git2::build::CheckoutBuilder::new();
+        checkout_opts.force();
+        manager.repo().set_head("refs/heads/main").unwrap();
+        manager.repo().reset(&main_obj, ResetType::Hard, Some(&mut checkout_opts)).unwrap();
+
+        let branches = manager.list_branches().unwrap();
+        assert!(branches.contains(&"re/test/FuncAv1".to_string()));
+
+        manager.delete_branch("re/test/FuncAv1").unwrap();
+        let branches = manager.list_branches().unwrap();
+        assert!(!branches.contains(&"re/test/FuncAv1".to_string()));
+    }
+
+    #[test]
+    fn test_delete_main_blocked() {
+        let (_tmp_dir, manager) = temp_git_repo();
+        let result = manager.delete_branch("main");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_store_failure() {
+        let (tmp_dir, manager) = temp_git_repo();
+        let branch_result = manager.create_branch("game_logic.dll", "DrawSprite", 1).unwrap();
+        let branch = branch_result.branch;
+
+        let commit = manager.commit(&branch, "re/translation: failed attempt", &[]).unwrap();
+
+        let patch_path = manager.store_failure(
+            &branch,
+            "Compilation failed",
+            &["error[E0308]: mismatched types".to_string()],
+            &["test_input_3: expected 42, got 43".to_string()],
+            &commit.hash,
+        ).unwrap();
+
+        assert!(patch_path.exists());
+        assert_eq!(
+            patch_path.parent().unwrap(),
+            tmp_dir.join("re").join("patches").join("game_logic.dll").join("DrawSprite")
+        );
+
+        let content = std::fs::read_to_string(&patch_path).unwrap();
+        let record: PatchRecord = serde_json::from_str(&content).unwrap();
+        assert_eq!(record.dll, "game_logic.dll");
+        assert_eq!(record.function, "DrawSprite");
+        assert_eq!(record.attempt, 1);
+        assert_eq!(record.error_message, "Compilation failed");
+        assert_eq!(record.compilation_errors.len(), 1);
+        assert_eq!(record.test_failures.len(), 1);
+    }
+
+    #[test]
+    fn test_working_dir_status() {
+        let (_tmp_dir, manager) = temp_git_repo();
+        let test_file = manager.repo_path().join("untracked.rs");
+        std::fs::write(&test_file, "// untracked").unwrap();
+
+        let status = manager.working_dir_status().unwrap();
+        assert!(status.iter().any(|(path, _)| path == "untracked.rs"));
+    }
+
+    #[test]
+    fn test_current_commit() {
+        let (_tmp_dir, manager) = temp_git_repo();
+        let commit = manager.current_commit().unwrap();
+        assert_eq!(commit.len(), 40);
+    }
+
+    #[test]
+    fn test_git_branch_validation() {
+        assert!(GitBranch::new("", "Func", 1).is_err());
+        assert!(GitBranch::new("dll.dll", "", 1).is_err());
     }
 }
