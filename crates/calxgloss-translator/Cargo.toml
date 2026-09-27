@@ -14,3 +14,5 @@ calxgloss-testgen = { path = "../calxgloss-testgen" }
 calxgloss-analysis = { path = "../calxgloss-analysis" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
