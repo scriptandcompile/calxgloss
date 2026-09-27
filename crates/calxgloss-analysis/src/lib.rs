@@ -26,8 +26,9 @@
 //! let api_mappings = ApiMappings::default();
 //! let analyzer = Analyzer::new(ghidra, api_mappings);
 //!
-//! // Classify all DLLs for a target executable
-//! let classifications = analyzer.classify_target("myapp.exe").await?;
+//! // Classify the DLLs you care about
+//! let names = vec!["eqmain.dll".to_string()];
+//! let classifications = analyzer.classify_dlls(&names).await?;
 //! for classification in &classifications {
 //!     println!(
 //!         "{:20} → {:?} ({:?})",
@@ -46,8 +47,9 @@ pub use error::{AnalysisError, Result};
 
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_pal::ApiMappings;
-use calxgloss_types::{DllCategory, DllInfo, FunctionInfo, Import, WindowsApiCall};
-use tracing::{debug, info, instrument};
+use calxgloss_types::{DllCategory, DllInfo, FunctionInfo, WindowsApiCall};
+use error::AnalysisError as Error;
+use tracing::{debug, info, instrument, warn};
 
 // ============================================================
 // Public types
@@ -164,13 +166,18 @@ impl Analyzer {
     /// Classifies a single DLL by fetching its metadata from Ghidra and
     /// applying classification heuristics based on the DLL filename.
     ///
-    /// This method queries the Ghidra server for the DLL's imports and exports,
-    /// then classifies the DLL using [`classify_dll_name`].
-    ///
     /// # Arguments
     ///
-    /// * `target_exe` — The target executable that was loaded into Ghidra.
     /// * `dll` — The DLL filename to classify (e.g., `game_logic.dll`).
+    ///
+    /// # A note on the symbol counts
+    ///
+    /// Ghidra serves one program at a time and exposes no per-DLL routing, so
+    /// `exports_count` and `imports_count` are the counts for whichever program
+    /// is open in Ghidra — not for the DLL named in `dll`. The category itself
+    /// comes from the filename and is unaffected. Call this when the open
+    /// program is the DLL you mean; otherwise the counts describe something
+    /// else while still being attached to `dll`.
     ///
     /// # Example
     ///
@@ -182,26 +189,25 @@ impl Analyzer {
     /// let ghidra = calxgloss_ghidra::GhidraClient::new("http://localhost:8080")?;
     /// let analyzer = Analyzer::new(ghidra, ApiMappings::default());
     ///
-    /// let classification = analyzer.classify_dll("myapp.exe", "game_logic.dll").await?;
+    /// let classification = analyzer.classify_dll("game_logic.dll").await?;
     /// println!("Strategy: {:?}", classification.strategy);
     /// # Ok(())
     /// # }
     /// ```
-    #[instrument(skip(self), fields(target_exe, dll, base_url = %self.ghidra.base_url()))]
-    pub async fn classify_dll(&self, target_exe: &str, dll: &str) -> Result<DllClassification> {
-        debug!(target_exe, dll, "Classifying DLL");
+    #[instrument(skip(self), fields(dll, base_url = %self.ghidra.base_url()))]
+    pub async fn classify_dll(&self, dll: &str) -> Result<DllClassification> {
+        debug!(dll, "Classifying DLL");
 
-        // Fetch imports and exports from Ghidra
-        let imports = self
-            .ghidra
-            .get_imports(target_exe, dll)
-            .await
-            .unwrap_or_default();
-        let exports = self
-            .ghidra
-            .get_exports(target_exe, dll)
-            .await
-            .unwrap_or_default();
+        // Symbol counts come from the program currently open in Ghidra; see the
+        // note on this method about what that means for a named DLL.
+        let imports = self.ghidra.imports(None).await.unwrap_or_else(|e| {
+            warn!(dll, error = %e, "Could not read imports; counting none");
+            Vec::new()
+        });
+        let exports = self.ghidra.exports(None).await.unwrap_or_else(|e| {
+            warn!(dll, error = %e, "Could not read exports; counting none");
+            Vec::new()
+        });
 
         // Classify based on DLL filename
         let category = classify_dll_name(dll);
@@ -240,14 +246,13 @@ impl Analyzer {
         Ok(classification)
     }
 
-    /// Classifies all DLLs associated with a target executable.
+    /// Classifies each of the named DLLs using [`classify_dll`].
     ///
-    /// First lists all DLLs known to the Ghidra server for the target,
-    /// then classifies each one using [`classify_dll`].
-    ///
-    /// # Arguments
-    ///
-    /// * `target_exe` — The target executable that was loaded into Ghidra.
+    /// The names are supplied by the caller because Ghidra has no way to
+    /// enumerate them: it serves a single open program and exposes no listing of
+    /// what else a target links against. Where the list comes from — a
+    /// directory scan, a manifest, a hand-written list — is the caller's
+    /// decision.
     ///
     /// # Example
     ///
@@ -259,44 +264,37 @@ impl Analyzer {
     /// let ghidra = calxgloss_ghidra::GhidraClient::new("http://localhost:8080")?;
     /// let analyzer = Analyzer::new(ghidra, ApiMappings::default());
     ///
-    /// let classifications = analyzer.classify_target("myapp.exe").await?;
-    /// for c in &classifications {
+    /// let names = vec!["eqmain.dll".to_string(), "eqgui.dll".to_string()];
+    /// for c in analyzer.classify_dlls(&names).await? {
     ///     println!("{}: {:?}", c.dll, c.strategy);
     /// }
     /// # Ok(())
     /// # }
     /// ```
-    #[instrument(skip(self), fields(target_exe, base_url = %self.ghidra.base_url()))]
-    pub async fn classify_target(&self, target_exe: &str) -> Result<Vec<DllClassification>> {
-        debug!(target_exe, "Classifying target");
-
-        let dlls = self.ghidra.list_dlls(target_exe).await?;
-        info!(count = dlls.len(), target_exe, "Fetched DLL list");
-
+    #[instrument(skip(self, dlls), fields(count = dlls.len(), base_url = %self.ghidra.base_url()))]
+    pub async fn classify_dlls(&self, dlls: &[String]) -> Result<Vec<DllClassification>> {
         let mut classifications = Vec::with_capacity(dlls.len());
-        for dll in &dlls {
-            let classification = self.classify_dll(target_exe, dll).await?;
-            classifications.push(classification);
+        for dll in dlls {
+            classifications.push(self.classify_dll(dll).await?);
         }
 
-        info!(
-            count = classifications.len(),
-            target_exe, "Classified all DLLs"
-        );
+        info!(count = classifications.len(), "Classified all DLLs");
         Ok(classifications)
     }
 
     /// Performs complete analysis on a single function.
     ///
-    /// Fetches the function's metadata from Ghidra (disassembly, decompiler
-    /// output, call graph), then tags any Windows API calls found in the
-    /// imports using [`tag_windows_apis`].
+    /// Resolves `function` to an address in the program open in Ghidra, fetches
+    /// its decompilation, disassembly and cross-references, then tags any
+    /// Windows API calls found in the program's imports using
+    /// [`tag_windows_apis`].
     ///
     /// # Arguments
     ///
-    /// * `target_exe` — The target executable that was loaded into Ghidra.
-    /// * `dll` — The DLL containing the function.
-    /// * `function` — The function name to analyze.
+    /// * `dll` — The DLL the function belongs to. Recorded on the result; the
+    ///   lookup itself is against the program Ghidra has open, which must be
+    ///   this DLL.
+    /// * `function` — The function name, as Ghidra knows it.
     ///
     /// # Example
     ///
@@ -308,43 +306,80 @@ impl Analyzer {
     /// let ghidra = calxgloss_ghidra::GhidraClient::new("http://localhost:8080")?;
     /// let analyzer = Analyzer::new(ghidra, ApiMappings::default());
     ///
-    /// let analysis = analyzer.analyze_function("myapp.exe", "game_logic.dll", "DrawSprite").await?;
+    /// let analysis = analyzer.analyze_function("game_logic.dll", "DrawSprite").await?;
     /// println!("Found {} tagged Windows API calls", analysis.tagged_apis.len());
     /// # Ok(())
     /// # }
     /// ```
-    #[instrument(skip(self), fields(target_exe, dll, function, base_url = %self.ghidra.base_url()))]
-    pub async fn analyze_function(
-        &self,
-        target_exe: &str,
-        dll: &str,
-        function: &str,
-    ) -> Result<FunctionAnalysis> {
-        debug!(target_exe, dll, function, "Analyzing function");
+    #[instrument(skip(self), fields(dll, function, base_url = %self.ghidra.base_url()))]
+    pub async fn analyze_function(&self, dll: &str, function: &str) -> Result<FunctionAnalysis> {
+        debug!(dll, function, "Analyzing function");
 
-        // Fetch complete function info from Ghidra
-        let function_info = self.ghidra.get_function(target_exe, dll, function).await?;
+        // Ghidra has no lookup that returns a function without an address, so
+        // the name is resolved first. A partial match is refused rather than
+        // guessed at, since silently analysing the wrong function would produce
+        // a plausible but irrelevant translation.
+        let matches = self.ghidra.search_functions(function, Some(1)).await?;
+        let found = matches.iter().find(|m| m.name == function).ok_or_else(|| {
+            Error::FunctionAnalysisFailed {
+                dll: dll.to_string(),
+                function: function.to_string(),
+                reason: format!(
+                    "no function by that exact name in the program Ghidra has open; the \
+                         search matched {:?}. If the name is a substring of the real one, pass \
+                         the full name.",
+                    matches.iter().map(|m| &m.name).collect::<Vec<_>>()
+                ),
+            }
+        })?;
+        let report = self.ghidra.function_report(found.address).await?;
 
-        // Fetch imports to cross-reference with API mappings
-        let imports = self
+        // Imports of the open program, used to spot Windows API calls.
+        let import_names: Vec<String> = self
             .ghidra
-            .get_imports(target_exe, dll)
+            .imports(None)
             .await
-            .unwrap_or_default();
+            .unwrap_or_else(|e| {
+                warn!(error = %e, "Could not read imports; tagging no API calls");
+                Vec::new()
+            })
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
 
-        // Tag Windows API calls in the function's imports
-        let tagged_apis = self.tag_windows_apis(&function_info.disassembly, &imports)?;
+        // Tag Windows API calls in the function's disassembly
+        let tagged_apis = self.tag_windows_apis(&report.disassembly, &import_names)?;
+
+        // Ghidra has no call-graph endpoint. Callers come from the
+        // cross-references to the entry; callees are scraped from the
+        // decompiled body, which cannot see calls made through a function
+        // pointer.
+        let call_graph: Vec<String> = report
+            .callers
+            .iter()
+            .chain(report.callees.iter())
+            .cloned()
+            .collect();
 
         let analysis = FunctionAnalysis {
-            function_info,
-            tagged_apis,
-            call_graph: Vec::new(),
+            function_info: FunctionInfo {
+                name: report.name.clone(),
+                address: report.address,
+                dll: dll.to_string(),
+                disassembly: report.disassembly,
+                decompiler_output: report.decompiled.body,
+                windows_apis: Vec::new(),
+                call_graph: call_graph.clone(),
+            },
+            tagged_apis: tagged_apis.clone(),
+            call_graph,
         };
 
         info!(
             dll,
             function,
-            tagged_apis = analysis.tagged_apis.len(),
+            address = format_args!("{:#x}", found.address),
+            neighbors = analysis.call_graph.len(),
             "Function analysis complete"
         );
 
@@ -376,19 +411,23 @@ impl Analyzer {
     /// let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
     /// let analyzer = Analyzer::new(ghidra, ApiMappings::default());
     ///
-    /// let imports = vec![
-    ///     Import { dll: "kernel32.dll".to_string(), function: "CreateFileA".to_string() },
-    ///     Import { dll: "kernel32.dll".to_string(), function: "ReadFile".to_string() },
-    /// ];
+    /// let imports = vec!["CreateFileA".to_string(), "ReadFile".to_string()];
     ///
     /// let tagged = analyzer.tag_windows_apis("", &imports).unwrap();
     /// assert_eq!(tagged.len(), 2);
     /// assert_eq!(tagged[0].name, "CreateFileA");
     /// ```
+    ///
+    /// # Arguments
+    ///
+    /// * `imports` — Imported symbol names. Ghidra reports an import as a name
+    ///   and an external slot with no module attached, so these are names rather
+    ///   than [`Import`] values; the module a symbol came from is not available
+    ///   from the analysis side and is not needed to look up a mapping.
     pub fn tag_windows_apis(
         &self,
         disassembly: &str,
-        imports: &[Import],
+        imports: &[String],
     ) -> Result<Vec<WindowsApiCall>> {
         debug!(imports_count = imports.len(), "Tagging Windows APIs");
 
@@ -397,9 +436,7 @@ impl Analyzer {
         let mut seen = std::collections::HashSet::new();
 
         // Tag APIs found in the imports
-        for import in imports {
-            let api_name = &import.function;
-
+        for api_name in imports {
             // Skip if we've already tagged this API
             if seen.contains(api_name.as_str()) {
                 continue;
@@ -504,16 +541,7 @@ mod tests {
     #[test]
     fn test_tag_windows_apis_kernel32() {
         let analyzer = test_analyzer();
-        let imports = vec![
-            Import {
-                dll: "kernel32.dll".to_string(),
-                function: "CreateFileA".to_string(),
-            },
-            Import {
-                dll: "kernel32.dll".to_string(),
-                function: "ReadFile".to_string(),
-            },
-        ];
+        let imports = vec!["CreateFileA".to_string(), "ReadFile".to_string()];
 
         let tagged = analyzer.tag_windows_apis("", &imports).unwrap();
         assert_eq!(tagged.len(), 2);
@@ -524,16 +552,7 @@ mod tests {
     #[test]
     fn test_tag_windows_apis_deduplication() {
         let analyzer = test_analyzer();
-        let imports = vec![
-            Import {
-                dll: "kernel32.dll".to_string(),
-                function: "CreateFileA".to_string(),
-            },
-            Import {
-                dll: "kernel32.dll".to_string(),
-                function: "CreateFileA".to_string(),
-            },
-        ];
+        let imports = vec!["CreateFileA".to_string(), "CreateFileA".to_string()];
 
         let tagged = analyzer.tag_windows_apis("", &imports).unwrap();
         assert_eq!(tagged.len(), 1);
@@ -542,10 +561,7 @@ mod tests {
     #[test]
     fn test_tag_windows_apis_unrecognized() {
         let analyzer = test_analyzer();
-        let imports = vec![Import {
-            dll: "unknown.dll".to_string(),
-            function: "UnknownFunction".to_string(),
-        }];
+        let imports = vec!["UnknownFunction".to_string()];
 
         let tagged = analyzer.tag_windows_apis("", &imports).unwrap();
         assert!(tagged.is_empty());
@@ -561,7 +577,7 @@ mod tests {
     #[test]
     fn test_tag_windows_apis_disassembly_scan() {
         let analyzer = test_analyzer();
-        let imports: Vec<Import> = vec![];
+        let imports: Vec<String> = vec![];
 
         // Disassembly contains a known API name that's not in imports
         let disassembly = r"

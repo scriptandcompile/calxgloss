@@ -1,93 +1,125 @@
-//! GhidraMCP HTTP client for pulling disassembly, decompiler output, and symbol data.
+//! Client for the GhidraMCP HTTP API.
 //!
-//! This crate provides `GhidraClient`, which communicates with a GhidraMCP server
-//! over HTTP to retrieve function disassembly, decompiler pseudo-C output, DLL
-//! import/export tables, and call graph information.
+//! # The shape of the API
+//!
+//! GhidraMCP serves whichever program is open in the running Ghidra instance
+//! over a flat set of endpoints. There are no sessions, no target executables in
+//! the path, and no per-DLL routing: a request names an address or a symbol, and
+//! the open program answers.
+//!
+//! Two consequences shape this client:
+//!
+//! * **Responses are `text/plain`,** not JSON, so [`parse`] holds the record
+//!   formats rather than serde.
+//! * **Failures arrive as `200 OK` with an explanation in the body.** Every
+//!   response is passed through [`error::classify`] before its content is
+//!   parsed; see that module for why this is not optional.
 
-mod response;
-mod session;
+mod error;
+mod model;
+pub mod parse;
 
-pub use response::*;
-pub use session::Session;
+pub use error::Classification;
+pub use model::{
+    DecompiledFunction, FunctionBody, FunctionReport, FunctionSummary, Segment, StringLiteral,
+    Symbol, Xref,
+};
 
-use calxgloss_types::{DllInfo, Export, FunctionInfo, Import};
+use std::time::Duration;
+
 use reqwest::Client;
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, info, instrument, trace, warn};
 use url::Url;
+
+/// Result of a GhidraMCP operation.
+pub type Result<T> = std::result::Result<T, GhidraError>;
 
 // ============================================================
 // Error types
 // ============================================================
 
-/// Errors that can occur during GhidraMCP client operations.
+/// Errors from talking to GhidraMCP.
 #[derive(Debug, thiserror::Error)]
 pub enum GhidraError {
-    #[error("HTTP request failed: {0}")]
-    Http(#[from] reqwest::Error),
+    /// The request could not be delivered, or its body could not be read.
+    ///
+    /// The hint matters because GhidraMCP only serves requests while a
+    /// CodeBrowser is open, so a refused connection usually means a closed
+    /// window rather than a broken server.
+    #[error(
+        "Could not reach GhidraMCP at {url}: {source}\nGhidra must be running with the \
+            GhidraMCP extension loaded and a program open in a CodeBrowser"
+    )]
+    Transport { url: String, source: reqwest::Error },
 
-    #[error("Server returned error status {status}: {message}")]
-    ServerError { status: u16, message: String },
+    /// The server answered, and its answer was an explanation rather than a
+    /// result.
+    ///
+    /// `status` is the HTTP status. Most failures arrive as `200` with the
+    /// explanation in the body, so this is `Some(200)` far more often than a
+    /// real transport-level status.
+    #[error("Ghidra reported an error: {message}")]
+    Reported {
+        status: Option<u16>,
+        message: String,
+    },
 
-    #[error("Function '{function}' not found in DLL '{dll}'")]
-    FunctionNotFound { function: String, dll: String },
+    /// Nothing in the open program matched the request.
+    #[error("Ghidra has no {kind} matching '{query}'")]
+    NotFound { kind: &'static str, query: String },
 
-    #[error("DLL '{0}' not found or not analyzed")]
-    DllNotFound(String),
+    /// A response was a result but did not have the shape the endpoint promises.
+    #[error("Could not read {kind} from Ghidra's response: {detail}")]
+    Malformed { kind: &'static str, detail: String },
 
-    #[error("Invalid session: {0}")]
-    InvalidSession(String),
-
-    #[error("Session '{0}' expired")]
-    SessionExpired(String),
-
-    #[error("Malformed response from server: {0}")]
-    MalformedResponse(String),
-
-    #[error("Client is not connected — call connect() first")]
-    NotConnected,
-
+    /// The configured base URL could not be parsed.
     #[error("Server URL is invalid: {0}")]
     InvalidUrl(#[from] url::ParseError),
 }
-
-pub type Result<T> = std::result::Result<T, GhidraError>;
 
 // ============================================================
 // Configuration
 // ============================================================
 
-/// Configuration for connecting to a GhidraMCP server.
+/// Connection settings for a GhidraMCP server.
 #[derive(Debug, Clone)]
 pub struct GhidraConfig {
-    /// Base URL of the GhidraMCP server (e.g., `http://localhost:8080`).
+    /// Base URL of the GhidraMCP server, e.g. `http://127.0.0.1:8080`.
     pub base_url: Url,
 
-    /// Request timeout in seconds.
-    pub timeout_secs: u64,
+    /// How long to wait for a response.
+    ///
+    /// Decompiling a large function is slow inside Ghidra, so this is generous
+    /// relative to a normal HTTP call.
+    pub timeout: Duration,
 
-    /// Optional API key or bearer token for authentication.
+    /// Optional bearer token, for a server behind a proxy.
     pub api_key: Option<String>,
 }
 
 impl GhidraConfig {
-    /// Create a new configuration with sensible defaults.
-    pub fn new(base_url: &str) -> Result<Self> {
+    /// Default configuration for a base URL.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GhidraError::InvalidUrl`] if `base_url` is not a valid URL.
+    pub fn new(base_url: &str) -> std::result::Result<Self, GhidraError> {
         Ok(Self {
             base_url: Url::parse(base_url)?,
-            timeout_secs: 120,
+            timeout: Duration::from_secs(120),
             api_key: None,
         })
     }
 
-    /// Set the request timeout.
-    pub fn with_timeout(mut self, timeout_secs: u64) -> Self {
-        self.timeout_secs = timeout_secs;
+    /// Override the request timeout.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
         self
     }
 
-    /// Set an API key for authentication.
-    pub fn with_api_key(mut self, api_key: String) -> Self {
-        self.api_key = Some(api_key);
+    /// Send a bearer token with every request.
+    pub fn with_api_key(mut self, api_key: impl Into<String>) -> Self {
+        self.api_key = Some(api_key.into());
         self
     }
 }
@@ -96,23 +128,15 @@ impl GhidraConfig {
 // Client
 // ============================================================
 
-/// A client for the GhidraMCP HTTP API.
+/// A client for the GhidraMCP API.
 ///
-/// The client manages a session with a Ghidra server and provides methods
-/// to query DLLs, functions, disassembly, decompiler output, and call graphs.
-///
-/// # Connection Lifecycle
-///
-/// 1. Create with [`GhidraClient::new`]
-/// 2. (Optional) Call [`connect`](Self::connect) to initialize a session
-/// 3. Use query methods like [`get_function`](Self::get_function),
-///    [`get_dll_info`](Self::get_dll_info), etc.
-/// 4. Call [`disconnect`](Self::disconnect) when done
+/// Every query runs against the program currently open in Ghidra, so a client
+/// is valid for as long as that program is. Opening a different program in
+/// Ghidra changes what these methods return without the client noticing.
 #[derive(Debug, Clone)]
 pub struct GhidraClient {
     config: GhidraConfig,
     http: Client,
-    session: Option<Session>,
 }
 
 impl GhidraClient {
@@ -120,546 +144,501 @@ impl GhidraClient {
     // Construction
     // =========================================================
 
-    /// Create a new client with default configuration.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GhidraError::InvalidUrl`] if the base URL is malformed.
-    pub fn new(base_url: &str) -> Result<Self> {
-        let config = GhidraConfig::new(base_url)?;
-        Self::from_config(config)
+    /// Create a client with default settings.
+    pub fn new(base_url: &str) -> std::result::Result<Self, GhidraError> {
+        Self::from_config(GhidraConfig::new(base_url)?)
     }
 
-    /// Create a new client from an explicit configuration.
-    pub fn from_config(config: GhidraConfig) -> Result<Self> {
+    /// Create a client from explicit settings.
+    pub fn from_config(config: GhidraConfig) -> std::result::Result<Self, GhidraError> {
         let http = Client::builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_secs))
+            .timeout(config.timeout)
             .build()
-            .map_err(GhidraError::Http)?;
-
+            .map_err(|source| GhidraError::Transport {
+                url: config.base_url.to_string(),
+                source,
+            })?;
         info!(base_url = %config.base_url, "Created GhidraClient");
-
-        Ok(Self {
-            config,
-            http,
-            session: None,
-        })
+        Ok(Self { config, http })
     }
 
-    // =========================================================
-    // Session management
-    // =========================================================
-
-    /// List existing analysis sessions on the server.
-    #[instrument(skip(self), fields(base_url = %self.config.base_url))]
-    pub async fn list_sessions(&self) -> Result<Vec<Session>> {
-        debug!("Listing sessions");
-
-        let url = self.config.base_url.join("sessions")?;
-        let response = self.http.get(url.clone()).send().await?;
-
-        let status = response.status().as_u16();
-        if status != 200 {
-            let body = response.text().await?;
-            error!(status, body = %body, "Failed to list sessions");
-            return Err(GhidraError::ServerError {
-                status,
-                message: body,
-            });
-        }
-
-        let sessions: ListSessionsResponse = response.json().await.map_err(|e| {
-            error!(error = %e, "Failed to parse session list response");
-            GhidraError::MalformedResponse(e.to_string())
-        })?;
-
-        info!(count = sessions.sessions.len(), "Listed sessions");
-        Ok(sessions
-            .sessions
-            .into_iter()
-            .map(|s| Session::new(&s.id, &s.target))
-            .collect())
-    }
-
-    /// Create a new analysis session for a target binary.
-    ///
-    /// Returns a [`Session`] that must be used for subsequent API calls.
-    /// Updates the client's internal session state.
-    #[instrument(skip(self), fields(target_exe, base_url = %self.config.base_url))]
-    pub async fn create_session(&mut self, target_exe: &str) -> Result<Session> {
-        debug!(target_exe, "Creating session");
-
-        let url = self.config.base_url.join("sessions")?;
-        let body = serde_json::json!({ "target": target_exe });
-
-        let mut request = self.http.post(url).json(&body);
-        if let Some(ref api_key) = self.config.api_key {
-            request = request.bearer_auth(api_key);
-        }
-
-        let response = request.send().await?;
-        let status = response.status().as_u16();
-
-        if status != 201 {
-            let body = response.text().await?;
-            error!(status, target_exe, body = %body, "Failed to create session");
-            return Err(GhidraError::ServerError {
-                status,
-                message: body,
-            });
-        }
-
-        let session_data: CreateSessionResponse = response.json().await.map_err(|e| {
-            error!(error = %e, "Failed to parse session creation response");
-            GhidraError::MalformedResponse(e.to_string())
-        })?;
-
-        let session = Session::new(&session_data.id, &session_data.target);
-        info!(session_id = %session.id, target = %session.target, "Session created");
-        self.session = Some(session.clone());
-        Ok(session)
-    }
-
-    /// Get the current session, if one is established.
-    pub fn session(&self) -> Option<&Session> {
-        self.session.as_ref()
-    }
-
-    /// Disconnect and clear the current session.
-    pub fn disconnect(&mut self) {
-        if let Some(ref session) = self.session {
-            info!(session_id = %session.id, "Disconnecting session");
-        }
-        self.session = None;
-    }
-
-    /// Ensure a session exists, creating one if needed.
-    pub async fn ensure_session(&mut self, target_exe: &str) -> Result<()> {
-        if self.session.is_none() {
-            let session = self.create_session(target_exe).await?;
-            info!(session_id = %session.id, "Session ensured");
-        }
-        Ok(())
-    }
-
-    // =========================================================
-    // DLL-level queries
-    // =========================================================
-
-    /// List all DLLs known to the server for a target executable.
-    #[instrument(skip(self), fields(target_exe, base_url = %self.config.base_url))]
-    pub async fn list_dlls(&self, target_exe: &str) -> Result<Vec<String>> {
-        debug!(target_exe, "Listing DLLs");
-
-        let url = self
-            .config
-            .base_url
-            .join(&format!("sessions/{target_exe}/dlls"))?;
-        let mut request = self.http.get(url);
-        if let Some(ref api_key) = self.config.api_key {
-            request = request.bearer_auth(api_key);
-        }
-
-        let response = request.send().await?;
-        let status = response.status().as_u16();
-
-        if status == 404 {
-            return Err(GhidraError::DllNotFound(target_exe.to_string()));
-        }
-
-        if status != 200 {
-            let body = response.text().await?;
-            error!(status, target_exe, body = %body, "Failed to list DLLs");
-            return Err(GhidraError::ServerError {
-                status,
-                message: body,
-            });
-        }
-
-        let dll_list: ListDllsResponse = response.json().await.map_err(|e| {
-            error!(error = %e, "Failed to parse DLL list response");
-            GhidraError::MalformedResponse(e.to_string())
-        })?;
-
-        info!(count = dll_list.dlls.len(), target_exe, "Listed DLLs");
-        Ok(dll_list.dlls)
-    }
-
-    /// Get full analysis information for a single DLL.
-    #[instrument(skip(self), fields(dll, target_exe, base_url = %self.config.base_url))]
-    pub async fn get_dll_info(&self, target_exe: &str, dll: &str) -> Result<DllInfo> {
-        debug!(dll, target_exe, "Getting DLL info");
-
-        let url = self
-            .config
-            .base_url
-            .join(&format!("sessions/{target_exe}/dlls/{dll}"))?;
-        let mut request = self.http.get(url);
-        if let Some(ref api_key) = self.config.api_key {
-            request = request.bearer_auth(api_key);
-        }
-
-        let response = request.send().await?;
-        let status = response.status().as_u16();
-
-        if status == 404 {
-            return Err(GhidraError::DllNotFound(dll.to_string()));
-        }
-
-        if status != 200 {
-            let body = response.text().await?;
-            error!(status, dll, target_exe, body = %body, "Failed to get DLL info");
-            return Err(GhidraError::ServerError {
-                status,
-                message: body,
-            });
-        }
-
-        let dll_response: DllInfoResponse = response.json().await.map_err(|e| {
-            error!(error = %e, "Failed to parse DLL info response");
-            GhidraError::MalformedResponse(e.to_string())
-        })?;
-
-        info!(dll, target_exe, "Got DLL info");
-        Ok(dll_response.dll)
-    }
-
-    /// Get the imported symbols for a DLL.
-    #[instrument(skip(self), fields(dll, target_exe, base_url = %self.config.base_url))]
-    pub async fn get_imports(&self, target_exe: &str, dll: &str) -> Result<Vec<Import>> {
-        debug!(dll, target_exe, "Getting imports");
-
-        let url = self
-            .config
-            .base_url
-            .join(&format!("sessions/{target_exe}/dlls/{dll}/imports"))?;
-        let mut request = self.http.get(url);
-        if let Some(ref api_key) = self.config.api_key {
-            request = request.bearer_auth(api_key);
-        }
-
-        let response = request.send().await?;
-        let status = response.status().as_u16();
-
-        if status == 404 {
-            return Err(GhidraError::DllNotFound(dll.to_string()));
-        }
-
-        if status != 200 {
-            let body = response.text().await?;
-            error!(status, dll, target_exe, body = %body, "Failed to get imports");
-            return Err(GhidraError::ServerError {
-                status,
-                message: body,
-            });
-        }
-
-        let imports_response: ImportsResponse = response.json().await.map_err(|e| {
-            error!(error = %e, "Failed to parse imports response");
-            GhidraError::MalformedResponse(e.to_string())
-        })?;
-
-        info!(dll, count = imports_response.imports.len(), "Got imports");
-        Ok(imports_response.imports)
-    }
-
-    /// Get the exported symbols for a DLL.
-    #[instrument(skip(self), fields(dll, target_exe, base_url = %self.config.base_url))]
-    pub async fn get_exports(&self, target_exe: &str, dll: &str) -> Result<Vec<Export>> {
-        debug!(dll, target_exe, "Getting exports");
-
-        let url = self
-            .config
-            .base_url
-            .join(&format!("sessions/{target_exe}/dlls/{dll}/exports"))?;
-        let mut request = self.http.get(url);
-        if let Some(ref api_key) = self.config.api_key {
-            request = request.bearer_auth(api_key);
-        }
-
-        let response = request.send().await?;
-        let status = response.status().as_u16();
-
-        if status == 404 {
-            return Err(GhidraError::DllNotFound(dll.to_string()));
-        }
-
-        if status != 200 {
-            let body = response.text().await?;
-            error!(status, dll, target_exe, body = %body, "Failed to get exports");
-            return Err(GhidraError::ServerError {
-                status,
-                message: body,
-            });
-        }
-
-        let exports_response: ExportsResponse = response.json().await.map_err(|e| {
-            error!(error = %e, "Failed to parse exports response");
-            GhidraError::MalformedResponse(e.to_string())
-        })?;
-
-        info!(dll, count = exports_response.exports.len(), "Got exports");
-        Ok(exports_response.exports)
-    }
-
-    // =========================================================
-    // Function-level queries
-    // =========================================================
-
-    /// Get complete function analysis from Ghidra: disassembly, decompiler output,
-    /// Windows API calls, and call graph.
-    ///
-    /// This is the primary convenience method — it bundles the individual queries
-    /// for disassembly, decompiler output, imports, exports, and call graph into
-    /// a single [`FunctionInfo`] struct.
-    #[instrument(skip(self), fields(dll, function, target_exe, base_url = %self.config.base_url))]
-    pub async fn get_function(
-        &self,
-        target_exe: &str,
-        dll: &str,
-        function: &str,
-    ) -> Result<FunctionInfo> {
-        debug!(dll, function, target_exe, "Getting function info");
-
-        let disassembly = self.get_disassembly(target_exe, dll, function).await?;
-        let decompiler_output = self.get_decompiler(target_exe, dll, function).await?;
-        let call_graph = self.get_call_graph(target_exe, dll, function).await?;
-
-        // Extract a minimal windows_apis list from the disassembly.
-        // Full API tagging is done by the analyzer crate.
-        let windows_apis = Vec::new();
-
-        let function_info = FunctionInfo {
-            name: function.to_string(),
-            address: 0, // Filled in by the full endpoint below
-            dll: dll.to_string(),
-            disassembly,
-            decompiler_output,
-            windows_apis,
-            call_graph,
-        };
-
-        info!(dll, function, "Got function info");
-        Ok(function_info)
-    }
-
-    /// Get the raw disassembly listing for a function.
-    #[instrument(skip(self), fields(dll, function, target_exe, base_url = %self.config.base_url))]
-    pub async fn get_disassembly(
-        &self,
-        target_exe: &str,
-        dll: &str,
-        function: &str,
-    ) -> Result<String> {
-        debug!(dll, function, target_exe, "Getting disassembly");
-
-        let url = self.config.base_url.join(&format!(
-            "sessions/{target_exe}/dlls/{dll}/functions/{function}/disassembly"
-        ))?;
-        let mut request = self.http.get(url);
-        if let Some(ref api_key) = self.config.api_key {
-            request = request.bearer_auth(api_key);
-        }
-
-        let response = request.send().await?;
-        let status = response.status().as_u16();
-
-        if status == 404 {
-            return Err(GhidraError::FunctionNotFound {
-                function: function.to_string(),
-                dll: dll.to_string(),
-            });
-        }
-
-        if status != 200 {
-            let body = response.text().await?;
-            error!(status, dll, function, body = %body, "Failed to get disassembly");
-            return Err(GhidraError::ServerError {
-                status,
-                message: body,
-            });
-        }
-
-        let disassembly_response: DisassemblyResponse = response.json().await.map_err(|e| {
-            error!(error = %e, "Failed to parse disassembly response");
-            GhidraError::MalformedResponse(e.to_string())
-        })?;
-
-        trace!(
-            length = disassembly_response.disassembly.len(),
-            dll, function, "Got disassembly"
-        );
-        Ok(disassembly_response.disassembly)
-    }
-
-    /// Get the decompiler (pseudo-C) output for a function.
-    #[instrument(skip(self), fields(dll, function, target_exe, base_url = %self.config.base_url))]
-    pub async fn get_decompiler(
-        &self,
-        target_exe: &str,
-        dll: &str,
-        function: &str,
-    ) -> Result<String> {
-        debug!(dll, function, target_exe, "Getting decompiler output");
-
-        let url = self.config.base_url.join(&format!(
-            "sessions/{target_exe}/dlls/{dll}/functions/{function}/decompiler"
-        ))?;
-        let mut request = self.http.get(url);
-        if let Some(ref api_key) = self.config.api_key {
-            request = request.bearer_auth(api_key);
-        }
-
-        let response = request.send().await?;
-        let status = response.status().as_u16();
-
-        if status == 404 {
-            warn!(dll, function, "No decompiler output available");
-            return Ok(String::new());
-        }
-
-        if status != 200 {
-            let body = response.text().await?;
-            error!(status, dll, function, body = %body, "Failed to get decompiler output");
-            return Err(GhidraError::ServerError {
-                status,
-                message: body,
-            });
-        }
-
-        let decompiler_response: DecompilerResponse = response.json().await.map_err(|e| {
-            error!(error = %e, "Failed to parse decompiler response");
-            GhidraError::MalformedResponse(e.to_string())
-        })?;
-
-        trace!(
-            length = decompiler_response.pseudo_c.len(),
-            dll, function, "Got decompiler output"
-        );
-        Ok(decompiler_response.pseudo_c)
-    }
-
-    /// Get the call graph for a function — names of functions it calls and
-    /// that call it.
-    #[instrument(skip(self), fields(dll, function, target_exe, base_url = %self.config.base_url))]
-    pub async fn get_call_graph(
-        &self,
-        target_exe: &str,
-        dll: &str,
-        function: &str,
-    ) -> Result<Vec<String>> {
-        debug!(dll, function, target_exe, "Getting call graph");
-
-        let url = self.config.base_url.join(&format!(
-            "sessions/{target_exe}/dlls/{dll}/functions/{function}/callgraph"
-        ))?;
-        let mut request = self.http.get(url);
-        if let Some(ref api_key) = self.config.api_key {
-            request = request.bearer_auth(api_key);
-        }
-
-        let response = request.send().await?;
-        let status = response.status().as_u16();
-
-        if status == 404 {
-            return Err(GhidraError::FunctionNotFound {
-                function: function.to_string(),
-                dll: dll.to_string(),
-            });
-        }
-
-        if status != 200 {
-            let body = response.text().await?;
-            error!(status, dll, function, body = %body, "Failed to get call graph");
-            return Err(GhidraError::ServerError {
-                status,
-                message: body,
-            });
-        }
-
-        let callgraph_response: CallgraphResponse = response.json().await.map_err(|e| {
-            error!(error = %e, "Failed to parse callgraph response");
-            GhidraError::MalformedResponse(e.to_string())
-        })?;
-
-        trace!(
-            count = callgraph_response.neighbors.len(),
-            dll, function, "Got call graph"
-        );
-        Ok(callgraph_response.neighbors)
-    }
-
-    // =========================================================
-    // Full function analysis (single endpoint)
-    // =========================================================
-
-    /// Get a complete function analysis in a single request.
-    ///
-    /// Some GhidraMCP server implementations provide a single endpoint that
-    /// returns disassembly, decompiler output, address, and call graph together.
-    /// This method handles that format. Falls back to individual queries if
-    /// the endpoint returns 404.
-    #[instrument(skip(self), fields(dll, function, target_exe, base_url = %self.config.base_url))]
-    pub async fn get_function_full(
-        &self,
-        target_exe: &str,
-        dll: &str,
-        function: &str,
-    ) -> Result<FunctionInfo> {
-        debug!(dll, function, target_exe, "Getting full function analysis");
-
-        let url = self.config.base_url.join(&format!(
-            "sessions/{target_exe}/dlls/{dll}/functions/{function}"
-        ))?;
-        let mut request = self.http.get(url);
-        if let Some(ref api_key) = self.config.api_key {
-            request = request.bearer_auth(api_key);
-        }
-
-        let response = request.send().await?;
-        let status = response.status().as_u16();
-
-        if status == 404 {
-            // Fall back to individual queries
-            warn!(
-                dll,
-                function,
-                "Full function endpoint not available, falling back to individual queries"
-            );
-            return self.get_function(target_exe, dll, function).await;
-        }
-
-        if status != 200 {
-            let body = response.text().await?;
-            error!(status, dll, function, body = %body, "Failed to get function");
-            return Err(GhidraError::ServerError {
-                status,
-                message: body,
-            });
-        }
-
-        let full_response: FullFunctionResponse = response.json().await.map_err(|e| {
-            error!(error = %e, "Failed to parse full function response");
-            GhidraError::MalformedResponse(e.to_string())
-        })?;
-
-        info!(dll, function, "Got full function analysis");
-        Ok(full_response.function)
-    }
-
-    // =========================================================
-    // Configuration accessors
-    // =========================================================
-
-    /// Get the base URL of the GhidraMCP server.
+    /// The base URL of the server.
     pub fn base_url(&self) -> &Url {
         &self.config.base_url
     }
 
-    /// Get the HTTP client used for requests.
-    pub fn http_client(&self) -> &Client {
-        &self.http
+    // =========================================================
+    // Transport
+    // =========================================================
+
+    /// Issue a GET and return the body, having established that it is a result.
+    ///
+    /// This is the single point where server errors become client errors, so
+    /// every other method can assume it received content.
+    async fn get_text(&self, endpoint: &str, params: &[(&str, String)]) -> Result<String> {
+        let mut url = self.config.base_url.join(endpoint)?;
+        // The query string is only touched when there is one to add. Merely
+        // calling `query_pairs_mut` appends a bare `?`, and Ghidra rejects a
+        // request path carrying one as an unknown context.
+        if !params.is_empty() {
+            let mut pairs = url.query_pairs_mut();
+            for (k, v) in params {
+                pairs.append_pair(k, v);
+            }
+        }
+
+        trace!(%url, endpoint, "GET");
+        let mut request = self.http.get(url.clone());
+        if let Some(ref key) = self.config.api_key {
+            request = request.bearer_auth(key);
+        }
+
+        let send = |source: reqwest::Error| GhidraError::Transport {
+            url: url.to_string(),
+            source,
+        };
+        let response = request.send().await.map_err(send)?;
+        let status = response.status();
+        let body = response.text().await.map_err(send)?;
+        trace!(%status, bytes = body.len(), "GOT");
+
+        match error::classify(&body) {
+            Classification::Content => Ok(body),
+            Classification::Failure(message) => Err(GhidraError::Reported {
+                status: Some(status.as_u16()),
+                message: message.to_string(),
+            }),
+            Classification::FailureWithStatus(code, message) => Err(GhidraError::Reported {
+                status: Some(code),
+                message: message.to_string(),
+            }),
+            Classification::Unrecognised(body) => Err(GhidraError::Reported {
+                status: Some(status.as_u16()),
+                message: if body.is_empty() {
+                    "the server returned an empty response".to_string()
+                } else {
+                    format!("the server returned an unrecognised response: {body}")
+                },
+            }),
+        }
     }
+
+    /// Issue a POST whose body is a bare string, as the decompile-by-name and
+    /// annotation endpoints expect.
+    async fn post_text(&self, endpoint: &str, body: &str) -> Result<String> {
+        trace!(endpoint, "POST");
+        let url = self.config.base_url.join(endpoint)?;
+        let mut request = self.http.post(url.clone()).body(body.to_string());
+        if let Some(ref key) = self.config.api_key {
+            request = request.bearer_auth(key);
+        }
+
+        let send = |source: reqwest::Error| GhidraError::Transport {
+            url: url.to_string(),
+            source,
+        };
+        let response = request.send().await.map_err(send)?;
+        let status = response.status();
+        let text = response.text().await.map_err(send)?;
+        trace!(%status, bytes = text.len(), "GOT");
+
+        match error::classify(&text) {
+            Classification::Content => Ok(text),
+            Classification::Failure(message) | Classification::Unrecognised(message) => {
+                Err(GhidraError::Reported {
+                    status: Some(status.as_u16()),
+                    message: if message.is_empty() {
+                        "the server returned an empty response".to_string()
+                    } else {
+                        message.to_string()
+                    },
+                })
+            }
+            Classification::FailureWithStatus(code, message) => Err(GhidraError::Reported {
+                status: Some(code),
+                message: message.to_string(),
+            }),
+        }
+    }
+
+    /// Render an address the way the server's endpoints expect: bare hex.
+    fn addr(address: u64) -> String {
+        format!("{address:x}")
+    }
+
+    // =========================================================
+    // Program state
+    // =========================================================
+
+    /// Every function Ghidra knows about in the open program.
+    ///
+    /// This is the whole program at once — a large binary returns several
+    /// thousand entries — so prefer [`search_functions`](Self::search_functions)
+    /// when a name is known.
+    #[instrument(skip(self))]
+    pub async fn list_functions(&self) -> Result<Vec<FunctionSummary>> {
+        let body = self.get_text("list_functions", &[]).await?;
+        let functions = parse::parse_function_listing(&body);
+        debug!(count = functions.len(), "Listed functions");
+        Ok(functions)
+    }
+
+    /// Functions whose name contains `query`.
+    ///
+    /// An empty result is reported as [`GhidraError::NotFound`] rather than an
+    /// empty vector, because "no such function" and "the query found nothing
+    /// yet" are different situations and only the first is an error.
+    #[instrument(skip(self), fields(query))]
+    pub async fn search_functions(
+        &self,
+        query: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<FunctionSummary>> {
+        let mut params: Vec<(&str, String)> = vec![("query", query.to_string())];
+        if let Some(n) = limit {
+            params.push(("limit", n.to_string()));
+        }
+        let body = self.get_text("searchFunctions", &params).await?;
+        let found = parse::parse_function_listing(&body);
+        if found.is_empty() {
+            return Err(GhidraError::NotFound {
+                kind: "function",
+                query: query.to_string(),
+            });
+        }
+        debug!(count = found.len(), query, "Searched functions");
+        Ok(found)
+    }
+
+    /// The address Ghidra's cursor is at.
+    #[instrument(skip(self))]
+    pub async fn current_address(&self) -> Result<u64> {
+        let body = self.get_text("get_current_address", &[]).await?;
+        parse::parse_address(&body).ok_or_else(|| GhidraError::Malformed {
+            kind: "the current address",
+            detail: body.trim().to_string(),
+        })
+    }
+
+    /// The function under Ghidra's cursor.
+    #[instrument(skip(self))]
+    pub async fn current_function(&self) -> Result<FunctionBody> {
+        let body = self.get_text("get_current_function", &[]).await?;
+        parse::parse_function_body(&body).ok_or_else(|| GhidraError::Malformed {
+            kind: "the current function",
+            detail: body.trim().to_string(),
+        })
+    }
+
+    /// The program's memory layout.
+    ///
+    /// The lowest segment start is the image base, which is what turns a Ghidra
+    /// virtual address into a file-relative one.
+    #[instrument(skip(self))]
+    pub async fn segments(&self) -> Result<Vec<Segment>> {
+        let body = self.get_text("segments", &[]).await?;
+        Ok(parse::parse_segments(&body))
+    }
+
+    /// The base address the open program is loaded at.
+    #[instrument(skip(self))]
+    pub async fn image_base(&self) -> Result<u64> {
+        self.segments()
+            .await?
+            .iter()
+            .map(|s| s.start)
+            .min()
+            .ok_or_else(|| GhidraError::Malformed {
+                kind: "the program layout",
+                detail: "the server listed no segments".to_string(),
+            })
+    }
+
+    // =========================================================
+    // Function queries
+    // =========================================================
+
+    /// The pseudo-C for the function at `address`.
+    ///
+    /// `address` may be any address inside the function, not just its entry.
+    #[instrument(skip(self), fields(address = format_args!("{address:#x}")))]
+    pub async fn decompile_function(&self, address: u64) -> Result<DecompiledFunction> {
+        let body = self
+            .get_text("decompile_function", &[("address", Self::addr(address))])
+            .await?;
+        parse::parse_decompiled(&body).ok_or_else(|| GhidraError::Malformed {
+            kind: "decompiled output",
+            detail: body.trim().to_string(),
+        })
+    }
+
+    /// The pseudo-C for a function named by Ghidra.
+    #[instrument(skip(self), fields(function))]
+    pub async fn decompile_function_by_name(&self, function: &str) -> Result<DecompiledFunction> {
+        let body = self.post_text("decompile", function).await?;
+        parse::parse_decompiled(&body).ok_or_else(|| GhidraError::Malformed {
+            kind: "decompiled output",
+            detail: body.trim().to_string(),
+        })
+    }
+
+    /// The disassembly listing for the function at `address`.
+    #[instrument(skip(self), fields(address = format_args!("{address:#x}")))]
+    pub async fn disassemble_function(&self, address: u64) -> Result<String> {
+        self.get_text("disassemble_function", &[("address", Self::addr(address))])
+            .await
+    }
+
+    /// Entry point and body range of the function at `address`.
+    #[instrument(skip(self), fields(address = format_args!("{address:#x}")))]
+    pub async fn function_body(&self, address: u64) -> Result<FunctionBody> {
+        let body = self
+            .get_text(
+                "get_function_by_address",
+                &[("address", Self::addr(address))],
+            )
+            .await?;
+        parse::parse_function_body(&body).ok_or_else(|| GhidraError::Malformed {
+            kind: "function metadata",
+            detail: body.trim().to_string(),
+        })
+    }
+
+    /// Everything worth knowing about the function at `address`.
+    ///
+    /// This is the convenience the pipeline wants, assembled from four
+    /// endpoints: the decompiled body, the disassembly, the body range, and the
+    /// cross-references to the entry point.
+    ///
+    /// Callees are read out of the decompiled text rather than from a call-graph
+    /// endpoint, because the server has no such endpoint and building a faithful
+    /// list would cost a request per call site. A call through a function
+    /// pointer therefore does not appear in `callees`.
+    #[instrument(skip(self), fields(address = format_args!("{address:#x}")))]
+    pub async fn function_report(&self, address: u64) -> Result<FunctionReport> {
+        let decompiled = self.decompile_function(address).await?;
+
+        // The remaining three enrich the decompilation rather than define it, so
+        // a function that decompiles is still reported when they fail — a
+        // missing call site is not a reason to lose the body.
+        let disassembly = self
+            .disassemble_function(address)
+            .await
+            .unwrap_or_else(|e| {
+                warn!(error = %e, "Could not read disassembly; reporting without it");
+                String::new()
+            });
+        let body = self.function_body(address).await.ok();
+        let callers = self.callers(address).await.unwrap_or_else(|e| {
+            warn!(error = %e, "Could not read cross-references; reporting without callers");
+            Vec::new()
+        });
+
+        let callees = parse::callees_from_decompiled(&decompiled.body);
+        let name = body
+            .as_ref()
+            .map(|b| b.name.clone())
+            .unwrap_or_else(|| decompiled.name.clone());
+
+        info!(%name, address = format_args!("{address:#x}"), callees = callees.len(), "Read function report");
+        Ok(FunctionReport {
+            name,
+            address,
+            decompiled,
+            disassembly,
+            body,
+            callers,
+            callees,
+        })
+    }
+
+    // =========================================================
+    // Cross-references
+    // =========================================================
+
+    /// References to `address` — who points at it.
+    #[instrument(skip(self), fields(address = format_args!("{address:#x}")))]
+    pub async fn xrefs_to(&self, address: u64, limit: Option<usize>) -> Result<Vec<Xref>> {
+        let mut params: Vec<(&str, String)> = vec![("address", Self::addr(address))];
+        if let Some(n) = limit {
+            params.push(("limit", n.to_string()));
+        }
+        let body = self.get_text("xrefs_to", &params).await?;
+        Ok(parse::parse_xrefs(&body))
+    }
+
+    /// References from `address` — what it points at.
+    ///
+    /// A function's *entry* has no outgoing references, because nothing inside
+    /// it is the source. Pass the address of a call instruction to learn its
+    /// target.
+    #[instrument(skip(self), fields(address = format_args!("{address:#x}")))]
+    pub async fn xrefs_from(&self, address: u64, limit: Option<usize>) -> Result<Vec<Xref>> {
+        let mut params: Vec<(&str, String)> = vec![("address", Self::addr(address))];
+        if let Some(n) = limit {
+            params.push(("limit", n.to_string()));
+        }
+        let body = self.get_text("xrefs_from", &params).await?;
+        Ok(parse::parse_xrefs(&body))
+    }
+
+    /// References to a function, found by name.
+    #[instrument(skip(self), fields(function))]
+    pub async fn function_xrefs(&self, function: &str, limit: Option<usize>) -> Result<Vec<Xref>> {
+        let mut params: Vec<(&str, String)> = vec![("name", function.to_string())];
+        if let Some(n) = limit {
+            params.push(("limit", n.to_string()));
+        }
+        let body = self.get_text("function_xrefs", &params).await?;
+        Ok(parse::parse_xrefs(&body))
+    }
+
+    /// Names of the functions that call the function at `address`.
+    ///
+    /// Cross-references that name no enclosing function are dropped, so this
+    /// answers "which functions call this" and not "how many references exist".
+    #[instrument(skip(self), fields(address = format_args!("{address:#x}")))]
+    pub async fn callers(&self, address: u64) -> Result<Vec<String>> {
+        let xrefs = self.xrefs_to(address, None).await?;
+        let mut names: Vec<String> = Vec::new();
+        for x in xrefs {
+            if let Some(f) = x.function
+                && !names.contains(&f)
+            {
+                names.push(f);
+            }
+        }
+        Ok(names)
+    }
+
+    // =========================================================
+    // Symbols and data
+    // =========================================================
+
+    /// Symbols the program exports.
+    #[instrument(skip(self))]
+    pub async fn exports(&self, limit: Option<usize>) -> Result<Vec<Symbol>> {
+        let params = limit
+            .map(|n| vec![("limit", n.to_string())])
+            .unwrap_or_default();
+        let body = self.get_text("exports", &params).await?;
+        Ok(parse::parse_symbols(&body, false))
+    }
+
+    /// Symbols the program imports.
+    ///
+    /// Imports that resolve to an external module arrive with an `EXTERNAL:`
+    /// address, which is a slot the loader fills rather than a location in the
+    /// program.
+    #[instrument(skip(self))]
+    pub async fn imports(&self, limit: Option<usize>) -> Result<Vec<Symbol>> {
+        let params = limit
+            .map(|n| vec![("limit", n.to_string())])
+            .unwrap_or_default();
+        let body = self.get_text("imports", &params).await?;
+        Ok(parse::parse_symbols(&body, true))
+    }
+
+    /// String literals defined in the program.
+    #[instrument(skip(self), fields(filter))]
+    pub async fn strings(
+        &self,
+        limit: Option<usize>,
+        filter: Option<&str>,
+    ) -> Result<Vec<StringLiteral>> {
+        let mut params: Vec<(&str, String)> = Vec::new();
+        if let Some(n) = limit {
+            params.push(("limit", n.to_string()));
+        }
+        if let Some(f) = filter {
+            params.push(("filter", f.to_string()));
+        }
+        let body = self.get_text("strings", &params).await?;
+        Ok(parse::records(&body)
+            .into_iter()
+            .filter_map(parse::parse_string_literal)
+            .collect())
+    }
+
+    /// Namespaces defined in the program.
+    #[instrument(skip(self))]
+    pub async fn namespaces(&self, limit: Option<usize>) -> Result<Vec<String>> {
+        let params = limit
+            .map(|n| vec![("limit", n.to_string())])
+            .unwrap_or_default();
+        let body = self.get_text("namespaces", &params).await?;
+        Ok(parse::records(&body)
+            .into_iter()
+            .map(str::to_string)
+            .collect())
+    }
+
+    /// Classes defined in the program.
+    #[instrument(skip(self))]
+    pub async fn classes(&self, limit: Option<usize>) -> Result<Vec<String>> {
+        let params = limit
+            .map(|n| vec![("limit", n.to_string())])
+            .unwrap_or_default();
+        let body = self.get_text("classes", &params).await?;
+        Ok(parse::records(&body)
+            .into_iter()
+            .map(str::to_string)
+            .collect())
+    }
+
+    /// Methods defined in the program.
+    #[instrument(skip(self))]
+    pub async fn methods(&self, limit: Option<usize>) -> Result<Vec<String>> {
+        let params = limit
+            .map(|n| vec![("limit", n.to_string())])
+            .unwrap_or_default();
+        let body = self.get_text("methods", &params).await?;
+        Ok(parse::records(&body)
+            .into_iter()
+            .map(str::to_string)
+            .collect())
+    }
+
+    // =========================================================
+    // Availability
+    // =========================================================
+
+    /// Whether the server is up and a program is open.
+    ///
+    /// GhidraMCP only serves requests while a CodeBrowser is open, so this is
+    /// the check to run before a long pipeline to fail early with a clear
+    /// reason.
+    pub async fn probe(&self) -> Result<ProgramInfo> {
+        let address = self.current_address().await?;
+        let function = self.current_function().await?;
+        info!(
+            function = %function.name,
+            address = format_args!("{address:#x}"),
+            "GhidraMCP is serving"
+        );
+        Ok(ProgramInfo {
+            function: function.name,
+            address,
+        })
+    }
+}
+
+/// A summary of what the server is currently serving.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgramInfo {
+    /// Name of the function under Ghidra's cursor.
+    pub function: String,
+    /// Address of Ghidra's cursor.
+    pub address: u64,
+}
+
+/// Convert a Ghidra virtual address into a file-relative one.
+///
+/// The program's image base is the lowest mapped address, and subtracting it
+/// yields the RVA the PE headers index exports and imports by.
+pub fn rva_from_va(image_base: u64, va: u64) -> Option<u32> {
+    let rva = va.checked_sub(image_base)?;
+    u32::try_from(rva).ok()
 }
 
 #[cfg(test)]
@@ -667,49 +646,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_config_new() {
-        let config = GhidraConfig::new("http://localhost:8080").unwrap();
-        assert_eq!(config.base_url.as_str(), "http://localhost:8080/");
-        assert_eq!(config.timeout_secs, 120);
+    fn test_config_defaults() {
+        let config = GhidraConfig::new("http://127.0.0.1:8080").unwrap();
+        assert_eq!(config.base_url.as_str(), "http://127.0.0.1:8080/");
+        assert_eq!(config.timeout, Duration::from_secs(120));
         assert!(config.api_key.is_none());
     }
 
     #[test]
-    fn test_config_with_timeout() {
-        let config = GhidraConfig::new("http://localhost:8080")
-            .unwrap()
-            .with_timeout(60);
-        assert_eq!(config.timeout_secs, 60);
+    fn test_config_rejects_a_non_url() {
+        assert!(GhidraConfig::new("not-a-url").is_err());
     }
 
     #[test]
-    fn test_config_with_api_key() {
-        let config = GhidraConfig::new("http://localhost:8080")
-            .unwrap()
-            .with_api_key("secret".to_string());
-        assert_eq!(config.api_key, Some("secret".to_string()));
+    fn test_client_exposes_its_base_url() {
+        let client = GhidraClient::new("http://127.0.0.1:8080").unwrap();
+        assert_eq!(client.base_url().as_str(), "http://127.0.0.1:8080/");
     }
 
     #[test]
-    fn test_config_invalid_url() {
-        let result = GhidraConfig::new("not-a-url");
-        assert!(result.is_err());
+    fn test_addresses_are_sent_as_bare_hex() {
+        // Ghidra writes addresses without a prefix and does not parse one, so
+        // the client must not add it.
+        assert_eq!(GhidraClient::addr(0x18008ed50), "18008ed50");
     }
 
     #[test]
-    fn test_error_display() {
-        let err = GhidraError::FunctionNotFound {
-            function: "foo".to_string(),
-            dll: "bar.dll".to_string(),
+    fn test_rva_from_va() {
+        assert_eq!(rva_from_va(0x180000000, 0x18008ed50), Some(0x8ed50));
+        // A VA below the image base is not addressable, and silently wrapping
+        // would produce a plausible-looking but wrong RVA.
+        assert_eq!(rva_from_va(0x180000000, 0x17ffffff), None);
+    }
+
+    #[test]
+    fn test_reported_error_mentions_the_message() {
+        let err = GhidraError::Reported {
+            status: Some(200),
+            message: "Function not found".to_string(),
         };
-        assert!(err.to_string().contains("foo"));
-        assert!(err.to_string().contains("bar.dll"));
-    }
-
-    #[tokio::test]
-    async fn test_client_creation() {
-        let client = GhidraClient::new("http://localhost:8080").unwrap();
-        assert_eq!(client.base_url().as_str(), "http://localhost:8080/");
-        assert!(client.session().is_none());
+        assert!(err.to_string().contains("Function not found"));
     }
 }

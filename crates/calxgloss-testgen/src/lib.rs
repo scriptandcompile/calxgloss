@@ -1,16 +1,25 @@
 //! Test generation infrastructure for the Calxgloss reverse engineering harness.
 //!
-//! This crate provides tools for generating FFI stubs that link against original
-//! DLLs, creating diverse test inputs from function signatures and disassembly
-//! analysis, and executing baseline tests to capture the original binary's behavior.
+//! This crate provides tools for reading Windows DLL metadata, generating FFI
+//! stubs, creating diverse test inputs from function signatures and disassembly
+//! analysis, and executing baseline tests to capture the original binary's
+//! behavior.
 //!
 //! # Workflow
 //!
-//! 1. Extract function signatures from Ghidra exports or manual analysis
-//! 2. Generate FFI stubs (`extern "C"` blocks) for the original DLL
-//! 3. Generate test inputs covering boundary values, typical values, and edge cases
-//! 4. Execute tests against the original binary to capture baseline behavior
-//! 5. Save baseline results as JSON for verification against Rust translations
+//! 1. Read the DLL's metadata with [`PeImage`]: image base, architecture, and
+//!    the export and import tables
+//! 2. Extract function signatures from Ghidra or the export table
+//! 3. Generate FFI stubs (`extern "system"` blocks) for the original DLL
+//! 4. Generate test inputs covering boundary values, typical values, and edge cases
+//! 5. Execute those inputs against the original binary under Wine to capture
+//!    baseline behavior
+//! 6. Save baseline results as JSON for verification against Rust translations
+//!
+//! Baseline execution calls into the real DLL, so it needs the module mapped at
+//! runtime rather than a link-time stub: [`WineRunner`] generates a small
+//! harness per function, cross-compiles it for the DLL's own architecture, and
+//! runs it under Wine. See the `run` module for the details.
 //!
 //! # Example
 //!
@@ -33,13 +42,22 @@
 
 mod ffi;
 mod inputs;
+mod pe;
 mod run;
+mod wine;
 
 pub use ffi::{
-    FfiStub, FfiStubBuilder, ParameterTypeInfo, ParsedSignature, generate_ffi_stub, parse_signature,
+    FfiStub, FfiStubBuilder, ParameterTypeInfo, ParsedSignature, generate_ffi_stub,
+    ghidra_type_to_rust, parse_signature,
 };
 pub use inputs::{DisassemblyEdgeCases, EdgeCaseSource, generate_test_inputs};
+pub use pe::{ExportEntry, ImportEntry, Machine, PeImage};
 pub use run::{BaselineRunner, TestContext};
+pub use wine::{
+    FunctionLocator, HarnessReport, HarnessSpec, HarnessTestResult, LoadMode, ParamSpec,
+    ScalarKind, WineRunner, encode_test_case, generate_harness, locator_for_function,
+    locator_for_va,
+};
 
 use std::path::{Path, PathBuf};
 

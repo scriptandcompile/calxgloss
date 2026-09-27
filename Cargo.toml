@@ -22,6 +22,7 @@ members = [
     "crates/calxgloss",
     "crates/calxgloss-cli",
     "crates/calxgloss-web",
+    "crates/calxgloss-config",
 ]
 
 [workspace.dependencies]

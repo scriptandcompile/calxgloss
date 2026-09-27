@@ -1,43 +1,45 @@
 //! Baseline test execution infrastructure.
 //!
-//! This module provides the ability to compile a temporary Cargo project
-//! containing FFI stubs and test harnesses, link against the original DLL,
-//! execute test cases, and capture results.
+//! Runs test cases against the *original* DLL to establish what the real
+//! function does, which is the reference the translated model is later judged
+//! against.
 //!
 //! # Execution Model
 //!
-//! For each function under test:
+//! Calling an arbitrary internal function of a Windows DLL needs the module to
+//! be mapped and the target to be called by address, so each function gets its
+//! own generated harness rather than a link-time stub:
 //!
-//! 1. A temporary Cargo project is created with:
-//!    - The FFI stub for calling the original DLL function
-//!    - A test harness that invokes the function with controlled inputs
-//!    - Dependencies needed for the FFI (link flags for the target DLL)
-//! 2. The project is compiled using `cargo build`
-//! 3. The compiled binary is executed, running each test case
-//! 4. Return values and side effects are captured and reported
+//! 1. The DLL is parsed to find its image base, architecture, and exports.
+//! 2. The function is located — a Ghidra `FUN_<hex>` name becomes an RVA via
+//!    the image base, anything else is resolved through the export table.
+//! 3. A dependency-free harness is generated: it maps the DLL with
+//!    `LoadLibraryExW`, calls the target once per input line, and writes one
+//!    result line per case.
+//! 4. The harness is cross-compiled for the DLL's own architecture and run
+//!    under Wine.
+//! 5. A fault in the target is caught by the harness's own crash handler, so a
+//!    single bad input costs one case rather than the whole batch.
 //!
 //! # Temporary Project Structure
 //!
 //! ```text
-//! ~/.cache/calxgloss/baseline/{dll_hash}/{function_hash}/
+//! ~/.cache/calxgloss/baseline/{function_label}/
 //! ├── Cargo.toml
-//! ├── src/
-//! │   ├── main.rs          # Test harness
-//! │   └── ffi.rs           # FFI stub
-//! └── target/              # Build output
+//! ├── src/main.rs         # generated harness
+//! └── target/             # cross-compiled output
 //! ```
 
-use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::{Context, Result};
-use calxgloss_types::{SideEffect, TestCase, TestResult};
-use serde::{Deserialize, Serialize};
-use tracing::{debug, info, instrument, warn};
+use calxgloss_types::{TestCase, TestResult};
+use serde_json::Value;
+use tracing::{info, instrument, warn};
 
-use crate::FfiStub;
+use crate::pe::PeImage;
+use crate::wine::{HarnessSpec, WineRunner, locator_for_function};
+use crate::{FfiStub, parse_signature};
 
 /// Context data passed during test execution.
 ///
@@ -103,8 +105,6 @@ impl BaselineRunner {
         tests: &[TestCase],
         dll_path: &Path,
     ) -> Result<Vec<TestResult>> {
-        debug!(dll, function, "Starting baseline test execution");
-
         // Check if DLL exists
         if !dll_path.exists() {
             warn!(
@@ -114,219 +114,36 @@ impl BaselineRunner {
             return self.create_stub_failures(dll, function, tests);
         }
 
-        // Generate FFI stub
-        let ffi_stub = crate::generate_ffi_stub(dll, function, signature)
-            .context("Failed to generate FFI stub for baseline execution")?;
+        let image = PeImage::parse(dll_path)
+            .with_context(|| format!("Could not read '{}' as a PE image", dll_path.display()))?;
+        let machine = image.machine();
 
-        // Create test project directory
-        let project_dir = self.create_project(dll, function, &ffi_stub)?;
+        let locator = locator_for_function(&image, function).with_context(|| {
+            format!("Could not locate '{function}' in '{}'", dll_path.display())
+        })?;
+        let parsed = parse_signature(signature)
+            .with_context(|| format!("Could not parse the signature of '{function}'"))?;
+        let spec = HarnessSpec::new(function, locator, &parsed, machine)
+            .with_context(|| format!("Could not build a harness for '{function}'"))?;
 
-        // Compile the test project
-        self.compile(&project_dir)?;
+        let runner = WineRunner::new(&self.work_dir);
+        runner.preflight_wine()?;
 
-        // Execute the test binary and collect results
-        let results = self.execute(&project_dir, tests)?;
+        let report = runner
+            .run(&spec, dll_path, tests, machine)
+            .with_context(|| format!("Baseline execution failed for '{function}'"))?;
 
-        // Cleanup test project
-        self.cleanup(&project_dir)?;
+        let results = collect_results(&report.results, tests);
 
         info!(
             dll,
             function,
             count = results.len(),
+            passed = results.iter().filter(|r| r.passed).count(),
             "Baseline execution complete"
         );
 
         Ok(results)
-    }
-
-    /// Create a temporary Cargo project for testing.
-    fn create_project(&self, dll: &str, function: &str, ffi_stub: &FfiStub) -> Result<PathBuf> {
-        debug!(dll, function, "Creating test project");
-
-        // Create a unique directory for this test
-        let project_name = format!("baseline_{}_{}", dll.replace('.', "_"), function);
-        let project_dir = self.work_dir.join(&project_name);
-
-        // Create directory structure
-        fs::create_dir_all(project_dir.join("src"))
-            .context("Failed to create test project directories")?;
-
-        // Write Cargo.toml
-        let cargo_toml = self.generate_cargo_toml(dll, &project_name);
-        fs::write(project_dir.join("Cargo.toml"), cargo_toml)
-            .context("Failed to write Cargo.toml")?;
-
-        // Write FFI stub
-        fs::write(project_dir.join("src").join("ffi.rs"), &ffi_stub.code)
-            .context("Failed to write FFI stub")?;
-
-        // Write test harness
-        // The harness reads test cases from stdin (JSON array) and outputs results (JSON array)
-        let harness = self.generate_test_harness(dll, function);
-        fs::write(project_dir.join("src").join("main.rs"), harness)
-            .context("Failed to write test harness")?;
-
-        info!(
-            path = %project_dir.display(),
-            "Test project created"
-        );
-
-        Ok(project_dir)
-    }
-
-    /// Generate a Cargo.toml for the test project.
-    fn generate_cargo_toml(&self, _dll: &str, project_name: &str) -> String {
-        format!(
-            r#"[package]
-name = "{project_name}"
-version = "0.1.0"
-edition = "2021"
-
-[[bin]]
-name = "test_runner"
-path = "src/main.rs"
-
-[dependencies]
-serde = {{ version = "1.0", features = ["derive"] }}
-serde_json = "1.0"
-"#
-        )
-    }
-
-    /// Generate a test harness that reads test cases from stdin and outputs results.
-    fn generate_test_harness(&self, dll: &str, function: &str) -> String {
-        // The harness dynamically includes the FFI stub and runs tests.
-        // Since we can't easily include the FFI at compile time for arbitrary functions,
-        // the harness generates the FFI code and compiles it as a module.
-        //
-        // For MVP, we use a simpler approach: the harness is a template that
-        // gets customized with the specific function call.
-        format!(
-            r#"// Auto-generated test harness for {dll}::{function}
-// Note: This is a skeleton for MVP. Full execution requires
-// linking against the original DLL at runtime.
-
-use serde::{{Deserialize, Serialize}};
-use std::collections::HashMap;
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct TestInput {{
-    inputs: HashMap<String, serde_json::Value>,
-}}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct TestOutput {{
-    test_index: usize,
-    inputs: HashMap<String, serde_json::Value>,
-    actual_return: serde_json::Value,
-    passed: bool,
-    error: Option<String>,
-}}
-
-// The FFI module is included from ffi.rs
-include!("{ffi_stub_path}");
-
-fn main() {{
-    // Read test cases from stdin
-    let input_data: String = std::io::stdin().read_line(&mut Vec::new()).unwrap_or_default();
-    let test_cases: Vec<TestInput> = serde_json::from_str(&input_data).expect("Failed to parse test cases");
-
-    let mut results: Vec<TestOutput> = Vec::new();
-
-    for (i, test) in test_cases.iter().enumerate() {{
-        // TODO: Implement actual FFI call
-        // For MVP, we output placeholder results
-        results.push(TestOutput {{
-            test_index: i,
-            inputs: test.inputs.clone(),
-            actual_return: serde_json::Value::Null,
-            passed: false,
-            error: Some("FFI execution not yet implemented in MVP".to_string()),
-        }});
-    }}
-
-    // Output results as JSON to stdout
-    let output = serde_json::to_string_pretty(&results).expect("Failed to serialize results");
-    println!("{{}}", output);
-}}
-"#,
-            ffi_stub_path = "../src/ffi.rs",
-        )
-    }
-
-    /// Compile the test project.
-    fn compile(&self, project_dir: &Path) -> Result<()> {
-        debug!(path = %project_dir.display(), "Compiling test project");
-
-        let status = Command::new("cargo")
-            .arg("build")
-            .arg("--release")
-            .current_dir(project_dir)
-            .status()
-            .context("Failed to run cargo build")?;
-
-        if !status.success() {
-            return Err(anyhow::anyhow!(
-                "Test project compilation failed (exit code: {:?})",
-                status.code()
-            ));
-        }
-
-        debug!("Test project compiled successfully");
-        Ok(())
-    }
-
-    /// Execute the test binary and collect results.
-    fn execute(&self, project_dir: &Path, tests: &[TestCase]) -> Result<Vec<TestResult>> {
-        debug!("Executing test binary");
-
-        let _binary_path = project_dir
-            .join("target")
-            .join("release")
-            .join("test_runner");
-
-        // Convert test cases to JSON input
-        let test_inputs: Vec<HashMap<String, serde_json::Value>> = tests
-            .iter()
-            .map(|t| {
-                let mut map = HashMap::new();
-                if let serde_json::Value::Object(obj) = &t.inputs {
-                    for (k, v) in obj.iter() {
-                        map.insert(k.clone(), v.clone());
-                    }
-                }
-                map
-            })
-            .collect();
-
-        let _input_json =
-            serde_json::to_string(&test_inputs).context("Failed to serialize test inputs")?;
-
-        // In the future, this would spawn the test_runner binary and
-        // pipe the test inputs to its stdin, then parse JSON results from stdout.
-        // For MVP, we return placeholder results since the FFI link step
-        // is not yet fully implemented.
-        warn!("MVP: FFI execution is not yet fully implemented. Returning placeholder results.");
-
-        // Build the same wire format the compiled test_runner emits, then convert
-        // it to `TestResult`s through the real deserialization path.
-        let outputs: Vec<ExecutionOutput> = test_inputs
-            .iter()
-            .enumerate()
-            .map(|(i, inputs)| ExecutionOutput {
-                test_index: i,
-                inputs: serde_json::Value::Object(inputs.clone().into_iter().collect()),
-                actual_return: serde_json::Value::Null,
-                actual_side_effects: Vec::new(),
-                passed: false,
-                error: Some(
-                    "FFI execution requires the original DLL to be present at runtime".to_string(),
-                ),
-            })
-            .collect();
-
-        Ok(outputs_to_results(&outputs, tests))
     }
 
     /// Create stub failure results when the DLL is not available.
@@ -340,65 +157,197 @@ fn main() {{
             .iter()
             .map(|test| TestResult {
                 test_case: test.clone(),
-                actual_return: serde_json::Value::Null,
+                actual_return: Value::Null,
                 actual_side_effects: Vec::new(),
                 passed: false,
                 error: Some(format!(
-                    "Original DLL '{}' not found — baseline cannot be executed. DLL path must be provided to run_baseline_tests.",
-                    dll
+                    "Original DLL '{dll}' not found — baseline cannot be executed. DLL path must be provided to run_baseline_tests.",
                 )),
             })
             .collect();
 
         Ok(results)
     }
+}
 
-    /// Cleanup temporary test project.
-    fn cleanup(&self, project_dir: &Path) -> Result<()> {
-        // Optionally keep test projects for debugging.
-        // For now, we skip cleanup to allow inspection of generated code.
-        debug!(path = %project_dir.display(), "Keeping test project for inspection");
-        Ok(())
+/// Whether an observed return value agrees with what the test case expected.
+///
+/// JSON carries no integer widths, so the two sides are compared as they are
+/// rather than re-interpreted. The harness already reports a value at the exact
+/// width the signature declares, so an expectation derived from that same
+/// signature agrees without any coercion — and guessing at a width here could
+/// either hide a genuine divergence or invent a false one.
+fn values_match(expected: &Value, actual: &Value) -> bool {
+    match (expected, actual) {
+        // Beyond i64, JSON can only hold the value as a float; that is the
+        // closest available reading, and it is exact for anything under 2^53.
+        (Value::Number(e), Value::Number(a)) => match (e.as_i64(), a.as_i64()) {
+            (Some(e), Some(a)) => e == a,
+            _ => e.as_f64() == a.as_f64(),
+        },
+        _ => expected == actual,
     }
 }
 
-/// A single test execution output from the baseline runner.
+/// Turn harness outcomes into [`TestResult`]s, one per test case.
 ///
-/// This type is used to communicate results between the compiled test
-/// binary and the harness.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExecutionOutput {
-    /// The test case index (0-based).
-    pub test_index: usize,
-
-    /// The inputs that were tested.
-    pub inputs: serde_json::Value,
-
-    /// The actual return value observed from the original function.
-    pub actual_return: serde_json::Value,
-
-    /// Side effects observed during execution.
-    pub actual_side_effects: Vec<SideEffect>,
-
-    /// Whether the test passed (actual matches expected).
-    pub passed: bool,
-
-    /// Error message if the test failed or an error occurred.
-    pub error: Option<String>,
-}
-
-/// Convert execution outputs to [`TestResult`] structs.
-pub fn outputs_to_results(outputs: &[ExecutionOutput], tests: &[TestCase]) -> Vec<TestResult> {
-    outputs
+/// `passed` means the call completed and, where the test case states an
+/// expectation, that the observed return value matched it. A test case with no
+/// expectation (`expected_return` is `null`) records what the function did
+/// without asserting anything about it — the baseline's job is to establish
+/// ground truth, so an unremarked-upon result is not a failure.
+///
+/// Cases the harness never reported are surfaced as failures rather than
+/// dropped: a missing result means the function did something the harness could
+/// not account for, and silently omitting it would hide that.
+fn collect_results(
+    outcomes: &[crate::wine::HarnessTestResult],
+    tests: &[TestCase],
+) -> Vec<TestResult> {
+    tests
         .iter()
-        .filter_map(|output| {
-            tests.get(output.test_index).map(|test| TestResult {
+        .enumerate()
+        .map(|(index, test)| {
+            let Some(outcome) = outcomes.iter().find(|o| o.index == index) else {
+                return TestResult {
+                    test_case: test.clone(),
+                    actual_return: Value::Null,
+                    actual_side_effects: Vec::new(),
+                    passed: false,
+                    error: Some("the harness produced no result for this test case".to_string()),
+                };
+            };
+
+            let expected = &test.expected_return;
+            let expectation_stated = !expected.is_null();
+            let agrees = !expectation_stated || values_match(expected, &outcome.returned);
+            let mismatch = if agrees {
+                None
+            } else {
+                Some(format!(
+                    "expected {expected} but the original returned {}",
+                    outcome.returned
+                ))
+            };
+
+            TestResult {
                 test_case: test.clone(),
-                actual_return: output.actual_return.clone(),
-                actual_side_effects: output.actual_side_effects.clone(),
-                passed: output.passed,
-                error: output.error.clone(),
-            })
+                actual_return: outcome.returned.clone(),
+                // Side effects are not observed: the harness calls the target
+                // and reports its return value, and reading back whatever the
+                // call mutated would need a per-type view of the arguments.
+                actual_side_effects: Vec::new(),
+                passed: outcome.ok && agrees,
+                error: outcome.error.clone().or(mismatch),
+            }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wine::HarnessTestResult;
+    use serde_json::json;
+
+    fn outcome(index: usize, returned: Value) -> HarnessTestResult {
+        HarnessTestResult {
+            index,
+            ok: true,
+            returned,
+            error: None,
+            crashed: false,
+        }
+    }
+
+    fn case(inputs: Value, expected: Value) -> TestCase {
+        TestCase {
+            inputs,
+            expected_return: expected,
+            expected_side_effects: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_values_match_across_json_representations() {
+        assert!(values_match(&json!(7), &json!(7)));
+        assert!(values_match(&json!(-2147483648), &json!(-2147483648)));
+        assert!(values_match(&json!(4294967295u64), &json!(4294967295u64)));
+        assert!(values_match(
+            &json!("FUN_18008ed50"),
+            &json!("FUN_18008ed50")
+        ));
+        // Signedness is never guessed at: without the declared width these are
+        // not comparable, and reading one as the other would hide a divergence.
+        assert!(!values_match(&json!(-1), &json!(4294967295u64)));
+        assert!(!values_match(&json!(0), &json!(1)));
+        assert!(!values_match(&Value::Null, &json!(0)));
+    }
+
+    #[test]
+    fn test_collect_results_matches_expectations_per_case() {
+        let tests = vec![
+            case(json!({ "a": 1 }), json!(8)),
+            case(json!({ "a": 2 }), json!(99)),
+        ];
+        let outcomes = vec![outcome(0, json!(8)), outcome(1, json!(7))];
+
+        let results = collect_results(&outcomes, &tests);
+        assert_eq!(results.len(), 2);
+        assert!(results[0].passed, "{:?}", results[0].error);
+        assert!(!results[1].passed);
+        assert_eq!(results[1].actual_return, json!(7));
+        assert!(
+            results[1]
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("expected 99") && e.contains("returned 7")),
+            "a mismatch should say what was wanted and what happened: {:?}",
+            results[1].error
+        );
+    }
+
+    #[test]
+    fn test_case_without_an_expectation_records_ground_truth() {
+        // The baseline's job is to establish what the original function does, so
+        // a case that states no expectation passes when the call returned.
+        let tests = vec![case(json!({ "a": 1 }), Value::Null)];
+        let results = collect_results(&[outcome(0, json!(4294967295u64))], &tests);
+        assert!(results[0].passed);
+        assert_eq!(results[0].actual_return, json!(4294967295u64));
+    }
+
+    #[test]
+    fn test_a_crashed_case_fails_even_against_a_matching_expectation() {
+        let tests = vec![case(json!({ "a": 1 }), json!(8))];
+        let outcomes = vec![HarnessTestResult {
+            index: 0,
+            ok: false,
+            returned: Value::Null,
+            error: Some("the function under test faulted".to_string()),
+            crashed: true,
+        }];
+
+        let results = collect_results(&outcomes, &tests);
+        assert!(!results[0].passed, "a fault must not be reported as a pass");
+        assert_eq!(
+            results[0].error.as_deref(),
+            Some("the function under test faulted")
+        );
+    }
+
+    #[test]
+    fn test_a_missing_outcome_is_surfaced_rather_than_dropped() {
+        // Cases 0 and 2 exist but the harness never reported them; silently
+        // returning one result would hide that from the caller.
+        let tests = vec![
+            case(json!({ "a": 1 }), Value::Null),
+            case(json!({ "a": 2 }), Value::Null),
+            case(json!({ "a": 3 }), Value::Null),
+        ];
+        let results = collect_results(&[outcome(1, json!(4))], &tests);
+        assert_eq!(results.len(), 3);
+        assert!(!results[0].passed && !results[2].passed);
+        assert!(results[1].passed);
+    }
 }

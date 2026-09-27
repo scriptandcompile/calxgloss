@@ -17,6 +17,7 @@ calxgloss-git = { path = "../calxgloss-git" }
 calxgloss-reports = { path = "../calxgloss-reports" }
 calxgloss-llm = { path = "../calxgloss-llm" }
 calxgloss-pal = { path = "../calxgloss-pal" }
+calxgloss-config = { path = "../calxgloss-config" }
 clap = { workspace = true }
 tokio = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["json"] }
@@ -24,3 +25,6 @@ tracing = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

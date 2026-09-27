@@ -25,20 +25,19 @@ pub use calxgloss_types::verification::{FailedTest, VerificationResult};
 // calxgloss-ghidra — GhidraMCP HTTP client
 // ============================================================
 
-pub use calxgloss_ghidra::CallgraphResponse;
-pub use calxgloss_ghidra::CreateSessionResponse;
-pub use calxgloss_ghidra::DecompilerResponse;
-pub use calxgloss_ghidra::DisassemblyResponse;
-pub use calxgloss_ghidra::DllInfoResponse;
-pub use calxgloss_ghidra::ExportsResponse;
-pub use calxgloss_ghidra::FullFunctionResponse;
+pub use calxgloss_ghidra::DecompiledFunction;
+pub use calxgloss_ghidra::FunctionBody;
+pub use calxgloss_ghidra::FunctionReport;
+pub use calxgloss_ghidra::FunctionSummary;
 pub use calxgloss_ghidra::GhidraClient;
 pub use calxgloss_ghidra::GhidraConfig;
 pub use calxgloss_ghidra::GhidraError;
-pub use calxgloss_ghidra::ImportsResponse;
-pub use calxgloss_ghidra::ListDllsResponse;
-pub use calxgloss_ghidra::ListSessionsResponse;
-pub use calxgloss_ghidra::Session;
+pub use calxgloss_ghidra::ProgramInfo;
+pub use calxgloss_ghidra::Segment;
+pub use calxgloss_ghidra::StringLiteral;
+pub use calxgloss_ghidra::Symbol;
+pub use calxgloss_ghidra::Xref;
+pub use calxgloss_ghidra::rva_from_va;
 
 // ============================================================
 // calxgloss-llm — Local LLM client

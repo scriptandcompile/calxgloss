@@ -9,12 +9,20 @@
 //! - `classify` — Classify DLLs for a target executable
 //! - `translate` — Translate a single function from disassembly to Rust
 //! - `verify` — Verify a previously translated function
+//! - `config` — Show the configuration in force and where each value came from
+//!
+//! # Configuration
+//!
+//! Server addresses come from, most specific first: a command-line flag, an
+//! environment variable, a TOML file, then a built-in default. Run
+//! `calxgloss config` to see which layer won for each setting.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use calxgloss::GitBranch;
 use calxgloss_analysis::Analyzer;
+use calxgloss_config::{FileConfig, GhidraSection, Layers, LlmSection, Resolved, load};
 use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use calxgloss_git::GitManager;
 use calxgloss_llm::{LlmClient, LlmConfig};
@@ -28,6 +36,10 @@ use calxgloss_translator::TranslationPipeline;
 use calxgloss_verify::Verifier;
 use clap::{Args, Parser, Subcommand};
 use tracing::{debug, error, info, warn};
+
+mod settings;
+
+use settings::Settings;
 
 // ============================================================
 // CLI argument parsing
@@ -47,11 +59,54 @@ struct Cli {
     #[arg(long, default_value = "pretty")]
     log_format: String,
 
+    /// Path to a TOML configuration file
+    ///
+    /// Overrides the search for ./calxgloss.toml and
+    /// ~/.config/calxgloss/config.toml. The named file must exist, so a typo
+    /// fails loudly instead of silently falling back.
+    #[arg(long, global = true, value_name = "FILE")]
+    config: Option<PathBuf>,
+
+    /// GhidraMCP server URL (default: http://127.0.0.1:8080)
+    #[arg(long, global = true)]
+    ghidra_url: Option<String>,
+
+    /// API key for the GhidraMCP server (optional)
+    #[arg(long, global = true)]
+    ghidra_api_key: Option<String>,
+
+    /// LLM server URL (OpenAI-compatible API)
+    #[arg(long, global = true)]
+    llm_url: Option<String>,
+
+    /// LLM model name
+    #[arg(long, global = true)]
+    llm_model: Option<String>,
+
+    /// API key for the LLM server (optional)
+    #[arg(long, global = true)]
+    llm_api_key: Option<String>,
+
+    /// Maximum tokens for LLM generation (default: 8192)
+    #[arg(long, global = true)]
+    max_tokens: Option<usize>,
+
+    /// LLM temperature (0.0 = deterministic, higher = more creative) (default: 0.1)
+    #[arg(long, global = true)]
+    temperature: Option<f32>,
+
+    /// Number of retry attempts on translation failure (default: 3)
+    #[arg(long, global = true)]
+    max_retries: Option<u32>,
+
     #[command(subcommand)]
     command: Command,
 }
 
 /// Arguments for the `translate` subcommand.
+///
+/// The connection settings live on [`Cli`] as global flags, so they mean the
+/// same thing for every subcommand and `calxgloss config` can show an override.
 #[derive(Args, Debug)]
 struct TranslateArgs {
     /// Path to the target executable
@@ -66,62 +121,33 @@ struct TranslateArgs {
     #[arg(long)]
     function: String,
 
-    /// GhidraMCP server URL
-    #[arg(long, default_value = "http://localhost:8080")]
-    ghidra_url: String,
-
-    /// LLM server URL (OpenAI-compatible API)
-    #[arg(long, default_value = "http://localhost:8081/v1")]
-    llm_url: String,
-
-    /// LLM model name
-    #[arg(long, default_value = "qwen3-235b-a22b")]
-    llm_model: String,
-
-    /// API key for the LLM server (optional)
-    #[arg(long)]
-    llm_api_key: Option<String>,
-
     /// Output directory for translated code (default: same as target directory)
     #[arg(long)]
     output_dir: Option<PathBuf>,
 
-    /// Maximum tokens for LLM generation
-    #[arg(long, default_value_t = 8192)]
-    max_tokens: usize,
-
-    /// LLM temperature (0.0 = deterministic, higher = more creative)
-    #[arg(long, default_value_t = 0.1)]
-    temperature: f32,
-
     /// Skip git operations
     #[arg(long)]
     skip_git: bool,
-
-    /// Number of retry attempts on translation failure
-    #[arg(long, default_value_t = 3)]
-    max_retries: u32,
 }
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Classify DLLs for a target executable
+    /// Classify DLLs, choosing how to treat each one
     Classify {
-        /// Path to the target executable
-        #[arg(long)]
-        target: PathBuf,
-
-        /// GhidraMCP server URL
-        #[arg(long, default_value = "http://localhost:8080")]
-        ghidra_url: String,
-
-        /// API key for the GhidraMCP server (optional)
-        #[arg(long)]
-        ghidra_api_key: Option<String>,
+        /// The DLLs to classify are named here because Ghidra serves a single
+        /// open program and cannot list what a target links against.
+        #[arg(long, required = true)]
+        dll: Vec<String>,
     },
 
     /// Translate a single function from disassembly to Rust
     Translate(TranslateArgs),
+
+    /// Show the configuration in force and where each value came from
+    ///
+    /// Secrets are reported as `<set>` rather than printed, so this output is
+    /// safe to paste into a bug report.
+    Config,
 
     /// Verify a previously translated function against baseline tests
     Verify {
@@ -222,19 +248,16 @@ fn white_bold(text: &str) -> String {
 // Classify command handler
 // ============================================================
 
-async fn handle_classify(
-    target: &Path,
-    ghidra_url: &str,
-    ghidra_api_key: Option<&str>,
-) -> Result<()> {
-    info!(target = ?target, "Classifying target");
+async fn handle_classify(dlls: &[String], settings: &Settings) -> Result<()> {
+    info!(count = dlls.len(), "Classifying DLLs");
 
     // Initialize Ghidra client
+    let ghidra_url = &settings.ghidra_url.value;
     let mut config = GhidraConfig::new(ghidra_url)
         .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
 
-    if let Some(key) = ghidra_api_key {
-        config = config.with_api_key(key.to_string());
+    if let Some(key) = &settings.ghidra_api_key {
+        config = config.with_api_key(key.value.clone());
     }
 
     let ghidra = GhidraClient::from_config(config)
@@ -244,9 +267,7 @@ async fn handle_classify(
     let api_mappings = ApiMappings::default();
     let analyzer = Analyzer::new(ghidra, api_mappings);
 
-    // Classify all DLLs for the target
-    let target_exe = target.to_string_lossy().to_string();
-    let classifications = analyzer.classify_target(&target_exe).await?;
+    let classifications = analyzer.classify_dlls(dlls).await?;
 
     // Print report
     print_classification_report(&classifications);
@@ -259,49 +280,62 @@ async fn handle_classify(
 // Translate command handler
 // ============================================================
 
-async fn handle_translate(args: &TranslateArgs) -> Result<()> {
+async fn handle_translate(args: &TranslateArgs, settings: &Settings) -> Result<()> {
     let TranslateArgs {
         target,
         dll,
         function,
-        ghidra_url,
-        llm_url,
-        llm_model,
-        llm_api_key,
         output_dir,
-        max_tokens,
-        temperature,
         skip_git,
-        max_retries,
+        ..
     } = args;
     let (target, dll, function) = (target.as_path(), dll.as_str(), function.as_str());
-    let (ghidra_url, llm_url, llm_model) =
-        (ghidra_url.as_str(), llm_url.as_str(), llm_model.as_str());
-    let llm_api_key = llm_api_key.as_deref();
-    let output_dir = output_dir.as_deref();
-    let max_tokens = *max_tokens;
-    let temperature = *temperature;
     let skip_git = *skip_git;
-    let max_retries = *max_retries;
+
+    // Demanded here rather than at startup: `classify` and `verify` never talk
+    // to the LLM, so making the endpoint mandatory for them would force users
+    // to configure something they do not use.
+    let llm_url = settings.require_llm_url()?;
+    let llm_model = settings.require_llm_model()?;
+    let ghidra_url = settings.ghidra_url.value.as_str();
+    let max_tokens = settings.max_tokens.value;
+    let temperature = settings.temperature.value;
+    let max_retries = settings.max_retries.value;
+
+    // Logging the layer that supplied the endpoint is what makes a surprising
+    // model name diagnosable from a log alone.
+    let source_of = |r: &Option<Resolved<String>>| {
+        r.as_ref()
+            .map_or_else(|| "unset".to_string(), |r| r.source.to_string())
+    };
 
     info!(
         target = ?target,
         dll = %dll,
         function = %function,
+        llm_url = %llm_url,
+        llm_url_source = source_of(&settings.llm_url),
+        llm_model = %llm_model,
+        llm_model_source = source_of(&settings.llm_model),
         "Starting translation"
     );
 
-    let target_exe = target.to_string_lossy().to_string();
+    // `target` is the path the function is being translated out of, used here
+    // only to place the output. Ghidra identifies the program itself, so the
+    // path is not sent to it.
     let target_dir = target.parent().unwrap_or(target).to_path_buf();
-    let output_dir = output_dir.map(PathBuf::from).unwrap_or(target_dir);
+    let output_dir = output_dir.clone().unwrap_or(target_dir);
 
     // Create output directory structure
     let modules_dir = output_dir.join("src").join("modules");
     std::fs::create_dir_all(&modules_dir).context("Failed to create modules directory")?;
 
     // Initialize Ghidra client
-    let ghidra_config = GhidraConfig::new(ghidra_url)
+    let mut ghidra_config = GhidraConfig::new(ghidra_url)
         .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
+    if let Some(key) = &settings.ghidra_api_key {
+        ghidra_config = ghidra_config.with_api_key(key.value.clone());
+    }
     let ghidra = GhidraClient::from_config(ghidra_config)
         .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))?;
 
@@ -309,8 +343,8 @@ async fn handle_translate(args: &TranslateArgs) -> Result<()> {
     let mut llm_config = LlmConfig::new(llm_url, llm_model)
         .with_context(|| format!("Failed to parse LLM URL: {}", llm_url))?;
 
-    if let Some(key) = llm_api_key {
-        llm_config = llm_config.with_api_key(key.to_string());
+    if let Some(key) = &settings.llm_api_key {
+        llm_config = llm_config.with_api_key(key.value.clone());
     }
     llm_config = llm_config
         .with_max_tokens(max_tokens)
@@ -347,7 +381,7 @@ async fn handle_translate(args: &TranslateArgs) -> Result<()> {
 
         // Run translation
         let translation = pipeline
-            .translate(&target_exe, dll, function)
+            .translate(dll, function)
             .await
             .with_context(|| format!("Translation failed on attempt {}", attempt))?;
 
@@ -637,26 +671,50 @@ fn main() -> Result<()> {
         "Calxgloss starting"
     );
 
+    // Layer configuration once, so every command sees the same values and a
+    // malformed file is reported before any work starts rather than halfway
+    // through a translation.
+    let loaded = load(cli.config.as_deref())?;
+    if let Some(path) = &loaded.path {
+        debug!(path = %path.display(), "Loaded config file");
+    }
+    let mut layers = Layers::from_env();
+    layers.file = loaded.file.clone();
+
+    // The global flags form the highest-priority layer, shared by every
+    // subcommand so `config` reports the same values a real run would use.
+    let flags = FileConfig {
+        ghidra: GhidraSection {
+            url: cli.ghidra_url.clone(),
+            api_key: cli.ghidra_api_key.clone(),
+        },
+        llm: LlmSection {
+            url: cli.llm_url.clone(),
+            model: cli.llm_model.clone(),
+            api_key: cli.llm_api_key.clone(),
+            max_tokens: cli.max_tokens,
+            temperature: cli.temperature,
+            max_retries: cli.max_retries,
+        },
+    };
+    let settings = Settings::resolve(&layers, flags, &loaded);
+
     // Run the appropriate command
     let result = match cli.command {
-        Command::Classify {
-            target,
-            ghidra_url,
-            ghidra_api_key,
-        } => tokio::runtime::Builder::new_current_thread()
+        Command::Config => {
+            print!("{}", settings::render(&settings));
+            Ok(())
+        }
+        Command::Classify { dll } => tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .context("Failed to create tokio runtime")?
-            .block_on(handle_classify(
-                &target,
-                &ghidra_url,
-                ghidra_api_key.as_deref(),
-            )),
+            .block_on(handle_classify(&dll, &settings)),
         Command::Translate(args) => tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .context("Failed to create tokio runtime")?
-            .block_on(handle_translate(&args)),
+            .block_on(handle_translate(&args, &settings)),
         Command::Verify {
             dll,
             function,

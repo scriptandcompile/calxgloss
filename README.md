@@ -73,21 +73,65 @@ See [`Documentation/step_by_step_mvp.md`](Documentation/step_by_step_mvp.md) for
 
 ## Quick Start
 
+Write your server addresses to a config file once:
+
+```toml
+# ~/.config/calxgloss/config.toml
+[ghidra]
+url = "http://127.0.0.1:8080"
+
+[llm]
+url   = "http://127.0.0.1:1919/v1"
+model = "Qwen3.6-35B-A3B-FP8"
+```
+
+Then translate without repeating them:
+
 ```bash
 cargo run --bin calxgloss-cli -- translate \
     --target myapp.exe \
     --dll game_logic.dll \
-    --function DrawSprite \
-    --ghidra-url http://localhost:8080 \
-    --llm-url http://localhost:8081/v1 \
-    --llm-model qwen3-235b-a22b
+    --function DrawSprite
 ```
+
+`calxgloss config` prints every setting in force and which layer supplied it, so
+a value you did not expect can be traced to its source:
+
+```
+ghidra
+  url          http://127.0.0.1:8080              (config file)
+
+llm
+  url          http://127.0.0.1:1919/v1           (config file)
+  model        Qwen3.6-35B-A3B-FP8                (environment)
+  api_key      <not set>
+```
+
+### Configuration
+
+Settings are resolved in this order, most specific first:
+
+1. a command-line flag (`--ghidra-url`, `--llm-model`, ...),
+2. an environment variable (`CALXGLOSS_GHIDRA_URL`, `CALXGLOSS_LLM_MODEL`, ...),
+3. a TOML file,
+4. a built-in default.
+
+The file is looked for at, in order: the path given to `--config`,
+`./calxgloss.toml`, then `$XDG_CONFIG_HOME/calxgloss/config.toml` (or
+`~/.config/calxgloss/config.toml`). A file named with `--config` must exist; the
+others are optional.
+
+Ghidra's URL has a default, because GhidraMCP has a well-known port. The LLM URL
+and model have none — a local inference server has no conventional address — so
+`translate` reports them as unset, listing all three ways to provide one, rather
+than failing later with a connection error to a port nothing is listening on.
 
 ## Workspace Structure
 
 | Crate | Purpose |
 |-------|---------|
 | `calxgloss-types` | Shared data structures |
+| `calxgloss-config` | Layered configuration (flags, environment, TOML) |
 | `calxgloss-ghidra` | GhidraMCP HTTP client |
 | `calxgloss-llm` | Local LLM client (Ollama/vLLM) |
 | `calxgloss-prompts` | Prompt templates |

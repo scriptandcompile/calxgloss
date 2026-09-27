@@ -383,6 +383,101 @@ impl FfiStubBuilder {
     }
 }
 
+/// Map a Ghidra decompiler type name to a Rust FFI type.
+///
+/// Ghidra's decompiler emits a different vocabulary from a C SDK: it writes
+/// `longlong` and `ulonglong` without a space, `undefined4` instead of `int`,
+/// and `pointer`/`code` for types it could not resolve. None of those are in
+/// [`TYPE_MAP`], and falling through to the raw string would emit invalid Rust,
+/// so they are normalised here.
+///
+/// Resolution order:
+/// 1. An exact match in `type_map`, so SDK spellings like `DWORD` and
+///    `unsigned int` keep their existing mapping.
+/// 2. Ghidra's own spellings, with pointer depth preserved.
+/// 3. [`windows_type_to_rust`] as a fallback.
+///
+/// Pointer depth is significant: `undefined **` becomes `*mut *mut u8`, not
+/// `*mut u8`, because a single level would silently drop a dereference.
+pub fn ghidra_type_to_rust(type_name: &str, type_map: &HashMap<String, String>) -> String {
+    let trimmed = type_name.trim();
+    if trimmed.is_empty() {
+        return "()".to_string();
+    }
+
+    // An exact hit in the type map wins, so Windows SDK names are unaffected.
+    if let Some(mapped) = type_map.get(trimmed) {
+        return mapped.clone();
+    }
+
+    // Split off pointer depth: count stars, then reduce the base.
+    let depth = trimmed.matches('*').count();
+    let mut base = trimmed.trim();
+    while let Some(rest) = base.strip_suffix('*') {
+        base = rest.trim_end();
+    }
+    base = base.trim();
+    // `const` and `unsigned` are already in the map where they matter, so a bare
+    // `const` left over here is decoration rather than part of the type name.
+    if let Some(rest) = base.strip_prefix("const") {
+        base = rest.trim();
+    }
+    // Ghidra writes `unsigned long` and friends; the map keys include
+    // `unsigned`, so retry the full form before reducing it.
+    if let Some(mapped) = type_map.get(base) {
+        return apply_pointer_depth(mapped, depth);
+    }
+
+    let scalar = match base {
+        // Width-qualified unknowns. Ghidra's `undefinedN` is unsigned storage of
+        // unknown interpretation, so it is mapped to the unsigned type.
+        "undefined1" | "byte" | "uchar" => "u8",
+        "undefined2" | "ushort" | "word" => "u16",
+        "undefined4" | "uint" | "dword" => "u32",
+        "undefined8" | "ulonglong" | "ulong" | "qword" => "u64",
+        "undefined" | "undefined16" => "u8",
+
+        // Signed forms, written without the space the SDK uses.
+        "longlong" => "i64",
+        "long" | "int" | "sint" => "i32",
+        "short" => "i16",
+        "char" | "schar" => "i8",
+
+        // Ghidra uses these for types it could not resolve.
+        "pointer" | "code" | "void" | "undefined_p" => "*mut u8",
+        "float" => "f32",
+        "double" => "f64",
+        "wchar_t" => "u16",
+        "bool" | "BOOL" => "i32",
+
+        _ => {
+            // Unknown: hand the original string to the Windows mapper, which
+            // will pass it through unchanged. The caller validates the result.
+            return windows_type_to_rust(trimmed, type_map);
+        }
+    };
+
+    apply_pointer_depth(scalar, depth)
+}
+
+/// Wrap a mapped scalar in the number of pointer levels it was written with.
+fn apply_pointer_depth(scalar: &str, depth: usize) -> String {
+    // The Ghidra spellings above already carry their own `*` where the type is
+    // itself a pointer (`pointer`, `void`), so don't double-wrap those.
+    let base_pointer = scalar.starts_with('*');
+    let mut out = scalar.to_string();
+    for _ in 0..depth {
+        if base_pointer {
+            // Re-point through the pointee, e.g. `*mut u8` -> `*mut *mut u8`.
+            out = format!("mut {}", out);
+            out = format!("*{out}");
+        } else {
+            out = format!("*mut {out}");
+        }
+    }
+    out
+}
+
 /// Map a Windows type name to a Rust type.
 ///
 /// Handles basic type names and pointer types (e.g., `"char*"` -> `"*mut i8"`).

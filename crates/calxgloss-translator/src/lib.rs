@@ -23,7 +23,7 @@
 //! let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;
 //! let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
 //!
-//! let translation = pipeline.translate("myapp.exe", "game_logic.dll", "DrawSprite").await?;
+//! let translation = pipeline.translate("game_logic.dll", "DrawSprite").await?;
 //! println!("Translated code:\n{}", translation.rust_code);
 //! # Ok(())
 //! # }
@@ -39,8 +39,8 @@ use calxgloss_llm::{LlmClient, LlmMessage};
 use calxgloss_pal::ApiMappings;
 use calxgloss_prompts::build_translate_prompt;
 use calxgloss_testgen::TestGenerator;
-use calxgloss_types::{Export, FunctionInfo, Import, TestCase, TranslationRequest};
-use tracing::{debug, info, instrument};
+use calxgloss_types::{Export, FunctionInfo, TestCase, TranslationRequest};
+use tracing::{debug, info, instrument, warn};
 
 // ============================================================
 // Public types
@@ -323,7 +323,7 @@ impl TranslationPipeline {
         self
     }
 
-    /// Translate a function from a target executable.
+    /// Translate a function from the program open in Ghidra.
     ///
     /// This is the main pipeline entry point. It fetches all data from Ghidra,
     /// analyzes the function, generates tests, builds a prompt, and sends it
@@ -331,8 +331,8 @@ impl TranslationPipeline {
     ///
     /// # Arguments
     ///
-    /// * `target_exe` — The target executable name (used for Ghidra session).
-    /// * `dll` — The DLL containing the function.
+    /// * `dll` — The DLL containing the function. Recorded on the result; the
+    ///   lookup is against the program Ghidra has open, which must be this DLL.
     /// * `function` — The function name to translate.
     ///
     /// # Returns
@@ -353,26 +353,21 @@ impl TranslationPipeline {
     /// let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;
     /// let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
     ///
-    /// let translation = pipeline.translate("myapp.exe", "game_logic.dll", "DrawSprite").await?;
+    /// let translation = pipeline.translate("game_logic.dll", "DrawSprite").await?;
     /// println!("Generated {} lines of Rust code", translation.rust_code.lines().count());
     /// # Ok(())
     /// # }
     /// ```
-    #[instrument(skip(self), fields(target_exe, dll, function, base_url = %self.ghidra.base_url()))]
-    pub async fn translate(
-        &self,
-        target_exe: &str,
-        dll: &str,
-        function: &str,
-    ) -> Result<Translation> {
-        debug!(target_exe, dll, function, "Starting translation pipeline");
+    #[instrument(skip(self), fields(dll, function, base_url = %self.ghidra.base_url()))]
+    pub async fn translate(&self, dll: &str, function: &str) -> Result<Translation> {
+        debug!(dll, function, "Starting translation pipeline");
 
         // Step 1: Fetch function metadata from Ghidra
-        let function_info = self.fetch_function(target_exe, dll, function).await?;
+        let function_info = self.fetch_function(dll, function).await?;
         info!(dll, function, "Fetched function metadata");
 
         // Step 2: Fetch imports and tag Windows APIs
-        let imports = self.fetch_imports(target_exe, dll).await?;
+        let imports = self.fetch_imports(dll).await?;
         let tagged_apis = self.tag_windows_apis(&function_info.disassembly, &imports)?;
         info!(
             dll,
@@ -482,27 +477,74 @@ impl TranslationPipeline {
     }
 
     /// Fetch function metadata from GhidraMCP.
-    async fn fetch_function(
-        &self,
-        target_exe: &str,
-        dll: &str,
-        function: &str,
-    ) -> Result<FunctionInfo> {
-        self.ghidra
-            .get_function_full(target_exe, dll, function)
+    ///
+    /// Ghidra serves the one program open in its CodeBrowser, so this is a
+    /// lookup in that program. The name is resolved to an address first, and
+    /// only an exact match is accepted: a substring match would silently
+    /// translate a different function.
+    async fn fetch_function(&self, dll: &str, function: &str) -> Result<FunctionInfo> {
+        let context = |source| TranslatorError::GhidraFetch {
+            dll: dll.to_string(),
+            function: function.to_string(),
+            source,
+        };
+
+        let matches = self
+            .ghidra
+            .search_functions(function, Some(1))
             .await
-            .map_err(|e| TranslatorError::GhidraFetch {
+            .map_err(context)?;
+        let found = matches.iter().find(|m| m.name == function).ok_or_else(|| {
+            TranslatorError::GhidraFetch {
                 dll: dll.to_string(),
                 function: function.to_string(),
-                source: e,
-            })
+                source: calxgloss_ghidra::GhidraError::NotFound {
+                    kind: "function",
+                    query: format!(
+                        "{function} (the search matched {:?})",
+                        matches.iter().map(|m| &m.name).collect::<Vec<_>>()
+                    ),
+                },
+            }
+        })?;
+
+        let report = self
+            .ghidra
+            .function_report(found.address)
+            .await
+            .map_err(context)?;
+
+        // Ghidra has no call-graph endpoint. Callers come from the
+        // cross-references to the entry; callees are read out of the
+        // decompiled body and so cannot include calls through a function pointer.
+        let call_graph: Vec<String> = report
+            .callers
+            .iter()
+            .chain(report.callees.iter())
+            .cloned()
+            .collect();
+
+        Ok(FunctionInfo {
+            name: report.name,
+            address: report.address,
+            dll: dll.to_string(),
+            disassembly: report.disassembly,
+            decompiler_output: report.decompiled.body,
+            windows_apis: Vec::new(),
+            call_graph,
+        })
     }
 
-    /// Fetch imports for a DLL from GhidraMCP.
-    async fn fetch_imports(&self, target_exe: &str, dll: &str) -> Result<Vec<Import>> {
+    /// Fetch the names of the open program's imports.
+    ///
+    /// Returned as names rather than [`Import`] values: Ghidra reports an import
+    /// as a name and an external slot with no module attached, so there is no
+    /// module name to put in an `Import`.
+    async fn fetch_imports(&self, dll: &str) -> Result<Vec<String>> {
         self.ghidra
-            .get_imports(target_exe, dll)
+            .imports(None)
             .await
+            .map(|symbols| symbols.into_iter().map(|s| s.name).collect())
             .map_err(|e| TranslatorError::GhidraFetch {
                 dll: dll.to_string(),
                 function: "<imports>".to_string(),
@@ -514,7 +556,7 @@ impl TranslationPipeline {
     fn tag_windows_apis(
         &self,
         disassembly: &str,
-        imports: &[Import],
+        imports: &[String],
     ) -> Result<Vec<calxgloss_types::translation::WindowsApiCall>> {
         // Use the analyzer's tagging logic via the analyzer we constructed
         let tagged = self
@@ -537,10 +579,11 @@ impl TranslationPipeline {
     async fn generate_baseline_tests(
         &self,
         function_info: &FunctionInfo,
-        imports: &[Import],
+        _imports: &[String],
     ) -> Result<Vec<TestCase>> {
-        // Build a mock signature from the function name and DLL for test generation
-        let signature = self.extract_mock_signature(function_info, imports);
+        // The signature Ghidra's decompiler inferred, used to derive the
+        // parameters the test cases feed in.
+        let signature = self.signature_for(function_info);
 
         // Generate test inputs from signature and disassembly
         let tests = calxgloss_testgen::generate_test_inputs(&signature, &function_info.disassembly)
@@ -549,51 +592,25 @@ impl TranslationPipeline {
         Ok(tests)
     }
 
-    /// Extract a mock function signature for test input generation.
+    /// The function's C signature, as Ghidra inferred it.
     ///
-    /// Since Ghidra may not always provide a clean C-style signature, we
-    /// construct a plausible one from the function name and imports.
-    fn extract_mock_signature(&self, function_info: &FunctionInfo, imports: &[Import]) -> String {
-        // Try to build a signature that looks like a C function declaration
-        // The test generator parses this to create boundary-value inputs
-        let param_count = self.estimate_params(function_info, imports);
-        let params: Vec<String> = (0..param_count)
-            .map(|i| format!("int param_{}", i))
-            .collect();
-        let params_str = params.join(", ");
-
-        format!("int __stdcall {}({})", function_info.name, params_str)
-    }
-
-    /// Estimate the number of parameters a function takes.
-    fn estimate_params(&self, function_info: &FunctionInfo, _imports: &[Import]) -> usize {
-        // Heuristic: if we have exports, try to extract the real signature
-        if let Some(ref dll_name) = self.target_dll
-            && dll_name == &function_info.dll
-            && let Some(export) = self.exports.iter().find(|e| e.name == function_info.name)
-            && let Ok(parsed) = calxgloss_testgen::parse_signature(&export.signature)
+    /// The decompiler's first line is a real signature carrying real parameter
+    /// types, so it is preferred. Only when that line is unusable — the
+    /// decompilation failed, or the text is not pseudo-C — does this fall back
+    /// to a placeholder, which yields boundary-value tests for the wrong
+    /// parameter count rather than no tests at all.
+    fn signature_for(&self, function_info: &FunctionInfo) -> String {
+        if let Some(parsed) =
+            calxgloss_ghidra::parse::parse_decompiled(&function_info.decompiler_output)
         {
-            return parsed.parameters.len();
+            return parsed.signature;
         }
 
-        // Fallback: guess based on decompiler output or disassembly
-        if function_info.decompiler_output.contains('(')
-            && function_info.decompiler_output.contains(')')
-        {
-            // Try to extract from pseudo-C
-            let open = function_info.decompiler_output.find('(').unwrap_or(0);
-            let close = function_info
-                .decompiler_output
-                .rfind(')')
-                .unwrap_or(function_info.decompiler_output.len());
-            let params = &function_info.decompiler_output[open + 1..close];
-            if !params.trim().is_empty() {
-                return params.split(',').count();
-            }
-        }
-
-        // Default guess
-        3
+        warn!(
+            function = %function_info.name,
+            "No signature in the decompiled output; falling back to a parameter-less one"
+        );
+        format!("int __stdcall {}()", function_info.name)
     }
 
     /// Build a [`TranslationRequest`] with all gathered context.
@@ -708,7 +725,7 @@ mod tests {
     }
 
     #[test]
-    fn test_estimate_params_from_decompiler() {
+    fn test_signature_comes_from_the_decompiler() {
         let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
         let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
@@ -723,12 +740,49 @@ mod tests {
             call_graph: Vec::new(),
         };
 
-        let params = pipeline.estimate_params(&func_info, &[]);
-        assert_eq!(params, 3);
+        // The inferred signature is used as-is, parameter types included.
+        assert_eq!(
+            pipeline.signature_for(&func_info),
+            "int __stdcall DrawSprite(int x, int y, unsigned int texture_index)"
+        );
     }
 
     #[test]
-    fn test_estimate_params_default() {
+    fn test_signature_takes_the_declarator_not_the_whole_body() {
+        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
+        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+
+        // This is the verbatim decompilation of `FUN_18008ed50` in `eqmain.dll`.
+        // Reading the parameter list as everything between the first `(` and the
+        // last `)` would swallow the whole body and report the parameters of the
+        // expression, not of the function.
+        let func_info = FunctionInfo {
+            name: "FUN_18008ed50".to_string(),
+            address: 0x18008ed50,
+            dll: "eqmain.dll".to_string(),
+            disassembly: String::new(),
+            decompiler_output: "\nlonglong FUN_18008ed50(longlong param_1,int param_2)\n\n{\n  return param_1 + ((longlong)param_2 + 4) * 8;\n}\n".to_string(),
+            windows_apis: Vec::new(),
+            call_graph: Vec::new(),
+        };
+
+        let signature = pipeline.signature_for(&func_info);
+        assert_eq!(
+            signature,
+            "longlong FUN_18008ed50(longlong param_1,int param_2)"
+        );
+        assert_eq!(
+            calxgloss_testgen::parse_signature(&signature)
+                .unwrap()
+                .parameters
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn test_signature_falls_back_when_there_is_no_decompilation() {
         let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
         let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
@@ -743,8 +797,13 @@ mod tests {
             call_graph: Vec::new(),
         };
 
-        let params = pipeline.estimate_params(&func_info, &[]);
-        assert_eq!(params, 3); // default fallback
+        // With nothing to read, the fallback declares no parameters. It
+        // previously invented three, which generated test cases feeding
+        // arguments to a function that takes none.
+        assert_eq!(
+            pipeline.signature_for(&func_info),
+            "int __stdcall SomeFunc()"
+        );
     }
 
     #[test]
