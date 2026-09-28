@@ -17,7 +17,10 @@ pub fn generate_invoke(spec: &HarnessSpec) -> Result<String> {
     // Buffers requested by pointer arguments must outlive the call into the target
     // function, so they are held in an arena. Only emitted when a pointer is
     // actually present, otherwise it would be an unused binding.
-    let has_pointer = spec.params.iter().any(|p| p.kind == crate::wine::ScalarKind::Ptr);
+    let has_pointer = spec
+        .params
+        .iter()
+        .any(|p| p.kind == crate::wine::ScalarKind::Ptr);
 
     writeln!(
         out,
@@ -380,15 +383,8 @@ pub const HARNESS_CRASH_EXIT: u32 = 133;
 
 /// Generate the complete harness source for a spec.
 pub fn generate_harness(spec: &HarnessSpec) -> Result<String> {
-    use anyhow::Context;
-
     let mut src = String::with_capacity(8 * 1024);
-    src.push_str(
-        &HARNESS_PREFIX.replace(
-            "__CRASH_EXIT__",
-            &HARNESS_CRASH_EXIT.to_string(),
-        ),
-    );
+    src.push_str(&HARNESS_PREFIX.replace("__CRASH_EXIT__", &HARNESS_CRASH_EXIT.to_string()));
     src.push_str(&generate_invoke(spec)?);
     src.push_str(HARNESS_SUFFIX);
     Ok(src)

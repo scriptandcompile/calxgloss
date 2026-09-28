@@ -44,7 +44,6 @@
 //! retries case-by-case so one bad input does not discard the rest. Note that
 //! this only covers *crashes*; a hang is still fatal.
 
-use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -53,14 +52,14 @@ use anyhow::{Context, Result, bail};
 use calxgloss_types::TestCase;
 use tracing::{debug, info, instrument, warn};
 
+use encode::decode_value;
+pub use encode::encode_test_case;
+use harness::HARNESS_CRASH_EXIT;
+pub use harness::generate_harness;
 pub use types::{
     FunctionLocator, HarnessReport, HarnessSpec, HarnessTestResult, LoadMode, ParamSpec,
     ScalarKind, UNIT_SEPARATOR, locator_for_function, locator_for_va,
 };
-pub use encode::encode_test_case;
-pub use harness::generate_harness;
-use encode::{decode_value};
-use harness::HARNESS_CRASH_EXIT;
 
 pub mod encode;
 pub mod harness;
@@ -369,9 +368,9 @@ impl WineRunner {
              panic = \"unwind\"\n\
              debug = false\n";
         std::fs::write(dir.join("Cargo.toml"), manifest)
-            .with_context(|| format!("Failed to write Cargo.toml"))?;
+            .with_context(|| "Failed to write Cargo.toml".to_string())?;
         std::fs::write(src.join("main.rs"), &generate_harness(spec)?)
-            .with_context(|| format!("Failed to write harness source"))?;
+            .with_context(|| "Failed to write harness source".to_string())?;
 
         debug!(path = %dir.display(), "Wrote harness project");
         Ok(dir)
@@ -499,7 +498,9 @@ fn parse_hex(s: &str) -> Result<u64, String> {
         .strip_prefix("0x")
         .or_else(|| t.strip_prefix("0X"))
         .unwrap_or(t);
-    u64::from_str_radix(t, 16).with_context(|| format!("'{t}' is not a hex value")).map_err(|e| e.to_string())
+    u64::from_str_radix(t, 16)
+        .with_context(|| format!("'{t}' is not a hex value"))
+        .map_err(|e| e.to_string())
 }
 
 fn to_windows_separators(path: &str) -> String {

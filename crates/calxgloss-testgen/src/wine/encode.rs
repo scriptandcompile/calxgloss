@@ -1,7 +1,5 @@
 //! Encode test cases for the harness wire format.
 
-use std::path::Path;
-
 use anyhow::{Context, Result, bail};
 use calxgloss_types::TestCase;
 use serde_json::Value;
@@ -231,5 +229,7 @@ fn parse_hex(s: &str) -> Result<u64, String> {
         .strip_prefix("0x")
         .or_else(|| t.strip_prefix("0X"))
         .unwrap_or(t);
-    u64::from_str_radix(t, 16).with_context(|| format!("'{t}' is not a hex value")).map_err(|e| e.to_string())
+    u64::from_str_radix(t, 16)
+        .with_context(|| format!("'{t}' is not a hex value"))
+        .map_err(|e| e.to_string())
 }

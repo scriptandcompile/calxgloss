@@ -284,16 +284,16 @@ pub const UNIT_SEPARATOR: char = '\u{1f}';
 /// or a named export.
 pub fn locator_for_function(image: &crate::pe::PeImage, function: &str) -> Option<FunctionLocator> {
     // If it looks like an address, treat it as an RVA.
-    if function.starts_with("FUN_") {
-        if let Ok(hex) = u32::from_str_radix(&function[4..], 16) {
-            return Some(FunctionLocator::Rva(hex - image.image_base() as u32));
-        }
+    if let Some(stripped) = function.strip_prefix("FUN_")
+        && let Ok(hex) = u32::from_str_radix(stripped, 16)
+    {
+        return Some(FunctionLocator::Rva(hex - image.image_base() as u32));
     }
     // Otherwise, look it up in the export table.
     image
         .exports()
         .iter()
-        .find(|e| &e.name == function)
+        .find(|e| e.name == function)
         .map(|e| FunctionLocator::ExportName(e.name.clone()))
 }
 
@@ -301,6 +301,6 @@ pub fn locator_for_function(image: &crate::pe::PeImage, function: &str) -> Optio
 ///
 /// Takes the VA from Ghidra and returns a [`FunctionLocator::Rva`].
 pub fn locator_for_va(image: &crate::pe::PeImage, va: u64) -> Option<FunctionLocator> {
-    let rva = va - image.image_base() as u64;
+    let rva = va - image.image_base();
     Some(FunctionLocator::Rva(rva as u32))
 }

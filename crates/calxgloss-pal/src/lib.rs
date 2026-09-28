@@ -30,7 +30,7 @@ use calxgloss_types::ApiCategory;
 
 mod data;
 
-pub use data::{MAPPINGS, CATEGORY_INDEX};
+pub use data::{CATEGORY_INDEX, MAPPINGS};
 
 /// A single mapping from a Windows API to its cross-platform Rust equivalent.
 ///
@@ -94,13 +94,11 @@ impl ApiMapping {
 #[derive(Debug, Clone)]
 pub struct ApiMappings(&'static [ApiMapping]);
 
-
 /// Lazy-initialized category index for efficient `for_category` lookups.
 ///
 /// Built once on first access, then reused. No per-call allocation or leak.
 ///
 /// Defined in the `data` module.
-
 impl ApiMappings {
     /// Looks up an API mapping by its Windows API name.
     ///

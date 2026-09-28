@@ -446,6 +446,56 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    /// Saves and restores environment variables on drop.
+    ///
+    /// This is the correct way to temporarily change `HOME`, `XDG_CONFIG_HOME`,
+    /// or other process-wide variables from a test: the guard's `Drop` impl
+    /// always restores the original state even if the test panics, and the
+    /// guard holds the previous values so they are never lost.
+    struct EnvGuard {
+        vars: Vec<(&'static str, Option<String>)>,
+        cwd: PathBuf,
+    }
+
+    impl EnvGuard {
+        fn new() -> Self {
+            Self {
+                vars: Vec::new(),
+                cwd: std::env::current_dir().unwrap_or_default(),
+            }
+        }
+
+        /// Set `var` to `value`, removing it if `value` is `None`.
+        fn set(&mut self, var: &'static str, value: Option<String>) {
+            let previous = std::env::var(var).ok();
+            match &value {
+                Some(v) => unsafe { std::env::set_var(var, v) },
+                None => unsafe { std::env::remove_var(var) },
+            }
+            self.vars.push((var, previous));
+        }
+
+        /// Change the current directory and record the old one for restoration.
+        fn chdir(&mut self, path: &Path) {
+            self.cwd = std::env::current_dir().unwrap_or_default();
+            std::env::set_current_dir(path).unwrap();
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // Restore variables in reverse order.
+            for (var, prev) in self.vars.iter().rev() {
+                match prev {
+                    Some(v) => unsafe { std::env::set_var(var, v) },
+                    None => unsafe { std::env::remove_var(var) },
+                }
+            }
+            // Restore the working directory.
+            let _ = std::env::set_current_dir(&self.cwd);
+        }
+    }
+
     fn write(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);
         std::fs::write(&path, body).expect("write config");
@@ -568,32 +618,13 @@ max_retries = 5
         // checkout, so falling through to the user-global path must succeed
         // rather than fail.
         let dir = tempfile::tempdir().unwrap();
-        // Temporarily unset the user-global config path so no user config is
-        // picked up — the dev machine may have `~/.config/calxgloss/config.toml`
-        // which would make `loaded.is_empty()` false.
-        let xdg_previous = std::env::var_os("XDG_CONFIG_HOME");
-        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
-        // Also neutralize `HOME` so `user_config_path()` returns `None`
-        // rather than falling back to `~/.config/calxgloss/config.toml`
-        // which may exist on the dev machine.
-        let home_previous = std::env::var_os("HOME");
-        unsafe { std::env::set_var("HOME", dir.path()) };
-        // Point the search at an empty directory by running with the process
-        // current directory inside it, where `calxgloss.toml` is absent.
-        let cwd_previous = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
+        let mut guard = EnvGuard::new();
+        guard.set("XDG_CONFIG_HOME", None);
+        guard.set("HOME", Some(dir.path().to_string_lossy().into_owned()));
+        guard.chdir(dir.path());
         let loaded = load(None);
-        std::env::set_current_dir(cwd_previous).unwrap();
-        if let Some(val) = home_previous {
-            unsafe { std::env::set_var("HOME", val) };
-        } else {
-            unsafe { std::env::remove_var("HOME") };
-        }
-        if let Some(val) = xdg_previous {
-            unsafe { std::env::set_var("XDG_CONFIG_HOME", val) };
-        } else {
-            unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
-        }
+        // Guard drops and restores HOME / XDG_CONFIG_HOME / cwd here.
+        drop(guard);
 
         let loaded = loaded.expect("a missing optional file must not be an error");
         assert!(loaded.is_empty());
@@ -611,25 +642,14 @@ max_retries = 5
         let dir = tempfile::tempdir().unwrap();
         // Temporarily neutralize user-global config paths so no user config
         // overrides the project-level value being tested.
-        let xdg_previous = std::env::var_os("XDG_CONFIG_HOME");
-        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
-        let home_previous = std::env::var_os("HOME");
-        unsafe { std::env::set_var("HOME", dir.path()) };
-        let cwd_previous = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
+        let mut guard = EnvGuard::new();
+        guard.set("XDG_CONFIG_HOME", None);
+        guard.set("HOME", Some(dir.path().to_string_lossy().into_owned()));
+        guard.chdir(dir.path());
         std::fs::write(PROJECT_FILE, "[llm]\nmodel = \"from-project\"\n").unwrap();
         let loaded = load(None);
-        std::env::set_current_dir(cwd_previous).unwrap();
-        if let Some(val) = home_previous {
-            unsafe { std::env::set_var("HOME", val) };
-        } else {
-            unsafe { std::env::remove_var("HOME") };
-        }
-        if let Some(val) = xdg_previous {
-            unsafe { std::env::set_var("XDG_CONFIG_HOME", val) };
-        } else {
-            unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
-        }
+        // Guard drops and restores env here.
+        drop(guard);
 
         let loaded = loaded.unwrap();
         assert_eq!(loaded.file.llm.model.as_deref(), Some("from-project"));
