@@ -674,7 +674,17 @@ impl<'a> DashboardBuilder<'a> {
             }
         }
 
-        let dashboard = ReviewDashboard::new(units);
+        let mut dashboard = ReviewDashboard::new(units);
+
+        // Phase 4 Step 4.4: auto-block units whose dependencies are not in a passing state.
+        let blocked = dashboard.auto_block_units();
+        if blocked > 0 {
+            eprintln!(
+                "  [auto-block] Marked {} units as blocked due to unmet dependencies",
+                blocked
+            );
+        }
+
         Ok(dashboard)
     }
 

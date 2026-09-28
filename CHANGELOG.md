@@ -298,6 +298,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DependencyNode::with_level()` constructors.
 
 
+### Phase 4, Step 4.4 — Auto-queue Unmet Units
+
+#### `calxgloss-types`
+- **`ReviewDashboard::auto_block_units()`** — automatically marks units
+  as `Blocked` when their dependencies are in a failing state
+  (`SendBack` / `PatchRequested`). Propagates transitively: if A depends
+  on B and B fails, A is blocked; if C depends on A and A is blocked, C
+  is also blocked. Skips terminal statuses (`Accepted` / `Merged` /
+  `Blocked`) and the failing units themselves (they keep their original
+  status). Scans both `review_queue` and `recent_activity`. Returns the
+  count of units changed to `Blocked`. Idempotent.
+- 8 unit tests: basic blocking, no-op with all deps accepted, multiple
+  deps (any failed blocks dependent), transitive propagation, terminal
+  status respect, `PatchRequested` triggers blocking, empty graph,
+  idempotency.
+
+#### `calxgloss-reports`
+- `DashboardBuilder::build()` now calls `auto_block_units()` after
+  constructing the dashboard from git/file artifacts, ensuring the
+  terminal dashboard always shows correct blocked status.
+
 ## [0.1.0] — 2025-09-27
 
 ### Added
