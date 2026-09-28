@@ -10,5 +10,6 @@ repository.workspace = true
 calxgloss-types = { path = "../calxgloss-types" }
 calxgloss-ghidra = { path = "../calxgloss-ghidra" }
 calxgloss-pal = { path = "../calxgloss-pal" }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

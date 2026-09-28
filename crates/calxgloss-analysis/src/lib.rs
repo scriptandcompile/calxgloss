@@ -40,8 +40,10 @@
 //! ```
 
 mod classify;
+pub mod benchmark;
 pub mod error;
 
+pub use benchmark::*;
 pub use classify::*;
 pub use error::{AnalysisError, Result};
 
