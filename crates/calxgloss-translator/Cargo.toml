@@ -14,7 +14,9 @@ calxgloss-prompts = { path = "../calxgloss-prompts" }
 calxgloss-pal = { path = "../calxgloss-pal" }
 calxgloss-testgen = { path = "../calxgloss-testgen" }
 calxgloss-analysis = { path = "../calxgloss-analysis" }
+calxgloss-verify = { path = "../calxgloss-verify" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+askama = { workspace = true }

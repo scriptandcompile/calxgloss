@@ -133,8 +133,44 @@ pub fn build_translate_prompt(req: &TranslationRequest) -> Result<String, Prompt
 }
 
 // ============================================================
-// Built-in templates
+// Fix template — for retrying after verification failure
 // ============================================================
+
+/// Template for "fix the compilation errors" or "fix the failing tests" prompts.
+///
+/// Rendered via Askama from the embedded `templates/fix.j2` file.
+#[derive(Template)]
+#[template(path = "fix.j2")]
+pub struct FixTemplate {
+    /// The function name being fixed.
+    pub function_name: String,
+
+    /// The DLL containing the function.
+    pub dll_name: String,
+
+    /// The previously generated (failing) Rust code.
+    pub original_rust_code: String,
+
+    /// A description of what went wrong during verification.
+    pub failure_description: String,
+}
+
+impl FixTemplate {
+    /// Create a new fix template.
+    pub fn new(
+        function_name: String,
+        dll_name: String,
+        original_rust_code: String,
+        failure_description: String,
+    ) -> Self {
+        Self {
+            function_name,
+            dll_name,
+            original_rust_code,
+            failure_description,
+        }
+    }
+}
 
 // ============================================================
 // Tests

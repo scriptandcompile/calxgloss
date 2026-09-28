@@ -30,8 +30,12 @@
 //! ```
 
 pub mod error;
+pub mod retry;
 
 pub use error::{Result, TranslatorError};
+pub use retry::{
+    RetryConfig, RetryResult, RetryStrategy, TranslationAttempt, try_translate_with_retry,
+};
 
 use calxgloss_analysis::Analyzer;
 use calxgloss_ghidra::GhidraClient;
@@ -40,6 +44,7 @@ use calxgloss_pal::ApiMappings;
 use calxgloss_prompts::build_translate_prompt;
 use calxgloss_testgen::TestGenerator;
 use calxgloss_types::{Export, FunctionInfo, TestCase, TranslationRequest};
+use calxgloss_verify::Verifier;
 use tracing::{debug, info, instrument, warn};
 
 // ============================================================
@@ -474,6 +479,108 @@ impl TranslationPipeline {
             tokens_used: response.tokens_used,
             baseline_tests: request.baseline_tests,
         })
+    }
+
+    /// Translate with automatic retry on verification failure.
+    ///
+    /// This is the main entry point for production use. It performs the full
+    /// translation pipeline, verifies the result, and if verification fails
+    /// it retries with escalating strategies:
+    ///
+    /// 1. **Initial attempt** — full pipeline, then verify
+    /// 2. **Compile fix** — if compilation fails, feed errors back to LLM
+    /// 3. **Test fix** — if tests fail, feed failing cases back to LLM
+    /// 4. **Escalate** — add more context and retry
+    ///
+    /// The retry loop continues until success or `max_attempts` is reached.
+    ///
+    /// # Arguments
+    ///
+    /// * `dll` — The DLL containing the function.
+    /// * `function` — The function name to translate.
+    /// * `config` — Retry configuration (default: 3 attempts, compile_fix strategy).
+    /// * `verifier` — The verification engine to use for checking translations.
+    ///
+    /// # Returns
+    ///
+    /// A [`RetryResult`] containing all attempts and the final outcome.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use calxgloss_translator::{TranslationPipeline, RetryConfig, RetryStrategy};
+    /// use calxgloss_verify::Verifier;
+    /// use std::path::Path;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let ghidra = calxgloss_ghidra::GhidraClient::new("http://localhost:8080")?;
+    /// let llm = calxgloss_llm::LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;
+    /// let pipeline = TranslationPipeline::new(ghidra, llm, calxgloss_pal::ApiMappings::default());
+    /// let verifier = Verifier::new(Path::new("/tmp/calxgloss-work"))?;
+    /// let config = RetryConfig::default();
+    ///
+    /// let result = pipeline.try_translate_with_retry(
+    ///     "game_logic.dll",
+    ///     "DrawSprite",
+    ///     &config,
+    ///     &verifier,
+    /// ).await?;
+    ///
+    /// if result.success {
+    ///     println!("Success after {} attempts", result.attempts.len());
+    ///     println!("{}", result.rust_code.as_ref().unwrap());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[instrument(skip(self, config, verifier), fields(dll, function))]
+    pub async fn try_translate_with_retry(
+        &self,
+        dll: &str,
+        function: &str,
+        config: &RetryConfig,
+        verifier: &Verifier,
+    ) -> Result<RetryResult> {
+        debug!(dll, function, "Starting translation with retry (max {} attempts)", config.max_attempts);
+
+        // Step 1: Initial translation via the full pipeline
+        let initial = self.translate(dll, function).await?;
+
+        info!(
+            dll,
+            function,
+            code_len = initial.rust_code.len(),
+            "Initial translation complete, beginning verification loop"
+        );
+
+        // Step 2: Run the retry loop
+        let result = retry::try_translate_with_retry(
+            initial,
+            verifier,
+            config,
+            &self.llm,
+            config.strategy.clone(),
+        )
+        .await;
+
+        if result.success {
+            info!(
+                dll,
+                function,
+                attempts = result.attempts.len(),
+                strategy = %result.success_strategy.as_deref().unwrap_or("unknown"),
+                "Translation succeeded via retry loop"
+            );
+        } else {
+            warn!(
+                dll,
+                function,
+                attempts = result.attempts.len(),
+                "All retry attempts exhausted without success"
+            );
+        }
+
+        Ok(result)
     }
 
     /// Fetch function metadata from GhidraMCP.
