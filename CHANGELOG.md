@@ -167,6 +167,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`is_branch_merged_into_main()`** — checks if a branch is an ancestor
   of `main` via `graph_ahead_behind()`
 
+### Added
+
+#### `calxgloss-git`
+- **`accept_branch()`** — merges a branch into `main` and writes an
+  acceptance record to `re/accepts/{dll}/{function}/vN.json` for
+  dashboard visibility
+- **`reject_branch()`** — writes a rejection record to
+  `re/rejections/{dll}/{function}/vN.json` with the reviewer's reason,
+  enabling send-back history in the dashboard
+
+#### `calxgloss-reports`
+- **`branch_matches()`** — public predicate for matching a git branch name
+  against a `{dll}/{function}/{attempt}` target, used by the accept/reject
+  CLI handlers to resolve a target string to the actual branch
+
+#### `calxgloss-cli`
+- **`dashboard accept <target>`** — merges the named unit's branch into
+  `main` and reports success, already-merged status, or merge conflicts;
+  writes an acceptance record for the dashboard to discover
+- **`dashboard reject <target> --reason "..."`** — records a rejection
+  with an optional reason; the record is persisted so the dashboard can
+  display send-back history
+
 ### Changed
 
 #### all crates

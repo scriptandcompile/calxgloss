@@ -467,6 +467,100 @@ impl GitManager {
         })
     }
 
+    /// Accepts a branch by merging it into `main` and records the acceptance.
+    ///
+    /// Returns the merge result and writes a timestamp to
+    /// `re/accepts/{dll}/{function}/v{N}.json` for dashboard visibility.
+    pub fn accept_branch(&self, branch: &GitBranch) -> Result<MergeResult, TypesError> {
+        info!("Accepting branch '{}'", branch.name);
+
+        let result = self.merge_to_main(branch)?;
+
+        // Record acceptance for dashboard visibility
+        let accepts_dir = self
+            .repo_path
+            .join("re")
+            .join("accepts")
+            .join(&branch.dll)
+            .join(&branch.function);
+        std::fs::create_dir_all(&accepts_dir).map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to create accepts dir: {}", e))
+        })?;
+
+        let accept_file = accepts_dir.join(format!("v{}.json", branch.attempt));
+        let accept_record = serde_json::json!({
+            "branch": branch.name,
+            "dll": branch.dll,
+            "function": branch.function,
+            "attempt": branch.attempt,
+            "merged_at": Utc::now().to_rfc3339(),
+            "merge_result": match &result {
+                MergeResult::Merged { merge_hash } => format!("merged:{}", merge_hash),
+                MergeResult::AlreadyUpToDate => "already_up_to_date".to_string(),
+                MergeResult::Conflicts { conflicted_files, error } => {
+                    format!("conflicts:{}:{}", conflicted_files.join(","), error)
+                }
+            },
+        });
+        std::fs::write(
+            &accept_file,
+            serde_json::to_string_pretty(&accept_record).map_err(|e| {
+                TypesError::Serialization(e)
+            })?,
+        )
+        .map_err(|e| TypesError::InvalidBranchName(format!("Failed to write accept record: {}", e)))?;
+
+        info!("Accepted branch '{}' — record written to {}", branch.name, accept_file.display());
+        Ok(result)
+    }
+
+    /// Rejects a branch and stores a rejection record.
+    ///
+    /// The rejection reason is saved to
+    /// `re/rejections/{dll}/{function}/v{N}.json` so the dashboard can
+    /// display send-back history.
+    pub fn reject_branch(
+        &self,
+        branch: &GitBranch,
+        reason: &str,
+    ) -> Result<PathBuf, TypesError> {
+        info!("Rejecting branch '{}' — reason: {}", branch.name, reason);
+
+        let rejection_dir = self
+            .repo_path
+            .join("re")
+            .join("rejections")
+            .join(&branch.dll)
+            .join(&branch.function);
+        std::fs::create_dir_all(&rejection_dir).map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to create rejection dir: {}", e))
+        })?;
+
+        let rejection_path = rejection_dir.join(format!("v{}.json", branch.attempt));
+        let rejection_record = serde_json::json!({
+            "branch": branch.name,
+            "dll": branch.dll,
+            "function": branch.function,
+            "attempt": branch.attempt,
+            "reason": reason,
+            "rejected_at": Utc::now().to_rfc3339(),
+        });
+        std::fs::write(
+            &rejection_path,
+            serde_json::to_string_pretty(&rejection_record).map_err(|e| {
+                TypesError::Serialization(e)
+            })?,
+        )
+        .map_err(|e| TypesError::InvalidBranchName(format!("Failed to write rejection record: {}", e)))?;
+
+        info!(
+            "Rejected branch '{}' — record written to {}",
+            branch.name,
+            rejection_path.display()
+        );
+        Ok(rejection_path)
+    }
+
     /// Stores failure details for a translation attempt.
     pub fn store_failure(
         &self,

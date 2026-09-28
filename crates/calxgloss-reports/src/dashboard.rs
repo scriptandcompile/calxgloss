@@ -423,7 +423,7 @@ fn status_symbol(status: &ReviewStatus) -> &str {
 ///
 /// The naming convention is: `re/{kind}/{rest}v{attempt}` where *rest* may
 /// contain a `/` for nested structures like `{dll}/{function}`.
-fn parse_branch_name(name: &str) -> Option<BranchParts> {
+pub(crate) fn parse_branch_name(name: &str) -> Option<BranchParts> {
     // Strip the `re/` prefix
     let rest = name.strip_prefix("re/")?;
 
@@ -473,8 +473,38 @@ fn parse_branch_name(name: &str) -> Option<BranchParts> {
     })
 }
 
+/// Returns true if a git branch name matches the given DLL, function,
+/// and optional attempt number.
+///
+/// This is the public counterpart to [`parse_branch_name`], providing a
+/// simple predicate for branch-matching without exposing the internal
+/// [`BranchParts`] type.
+pub fn branch_matches(
+    branch: &str,
+    dll: &str,
+    function: &str,
+    attempt: Option<u32>,
+) -> bool {
+    let Some(parts) = parse_branch_name(branch) else {
+        return false;
+    };
+
+    let branch_dll = parts.dll.strip_suffix(".dll").unwrap_or(&parts.dll);
+    let branch_func = parts.function.as_deref().unwrap_or("");
+
+    if branch_dll != dll || branch_func != function {
+        return false;
+    }
+
+    if let Some(req) = attempt {
+        req == parts.attempt
+    } else {
+        true
+    }
+}
+
 #[derive(Debug)]
-struct BranchParts {
+pub(crate) struct BranchParts {
     kind: WorkUnitKind,
     dll: String,
     function: Option<String>,

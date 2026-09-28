@@ -236,7 +236,10 @@ enum Command {
     /// to produce a summary table of translation units and their status.
     ///
     /// Use `--follow` to watch for changes and auto-refresh.
-    /// Use the `view` subcommand to inspect a single unit of work.
+    /// Use subcommands to act on units:
+    /// - `accept <target>` — merge the unit's branch into main
+    /// - `reject <target> --reason "..."` — send back with comments
+    /// - `view <target>` — inspect a single unit of work in detail
     Dashboard {
         /// Follow mode: continuously watch for new/changed branches
         #[arg(long, short)]
@@ -272,6 +275,49 @@ enum DashboardSubcommand {
         /// Unit to view: `<dll>/<function>` or `<dll>/<function>/vN`
         #[arg(value_name = "TARGET")]
         target: String,
+    },
+
+    /// Accept a unit — merge its branch into main
+    ///
+    /// The unit identifier is in the format `dll/function` or
+    /// `dll/function/vN`.  If no version is given, the latest attempt is
+    /// accepted.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss dashboard accept game_logic/DrawPrimitive
+    /// calxgloss dashboard accept game_logic/DrawPrimitive/v3
+    /// ```
+    Accept {
+        /// Unit to accept: `<dll>/<function>` or `<dll>/<function>/vN`
+        #[arg(value_name = "TARGET")]
+        target: String,
+    },
+
+    /// Reject a unit and send it back for fixes
+    ///
+    /// Records the rejection reason in `re/rejections/{dll}/{function}/vN.json`
+    /// so the dashboard can display send-back history.
+    ///
+    /// # Arguments
+    ///
+    /// * `<target>` — Unit identifier in the format `dll/function` or `dll/function/vN`
+    /// * `--reason` — Optional rejection reason (shown in the dashboard)
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss dashboard reject game_logic/DrawPrimitive/v2 --reason "wrong shader mapping"
+    /// ```
+    Reject {
+        /// Unit to reject: `<dll>/<function>` or `<dll>/<function>/vN`
+        #[arg(value_name = "TARGET")]
+        target: String,
+
+        /// Rejection reason (optional)
+        #[arg(long, short)]
+        reason: Option<String>,
     },
 }
 
@@ -348,6 +394,123 @@ fn cyan_bold(text: &str) -> String {
 
 fn white_bold(text: &str) -> String {
     bold(text)
+}
+
+// ============================================================
+// Dashboard accept/reject helpers
+// ============================================================
+
+/// Walk up from CWD to find the Git repository root.
+fn find_repo_path() -> Result<PathBuf> {
+    let path = std::env::current_dir()?;
+    let mut search = path.clone();
+    for _ in 0..10 {
+        if search.join(".git").exists() || search.join(".git").is_dir() {
+            return Ok(search.clone());
+        }
+        if !search.pop() {
+            break;
+        }
+    }
+    Ok(path)
+}
+
+/// Resolve a ViewTarget to the actual git branch name.
+///
+/// Searches all translation branches (`re/*`) and returns the first one
+/// whose DLL and function match the target, optionally checking the
+/// attempt number.
+fn resolve_branch(
+    git: &GitManager,
+    target: &calxgloss_reports::dashboard::ViewTarget,
+) -> Result<String> {
+    let candidates = git.list_translation_branches()?;
+    let target_dll = target.dll.clone();
+    let target_func = target.function.clone();
+    let target_attempt = target.specific_attempt;
+
+    for branch in &candidates {
+        // Must start with re/
+        if !branch.starts_with("re/") {
+            continue;
+        }
+
+        // Use the public matching function from reports
+        if !calxgloss_reports::dashboard::branch_matches(
+            branch,
+            &target_dll,
+            &target_func,
+            target_attempt,
+        ) {
+            continue;
+        }
+
+        return Ok(branch.clone());
+    }
+
+    // Collect available branches for a helpful error message
+    let available: Vec<String> = candidates
+        .iter()
+        .filter(|b| {
+            b.starts_with("re/")
+                && b.contains(&target_dll)
+                && b.contains(&target_func)
+        })
+        .cloned()
+        .collect();
+
+    if available.is_empty() {
+        let all_branches: String = candidates
+            .iter()
+            .take(10)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "No translation branch found for '{}/{}'.\n\
+             Available branches: {}",
+            target_dll,
+            target_func,
+            all_branches
+        )
+    } else {
+        anyhow::bail!(
+            "No translation branch found for '{}/{}'.\n\
+             Possible matches (check attempt number): {}",
+            target_dll,
+            target_func,
+            available.join(", ")
+        )
+    }
+}
+
+/// Parse a git branch name back into (dll, function, attempt) components.
+///
+/// Accepts branches in the format `re/{dll}/{function}v{N}` or
+/// `re/{dll_without_dot}/{function}v{N}`.
+fn parse_branch_for_accept(branch: &str) -> (String, String, u32) {
+    // Strip re/ prefix
+    let rest = branch.strip_prefix("re/").unwrap_or(branch);
+
+    // Split into path and attempt suffix
+    // e.g. "game_logic/DrawSpritev1" → path="game_logic/DrawSprite", attempt=1
+    let (path, attempt) = if let Some(vpos) = rest.rfind('v') {
+        let after_v = &rest[vpos + 1..];
+        if after_v.chars().all(|c| c.is_ascii_digit()) && !after_v.is_empty() {
+            (rest, after_v.parse().unwrap_or(1))
+        } else {
+            (rest, 1)
+        }
+    } else {
+        (rest, 1)
+    };
+
+    // Split path into dll and function on first /
+    let parts: Vec<&str> = path.splitn(2, '/').collect();
+    let dll = parts[0].to_string();
+    let function = parts.get(1).map(|s| s.to_string()).unwrap_or_default();
+
+    (dll, function, attempt)
 }
 
 // ============================================================
@@ -1041,6 +1204,181 @@ async fn handle_dashboard_view(target: &str) -> Result<()> {
 }
 
 // ============================================================
+// Dashboard accept subcommand handler
+// ============================================================
+
+/// Handles the `dashboard accept <target>` subcommand.
+///
+/// Merges the named branch into `main` and writes an acceptance record.
+async fn handle_dashboard_accept(target: &str) -> Result<()> {
+    info!(target = %target, "Handling dashboard accept");
+
+    let view_target =
+        ViewTarget::parse(target).context("Invalid target format. Use: <dll>/<function>/vN")?;
+    info!(
+        dll = %view_target.dll,
+        function = %view_target.function,
+        attempt = ?view_target.specific_attempt,
+        "Parsed accept target"
+    );
+
+    // Find the git repository
+    let repo_path = find_repo_path()?;
+    let git = GitManager::open(&repo_path).context("Failed to open git repository")?;
+
+    // Resolve the branch name: find the matching translation branch
+    let branch_name = resolve_branch(&git, &view_target)
+        .context("Could not find a matching branch for this unit")?;
+
+    info!(branch = %branch_name, "Resolved branch for acceptance");
+
+    // Parse the branch name into a GitBranch for the accept operation
+    let (dll, function, attempt) = parse_branch_for_accept(&branch_name);
+    let branch = GitBranch::new(&dll, &function, attempt).context("Invalid branch name")?;
+
+    // Check if already merged
+    if git.is_branch_merged_into_main(&branch.name)? {
+        println!();
+        println!(
+            "  {} Branch '{}' is already merged into main.",
+            yellow_bold("◉"),
+            branch.name
+        );
+        println!();
+        return Ok(());
+    }
+
+    // Perform the merge + accept
+    println!();
+    println!("  Merging branch '{}' into main...", bold(&branch.name));
+
+    match git.accept_branch(&branch) {
+        Ok(calxgloss_git::MergeResult::Merged { merge_hash }) => {
+            println!(
+                "  {} Branch '{}' merged into main (commit: {}).",
+                green_bold("✓"),
+                branch.name,
+                &merge_hash[..7]
+            );
+            println!(
+                "  {} Unit '{}/{}' is now accepted.",
+                green_bold("✓"),
+                view_target.dll,
+                view_target.function
+            );
+        }
+        Ok(calxgloss_git::MergeResult::AlreadyUpToDate) => {
+            println!(
+                "  {} Branch '{}' is already up to date with main.",
+                yellow_bold("◉"),
+                branch.name
+            );
+        }
+        Ok(calxgloss_git::MergeResult::Conflicts {
+            conflicted_files,
+            error,
+        }) => {
+            println!(
+                "  {} Merge conflicts on branch '{}': {}",
+                red_bold("✗"),
+                branch.name,
+                error
+            );
+            println!("  Conflicted files: {}", conflicted_files.join(", "));
+            return Err(anyhow::anyhow!(
+                "Merge conflicts: {}",
+                conflicted_files.join(", ")
+            ));
+        }
+        Err(e) => {
+            println!(
+                "  {} Failed to accept branch '{}': {}",
+                red_bold("✗"),
+                branch.name,
+                e
+            );
+            return Err(anyhow::anyhow!("Accept failed: {}", e));
+        }
+    }
+
+    println!();
+    Ok(())
+}
+
+// ============================================================
+// Dashboard reject subcommand handler
+// ============================================================
+
+/// Handles the `dashboard reject <target> --reason "..."` subcommand.
+///
+/// Records the rejection in `re/rejections/{dll}/{function}/vN.json`.
+async fn handle_dashboard_reject(target: &str, reason: Option<&str>) -> Result<()> {
+    info!(target = %target, reason = ?reason, "Handling dashboard reject");
+
+    let view_target =
+        ViewTarget::parse(target).context("Invalid target format. Use: <dll>/<function>/vN")?;
+    info!(
+        dll = %view_target.dll,
+        function = %view_target.function,
+        attempt = ?view_target.specific_attempt,
+        "Parsed reject target"
+    );
+
+    let reason = reason.unwrap_or("no reason provided");
+
+    // Find the git repository
+    let repo_path = find_repo_path()?;
+    let git = GitManager::open(&repo_path).context("Failed to open git repository")?;
+
+    // Resolve the branch name: find the matching translation branch
+    let branch_name =
+        resolve_branch(&git, &view_target).context("Could not find a matching branch for this unit")?;
+
+    info!(branch = %branch_name, "Resolved branch for rejection");
+
+    // Parse the branch name into a GitBranch for the reject operation
+    let (dll, function, attempt) = parse_branch_for_accept(&branch_name);
+    let branch = GitBranch::new(&dll, &function, attempt).context("Invalid branch name")?;
+
+    // Perform the rejection
+    println!();
+    println!(
+        "  {} Branch '{}' will be sent back for fixes.",
+        red_bold("✗"),
+        branch.name
+    );
+    println!("  {} Rejection reason: \"{}\"", bold("Reason:"), reason);
+
+    match git.reject_branch(&branch, reason) {
+        Ok(rejection_path) => {
+            println!(
+                "  {} Rejection recorded at: {}",
+                green_bold("✓"),
+                rejection_path.display()
+            );
+            println!(
+                "  {} Unit '{}/{}' has been sent back.",
+                red_bold("✗"),
+                view_target.dll,
+                view_target.function
+            );
+        }
+        Err(e) => {
+            println!(
+                "  {} Failed to reject branch '{}': {}",
+                red_bold("✗"),
+                branch.name,
+                e
+            );
+            return Err(anyhow::anyhow!("Reject failed: {}", e));
+        }
+    }
+
+    println!();
+    Ok(())
+}
+
+// ============================================================
 // Verify command handler
 // ============================================================
 
@@ -1222,6 +1560,28 @@ fn main() -> Result<()> {
                 .build()
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_dashboard_view(&target))
+        }
+        Command::Dashboard {
+            follow: _,
+            interval: _,
+            command: Some(DashboardSubcommand::Accept { target }),
+        } => {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_dashboard_accept(&target))
+        }
+        Command::Dashboard {
+            follow: _,
+            interval: _,
+            command: Some(DashboardSubcommand::Reject { target, reason }),
+        } => {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_dashboard_reject(&target, reason.as_deref()))
         }
         Command::Dashboard {
             follow,
