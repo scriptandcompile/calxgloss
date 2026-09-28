@@ -41,6 +41,8 @@ pub struct Settings {
     pub temperature: Resolved<f32>,
     /// Attempts before a translation is abandoned.
     pub max_retries: Resolved<u32>,
+    /// Which retry strategy to use.
+    pub retry_strategy: Option<Resolved<String>>,
     /// Where the configuration file was read from, for diagnostics.
     pub config_path: Option<PathBuf>,
     /// Every location that was checked for a configuration file.
@@ -57,6 +59,7 @@ impl Settings {
             max_tokens: flag_tokens,
             temperature: flag_temp,
             max_retries: flag_retries,
+            strategy: _,
         } = flags.llm;
         let GhidraSection {
             url: flag_ghidra,
@@ -120,6 +123,12 @@ impl Settings {
                     Some(defaults::LLM_MAX_RETRIES),
                 )
                 .expect("max_retries has a default"),
+            retry_strategy: layers.resolve(
+                flags.llm.strategy.clone(),
+                layers.env.llm.strategy.clone(),
+                layers.file.llm.strategy.clone(),
+                None,
+            ),
             config_path: loaded.path.clone(),
             config_searched: loaded.searched.clone(),
         }
@@ -281,6 +290,9 @@ pub fn render(s: &Settings) -> String {
     num(&mut out, "max_tokens", &s.max_tokens);
     num(&mut out, "temperature", &s.temperature);
     num(&mut out, "max_retries", &s.max_retries);
+
+    out.push_str("\ntranslation\n");
+    row(&mut out, "retry_strategy", s.retry_strategy.as_ref(), false);
 
     out
 }

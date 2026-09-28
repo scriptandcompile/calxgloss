@@ -42,6 +42,27 @@ mod settings;
 
 use settings::Settings;
 
+/// Parse a retry strategy string into a [`RetryStrategy`].
+fn parse_retry_strategy(s: &str) -> Result<RetryStrategy> {
+    Ok(match s {
+        "compile_fix" => RetryStrategy::CompileFix,
+        "test_fix" => RetryStrategy::TestFix,
+        "escalate" => RetryStrategy::Escalate,
+        "edge_case_fix" => RetryStrategy::EdgeCaseFix,
+        "auto" => {
+            // Auto mode starts with compile_fix and cycles through all strategies.
+            // The cycling happens in the retry loop itself.
+            RetryStrategy::CompileFix
+        }
+        other => anyhow::bail!(
+            "Unknown retry strategy '{}'. Valid strategies: compile_fix, test_fix, \
+             escalate, edge_case_fix, auto",
+            other
+        ),
+    })
+}
+
+
 // ============================================================
 // CLI argument parsing
 // ============================================================
@@ -99,6 +120,11 @@ struct Cli {
     /// Number of retry attempts on translation failure (default: 3)
     #[arg(long, global = true)]
     max_retries: Option<u32>,
+
+    /// Retry strategy: compile_fix, test_fix, escalate, edge_case_fix, or auto
+    /// (auto cycles through all strategies on each failure)
+    #[arg(long, global = true, value_parser = ["compile_fix", "test_fix", "escalate", "edge_case_fix", "auto"])]
+    strategy: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -334,6 +360,12 @@ async fn handle_translate(args: &TranslateArgs, settings: &Settings) -> Result<(
     let temperature = settings.temperature.value;
     let max_retries = settings.max_retries.value;
 
+    // Parse the retry strategy from the CLI flag or config.
+    let retry_strategy = match &settings.retry_strategy {
+        Some(r) => parse_retry_strategy(&r.value)?,
+        None => RetryStrategy::CompileFix, // default
+    };
+
     // Logging the layer that supplied the endpoint is what makes a surprising
     // model name diagnosable from a log alone.
     let source_of = |r: &Option<Resolved<String>>| {
@@ -412,11 +444,9 @@ async fn handle_translate(args: &TranslateArgs, settings: &Settings) -> Result<(
     // Configure retry behavior
     let retry_config = RetryConfig {
         max_attempts: max_retries,
-        strategy: RetryStrategy::CompileFix,
+        strategy: retry_strategy,
         escalate_on_failure: true,
     };
-
-    // Run translation with automatic retry on verification failure
     let retry_result = pipeline
         .try_translate_with_retry(dll, function, &retry_config, &verifier)
         .await
@@ -545,11 +575,13 @@ async fn handle_translate(args: &TranslateArgs, settings: &Settings) -> Result<(
                 last_translation = Some(calxgloss_translator::Translation {
                     dll: dll.to_string(),
                     function: function.to_string(),
+                    function_address: None,
                     rust_code: attempt.rust_code.clone(),
                     prompt_used: String::new(),
                     model: llm_model_name.clone(),
                     tokens_used: None,
                     baseline_tests: Vec::new(),
+                    call_graph: Vec::new(),
                 });
                 break;
             } else if attempt.attempt >= retry_config.max_attempts {
@@ -641,6 +673,12 @@ async fn handle_batch_translate(args: &BatchTranslateArgs, settings: &Settings) 
     let max_tokens = settings.max_tokens.value;
     let temperature = settings.temperature.value;
     let max_retries = settings.max_retries.value;
+
+    // Parse the retry strategy from the CLI flag or config.
+    let retry_strategy = match &settings.retry_strategy {
+        Some(r) => parse_retry_strategy(&r.value)?,
+        None => RetryStrategy::CompileFix, // default
+    };
 
     info!(
         target = ?target,
@@ -750,7 +788,7 @@ async fn handle_batch_translate(args: &BatchTranslateArgs, settings: &Settings) 
     // Configure retry behavior
     let retry_config = calxgloss_translator::RetryConfig {
         max_attempts: max_retries,
-        strategy: calxgloss_translator::RetryStrategy::CompileFix,
+        strategy: retry_strategy,
         escalate_on_failure: true,
     };
 
@@ -989,6 +1027,7 @@ fn main() -> Result<()> {
             max_tokens: cli.max_tokens,
             temperature: cli.temperature,
             max_retries: cli.max_retries,
+            strategy: cli.strategy.clone(),
         },
     };
     let settings = Settings::resolve(&layers, flags, &loaded);
