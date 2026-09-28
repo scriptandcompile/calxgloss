@@ -22,9 +22,9 @@
 //!   failing test cases back with a "fix these test cases" prompt
 //! - **Escalate** — add more context from the disassembly and try again
 
+use crate::Translation;
 use askama::Template;
 use calxgloss_llm::{LlmClient, LlmMessage};
-use crate::Translation;
 use calxgloss_verify::{CompileResult, Verifier};
 use tracing::{info, warn};
 
@@ -130,6 +130,12 @@ pub struct RetryResult {
     pub success_strategy: Option<String>,
 }
 
+impl Default for RetryResult {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RetryResult {
     /// Create a new retry result with no attempts.
     pub fn new() -> Self {
@@ -181,9 +187,12 @@ pub fn build_compile_fix_prompt(
         original_rust_code.to_string(),
         failure_desc,
     );
-    template
-        .render()
-        .unwrap_or_else(|_| format!("Fix the compilation errors:\n{}", compilation_errors.join("\n")))
+    template.render().unwrap_or_else(|_| {
+        format!(
+            "Fix the compilation errors:\n{}",
+            compilation_errors.join("\n")
+        )
+    })
 }
 
 /// Build a fix prompt for failing behavioral tests.
@@ -292,7 +301,9 @@ pub async fn try_translate_with_retry(
                     attempt: attempt_num,
                     rust_code: initial_translation.rust_code.clone(),
                     compiled: false,
-                    compilation_errors: vec!["Skipped: default strategy would re-send identical prompt".to_string()],
+                    compilation_errors: vec![
+                        "Skipped: default strategy would re-send identical prompt".to_string(),
+                    ],
                     tests_passed: 0,
                     tests_total: 0,
                     failed_tests: Vec::new(),
@@ -324,13 +335,12 @@ pub async fn try_translate_with_retry(
                     Ok(vr) => vr
                         .failed_tests
                         .iter()
-                        .map(|ft| format!(
-                            "Test {}: expected {}, got {} — {}",
-                            ft.test_index,
-                            ft.expected,
-                            ft.actual,
-                            ft.error
-                        ))
+                        .map(|ft| {
+                            format!(
+                                "Test {}: expected {}, got {} — {}",
+                                ft.test_index, ft.expected, ft.actual, ft.error
+                            )
+                        })
                         .collect(),
                     Err(_) => vec!["Verification failed".to_string()],
                 };
@@ -383,7 +393,10 @@ pub async fn try_translate_with_retry(
         let new_rust_code = response.content.trim().to_string();
 
         if new_rust_code.is_empty() {
-            warn!(attempt = attempt_num, "LLM returned empty code during retry");
+            warn!(
+                attempt = attempt_num,
+                "LLM returned empty code during retry"
+            );
             result.add_attempt(TranslationAttempt {
                 attempt: attempt_num,
                 rust_code: String::new(),
@@ -431,13 +444,12 @@ pub async fn try_translate_with_retry(
                     vr.tests_total,
                     vr.failed_tests
                         .iter()
-                        .map(|ft| format!(
-                            "Test {}: expected {}, got {} — {}",
-                            ft.test_index,
-                            ft.expected,
-                            ft.actual,
-                            ft.error
-                        ))
+                        .map(|ft| {
+                            format!(
+                                "Test {}: expected {}, got {} — {}",
+                                ft.test_index, ft.expected, ft.actual, ft.error
+                            )
+                        })
                         .collect::<Vec<_>>(),
                 ),
                 Err(_) => (0, 0, vec!["Verification failed".to_string()]),
@@ -547,7 +559,10 @@ mod tests {
         });
         assert!(result.success);
         assert!(result.rust_code.is_some());
-        assert_eq!(result.rust_code.as_deref().unwrap(), "fn foo() -> i32 { 42 }");
+        assert_eq!(
+            result.rust_code.as_deref().unwrap(),
+            "fn foo() -> i32 { 42 }"
+        );
         assert_eq!(result.success_strategy.as_deref().unwrap(), "initial");
     }
 
