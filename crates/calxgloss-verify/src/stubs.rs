@@ -27,9 +27,11 @@ impl Stubs {
     /// - PAL traits: `GraphicsDevice`, `AudioDevice`, `FileSystem`, `WindowManager`
     /// - Stub implementations for each PAL trait
     /// - Threading stubs
+    /// - Common Windows internal extern shims (e.g., `__security_init_cookie`,
+    ///   `dllmain_dispatch`)
     pub fn all() -> String {
         format!(
-            "{}\n{}\n{}\n{}\n{}\n{}\n{}",
+            "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
             types(),
             pal_traits(),
             graphics_stub(),
@@ -37,6 +39,7 @@ impl Stubs {
             filesystem_stub(),
             window_stub(),
             threading_stub(),
+            windows_internals(),
         )
     }
 }
@@ -388,6 +391,84 @@ impl Thread for ThreadStub {
         // `thread_id_value` unstable feature.  Process ID is stable and
         // serves as a unique-enough identifier for stub usage.
         std::process::id() as u64
+    }
+}
+"#
+    .to_string()
+}
+
+/// Stub extern declarations for common Windows-internal functions.
+///
+/// These are functions that appear in disassembly / decompiler output but are not
+/// part of the public Windows SDK — they are internal helpers from the C runtime,
+/// the DLL itself, or the OS.
+///
+/// Each stub is declared as an `extern "C"` function with a no-op body so that
+/// the generated Rust compiles without pulling in external symbols.
+pub fn windows_internals() -> String {
+    r#"
+// ============================================================
+// Common Windows-internal extern shims
+// ============================================================
+
+/// Initializes the security cookie used by /GS buffer-overflow protection.
+///
+/// The original Windows call triggers stack-canary setup.  In the stub we do
+/// nothing — translated code rarely depends on the cookie value itself during
+/// theDllMain / entry path.
+#[allow(unused_variables)]
+extern "system" fn __security_init_cookie() {
+    // Stub: no-op placeholder for /GS security cookie initialization
+}
+
+/// Windows API equivalent for zeroing the security cookie at process shutdown.
+#[allow(unused_variables)]
+extern "system" fn __security_check_cookie(addr: *const core::ffi::c_void) {
+    // Stub: no-op placeholder for /GS stack cookie validation
+}
+
+/// Dispatches DLL_PROCESS_ATTACH / DETACH / THREAD_ATTACH / DETACH to the
+/// application's DllMain-style handler.
+///
+/// The original function lives inside the DLL itself, so we provide a no-op
+/// stub that simply returns.  Real behavioral testing of the dispatch logic
+/// requires the original binary FFI.
+#[allow(unused_variables)]
+extern "system" fn dllmain_dispatch(
+    hinst: *mut core::ffi::c_void,
+    fdw_reason: u32,
+    reserved: *mut core::ffi::c_void,
+) {
+    // Stub: no-op placeholder for the DLL's internal DllMain dispatcher
+}
+
+/// Used by MSVC /GS to report a buffer-overflow detected at runtime.
+///
+/// The stub panics so that if translated code actually triggers this path the
+/// failure is obvious rather than silently producing wrong results.
+#[allow(unreachable_code)]
+extern "system" fn __report_gsfailure(_reason: u32) -> ! {
+    panic!("__report_gsfailure stub reached — this should not happen in translated code")
+}
+
+/// CRT heap allocation entry-point used by MSVC-compiled binaries.
+#[allow(unused_variables)]
+extern "system" fn _malloc_dbg(
+    size: usize,
+    _block_type: i32,
+    _file: *const i8,
+    _line: i32,
+) -> *mut core::ffi::c_void {
+    // Stub: falls back to std::alloc for unmanaged allocations
+    std::alloc::alloc(std::alloc::Layout::from_size_align(size, 8).unwrap())
+}
+
+/// CRT heap free entry-point used by MSVC-compiled binaries.
+#[allow(unused_variables)]
+extern "system" fn _free_dbg(_ptr: *mut core::ffi::c_void, _block_type: i32) {
+    // Stub: falls back to std::alloc for unmanaged deallocations
+    if !_ptr.is_null() {
+        std::alloc::dealloc(_ptr, std::alloc::Layout::from_size_align(8, 8).unwrap());
     }
 }
 "#
