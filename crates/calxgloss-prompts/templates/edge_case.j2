@@ -37,27 +37,44 @@ Error: {{ test.error }}
 Ghidra analysis identified these boundary checks in the disassembly:
 
 {% for bv in boundary_values %}
-- **{{ bv.description }}** — check for: {{ bv.condition | safe }} → branch at address {{ format!("0x{:X}", bv.branch_address) | safe }}
+- **{{ bv.description }}** \u2014 check for: {{ bv.condition | safe }} \u2192 branch at address {{ format!("0x{:X}", bv.branch_address) | safe }}
 {% endfor %}
 {% else %}
 No specific boundary analysis available. Derive edge cases from the function's type signature and the failing test inputs above.
+{% endif %}
+
+{% if !failure_history.is_empty() %}
+
+---
+
+## PREVIOUS ATTEMPT HISTORY
+
+{% for hint in failure_history %}
+### Attempt #{{ hint.attempt }} (strategy: {{ hint.strategy }})
+{{ hint.failure_description }}
+{% if hint.fix_attempted.is_some() %}
+Fix attempted: {{ hint.fix_attempted.as_ref().unwrap() }}
+{% endif %}
+
+{% endfor %}
 {% endif %}
 
 ---
 
 ## TRANSLATION REQUIREMENTS
 
-1. **Output ONLY the corrected Rust code** — no explanations, no markdown fences, no code blocks.
-2. **Focus on boundary handling** — the failing tests are all edge cases (zero, max, negative, null, overflow, underflow).
-3. **Add explicit checks for** (where the original disassembly has `cmp` + conditional branch):
+1. **Output ONLY the corrected Rust code** \u2014 no explanations, no markdown fences, no code blocks.
+2. **Learn from past failures** \u2014 avoid the specific mistakes documented in the history above.
+3. **Focus on boundary handling** \u2014 the failing tests are all edge cases (zero, max, negative, null, overflow, underflow).
+4. **Add explicit checks for** (where the original disassembly has `cmp` + conditional branch):
    - `0` and `1` for counters/indices
    - `i32::MIN` / `i32::MAX` and `u32::MIN` / `u32::MAX` for integer types
    - `None` / null pointer checks
    - Empty array / zero-length checks
    - Overflow guards for arithmetic operations
-4. **Preserve the function signature** — the parameters must remain the same.
-5. **Keep extern stubs** — any `extern "C"` declarations that were in the original code must be preserved.
-6. **Match the original's boundary behavior exactly** — if the original wraps, saturates, or returns error codes for overflows, replicate that.
-7. **Do NOT guess at Windows API behaviors** — follow the disassembly and decompiler output strictly.
+5. **Preserve the function signature** \u2014 the parameters must remain the same.
+6. **Keep extern stubs** \u2014 any `extern "C"` declarations that were in the original code must be preserved.
+7. **Match the original's boundary behavior exactly** \u2014 if the original wraps, saturates, or returns error codes for overflows, replicate that.
+8. **Do NOT guess at Windows API behaviors** \u2014 follow the disassembly and decompiler output strictly.
 
 ## CORRECTED RUST CODE:

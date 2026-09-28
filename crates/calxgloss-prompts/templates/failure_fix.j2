@@ -20,8 +20,8 @@ You are a reverse engineering specialist. You previously translated a function t
 {% for hint in failure_history %}
 ### Attempt #{{ hint.attempt }} (strategy: {{ hint.strategy }})
 {{ hint.failure_description }}
-{% if hint.fix_attempted != "" %}
-Fix attempted: {{ hint.fix_attempted }}
+{% if hint.fix_attempted.is_some() %}
+Fix attempted: {{ hint.fix_attempted.as_ref().unwrap() }}
 {% endif %}
 
 {% endfor %}

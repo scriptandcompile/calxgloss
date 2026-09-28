@@ -13,6 +13,20 @@ You are a reverse engineering specialist. You previously translated a function t
 
 {{ failure_description }}
 
+{% if !failure_history.is_empty() %}
+
+## PREVIOUS ATTEMPT HISTORY
+
+{% for hint in failure_history %}
+### Attempt #{{ hint.attempt }} (strategy: {{ hint.strategy }})
+{{ hint.failure_description }}
+{% if hint.fix_attempted.is_some() %}
+Fix attempted: {{ hint.fix_attempted.as_ref().unwrap() }}
+{% endif %}
+
+{% endfor %}
+{% endif %}
+
 ---
 
 ## ADDITIONAL CONTEXT — CALL GRAPH NEIGHBORS

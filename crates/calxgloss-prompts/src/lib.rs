@@ -45,7 +45,7 @@ pub mod error;
 pub use error::PromptError;
 
 use askama::Template;
-use calxgloss_types::{ApiCategoryMapping, FunctionComplexity, TranslationRequest};
+use calxgloss_types::{ApiCategoryMapping, FailureHint, FunctionComplexity, TranslationRequest};
 use serde_json::json;
 
 // ============================================================
@@ -228,9 +228,11 @@ pub fn build_translate_prompt(req: &TranslationRequest) -> Result<String, Prompt
 
 /// Template for "fix the compilation errors" or "fix the failing tests" prompts.
 ///
-/// Rendered via Askama from the embedded `templates/fix.j2` file.
+/// Rendered via Askama from the embedded `templates/failure_fix.j2` file.
+/// When `failure_history` is non-empty, the prompt includes a "PREVIOUS
+/// ATTEMPT HISTORY" section so the LLM can learn from specific past mistakes.
 #[derive(Template)]
-#[template(path = "fix.j2")]
+#[template(path = "failure_fix.j2")]
 pub struct FixTemplate {
     /// The function name being fixed.
     pub function_name: String,
@@ -243,10 +245,14 @@ pub struct FixTemplate {
 
     /// A description of what went wrong during verification.
     pub failure_description: String,
+
+    /// Previous attempt failures to reference in the prompt.
+    /// When non-empty, an "PREVIOUS ATTEMPT HISTORY" section is rendered.
+    pub failure_history: Vec<FailureHint>,
 }
 
 impl FixTemplate {
-    /// Create a new fix template.
+    /// Create a new fix template without failure history.
     pub fn new(
         function_name: String,
         dll_name: String,
@@ -258,6 +264,24 @@ impl FixTemplate {
             dll_name,
             original_rust_code,
             failure_description,
+            failure_history: Vec::new(),
+        }
+    }
+
+    /// Create a new fix template with failure history for informed prompting.
+    pub fn with_history(
+        function_name: String,
+        dll_name: String,
+        original_rust_code: String,
+        failure_description: String,
+        failure_history: Vec<FailureHint>,
+    ) -> Self {
+        Self {
+            function_name,
+            dll_name,
+            original_rust_code,
+            failure_description,
+            failure_history,
         }
     }
 }
@@ -269,7 +293,9 @@ impl FixTemplate {
 /// Template for "add more context and retry" prompts.
 ///
 /// Used when previous attempts failed with compile_fix or test_fix strategies.
-/// Injects call graph neighbors, neighboring functions, data structures, and type info.
+/// Injects call graph neighbors, neighboring functions, data structures, and
+/// type information. When `failure_history` is non-empty, includes a
+/// "PREVIOUS ATTEMPT HISTORY" section so the LLM can learn from past mistakes.
 #[derive(Template)]
 #[template(path = "escalate.j2")]
 pub struct EscalateTemplate {
@@ -296,6 +322,62 @@ pub struct EscalateTemplate {
 
     /// Type information inferred by Ghidra.
     pub type_info: Vec<TypeInfo>,
+
+    /// Previous attempt failures to reference in the prompt.
+    pub failure_history: Vec<FailureHint>,
+}
+
+impl EscalateTemplate {
+    /// Create a new escalate template without failure history.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        function_name: String,
+        dll_name: String,
+        original_rust_code: String,
+        failure_description: String,
+        call_graph_neighbors: Vec<CallGraphNeighbor>,
+        neighboring_functions: Vec<NeighborFunction>,
+        data_structures: Vec<StructuredData>,
+        type_info: Vec<TypeInfo>,
+    ) -> Self {
+        Self {
+            function_name,
+            dll_name,
+            original_rust_code,
+            failure_description,
+            call_graph_neighbors,
+            neighboring_functions,
+            data_structures,
+            type_info,
+            failure_history: Vec::new(),
+        }
+    }
+
+    /// Create a new escalate template with failure history for informed prompting.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_history(
+        function_name: String,
+        dll_name: String,
+        original_rust_code: String,
+        failure_description: String,
+        call_graph_neighbors: Vec<CallGraphNeighbor>,
+        neighboring_functions: Vec<NeighborFunction>,
+        data_structures: Vec<StructuredData>,
+        type_info: Vec<TypeInfo>,
+        failure_history: Vec<FailureHint>,
+    ) -> Self {
+        Self {
+            function_name,
+            dll_name,
+            original_rust_code,
+            failure_description,
+            call_graph_neighbors,
+            neighboring_functions,
+            data_structures,
+            type_info,
+            failure_history,
+        }
+    }
 }
 
 /// A function that is a direct caller or callee of the target function.
@@ -364,6 +446,7 @@ pub struct TypeInfo {
 /// Template for "fix edge cases" prompts.
 ///
 /// Used when tests fail specifically on boundary values (zero, max, negative).
+/// When `failure_history` is non-empty, includes a "PREVIOUS ATTEMPT HISTORY" section.
 #[derive(Template)]
 #[template(path = "edge_case.j2")]
 pub struct EdgeCaseTemplate {
@@ -381,6 +464,48 @@ pub struct EdgeCaseTemplate {
 
     /// Boundary checks identified from the disassembly.
     pub boundary_values: Vec<BoundaryValue>,
+
+    /// Previous attempt failures to reference in the prompt.
+    pub failure_history: Vec<FailureHint>,
+}
+
+impl EdgeCaseTemplate {
+    /// Create a new edge case template without failure history.
+    pub fn new(
+        function_name: String,
+        dll_name: String,
+        original_rust_code: String,
+        failed_tests: Vec<EdgeCaseTest>,
+        boundary_values: Vec<BoundaryValue>,
+    ) -> Self {
+        Self {
+            function_name,
+            dll_name,
+            original_rust_code,
+            failed_tests,
+            boundary_values,
+            failure_history: Vec::new(),
+        }
+    }
+
+    /// Create a new edge case template with failure history for informed prompting.
+    pub fn with_history(
+        function_name: String,
+        dll_name: String,
+        original_rust_code: String,
+        failed_tests: Vec<EdgeCaseTest>,
+        boundary_values: Vec<BoundaryValue>,
+        failure_history: Vec<FailureHint>,
+    ) -> Self {
+        Self {
+            function_name,
+            dll_name,
+            original_rust_code,
+            failed_tests,
+            boundary_values,
+            failure_history,
+        }
+    }
 }
 
 /// A failing edge case test with context.
@@ -412,6 +537,10 @@ pub struct BoundaryValue {
 }
 
 /// Build an escalated prompt that injects additional Ghidra context.
+///
+/// When `failure_history` is non-empty, the prompt includes a
+/// "PREVIOUS ATTEMPT HISTORY" section so the LLM can learn from past mistakes.
+#[allow(clippy::too_many_arguments)]
 pub fn build_escalate_prompt(
     function_name: String,
     dll_name: String,
@@ -421,6 +550,7 @@ pub fn build_escalate_prompt(
     neighboring_functions: Vec<NeighborFunction>,
     data_structures: Vec<StructuredData>,
     type_info: Vec<TypeInfo>,
+    failure_history: Vec<FailureHint>,
 ) -> Result<String, PromptError> {
     let template = EscalateTemplate {
         function_name,
@@ -431,6 +561,7 @@ pub fn build_escalate_prompt(
         neighboring_functions,
         data_structures,
         type_info,
+        failure_history,
     };
     let rendered = template
         .render()
@@ -442,20 +573,25 @@ pub fn build_escalate_prompt(
 }
 
 /// Build an edge-case prompt focused on boundary value handling.
+///
+/// When `failure_history` is non-empty, the prompt includes a
+/// "PREVIOUS ATTEMPT HISTORY" section so the LLM can learn from past mistakes.
 pub fn build_edge_case_prompt(
     function_name: String,
     dll_name: String,
     original_rust_code: String,
     failed_tests: Vec<EdgeCaseTest>,
     boundary_values: Vec<BoundaryValue>,
+    failure_history: Vec<FailureHint>,
 ) -> Result<String, PromptError> {
-    let template = EdgeCaseTemplate {
+    let template = EdgeCaseTemplate::with_history(
         function_name,
         dll_name,
         original_rust_code,
         failed_tests,
         boundary_values,
-    };
+        failure_history,
+    );
     let rendered = template
         .render()
         .map_err(|e| PromptError::Render(e.to_string()))?;
@@ -940,6 +1076,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(), // empty failure history
         )
         .unwrap();
 
@@ -969,6 +1106,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(), // empty failure history
         )
         .unwrap();
 
@@ -992,7 +1130,8 @@ mod tests {
             "game_logic.dll".to_string(),
             "fn draw_sprite(x: i32) -> i32 { x + 1 }".to_string(),
             failed_tests,
-            Vec::new(),
+            Vec::new(), // empty boundary values
+            Vec::new(), // empty failure history
         )
         .unwrap();
 
@@ -1016,6 +1155,7 @@ mod tests {
             "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
             Vec::new(),
             bvs,
+            Vec::new(), // empty failure history
         )
         .unwrap();
 
@@ -1293,5 +1433,139 @@ mod tests {
         // When there are no Windows APIs, the section should be absent
         assert!(!prompt.contains("Win32Core Category"));
         assert!(!prompt.contains("DirectX Category"));
+    }
+
+    // ============================================================
+    // Phase 2, step 2.3 — Failure-informed prompting tests
+    // ============================================================
+
+    #[test]
+    fn test_fix_template_with_failure_history() {
+        let hints = vec![
+            FailureHint::new(
+                1,
+                "compile_fix",
+                "Compilation failed: E0425 — `__security_init_cookie` not found",
+            ),
+            FailureHint::new(
+                2,
+                "test_fix",
+                "2 of 5 tests passed — wrong return on boundary",
+            ),
+        ];
+
+        let template = super::FixTemplate::with_history(
+            "entry".to_string(),
+            "eqmain.dll".to_string(),
+            "fn entry() { __security_init_cookie(); }".to_string(),
+            "Tests failed on boundary input".to_string(),
+            hints,
+        );
+        let rendered = template.render().unwrap();
+
+        assert!(rendered.contains("entry"));
+        assert!(rendered.contains("eqmain.dll"));
+        assert!(rendered.contains("PREVIOUS ATTEMPT HISTORY"));
+        assert!(rendered.contains("Attempt #1"));
+        assert!(rendered.contains("compile_fix"));
+        assert!(rendered.contains("E0425"));
+        assert!(rendered.contains("Attempt #2"));
+        assert!(rendered.contains("test_fix"));
+        assert!(rendered.contains("wrong return on boundary"));
+    }
+
+    #[test]
+    fn test_fix_template_without_history_has_no_history_section() {
+        let template = super::FixTemplate::new(
+            "entry".to_string(),
+            "eqmain.dll".to_string(),
+            "fn entry() { __security_init_cookie(); }".to_string(),
+            "Tests failed".to_string(),
+        );
+        let rendered = template.render().unwrap();
+
+        assert!(rendered.contains("entry"));
+        assert!(!rendered.contains("PREVIOUS ATTEMPT HISTORY"));
+    }
+
+    #[test]
+    fn test_escalate_template_with_failure_history() {
+        let hints = vec![FailureHint::new(
+            1,
+            "compile_fix",
+            "Wrong shader constant mapping",
+        )];
+
+        let prompt = build_escalate_prompt(
+            "DrawSprite".to_string(),
+            "game_logic.dll".to_string(),
+            "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
+            "Wrong result".to_string(),
+            Vec::new(), // empty neighbors
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            hints,
+        )
+        .unwrap();
+
+        assert!(prompt.contains("DrawSprite"));
+        assert!(prompt.contains("PREVIOUS ATTEMPT HISTORY"));
+        assert!(prompt.contains("Attempt #1"));
+        assert!(prompt.contains("compile_fix"));
+        assert!(prompt.contains("Wrong shader constant mapping"));
+    }
+
+    #[test]
+    fn test_edge_case_template_with_failure_history() {
+        let hints = vec![
+            FailureHint::new(1, "test_fix", "Wrong result on zero input"),
+            FailureHint::new(2, "escalate", "Still wrong on zero after adding context"),
+        ];
+
+        let failed_tests = vec![EdgeCaseTest {
+            index: 1,
+            inputs: json!({"x": 0}),
+            expected: json!(0),
+            actual: json!(1),
+            error: "Expected 0, got 1".to_string(),
+            disassembly_hints: "cmp eax, 0\nje .zero_branch".to_string(),
+        }];
+
+        let prompt = build_edge_case_prompt(
+            "DrawSprite".to_string(),
+            "game_logic.dll".to_string(),
+            "fn draw_sprite(x: i32) -> i32 { x + 1 }".to_string(),
+            failed_tests,
+            Vec::new(),
+            hints,
+        )
+        .unwrap();
+
+        assert!(prompt.contains("DrawSprite"));
+        assert!(prompt.contains("PREVIOUS ATTEMPT HISTORY"));
+        assert!(prompt.contains("Attempt #1"));
+        assert!(prompt.contains("Attempt #2"));
+        assert!(prompt.contains("Learn from past failures"));
+    }
+
+    #[test]
+    fn test_fix_template_with_fix_attempted() {
+        let hint = FailureHint::new(1, "compile_fix", "Wrong parameter type")
+            .with_fix("Added explicit casting to u32");
+
+        let template = super::FixTemplate::with_history(
+            "entry".to_string(),
+            "eqmain.dll".to_string(),
+            "fn entry() { }".to_string(),
+            "Compilation failed".to_string(),
+            vec![hint],
+        );
+        let rendered = template.render().unwrap();
+
+        assert!(rendered.contains("PREVIOUS ATTEMPT HISTORY"));
+        assert!(rendered.contains("Wrong parameter type"));
+        assert!(rendered.contains("Fix attempted:"));
+        assert!(rendered.contains("Added explicit casting to u32"));
     }
 }
