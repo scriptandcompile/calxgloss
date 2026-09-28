@@ -829,6 +829,49 @@ impl ApiMappings {
     pub fn iter(&self) -> impl Iterator<Item = &ApiMapping> {
         self.0.iter()
     }
+
+    /// Returns all API mappings grouped by category for the given set of
+    /// categories.
+    ///
+    /// This is used by the translation pipeline to inject the full mapping
+    /// table rows for the specific API categories a function touches into
+    /// the LLM prompt (Phase 2, step 2.2 — API-aware prompt augmentation).
+    ///
+    /// # Arguments
+    ///
+    /// * `categories` — The API categories to include. Only categories that
+    ///   have mappings in the table will appear in the result.
+    ///
+    /// # Returns
+    ///
+    /// A vector of [`ApiCategoryMapping`](calxgloss_types::ApiCategoryMapping)
+    /// entries, one per requested category that has mappings.
+    pub fn for_categories(
+        &self,
+        categories: &[calxgloss_types::ApiCategory],
+    ) -> Vec<calxgloss_types::ApiCategoryMapping> {
+        categories
+            .iter()
+            .filter_map(|cat| {
+                let mappings = self.for_category(cat.clone());
+                if mappings.is_empty() {
+                    return None;
+                }
+                let items: Vec<calxgloss_types::ApiMappingItem> = mappings
+                    .iter()
+                    .map(|m| calxgloss_types::ApiMappingItem {
+                        windows_api: m.windows_api.to_string(),
+                        rust_equivalent: m.rust_equivalent.to_string(),
+                        notes: m.notes.to_string(),
+                    })
+                    .collect();
+                Some(calxgloss_types::ApiCategoryMapping {
+                    category: cat.to_string(),
+                    mappings: items,
+                })
+            })
+            .collect()
+    }
 }
 
 impl Default for ApiMappings {
@@ -1028,5 +1071,80 @@ mod tests {
     fn test_is_empty() {
         let mappings = ApiMappings::default();
         assert!(!mappings.is_empty());
+    }
+
+    #[test]
+    fn test_for_categories_returns_mappings_for_multiple_categories() {
+        let mappings = ApiMappings::default();
+
+        let categories = vec![ApiCategory::Win32Core, ApiCategory::DirectX];
+        let result = mappings.for_categories(&categories);
+
+        assert_eq!(result.len(), 2);
+
+        // Check Win32Core category
+        let win32 = result
+            .iter()
+            .find(|c| c.category == "Win32Core")
+            .expect("should have Win32Core");
+        assert!(!win32.mappings.is_empty());
+        assert!(
+            win32
+                .mappings
+                .iter()
+                .any(|m| m.windows_api == "CreateFileA")
+        );
+
+        // Check DirectX category
+        let dx = result
+            .iter()
+            .find(|c| c.category == "DirectX")
+            .expect("should have DirectX");
+        assert!(!dx.mappings.is_empty());
+        assert!(
+            dx.mappings
+                .iter()
+                .any(|m| m.windows_api == "Direct3DCreate9")
+        );
+    }
+
+    #[test]
+    fn test_for_categories_empty_input() {
+        let mappings = ApiMappings::default();
+        let result = mappings.for_categories(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_for_categories_ignores_categories_without_mappings() {
+        let mappings = ApiMappings::default();
+
+        // GdiPlus has no mappings
+        let categories = vec![ApiCategory::GdiPlus, ApiCategory::Win32Core];
+        let result = mappings.for_categories(&categories);
+
+        // Only Win32Core should appear (GdiPlus is filtered out)
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].category, "Win32Core");
+    }
+
+    #[test]
+    fn test_for_categories_api_aware_augmentation() {
+        let mappings = ApiMappings::default();
+
+        // Simulate a function that uses GDI APIs
+        let categories = vec![ApiCategory::Gdi];
+        let result = mappings.for_categories(&categories);
+
+        assert_eq!(result.len(), 1);
+        let gdi = &result[0];
+        assert_eq!(gdi.category, "GDI");
+        assert!(gdi.mappings.iter().any(|m| m.windows_api == "BitBlt"));
+        assert!(gdi.mappings.iter().any(|m| m.windows_api == "TextOutA"));
+        assert!(
+            gdi.mappings
+                .iter()
+                .any(|m| m.notes.contains("PAL placeholder"))
+        );
     }
 }

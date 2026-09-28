@@ -366,6 +366,7 @@ name = "calxgloss-prompts"
 version = "0.2.0"
 dependencies = [
  "askama",
+ "calxgloss-pal",
  "calxgloss-types",
  "serde",
  "serde_json",
