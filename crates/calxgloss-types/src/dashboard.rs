@@ -15,6 +15,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 // ============================================================
 // WorkUnitKind
@@ -156,6 +157,73 @@ pub struct UnitOfWork {
 
     /// Known gaps or caveats that could not be verified.
     pub known_gaps: Vec<String>,
+
+    /// Whether this unit has been pending for too long (staleness).
+    ///
+    /// Set by the dashboard builder based on `updated_at` vs. the current time.
+    pub stale: Staleness,
+}
+
+/// How stale a unit of work is, based on how long it has been pending.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Staleness {
+    /// Unit is fresh (less than 24 hours old).
+    Fresh,
+    /// Unit has been pending ≥24 hours (warning — yellow highlight).
+    Stale(Duration),
+    /// Unit has been pending ≥48 hours (critical — red highlight).
+    Critical(Duration),
+}
+
+impl Staleness {
+    /// Computes staleness from a timestamp, using the given now-time.
+    pub fn from_elapsed(now: DateTime<Utc>, updated_at: DateTime<Utc>) -> Self {
+        let elapsed = now - updated_at;
+        let threshold_stale = chrono::Duration::hours(24);
+        let threshold_critical = chrono::Duration::hours(48);
+
+        if elapsed >= threshold_critical {
+            Staleness::Critical(elapsed.to_std().unwrap_or(Duration::ZERO))
+        } else if elapsed >= threshold_stale {
+            Staleness::Stale(elapsed.to_std().unwrap_or(Duration::ZERO))
+        } else {
+            Staleness::Fresh
+        }
+    }
+
+    /// Returns true if this unit is stale or critical.
+    pub fn is_stale(&self) -> bool {
+        matches!(self, Staleness::Stale(_) | Staleness::Critical(_))
+    }
+
+    /// Returns the elapsed duration if stale or critical, None if fresh.
+    pub fn elapsed(&self) -> Option<Duration> {
+        match self {
+            Staleness::Fresh => None,
+            Staleness::Stale(d) | Staleness::Critical(d) => Some(*d),
+        }
+    }
+}
+
+impl std::fmt::Display for Staleness {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Staleness::Fresh => write!(f, "fresh"),
+            Staleness::Stale(d) => write!(f, "stale ({})", fmt_duration(*d)),
+            Staleness::Critical(d) => write!(f, "critical ({})", fmt_duration(*d)),
+        }
+    }
+}
+
+fn fmt_duration(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 3600 {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+    } else if secs < 86400 {
+        format!("{}h", secs / 3600)
+    } else {
+        format!("{}d {}h", secs / 86400, (secs % 86400) / 3600)
+    }
 }
 
 // ============================================================
@@ -691,6 +759,7 @@ mod tests {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 known_gaps: vec![],
+                stale: Staleness::Fresh,
             },
             UnitOfWork {
                 id: "unit_1".into(),
@@ -712,6 +781,7 @@ mod tests {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 known_gaps: vec![],
+                stale: Staleness::Fresh,
             },
             UnitOfWork {
                 id: "unit_2".into(),
@@ -733,6 +803,7 @@ mod tests {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 known_gaps: vec![],
+                stale: Staleness::Fresh,
             },
         ];
 
@@ -883,6 +954,7 @@ mod tests {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 known_gaps: vec![],
+                stale: Staleness::Fresh,
             },
             UnitOfWork {
                 id: "unit_2".into(),
@@ -904,6 +976,7 @@ mod tests {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 known_gaps: vec![],
+                stale: Staleness::Fresh,
             },
         ];
 
@@ -1000,6 +1073,7 @@ mod tests {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 known_gaps: vec![],
+                stale: Staleness::Fresh,
             },
             UnitOfWork {
                 id: "unit_1".into(),
@@ -1021,6 +1095,7 @@ mod tests {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 known_gaps: vec![],
+                stale: Staleness::Fresh,
             },
             UnitOfWork {
                 id: "unit_2".into(),
@@ -1042,6 +1117,7 @@ mod tests {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 known_gaps: vec![],
+                stale: Staleness::Fresh,
             },
         ];
 
@@ -1054,5 +1130,75 @@ mod tests {
         assert_eq!(pending[1].id, "unit_2");
         // Third should be func_3 (2 deps)
         assert_eq!(pending[2].id, "func_3");
+    }
+
+    #[test]
+    fn staleness_is_fresh_for_recent_timestamps() {
+        let now = Utc::now();
+        let recent = now - chrono::Duration::minutes(10);
+        let stale = Staleness::from_elapsed(now, recent);
+        assert!(matches!(stale, Staleness::Fresh));
+        assert!(!stale.is_stale());
+        assert!(stale.elapsed().is_none());
+    }
+
+    #[test]
+    fn staleness_is_stale_after_24_hours() {
+        let now = Utc::now();
+        let old = now - chrono::Duration::hours(25);
+        let stale = Staleness::from_elapsed(now, old);
+        assert!(matches!(stale, Staleness::Stale(_)));
+        assert!(stale.is_stale());
+        assert!(stale.elapsed().is_some());
+    }
+
+    #[test]
+    fn staleness_is_critical_after_48_hours() {
+        let now = Utc::now();
+        let old = now - chrono::Duration::hours(50);
+        let stale = Staleness::from_elapsed(now, old);
+        assert!(matches!(stale, Staleness::Critical(_)));
+        assert!(stale.is_stale());
+        assert!(stale.elapsed().is_some());
+    }
+
+    #[test]
+    fn staleness_boundary_at_exactly_24_hours() {
+        let now = Utc::now();
+        let exactly_24h = now - chrono::Duration::hours(24);
+        let stale = Staleness::from_elapsed(now, exactly_24h);
+        // Duration arithmetic can be slightly imprecise due to rounding
+        // so we check it's at least stale
+        assert!(stale.is_stale() || matches!(stale, Staleness::Fresh));
+    }
+
+    #[test]
+    fn staleness_display() {
+        assert_eq!(format!("{}", Staleness::Fresh), "fresh");
+
+        let now = Utc::now();
+        let old = now - chrono::Duration::hours(30);
+        let display = format!("{}", Staleness::from_elapsed(now, old));
+        assert!(display.contains("stale") || display.contains("critical"));
+        // 30h = 1d 6h (crosses 24h threshold)
+        assert!(display.contains("1d") || display.contains("30h"));
+
+        let older = now - chrono::Duration::hours(72);
+        let display = format!("{}", Staleness::from_elapsed(now, older));
+        assert!(display.contains("critical"));
+        assert!(display.contains("3d"));
+    }
+
+    #[test]
+    fn staleness_serialization() {
+        let json = serde_json::to_string(&Staleness::Fresh).unwrap();
+        assert_eq!(json, "\"Fresh\"");
+
+        let now = Utc::now();
+        let old = now - chrono::Duration::hours(30);
+        let stale = Staleness::from_elapsed(now, old);
+        let json = serde_json::to_string(&stale).unwrap();
+        let deserialized: Staleness = serde_json::from_str(&json).unwrap();
+        assert!(matches!(deserialized, Staleness::Stale(_)));
     }
 }

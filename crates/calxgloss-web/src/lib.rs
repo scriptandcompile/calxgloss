@@ -140,6 +140,7 @@ mod tests {
         DependencyEdge, DependencyGraph, DependencyNode, ReviewDashboard, ReviewStatus,
         StatusCounts, UnitOfWork, WorkUnitKind,
     };
+    use calxgloss_types::dashboard::Staleness;
     use chrono::Utc;
 
     #[test]
@@ -255,6 +256,7 @@ mod tests {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 known_gaps: vec![],
+                stale: Staleness::Fresh,
             },
             UnitOfWork {
                 id: "unit_1".into(),
@@ -276,6 +278,7 @@ mod tests {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 known_gaps: vec![],
+                stale: Staleness::Fresh,
             },
             UnitOfWork {
                 id: "unit_2".into(),
@@ -297,6 +300,7 @@ mod tests {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 known_gaps: vec![],
+                stale: Staleness::Fresh,
             },
         ];
 

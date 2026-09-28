@@ -162,6 +162,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Table column alignment** — switched from format-width specifiers (which
   counted invisible ANSI escape codes as characters) to hardcoded column
   widths per element, so colored headers no longer shift data columns.
+- **Stale-work highlighting** (`Staleness`) — `Fresh` / `Stale` (≥24h,
+  yellow highlight) / `Critical` (≥48h, red highlight) enum on
+  `UnitOfWork`. Dashboard builder parses the actual commit timestamp from
+  patch records to compute elapsed pending time. Queue table rows for
+  stale units get a warning/critical prefix symbol and the dashboard
+  renders a "Stale work" section listing them with elapsed durations.
 
 #### `calxgloss-git`
 - **`is_branch_merged_into_main()`** — checks if a branch is an ancestor

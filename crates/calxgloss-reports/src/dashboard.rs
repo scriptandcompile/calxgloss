@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use calxgloss_git::GitManager;
 use calxgloss_types::dashboard::{
-    ReviewDashboard, ReviewStatus, StatusCounts, UnitOfWork, WorkUnitKind,
+    ReviewDashboard, ReviewStatus, Staleness, StatusCounts, UnitOfWork, WorkUnitKind,
 };
 use chrono::Utc;
 
@@ -362,6 +362,18 @@ impl UnitViewData {
 // ANSI codes (kept in sync with the rest of the crate)
 // ============================================================
 
+/// Format a `Duration` as a human-readable string like "2d 3h" or "5h 30m".
+fn fmt_duration(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 3600 {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+    } else if secs < 86400 {
+        format!("{}h", secs / 3600)
+    } else {
+        format!("{}d {}h", secs / 86400, (secs % 86400) / 3600)
+    }
+}
+
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_BOLD: &str = "\x1b[1m";
 const ANSI_DIM: &str = "\x1b[2m";
@@ -627,6 +639,7 @@ impl<'a> DashboardBuilder<'a> {
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
                     known_gaps: vec![],
+                    stale: Staleness::Fresh,
                 };
                 units_by_key.entry(key).or_default().push(unit);
             }
@@ -903,6 +916,19 @@ impl<'a> DashboardBuilder<'a> {
             }
         });
 
+        // Parse the commit timestamp for the latest attempt.
+        // Use it as the "updated_at" so stale detection reflects real age.
+        let now = Utc::now();
+        let (updated_at, stale) = patch_data
+            .map(|pr| {
+                let dt = chrono::DateTime::parse_from_rfc3339(&pr.committed_at)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or(now);
+                let staleness = Staleness::from_elapsed(now, dt);
+                (dt, staleness)
+            })
+            .unwrap_or_else(|| (now, Staleness::Fresh));
+
         UnitOfWork {
             id,
             name: display_name,
@@ -923,9 +949,10 @@ impl<'a> DashboardBuilder<'a> {
             ),
             prompt_tier: None,
             dependencies: vec![],
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: now,
+            updated_at,
             known_gaps: vec![],
+            stale,
         }
     }
 }
@@ -1073,6 +1100,52 @@ pub fn render_dashboard(dashboard: &ReviewDashboard, follow: bool) {
         println_content("");
     }
 
+    // Stale work highlighting
+    let stale_units: Vec<&UnitOfWork> = dashboard
+        .review_queue
+        .iter()
+        .filter(|u| u.stale.is_stale())
+        .collect();
+    if !stale_units.is_empty() {
+        // Count critical for the summary header
+        let critical_count = stale_units
+            .iter()
+            .filter(|u| matches!(u.stale, Staleness::Critical(_)))
+            .count();
+        let warning_count = stale_units.len() - critical_count;
+
+        println_content(format!(
+            "  Stale work ({}): {} warning, {} critical",
+            stale_units.len(),
+            warning_count,
+            critical_count
+        ));
+        for unit in &stale_units {
+            let name = format!("{} ({})", unit.name, unit.dll);
+            let stale = unit.stale;
+            match stale {
+                Staleness::Critical(elapsed) => {
+                    println_content(format!(
+                        "    {} {} — pending for {}",
+                        red_bold("⚠"),
+                        name,
+                        fmt_duration(elapsed)
+                    ));
+                }
+                Staleness::Stale(elapsed) => {
+                    println_content(format!(
+                        "    {} {} — pending for {}",
+                        yellow_bold("⏳"),
+                        name,
+                        fmt_duration(elapsed)
+                    ));
+                }
+                Staleness::Fresh => {}
+            }
+        }
+        println_content("");
+    }
+
     let recent = &dashboard.recent_activity;
     if !recent.is_empty() {
         println_content(format!("  Recent activity ({}):", recent.len()));
@@ -1133,6 +1206,14 @@ fn render_queue_table(units: &[UnitOfWork]) {
         let kind_str = format_kind(&unit.kind);
         let name = truncate(&unit.name, 30);
         let status_str = format_status_display(&unit.status);
+
+        // Apply stale highlighting to the entire row
+        let (status_str, row_prefix) = match &unit.stale {
+            Staleness::Critical(_) => (yellow_bold(&status_str), "  ⚠ "),
+            Staleness::Stale(_) => (dim(&yellow_bold(&status_str)), "  ⏳ "),
+            Staleness::Fresh => (status_str, "    "),
+        };
+
         let _test_info = match (unit.baseline_tests_passed, unit.baseline_tests_total) {
             (Some(passed), Some(total)) => format!("{}/{}", passed, total),
             _ => "—".to_string(),
@@ -1140,7 +1221,8 @@ fn render_queue_table(units: &[UnitOfWork]) {
         let attempt_str = format!("v{}", unit.attempt);
 
         let line = format!(
-            "  {}  {}  {}  {}  {}  {}",
+            "{}{}  {}  {}  {}  {}  {}",
+            row_prefix,
             bold(&format!("{:<3}", idx + 1)),
             format_dim(&format!("{:<8}", kind_str)),
             format_dim(&format!("{:<30}", name)),
