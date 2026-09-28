@@ -235,6 +235,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `calxgloss-prompts`, `calxgloss-reports`, `calxgloss-translator`,
   `calxgloss-types`.
 
+### Phase 4, Step 4.2 — Topological Sort with Level-Aware Tie-Breaking
+
+#### `calxgloss-types`
+- **`WorkUnitLevel`** enum — defines 7 processing-phase levels for
+  dependency-ordered pipeline execution: `DllClassification` →
+  `ShimLayer` → `PalTrait` → `TestCaseAddition` →
+  `FunctionTranslation` → `IntegrationStep` → `BugFix`. Derives
+  `PartialOrd` / `Ord` so lower-level units are always processed before
+  higher-level ones. Includes `label()` for human-readable output.
+- **`WorkUnitKind::level()`** — maps each unit kind to its corresponding
+  `WorkUnitLevel`, enabling automatic level assignment from existing data.
+- **`DependencyNode::level`** — new `#[serde(default)]` field with
+  constructors `DependencyNode::new()` (default level) and
+  `DependencyNode::with_level()`. Backward-compatible: missing `level`
+  fields deserialize to `WorkUnitLevel::DllClassification`.
+- **`DependencyGraph::topological_order()`** — rewritten to return
+  `(Vec<&DependencyNode>, Vec<String>)` (ordered nodes + cycle-involved
+  nodes). Uses Kahn's algorithm with a merge-sorted priority queue keyed
+  by `(depth, level, node_id)`. Level-aware tie-breaking ensures shim
+  layers appear before PAL traits before function translations at the
+  same topological depth. Cycle detection is non-fatal: nodes not
+  involved in cycles are still correctly ordered.
+- **`ReviewDashboard::sorted_queue()`** — canonical ordering for batch
+  operations, using the full topological sort with level tie-breaking.
+  Returns `Queued` / `PendingReview` units in dependency order, with
+  already-accepted units at the end.
+- **`ReviewDashboard::next_in_dependency_order()`** — returns the next
+  unit to review in proper dependency-then-level order, replacing the
+  deprecated `next_to_review()`.
+- 8 new tests: `level_respects_pipeline_order`, `full_pipeline_order`,
+  `cycle_detection`, `partial_cycle`, `work_unit_level_ordering`,
+  `work_unit_kind_to_level`, `dependency_node_constructors`,
+  `level_tiebreaks_same_depth`.
+
+#### `calxgloss-analysis`
+- **`DependencyTracker::build()` / `for_dll()`** — now assign correct
+  `WorkUnitLevel` (`DllClassification`, `ShimLayer`) to nodes they
+  create, instead of using default struct field syntax.
+
+#### `calxgloss-web`
+- Updated test fixtures to use `DependencyNode::new()` and
+  `DependencyNode::with_level()` constructors.
+
+
 ## [0.1.0] — 2025-09-27
 
 ### Added
