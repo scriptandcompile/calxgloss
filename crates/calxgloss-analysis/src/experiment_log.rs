@@ -1,7 +1,7 @@
-//! Prompt strategy benchmark logger.
+//! Prompt strategy experiment logger.
 //!
 //! This module provides [`PromptStrategyLogger`] for persisting translation
-//! attempt benchmarks to `re/analysis/prompt_strategy_log.json`.
+//! attempt experiment logs to `re/analysis/prompt_strategy_log.json`.
 //!
 //! # Purpose
 //!
@@ -50,9 +50,9 @@
 use calxgloss_types::PromptStrategyEntry;
 use tracing::{debug, warn};
 
-/// Logger for prompt strategy benchmark entries.
+/// Logger for prompt strategy experiment entries.
 ///
-/// Each call to [`record`](Self::record) appends a benchmark entry to the
+/// Each call to [`record`](Self::record) appends an experiment entry to the
 /// in-memory log and flushes it to the JSON file on disk.
 ///
 /// The file path is `<workspace>/re/analysis/prompt_strategy_log.json`.
@@ -76,7 +76,7 @@ impl PromptStrategyLogger {
         }
     }
 
-    /// Record a single benchmark entry.
+    /// Record a single experiment entry.
     ///
     /// This appends the entry to the in-memory log and persists the entire
     /// log to disk. If persistence fails, the entry is still kept in memory
@@ -92,7 +92,7 @@ impl PromptStrategyLogger {
                     warn!(
                         path = ?log_path,
                         error = %e,
-                        "Failed to parse existing benchmark log, starting fresh"
+                        "Failed to parse existing experiment log, starting fresh"
                     );
                     calxgloss_types::PromptStrategyLog::new()
                 }
@@ -105,13 +105,13 @@ impl PromptStrategyLogger {
 
         // Persist
         if let Err(e) = self.persist(&log) {
-            warn!(error = %e, "Failed to persist benchmark log to disk");
+            warn!(error = %e, "Failed to persist experiment log to disk");
         } else {
             debug!(
                 dll = %log.entries.last().map(|e| &e.dll).unwrap_or(&"".to_string()),
                 strategy = %log.entries.last().map(|e| &e.strategy).unwrap_or(&"".to_string()),
                 success = log.entries.last().map(|e| e.success).unwrap_or(false),
-                "Recorded benchmark entry"
+                "Recorded experiment entry"
             );
         }
     }
@@ -151,7 +151,7 @@ impl PromptStrategyLogger {
         Some(log.compute_stats())
     }
 
-    /// Get the path to the benchmark log JSON file.
+    /// Get the path to the experiment log JSON file.
     fn log_path(&self) -> std::path::PathBuf {
         self.workspace
             .join("re")
@@ -169,7 +169,7 @@ mod tests {
     use super::*;
 
     fn temp_workspace(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("calxgloss-test-benchmark-{}", name));
+        let dir = std::env::temp_dir().join(format!("calxgloss-test-experiment-{}", name));
         // Clean up any previous test artifacts
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

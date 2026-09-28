@@ -78,7 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 #### `calxgloss-types`
-- **Prompt variant benchmarking types** (`calxgloss-types::benchmark`) —
+- **Prompt strategy experiment types** (`calxgloss-types::experiment_log`) —
   `PromptStrategyEntry` (single attempt outcome), `PromptStrategyLog`
   (collectible entries), `PromptStrategyStats` with `CategoryStats` and
   `StrategyStats` (aggregate pass/fail rates), and
@@ -86,14 +86,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   persistence.
 
 #### `calxgloss-analysis`
-- **Prompt strategy logger** (`PromptStrategyLogger`) — persists benchmark
+- **Prompt strategy logger** (`PromptStrategyLogger`) — persists experiment
   entries to `<workspace>/re/analysis/prompt_strategy_log.json` with
   `record()`, `load()`, `compute_stats()`, and `log_path()` methods.
   Auto-creates directory structure; handles corrupted-file recovery by
   starting fresh.
 
 #### `calxgloss-translator`
-- **Benchmark logging integration** — `try_translate_with_retry()` now
+- **Experiment logging integration** — `try_translate_with_retry()` now
   accepts an optional workspace path; `TranslationPipeline` gains
   `with_workspace()` builder method. Every retry attempt is recorded
   (DLL name, auto-classified category, strategy label, success/fail,

@@ -6,7 +6,7 @@ use crate::retry::{
     build_escalate_prompt_with_context, build_failure_informed_compile_fix_prompt,
     build_failure_informed_edge_case_fix_prompt, build_failure_informed_escalate_prompt,
     build_failure_informed_test_fix_prompt, build_test_fix_prompt,
-    log_prompt_variant_benchmark,
+    log_prompt_variant_experiment,
 };
 use crate::Translation;
 use calxgloss_ghidra::GhidraClient;
@@ -24,7 +24,7 @@ use tracing::{info, warn};
 /// 4. Re-verifies each fix attempt
 /// 5. Escalates strategy after each failure
 /// 6. Returns a [`RetryResult`] with all attempt details
-/// 7. Logs benchmark data per attempt
+/// 7. Logs experiment data per attempt
 ///
 /// # Arguments
 ///
@@ -34,7 +34,7 @@ use tracing::{info, warn};
 /// * `llm` — The LLM client for sending fix prompts.
 /// * `ghidra` — The Ghidra client, used for context extraction during escalation.
 /// * `strategy` — The starting retry strategy.
-/// * `workspace` — Optional workspace path for benchmark logging.
+/// * `workspace` — Optional workspace path for experiment logging.
 pub async fn try_translate_with_retry(
     initial_translation: Translation,
     verifier: &Verifier,
@@ -440,9 +440,9 @@ pub async fn try_translate_with_retry(
             break;
         }
 
-        // Log benchmark data for prompt variant tracking
+        // Log experiment data for prompt variant tracking
         let dll_name = &initial_translation.dll;
-        log_prompt_variant_benchmark(
+        log_prompt_variant_experiment(
             dll_name,
             &strategy_name,
             result.success,

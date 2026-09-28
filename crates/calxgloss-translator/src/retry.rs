@@ -36,13 +36,13 @@ pub use edge_detection::is_edge_case_failure;
 // --- Main entry point ---
 pub use retry_loop::try_translate_with_retry;
 
-// --- Benchmark logging ---
-pub use benchmark::log_prompt_variant_benchmark;
+// --- Experiment logging ---
+pub use experiment_log::log_prompt_variant_experiment;
 
 // ============================================================================
 // Internal submodule declarations
 // ============================================================================
-mod benchmark;
+mod experiment_log;
 mod compile_fix;
 mod config;
 mod edge_detection;

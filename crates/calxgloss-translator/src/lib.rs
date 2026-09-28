@@ -307,7 +307,7 @@ pub struct TranslationPipeline {
     /// Optional DLL name override for test generation context.
     target_dll: Option<String>,
 
-    /// Optional workspace root path for benchmark logging.
+    /// Optional workspace root path for experiment logging.
     workspace: Option<std::path::PathBuf>,
 }
 
@@ -329,7 +329,7 @@ impl TranslationPipeline {
         }
     }
 
-    /// Set the workspace root path for benchmark logging.
+    /// Set the workspace root path for experiment logging.
     ///
     /// When set, every translation attempt is recorded to
     /// `<workspace>/re/analysis/prompt_strategy_log.json`.
@@ -594,7 +594,7 @@ impl TranslationPipeline {
         );
 
         // Step 2: Run the retry loop
-        // Pass workspace path for benchmark logging
+        // Pass workspace path for experiment logging
         let result = retry::try_translate_with_retry(
             initial,
             verifier,

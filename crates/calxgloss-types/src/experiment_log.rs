@@ -1,4 +1,4 @@
-//! Prompt variant benchmarking data types.
+//! Prompt variant experiment data types.
 //!
 //! This module provides types for tracking and analyzing prompt strategy
 //! performance across DLL categories.
@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::DllCategory;
 
-/// A single benchmark entry recording the outcome of one translation attempt.
+/// A single experiment entry recording the outcome of one translation attempt.
 ///
 /// Each entry captures which strategy was used, whether it succeeded, and
 /// which DLL category it operated on. The logger fills in the timestamp.
@@ -66,7 +66,7 @@ pub struct PromptStrategyEntry {
 }
 
 impl PromptStrategyEntry {
-    /// Create a new benchmark entry with the current timestamp.
+    /// Create a new experiment entry with the current timestamp.
     pub fn new(
         dll: impl Into<String>,
         dll_category: DllCategory,
@@ -85,7 +85,7 @@ impl PromptStrategyEntry {
     }
 }
 
-/// An aggregated view of benchmark data across entries.
+/// An aggregated view of experiment data across entries.
 ///
 /// This struct is produced by [`PromptStrategyLog::compute_stats`] and
 /// contains pass rates broken down by category and strategy.
@@ -137,7 +137,7 @@ pub struct StrategyStats {
     pub pass_rate: f64,
 }
 
-/// A complete benchmark log collecting entries across all translation runs.
+/// A complete experiment log collecting entries across all translation runs.
 ///
 /// This struct is the in-memory representation that the logger serializes
 /// to `re/analysis/prompt_strategy_log.json`. It can also compute aggregate

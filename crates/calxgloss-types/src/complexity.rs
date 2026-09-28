@@ -283,7 +283,7 @@ pub struct PromptVariant {
     /// Previous attempt failures to reference in the prompt.
     pub failure_history: Vec<FailureHint>,
 
-    /// The strategy label for benchmarking.
+    /// The strategy label for experiment tracking.
     pub strategy_label: String,
 }
 
@@ -311,7 +311,7 @@ impl PromptVariant {
         self
     }
 
-    /// Set the strategy label for benchmarking.
+    /// Set the strategy label for experiment tracking.
     pub fn with_strategy(mut self, label: String) -> Self {
         self.strategy_label = label;
         self

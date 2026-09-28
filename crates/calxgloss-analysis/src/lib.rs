@@ -39,11 +39,11 @@
 //! # }
 //! ```
 
-pub mod benchmark;
+pub mod experiment_log;
 mod classify;
 pub mod error;
 
-pub use benchmark::*;
+pub use experiment_log::*;
 pub use classify::*;
 pub use error::{AnalysisError, Result};
 

@@ -16,7 +16,7 @@
 //! - [`dashboard`] — Review dashboard data model
 //! - [`error`] — Unified error type (`TypesError`)
 
-pub mod benchmark;
+pub mod experiment_log;
 pub mod complexity;
 pub mod dashboard;
 pub mod dll;
@@ -29,7 +29,7 @@ pub mod verification;
 
 // Re-export public types at the crate root for convenient access.
 
-pub use benchmark::{
+pub use experiment_log::{
     CategoryStats, PromptStrategyEntry, PromptStrategyLog, PromptStrategyStats, StrategyStats,
 };
 pub use complexity::{FailureHint, FunctionComplexity, PromptVariant, detect_complexity};

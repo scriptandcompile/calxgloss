@@ -1,6 +1,6 @@
-//! Benchmark logging for prompt variant tracking.
+//! Experiment logging for prompt variant tracking.
 
-/// Log a prompt variant benchmark entry for analysis.
+/// Log a prompt variant experiment entry for analysis.
 ///
 /// Persists the entry to `re/analysis/prompt_strategy_log.json` via the
 /// [`PromptStrategyLogger`](calxgloss_analysis::PromptStrategyLogger).
@@ -13,7 +13,7 @@
 /// * `success` — Whether this attempt succeeded.
 /// * `attempt_num` — The attempt number (1-based).
 /// * `workspace` — The workspace root path for the log file. `None` to skip logging.
-pub fn log_prompt_variant_benchmark(
+pub fn log_prompt_variant_experiment(
     dll_name: &str,
     strategy: &str,
     success: bool,
