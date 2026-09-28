@@ -6,6 +6,9 @@ description = "DLL classification, call graph analysis, and Windows API tagging"
 license.workspace = true
 repository.workspace = true
 
+[dev-dependencies]
+chrono = { workspace = true }
+
 [dependencies]
 calxgloss-types = { path = "../calxgloss-types" }
 calxgloss-ghidra = { path = "../calxgloss-ghidra" }

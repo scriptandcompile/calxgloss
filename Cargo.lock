@@ -273,6 +273,7 @@ dependencies = [
  "calxgloss-ghidra",
  "calxgloss-pal",
  "calxgloss-types",
+ "chrono",
  "serde_json",
  "thiserror",
  "tracing",

@@ -212,6 +212,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and send-back units). Reports per-unit status with merge hashes and a
   summary line (accepted / skipped / failed).
 
+### Added
+
+#### `calxgloss-analysis`
+- **Dependency tracker** (`DependencyTracker`) — builds a `DependencyGraph`
+  from DLL classifications and Ghidra call graph data. Automatically derives
+  shim layer declarations from crate-replacement classifications. Produces a
+  DAG in dependency order: DLL classifications (roots) → shim layers →
+  function translations (depending on shim + call graph neighbors).
+  `for_dll()` method for incremental single-DLL builds.
+- `ShimLayerDeclaration` — declares a shim layer for a crate-replacement DLL;
+  extracted from `DllClassification` via `from_classification()`.
+
 ### Changed
 
 #### all crates
