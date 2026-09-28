@@ -67,7 +67,13 @@ pub struct PromptStrategyEntry {
 
 impl PromptStrategyEntry {
     /// Create a new benchmark entry with the current timestamp.
-    pub fn new(dll: impl Into<String>, dll_category: DllCategory, strategy: impl Into<String>, success: bool, attempt: u32) -> Self {
+    pub fn new(
+        dll: impl Into<String>,
+        dll_category: DllCategory,
+        strategy: impl Into<String>,
+        success: bool,
+        attempt: u32,
+    ) -> Self {
         Self {
             dll: dll.into(),
             dll_category,
@@ -191,9 +197,7 @@ impl PromptStrategyLog {
         let mut strategy_map: std::collections::HashMap<String, (usize, usize)> =
             std::collections::HashMap::new();
         for entry in &self.entries {
-            let (tot, suc) = strategy_map
-                .entry(entry.strategy.clone())
-                .or_insert((0, 0));
+            let (tot, suc) = strategy_map.entry(entry.strategy.clone()).or_insert((0, 0));
             *tot += 1;
             if entry.success {
                 *suc += 1;
@@ -295,12 +299,48 @@ mod tests {
         let mut log = PromptStrategyLog::new();
 
         // 3 compile_fix, 1 test_fix, 1 escalate
-        log.add_entry(PromptStrategyEntry::new("a.dll", DllCategory::ProjectSpecific, "compile_fix", false, 1));
-        log.add_entry(PromptStrategyEntry::new("a.dll", DllCategory::ProjectSpecific, "compile_fix", true, 2));
-        log.add_entry(PromptStrategyEntry::new("a.dll", DllCategory::ProjectSpecific, "test_fix", true, 3));
-        log.add_entry(PromptStrategyEntry::new("b.dll", DllCategory::MicrosoftSdk, "compile_fix", false, 1));
-        log.add_entry(PromptStrategyEntry::new("b.dll", DllCategory::MicrosoftSdk, "test_fix", false, 2));
-        log.add_entry(PromptStrategyEntry::new("b.dll", DllCategory::MicrosoftSdk, "escalate", true, 3));
+        log.add_entry(PromptStrategyEntry::new(
+            "a.dll",
+            DllCategory::ProjectSpecific,
+            "compile_fix",
+            false,
+            1,
+        ));
+        log.add_entry(PromptStrategyEntry::new(
+            "a.dll",
+            DllCategory::ProjectSpecific,
+            "compile_fix",
+            true,
+            2,
+        ));
+        log.add_entry(PromptStrategyEntry::new(
+            "a.dll",
+            DllCategory::ProjectSpecific,
+            "test_fix",
+            true,
+            3,
+        ));
+        log.add_entry(PromptStrategyEntry::new(
+            "b.dll",
+            DllCategory::MicrosoftSdk,
+            "compile_fix",
+            false,
+            1,
+        ));
+        log.add_entry(PromptStrategyEntry::new(
+            "b.dll",
+            DllCategory::MicrosoftSdk,
+            "test_fix",
+            false,
+            2,
+        ));
+        log.add_entry(PromptStrategyEntry::new(
+            "b.dll",
+            DllCategory::MicrosoftSdk,
+            "escalate",
+            true,
+            3,
+        ));
 
         let stats = log.compute_stats();
         assert_eq!(stats.total_entries, 6);
@@ -308,19 +348,31 @@ mod tests {
         assert_eq!(stats.total_failures, 3);
 
         // compile_fix: 1/3 = 0.333...
-        let cf = stats.by_strategy.iter().find(|s| s.strategy == "compile_fix").unwrap();
+        let cf = stats
+            .by_strategy
+            .iter()
+            .find(|s| s.strategy == "compile_fix")
+            .unwrap();
         assert_eq!(cf.total, 3);
         assert_eq!(cf.successes, 1);
         assert!((cf.pass_rate - 1.0 / 3.0).abs() < 0.001);
 
         // test_fix: 1/2 = 0.5
-        let tf = stats.by_strategy.iter().find(|s| s.strategy == "test_fix").unwrap();
+        let tf = stats
+            .by_strategy
+            .iter()
+            .find(|s| s.strategy == "test_fix")
+            .unwrap();
         assert_eq!(tf.total, 2);
         assert_eq!(tf.successes, 1);
         assert_eq!(tf.pass_rate, 0.5);
 
         // escalate: 1/1 = 1.0
-        let es = stats.by_strategy.iter().find(|s| s.strategy == "escalate").unwrap();
+        let es = stats
+            .by_strategy
+            .iter()
+            .find(|s| s.strategy == "escalate")
+            .unwrap();
         assert_eq!(es.total, 1);
         assert_eq!(es.successes, 1);
         assert_eq!(es.pass_rate, 1.0);

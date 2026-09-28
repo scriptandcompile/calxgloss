@@ -39,8 +39,8 @@
 //! # }
 //! ```
 
-mod classify;
 pub mod benchmark;
+mod classify;
 pub mod error;
 
 pub use benchmark::*;

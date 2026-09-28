@@ -232,9 +232,27 @@ mod tests {
         let logger = PromptStrategyLogger::new(&ws);
 
         // Mixed strategies and categories
-        logger.record(PromptStrategyEntry::new("a.dll", calxgloss_types::DllCategory::ProjectSpecific, "compile_fix", true, 1));
-        logger.record(PromptStrategyEntry::new("a.dll", calxgloss_types::DllCategory::ProjectSpecific, "test_fix", false, 2));
-        logger.record(PromptStrategyEntry::new("b.dll", calxgloss_types::DllCategory::MicrosoftSdk, "compile_fix", true, 1));
+        logger.record(PromptStrategyEntry::new(
+            "a.dll",
+            calxgloss_types::DllCategory::ProjectSpecific,
+            "compile_fix",
+            true,
+            1,
+        ));
+        logger.record(PromptStrategyEntry::new(
+            "a.dll",
+            calxgloss_types::DllCategory::ProjectSpecific,
+            "test_fix",
+            false,
+            2,
+        ));
+        logger.record(PromptStrategyEntry::new(
+            "b.dll",
+            calxgloss_types::DllCategory::MicrosoftSdk,
+            "compile_fix",
+            true,
+            1,
+        ));
 
         let stats = logger.compute_stats().expect("stats should exist");
         assert_eq!(stats.total_entries, 3);
@@ -276,7 +294,9 @@ mod tests {
         let log_path = logger.log_path();
         assert_eq!(
             log_path,
-            ws.join("re").join("analysis").join("prompt_strategy_log.json")
+            ws.join("re")
+                .join("analysis")
+                .join("prompt_strategy_log.json")
         );
     }
 

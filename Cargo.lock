@@ -425,6 +425,7 @@ dependencies = [
 name = "calxgloss-types"
 version = "0.2.0"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
  "thiserror",
@@ -446,6 +447,7 @@ name = "calxgloss-web"
 version = "0.2.0"
 dependencies = [
  "axum",
+ "calxgloss-types",
  "chrono",
 ]
 

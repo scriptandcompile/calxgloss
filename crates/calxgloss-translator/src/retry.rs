@@ -1033,7 +1033,13 @@ pub async fn try_translate_with_retry(
 
         // Phase 2, step 2.4: Log benchmark data for prompt variant tracking
         let dll_name = &initial_translation.dll;
-        log_prompt_variant_benchmark(dll_name, &strategy_name, result.success, attempt_num, workspace);
+        log_prompt_variant_benchmark(
+            dll_name,
+            &strategy_name,
+            result.success,
+            attempt_num,
+            workspace,
+        );
 
         // Escalate strategy for next attempt
         if config.escalate_on_failure {
