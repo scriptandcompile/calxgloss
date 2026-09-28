@@ -69,6 +69,191 @@ use calxgloss_types::{DependencyEdge, DependencyGraph, DependencyNode, ReviewSta
 use crate::DllClassification;
 
 // ============================================================
+// Dependency graph persistence
+// ============================================================
+
+/// Persists a [`DependencyGraph`] to `re/analysis/dependency_graph.json`.
+///
+/// This module provides [`DependencyGraphPersistor`] for saving and loading
+/// the dependency graph on disk so that downstream consumers (web UI,
+/// terminal dashboard, restitch engine) can read the full DAG without
+/// rebuilding it from raw classifications.
+///
+/// # File Format
+///
+/// The file is a JSON object matching [`DependencyGraph`]:
+///
+/// ```json
+/// {
+///   "nodes": [
+///     {
+///       "unit_id": "dll_classify_d3d9",
+///       "name": "Classify d3d9.dll",
+///       "status": "queued",
+///       "level": "DllClassification"
+///     },
+///     {
+///       "unit_id": "shim_d3d9_wgpu",
+///       "name": "Shim d3d9.dll → wgpu",
+///       "status": "queued",
+///       "level": "ShimLayer"
+///     }
+///   ],
+///   "edges": [
+///     { "from": "shim_d3d9_wgpu", "to": "dll_classify_d3d9" },
+///     { "from": "func_DrawPrimitive", "to": "shim_d3d9_wgpu" }
+///   ]
+/// }
+/// ```
+///
+/// # Example
+///
+/// ```no_run
+/// use calxgloss_analysis::{DependencyTracker, DependencyGraphPersistor, DllClassification, Strategy};
+/// use calxgloss_types::{DllCategory, DependencyEdge};
+///
+/// let tracker = DependencyTracker::default();
+///
+/// // Build a graph from classifications + call graph
+/// let classifications = vec![DllClassification {
+///     dll: "d3d9.dll".to_string(),
+///     category: DllCategory::MicrosoftSdk,
+///     strategy: Strategy::CrateReplacement {
+///         crate_name: "wgpu".to_string(),
+///     },
+///     exports_count: 0,
+///     imports_count: 0,
+///     crate_replacement: Some("wgpu".to_string()),
+/// }];
+///
+/// let call_graph: Vec<(&str, Vec<String>)> = vec![("DrawPrimitive", vec![])];
+/// let graph = tracker.build(&classifications, &call_graph);
+///
+/// // Persist to workspace
+/// let persistor = DependencyGraphPersistor::new("/path/to/workspace");
+/// persistor.save(&graph).expect("should persist graph");
+///
+/// // Later: load it back
+/// let loaded = persistor.load().expect("should load graph");
+/// assert_eq!(loaded.nodes.len(), graph.nodes.len());
+/// ```
+#[derive(Debug, Clone)]
+pub struct DependencyGraphPersistor {
+    /// Base workspace path where `re/analysis/` resides.
+    workspace: std::path::PathBuf,
+}
+
+impl DependencyGraphPersistor {
+    /// Creates a new persistor targeting the given workspace directory.
+    ///
+    /// # Arguments
+    ///
+    /// * `workspace` — The workspace root path. The graph file will be written
+    ///   to `<workspace>/re/analysis/dependency_graph.json`.
+    pub fn new(workspace: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            workspace: workspace.into(),
+        }
+    }
+
+    /// Saves the given dependency graph to the JSON file.
+    ///
+    /// Creates the `re/analysis/` directory structure if it does not already exist.
+    /// Overwrites any existing graph file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`std::io::Error`] if the file cannot be written (e.g., permission
+    /// denied, disk full, or parent directory is read-only).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use calxgloss_analysis::{DependencyTracker, DependencyGraphPersistor};
+    /// use calxgloss_types::DependencyGraph;
+    ///
+    /// let graph = DependencyGraph {
+    ///     nodes: vec![],
+    ///     edges: vec![],
+    /// };
+    ///
+    /// let persistor = DependencyGraphPersistor::new("/workspace");
+    /// persistor.save(&graph).expect("graph should be saved");
+    /// ```
+    pub fn save(&self, graph: &DependencyGraph) -> std::io::Result<()> {
+        let path = self.graph_path();
+
+        // Ensure the directory exists
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        // Serialize with indentation for readability
+        let contents = serde_json::to_string_pretty(graph)?;
+        std::fs::write(&path, contents)?;
+
+        Ok(())
+    }
+
+    /// Loads the dependency graph from the JSON file.
+    ///
+    /// Returns [`None`] if the file does not exist or contains invalid JSON.
+    /// Does not error on missing files — this allows callers to decide
+    /// whether a missing graph is acceptable (e.g., fresh workspace).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use calxgloss_analysis::DependencyGraphPersistor;
+    ///
+    /// let persistor = DependencyGraphPersistor::new("/workspace");
+    /// match persistor.load() {
+    ///     Some(graph) => println!("Loaded {} nodes", graph.nodes.len()),
+    ///     None => println!("No graph file found — build from scratch"),
+    /// }
+    /// ```
+    pub fn load(&self) -> Option<DependencyGraph> {
+        let path = self.graph_path();
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|contents| serde_json::from_str(&contents).ok())
+    }
+
+    /// Builds and persists a dependency graph in one step.
+    ///
+    /// This is a convenience method that combines [`DependencyTracker::build`]
+    /// with [`save`]. It takes raw classification and call-graph data,
+    /// constructs the graph, and writes it to disk.
+    ///
+    /// # Returns
+    ///
+    /// The constructed [`DependencyGraph`] on success, or an [`std::io::Error`]
+    /// if the file cannot be written.
+    ///
+    /// [`save`]: Self::save
+    pub fn build_and_save(
+        &self,
+        classifications: &[DllClassification],
+        call_graph: &[(&str, Vec<String>)],
+    ) -> std::io::Result<DependencyGraph> {
+        let tracker = DependencyTracker::default();
+        let graph = tracker.build(classifications, call_graph);
+        self.save(&graph)?;
+        Ok(graph)
+    }
+
+    /// Returns the path to the dependency graph JSON file.
+    ///
+    /// The path is `<workspace>/re/analysis/dependency_graph.json`.
+    pub fn graph_path(&self) -> std::path::PathBuf {
+        self.workspace
+            .join("re")
+            .join("analysis")
+            .join("dependency_graph.json")
+    }
+}
+
+// ============================================================
 // Shim layer declarations
 // ============================================================
 
@@ -888,5 +1073,179 @@ mod tests {
     fn detect_dll_from_empty_function_returns_none() {
         let dll = DependencyTracker::detect_dll_from_function("", &[]);
         assert!(dll.is_none());
+    }
+
+    // ── DependencyGraphPersistor tests ──
+
+    fn temp_workspace(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("calxgloss-test-graph-{}", name));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn persistor_create() {
+        let ws = temp_workspace("create");
+        let persistor = super::DependencyGraphPersistor::new(&ws);
+        assert_eq!(persistor.workspace, ws);
+    }
+
+    #[test]
+    fn persistor_graph_path_construction() {
+        let ws = std::path::PathBuf::from("/workspace");
+        let persistor = super::DependencyGraphPersistor::new(&ws);
+        let expected = ws.join("re").join("analysis").join("dependency_graph.json");
+        assert_eq!(persistor.graph_path(), expected);
+    }
+
+    #[test]
+    fn persistor_save_and_load_round_trip() {
+        let ws = temp_workspace("round_trip");
+        let persistor = super::DependencyGraphPersistor::new(&ws);
+
+        let tracker = DependencyTracker;
+        let classifications = vec![test_classification(
+            "d3d9.dll",
+            DllCategory::MicrosoftSdk,
+            Some("wgpu"),
+        )];
+        let call_graph = vec![("DrawPrimitive", vec![])];
+        let graph = tracker.build(&classifications, &call_graph);
+
+        persistor.save(&graph).expect("save should succeed");
+        let loaded = persistor.load().expect("load should succeed");
+
+        assert_eq!(loaded.nodes.len(), graph.nodes.len());
+        assert_eq!(loaded.edges.len(), graph.edges.len());
+        assert_eq!(loaded.nodes[0].unit_id, "dll_classify_d3d9");
+        assert_eq!(loaded.nodes[1].unit_id, "shim_d3d9_wgpu");
+    }
+
+    #[test]
+    fn persistor_load_nonexistent() {
+        let ws = temp_workspace("nonexistent");
+        let persistor = super::DependencyGraphPersistor::new(&ws);
+        assert!(persistor.load().is_none());
+    }
+
+    #[test]
+    fn persistor_persists_across_instances() {
+        let ws = temp_workspace("persist_across");
+        let persistor1 = super::DependencyGraphPersistor::new(&ws);
+
+        let tracker = DependencyTracker;
+        let classifications = vec![test_classification(
+            "fmod.dll",
+            DllCategory::KnownThirdParty,
+            Some("fmod-rs"),
+        )];
+        let call_graph = vec![("OpenSound", vec![])];
+        let graph = tracker.build(&classifications, &call_graph);
+
+        persistor1.save(&graph).expect("save should succeed");
+
+        // New instance should read the same file
+        let persistor2 = super::DependencyGraphPersistor::new(&ws);
+        let loaded = persistor2.load().expect("should load from disk");
+        assert_eq!(loaded.nodes.len(), 3); // classification + shim + function
+    }
+
+    #[test]
+    fn persistor_build_and_save() {
+        let ws = temp_workspace("build_and_save");
+        let persistor = super::DependencyGraphPersistor::new(&ws);
+
+        let classifications = vec![test_classification(
+            "game_logic.dll",
+            DllCategory::ProjectSpecific,
+            None,
+        )];
+        let call_graph = vec![("UpdatePlayer", vec!["UpdatePlayer".to_string()])];
+
+        let graph = persistor
+            .build_and_save(&classifications, &call_graph)
+            .expect("build_and_save should succeed");
+
+        assert_eq!(graph.nodes.len(), 2); // classification + function (no shim)
+        // 2 edges: function → classification, function → function (self-edge from call graph)
+        assert!(graph.edges.len() >= 1);
+
+        // Verify it can be loaded back
+        let loaded = persistor.load().expect("should load after build_and_save");
+        assert_eq!(loaded.nodes.len(), graph.nodes.len());
+    }
+
+    #[test]
+    fn persistor_overwrites_existing() {
+        let ws = temp_workspace("overwrite");
+        let persistor = super::DependencyGraphPersistor::new(&ws);
+
+        let tracker = DependencyTracker;
+
+        // Save a 3-node graph
+        let classifications_a = vec![test_classification(
+            "d3d9.dll",
+            DllCategory::MicrosoftSdk,
+            Some("wgpu"),
+        )];
+        let call_graph_a = vec![("DrawPrimitive", vec![])];
+        let graph_a = tracker.build(&classifications_a, &call_graph_a);
+        persistor.save(&graph_a).expect("first save should succeed");
+
+        // Overwrite with a 2-node graph
+        let classifications_b = vec![test_classification(
+            "kernel32.dll",
+            DllCategory::WindowsOs,
+            None,
+        )];
+        let call_graph_b = vec![("CreateFile", vec![])];
+        let graph_b = tracker.build(&classifications_b, &call_graph_b);
+        persistor.save(&graph_b).expect("second save should succeed");
+
+        // Should have the 2-node version, not the 3-node version
+        let loaded = persistor.load().expect("should load overwritten graph");
+        assert_eq!(loaded.nodes.len(), 2);
+        assert_eq!(loaded.nodes[0].unit_id, "dll_classify_kernel32");
+    }
+
+    #[test]
+    fn persistor_empty_graph() {
+        let ws = temp_workspace("empty_graph");
+        let persistor = super::DependencyGraphPersistor::new(&ws);
+
+        let empty_graph = DependencyGraph {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        };
+
+        persistor
+            .save(&empty_graph)
+            .expect("save empty graph should succeed");
+
+        let loaded = persistor
+            .load()
+            .expect("load empty graph should succeed");
+        assert!(loaded.nodes.is_empty());
+        assert!(loaded.edges.is_empty());
+    }
+
+    #[test]
+    fn persistor_directory_created_automatically() {
+        let ws = temp_workspace("auto_dir");
+        let persistor = super::DependencyGraphPersistor::new(&ws);
+
+        // The re/analysis/ subdirectory does not exist yet
+        let deep_path = ws.join("re").join("analysis").join("deep");
+        assert!(!deep_path.exists());
+
+        // Saving the graph should create all intermediate directories
+        let tracker = DependencyTracker;
+        let classifications = vec![test_classification("test.dll", DllCategory::ProjectSpecific, None)];
+        let call_graph = vec![("TestFunc", vec![])];
+        let graph = tracker.build(&classifications, &call_graph);
+
+        persistor.save(&graph).expect("save should create directories");
+        assert!(persistor.graph_path().exists());
     }
 }

@@ -298,6 +298,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DependencyNode::with_level()` constructors.
 
 
+### Phase 4, Step 4.5 — Persist Dependency Graph
+
+#### `calxgloss-analysis`
+- **`DependencyGraphPersistor`** — persists a `DependencyGraph` to
+  `<workspace>/re/analysis/dependency_graph.json`. Provides `save()`,
+  `load()`, `graph_path()`, and a convenience `build_and_save()` that
+  combines `DependencyTracker::build()` with `save()`. Auto-creates the
+  `re/analysis/` directory structure. Returns `None` on missing or
+  corrupt files rather than erroring.
+
 ### Phase 4, Step 4.4 — Auto-queue Unmet Units
 
 #### `calxgloss-types`
