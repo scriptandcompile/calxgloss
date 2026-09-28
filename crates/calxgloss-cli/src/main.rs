@@ -319,6 +319,33 @@ enum DashboardSubcommand {
         #[arg(long, short)]
         reason: Option<String>,
     },
+
+    /// Accept all pending units in dependency order
+    ///
+    /// Walks the review queue, topologically sorts units so dependencies
+    /// are accepted first, then merges each branch into `main` and writes
+    /// the acceptance record.
+    ///
+    /// Only units with status `Queued` or `PendingReview` are accepted.
+    /// Already-accepted, merged, or rejected units are skipped silently.
+    ///
+    /// # Arguments
+    ///
+    /// * `--all` — Accept **all** non-merged `re/*` branches (including
+    ///   `Blocked` and `SendBack` units) instead of only queued/pending.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss dashboard accept-all
+    /// calxgloss dashboard accept-all --all
+    /// ```
+    AcceptAll {
+        /// Accept every unmerged translation branch, including blocked and
+        /// send-back units.
+        #[arg(long, short)]
+        all: bool,
+    },
 }
 
 // ============================================================
@@ -394,6 +421,55 @@ fn cyan_bold(text: &str) -> String {
 
 fn white_bold(text: &str) -> String {
     bold(text)
+}
+
+fn dim(text: &str) -> String {
+    format!("{}{}{}", "\x1b[2m", text, ANSI_RESET)
+}
+
+fn format_dim(text: &str) -> String {
+    dim(text)
+}
+
+/// Width of horizontal dividers (no vertical borders, no corners).
+const SEP_WIDTH: usize = 78;
+
+/// A single horizontal divider.
+fn hsep() {
+    println!("  {}", "─".repeat(SEP_WIDTH));
+}
+
+/// A bold horizontal divider.
+fn hsep_bold() {
+    println!("  {}", "═".repeat(SEP_WIDTH));
+}
+
+/// Prints a line of content, padded to SEP_WIDTH with spaces.
+/// Safe for ANSI codes and multi-byte UTF-8.
+fn println_content(content: impl AsRef<str>) {
+    let s = content.as_ref();
+    let visible: String = s.chars().filter(|c| !c.is_control()).collect();
+    let padded = if visible.len() < SEP_WIDTH {
+        format!("{:<SEP_WIDTH$}", s)
+    } else {
+        let mut end = SEP_WIDTH.min(visible.len());
+        while !visible.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut vcount = 0usize;
+        let mut bend = 0usize;
+        for (bi, ch) in s.chars().enumerate() {
+            if !ch.is_control() {
+                vcount += 1;
+            }
+            if vcount >= end {
+                bend = bi + ch.len_utf8();
+                break;
+            }
+        }
+        s[..bend].to_string()
+    };
+    println!("  {}", padded);
 }
 
 // ============================================================
@@ -1379,6 +1455,189 @@ async fn handle_dashboard_reject(target: &str, reason: Option<&str>) -> Result<(
 }
 
 // ============================================================
+// Dashboard accept-all subcommand handler
+// ============================================================
+
+/// Handles the `dashboard accept-all` subcommand.
+///
+/// Builds the dashboard, topologically sorts pending units by dependency,
+/// and accepts each one in order.
+async fn handle_dashboard_accept_all(all_flag: bool) -> Result<()> {
+    // Find the git repository
+    let repo_path = find_repo_path()?;
+    let git = GitManager::open(&repo_path).context("Failed to open git repository")?;
+
+    // Build the dashboard
+    let builder = calxgloss_reports::dashboard::DashboardBuilder::new(&git);
+    let dashboard = builder.build().context("Failed to build review dashboard")?;
+
+    // Determine which units to accept
+    let to_accept: Vec<&calxgloss::UnitOfWork> = if all_flag {
+        // Accept every non-merged branch in the dashboard
+        dashboard
+            .review_queue
+            .iter()
+            .filter(|u| !matches!(u.status, calxgloss::ReviewStatus::Accepted))
+            .filter(|u| !matches!(u.status, calxgloss::ReviewStatus::Merged))
+            .collect()
+    } else {
+        // Accept only queued and pending-review units, in dependency order
+        dashboard.pending_in_dependency_order()
+    };
+
+    if to_accept.is_empty() {
+        println!();
+        if all_flag {
+            println!("  {} No unmerged branches to accept.", dim("◉"));
+        } else {
+            println!("  {} No pending units to accept.", dim("◉"));
+        }
+        println!();
+        return Ok(());
+    }
+
+    let total = to_accept.len();
+    println!();
+    hsep_bold();
+    println_content(format!(
+        "  Batch Accept: {} units — dependency order",
+        bold(&total.to_string())
+    ));
+    hsep();
+    println_content("");
+
+    let mut accepted = 0;
+    let mut skipped = 0;
+    let mut failed = 0;
+
+    for unit in &to_accept {
+        // Quick check: if already merged, skip
+        let branch_name = resolve_branch(
+            &git,
+            &ViewTarget {
+                dll: unit.dll.clone(),
+                function: unit.function.clone().unwrap_or_default(),
+                specific_attempt: Some(unit.attempt),
+            },
+        );
+
+        let branch_name = match branch_name {
+            Ok(name) => name,
+            Err(_) => {
+                println!(
+                    "  {} {} [{}] — branch not found",
+                    yellow_bold("◉"),
+                    dim(&format!("{}/{}", unit.dll, unit.name)),
+                    red_bold("skip")
+                );
+                skipped += 1;
+                continue;
+            }
+        };
+
+        // Check if already merged
+        if git.is_branch_merged_into_main(&branch_name)? {
+            println!(
+                "  {} {} [{}] — already merged",
+                dim(" "),
+                format_dim(&format!("{}/{}", unit.dll, unit.name)),
+                dim("skipped")
+            );
+            skipped += 1;
+            continue;
+        }
+
+        // Parse the branch into a GitBranch
+        let (dll, function, attempt) = parse_branch_for_accept(&branch_name);
+        let branch = match GitBranch::new(&dll, &function, attempt) {
+            Ok(b) => b,
+            Err(e) => {
+                println!(
+                    "  {} {} [{}] — {}",
+                    red_bold("✗"),
+                    format_dim(&format!("{}/{}", unit.dll, unit.name)),
+                    red_bold("error"),
+                    e
+                );
+                failed += 1;
+                continue;
+            }
+        };
+
+        // Accept the branch
+        match git.accept_branch(&branch) {
+            Ok(calxgloss_git::MergeResult::Merged { merge_hash }) => {
+                println!(
+                    "  {} {} [v{}] — {} ({})",
+                    green_bold("✓"),
+                    format_dim(&format!("{}/{}", unit.dll, unit.name)),
+                    unit.attempt,
+                    green_bold("accepted"),
+                    &merge_hash[..7]
+                );
+                accepted += 1;
+            }
+            Ok(calxgloss_git::MergeResult::AlreadyUpToDate) => {
+                println!(
+                    "  {} {} [v{}] — {}",
+                    yellow_bold("◉"),
+                    format_dim(&format!("{}/{}", unit.dll, unit.name)),
+                    unit.attempt,
+                    yellow_bold("up to date")
+                );
+                skipped += 1;
+            }
+            Ok(calxgloss_git::MergeResult::Conflicts {
+                conflicted_files,
+                error,
+            }) => {
+                println!(
+                    "  {} {} [v{}] — {} ({})",
+                    red_bold("✗"),
+                    format_dim(&format!("{}/{}", unit.dll, unit.name)),
+                    unit.attempt,
+                    red_bold("conflict"),
+                    error
+                );
+                println_content(format!("    Conflicted files: {}", conflicted_files.join(", ")));
+                failed += 1;
+            }
+            Err(e) => {
+                println!(
+                    "  {} {} [v{}] — {} ({})",
+                    red_bold("✗"),
+                    format_dim(&format!("{}/{}", unit.dll, unit.name)),
+                    unit.attempt,
+                    red_bold("failed"),
+                    e
+                );
+                failed += 1;
+            }
+        }
+    }
+
+    println_content("");
+    hsep();
+    let summary_parts = [
+        green_bold(&format!("Accepted:  {}", accepted)),
+        yellow_bold(&format!("Skipped:   {}", skipped)),
+        red_bold(&format!("Failed:    {}", failed)),
+    ];
+    println_content(summary_parts.join("  │  "));
+    hsep_bold();
+    println!();
+
+    if failed > 0 {
+        return Err(anyhow::anyhow!(
+            "Batch accept completed with {} failure(s)",
+            failed
+        ));
+    }
+
+    Ok(())
+}
+
+// ============================================================
 // Verify command handler
 // ============================================================
 
@@ -1582,6 +1841,17 @@ fn main() -> Result<()> {
                 .build()
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_dashboard_reject(&target, reason.as_deref()))
+        }
+        Command::Dashboard {
+            follow: _,
+            interval: _,
+            command: Some(DashboardSubcommand::AcceptAll { all }),
+        } => {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_dashboard_accept_all(all))
         }
         Command::Dashboard {
             follow,

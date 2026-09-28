@@ -190,6 +190,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with an optional reason; the record is persisted so the dashboard can
   display send-back history
 
+#### `calxgloss-types`
+- **`DependencyGraph::topological_order()`** — returns all nodes in
+  topological order (dependencies first) using Kahn's algorithm with
+  depth tracking. Suitable for ordered batch operations like batch accept.
+- **`ReviewDashboard::pending_in_dependency_order()`** — returns only
+  `Queued` / `PendingReview` units sorted by dependency depth, ready for
+  batch acceptance.
+
+#### `calxgloss-cli`
+- **`dashboard accept-all [--all]`** — accepts every pending unit in
+  dependency order: topologically sorts the review queue, merges each
+  branch into `main` sequentially, writes acceptance records. The `--all`
+  flag extends acceptance to every unmerged branch (including blocked
+  and send-back units). Reports per-unit status with merge hashes and a
+  summary line (accepted / skipped / failed).
+
 ### Changed
 
 #### all crates

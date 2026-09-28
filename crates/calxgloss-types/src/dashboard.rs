@@ -221,6 +221,92 @@ impl DependencyGraph {
             .filter_map(|e| self.nodes.iter().find(|n| n.unit_id == e.to))
             .collect()
     }
+
+    /// Returns all nodes in topological order (dependencies first).
+    ///
+    /// Uses a depth-based approach: each node is assigned a depth equal to
+    /// the longest dependency chain leading to it. Nodes are then sorted by
+    /// depth, so a node always appears after all its dependencies.
+    ///
+    /// This is suitable for ordered batch operations like
+    /// [`ReviewDashboard::accept_all`] — a unit is only returned after all
+    /// of its dependencies.
+    pub fn topological_order(&self) -> Vec<&DependencyNode> {
+        // Build adjacency list: for each node (key), which nodes depend on it (values)
+        let mut depended_by: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        // in_degree[node] = number of dependencies this node has
+        let mut in_degree: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+
+        let node_ids: Vec<String> = self
+            .nodes
+            .iter()
+            .map(|n| n.unit_id.clone())
+            .collect();
+
+        for id in &node_ids {
+            in_degree.insert(id.clone(), 0);
+        }
+
+        for edge in &self.edges {
+            // edge.from depends on edge.to
+            // edge.to has dependents: edge.from
+            depended_by
+                .entry(edge.to.clone())
+                .or_default()
+                .push(edge.from.clone());
+
+            // edge.from has one more dependency
+            *in_degree.entry(edge.from.clone()).or_insert(0) += 1;
+        }
+
+        // Kahn's algorithm: process nodes with no dependencies first
+        let mut depth: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        let mut queue: Vec<String> = in_degree
+            .iter()
+            .filter(|&(_, deg)| *deg == 0)
+            .map(|(id, _)| id.clone())
+            .collect();
+        queue.sort();
+
+        while let Some(current) = queue.first().cloned() {
+            queue.remove(0);
+            // Don't overwrite depth if already set (it was set when added to queue)
+            depth.entry(current.clone()).or_insert(0);
+
+            // Decrement in-degree of all nodes that depend on `current`
+            for dependent in depended_by.get(&current).into_iter().flatten() {
+                let deg = in_degree.get_mut(dependent).unwrap();
+                *deg -= 1;
+                if *deg == 0 {
+                    // All dependencies resolved
+                    let d = depth
+                        .get(&current)
+                        .copied()
+                        .unwrap_or(0)
+                        + 1;
+                    depth.insert(dependent.clone(), d);
+                    queue.push(dependent.clone());
+                }
+            }
+        }
+
+        // Nodes not reachable (cycles or missing deps) get depth 0
+        for id in &node_ids {
+            depth.entry(id.clone()).or_insert(0);
+        }
+
+        // Sort by depth (ascending), with stable tie-breaking by node ID
+        let mut ordered: Vec<&DependencyNode> = self.nodes.iter().collect();
+        ordered.sort_by(|a, b| {
+            let da = depth.get(&a.unit_id).copied().unwrap_or(0);
+            let db = depth.get(&b.unit_id).copied().unwrap_or(0);
+            da.cmp(&db).then_with(|| a.unit_id.cmp(&b.unit_id))
+        });
+        ordered
+    }
 }
 
 // ============================================================
@@ -368,6 +454,85 @@ impl ReviewDashboard {
         self.review_queue
             .iter()
             .filter(|u| matches!(u.status, ReviewStatus::Blocked))
+            .collect()
+    }
+
+    /// Returns units sorted in dependency order, excluding already-accepted ones.
+    ///
+    /// Only units with status `Queued` or `PendingReview` are included.
+    /// Units with dependencies that are already accepted appear after those
+    /// dependencies in the returned order.
+    pub fn pending_in_dependency_order(&self) -> Vec<&UnitOfWork> {
+        // Build a temporary graph from the review queue
+        let mut nodes: Vec<&str> = self
+            .review_queue
+            .iter()
+            .filter(|u| {
+                matches!(
+                    u.status,
+                    ReviewStatus::Queued | ReviewStatus::PendingReview
+                )
+            })
+            .map(|u| u.id.as_str())
+            .collect();
+        nodes.sort(); // stable ordering
+
+        let edges: Vec<(&str, &str)> = self
+            .review_queue
+            .iter()
+            .filter(|u| {
+                matches!(
+                    u.status,
+                    ReviewStatus::Queued | ReviewStatus::PendingReview
+                )
+            })
+            .flat_map(|u| u.dependencies.iter().map(|d| (u.id.as_str(), d.as_str())))
+            .collect();
+
+        let graph = DependencyGraph {
+            nodes: nodes
+                .iter()
+                .map(|id| {
+                    let name = self
+                        .review_queue
+                        .iter()
+                        .find(|u| u.id == *id)
+                        .map(|u| u.name.clone())
+                        .unwrap_or_default();
+                    let status = self
+                        .review_queue
+                        .iter()
+                        .find(|u| u.id == *id)
+                        .map(|u| u.status.clone())
+                        .unwrap_or(ReviewStatus::Queued);
+                    DependencyNode {
+                        unit_id: id.to_string(),
+                        name,
+                        status,
+                    }
+                })
+                .collect(),
+            edges: edges
+                .into_iter()
+                .map(|(from, to)| DependencyEdge {
+                    from: from.to_string(),
+                    to: to.to_string(),
+                })
+                .collect(),
+        };
+
+        let ordered_ids: Vec<&str> = graph.topological_order().iter().map(|n| n.unit_id.as_str()).collect();
+
+        // Return units in topological order, preserving original fields
+        let id_set: std::collections::HashSet<&str> = ordered_ids.iter().copied().collect();
+        self.review_queue
+            .iter()
+            .filter(|u| {
+                matches!(
+                    u.status,
+                    ReviewStatus::Queued | ReviewStatus::PendingReview
+                ) && id_set.contains(u.id.as_str())
+            })
             .collect()
     }
 }
@@ -755,5 +920,139 @@ mod tests {
         // Status counts should match
         assert_eq!(dashboard.status_counts.accepted, 1);
         assert_eq!(dashboard.status_counts.pending_review, 1);
+    }
+
+    #[test]
+    fn topological_order_respects_dependencies() {
+        let graph = DependencyGraph {
+            nodes: vec![
+                DependencyNode {
+                    unit_id: "dll_classify".into(),
+                    name: "DLL Classification".into(),
+                    status: ReviewStatus::Accepted,
+                },
+                DependencyNode {
+                    unit_id: "shim_wgpu".into(),
+                    name: "Shim wgpu".into(),
+                    status: ReviewStatus::PendingReview,
+                },
+                DependencyNode {
+                    unit_id: "func_draw".into(),
+                    name: "func_DrawPrimitive".into(),
+                    status: ReviewStatus::Queued,
+                },
+                DependencyNode {
+                    unit_id: "func_present".into(),
+                    name: "func_Present".into(),
+                    status: ReviewStatus::Queued,
+                },
+            ],
+            edges: vec![
+                DependencyEdge {
+                    from: "shim_wgpu".into(),
+                    to: "dll_classify".into(),
+                },
+                DependencyEdge {
+                    from: "func_draw".into(),
+                    to: "shim_wgpu".into(),
+                },
+                DependencyEdge {
+                    from: "func_present".into(),
+                    to: "shim_wgpu".into(),
+                },
+            ],
+        };
+
+        let ordered = graph.topological_order();
+        let order_ids: Vec<&str> = ordered.iter().map(|n| n.unit_id.as_str()).collect();
+
+        // dll_classify must come first (no dependencies)
+        assert_eq!(order_ids[0], "dll_classify");
+
+        // shim_wgpu must come before func_draw and func_present
+        let shim_idx = order_ids.iter().position(|&id| id == "shim_wgpu").unwrap();
+        let draw_idx = order_ids.iter().position(|&id| id == "func_draw").unwrap();
+        let present_idx = order_ids.iter().position(|&id| id == "func_present").unwrap();
+        assert!(shim_idx < draw_idx, "shim must come before func_draw");
+        assert!(shim_idx < present_idx, "shim must come before func_present");
+    }
+
+    #[test]
+    fn pending_in_dependency_order() {
+        let units = vec![
+            UnitOfWork {
+                id: "func_3".into(),
+                name: "func_3".into(),
+                kind: WorkUnitKind::FunctionTranslation,
+                dll: "test.dll".into(),
+                function: Some("func3".into()),
+                attempt: 1,
+                status: ReviewStatus::Queued,
+                accepted: false,
+                confidence: None,
+                baseline_tests_passed: None,
+                baseline_tests_total: None,
+                verification_tests_passed: None,
+                verification_tests_total: None,
+                llm_model: None,
+                prompt_tier: None,
+                dependencies: vec!["unit_1".into(), "unit_2".into()],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                known_gaps: vec![],
+            },
+            UnitOfWork {
+                id: "unit_1".into(),
+                name: "unit_1".into(),
+                kind: WorkUnitKind::DllClassification,
+                dll: "test.dll".into(),
+                function: None,
+                attempt: 1,
+                status: ReviewStatus::PendingReview,
+                accepted: false,
+                confidence: None,
+                baseline_tests_passed: None,
+                baseline_tests_total: None,
+                verification_tests_passed: None,
+                verification_tests_total: None,
+                llm_model: None,
+                prompt_tier: None,
+                dependencies: vec![],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                known_gaps: vec![],
+            },
+            UnitOfWork {
+                id: "unit_2".into(),
+                name: "unit_2".into(),
+                kind: WorkUnitKind::ShimLayer,
+                dll: "test.dll".into(),
+                function: None,
+                attempt: 1,
+                status: ReviewStatus::PendingReview,
+                accepted: false,
+                confidence: None,
+                baseline_tests_passed: None,
+                baseline_tests_total: None,
+                verification_tests_passed: None,
+                verification_tests_total: None,
+                llm_model: None,
+                prompt_tier: None,
+                dependencies: vec!["unit_1".into()],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                known_gaps: vec![],
+            },
+        ];
+
+        let dashboard = ReviewDashboard::new(units);
+        let pending = dashboard.pending_in_dependency_order();
+
+        // First should be unit_1 (0 deps)
+        assert_eq!(pending[0].id, "unit_1");
+        // Second should be unit_2 (1 dep on unit_1)
+        assert_eq!(pending[1].id, "unit_2");
+        // Third should be func_3 (2 deps)
+        assert_eq!(pending[2].id, "func_3");
     }
 }

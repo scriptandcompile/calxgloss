@@ -21,6 +21,12 @@ pub use calxgloss_types::test::*;
 pub use calxgloss_types::translation::WindowsApiCall;
 pub use calxgloss_types::verification::{FailedTest, VerificationResult};
 
+// Dashboard types
+pub use calxgloss_types::dashboard::{
+    DependencyEdge, DependencyGraph, DependencyNode, ReviewAction, ReviewActionKind,
+    ReviewDashboard, ReviewStatus, StatusCounts, UnitOfWork, WorkUnitKind,
+};
+
 // ============================================================
 // calxgloss-ghidra — GhidraMCP HTTP client
 // ============================================================
