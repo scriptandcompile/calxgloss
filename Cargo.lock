@@ -413,6 +413,7 @@ dependencies = [
  "calxgloss-testgen",
  "calxgloss-types",
  "calxgloss-verify",
+ "serde_json",
  "thiserror",
  "tokio",
  "tracing",
