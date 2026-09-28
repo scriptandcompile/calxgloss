@@ -569,6 +569,36 @@ impl GitManager {
             .collect())
     }
 
+    /// Checks if a specific branch is an ancestor of `main`.
+    pub fn is_branch_merged_into_main(
+        &self,
+        branch_name: &str,
+    ) -> Result<bool, TypesError> {
+        let main_ref = self
+            .repo
+            .find_branch("main", git2::BranchType::Local)
+            .ok()
+            .and_then(|b| b.get().peel_to_commit().ok());
+
+        let branch_ref = self
+            .repo
+            .find_branch(branch_name, git2::BranchType::Local)
+            .ok()
+            .and_then(|b| b.get().peel_to_commit().ok());
+
+        match (main_ref, branch_ref) {
+            (Some(main_commit), Some(branch_commit)) => {
+                let is_ancestor = self
+                    .repo
+                    .graph_ahead_behind(branch_commit.id(), main_commit.id())
+                    .map(|(ahead, _)| ahead == 0)
+                    .unwrap_or(false);
+                Ok(is_ancestor)
+            }
+            _ => Ok(false),
+        }
+    }
+
     /// Deletes a branch.
     pub fn delete_branch(&self, branch_name: &str) -> Result<(), TypesError> {
         debug!("Deleting branch '{}'", branch_name);
