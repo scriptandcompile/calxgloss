@@ -20,11 +20,24 @@
 //!   "fix these errors" prompt
 //! - **TestFix** — compilation passed but behavioral tests failed; feed the
 //!   failing test cases back with a "fix these test cases" prompt
-//! - **Escalate** — add more context from the disassembly and try again
+//! - **Escalate** — add more context from disassembly (call graph neighbors,
+//!   neighboring functions, data structures, type info) and try again
+//! - **EdgeCaseFix** — compilation passed, tests failed specifically on
+//!   boundary values (zero, max, negative); feed a boundary-aware fix prompt
+//!
+//! # Strategy Selection
+//!
+//! The user can request a specific strategy, or choose `Auto` which cycles
+//! through `[compile_fix → test_fix → escalate → edge_case_fix]` on each
+//! failure.
 
 use crate::Translation;
 use askama::Template;
+use calxgloss_ghidra::GhidraClient;
 use calxgloss_llm::{LlmClient, LlmMessage};
+use calxgloss_prompts::{
+    CallGraphNeighbor, EdgeCaseTest, NeighborFunction, StructuredData, TypeInfo,
+};
 use calxgloss_verify::{CompileResult, Verifier};
 use tracing::{info, warn};
 
@@ -66,6 +79,9 @@ pub enum RetryStrategy {
     TestFix,
     /// Add more context from disassembly and try again.
     Escalate,
+    /// Compilation passed but tests failed specifically on boundary values;
+    /// feed a boundary-aware fix prompt.
+    EdgeCaseFix,
 }
 
 impl std::fmt::Display for RetryStrategy {
@@ -75,9 +91,20 @@ impl std::fmt::Display for RetryStrategy {
             Self::CompileFix => write!(f, "compile_fix"),
             Self::TestFix => write!(f, "test_fix"),
             Self::Escalate => write!(f, "escalate"),
+            Self::EdgeCaseFix => write!(f, "edge_case_fix"),
         }
     }
 }
+
+/// The sequence of strategies to try when using auto mode.
+///
+/// Each strategy is tried in order; on failure the next one in the cycle is used.
+pub const AUTO_STRATEGY_CYCLE: &[RetryStrategy] = &[
+    RetryStrategy::CompileFix,
+    RetryStrategy::TestFix,
+    RetryStrategy::Escalate,
+    RetryStrategy::EdgeCaseFix,
+];
 
 /// Details about a single translation attempt.
 #[derive(Debug, Clone)]
@@ -105,6 +132,9 @@ pub struct TranslationAttempt {
 
     /// The retry strategy used for this attempt (0 = initial, 1+ = retry).
     pub strategy: String,
+
+    /// Number of tokens the LLM used for this attempt, if reported.
+    pub tokens_used: Option<usize>,
 }
 
 impl TranslationAttempt {
@@ -225,6 +255,198 @@ pub fn build_test_fix_prompt(
         .unwrap_or_else(|_| format!("Fix the failing tests:\n{}", failed_tests.join("\n")))
 }
 
+/// Build an escalated fix prompt that injects additional Ghidra context.
+///
+/// This prompt is used when previous `compile_fix` or `test_fix` attempts have
+/// failed. It adds call graph neighbors, neighboring function code, data
+/// structures, and type information to help the LLM resolve the failure.
+pub async fn build_escalate_prompt_with_context(
+    function_name: &str,
+    dll_name: &str,
+    original_rust_code: &str,
+    failure_description: &str,
+    ghidra: &GhidraClient,
+    address: u64,
+    call_graph: &[String],
+) -> String {
+    // Extract call graph neighbors from the address-based lookup
+    let call_graph_neighbors =
+        extract_call_graph_neighbors(ghidra, call_graph, address).await;
+
+    // Extract neighboring function context (callees and callers)
+    let neighboring_functions = extract_neighboring_context(ghidra, call_graph).await;
+
+    // Data structures and type info come from Ghidra's symbol table
+    let data_structures = extract_data_structures(ghidra, address).await;
+    let type_info = extract_type_info(ghidra, function_name).await;
+
+    calxgloss_prompts::build_escalate_prompt(
+        function_name.to_string(),
+        dll_name.to_string(),
+        original_rust_code.to_string(),
+        failure_description.to_string(),
+        call_graph_neighbors,
+        neighboring_functions,
+        data_structures,
+        type_info,
+    )
+    .unwrap_or_else(|e| {
+        format!(
+            "Escalated prompt failed to render: {}\n\n---\n\n{} (failure details above)",
+            e, original_rust_code
+        )
+    })
+}
+
+/// Build an edge-case fix prompt focused on boundary value handling.
+///
+/// This prompt is used when tests fail specifically on boundary values
+/// (zero, max, negative, null) rather than on typical inputs.
+pub fn build_edge_case_fix_prompt(
+    function_name: &str,
+    dll_name: &str,
+    original_rust_code: &str,
+    failed_tests: &[EdgeCaseTest],
+) -> String {
+    calxgloss_prompts::build_edge_case_prompt(
+        function_name.to_string(),
+        dll_name.to_string(),
+        original_rust_code.to_string(),
+        failed_tests.to_vec(),
+        Vec::new(), // boundary values extracted separately by caller
+    )
+    .unwrap_or_else(|e| {
+        format!(
+            "Edge case prompt failed to render: {}\n\n---\n\n{} (failure details above)",
+            e, original_rust_code
+        )
+    })
+}
+
+/// Detect whether test failures are concentrated on boundary values.
+///
+/// Returns `true` if the failing tests are likely edge cases (zero, max, negative,
+/// null, empty, overflow). This is used to decide whether `EdgeCaseFix` is
+/// appropriate.
+pub fn is_edge_case_failure(failed_tests: &[String], _tests_passed: usize, _tests_total: usize) -> bool {
+    // Need some failures to matter
+    if failed_tests.is_empty() {
+        return false;
+    }
+
+    // Check if failures are all in boundary-value territory.
+    // Word-boundary indicators avoid matching "0" inside "100".
+    let boundary_indicators = [
+        "zero", "null", "max", "overflow", "underflow",
+        "negative", "empty", "min", "boundary",
+        "i32::", "u32::", "i16::", "u16::", "i64::", "u64::",
+        "i8::", "u8::",
+    ];
+
+    let total_failing = failed_tests.len();
+    let mut boundary_matches = 0u32;
+
+    for test_desc in failed_tests {
+        let lower = test_desc.to_lowercase();
+        for indicator in &boundary_indicators {
+            if lower.contains(indicator) {
+                boundary_matches += 1;
+                break;
+            }
+        }
+    }
+
+    // If the majority of failing tests mention boundary indicators,
+    // treat as edge case failure.
+    boundary_matches as f64 >= (total_failing as f64 * 0.5)
+}
+
+// ============================================================
+// Ghidra context extraction helpers
+// ============================================================
+
+/// Extract call graph neighbor details from Ghidra.
+async fn extract_call_graph_neighbors(
+    ghidra: &GhidraClient,
+    call_graph: &[String],
+    _target_address: u64,
+) -> Vec<CallGraphNeighbor> {
+    let mut neighbors = Vec::new();
+    for name in call_graph {
+        // Search for the neighbor function to get its address
+        if let Ok(matches) = ghidra.search_functions(name, Some(5)).await {
+            if let Some(found) = matches.iter().find(|m| m.name == *name) {
+                // Try to get the signature from decompilation
+                let signature = match ghidra.decompile_function(found.address).await {
+                    Ok(decompiled) => decompiled.signature,
+                    Err(_) => String::new(),
+                };
+                neighbors.push(CallGraphNeighbor {
+                    name: found.name.clone(),
+                    address: found.address,
+                    signature,
+                    role: "callee".to_string(), // simplified: most are callees
+                });
+                continue;
+            }
+        }
+        // If not found, just add a stub
+        neighbors.push(CallGraphNeighbor {
+            name: name.clone(),
+            address: 0,
+            signature: String::new(),
+            role: "unknown".to_string(),
+        });
+    }
+    neighbors
+}
+
+/// Extract neighboring function context (full code) from Ghidra.
+async fn extract_neighboring_context(
+    ghidra: &GhidraClient,
+    call_graph: &[String],
+) -> Vec<NeighborFunction> {
+    let mut neighbors = Vec::new();
+    // Limit to a few neighbors to avoid context window bloat
+    for name in call_graph.iter().take(3) {
+        if let Ok(matches) = ghidra.search_functions(name, Some(5)).await {
+            if let Some(found) = matches.iter().find(|m| m.name == *name) {
+                if let Ok(report) = ghidra.function_report(found.address).await {
+                    neighbors.push(NeighborFunction {
+                        name: report.name.clone(),
+                        dll: String::new(),
+                        address: report.address,
+                        disassembly: report.disassembly.clone(),
+                        decompiler_output: report.decompiled.body.clone(),
+                    });
+                }
+            }
+        }
+    }
+    neighbors
+}
+
+/// Extract data structure information from Ghidra.
+async fn extract_data_structures(
+    _ghidra: &GhidraClient,
+    _address: u64,
+) -> Vec<StructuredData> {
+    // GhidraMCP doesn't have a dedicated data-structure endpoint,
+    // so we return empty for now. This is a placeholder for future
+    // integration with Ghidra's type database.
+    Vec::new()
+}
+
+/// Extract type information from Ghidra for the given function.
+async fn extract_type_info(
+    _ghidra: &GhidraClient,
+    _function_name: &str,
+) -> Vec<TypeInfo> {
+    // GhidraMCP doesn't expose type inference directly.
+    // This is a placeholder for future integration.
+    Vec::new()
+}
+
 /// Execute a translation with retry logic.
 ///
 /// This is the main retry entry point. It:
@@ -234,11 +456,21 @@ pub fn build_test_fix_prompt(
 /// 4. Re-verifies each fix attempt
 /// 5. Escalates strategy after each failure
 /// 6. Returns a [`RetryResult`] with all attempt details
+///
+/// # Arguments
+///
+/// * `initial_translation` — The initial [`Translation`] to verify and retry.
+/// * `verifier` — The verification engine.
+/// * `config` — Retry configuration.
+/// * `llm` — The LLM client for sending fix prompts.
+/// * `ghidra` — The Ghidra client, used for context extraction during escalation.
+/// * `strategy` — The starting retry strategy.
 pub async fn try_translate_with_retry(
     initial_translation: Translation,
     verifier: &Verifier,
     config: &RetryConfig,
     llm: &LlmClient,
+    ghidra: &GhidraClient,
     strategy: RetryStrategy,
 ) -> RetryResult {
     let mut result = RetryResult::new();
@@ -275,6 +507,7 @@ pub async fn try_translate_with_retry(
         tests_total: 0,
         failed_tests: Vec::new(),
         strategy: "initial".to_string(),
+        tokens_used: initial_translation.tokens_used,
     };
     result.add_attempt(attempt);
 
@@ -308,6 +541,7 @@ pub async fn try_translate_with_retry(
                     tests_total: 0,
                     failed_tests: Vec::new(),
                     strategy: "skip_default".to_string(),
+                    tokens_used: None,
                 });
                 continue;
             }
@@ -354,14 +588,95 @@ pub async fn try_translate_with_retry(
                 (prompt, "test_fix".to_string())
             }
             RetryStrategy::Escalate => {
-                warn!("Escalate strategy not yet implemented — falling back to compile_fix");
-                let prompt = build_compile_fix_prompt(
+                // Build an escalated prompt with additional Ghidra context.
+                // The initial translation carries the function address and call graph.
+                let failure_desc = if !compile_result.errors.is_empty() {
+                    format!(
+                        "Compilation failed with {} error(s):\n\n{}",
+                        compile_result.errors.len(),
+                        compile_result.errors.join("\n\n")
+                    )
+                } else {
+                    // Get test failure details if compilation passed
+                    let verification = verifier
+                        .verify(
+                            &initial_translation.dll,
+                            &initial_translation.function,
+                            &initial_translation.rust_code,
+                            &initial_translation.baseline_tests,
+                        )
+                        .await;
+                    match verification {
+                        Ok(vr) => format!(
+                            "{} test(s) failed:\n\n{}",
+                            vr.failed_tests.len(),
+                            vr.failed_tests
+                                .iter()
+                                .map(|ft| format!(
+                                    "Test {}: expected {}, got {} — {}",
+                                    ft.test_index, ft.expected, ft.actual, ft.error
+                                ))
+                                .collect::<Vec<_>>()
+                                .join("\n\n")
+                        ),
+                        Err(_) => "Verification failed".to_string(),
+                    }
+                };
+
+                let prompt = build_escalate_prompt_with_context(
                     &initial_translation.function,
                     &initial_translation.dll,
                     &initial_translation.rust_code,
-                    &compile_result.errors,
-                );
+                    &failure_desc,
+                    ghidra,
+                    initial_translation.function_address.unwrap_or(0),
+                    &initial_translation.call_graph,
+                )
+                .await;
                 (prompt, "escalate".to_string())
+            }
+            RetryStrategy::EdgeCaseFix => {
+                // Get test failure details and build an edge-case-focused prompt
+                let verification = verifier
+                    .verify(
+                        &initial_translation.dll,
+                        &initial_translation.function,
+                        &initial_translation.rust_code,
+                        &initial_translation.baseline_tests,
+                    )
+                    .await;
+
+                let failed_tests: Vec<EdgeCaseTest> = match &verification {
+                    Ok(vr) => vr
+                        .failed_tests
+                        .iter()
+                        .enumerate()
+                        .map(|(_i, ft)| EdgeCaseTest {
+                            index: ft.test_index,
+                            inputs: ft.inputs.clone(),
+                            expected: ft.expected.clone(),
+                            actual: ft.actual.clone(),
+                            error: ft.error.clone(),
+                            disassembly_hints: String::new(),
+                        })
+                        .collect(),
+                    Err(_) => vec![EdgeCaseTest {
+                        index: 0,
+                        inputs: serde_json::Value::Null,
+                        expected: serde_json::Value::Null,
+                        actual: serde_json::Value::Null,
+                        error: "Verification failed".to_string(),
+                        disassembly_hints: String::new(),
+                    }],
+                };
+
+                let prompt = build_edge_case_fix_prompt(
+                    &initial_translation.function,
+                    &initial_translation.dll,
+                    &initial_translation.rust_code,
+                    &failed_tests,
+                );
+                (prompt, "edge_case_fix".to_string())
             }
         };
 
@@ -384,6 +699,7 @@ pub async fn try_translate_with_retry(
                     tests_total: 0,
                     failed_tests: Vec::new(),
                     strategy: strategy_name.clone(),
+                    tokens_used: None,
                 });
                 // Continue to next attempt (might get a different strategy)
                 continue;
@@ -391,6 +707,7 @@ pub async fn try_translate_with_retry(
         };
 
         let new_rust_code = response.content.trim().to_string();
+        let tokens_used = response.tokens_used;
 
         if new_rust_code.is_empty() {
             warn!(
@@ -406,6 +723,7 @@ pub async fn try_translate_with_retry(
                 tests_total: 0,
                 failed_tests: Vec::new(),
                 strategy: strategy_name.clone(),
+                tokens_used,
             });
             continue;
         }
@@ -467,6 +785,7 @@ pub async fn try_translate_with_retry(
             tests_total,
             failed_tests,
             strategy: strategy_name.clone(),
+            tokens_used,
         };
         result.add_attempt(attempt);
 
@@ -480,7 +799,8 @@ pub async fn try_translate_with_retry(
             current_strategy = match current_strategy {
                 RetryStrategy::CompileFix => RetryStrategy::TestFix,
                 RetryStrategy::TestFix => RetryStrategy::Escalate,
-                RetryStrategy::Escalate => RetryStrategy::CompileFix, // cycle back
+                RetryStrategy::Escalate => RetryStrategy::EdgeCaseFix,
+                RetryStrategy::EdgeCaseFix => RetryStrategy::CompileFix, // cycle back
                 RetryStrategy::Default => RetryStrategy::CompileFix,
             };
         }
@@ -511,6 +831,7 @@ mod tests {
         assert_eq!(format!("{}", RetryStrategy::CompileFix), "compile_fix");
         assert_eq!(format!("{}", RetryStrategy::TestFix), "test_fix");
         assert_eq!(format!("{}", RetryStrategy::Escalate), "escalate");
+        assert_eq!(format!("{}", RetryStrategy::EdgeCaseFix), "edge_case_fix");
     }
 
     #[test]
@@ -524,6 +845,7 @@ mod tests {
             tests_total: 5,
             failed_tests: Vec::new(),
             strategy: "initial".to_string(),
+            tokens_used: Some(1024),
         };
         assert!(attempt.is_successful());
 
@@ -556,6 +878,7 @@ mod tests {
             tests_total: 3,
             failed_tests: Vec::new(),
             strategy: "initial".to_string(),
+            tokens_used: Some(512),
         });
         assert!(result.success);
         assert!(result.rust_code.is_some());
@@ -594,5 +917,40 @@ mod tests {
         assert!(prompt.contains("DrawSprite"));
         assert!(prompt.contains("expected 42"));
         assert!(prompt.contains("expected 0"));
+    }
+
+    #[test]
+    fn test_is_edge_case_failure_boundary() {
+        let failed = vec![
+            "Test 0: expected 0, got 1 — input was 0 (zero check)".to_string(),
+            "Test 1: expected 2147483647, got 0 — input was max (overflow)".to_string(),
+        ];
+        assert!(is_edge_case_failure(&failed, 0, 2));
+    }
+
+    #[test]
+    fn test_is_edge_case_failure_normal_failure() {
+        let failed = vec![
+            "Test 0: expected 100, got 50 — wrong multiplication".to_string(),
+            "Test 1: expected 200, got 100 — wrong addition".to_string(),
+        ];
+        assert!(!is_edge_case_failure(&failed, 0, 2));
+    }
+
+    #[test]
+    fn test_is_edge_case_failure_mixed() {
+        // Mixed: 2 boundary + 1 normal — should be edge case (majority)
+        let failed = vec![
+            "Test 0: expected 0, got 1 — zero input".to_string(),
+            "Test 1: expected 0, got -1 — negative input".to_string(),
+            "Test 2: expected 100, got 50 — wrong value".to_string(),
+        ];
+        assert!(is_edge_case_failure(&failed, 0, 3));
+    }
+
+    #[test]
+    fn test_is_edge_case_failure_all_passed() {
+        let failed: Vec<String> = vec![];
+        assert!(!is_edge_case_failure(&failed, 5, 5));
     }
 }
