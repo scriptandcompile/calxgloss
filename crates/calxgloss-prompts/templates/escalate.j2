@@ -1,0 +1,106 @@
+You are a reverse engineering specialist. You previously translated a function to Rust, but earlier attempts failed. This time, additional Ghidra context has been injected to help you succeed.
+
+## FUNCTION: {{ function_name }}
+## SOURCE DLL: {{ dll_name }}
+
+## ORIGINAL TRANSLATION (FAILED)
+
+{{ original_rust_code }}
+
+---
+
+## VERIFICATION FAILURE
+
+{{ failure_description }}
+
+---
+
+## ADDITIONAL CONTEXT — CALL GRAPH NEIGHBORS
+
+{% if !call_graph_neighbors.is_empty() %}
+The following functions are directly called by or call this function.
+Their signatures have been resolved from Ghidra analysis:
+
+{% for neighbor in call_graph_neighbors %}
+- **{{ neighbor.name }}** (address: {{ neighbor.address }})
+  Signature: `{{ neighbor.signature }}`
+  Role: {% if neighbor.role == "caller" %}This function calls {{ neighbor.name }}{% elif neighbor.role == "callee" %}{{ neighbor.name }} is called by this function{% else %}{{ neighbor.name }}{% endif %}
+{% endfor %}
+{% else %}
+No call graph neighbors identified.
+{% endif %}
+
+---
+
+## ADDITIONAL CONTEXT — NEIGHBORING FUNCTIONS
+
+{% if !neighboring_functions.is_empty() %}
+The following functions share code patterns, data structures, or call conventions
+with this function. Review them for context:
+
+{% for neighbor in neighboring_functions %}
+### Function: {{ neighbor.name }} ({{ neighbor.dll }})
+Address: {{ neighbor.address }}
+
+Disassembly:
+```
+{{ neighbor.disassembly }}
+```
+
+Pseudo-C:
+```c
+{{ neighbor.decompiler_output }}
+```
+{% endfor %}
+{% else %}
+No neighboring function context available.
+{% endif %}
+
+---
+
+## ADDITIONAL CONTEXT — DATA STRUCTURES
+
+{% if !data_structures.is_empty() %}
+The following data structures are used in or near this function:
+
+{% for ds in data_structures %}
+### {{ ds.name }}
+Size: {{ ds.size }} bytes
+Fields:
+{% for field in ds.fields %}
+- `{{ field.name }}` : {{ field.type_ }} {% if field.offset != -1 %}(offset: {{ field.offset }}){% endif %}
+{% endfor %}
+{% endfor %}
+{% else %}
+No data structure context available.
+{% endif %}
+
+---
+
+## ADDITIONAL CONTEXT — TYPE INFORMATION
+
+{% if type_info.len() > 0 %}
+The following types were inferred by Ghidra's type database:
+
+{% for ti in type_info %}
+- `{{ ti.name }}`: {% if ti.description.len() > 0 %}{{ ti.description }}{% else %}inferred type{% endif %}
+{% endfor %}
+{% else %}
+No additional type information available.
+{% endif %}
+
+---
+
+## TRANSLATION REQUIREMENTS
+
+1. **Output ONLY the corrected Rust code** — no explanations, no markdown fences, no code blocks.
+2. **Use ALL context provided above** — the call graph, neighboring functions, data structures, and type info are all relevant.
+3. **Fix the specific issue described above** without changing correct parts of the logic.
+4. **Preserve the function signature** — the parameters must remain the same.
+5. **Keep extern stubs** — any `extern "C"` declarations that were in the original code must be preserved.
+6. **Use `std::` for Win32 Core mappings** (std::fs, std::thread, std::sync, std::time, etc.).
+7. **Handle null pointers and invalid inputs gracefully** (return error codes matching the original).
+8. **Do NOT guess at Windows API behaviors** — follow the disassembly and decompiler output strictly.
+9. **When the call graph shows this function calls another project function**, declare that callee as an `extern "C"` stub.
+
+## CORRECTED RUST CODE:

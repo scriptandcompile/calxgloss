@@ -173,6 +173,209 @@ impl FixTemplate {
 }
 
 // ============================================================
+// Escalate template — for retrying with additional Ghidra context
+// ============================================================
+
+/// Template for "add more context and retry" prompts.
+///
+/// Used when previous attempts failed with compile_fix or test_fix strategies.
+/// Injects call graph neighbors, neighboring functions, data structures, and type info.
+#[derive(Template)]
+#[template(path = "escalate.j2")]
+pub struct EscalateTemplate {
+    /// The function name being fixed.
+    pub function_name: String,
+
+    /// The DLL containing the function.
+    pub dll_name: String,
+
+    /// The previously generated (failing) Rust code.
+    pub original_rust_code: String,
+
+    /// A description of what went wrong during verification.
+    pub failure_description: String,
+
+    /// Functions directly called by or calling this function.
+    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
+
+    /// Other functions sharing context with this function.
+    pub neighboring_functions: Vec<NeighborFunction>,
+
+    /// Data structures referenced near this function.
+    pub data_structures: Vec<StructuredData>,
+
+    /// Type information inferred by Ghidra.
+    pub type_info: Vec<TypeInfo>,
+}
+
+/// A function that is a direct caller or callee of the target function.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CallGraphNeighbor {
+    /// The neighbor function's name.
+    pub name: String,
+    /// Virtual address of the neighbor.
+    pub address: u64,
+    /// Signature as seen by Ghidra.
+    pub signature: String,
+    /// Whether this neighbor calls or is called by the target.
+    pub role: String,
+}
+
+/// A neighboring function with shared context.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct NeighborFunction {
+    /// The function name.
+    pub name: String,
+    /// The DLL containing the function.
+    pub dll: String,
+    /// Virtual address.
+    pub address: u64,
+    /// Disassembly listing.
+    pub disassembly: String,
+    /// Pseudo-C decompiler output.
+    pub decompiler_output: String,
+}
+
+/// A data structure referenced near the target function.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StructuredData {
+    /// Name or type tag.
+    pub name: String,
+    /// Size in bytes, or 0 if unknown.
+    pub size: usize,
+    /// Struct fields.
+    pub fields: Vec<StructField>,
+}
+
+/// A single field within a data structure.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StructField {
+    /// Field name.
+    pub name: String,
+    /// Field type as inferred by Ghidra.
+    pub type_: String,
+    /// Byte offset from struct start, or -1 if unknown.
+    pub offset: i64,
+}
+
+/// Type information inferred by Ghidra's type database.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TypeInfo {
+    /// Type name or signature.
+    pub name: String,
+    /// Human-readable description, or empty string when none available.
+    pub description: String,
+}
+
+// ============================================================
+// Edge case template — for boundary-value test failures
+// ============================================================
+
+/// Template for "fix edge cases" prompts.
+///
+/// Used when tests fail specifically on boundary values (zero, max, negative).
+#[derive(Template)]
+#[template(path = "edge_case.j2")]
+pub struct EdgeCaseTemplate {
+    /// The function name being fixed.
+    pub function_name: String,
+
+    /// The DLL containing the function.
+    pub dll_name: String,
+
+    /// The previously generated (failing) Rust code.
+    pub original_rust_code: String,
+
+    /// Failing edge case test details.
+    pub failed_tests: Vec<EdgeCaseTest>,
+
+    /// Boundary checks identified from the disassembly.
+    pub boundary_values: Vec<BoundaryValue>,
+}
+
+/// A failing edge case test with context.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EdgeCaseTest {
+    /// Test index (1-based).
+    pub index: usize,
+    /// Test inputs as JSON.
+    pub inputs: serde_json::Value,
+    /// Expected output.
+    pub expected: serde_json::Value,
+    /// Actual output.
+    pub actual: serde_json::Value,
+    /// Error message from the test harness.
+    pub error: String,
+    /// Disassembly hints from Ghidra that explain this branch.
+    pub disassembly_hints: String,
+}
+
+/// A boundary value check identified in the disassembly.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BoundaryValue {
+    /// Human-readable description.
+    pub description: String,
+    /// The condition being checked (e.g., "x <= 0").
+    pub condition: String,
+    /// Address of the branch instruction.
+    pub branch_address: u64,
+}
+
+/// Build an escalated prompt that injects additional Ghidra context.
+pub fn build_escalate_prompt(
+    function_name: String,
+    dll_name: String,
+    original_rust_code: String,
+    failure_description: String,
+    call_graph_neighbors: Vec<CallGraphNeighbor>,
+    neighboring_functions: Vec<NeighborFunction>,
+    data_structures: Vec<StructuredData>,
+    type_info: Vec<TypeInfo>,
+) -> Result<String, PromptError> {
+    let template = EscalateTemplate {
+        function_name,
+        dll_name,
+        original_rust_code,
+        failure_description,
+        call_graph_neighbors,
+        neighboring_functions,
+        data_structures,
+        type_info,
+    };
+    let rendered = template
+        .render()
+        .map_err(|e| PromptError::Render(e.to_string()))?;
+    if rendered.trim().is_empty() {
+        return Err(PromptError::EmptyPrompt);
+    }
+    Ok(rendered)
+}
+
+/// Build an edge-case prompt focused on boundary value handling.
+pub fn build_edge_case_prompt(
+    function_name: String,
+    dll_name: String,
+    original_rust_code: String,
+    failed_tests: Vec<EdgeCaseTest>,
+    boundary_values: Vec<BoundaryValue>,
+) -> Result<String, PromptError> {
+    let template = EdgeCaseTemplate {
+        function_name,
+        dll_name,
+        original_rust_code,
+        failed_tests,
+        boundary_values,
+    };
+    let rendered = template
+        .render()
+        .map_err(|e| PromptError::Render(e.to_string()))?;
+    if rendered.trim().is_empty() {
+        return Err(PromptError::EmptyPrompt);
+    }
+    Ok(rendered)
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -260,5 +463,100 @@ mod tests {
         req.baseline_tests = vec![];
         let template = TranslateTemplate::from_request(&req);
         assert_eq!(template.test_cases.len(), 0);
+    }
+
+    #[test]
+    fn test_escalate_prompt_basic() {
+        let prompt = build_escalate_prompt(
+            "DrawSprite".to_string(),
+            "game_logic.dll".to_string(),
+            "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
+            "Tests failed: boundary case x=0 produced wrong result".to_string(),
+            Vec::new(), // empty neighbors — should render "No call graph neighbors"
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+
+        assert!(prompt.contains("DrawSprite"));
+        assert!(prompt.contains("game_logic.dll"));
+        assert!(prompt.contains("No call graph neighbors identified"));
+        assert!(prompt.contains("No neighboring function context available"));
+        assert!(prompt.contains("No data structure context available"));
+        assert!(prompt.contains("No additional type information available"));
+    }
+
+    #[test]
+    fn test_escalate_prompt_with_neighbors() {
+        let neighbors = vec![CallGraphNeighbor {
+            name: "helper_compute".to_string(),
+            address: 0x1000,
+            signature: "int __stdcall helper_compute(int x, int y)".to_string(),
+            role: "callee".to_string(),
+        }];
+
+        let prompt = build_escalate_prompt(
+            "DrawSprite".to_string(),
+            "game_logic.dll".to_string(),
+            "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
+            "Wrong result".to_string(),
+            neighbors,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+
+        assert!(prompt.contains("helper_compute"));
+        assert!(prompt.contains("int __stdcall helper_compute(int x, int y)"));
+    }
+
+    #[test]
+    fn test_edge_case_prompt_basic() {
+        let failed_tests = vec![EdgeCaseTest {
+            index: 1,
+            inputs: json!({"x": 0}),
+            expected: json!(0),
+            actual: json!(1),
+            error: "Expected 0, got 1".to_string(),
+            disassembly_hints: "cmp eax, 0\nje .zero_branch".to_string(),
+        }];
+
+        let prompt = build_edge_case_prompt(
+            "DrawSprite".to_string(),
+            "game_logic.dll".to_string(),
+            "fn draw_sprite(x: i32) -> i32 { x + 1 }".to_string(),
+            failed_tests,
+            Vec::new(),
+        )
+        .unwrap();
+
+        assert!(prompt.contains("DrawSprite"));
+        assert!(prompt.contains("x + 1"));
+        assert!(prompt.contains("Expected 0, got 1"));
+        assert!(prompt.contains("cmp eax, 0"));
+    }
+
+    #[test]
+    fn test_edge_case_prompt_with_boundary_values() {
+        let bvs = vec![BoundaryValue {
+            description: "Zero check for input index".to_string(),
+            condition: "x <= 0".to_string(),
+            branch_address: 0x2000,
+        }];
+
+        let prompt = build_edge_case_prompt(
+            "DrawSprite".to_string(),
+            "game_logic.dll".to_string(),
+            "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
+            Vec::new(),
+            bvs,
+        )
+        .unwrap();
+
+        assert!(prompt.contains("Zero check for input index"));
+        assert!(prompt.contains("x <= 0"));
+        assert!(prompt.contains("0x2000"));
     }
 }
