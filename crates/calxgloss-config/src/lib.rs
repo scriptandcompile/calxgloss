@@ -613,6 +613,7 @@ max_retries = 5
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_a_missing_optional_file_is_not_an_error() {
         // A project-local file that does not exist is the normal case on a fresh
         // checkout, so falling through to the user-global path must succeed
@@ -638,6 +639,7 @@ max_retries = 5
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_a_found_file_is_reported() {
         let dir = tempfile::tempdir().unwrap();
         // Temporarily neutralize user-global config paths so no user config
