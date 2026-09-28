@@ -104,6 +104,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### `calxgloss-config`
 - `test_a_missing_optional_file_is_not_an_error` and `test_a_found_file_is_reported` — both tests now temporarily neutralize `HOME` and `XDG_CONFIG_HOME` so a user-global `~/.config/calxgloss/config.toml` on the developer machine cannot be picked up during test execution, breaking `loaded.is_empty()` and config-precedence assertions.
 
+### Phase 3 — Terminal Review Dashboard
+
+#### `calxgloss-types`
+- **Dashboard data model** (`calxgloss-types::dashboard`) — new module with all
+  review dashboard types, replacing the duplicate scaffolding in `calxgloss-web`:
+  `WorkUnitKind` (7 unit types), `ReviewStatus` (7 statuses), `UnitOfWork`
+  (full metadata struct with timestamps, test counts, confidence, dependencies,
+  known gaps), `DependencyNode` / `DependencyEdge` / `DependencyGraph` (DAG with
+  `roots()`, `dependents()`, `dependencies()` traversal), `StatusCounts` (aggregated
+  counts with `total()`), `ReviewDashboard` (assembles units into a viewable
+  dashboard with dependency-sorted queue, recent activity, and status counts), and
+  `ReviewAction` / `ReviewActionKind` (human review actions). All types derive
+  `serde::Serialize` and `serde::Deserialize`.
+- `chrono` dependency — added to `calxgloss-types` for `DateTime<Utc>` fields
+  in `UnitOfWork` timestamps.
+
+#### `calxgloss-web`
+- **Re-exported from `calxgloss-types`** — the domain data types
+  (`UnitOfWork`, `ReviewDashboard`, `DependencyGraph`, `ReviewStatus`, etc.)
+  are no longer defined locally; this crate re-exports them from
+  `calxgloss-types` so downstream consumers get a single source of truth.
+  The axum server scaffold (behind `server` feature) and tests are preserved.
+
 ## [0.1.0] — 2025-09-27
 
 ### Added

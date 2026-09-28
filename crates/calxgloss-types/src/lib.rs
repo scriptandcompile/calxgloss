@@ -2,7 +2,8 @@
 //!
 //! This crate defines the core types used across all Calxgloss crates,
 //! including DLL analysis, function metadata, test cases, translation
-//! requests/responses, verification results, and Git automation.
+//! requests/responses, verification results, Git automation, and the
+//! review dashboard data model.
 //!
 //! # Module Organization
 //!
@@ -12,10 +13,12 @@
 //! - [`translation`] — LLM translation requests and results
 //! - [`verification`] — Compilation and behavioral verification results
 //! - [`git`] — Branch and commit tracking
+//! - [`dashboard`] — Review dashboard data model (Phase 3)
 //! - [`error`] — Unified error type (`TypesError`)
 
 pub mod benchmark;
 pub mod complexity;
+pub mod dashboard;
 pub mod dll;
 pub mod error;
 pub mod function;
@@ -26,8 +29,14 @@ pub mod verification;
 
 // Re-export public types at the crate root for convenient access.
 
-pub use benchmark::{CategoryStats, PromptStrategyEntry, PromptStrategyLog, PromptStrategyStats, StrategyStats};
+pub use benchmark::{
+    CategoryStats, PromptStrategyEntry, PromptStrategyLog, PromptStrategyStats, StrategyStats,
+};
 pub use complexity::{FailureHint, FunctionComplexity, PromptVariant, detect_complexity};
+pub use dashboard::{
+    DependencyEdge, DependencyGraph, DependencyNode, ReviewAction, ReviewActionKind,
+    ReviewDashboard, ReviewStatus, StatusCounts, UnitOfWork, WorkUnitKind,
+};
 pub use dll::{DllCategory, DllInfo, Export, Import};
 pub use error::TypesError;
 pub use function::{ApiCategory, FunctionInfo, WindowsApiCall};

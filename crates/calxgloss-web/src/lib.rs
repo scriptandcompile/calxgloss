@@ -1,12 +1,13 @@
 //! Calxgloss Web — Web Review UI (scaffolded for post-MVP implementation)
 //!
-//! This crate will house the review UI for the Calxgloss reverse engineering harness.
-//! It will use **axum** + **leptos** for a reactive server-side rendered web interface.
+//! This crate houses the review UI for the Calxgloss reverse engineering harness.
+//! The domain data types (`UnitOfWork`, `ReviewDashboard`, `DependencyGraph`, etc.)
+//! live in `calxgloss-types` and are re-exported from this crate for convenience.
 //!
 //! ## MVP Status
 //!
 //! In the MVP, review happens via terminal output from `calxgloss-reports`.
-//! The web UI is not implemented yet — these structs are scaffolds for future work.
+//! The web UI is not implemented yet — only the server scaffolding is present.
 //!
 //! ## Future Architecture
 //!
@@ -36,358 +37,17 @@
 //! cargo build --features server
 //! ```
 //!
-//! ## Post-MVP Implementation Plan
-//!
-//! 1. Set up axum router with `/api/*` endpoints for review data
-//! 2. Add leptos and implement components for review dashboard, diff view, dependency graph
-//! 3. Wire endpoints to `calxgloss-types` and `calxgloss-git` data sources
-//! 4. Add WebSocket support for real-time translation progress streaming
+//! Re-export the dashboard data types from `calxgloss-types` so downstream
+//! consumers can import everything from a single place.
 
 // ============================================================
-// Core structs — future web UI data models
+// Re-exports from calxgloss-types
 // ============================================================
 
-use chrono::{DateTime, Utc};
-
-/// Represents a unit of work in the reverse engineering pipeline.
-/// Each unit corresponds to a single function translation, DLL classification,
-/// shim layer implementation, or integration step.
-#[derive(Debug, Clone)]
-pub struct UnitOfWork {
-    /// Unique identifier for this unit of work.
-    pub id: String,
-
-    /// Display name (e.g., "DirectX_DrawPrimitive").
-    pub name: String,
-
-    /// Type of work unit.
-    pub kind: WorkUnitKind,
-
-    /// Associated DLL.
-    pub dll: String,
-
-    /// Associated function (if applicable).
-    pub function: Option<String>,
-
-    /// Attempt number (v1, v2, v3, etc.).
-    pub attempt: u32,
-
-    /// Current review status.
-    pub status: ReviewStatus,
-
-    /// Whether this unit has been accepted and merged to main.
-    pub accepted: bool,
-
-    /// Translation confidence score (0.0 to 1.0).
-    pub confidence: Option<f32>,
-
-    /// Number of baseline tests that passed.
-    pub baseline_tests_passed: Option<usize>,
-
-    /// Total number of baseline tests.
-    pub baseline_tests_total: Option<usize>,
-
-    /// Number of verification tests that passed.
-    pub verification_tests_passed: Option<usize>,
-
-    /// Total number of verification tests.
-    pub verification_tests_total: Option<usize>,
-
-    /// LLM model used for translation.
-    pub llm_model: Option<String>,
-
-    /// Prompt tier used (0-4).
-    pub prompt_tier: Option<usize>,
-
-    /// List of branch names this unit depends on.
-    pub dependencies: Vec<String>,
-
-    /// When this unit was created.
-    pub created_at: DateTime<Utc>,
-
-    /// When this unit was last updated.
-    pub updated_at: DateTime<Utc>,
-
-    /// Known gaps or caveats that could not be verified.
-    pub known_gaps: Vec<String>,
-}
-
-/// The kind of work unit.
-#[derive(Debug, Clone, PartialEq)]
-pub enum WorkUnitKind {
-    /// DLL classification output for one DLL.
-    DllClassification,
-    /// One crate shim implementation.
-    ShimLayer,
-    /// One function translated to Rust.
-    FunctionTranslation,
-    /// New baseline test discovered.
-    TestCaseAddition,
-    /// New PAL abstraction trait.
-    PalTrait,
-    /// Restitching a batch of functions.
-    IntegrationStep,
-    /// Fixing incorrect translation.
-    BugFix,
-}
-
-impl std::fmt::Display for WorkUnitKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            WorkUnitKind::DllClassification => write!(f, "DLL Classification"),
-            WorkUnitKind::ShimLayer => write!(f, "Shim Layer"),
-            WorkUnitKind::FunctionTranslation => write!(f, "Function Translation"),
-            WorkUnitKind::TestCaseAddition => write!(f, "Test Case Addition"),
-            WorkUnitKind::PalTrait => write!(f, "PAL Trait"),
-            WorkUnitKind::IntegrationStep => write!(f, "Integration Step"),
-            WorkUnitKind::BugFix => write!(f, "Bug Fix"),
-        }
-    }
-}
-
-/// The current review status of a unit of work.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ReviewStatus {
-    /// Queued for review, waiting for dependencies.
-    Queued,
-    /// Currently under human review.
-    PendingReview,
-    /// Human accepted this unit — merged to main.
-    Accepted,
-    /// Human sent back for fixes.
-    SendBack,
-    /// Patch requested for a specific issue.
-    PatchRequested,
-    /// Merged into main.
-    Merged,
-    /// Work on this unit is blocked by unresolved dependencies.
-    Blocked,
-}
-
-impl std::fmt::Display for ReviewStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ReviewStatus::Queued => write!(f, "queued"),
-            ReviewStatus::PendingReview => write!(f, "pending_review"),
-            ReviewStatus::Accepted => write!(f, "accepted"),
-            ReviewStatus::SendBack => write!(f, "send_back"),
-            ReviewStatus::PatchRequested => write!(f, "patch_requested"),
-            ReviewStatus::Merged => write!(f, "merged"),
-            ReviewStatus::Blocked => write!(f, "blocked"),
-        }
-    }
-}
-
-/// A node in the dependency graph of units of work.
-#[derive(Debug, Clone)]
-pub struct DependencyNode {
-    /// ID of the unit of work.
-    pub unit_id: String,
-    /// Display name.
-    pub name: String,
-    /// Status of this unit.
-    pub status: ReviewStatus,
-}
-
-/// An edge representing a dependency relationship between units of work.
-#[derive(Debug, Clone)]
-pub struct DependencyEdge {
-    /// The unit that depends on another.
-    pub from: String,
-    /// The unit that is depended upon.
-    pub to: String,
-}
-
-/// The full dependency graph for the current review session.
-#[derive(Debug, Clone)]
-pub struct DependencyGraph {
-    /// All nodes in the graph.
-    pub nodes: Vec<DependencyNode>,
-    /// All edges in the graph.
-    pub edges: Vec<DependencyEdge>,
-}
-
-impl DependencyGraph {
-    /// Returns nodes that have no incoming edges (root nodes — no dependencies).
-    pub fn roots(&self) -> Vec<&DependencyNode> {
-        let dependent_ids: std::collections::HashSet<&str> = self
-            .edges
-            .iter()
-            .map(|e| &e.from)
-            .map(|s| s.as_str())
-            .collect();
-        self.nodes
-            .iter()
-            .filter(|n| !dependent_ids.contains(n.unit_id.as_str()))
-            .collect()
-    }
-
-    /// Returns direct dependents of a given unit (units that depend on it).
-    pub fn dependents(&self, unit_id: &str) -> Vec<&DependencyNode> {
-        let dependent_edges: Vec<&DependencyEdge> =
-            self.edges.iter().filter(|e| e.to == unit_id).collect();
-        dependent_edges
-            .iter()
-            .filter_map(|e| self.nodes.iter().find(|n| n.unit_id == e.from))
-            .collect()
-    }
-
-    /// Returns direct dependencies of a given unit (units it depends on).
-    pub fn dependencies(&self, unit_id: &str) -> Vec<&DependencyNode> {
-        let dep_edges: Vec<&DependencyEdge> =
-            self.edges.iter().filter(|e| e.from == unit_id).collect();
-        dep_edges
-            .iter()
-            .filter_map(|e| self.nodes.iter().find(|n| n.unit_id == e.to))
-            .collect()
-    }
-}
-
-/// Represents a review action that a human can take on a unit of work.
-#[derive(Debug, Clone)]
-pub struct ReviewAction {
-    /// The unit of work this action applies to.
-    pub unit_id: String,
-    /// The action being performed.
-    pub action: ReviewActionKind,
-    /// Optional comments from the reviewer.
-    pub comments: Option<String>,
-}
-
-/// The kinds of review actions available.
-#[derive(Debug, Clone)]
-pub enum ReviewActionKind {
-    /// Accept the unit — merge to main.
-    Accept,
-    /// Send back to LLM with reviewer comments.
-    SendBack,
-    /// Request a patch for a specific issue.
-    RequestPatch {
-        /// Description of the issue to fix.
-        issue: String,
-    },
-    /// View all LLM attempts for this unit.
-    ViewAttempts,
-    /// View the original Ghidra context.
-    ViewGhidraContext,
-}
-
-/// A dashboard view showing all units of work and their status.
-#[derive(Debug, Clone)]
-pub struct ReviewDashboard {
-    /// The dependency graph for this review session.
-    pub dependency_graph: DependencyGraph,
-    /// Units of work ordered for review (dependency-sorted).
-    pub review_queue: Vec<UnitOfWork>,
-    /// Recently accepted units.
-    pub recent_activity: Vec<UnitOfWork>,
-    /// Total counts by status.
-    pub status_counts: StatusCounts,
-}
-
-impl ReviewDashboard {
-    /// Creates a new dashboard with the given units of work.
-    pub fn new(units: Vec<UnitOfWork>) -> Self {
-        let mut graph = DependencyGraph {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-        };
-        let mut queue = Vec::new();
-        let mut recent = Vec::new();
-        let mut counts = StatusCounts::default();
-
-        for unit in units {
-            let is_accepted =
-                unit.status == ReviewStatus::Accepted || unit.status == ReviewStatus::Merged;
-            let is_pending = unit.status == ReviewStatus::PendingReview
-                || unit.status == ReviewStatus::SendBack
-                || unit.status == ReviewStatus::PatchRequested;
-
-            if is_accepted {
-                recent.push(unit.clone());
-            } else if is_pending || unit.status == ReviewStatus::Queued {
-                queue.push(unit.clone());
-            }
-
-            // Count statuses
-            match unit.status {
-                ReviewStatus::Queued => counts.queued += 1,
-                ReviewStatus::PendingReview => counts.pending_review += 1,
-                ReviewStatus::Accepted => counts.accepted += 1,
-                ReviewStatus::SendBack => counts.send_back += 1,
-                ReviewStatus::PatchRequested => counts.patch_requested += 1,
-                ReviewStatus::Merged => counts.merged += 1,
-                ReviewStatus::Blocked => counts.blocked += 1,
-            }
-
-            // Add node to dependency graph
-            graph.nodes.push(DependencyNode {
-                unit_id: unit.id.clone(),
-                name: unit.name.clone(),
-                status: unit.status.clone(),
-            });
-
-            // Add edges for dependencies
-            for dep in &unit.dependencies {
-                graph.edges.push(DependencyEdge {
-                    from: unit.id.clone(),
-                    to: dep.clone(),
-                });
-            }
-        }
-
-        // Sort queue by dependency order (roots first)
-        queue.sort_by_key(|a| a.dependencies.len());
-
-        Self {
-            dependency_graph: graph,
-            review_queue: queue,
-            recent_activity: recent,
-            status_counts: counts,
-        }
-    }
-
-    /// Returns the next unit to review (first in dependency order).
-    pub fn next_to_review(&self) -> Option<&UnitOfWork> {
-        self.review_queue.first()
-    }
-
-    /// Returns units that are blocked by unmet dependencies.
-    pub fn blocked_units(&self) -> Vec<&UnitOfWork> {
-        self.review_queue
-            .iter()
-            .filter(|u| u.status == ReviewStatus::Blocked)
-            .collect()
-    }
-}
-
-/// Summary counts of units of work by status.
-#[derive(Debug, Default, Clone)]
-pub struct StatusCounts {
-    pub queued: usize,
-    pub pending_review: usize,
-    pub accepted: usize,
-    pub send_back: usize,
-    pub patch_requested: usize,
-    pub merged: usize,
-    pub blocked: usize,
-}
-
-impl std::fmt::Display for StatusCounts {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "queued: {}, pending: {}, accepted: {}, send_back: {}, patch: {}, merged: {}, blocked: {}",
-            self.queued,
-            self.pending_review,
-            self.accepted,
-            self.send_back,
-            self.patch_requested,
-            self.merged,
-            self.blocked,
-        )
-    }
-}
+pub use calxgloss_types::{
+    DependencyEdge, DependencyGraph, DependencyNode, ReviewAction, ReviewActionKind,
+    ReviewDashboard, ReviewStatus, StatusCounts, UnitOfWork, WorkUnitKind,
+};
 
 // ============================================================
 // Axum API scaffolding (behind feature flag)
@@ -476,7 +136,11 @@ pub mod server {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use calxgloss_types::{
+        DependencyEdge, DependencyGraph, DependencyNode, ReviewDashboard, ReviewStatus,
+        StatusCounts, UnitOfWork, WorkUnitKind,
+    };
+    use chrono::Utc;
 
     #[test]
     fn dependency_graph_roots() {
