@@ -13,6 +13,22 @@
 //! - [`DetailedTemplate`] — renders `detailed_translate.j2` (very complex functions)
 //! - [`build_translate_prompt`] — builds a standard translation prompt
 //! - [`build_complexity_prompt`] — Phase 2, step 2.1: selects template by complexity
+//! - [`ComplexityPromptData::api_categories`] — Phase 2, step 2.2: extracts API categories
+//!
+//! # Phase 2, Step 2.2 — API-Aware Prompt Augmentation
+//!
+//! When a function calls Windows APIs, the prompt builder automatically
+//! injects the full mapping table rows for each API category the function touches.
+//! This gives the LLM detailed context about how to translate specific APIs
+//! (e.g., every Win32 Core mapping, every DirectX mapping, every GDI mapping)
+//! rather than just the one-liner `api.name → api.pal_mapping` shown in the
+//! "WINDOWS API CALLS IDENTIFIED" section.
+//!
+//! The augmentation is applied to all complexity tiers:
+//! - **Minimal** functions (≤30 instructions) get the reference tables
+//! - **Standard** functions (31–100) get the reference tables
+//! - **Rich** functions (101–300) get the reference tables + advanced guidelines
+//! - **Detailed** functions (>300) get the reference tables + full Ghidra context
 //!
 //! # Template Syntax
 //!
@@ -38,8 +54,9 @@ use serde_json::json;
 
 /// Template for minimal translation prompts.
 ///
-/// Used for simple functions (≤30 instructions). Contains only
-/// disassembly, decompiler output, and baseline tests — no API context.
+/// Used for simple functions (≤30 instructions). Contains disassembly,
+/// decompiler output, baseline tests, and optionally API-category-specific
+/// mapping table rows when API-aware augmentation is enabled.
 #[derive(Template)]
 #[template(path = "minimal_translate.j2")]
 pub struct MinimalTemplate {
@@ -66,6 +83,10 @@ pub struct MinimalTemplate {
 
     /// Whether there are no Windows API calls (for conditional rendering).
     pub no_windows_apis: bool,
+
+    /// API-category-specific mapping rows providing detailed context
+    /// for the APIs used in this function (Phase 2, step 2.2).
+    pub api_category_mappings: Vec<calxgloss_types::ApiCategoryMapping>,
 }
 
 impl MinimalTemplate {
@@ -93,6 +114,7 @@ impl MinimalTemplate {
             windows_apis: req.windows_apis.clone(),
             test_cases,
             no_windows_apis: req.windows_apis.is_empty(),
+            api_category_mappings: Vec::new(),
         }
     }
 }
@@ -100,6 +122,8 @@ impl MinimalTemplate {
 /// Template for function translation prompts.
 ///
 /// Rendered via Askama from the embedded `templates/translate.j2` file.
+/// When API-aware augmentation is enabled, this includes the full mapping
+/// table rows for the API categories the function touches.
 #[derive(Template)]
 #[template(path = "translate.j2")]
 pub struct TranslateTemplate {
@@ -126,6 +150,10 @@ pub struct TranslateTemplate {
 
     /// Whether there are no Windows API calls (for conditional rendering).
     pub no_windows_apis: bool,
+
+    /// API-category-specific mapping rows providing detailed context
+    /// for the APIs used in this function (Phase 2, step 2.2).
+    pub api_category_mappings: Vec<calxgloss_types::ApiCategoryMapping>,
 }
 
 /// A formatted test case for template rendering.
@@ -169,6 +197,7 @@ impl TranslateTemplate {
             windows_apis: req.windows_apis.clone(),
             test_cases,
             no_windows_apis: req.windows_apis.is_empty(),
+            api_category_mappings: Vec::new(),
         }
     }
 }
@@ -671,6 +700,22 @@ impl ComplexityPromptData {
     pub fn has_no_windows_apis(&self) -> bool {
         self.windows_apis.is_empty()
     }
+
+    /// Returns the set of unique API categories used by this function's
+    /// tagged Windows API calls.
+    pub fn api_categories(&self) -> Vec<calxgloss_types::ApiCategory> {
+        let mut seen = std::collections::HashSet::new();
+        self.windows_apis
+            .iter()
+            .filter_map(|api| {
+                if seen.insert(api.category.clone()) {
+                    Some(api.category.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
 }
 
 /// Build and render a translation prompt, selecting the template
@@ -701,9 +746,15 @@ pub fn build_complexity_prompt(
     complexity: &FunctionComplexity,
     data: &ComplexityPromptData,
 ) -> Result<String, PromptError> {
+    // Phase 2, step 2.2: API-aware prompt augmentation — populate
+    // api_category_mappings from the function's tagged Windows APIs.
+    let categories = data.api_categories();
+    let api_mappings = calxgloss_pal::ApiMappings::default();
+    let api_category_mappings = api_mappings.for_categories(&categories);
+
     let rendered = match complexity {
         FunctionComplexity::Minimal => {
-            let template = MinimalTemplate {
+            let mut template = MinimalTemplate {
                 function_name: data.function_name.clone(),
                 dll_name: data.dll_name.clone(),
                 address: data.address,
@@ -712,28 +763,45 @@ pub fn build_complexity_prompt(
                 windows_apis: data.windows_apis.clone(),
                 test_cases: data.test_cases.clone(),
                 no_windows_apis: data.windows_apis.is_empty(),
+                api_category_mappings: Vec::new(),
             };
+            // API-aware augmentation: inject full mapping table rows
+            if !api_category_mappings.is_empty() {
+                template.api_category_mappings = api_category_mappings;
+            }
             template
                 .render()
                 .map_err(|e| PromptError::Render(e.to_string()))?
         }
         FunctionComplexity::Standard => {
             let req = build_std_request(data);
-            let template = TranslateTemplate::from_request(&req);
+            let mut template = TranslateTemplate::from_request(&req);
+            // API-aware augmentation: inject full mapping table rows
+            if !api_category_mappings.is_empty() {
+                template.api_category_mappings = api_category_mappings;
+            }
             template
                 .render()
                 .map_err(|e| PromptError::Render(e.to_string()))?
         }
         FunctionComplexity::Rich => {
             let req = build_std_request(data);
-            let template = RichTemplate::from_request(&req);
+            let mut template = RichTemplate::from_request(&req);
+            // API-aware augmentation: inject full mapping table rows
+            if !api_category_mappings.is_empty() {
+                template.api_category_mappings = api_category_mappings;
+            }
             template
                 .render()
                 .map_err(|e| PromptError::Render(e.to_string()))?
         }
         FunctionComplexity::Detailed => {
             let req = build_std_request(data);
-            let template = DetailedTemplate::from_request(&req);
+            let mut template = DetailedTemplate::from_request(&req);
+            // API-aware augmentation: inject full mapping table rows
+            if !api_category_mappings.is_empty() {
+                template.api_category_mappings = api_category_mappings;
+            }
             template
                 .render()
                 .map_err(|e| PromptError::Render(e.to_string()))?
@@ -1004,5 +1072,226 @@ mod tests {
         assert!(prompt.contains("StdFunc"));
         assert!(prompt.contains("game.dll"));
         assert!(prompt.contains("WINDOWS API CALLS IDENTIFIED"));
+    }
+
+    // ============================================================
+    // Phase 2, step 2.2 — API-aware prompt augmentation tests
+    // ============================================================
+
+    #[test]
+    fn test_api_categories_extracted_from_windows_apis() {
+        let data = ComplexityPromptData {
+            function_name: "TestFunc".to_string(),
+            dll_name: "test.dll".to_string(),
+            address: 0x1000,
+            disassembly: "mov eax, 0\nret".to_string(),
+            decompiler_output: "int TestFunc() { return 0; }".to_string(),
+            windows_apis: vec![
+                calxgloss_types::translation::WindowsApiCall {
+                    name: "CreateFileA".to_string(),
+                    category: ApiCategory::Win32Core,
+                    pal_mapping: "std::fs::File::open".to_string(),
+                },
+                calxgloss_types::translation::WindowsApiCall {
+                    name: "Direct3DCreate9".to_string(),
+                    category: ApiCategory::DirectX,
+                    pal_mapping: "wgpu::Instance::new [PAL placeholder]".to_string(),
+                },
+            ],
+            test_cases: Vec::new(),
+            api_category_mappings: Vec::new(),
+            call_graph_neighbors: Vec::new(),
+            neighboring_functions: Vec::new(),
+            data_structures: Vec::new(),
+            type_info: Vec::new(),
+        };
+
+        let categories = data.api_categories();
+        assert_eq!(categories.len(), 2);
+        assert!(categories.contains(&ApiCategory::Win32Core));
+        assert!(categories.contains(&ApiCategory::DirectX));
+    }
+
+    #[test]
+    fn test_api_categories_deduplicates() {
+        let data = ComplexityPromptData {
+            function_name: "TestFunc".to_string(),
+            dll_name: "test.dll".to_string(),
+            address: 0x1000,
+            disassembly: "mov eax, 0\nret".to_string(),
+            decompiler_output: "int TestFunc() { return 0; }".to_string(),
+            windows_apis: vec![
+                calxgloss_types::translation::WindowsApiCall {
+                    name: "CreateFileA".to_string(),
+                    category: ApiCategory::Win32Core,
+                    pal_mapping: "std::fs::File::open".to_string(),
+                },
+                calxgloss_types::translation::WindowsApiCall {
+                    name: "ReadFile".to_string(),
+                    category: ApiCategory::Win32Core,
+                    pal_mapping: "std::fs::read".to_string(),
+                },
+            ],
+            test_cases: Vec::new(),
+            api_category_mappings: Vec::new(),
+            call_graph_neighbors: Vec::new(),
+            neighboring_functions: Vec::new(),
+            data_structures: Vec::new(),
+            type_info: Vec::new(),
+        };
+
+        let categories = data.api_categories();
+        // Both APIs are Win32Core, so only one unique category
+        assert_eq!(categories.len(), 1);
+        assert_eq!(categories[0], ApiCategory::Win32Core);
+    }
+
+    #[test]
+    fn test_api_categories_empty_when_no_apis() {
+        let data = ComplexityPromptData {
+            function_name: "TestFunc".to_string(),
+            dll_name: "test.dll".to_string(),
+            address: 0x1000,
+            disassembly: "mov eax, 0\nret".to_string(),
+            decompiler_output: "int TestFunc() { return 0; }".to_string(),
+            windows_apis: Vec::new(),
+            test_cases: Vec::new(),
+            api_category_mappings: Vec::new(),
+            call_graph_neighbors: Vec::new(),
+            neighboring_functions: Vec::new(),
+            data_structures: Vec::new(),
+            type_info: Vec::new(),
+        };
+
+        let categories = data.api_categories();
+        assert!(categories.is_empty());
+    }
+
+    #[test]
+    fn test_standard_prompt_includes_api_mapping_reference() {
+        let data = ComplexityPromptData {
+            function_name: "TestFunc".to_string(),
+            dll_name: "game.dll".to_string(),
+            address: 0x2000,
+            disassembly: "mov eax, [esp+4]\nret".to_string(),
+            decompiler_output: "int TestFunc(int x) { return x; }".to_string(),
+            windows_apis: vec![calxgloss_types::translation::WindowsApiCall {
+                name: "CreateFileA".to_string(),
+                category: ApiCategory::Win32Core,
+                pal_mapping: "std::fs::File::open".to_string(),
+            }],
+            test_cases: Vec::new(),
+            api_category_mappings: Vec::new(),
+            call_graph_neighbors: Vec::new(),
+            neighboring_functions: Vec::new(),
+            data_structures: Vec::new(),
+            type_info: Vec::new(),
+        };
+
+        let prompt = build_complexity_prompt(&FunctionComplexity::Standard, &data).unwrap();
+
+        // The API mapping reference section should be present
+        assert!(prompt.contains("API MAPPING REFERENCE"));
+        // Win32Core category table should be present
+        assert!(prompt.contains("Win32Core Category"));
+        // Should contain a mapping row
+        assert!(prompt.contains("CreateFileA"));
+        assert!(prompt.contains("std::fs::File::open"));
+    }
+
+    #[test]
+    fn test_minimal_prompt_includes_api_mapping_reference() {
+        let data = ComplexityPromptData {
+            function_name: "SimpleFunc".to_string(),
+            dll_name: "test.dll".to_string(),
+            address: 0x1000,
+            disassembly: "mov eax, 0\nret".to_string(),
+            decompiler_output: "int SimpleFunc() { return 0; }".to_string(),
+            windows_apis: vec![calxgloss_types::translation::WindowsApiCall {
+                name: "BitBlt".to_string(),
+                category: ApiCategory::Gdi,
+                pal_mapping: "tiny_skia::Pixmap::blit_rect [PAL placeholder]".to_string(),
+            }],
+            test_cases: Vec::new(),
+            api_category_mappings: Vec::new(),
+            call_graph_neighbors: Vec::new(),
+            neighboring_functions: Vec::new(),
+            data_structures: Vec::new(),
+            type_info: Vec::new(),
+        };
+
+        let prompt = build_complexity_prompt(&FunctionComplexity::Minimal, &data).unwrap();
+
+        // The API mapping reference section should be present even for minimal prompts
+        assert!(prompt.contains("API MAPPING REFERENCE"));
+        assert!(prompt.contains("GDI Category"));
+        assert!(prompt.contains("BitBlt"));
+        assert!(prompt.contains("tiny_skia"));
+    }
+
+    #[test]
+    fn test_rich_prompt_includes_api_mapping_reference() {
+        let data = ComplexityPromptData {
+            function_name: "ComplexFunc".to_string(),
+            dll_name: "render.dll".to_string(),
+            address: 0x3000,
+            disassembly: (0..200)
+                .map(|i| format!("0x{:08X}: nop", 0x3000 + i * 4))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            decompiler_output: "int ComplexFunc() { return 0; }".to_string(),
+            windows_apis: vec![
+                calxgloss_types::translation::WindowsApiCall {
+                    name: "Direct3DCreate9".to_string(),
+                    category: ApiCategory::DirectX,
+                    pal_mapping: "wgpu::Instance::new [PAL placeholder]".to_string(),
+                },
+                calxgloss_types::translation::WindowsApiCall {
+                    name: "GetDC".to_string(),
+                    category: ApiCategory::Gdi,
+                    pal_mapping: "tiny_skia::Pixmap::new [PAL placeholder]".to_string(),
+                },
+            ],
+            test_cases: Vec::new(),
+            api_category_mappings: Vec::new(),
+            call_graph_neighbors: Vec::new(),
+            neighboring_functions: Vec::new(),
+            data_structures: Vec::new(),
+            type_info: Vec::new(),
+        };
+
+        let prompt = build_complexity_prompt(&FunctionComplexity::Rich, &data).unwrap();
+
+        assert!(prompt.contains("API MAPPING REFERENCE"));
+        assert!(prompt.contains("DirectX Category"));
+        assert!(prompt.contains("GDI Category"));
+        assert!(prompt.contains("Direct3DCreate9"));
+        assert!(prompt.contains("wgpu::Instance::new"));
+        assert!(prompt.contains("GetDC"));
+        assert!(prompt.contains("tiny_skia"));
+    }
+
+    #[test]
+    fn test_prompt_has_no_api_mapping_reference_when_no_apis() {
+        let data = ComplexityPromptData {
+            function_name: "NoApiFunc".to_string(),
+            dll_name: "test.dll".to_string(),
+            address: 0x1000,
+            disassembly: "mov eax, 0\nret".to_string(),
+            decompiler_output: "int NoApiFunc() { return 0; }".to_string(),
+            windows_apis: Vec::new(),
+            test_cases: Vec::new(),
+            api_category_mappings: Vec::new(),
+            call_graph_neighbors: Vec::new(),
+            neighboring_functions: Vec::new(),
+            data_structures: Vec::new(),
+            type_info: Vec::new(),
+        };
+
+        let prompt = build_complexity_prompt(&FunctionComplexity::Standard, &data).unwrap();
+
+        // When there are no Windows APIs, the section should be absent
+        assert!(!prompt.contains("Win32Core Category"));
+        assert!(!prompt.contains("DirectX Category"));
     }
 }

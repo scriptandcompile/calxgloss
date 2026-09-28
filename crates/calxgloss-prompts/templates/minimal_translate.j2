@@ -24,6 +24,25 @@ You are a reverse engineering specialist. Translate this function from assembly 
 {% endfor %}
 {% endif %}
 
+{% if !api_category_mappings.is_empty() %}
+
+## API MAPPING REFERENCE
+
+The tables below provide detailed mapping context for the API categories this function touches.
+Use these as your primary reference when translating specific API calls.
+
+{% for cat_mapping in api_category_mappings %}
+### {{ cat_mapping.category }} Category
+
+| Windows API | Rust Equivalent | Notes |
+|-------------|----------------|-------|
+{% for mapping in cat_mapping.mappings %}
+| {{ mapping.windows_api }} | {{ mapping.rust_equivalent }} | {{ mapping.notes }} |
+{% endfor %}
+
+{% endfor %}
+{% endif %}
+
 {% if !test_cases.is_empty() %}
 
 ## BASELINE TESTS

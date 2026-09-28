@@ -31,6 +31,28 @@ No Windows API calls were identified in this function.
 
 ---
 
+## API MAPPING REFERENCE
+
+The tables below provide detailed mapping context for the API categories this function touches.
+Use these as your primary reference when translating specific API calls.
+
+{% for cat_mapping in api_category_mappings %}
+### {{ cat_mapping.category }} Category
+
+| Windows API | Rust Equivalent | Notes |
+|-------------|----------------|-------|
+{% for mapping in cat_mapping.mappings %}
+| {{ mapping.windows_api }} | {{ mapping.rust_equivalent }} | {{ mapping.notes }} |
+{% endfor %}
+
+{% endfor %}
+
+{% if api_category_mappings.is_empty() %}
+No API category mapping reference is available for this function.
+{% endif %}
+
+---
+
 ## BASELINE TESTS (translated Rust code must produce identical outputs)
 
 {% for test in test_cases %}

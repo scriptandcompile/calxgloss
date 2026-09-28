@@ -55,12 +55,12 @@
 
 > **Goal:** Adapt prompts based on function complexity, API category, and failure history.
 
-| Step | What | Details |
-|------|------|---------|
-| 2.1 | Implement complexity-based prompt selection | Simple functions (≤30 instructions): send minimal prompt. Complex (>100 instructions): inject Ghidra data flow hints, type inference notes. |
-| 2.2 | Implement API-aware prompt augmentation | When a function calls DirectX/GDI, inject the relevant mapping table rows. When it calls Win32 core, inject std lib equivalents. |
-| 2.3 | Implement failure-informed prompting | If v1 failed because of wrong shader constant mapping, v2's prompt explicitly notes: "Previous attempt mapped SetTexture incorrectly. Ghidra shows the stage parameter comes from X, not Y." |
-| 2.4 | Benchmark prompt variants | Track pass rate per strategy per DLL category. Store in `re/analysis/prompt_strategy_log.json`. |
+| Step | What | Details | Status |
+|------|------|---------|--------|
+| 2.1 | Implement complexity-based prompt selection | Simple functions (≤30 instructions): send minimal prompt. Complex (>100 instructions): inject Ghidra data flow hints, type inference notes. | ✅ Complete |
+| 2.2 | Implement API-aware prompt augmentation | When a function calls DirectX/GDI, inject the relevant mapping table rows. When it calls Win32 core, inject std lib equivalents. | ✅ **Done** |
+| 2.3 | Implement failure-informed prompting | If v1 failed because of wrong shader constant mapping, v2's prompt explicitly notes: "Previous attempt mapped SetTexture incorrectly. Ghidra shows the stage parameter comes from X, not Y." | ⬜ Pending |
+| 2.4 | Benchmark prompt variants | Track pass rate per strategy per DLL category. Store in `re/analysis/prompt_strategy_log.json`. | ⬜ Pending |
 
 ---
 
