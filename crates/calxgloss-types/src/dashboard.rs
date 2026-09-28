@@ -1,7 +1,7 @@
 //! Dashboard data model for the review interface.
 //!
 //! This module defines the data types that power both the terminal review
-//! dashboard (Phase 3, Step 3) and the future web review UI (Phase 5).
+//! dashboard and the future web review UI.
 //! These are pure domain types — no web/HTTP dependencies.
 //!
 //! # Architecture

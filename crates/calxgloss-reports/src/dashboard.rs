@@ -22,7 +22,7 @@ use calxgloss_types::dashboard::{
 use chrono::Utc;
 
 // ============================================================
-// Unit view data types (Phase 3, Step 3.3)
+// Unit view data types
 // ============================================================
 
 /// Parsed representation of a `dashboard view <target>` argument.
@@ -1200,7 +1200,7 @@ fn should_stdin_refresh() -> bool {
 }
 
 // ============================================================
-// Per-unit quick-view rendering (Phase 3, Step 3.3)
+// Per-unit quick-view rendering
 // ============================================================
 
 /// Render a detailed view of a single translation unit.

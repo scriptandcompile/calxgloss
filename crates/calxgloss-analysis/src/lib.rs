@@ -553,8 +553,8 @@ impl Analyzer {
     /// Build a [`PromptVariant`] for the given function analysis.
     ///
     /// This determines which prompt template and what level of context
-    /// the translation pipeline should use. The default is API-aware
-    /// (step 2.2 of Phase 2).
+    /// the translation pipeline should use. The default is API-aware,
+    /// including mapping table rows for detected API categories.
     ///
     /// # Arguments
     ///

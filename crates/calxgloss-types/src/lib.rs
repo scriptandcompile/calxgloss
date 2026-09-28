@@ -13,7 +13,7 @@
 //! - [`translation`] — LLM translation requests and results
 //! - [`verification`] — Compilation and behavioral verification results
 //! - [`git`] — Branch and commit tracking
-//! - [`dashboard`] — Review dashboard data model (Phase 3)
+//! - [`dashboard`] — Review dashboard data model
 //! - [`error`] — Unified error type (`TypesError`)
 
 pub mod benchmark;

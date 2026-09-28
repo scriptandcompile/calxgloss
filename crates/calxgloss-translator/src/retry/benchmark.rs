@@ -1,4 +1,4 @@
-//! Benchmark logging for prompt variant tracking (Phase 2, step 2.4).
+//! Benchmark logging for prompt variant tracking.
 
 /// Log a prompt variant benchmark entry for analysis.
 ///

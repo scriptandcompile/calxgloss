@@ -24,7 +24,7 @@ use tracing::{info, warn};
 /// 4. Re-verifies each fix attempt
 /// 5. Escalates strategy after each failure
 /// 6. Returns a [`RetryResult`] with all attempt details
-/// 7. Logs benchmark data per attempt (Phase 2, step 2.4)
+/// 7. Logs benchmark data per attempt
 ///
 /// # Arguments
 ///
@@ -34,7 +34,7 @@ use tracing::{info, warn};
 /// * `llm` — The LLM client for sending fix prompts.
 /// * `ghidra` — The Ghidra client, used for context extraction during escalation.
 /// * `strategy` — The starting retry strategy.
-/// * `workspace` — Optional workspace path for benchmark logging (Phase 2, step 2.4).
+/// * `workspace` — Optional workspace path for benchmark logging.
 pub async fn try_translate_with_retry(
     initial_translation: Translation,
     verifier: &Verifier,
@@ -48,7 +48,7 @@ pub async fn try_translate_with_retry(
     let max = config.max_attempts;
     let mut current_strategy = strategy;
 
-    // Failure history for failure-informed prompting (Phase 2, step 2.3)
+    // Failure history for failure-informed prompting
     let mut failure_history: Vec<FailureHint> = Vec::new();
 
     // First attempt: verify the initial translation
@@ -120,7 +120,7 @@ pub async fn try_translate_with_retry(
                 continue;
             }
             RetryStrategy::CompileFix => {
-                // Phase 2, step 2.3: Use failure-informed prompts after first retry
+                // Use failure-informed prompts after first retry
                 let prompt = if failure_history.is_empty() {
                     build_compile_fix_prompt(
                         &initial_translation.function,
@@ -164,7 +164,7 @@ pub async fn try_translate_with_retry(
                     Err(_) => vec!["Verification failed".to_string()],
                 };
 
-                // Phase 2, step 2.3: Use failure-informed prompts after first retry
+                // Use failure-informed prompts after first retry
                 let prompt = if failure_history.is_empty() {
                     build_test_fix_prompt(
                         &initial_translation.function,
@@ -219,7 +219,7 @@ pub async fn try_translate_with_retry(
                     }
                 };
 
-                // Phase 2, step 2.3: Use failure-informed escalated prompt
+                // Use failure-informed escalated prompt
                 let prompt = if failure_history.is_empty() {
                     build_escalate_prompt_with_context(
                         &initial_translation.function,
@@ -280,7 +280,7 @@ pub async fn try_translate_with_retry(
                     }],
                 };
 
-                // Phase 2, step 2.3: Use failure-informed edge case prompt
+                // Use failure-informed edge case prompt
                 let prompt = if failure_history.is_empty() {
                     build_edge_case_fix_prompt(
                         &initial_translation.function,
@@ -410,7 +410,7 @@ pub async fn try_translate_with_retry(
         };
         result.add_attempt(attempt);
 
-        // Phase 2, step 2.3: Track failure history for informed prompting
+        // Track failure history for informed prompting
         // Only record history for failed attempts (not the initial one, not successful retries)
         if attempt_num >= 1 && !result.success {
             // Reconstruct the failure info from the attempt we just added
@@ -440,7 +440,7 @@ pub async fn try_translate_with_retry(
             break;
         }
 
-        // Phase 2, step 2.4: Log benchmark data for prompt variant tracking
+        // Log benchmark data for prompt variant tracking
         let dll_name = &initial_translation.dll;
         log_prompt_variant_benchmark(
             dll_name,
@@ -612,7 +612,7 @@ mod tests {
     }
 
     // ============================================================
-    // Phase 2, step 2.3 — Failure-informed prompt builder tests
+    // Failure-informed prompt builder tests
     // ============================================================
 
     #[test]

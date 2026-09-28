@@ -106,7 +106,7 @@ pub fn build_edge_case_fix_prompt(
 /// Build a failure-informed edge case fix prompt.
 ///
 /// Like [`build_edge_case_fix_prompt`] but includes failure history
-/// when available (Phase 2, step 2.3).
+/// when available.
 pub fn build_failure_informed_edge_case_fix_prompt(
     function_name: &str,
     dll_name: &str,

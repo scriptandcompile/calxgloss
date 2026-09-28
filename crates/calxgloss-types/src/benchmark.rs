@@ -1,7 +1,7 @@
 //! Prompt variant benchmarking data types.
 //!
 //! This module provides types for tracking and analyzing prompt strategy
-//! performance across DLL categories, as described in Phase 2, step 2.4.
+//! performance across DLL categories.
 //!
 //! # Overview
 //!

@@ -169,7 +169,7 @@ impl ApiMappings {
     ///
     /// This is used by the translation pipeline to inject the full mapping
     /// table rows for the specific API categories a function touches into
-    /// the LLM prompt (Phase 2, step 2.2 — API-aware prompt augmentation).
+    /// the LLM prompt.
     ///
     /// # Arguments
     ///

@@ -12,10 +12,10 @@
 //! - [`RichTemplate`] — renders `rich_translate.j2` (complex functions)
 //! - [`DetailedTemplate`] — renders `detailed_translate.j2` (very complex functions)
 //! - [`build_translate_prompt`] — builds a standard translation prompt
-//! - [`build_complexity_prompt`] — Phase 2, step 2.1: selects template by complexity
-//! - [`ComplexityPromptData::api_categories`] — Phase 2, step 2.2: extracts API categories
+//! - [`build_complexity_prompt`] — selects template by complexity
+//! - [`ComplexityPromptData::api_categories`] — extracts API categories
 //!
-//! # Phase 2, Step 2.2 — API-Aware Prompt Augmentation
+//! # API-Aware Prompt Augmentation
 //!
 //! When a function calls Windows APIs, the prompt builder automatically
 //! injects the full mapping table rows for each API category the function touches.
@@ -85,7 +85,7 @@ pub struct MinimalTemplate {
     pub no_windows_apis: bool,
 
     /// API-category-specific mapping rows providing detailed context
-    /// for the APIs used in this function (Phase 2, step 2.2).
+    /// for the APIs used in this function.
     pub api_category_mappings: Vec<calxgloss_types::ApiCategoryMapping>,
 }
 
@@ -152,7 +152,7 @@ pub struct TranslateTemplate {
     pub no_windows_apis: bool,
 
     /// API-category-specific mapping rows providing detailed context
-    /// for the APIs used in this function (Phase 2, step 2.2).
+    /// for the APIs used in this function.
     pub api_category_mappings: Vec<calxgloss_types::ApiCategoryMapping>,
 }
 
@@ -759,7 +759,7 @@ impl DetailedTemplate {
 }
 
 // ============================================================
-// Complexity-aware prompt builder (Phase 2, step 2.1)
+// Complexity-aware prompt builder
 // ============================================================
 
 /// Context data needed to build a complexity-aware prompt.
@@ -882,7 +882,7 @@ pub fn build_complexity_prompt(
     complexity: &FunctionComplexity,
     data: &ComplexityPromptData,
 ) -> Result<String, PromptError> {
-    // Phase 2, step 2.2: API-aware prompt augmentation — populate
+    // API-aware prompt augmentation — populate
     // api_category_mappings from the function's tagged Windows APIs.
     let categories = data.api_categories();
     let api_mappings = calxgloss_pal::ApiMappings::default();
@@ -1215,7 +1215,7 @@ mod tests {
     }
 
     // ============================================================
-    // Phase 2, step 2.2 — API-aware prompt augmentation tests
+    // API-aware prompt augmentation tests
     // ============================================================
 
     #[test]
@@ -1436,7 +1436,7 @@ mod tests {
     }
 
     // ============================================================
-    // Phase 2, step 2.3 — Failure-informed prompting tests
+    // Failure-informed prompting tests
     // ============================================================
 
     #[test]
