@@ -23,10 +23,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use calxgloss::GitBranch;
+use calxgloss::DllCategory;
 use calxgloss_analysis::Analyzer;
 use calxgloss_config::{FileConfig, GhidraSection, Layers, LlmSection, Resolved, load};
 use calxgloss_ghidra::{GhidraClient, GhidraConfig};
-use calxgloss_git::GitManager;
+use calxgloss_git::{BranchCreationPolicy, DependencyPolicy, GitManager};
 use calxgloss_llm::{LlmClient, LlmConfig};
 use calxgloss_pal::ApiMappings;
 use calxgloss_reports::{
@@ -810,7 +811,15 @@ async fn handle_translate(args: &TranslateArgs, settings: &Settings) -> Result<(
         // Git automation
         if let Some(ref mut git) = git {
             let branch_result = git
-                .create_branch(dll, function, attempt.attempt)
+                .create_branch(
+                    dll,
+                    function,
+                    attempt.attempt,
+                    Some(&BranchCreationPolicy::Warn(DependencyPolicy {
+                        category: DllCategory::ProjectSpecific,
+                        crate_replacement: None,
+                    })),
+                )
                 .context("Failed to create git branch")?;
 
             let branch_info = &branch_result.branch;
@@ -1106,7 +1115,15 @@ async fn handle_batch_translate(args: &BatchTranslateArgs, settings: &Settings) 
             })?;
 
             let branch_result = git_manager
-                .create_branch(dll, &func_result.function, 1)
+                .create_branch(
+                    dll,
+                    &func_result.function,
+                    1,
+                    Some(&BranchCreationPolicy::Warn(DependencyPolicy {
+                        category: DllCategory::ProjectSpecific,
+                        crate_replacement: None,
+                    })),
+                )
                 .context("Failed to create git branch")?;
 
             let branch_info = &branch_result.branch;

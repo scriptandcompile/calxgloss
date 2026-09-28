@@ -102,7 +102,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 #### `calxgloss-config`
-- `test_a_missing_optional_file_is_not_an_error` and `test_a_found_file_is_reported` — both tests now temporarily neutralize `HOME` and `XDG_CONFIG_HOME` so a user-global `~/.config/calxgloss/config.toml` on the developer machine cannot be picked up during test execution, breaking `loaded.is_empty()` and config-precedence assertions.
+- `test_a_missing_optional_file_is_not_an_error` and `test_a_found_file_is_reported` — both tests now temporarily neutralize `HOME`, `XDG_CONFIG_HOME`, and `CALXGLOSS_LLM_MODEL` so a user-global config or shell-profile env var cannot be picked up during test execution, breaking `loaded.is_empty()` and config-precedence assertions.
+
+
+#### `calxgloss-git`
+- **Shim-layer dependency enforcement on branch creation** — `create_branch` accepts an
+  optional `BranchCreationPolicy` parameter (`Skip`, `Warn`, or `Enforce`). The checker
+  resolves the required shim layer branches for `MicrosoftSdk` and `KnownThirdParty` DLLs
+  (e.g. `d3d9.dll` → `re/shim/wgpu`) by consulting a hardcoded mapping in
+  `ShimDependencyMap`, then queries Git to verify each required branch is an ancestor of
+  `main`. Enforce mode blocks creation when unmet; Warn mode logs a warning and proceeds.
+- `DependencyCheckResult`, `DependencyChecker`, `ShimDependencyMap`, `BranchCreationPolicy`,
+  `DependencyPolicy` — new types in `calxgloss-git` for dependency resolution and policy
+  enforcement.
+- `ShimDependencyMap` — hardcoded lookup covering 22 DLL → crate mappings across DirectX,
+  audio, 2D graphics, UI frameworks, and geometry libraries.
+
+#### `calxgloss-cli`
+- `handle_translate` and `handle_batch_translate` now pass
+  `BranchCreationPolicy::Warn` to `create_branch`, enabling dependency-aware branch
+  creation with warning-level enforcement during translation.
 
 ### Phase 3 — Terminal Review Dashboard
 
