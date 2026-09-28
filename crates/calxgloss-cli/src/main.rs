@@ -28,11 +28,10 @@ use calxgloss_git::GitManager;
 use calxgloss_llm::{LlmClient, LlmConfig};
 use calxgloss_pal::ApiMappings;
 use calxgloss_reports::{
-    print_classification_report, print_failure, print_git_status, print_translation_summary,
-    print_verification_results, prompt_acceptance,
+    print_classification_report, print_failure, print_git_status, print_verification_results,
 };
 use calxgloss_testgen::TestGenerator;
-use calxgloss_translator::TranslationPipeline;
+use calxgloss_translator::{RetryConfig, RetryStrategy, TranslationPipeline};
 use calxgloss_verify::Verifier;
 use clap::{Args, Parser, Subcommand};
 use tracing::{debug, error, info, warn};
@@ -356,6 +355,8 @@ async fn handle_translate(args: &TranslateArgs, settings: &Settings) -> Result<(
     let api_mappings = ApiMappings::default();
     let testgen = TestGenerator::new(&output_dir);
 
+    let llm_model_name = llm.model().to_string();
+
     // Build translation pipeline
     let pipeline = TranslationPipeline::new(ghidra, llm, api_mappings).with_testgen(testgen);
 
@@ -372,54 +373,88 @@ async fn handle_translate(args: &TranslateArgs, settings: &Settings) -> Result<(
         None
     };
 
-    // Run translation with retries
+    // Initialize verifier for retry loop
+    let verifier = Verifier::new(&output_dir).context("Failed to create verifier")?;
+
+    // Configure retry behavior
+    let retry_config = RetryConfig {
+        max_attempts: max_retries,
+        strategy: RetryStrategy::CompileFix,
+        escalate_on_failure: true,
+    };
+
+    // Run translation with automatic retry on verification failure
+    let retry_result = pipeline
+        .try_translate_with_retry(dll, function, &retry_config, &verifier)
+        .await
+        .with_context(|| format!("Translation with retry failed for {}", function))?;
+
+    // Process the retry result
     let mut last_translation: Option<calxgloss_translator::Translation> = None;
     let mut last_branch: Option<GitBranch> = None;
 
-    for attempt in 1..=max_retries {
-        info!(attempt, "Translation attempt {}/{}", attempt, max_retries);
+    for attempt in &retry_result.attempts {
+        info!(
+            attempt = attempt.attempt,
+            compiled = attempt.compiled,
+            tests_passed = attempt.tests_passed,
+            tests_total = attempt.tests_total,
+            strategy = %attempt.strategy,
+            "Processing attempt"
+        );
 
-        // Run translation
-        let translation = pipeline
-            .translate(dll, function)
-            .await
-            .with_context(|| format!("Translation failed on attempt {}", attempt))?;
+        if attempt.rust_code.is_empty() {
+            warn!(attempt = attempt.attempt, "Attempt produced no code");
+            continue;
+        }
 
-        last_translation = Some(translation.clone());
+        // Print attempt summary
+        println!(
+            "\n{}",
+            yellow_bold(&format!(
+                "Attempt {}/{} (strategy: {}) — {}",
+                attempt.attempt,
+                retry_config.max_attempts,
+                attempt.strategy,
+                if attempt.is_successful() {
+                    green_bold("PASS")
+                } else {
+                    red_bold("FAIL")
+                }
+            ))
+        );
 
-        // Print summary
-        print_translation_summary(&translation);
+        if !attempt.compiled {
+            println!("  Compilation: failed ({} errors)", attempt.compilation_errors.len());
+            for error in &attempt.compilation_errors {
+                println!("    {}", error);
+            }
+        } else {
+            println!(
+                "  Compilation: passed | Tests: {}/{} passed",
+                attempt.tests_passed, attempt.tests_total
+            );
+            if !attempt.failed_tests.is_empty() {
+                println!("  Failed tests:");
+                for test in &attempt.failed_tests {
+                    println!("    - {}", test);
+                }
+            }
+        }
 
-        // Write translated code
+        // Write translated code for this attempt
         let output_path = modules_dir.join(function).join("translated.rs");
         std::fs::create_dir_all(output_path.parent().unwrap())
             .context("Failed to create output directory")?;
-        std::fs::write(&output_path, &translation.rust_code).with_context(|| {
-            format!(
-                "Failed to write translated code to {}",
-                output_path.display()
-            )
+        std::fs::write(&output_path, &attempt.rust_code).with_context(|| {
+            format!("Failed to write translated code to {}", output_path.display())
         })?;
         info!(path = %output_path.display(), "Wrote translated code");
-
-        // Verify
-        let verifier = Verifier::new(&output_dir).context("Failed to create verifier")?;
-        let verification = verifier
-            .verify(
-                dll,
-                function,
-                &translation.rust_code,
-                &translation.baseline_tests,
-            )
-            .await
-            .context("Verification failed")?;
-
-        print_verification_results(&verification);
 
         // Git automation
         if let Some(ref mut git) = git {
             let branch_result = git
-                .create_branch(dll, function, attempt)
+                .create_branch(dll, function, attempt.attempt)
                 .context("Failed to create git branch")?;
 
             let branch_info = &branch_result.branch;
@@ -431,28 +466,20 @@ async fn handle_translate(args: &TranslateArgs, settings: &Settings) -> Result<(
                 .commit(
                     branch_info,
                     &format!(
-                        "re/translation/{}: translate {} (attempt {})",
-                        function, dll, attempt
+                        "re/translation/{}: translate {} (attempt {}, strategy: {})",
+                        function, dll, attempt.attempt, attempt.strategy
                     ),
                     &[&output_path_str],
                 )
                 .context("Failed to commit translated code")?;
 
-            // Merge if all tests pass
-            if verification.tests_passed == verification.tests_total && verification.tests_total > 0
-            {
+            if attempt.is_successful() {
+                // Merge if successful
                 let merge_result = git
                     .merge_to_main(branch_info)
                     .context("Failed to merge branch to main")?;
 
-                // Prompt for human acceptance if there were failures
-                let accepted =
-                    if verification.tests_total > 0 && !verification.failed_tests.is_empty() {
-                        prompt_acceptance()
-                    } else {
-                        true
-                    };
-
+                let accepted = true; // Auto-accept successful attempts
                 if !accepted {
                     warn!("Translation rejected by human reviewer");
                     continue;
@@ -474,47 +501,29 @@ async fn handle_translate(args: &TranslateArgs, settings: &Settings) -> Result<(
                         warn!(files = ?conflicted_files, error = %error, "Merge conflicts");
                     }
                 }
-                break;
-            } else if verification.tests_total == 0 {
-                // No tests — accept by default
-                info!("No baseline tests — accepting translation");
-                let merge_result = git
-                    .merge_to_main(branch_info)
-                    .context("Failed to merge branch to main")?;
 
+                // We found a successful attempt — break out of the loop
+                last_translation = Some(calxgloss_translator::Translation {
+                    dll: dll.to_string(),
+                    function: function.to_string(),
+                    rust_code: attempt.rust_code.clone(),
+                    prompt_used: String::new(),
+                    model: llm_model_name.clone(),
+                    tokens_used: None,
+                    baseline_tests: Vec::new(),
+                });
+                break;
+            } else if attempt.attempt >= retry_config.max_attempts {
+                // Last attempt failed — show failure status
+                print_failure(branch_info, &calxgloss_verify::VerificationResult {
+                    compiled: attempt.compiled,
+                    compilation_errors: attempt.compilation_errors.clone(),
+                    tests_passed: attempt.tests_passed,
+                    tests_total: attempt.tests_total,
+                    failed_tests: Vec::new(),
+                });
                 last_branch = Some(branch_info.clone());
-
-                match &merge_result {
-                    calxgloss_git::MergeResult::Merged { merge_hash } => {
-                        info!(hash = %merge_hash, "Translation accepted and merged (no tests)");
-                    }
-                    calxgloss_git::MergeResult::AlreadyUpToDate => {
-                        info!("Branch was already up to date with main");
-                    }
-                    calxgloss_git::MergeResult::Conflicts {
-                        conflicted_files,
-                        error,
-                    } => {
-                        warn!(files = ?conflicted_files, error = %error, "Merge conflicts");
-                    }
-                }
-                break;
             }
-
-            // Show failure status
-            print_failure(branch_info, &verification);
-            last_branch = Some(branch_info.clone());
-
-            warn!(
-                passed = verification.tests_passed,
-                total = verification.tests_total,
-                "Tests did not all pass — retrying"
-            );
-        }
-
-        // If all tests pass (or no tests exist), we're done
-        if verification.tests_passed == verification.tests_total || verification.tests_total == 0 {
-            break;
         }
     }
 
