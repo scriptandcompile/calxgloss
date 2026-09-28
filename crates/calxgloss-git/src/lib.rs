@@ -855,7 +855,7 @@ impl GitManager {
         std::fs::write(
             &accept_file,
             serde_json::to_string_pretty(&accept_record)
-                .map_err(|e| TypesError::Serialization(e))?,
+                .map_err(TypesError::Serialization)?,
         )
         .map_err(|e| {
             TypesError::InvalidBranchName(format!("Failed to write accept record: {}", e))
@@ -899,7 +899,7 @@ impl GitManager {
         std::fs::write(
             &rejection_path,
             serde_json::to_string_pretty(&rejection_record)
-                .map_err(|e| TypesError::Serialization(e))?,
+                .map_err(TypesError::Serialization)?,
         )
         .map_err(|e| {
             TypesError::InvalidBranchName(format!("Failed to write rejection record: {}", e))

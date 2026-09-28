@@ -1169,7 +1169,7 @@ mod tests {
 
         assert_eq!(graph.nodes.len(), 2); // classification + function (no shim)
         // 2 edges: function → classification, function → function (self-edge from call graph)
-        assert!(graph.edges.len() >= 1);
+        assert!(!graph.edges.is_empty());
 
         // Verify it can be loaded back
         let loaded = persistor.load().expect("should load after build_and_save");
