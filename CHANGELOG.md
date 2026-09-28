@@ -8,6 +8,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### `calxgloss-config`
+- `LlmSection.strategy` — retry strategy configuration (compile_fix, test_fix,
+  escalate, edge_case_fix, auto) via CLI flag, environment variable
+  (`CALXGLOSS_LLM_STRATEGY`), or config file
+
+#### `calxgloss-translator`
+- **Escalate retry strategy** — on verification failure, injects call graph
+  neighbors, neighboring function context, data structures, and type
+  information from Ghidra into the LLM prompt
+- **EdgeCaseFix retry strategy** — targets boundary-value test failures with
+  a dedicated prompt focused on zero/max/negative/null handling
+- **Auto strategy** — cycles through `[compile_fix → test_fix → escalate →
+  edge_case_fix]` on each failure until success or max attempts
+- `TranslationAttempt.tokens_used` — tracks LLM token consumption per attempt
+- `Translation.function_address` and `Translation.call_graph` — carry Ghidra
+  context for use during escalate retries
+- `is_edge_case_failure()` heuristic — detects boundary-value test failures
+  using word-boundary indicators (zero, null, overflow, i32::, etc.)
+- Ghidra context extraction helpers — `extract_call_graph_neighbors()`,
+  `extract_neighboring_context()` (data structures and type info are stubs
+  for future GhidraMCP integration)
+
+#### `calxgloss-prompts`
+- **Escalate prompt** (`escalate.j2`) — includes call graph neighbors,
+  neighboring function disassembly/decompiler output, data structures,
+  and type info alongside the original failure description
+- **Edge case prompt** (`edge_case.j2`) — presents failing boundary-value
+  tests with disassembly hints and explicit requirements for edge-case
+  handling (zero checks, overflow guards, etc.)
+
+#### `calxgloss-cli`
+- `--strategy` flag — select the initial retry strategy or `auto` for
+  automatic cycling through all strategies
+- `retry_strategy` displayed in `config` command output
+
 ### Fixed
 
 #### `calxgloss-config`
