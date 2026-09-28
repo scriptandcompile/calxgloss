@@ -615,6 +615,7 @@ async fn extract_type_info(_ghidra: &GhidraClient, _function_name: &str) -> Vec<
 /// 4. Re-verifies each fix attempt
 /// 5. Escalates strategy after each failure
 /// 6. Returns a [`RetryResult`] with all attempt details
+/// 7. Logs benchmark data per attempt (Phase 2, step 2.4)
 ///
 /// # Arguments
 ///
@@ -624,8 +625,7 @@ async fn extract_type_info(_ghidra: &GhidraClient, _function_name: &str) -> Vec<
 /// * `llm` — The LLM client for sending fix prompts.
 /// * `ghidra` — The Ghidra client, used for context extraction during escalation.
 /// * `strategy` — The starting retry strategy.
-/// * `dll_category` — Optional DLL classification category for benchmark tracking
-///   (Phase 2, step 2.4). If provided, pass rate statistics are logged per category.
+/// * `workspace` — Optional workspace path for benchmark logging (Phase 2, step 2.4).
 pub async fn try_translate_with_retry(
     initial_translation: Translation,
     verifier: &Verifier,
@@ -633,7 +633,7 @@ pub async fn try_translate_with_retry(
     llm: &LlmClient,
     ghidra: &GhidraClient,
     strategy: RetryStrategy,
-    dll_category: Option<&str>,
+    workspace: Option<&std::path::Path>,
 ) -> RetryResult {
     let mut result = RetryResult::new();
     let max = config.max_attempts;
@@ -1032,9 +1032,8 @@ pub async fn try_translate_with_retry(
         }
 
         // Phase 2, step 2.4: Log benchmark data for prompt variant tracking
-        if let Some(category) = dll_category {
-            log_prompt_variant_benchmark(category, &strategy_name, result.success, attempt_num);
-        }
+        let dll_name = &initial_translation.dll;
+        log_prompt_variant_benchmark(dll_name, &strategy_name, result.success, attempt_num, workspace);
 
         // Escalate strategy for next attempt
         if config.escalate_on_failure {
@@ -1057,32 +1056,39 @@ pub async fn try_translate_with_retry(
 
 /// Log a prompt variant benchmark entry for analysis.
 ///
-/// This is a lightweight, local logging mechanism for Phase 2, step 2.4.
-/// In production, this would write to `re/analysis/prompt_strategy_log.json`.
-/// For now, it logs to the tracing system with structured fields.
+/// Persists the entry to `re/analysis/prompt_strategy_log.json` via the
+/// [`PromptStrategyLogger`](calxgloss_analysis::PromptStrategyLogger).
+/// If the workspace path is `None`, the entry is silently discarded.
 ///
 /// # Arguments
 ///
-/// * `dll_category` — The DLL classification category (e.g., "ProjectSpecific").
-/// * `strategy` — The retry strategy used (e.g., "compile_fix", "test_fix").
-/// * `success` — Whether this attempt ultimately succeeded.
+/// * `dll_name` — The DLL filename (e.g., `"game_logic.dll"`).
+/// * `strategy` — The retry strategy used (e.g., `"compile_fix"`, `"test_fix"`).
+/// * `success` — Whether this attempt succeeded.
 /// * `attempt_num` — The attempt number (1-based).
-fn log_prompt_variant_benchmark(
-    dll_category: &str,
+/// * `workspace` — The workspace root path for the log file. `None` to skip logging.
+pub fn log_prompt_variant_benchmark(
+    dll_name: &str,
     strategy: &str,
     success: bool,
     attempt_num: u32,
+    workspace: Option<&std::path::Path>,
 ) {
-    use tracing::event;
-    event!(
-        tracing::Level::DEBUG,
-        event = "prompt_variant_benchmark",
-        dll_category = dll_category,
-        strategy = strategy,
-        success = success,
-        attempt = attempt_num,
-        phase2_step_2_4 = true,
+    let Some(ws) = workspace else {
+        return;
+    };
+
+    let dll_category = calxgloss_analysis::classify_dll_name(dll_name);
+    let entry = calxgloss_types::PromptStrategyEntry::new(
+        dll_name,
+        dll_category,
+        strategy,
+        success,
+        attempt_num,
     );
+
+    let logger = calxgloss_analysis::PromptStrategyLogger::new(ws);
+    logger.record(entry);
 }
 
 // ============================================================

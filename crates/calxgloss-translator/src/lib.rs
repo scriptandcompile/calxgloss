@@ -306,6 +306,9 @@ pub struct TranslationPipeline {
 
     /// Optional DLL name override for test generation context.
     target_dll: Option<String>,
+
+    /// Optional workspace root path for benchmark logging (Phase 2, step 2.4).
+    workspace: Option<std::path::PathBuf>,
 }
 
 impl TranslationPipeline {
@@ -322,7 +325,17 @@ impl TranslationPipeline {
             testgen: None,
             exports: Vec::new(),
             target_dll: None,
+            workspace: None,
         }
+    }
+
+    /// Set the workspace root path for benchmark logging (Phase 2, step 2.4).
+    ///
+    /// When set, every translation attempt is recorded to
+    /// `<workspace>/re/analysis/prompt_strategy_log.json`.
+    pub fn with_workspace(mut self, workspace: impl Into<std::path::PathBuf>) -> Self {
+        self.workspace = Some(workspace.into());
+        self
     }
 
     /// Set the test generator for baseline test creation.
@@ -581,7 +594,7 @@ impl TranslationPipeline {
         );
 
         // Step 2: Run the retry loop
-        // Phase 2, step 2.4: Pass DLL category for benchmark tracking
+        // Phase 2, step 2.4: Pass workspace path for benchmark logging
         let result = retry::try_translate_with_retry(
             initial,
             verifier,
@@ -589,7 +602,7 @@ impl TranslationPipeline {
             &self.llm,
             &self.ghidra,
             config.strategy.clone(),
-            Some(dll),
+            self.workspace.as_deref(),
         )
         .await;
 
