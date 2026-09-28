@@ -289,6 +289,7 @@ pub async fn build_escalate_prompt_with_context(
         neighboring_functions,
         data_structures,
         type_info,
+        Vec::new(), // no failure history for non-informed variant
     )
     .unwrap_or_else(|e| {
         format!(
@@ -314,6 +315,34 @@ pub fn build_edge_case_fix_prompt(
         original_rust_code.to_string(),
         failed_tests.to_vec(),
         Vec::new(), // boundary values extracted separately by caller
+        Vec::new(), // failure history — not used for edge case prompts directly
+    )
+    .unwrap_or_else(|e| {
+        format!(
+            "Edge case prompt failed to render: {}\n\n---\n\n{} (failure details above)",
+            e, original_rust_code
+        )
+    })
+}
+
+/// Build a failure-informed edge case fix prompt.
+///
+/// Like [`build_edge_case_fix_prompt`] but includes failure history
+/// when available (Phase 2, step 2.3).
+pub fn build_failure_informed_edge_case_fix_prompt(
+    function_name: &str,
+    dll_name: &str,
+    original_rust_code: &str,
+    failed_tests: &[EdgeCaseTest],
+    history: &[FailureHint],
+) -> String {
+    calxgloss_prompts::build_edge_case_prompt(
+        function_name.to_string(),
+        dll_name.to_string(),
+        original_rust_code.to_string(),
+        failed_tests.to_vec(),
+        Vec::new(), // boundary values extracted separately by caller
+        history.to_vec(),
     )
     .unwrap_or_else(|e| {
         format!(
@@ -324,47 +353,86 @@ pub fn build_edge_case_fix_prompt(
 }
 
 // ============================================================
-// Failure-informed prompts (Phase 2, step 2.3 — stub)
+// Failure-informed prompts (Phase 2, step 2.3)
 // ============================================================
 
 /// Build a failure-informed compile fix prompt.
 ///
-/// Currently falls back to the standard compile fix prompt.
-/// Full failure-informed support (injecting failure history into prompts)
-/// is planned for Phase 2, step 2.3.
+/// When `history` contains prior failures, the prompt includes a
+/// "PREVIOUS ATTEMPT HISTORY" section so the LLM can learn from
+/// specific past mistakes (e.g., "v1 mapped SetTexture incorrectly").
 pub fn build_failure_informed_compile_fix_prompt(
     function_name: &str,
     dll_name: &str,
     original_rust_code: &str,
     compilation_errors: &[String],
-    _history: &[FailureHint],
+    history: &[FailureHint],
 ) -> String {
-    build_compile_fix_prompt(
-        function_name,
-        dll_name,
-        original_rust_code,
-        compilation_errors,
-    )
+    let failure_desc = if compilation_errors.is_empty() {
+        "Compilation failed but no error details were captured.".to_string()
+    } else {
+        format!(
+            "The code failed to compile with {} error(s):\n\n{}",
+            compilation_errors.len(),
+            compilation_errors.join("\n\n")
+        )
+    };
+
+    let template = calxgloss_prompts::FixTemplate::with_history(
+        function_name.to_string(),
+        dll_name.to_string(),
+        original_rust_code.to_string(),
+        failure_desc,
+        history.to_vec(),
+    );
+    template.render().unwrap_or_else(|_| {
+        format!(
+            "Fix the compilation errors:\n{}",
+            compilation_errors.join("\n")
+        )
+    })
 }
 
 /// Build a failure-informed test fix prompt.
 ///
-/// Currently falls back to the standard test fix prompt.
-/// Full failure-informed support is planned for Phase 2, step 2.3.
+/// When `history` contains prior failures, the prompt includes a
+/// "PREVIOUS ATTEMPT HISTORY" section so the LLM can learn from
+/// specific past mistakes.
 pub fn build_failure_informed_test_fix_prompt(
     function_name: &str,
     dll_name: &str,
     original_rust_code: &str,
     failed_tests: &[String],
-    _history: &[FailureHint],
+    history: &[FailureHint],
 ) -> String {
-    build_test_fix_prompt(function_name, dll_name, original_rust_code, failed_tests)
+    let failure_desc = if failed_tests.is_empty() {
+        "Behavioral tests failed but no failure details were captured.".to_string()
+    } else {
+        format!(
+            "The code compiled but {} behavioral test(s) failed:\n\n{}",
+            failed_tests.len(),
+            failed_tests.join("\n\n")
+        )
+    };
+
+    let template = calxgloss_prompts::FixTemplate::with_history(
+        function_name.to_string(),
+        dll_name.to_string(),
+        original_rust_code.to_string(),
+        failure_desc,
+        history.to_vec(),
+    );
+    template
+        .render()
+        .unwrap_or_else(|_| format!("Fix the failing tests:\n{}", failed_tests.join("\n")))
 }
 
-/// Build a failure-informed escalate prompt.
+/// Build a failure-informed escalated prompt.
 ///
-/// Currently falls back to the standard escalate prompt.
-/// Full failure-informed support is planned for Phase 2, step 2.3.
+/// When `history` contains prior failures, the prompt includes a
+/// "PREVIOUS ATTEMPT HISTORY" section so the LLM can learn from
+/// specific past mistakes, in addition to the standard Ghidra context.
+#[allow(clippy::too_many_arguments)]
 pub async fn build_failure_informed_escalate_prompt(
     function_name: &str,
     dll_name: &str,
@@ -373,18 +441,35 @@ pub async fn build_failure_informed_escalate_prompt(
     ghidra: &GhidraClient,
     address: u64,
     call_graph: &[String],
-    _history: &[FailureHint],
+    history: &[FailureHint],
 ) -> String {
-    build_escalate_prompt_with_context(
-        function_name,
-        dll_name,
-        original_rust_code,
-        failure_description,
-        ghidra,
-        address,
-        call_graph,
+    // Extract call graph neighbors from the address-based lookup
+    let call_graph_neighbors = extract_call_graph_neighbors(ghidra, call_graph, address).await;
+
+    // Extract neighboring function context (callees and callers)
+    let neighboring_functions = extract_neighboring_context(ghidra, call_graph).await;
+
+    // Data structures and type info come from Ghidra's symbol table
+    let data_structures = extract_data_structures(ghidra, address).await;
+    let type_info = extract_type_info(ghidra, function_name).await;
+
+    calxgloss_prompts::build_escalate_prompt(
+        function_name.to_string(),
+        dll_name.to_string(),
+        original_rust_code.to_string(),
+        failure_description.to_string(),
+        call_graph_neighbors,
+        neighboring_functions,
+        data_structures,
+        type_info,
+        history.to_vec(),
     )
-    .await
+    .unwrap_or_else(|e| {
+        format!(
+            "Escalated prompt failed to render: {}\n\n---\n\n{} (failure details above)",
+            e, original_rust_code
+        )
+    })
 }
 
 /// Detect whether test failures are concentrated on boundary values.
@@ -795,12 +880,12 @@ pub async fn try_translate_with_retry(
                         &failed_tests,
                     )
                 } else {
-                    // Reuse the standard edge case fix prompt but log the history
-                    build_edge_case_fix_prompt(
+                    build_failure_informed_edge_case_fix_prompt(
                         &initial_translation.function,
                         &initial_translation.dll,
                         &initial_translation.rust_code,
                         &failed_tests,
+                        &failure_history,
                     )
                 };
                 (prompt, "edge_case_fix".to_string())
@@ -1143,5 +1228,103 @@ mod tests {
     fn test_is_edge_case_failure_all_passed() {
         let failed: Vec<String> = vec![];
         assert!(!is_edge_case_failure(&failed, 5, 5));
+    }
+
+    // ============================================================
+    // Phase 2, step 2.3 — Failure-informed prompt builder tests
+    // ============================================================
+
+    #[test]
+    fn test_failure_informed_compile_fix_includes_history() {
+        let hints = vec![
+            FailureHint::new(
+                1,
+                "compile_fix",
+                "Compilation failed: E0425 — `__security_init_cookie` not found",
+            ),
+            FailureHint::new(2, "test_fix", "Wrong result on boundary input"),
+        ];
+
+        let prompt = build_failure_informed_compile_fix_prompt(
+            "entry",
+            "eqmain.dll",
+            "fn entry() { __security_init_cookie(); }",
+            &["error[E0425]: not found: `__security_init_cookie`".to_string()],
+            &hints,
+        );
+
+        assert!(prompt.contains("entry"));
+        assert!(prompt.contains("eqmain.dll"));
+        assert!(prompt.contains("PREVIOUS ATTEMPT HISTORY"));
+        assert!(prompt.contains("Attempt #1"));
+        assert!(prompt.contains("compile_fix"));
+        assert!(prompt.contains("Attempt #2"));
+        assert!(prompt.contains("test_fix"));
+    }
+
+    #[test]
+    fn test_failure_informed_compile_fix_empty_history() {
+        let prompt = build_failure_informed_compile_fix_prompt(
+            "entry",
+            "eqmain.dll",
+            "fn entry() { }",
+            &["error[E0425]: not found: `foo`".to_string()],
+            &[], // empty history — should not include history section
+        );
+
+        assert!(prompt.contains("entry"));
+        assert!(!prompt.contains("PREVIOUS ATTEMPT HISTORY"));
+    }
+
+    #[test]
+    fn test_failure_informed_test_fix_includes_history() {
+        let hints = vec![FailureHint::new(
+            1,
+            "compile_fix",
+            "Compilation failed: E0412",
+        )];
+
+        let prompt = build_failure_informed_test_fix_prompt(
+            "DrawSprite",
+            "game_logic.dll",
+            "fn draw_sprite(x: i32) -> i32 { x }",
+            &["Test 0: expected 42, got 10 — input was 10".to_string()],
+            &hints,
+        );
+
+        assert!(prompt.contains("DrawSprite"));
+        assert!(prompt.contains("game_logic.dll"));
+        assert!(prompt.contains("PREVIOUS ATTEMPT HISTORY"));
+        assert!(prompt.contains("compile_fix"));
+        assert!(prompt.contains("Compilation failed: E0412"));
+    }
+
+    #[test]
+    fn test_failure_informed_edge_case_fix_includes_history() {
+        let hints = vec![
+            FailureHint::new(1, "test_fix", "Wrong result on zero input"),
+            FailureHint::new(2, "escalate", "Still wrong on zero after adding context"),
+        ];
+
+        let failed_tests = vec![EdgeCaseTest {
+            index: 1,
+            inputs: serde_json::json!({"x": 0}),
+            expected: serde_json::json!(0),
+            actual: serde_json::json!(1),
+            error: "Expected 0, got 1".to_string(),
+            disassembly_hints: "cmp eax, 0\nje .zero_branch".to_string(),
+        }];
+
+        let prompt = build_failure_informed_edge_case_fix_prompt(
+            "DrawSprite",
+            "game_logic.dll",
+            "fn draw_sprite(x: i32) -> i32 { x + 1 }",
+            &failed_tests,
+            &hints,
+        );
+
+        assert!(prompt.contains("DrawSprite"));
+        assert!(prompt.contains("PREVIOUS ATTEMPT HISTORY"));
+        assert!(prompt.contains("Learn from past failures"));
     }
 }
