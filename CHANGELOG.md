@@ -138,13 +138,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `re/patches/`, and baseline files from `re/baseline/` to build and render a
   structured review dashboard. Supports `--follow` (continuous watch) and
   `--interval <secs>` (refresh cadence, default 2).
-
-### Fixed
+- **`dashboard view <target>`** — per-unit quick-view subcommand showing
+  justification, diff summary, test results, and attempt history for a
+  single translation unit. Target format: `<dll>/<function>` or
+  `<dll>/<function>/vN` (e.g., `game_logic/DrawPrimitive/v3`).
 
 #### `calxgloss-reports`
+- **`render_unit_view()`** — renders a detailed single-unit view with
+  sections: unit info (kind, status, confidence, dependencies), branch
+  status (merged/unmerged), DLL classification, diff summary (files
+  changed, insertions, deletions), baseline and verification test
+  results, and attempt history loaded from patch records.
+- `ViewTarget` — parses `dll/function` or `dll/function/vN` target strings
+- `UnitViewData` — collects all data for a unit view (unit info, branch
+  name, merge status, diff summary, attempt history, baseline tests,
+  DLL classification)
+- **Dependency diff summary** — computes `git diff` stats between branch
+  and main (files changed, insertions, deletions)
+- Clippy `filter_next` — replaced `.filter(...).into_iter()...next()`
+  with `.find(...)` on branch list iteration
+- Clippy `unnecessary_closure` — replaced `.or_else(|| { Some(...) })`
+  with `.or(Some(...))` for static default values
 - **Table column alignment** — switched from format-width specifiers (which
   counted invisible ANSI escape codes as characters) to hardcoded column
   widths per element, so colored headers no longer shift data columns.
+
+#### `calxgloss-git`
+- **`is_branch_merged_into_main()`** — checks if a branch is an ancestor
+  of `main` via `graph_ahead_behind()`
+
+### Changed
+
+#### all crates
+- Removed references to implementation phases and steps from
+  doc-comments and inline comments. The planning document
+  (`step_by_step.md`) remains as the planning reference; source
+  comments now describe what the code does, not which phase it came
+  from. Affected crates: `calxgloss-analysis`, `calxgloss-pal`,
+  `calxgloss-prompts`, `calxgloss-reports`, `calxgloss-translator`,
+  `calxgloss-types`.
 
 ## [0.1.0] — 2025-09-27
 
