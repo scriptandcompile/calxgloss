@@ -17,8 +17,7 @@ pub async fn build_escalate_prompt_with_context(
     call_graph: &[String],
 ) -> String {
     // Extract call graph neighbors from the address-based lookup
-    let call_graph_neighbors =
-        extract_call_graph_neighbors(ghidra, call_graph, address).await;
+    let call_graph_neighbors = extract_call_graph_neighbors(ghidra, call_graph, address).await;
 
     // Extract neighboring function context (callees and callers)
     let neighboring_functions = extract_neighboring_context(ghidra, call_graph).await;
@@ -62,8 +61,7 @@ pub async fn build_failure_informed_escalate_prompt(
     history: &[calxgloss_types::FailureHint],
 ) -> String {
     // Extract call graph neighbors from the address-based lookup
-    let call_graph_neighbors =
-        extract_call_graph_neighbors(ghidra, call_graph, address).await;
+    let call_graph_neighbors = extract_call_graph_neighbors(ghidra, call_graph, address).await;
 
     // Extract neighboring function context (callees and callers)
     let neighboring_functions = extract_neighboring_context(ghidra, call_graph).await;

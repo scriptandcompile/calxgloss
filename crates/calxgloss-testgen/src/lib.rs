@@ -54,8 +54,8 @@ pub use inputs::{DisassemblyEdgeCases, EdgeCaseSource, generate_test_inputs};
 pub use pe::{ExportEntry, ImportEntry, Machine, PeImage};
 pub use run::{BaselineRunner, TestContext};
 pub use wine::{
-    encode_test_case, generate_harness, FunctionLocator, HarnessReport, HarnessSpec,
-    HarnessTestResult, LoadMode, ParamSpec, ScalarKind, WineRunner, locator_for_function,
+    FunctionLocator, HarnessReport, HarnessSpec, HarnessTestResult, LoadMode, ParamSpec,
+    ScalarKind, WineRunner, encode_test_case, generate_harness, locator_for_function,
     locator_for_va,
 };
 

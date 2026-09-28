@@ -39,15 +39,15 @@
 //! # }
 //! ```
 
-pub mod dependency;
-pub mod experiment_log;
 mod classify;
+pub mod dependency;
 pub mod error;
+pub mod experiment_log;
 
-pub use dependency::*;
-pub use experiment_log::*;
 pub use classify::*;
+pub use dependency::*;
 pub use error::{AnalysisError, Result};
+pub use experiment_log::*;
 
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_pal::ApiMappings;

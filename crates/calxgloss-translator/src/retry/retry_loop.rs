@@ -1,14 +1,13 @@
 //! The retry loop — orchestrates translation, verification, and LLM fixes.
 
-use crate::retry::{
-    RetryConfig, RetryResult, RetryStrategy, TranslationAttempt,
-    build_compile_fix_prompt, build_edge_case_fix_prompt,
-    build_escalate_prompt_with_context, build_failure_informed_compile_fix_prompt,
-    build_failure_informed_edge_case_fix_prompt, build_failure_informed_escalate_prompt,
-    build_failure_informed_test_fix_prompt, build_test_fix_prompt,
-    log_prompt_variant_experiment,
-};
 use crate::Translation;
+use crate::retry::{
+    RetryConfig, RetryResult, RetryStrategy, TranslationAttempt, build_compile_fix_prompt,
+    build_edge_case_fix_prompt, build_escalate_prompt_with_context,
+    build_failure_informed_compile_fix_prompt, build_failure_informed_edge_case_fix_prompt,
+    build_failure_informed_escalate_prompt, build_failure_informed_test_fix_prompt,
+    build_test_fix_prompt, log_prompt_variant_experiment,
+};
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_llm::{LlmClient, LlmMessage};
 use calxgloss_types::FailureHint;

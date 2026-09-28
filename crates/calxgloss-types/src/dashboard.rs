@@ -438,11 +438,7 @@ impl DependencyGraph {
         let mut in_degree: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
 
-        let node_ids: Vec<String> = self
-            .nodes
-            .iter()
-            .map(|n| n.unit_id.clone())
-            .collect();
+        let node_ids: Vec<String> = self.nodes.iter().map(|n| n.unit_id.clone()).collect();
 
         for id in &node_ids {
             in_degree.insert(id.clone(), 0);
@@ -462,13 +458,15 @@ impl DependencyGraph {
 
         // Helper to get level of a node by ID
         let get_level = |id: &str| -> WorkUnitLevel {
-            self.nodes.iter().find(|n| n.unit_id == id).map(|n| n.level)
+            self.nodes
+                .iter()
+                .find(|n| n.unit_id == id)
+                .map(|n| n.level)
                 .unwrap_or(WorkUnitLevel::FunctionTranslation)
         };
 
         // Kahn's algorithm with level-aware priority queue
-        let mut depth: std::collections::HashMap<String, usize> =
-            std::collections::HashMap::new();
+        let mut depth: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         // Use a Vec as a priority queue, sorted by (depth, level, node_id)
         let mut queue: Vec<String> = in_degree
             .iter()
@@ -516,8 +514,7 @@ impl DependencyGraph {
 
                 if n_depth < q_depth
                     || (n_depth == q_depth && n_level < q_level)
-                    || (n_depth == q_depth && n_level == q_level
-                        && newly_ready[ni] <= queue[qi])
+                    || (n_depth == q_depth && n_level == q_level && newly_ready[ni] <= queue[qi])
                 {
                     merged.push(newly_ready[ni].clone());
                     ni += 1;
@@ -721,13 +718,16 @@ impl ReviewDashboard {
             );
         }
 
-        let id_set: std::collections::HashSet<&str> = ordered.iter().map(|n| n.unit_id.as_str()).collect();
+        let id_set: std::collections::HashSet<&str> =
+            ordered.iter().map(|n| n.unit_id.as_str()).collect();
         let mut result: Vec<&UnitOfWork> = self
             .review_queue
             .iter()
             .chain(self.recent_activity.iter())
-            .filter(|u| !id_set.contains(u.id.as_str()) ||
-                matches!(u.status, ReviewStatus::Queued | ReviewStatus::PendingReview))
+            .filter(|u| {
+                !id_set.contains(u.id.as_str())
+                    || matches!(u.status, ReviewStatus::Queued | ReviewStatus::PendingReview)
+            })
             .collect();
 
         // Separate: accepted units go last (they're already merged)
@@ -749,7 +749,10 @@ impl ReviewDashboard {
                 (Some(i), Some(j)) => i.cmp(&j),
                 (Some(_), None) => std::cmp::Ordering::Less,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => a.kind.level().cmp(&b.kind.level())
+                (None, None) => a
+                    .kind
+                    .level()
+                    .cmp(&b.kind.level())
                     .then_with(|| a.id.cmp(&b.id)),
             }
         });
@@ -868,11 +871,7 @@ impl ReviewDashboard {
         // Phase 1: identify all failing units (SendBack, PatchRequested)
         // These are the roots of the blocking cascade.
         let mut failing: HashMap<String, bool> = HashMap::new();
-        let unit_ids: Vec<String> = self
-            .review_queue
-            .iter()
-            .map(|u| u.id.clone())
-            .collect();
+        let unit_ids: Vec<String> = self.review_queue.iter().map(|u| u.id.clone()).collect();
 
         for id in &unit_ids {
             let unit = self.review_queue.iter().find(|u| &u.id == id).unwrap();
@@ -910,12 +909,12 @@ impl ReviewDashboard {
             if let Some(dependents) = depended_on_by.get(&failing_id) {
                 for dependent_id in dependents {
                     // Only propagate if this dependent isn't already blocked/failing
-                    if let Some(was_failing) = failing.get(dependent_id) {
-                        if !*was_failing {
-                            // Mark as blocked and update state
-                            failing.insert(dependent_id.clone(), true);
-                            queue.push(dependent_id.clone());
-                        }
+                    if let Some(was_failing) = failing.get(dependent_id)
+                        && !*was_failing
+                    {
+                        // Mark as blocked and update state
+                        failing.insert(dependent_id.clone(), true);
+                        queue.push(dependent_id.clone());
                     }
                 }
             }
@@ -981,12 +980,7 @@ impl ReviewDashboard {
         let mut nodes: Vec<&str> = self
             .review_queue
             .iter()
-            .filter(|u| {
-                matches!(
-                    u.status,
-                    ReviewStatus::Queued | ReviewStatus::PendingReview
-                )
-            })
+            .filter(|u| matches!(u.status, ReviewStatus::Queued | ReviewStatus::PendingReview))
             .map(|u| u.id.as_str())
             .collect();
         nodes.sort(); // stable ordering
@@ -994,12 +988,7 @@ impl ReviewDashboard {
         let edges: Vec<(&str, &str)> = self
             .review_queue
             .iter()
-            .filter(|u| {
-                matches!(
-                    u.status,
-                    ReviewStatus::Queued | ReviewStatus::PendingReview
-                )
-            })
+            .filter(|u| matches!(u.status, ReviewStatus::Queued | ReviewStatus::PendingReview))
             .flat_map(|u| u.dependencies.iter().map(|d| (u.id.as_str(), d.as_str())))
             .collect();
 
@@ -1048,10 +1037,8 @@ impl ReviewDashboard {
         self.review_queue
             .iter()
             .filter(|u| {
-                matches!(
-                    u.status,
-                    ReviewStatus::Queued | ReviewStatus::PendingReview
-                ) && id_set.contains(u.id.as_str())
+                matches!(u.status, ReviewStatus::Queued | ReviewStatus::PendingReview)
+                    && id_set.contains(u.id.as_str())
             })
             .collect()
     }
@@ -1103,7 +1090,12 @@ mod tests {
         let graph = DependencyGraph {
             nodes: vec![
                 DependencyNode::new("dll_classify", "DLL Classification", ReviewStatus::Accepted),
-                DependencyNode::with_level("shim_wgpu", "Shim wgpu", ReviewStatus::PendingReview, WorkUnitLevel::ShimLayer),
+                DependencyNode::with_level(
+                    "shim_wgpu",
+                    "Shim wgpu",
+                    ReviewStatus::PendingReview,
+                    WorkUnitLevel::ShimLayer,
+                ),
                 DependencyNode::new("func_draw", "func_DrawPrimitive", ReviewStatus::Queued),
             ],
             edges: vec![
@@ -1129,7 +1121,12 @@ mod tests {
         let graph = DependencyGraph {
             nodes: vec![
                 DependencyNode::new("dll_classify", "DLL Classification", ReviewStatus::Accepted),
-                DependencyNode::with_level("shim_wgpu", "Shim wgpu", ReviewStatus::PendingReview, WorkUnitLevel::ShimLayer),
+                DependencyNode::with_level(
+                    "shim_wgpu",
+                    "Shim wgpu",
+                    ReviewStatus::PendingReview,
+                    WorkUnitLevel::ShimLayer,
+                ),
             ],
             edges: vec![DependencyEdge {
                 from: "shim_wgpu".into(),
@@ -1147,7 +1144,12 @@ mod tests {
         let graph = DependencyGraph {
             nodes: vec![
                 DependencyNode::new("func_draw", "func_DrawPrimitive", ReviewStatus::Queued),
-                DependencyNode::with_level("shim_wgpu", "Shim wgpu", ReviewStatus::Accepted, WorkUnitLevel::ShimLayer),
+                DependencyNode::with_level(
+                    "shim_wgpu",
+                    "Shim wgpu",
+                    ReviewStatus::Accepted,
+                    WorkUnitLevel::ShimLayer,
+                ),
             ],
             edges: vec![DependencyEdge {
                 from: "func_draw".into(),
@@ -1424,7 +1426,12 @@ mod tests {
         let graph = DependencyGraph {
             nodes: vec![
                 DependencyNode::new("dll_classify", "DLL Classification", ReviewStatus::Accepted),
-                DependencyNode::with_level("shim_wgpu", "Shim wgpu", ReviewStatus::PendingReview, WorkUnitLevel::ShimLayer),
+                DependencyNode::with_level(
+                    "shim_wgpu",
+                    "Shim wgpu",
+                    ReviewStatus::PendingReview,
+                    WorkUnitLevel::ShimLayer,
+                ),
                 DependencyNode::new("func_draw", "func_DrawPrimitive", ReviewStatus::Queued),
                 DependencyNode::new("func_present", "func_Present", ReviewStatus::Queued),
             ],
@@ -1454,7 +1461,10 @@ mod tests {
         // shim_wgpu must come before func_draw and func_present
         let shim_idx = order_ids.iter().position(|&id| id == "shim_wgpu").unwrap();
         let draw_idx = order_ids.iter().position(|&id| id == "func_draw").unwrap();
-        let present_idx = order_ids.iter().position(|&id| id == "func_present").unwrap();
+        let present_idx = order_ids
+            .iter()
+            .position(|&id| id == "func_present")
+            .unwrap();
         assert!(shim_idx < draw_idx, "shim must come before func_draw");
         assert!(shim_idx < present_idx, "shim must come before func_present");
     }
@@ -1620,17 +1630,49 @@ mod tests {
         // e.g., a shim layer at depth 1 should come before a PAL trait at depth 1
         let graph = DependencyGraph {
             nodes: vec![
-                DependencyNode::with_level("dll_cls", "DLL Classify", ReviewStatus::Accepted, WorkUnitLevel::DllClassification),
-                DependencyNode::with_level("shim_wgpu", "Shim wgpu", ReviewStatus::Queued, WorkUnitLevel::ShimLayer),
-                DependencyNode::with_level("pal_graphics", "PAL GraphicsDevice", ReviewStatus::Queued, WorkUnitLevel::PalTrait),
-                DependencyNode::with_level("func_draw", "func_DrawPrimitive", ReviewStatus::Queued, WorkUnitLevel::FunctionTranslation),
+                DependencyNode::with_level(
+                    "dll_cls",
+                    "DLL Classify",
+                    ReviewStatus::Accepted,
+                    WorkUnitLevel::DllClassification,
+                ),
+                DependencyNode::with_level(
+                    "shim_wgpu",
+                    "Shim wgpu",
+                    ReviewStatus::Queued,
+                    WorkUnitLevel::ShimLayer,
+                ),
+                DependencyNode::with_level(
+                    "pal_graphics",
+                    "PAL GraphicsDevice",
+                    ReviewStatus::Queued,
+                    WorkUnitLevel::PalTrait,
+                ),
+                DependencyNode::with_level(
+                    "func_draw",
+                    "func_DrawPrimitive",
+                    ReviewStatus::Queued,
+                    WorkUnitLevel::FunctionTranslation,
+                ),
             ],
             edges: vec![
-                DependencyEdge { from: "shim_wgpu".into(), to: "dll_cls".into() },
-                DependencyEdge { from: "pal_graphics".into(), to: "dll_cls".into() },
+                DependencyEdge {
+                    from: "shim_wgpu".into(),
+                    to: "dll_cls".into(),
+                },
+                DependencyEdge {
+                    from: "pal_graphics".into(),
+                    to: "dll_cls".into(),
+                },
                 // func_draw depends on both shim and PAL
-                DependencyEdge { from: "func_draw".into(), to: "shim_wgpu".into() },
-                DependencyEdge { from: "func_draw".into(), to: "pal_graphics".into() },
+                DependencyEdge {
+                    from: "func_draw".into(),
+                    to: "shim_wgpu".into(),
+                },
+                DependencyEdge {
+                    from: "func_draw".into(),
+                    to: "pal_graphics".into(),
+                },
             ],
         };
 
@@ -1643,8 +1685,14 @@ mod tests {
 
         // shim_wgpu before pal_graphics at depth 1 (ShimLayer < PalTrait level)
         let shim_idx = order_ids.iter().position(|&id| id == "shim_wgpu").unwrap();
-        let pal_idx = order_ids.iter().position(|&id| id == "pal_graphics").unwrap();
-        assert!(shim_idx < pal_idx, "shim layer should come before PAL trait at same depth");
+        let pal_idx = order_ids
+            .iter()
+            .position(|&id| id == "pal_graphics")
+            .unwrap();
+        assert!(
+            shim_idx < pal_idx,
+            "shim layer should come before PAL trait at same depth"
+        );
 
         // func_draw last (depth 2)
         assert_eq!(order_ids[order_ids.len() - 1], "func_draw");
@@ -1655,21 +1703,72 @@ mod tests {
         // Simulates the full pipeline: classify → shim → PAL trait → function → integration
         let graph = DependencyGraph {
             nodes: vec![
-                DependencyNode::with_level("dll_cls", "Classify d3d9.dll", ReviewStatus::Accepted, WorkUnitLevel::DllClassification),
-                DependencyNode::with_level("shim_wgpu", "Shim d3d9→wgpu", ReviewStatus::Queued, WorkUnitLevel::ShimLayer),
-                DependencyNode::with_level("pal_graphics", "PAL GraphicsDevice", ReviewStatus::Queued, WorkUnitLevel::PalTrait),
-                DependencyNode::with_level("func_present", "func_Present", ReviewStatus::Queued, WorkUnitLevel::FunctionTranslation),
-                DependencyNode::with_level("func_draw", "func_DrawPrimitive", ReviewStatus::Queued, WorkUnitLevel::FunctionTranslation),
-                DependencyNode::with_level("integrate_batch", "Integrate batch 001", ReviewStatus::Queued, WorkUnitLevel::IntegrationStep),
+                DependencyNode::with_level(
+                    "dll_cls",
+                    "Classify d3d9.dll",
+                    ReviewStatus::Accepted,
+                    WorkUnitLevel::DllClassification,
+                ),
+                DependencyNode::with_level(
+                    "shim_wgpu",
+                    "Shim d3d9→wgpu",
+                    ReviewStatus::Queued,
+                    WorkUnitLevel::ShimLayer,
+                ),
+                DependencyNode::with_level(
+                    "pal_graphics",
+                    "PAL GraphicsDevice",
+                    ReviewStatus::Queued,
+                    WorkUnitLevel::PalTrait,
+                ),
+                DependencyNode::with_level(
+                    "func_present",
+                    "func_Present",
+                    ReviewStatus::Queued,
+                    WorkUnitLevel::FunctionTranslation,
+                ),
+                DependencyNode::with_level(
+                    "func_draw",
+                    "func_DrawPrimitive",
+                    ReviewStatus::Queued,
+                    WorkUnitLevel::FunctionTranslation,
+                ),
+                DependencyNode::with_level(
+                    "integrate_batch",
+                    "Integrate batch 001",
+                    ReviewStatus::Queued,
+                    WorkUnitLevel::IntegrationStep,
+                ),
             ],
             edges: vec![
-                DependencyEdge { from: "shim_wgpu".into(), to: "dll_cls".into() },
-                DependencyEdge { from: "pal_graphics".into(), to: "shim_wgpu".into() },
-                DependencyEdge { from: "func_present".into(), to: "pal_graphics".into() },
-                DependencyEdge { from: "func_draw".into(), to: "shim_wgpu".into() },
-                DependencyEdge { from: "func_draw".into(), to: "pal_graphics".into() },
-                DependencyEdge { from: "integrate_batch".into(), to: "func_present".into() },
-                DependencyEdge { from: "integrate_batch".into(), to: "func_draw".into() },
+                DependencyEdge {
+                    from: "shim_wgpu".into(),
+                    to: "dll_cls".into(),
+                },
+                DependencyEdge {
+                    from: "pal_graphics".into(),
+                    to: "shim_wgpu".into(),
+                },
+                DependencyEdge {
+                    from: "func_present".into(),
+                    to: "pal_graphics".into(),
+                },
+                DependencyEdge {
+                    from: "func_draw".into(),
+                    to: "shim_wgpu".into(),
+                },
+                DependencyEdge {
+                    from: "func_draw".into(),
+                    to: "pal_graphics".into(),
+                },
+                DependencyEdge {
+                    from: "integrate_batch".into(),
+                    to: "func_present".into(),
+                },
+                DependencyEdge {
+                    from: "integrate_batch".into(),
+                    to: "func_draw".into(),
+                },
             ],
         };
 
@@ -1691,9 +1790,15 @@ mod tests {
 
         // func_present depends on pal_graphics at depth 3
         // func_draw depends on shim_wgpu (depth 2) + pal_graphics (depth 2) = depth 3
-        let present_idx = order_ids.iter().position(|&id| id == "func_present").unwrap();
+        let present_idx = order_ids
+            .iter()
+            .position(|&id| id == "func_present")
+            .unwrap();
         let draw_idx = order_ids.iter().position(|&id| id == "func_draw").unwrap();
-        let int_idx = order_ids.iter().position(|&id| id == "integrate_batch").unwrap();
+        let int_idx = order_ids
+            .iter()
+            .position(|&id| id == "integrate_batch")
+            .unwrap();
 
         assert!(present_idx < int_idx, "function before integration");
         assert!(draw_idx < int_idx, "function before integration");
@@ -1709,13 +1814,22 @@ mod tests {
                 DependencyNode::new("unit_b", "Unit B", ReviewStatus::Queued),
             ],
             edges: vec![
-                DependencyEdge { from: "unit_a".into(), to: "unit_b".into() },
-                DependencyEdge { from: "unit_b".into(), to: "unit_a".into() },
+                DependencyEdge {
+                    from: "unit_a".into(),
+                    to: "unit_b".into(),
+                },
+                DependencyEdge {
+                    from: "unit_b".into(),
+                    to: "unit_a".into(),
+                },
             ],
         };
 
         let (ordered, cycles) = graph.topological_order();
-        assert!(ordered.is_empty(), "all nodes should be excluded due to cycle");
+        assert!(
+            ordered.is_empty(),
+            "all nodes should be excluded due to cycle"
+        );
         assert_eq!(cycles.len(), 2, "both nodes should be in the cycle list");
     }
 
@@ -1730,10 +1844,19 @@ mod tests {
                 DependencyNode::new("bad_d", "Bad D", ReviewStatus::Queued),
             ],
             edges: vec![
-                DependencyEdge { from: "good_b".into(), to: "good_a".into() },
+                DependencyEdge {
+                    from: "good_b".into(),
+                    to: "good_a".into(),
+                },
                 // Cycle: bad_c → bad_d → bad_c
-                DependencyEdge { from: "bad_c".into(), to: "bad_d".into() },
-                DependencyEdge { from: "bad_d".into(), to: "bad_c".into() },
+                DependencyEdge {
+                    from: "bad_c".into(),
+                    to: "bad_d".into(),
+                },
+                DependencyEdge {
+                    from: "bad_d".into(),
+                    to: "bad_c".into(),
+                },
             ],
         };
 
@@ -1771,12 +1894,24 @@ mod tests {
 
     #[test]
     fn work_unit_kind_to_level() {
-        assert_eq!(WorkUnitKind::DllClassification.level(), WorkUnitLevel::DllClassification);
+        assert_eq!(
+            WorkUnitKind::DllClassification.level(),
+            WorkUnitLevel::DllClassification
+        );
         assert_eq!(WorkUnitKind::ShimLayer.level(), WorkUnitLevel::ShimLayer);
         assert_eq!(WorkUnitKind::PalTrait.level(), WorkUnitLevel::PalTrait);
-        assert_eq!(WorkUnitKind::TestCaseAddition.level(), WorkUnitLevel::TestCaseAddition);
-        assert_eq!(WorkUnitKind::FunctionTranslation.level(), WorkUnitLevel::FunctionTranslation);
-        assert_eq!(WorkUnitKind::IntegrationStep.level(), WorkUnitLevel::IntegrationStep);
+        assert_eq!(
+            WorkUnitKind::TestCaseAddition.level(),
+            WorkUnitLevel::TestCaseAddition
+        );
+        assert_eq!(
+            WorkUnitKind::FunctionTranslation.level(),
+            WorkUnitLevel::FunctionTranslation
+        );
+        assert_eq!(
+            WorkUnitKind::IntegrationStep.level(),
+            WorkUnitLevel::IntegrationStep
+        );
         assert_eq!(WorkUnitKind::BugFix.level(), WorkUnitLevel::BugFix);
     }
 
@@ -1788,7 +1923,10 @@ mod tests {
         assert_eq!(node.level, WorkUnitLevel::FunctionTranslation); // default
 
         let node = DependencyNode::with_level(
-            "id2", "Name 2", ReviewStatus::PendingReview, WorkUnitLevel::ShimLayer
+            "id2",
+            "Name 2",
+            ReviewStatus::PendingReview,
+            WorkUnitLevel::ShimLayer,
         );
         assert_eq!(node.unit_id, "id2");
         assert_eq!(node.level, WorkUnitLevel::ShimLayer);
@@ -1809,9 +1947,12 @@ mod tests {
     #[test]
     fn single_node_no_edges() {
         let graph = DependencyGraph {
-            nodes: vec![
-                DependencyNode::with_level("solo", "Solo Unit", ReviewStatus::Queued, WorkUnitLevel::ShimLayer),
-            ],
+            nodes: vec![DependencyNode::with_level(
+                "solo",
+                "Solo Unit",
+                ReviewStatus::Queued,
+                WorkUnitLevel::ShimLayer,
+            )],
             edges: Vec::new(),
         };
 
@@ -1827,15 +1968,44 @@ mod tests {
         // At the same depth, shim should come first.
         let graph = DependencyGraph {
             nodes: vec![
-                DependencyNode::with_level("dll", "DLL", ReviewStatus::Accepted, WorkUnitLevel::DllClassification),
-                DependencyNode::with_level("func_x", "Func X", ReviewStatus::Queued, WorkUnitLevel::FunctionTranslation),
-                DependencyNode::with_level("shim_y", "Shim Y", ReviewStatus::Queued, WorkUnitLevel::ShimLayer),
-                DependencyNode::with_level("pal_z", "PAL Z", ReviewStatus::Queued, WorkUnitLevel::PalTrait),
+                DependencyNode::with_level(
+                    "dll",
+                    "DLL",
+                    ReviewStatus::Accepted,
+                    WorkUnitLevel::DllClassification,
+                ),
+                DependencyNode::with_level(
+                    "func_x",
+                    "Func X",
+                    ReviewStatus::Queued,
+                    WorkUnitLevel::FunctionTranslation,
+                ),
+                DependencyNode::with_level(
+                    "shim_y",
+                    "Shim Y",
+                    ReviewStatus::Queued,
+                    WorkUnitLevel::ShimLayer,
+                ),
+                DependencyNode::with_level(
+                    "pal_z",
+                    "PAL Z",
+                    ReviewStatus::Queued,
+                    WorkUnitLevel::PalTrait,
+                ),
             ],
             edges: vec![
-                DependencyEdge { from: "func_x".into(), to: "dll".into() },
-                DependencyEdge { from: "shim_y".into(), to: "dll".into() },
-                DependencyEdge { from: "pal_z".into(), to: "dll".into() },
+                DependencyEdge {
+                    from: "func_x".into(),
+                    to: "dll".into(),
+                },
+                DependencyEdge {
+                    from: "shim_y".into(),
+                    to: "dll".into(),
+                },
+                DependencyEdge {
+                    from: "pal_z".into(),
+                    to: "dll".into(),
+                },
             ],
         };
 
@@ -1905,8 +2075,16 @@ mod tests {
         let blocked_count = dashboard.auto_block_units();
         assert_eq!(blocked_count, 1);
 
-        let shim = dashboard.review_queue.iter().find(|u| u.id == "shim_wgpu").unwrap();
-        let func = dashboard.review_queue.iter().find(|u| u.id == "func_draw").unwrap();
+        let shim = dashboard
+            .review_queue
+            .iter()
+            .find(|u| u.id == "shim_wgpu")
+            .unwrap();
+        let func = dashboard
+            .review_queue
+            .iter()
+            .find(|u| u.id == "func_draw")
+            .unwrap();
 
         // The failed dependency should NOT change its own status
         assert!(matches!(shim.status, ReviewStatus::SendBack));
@@ -1970,9 +2148,12 @@ mod tests {
         assert_eq!(blocked_count, 0);
 
         // No units should be blocked
-        assert!(dashboard.review_queue.iter().all(|u| {
-            !matches!(u.status, ReviewStatus::Blocked)
-        }));
+        assert!(
+            dashboard
+                .review_queue
+                .iter()
+                .all(|u| { !matches!(u.status, ReviewStatus::Blocked) })
+        );
     }
 
     #[test]
@@ -2051,7 +2232,11 @@ mod tests {
         let blocked_count = dashboard.auto_block_units();
         assert_eq!(blocked_count, 1);
 
-        let func = dashboard.review_queue.iter().find(|u| u.id == "func_draw").unwrap();
+        let func = dashboard
+            .review_queue
+            .iter()
+            .find(|u| u.id == "func_draw")
+            .unwrap();
         assert!(matches!(func.status, ReviewStatus::Blocked));
     }
 
@@ -2154,7 +2339,9 @@ mod tests {
         assert_eq!(blocked_count, 2); // func_draw + integrate
 
         // Check each unit's status
-        let statuses: HashMap<&str, &ReviewStatus> = dashboard.review_queue.iter()
+        let statuses: HashMap<&str, &ReviewStatus> = dashboard
+            .review_queue
+            .iter()
             .chain(dashboard.recent_activity.iter())
             .map(|u| (u.id.as_str(), &u.status))
             .collect();
@@ -2292,7 +2479,11 @@ mod tests {
         let blocked_count = dashboard.auto_block_units();
         assert_eq!(blocked_count, 1);
 
-        let func = dashboard.review_queue.iter().find(|u| u.id == "func_present").unwrap();
+        let func = dashboard
+            .review_queue
+            .iter()
+            .find(|u| u.id == "func_present")
+            .unwrap();
         assert!(matches!(func.status, ReviewStatus::Blocked));
     }
 

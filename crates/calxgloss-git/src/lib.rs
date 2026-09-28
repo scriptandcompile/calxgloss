@@ -318,11 +318,10 @@ impl DependencyChecker {
             .and_then(|b| b.get().peel_to_commit().ok());
 
         match (main_ref, branch_ref) {
-            (Some(main_commit), Some(branch_commit)) => {
-                repo.graph_ahead_behind(branch_commit.id(), main_commit.id())
-                    .map(|(ahead, _)| ahead == 0)
-                    .unwrap_or(false)
-            }
+            (Some(main_commit), Some(branch_commit)) => repo
+                .graph_ahead_behind(branch_commit.id(), main_commit.id())
+                .map(|(ahead, _)| ahead == 0)
+                .unwrap_or(false),
             _ => false,
         }
     }
@@ -855,13 +854,18 @@ impl GitManager {
         });
         std::fs::write(
             &accept_file,
-            serde_json::to_string_pretty(&accept_record).map_err(|e| {
-                TypesError::Serialization(e)
-            })?,
+            serde_json::to_string_pretty(&accept_record)
+                .map_err(|e| TypesError::Serialization(e))?,
         )
-        .map_err(|e| TypesError::InvalidBranchName(format!("Failed to write accept record: {}", e)))?;
+        .map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to write accept record: {}", e))
+        })?;
 
-        info!("Accepted branch '{}' — record written to {}", branch.name, accept_file.display());
+        info!(
+            "Accepted branch '{}' — record written to {}",
+            branch.name,
+            accept_file.display()
+        );
         Ok(result)
     }
 
@@ -870,11 +874,7 @@ impl GitManager {
     /// The rejection reason is saved to
     /// `re/rejections/{dll}/{function}/v{N}.json` so the dashboard can
     /// display send-back history.
-    pub fn reject_branch(
-        &self,
-        branch: &GitBranch,
-        reason: &str,
-    ) -> Result<PathBuf, TypesError> {
+    pub fn reject_branch(&self, branch: &GitBranch, reason: &str) -> Result<PathBuf, TypesError> {
         info!("Rejecting branch '{}' — reason: {}", branch.name, reason);
 
         let rejection_dir = self
@@ -898,11 +898,12 @@ impl GitManager {
         });
         std::fs::write(
             &rejection_path,
-            serde_json::to_string_pretty(&rejection_record).map_err(|e| {
-                TypesError::Serialization(e)
-            })?,
+            serde_json::to_string_pretty(&rejection_record)
+                .map_err(|e| TypesError::Serialization(e))?,
         )
-        .map_err(|e| TypesError::InvalidBranchName(format!("Failed to write rejection record: {}", e)))?;
+        .map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to write rejection record: {}", e))
+        })?;
 
         info!(
             "Rejected branch '{}' — record written to {}",
@@ -1036,10 +1037,7 @@ impl GitManager {
     }
 
     /// Checks if a specific branch is an ancestor of `main`.
-    pub fn is_branch_merged_into_main(
-        &self,
-        branch_name: &str,
-    ) -> Result<bool, TypesError> {
+    pub fn is_branch_merged_into_main(&self, branch_name: &str) -> Result<bool, TypesError> {
         let main_ref = self
             .repo
             .find_branch("main", git2::BranchType::Local)

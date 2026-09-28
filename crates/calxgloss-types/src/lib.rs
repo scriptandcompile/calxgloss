@@ -16,11 +16,11 @@
 //! - [`dashboard`] — Review dashboard data model
 //! - [`error`] — Unified error type (`TypesError`)
 
-pub mod experiment_log;
 pub mod complexity;
 pub mod dashboard;
 pub mod dll;
 pub mod error;
+pub mod experiment_log;
 pub mod function;
 pub mod git;
 pub mod test;
@@ -29,9 +29,6 @@ pub mod verification;
 
 // Re-export public types at the crate root for convenient access.
 
-pub use experiment_log::{
-    CategoryStats, PromptStrategyEntry, PromptStrategyLog, PromptStrategyStats, StrategyStats,
-};
 pub use complexity::{FailureHint, FunctionComplexity, PromptVariant, detect_complexity};
 pub use dashboard::{
     DependencyEdge, DependencyGraph, DependencyNode, ReviewAction, ReviewActionKind,
@@ -39,6 +36,9 @@ pub use dashboard::{
 };
 pub use dll::{DllCategory, DllInfo, Export, Import};
 pub use error::TypesError;
+pub use experiment_log::{
+    CategoryStats, PromptStrategyEntry, PromptStrategyLog, PromptStrategyStats, StrategyStats,
+};
 pub use function::{ApiCategory, FunctionInfo, WindowsApiCall};
 pub use git::{GitBranch, GitCommit};
 pub use test::{SideEffect, SideEffectKind, TestCase, TestResult};

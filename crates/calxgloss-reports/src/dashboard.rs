@@ -491,12 +491,7 @@ pub(crate) fn parse_branch_name(name: &str) -> Option<BranchParts> {
 /// This is the public counterpart to [`parse_branch_name`], providing a
 /// simple predicate for branch-matching without exposing the internal
 /// [`BranchParts`] type.
-pub fn branch_matches(
-    branch: &str,
-    dll: &str,
-    function: &str,
-    attempt: Option<u32>,
-) -> bool {
+pub fn branch_matches(branch: &str, dll: &str, function: &str, attempt: Option<u32>) -> bool {
     let Some(parts) = parse_branch_name(branch) else {
         return false;
     };

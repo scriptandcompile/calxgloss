@@ -197,7 +197,9 @@ fn test_list_branches() {
 fn test_list_translation_branches() {
     let (_tmp_dir, manager) = temp_git_repo();
     manager.create_branch("test.dll", "FuncA", 1, None).unwrap();
-    manager.create_branch("other.dll", "FuncB", 1, None).unwrap();
+    manager
+        .create_branch("other.dll", "FuncB", 1, None)
+        .unwrap();
 
     let translation_branches = manager.list_translation_branches().unwrap();
     assert_eq!(translation_branches.len(), 2);
@@ -350,11 +352,7 @@ fn test_dependency_check_no_deps_for_project_specific() {
 #[test]
 fn test_dependency_check_no_deps_for_windows_os() {
     let checker = DependencyChecker::new();
-    let result = checker.check(
-        "kernel32.dll",
-        &DllCategory::WindowsOs,
-        None::<&str>,
-    );
+    let result = checker.check("kernel32.dll", &DllCategory::WindowsOs, None::<&str>);
     assert!(result.is_complete());
     assert!(result.required.is_empty());
 }
@@ -362,34 +360,20 @@ fn test_dependency_check_no_deps_for_windows_os() {
 #[test]
 fn test_dependency_check_finds_shim_for_microsoft_sdk() {
     let checker = DependencyChecker::new();
-    let result = checker.check(
-        "d3d9.dll",
-        &DllCategory::MicrosoftSdk,
-        Some("wgpu"),
-    );
+    let result = checker.check("d3d9.dll", &DllCategory::MicrosoftSdk, Some("wgpu"));
     assert!(!result.is_complete());
     assert_eq!(result.required.len(), 1);
-    assert!(result
-        .required
-        .iter()
-        .any(|s| s == "re/shim/wgpu"));
+    assert!(result.required.iter().any(|s| s == "re/shim/wgpu"));
     assert!(result.has_unmet());
 }
 
 #[test]
 fn test_dependency_check_finds_shim_for_known_third_party() {
     let checker = DependencyChecker::new();
-    let result = checker.check(
-        "fmod.dll",
-        &DllCategory::KnownThirdParty,
-        Some("fmod-rs"),
-    );
+    let result = checker.check("fmod.dll", &DllCategory::KnownThirdParty, Some("fmod-rs"));
     assert!(!result.is_complete());
     assert_eq!(result.required.len(), 1);
-    assert!(result
-        .required
-        .iter()
-        .any(|s| s == "re/shim/fmod-rs"));
+    assert!(result.required.iter().any(|s| s == "re/shim/fmod-rs"));
 }
 
 #[test]
@@ -402,10 +386,7 @@ fn test_dependency_check_fallback_to_crate_replacement() {
         Some("my-crate"),
     );
     assert!(!result.is_complete());
-    assert!(result
-        .required
-        .iter()
-        .any(|s| s == "re/shim/my-crate"));
+    assert!(result.required.iter().any(|s| s == "re/shim/my-crate"));
 }
 
 #[test]
@@ -413,12 +394,7 @@ fn test_create_branch_skip_policy() {
     let (_tmp_dir, manager) = temp_git_repo();
     // Skip policy — should always succeed even with unmet deps
     let policy = BranchCreationPolicy::Skip;
-    let result = manager.create_branch(
-        "d3d9.dll",
-        "Present",
-        1,
-        Some(&policy),
-    );
+    let result = manager.create_branch("d3d9.dll", "Present", 1, Some(&policy));
     assert!(result.is_ok());
     assert!(result.unwrap().created);
 }
@@ -427,12 +403,7 @@ fn test_create_branch_skip_policy() {
 fn test_create_branch_with_none_policy() {
     let (_tmp_dir, manager) = temp_git_repo();
     // None policy — same as Skip (backwards-compatible)
-    let result = manager.create_branch(
-        "d3d9.dll",
-        "Present",
-        1,
-        None,
-    );
+    let result = manager.create_branch("d3d9.dll", "Present", 1, None);
     assert!(result.is_ok());
     assert!(result.unwrap().created);
 }
@@ -445,12 +416,7 @@ fn test_create_branch_enforce_blocks_unmet_deps() {
         category: DllCategory::MicrosoftSdk,
         crate_replacement: Some("wgpu".to_string()),
     });
-    let result = manager.create_branch(
-        "d3d9.dll",
-        "Present",
-        1,
-        Some(&policy),
-    );
+    let result = manager.create_branch("d3d9.dll", "Present", 1, Some(&policy));
     // Should fail because re/shim/wgpu is not merged into main
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -508,13 +474,14 @@ fn test_create_branch_enforce_allows_merged_shim() {
 
     let mut checkout_opts = git2::build::CheckoutBuilder::new();
     checkout_opts.force();
+    manager.repo().set_head("refs/heads/main").unwrap();
     manager
         .repo()
-        .set_head("refs/heads/main")
-        .unwrap();
-    manager
-        .repo()
-        .reset(main_commit.as_object(), ResetType::Hard, Some(&mut checkout_opts))
+        .reset(
+            main_commit.as_object(),
+            ResetType::Hard,
+            Some(&mut checkout_opts),
+        )
         .unwrap();
 
     // Now enforce policy should succeed because shim is merged into main
@@ -522,12 +489,7 @@ fn test_create_branch_enforce_allows_merged_shim() {
         category: DllCategory::MicrosoftSdk,
         crate_replacement: Some("wgpu".to_string()),
     });
-    let result = manager.create_branch(
-        "d3d9.dll",
-        "Present",
-        1,
-        Some(&policy),
-    );
+    let result = manager.create_branch("d3d9.dll", "Present", 1, Some(&policy));
     assert!(
         result.is_ok(),
         "Should succeed when shim is already merged: {:?}",
@@ -543,12 +505,7 @@ fn test_create_branch_warn_continues_on_unmet() {
         category: DllCategory::MicrosoftSdk,
         crate_replacement: Some("wgpu".to_string()),
     });
-    let result = manager.create_branch(
-        "d3d9.dll",
-        "Present",
-        1,
-        Some(&policy),
-    );
+    let result = manager.create_branch("d3d9.dll", "Present", 1, Some(&policy));
     // Should succeed despite unmet deps
     assert!(result.is_ok());
     assert!(result.unwrap().created);

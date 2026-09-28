@@ -22,21 +22,21 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use calxgloss::GitBranch;
 use calxgloss::DllCategory;
+use calxgloss::GitBranch;
 use calxgloss_analysis::Analyzer;
 use calxgloss_config::{FileConfig, GhidraSection, Layers, LlmSection, Resolved, load};
 use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use calxgloss_git::{BranchCreationPolicy, DependencyPolicy, GitManager};
 use calxgloss_llm::{LlmClient, LlmConfig};
 use calxgloss_pal::ApiMappings;
-use calxgloss_reports::{
-    print_batch_summary, print_classification_report, print_failure, print_git_status,
-    print_verification_results,
-};
 use calxgloss_reports::dashboard::{
     DashboardBuilder, UnitViewData, ViewTarget, render_dashboard, render_dashboard_follow,
     render_unit_view,
+};
+use calxgloss_reports::{
+    print_batch_summary, print_classification_report, print_failure, print_git_status,
+    print_verification_results,
 };
 use calxgloss_testgen::TestGenerator;
 use calxgloss_translator::{RetryConfig, RetryStrategy, TranslationPipeline};
@@ -528,11 +528,7 @@ fn resolve_branch(
     // Collect available branches for a helpful error message
     let available: Vec<String> = candidates
         .iter()
-        .filter(|b| {
-            b.starts_with("re/")
-                && b.contains(&target_dll)
-                && b.contains(&target_func)
-        })
+        .filter(|b| b.starts_with("re/") && b.contains(&target_dll) && b.contains(&target_func))
         .cloned()
         .collect();
 
@@ -1256,9 +1252,8 @@ async fn handle_dashboard_view(target: &str) -> Result<()> {
     info!(target = %target, "Starting dashboard view");
 
     // Parse target using the shared type from reports crate
-    let view_target = ViewTarget::parse(target).context(
-        "Invalid target format. Use: <dll>/<function> or <dll>/<function>/vN",
-    )?;
+    let view_target = ViewTarget::parse(target)
+        .context("Invalid target format. Use: <dll>/<function> or <dll>/<function>/vN")?;
     info!(
         dll = %view_target.dll,
         function = %view_target.function,
@@ -1424,8 +1419,8 @@ async fn handle_dashboard_reject(target: &str, reason: Option<&str>) -> Result<(
     let git = GitManager::open(&repo_path).context("Failed to open git repository")?;
 
     // Resolve the branch name: find the matching translation branch
-    let branch_name =
-        resolve_branch(&git, &view_target).context("Could not find a matching branch for this unit")?;
+    let branch_name = resolve_branch(&git, &view_target)
+        .context("Could not find a matching branch for this unit")?;
 
     info!(branch = %branch_name, "Resolved branch for rejection");
 
@@ -1486,7 +1481,9 @@ async fn handle_dashboard_accept_all(all_flag: bool) -> Result<()> {
 
     // Build the dashboard
     let builder = calxgloss_reports::dashboard::DashboardBuilder::new(&git);
-    let dashboard = builder.build().context("Failed to build review dashboard")?;
+    let dashboard = builder
+        .build()
+        .context("Failed to build review dashboard")?;
 
     // Determine which units to accept
     let to_accept: Vec<&calxgloss::UnitOfWork> = if all_flag {
@@ -1616,7 +1613,10 @@ async fn handle_dashboard_accept_all(all_flag: bool) -> Result<()> {
                     red_bold("conflict"),
                     error
                 );
-                println_content(format!("    Conflicted files: {}", conflicted_files.join(", ")));
+                println_content(format!(
+                    "    Conflicted files: {}",
+                    conflicted_files.join(", ")
+                ));
                 failed += 1;
             }
             Err(e) => {
@@ -1830,46 +1830,38 @@ fn main() -> Result<()> {
             follow: _,
             interval: _,
             command: Some(DashboardSubcommand::View { target }),
-        } => {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create tokio runtime")?
-                .block_on(handle_dashboard_view(&target))
-        }
+        } => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("Failed to create tokio runtime")?
+            .block_on(handle_dashboard_view(&target)),
         Command::Dashboard {
             follow: _,
             interval: _,
             command: Some(DashboardSubcommand::Accept { target }),
-        } => {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create tokio runtime")?
-                .block_on(handle_dashboard_accept(&target))
-        }
+        } => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("Failed to create tokio runtime")?
+            .block_on(handle_dashboard_accept(&target)),
         Command::Dashboard {
             follow: _,
             interval: _,
             command: Some(DashboardSubcommand::Reject { target, reason }),
-        } => {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create tokio runtime")?
-                .block_on(handle_dashboard_reject(&target, reason.as_deref()))
-        }
+        } => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("Failed to create tokio runtime")?
+            .block_on(handle_dashboard_reject(&target, reason.as_deref())),
         Command::Dashboard {
             follow: _,
             interval: _,
             command: Some(DashboardSubcommand::AcceptAll { all }),
-        } => {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create tokio runtime")?
-                .block_on(handle_dashboard_accept_all(all))
-        }
+        } => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("Failed to create tokio runtime")?
+            .block_on(handle_dashboard_accept_all(all)),
         Command::Dashboard {
             follow,
             interval,

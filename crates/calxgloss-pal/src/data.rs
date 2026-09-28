@@ -673,13 +673,12 @@ pub static MAPPINGS: &[ApiMapping] = &[
 /// Lazy-initialized category index for efficient `for_category` lookups.
 ///
 /// Built once on first access, then reused. No per-call allocation or leak.
-pub static CATEGORY_INDEX: LazyLock<IndexMap<ApiCategory, Vec<ApiMapping>>> =
-    LazyLock::new(|| {
-        let mut map: IndexMap<ApiCategory, Vec<ApiMapping>> = IndexMap::new();
-        for mapping in MAPPINGS {
-            map.entry(mapping.category.clone())
-                .or_default()
-                .push(mapping.clone());
-        }
-        map
-    });
+pub static CATEGORY_INDEX: LazyLock<IndexMap<ApiCategory, Vec<ApiMapping>>> = LazyLock::new(|| {
+    let mut map: IndexMap<ApiCategory, Vec<ApiMapping>> = IndexMap::new();
+    for mapping in MAPPINGS {
+        map.entry(mapping.category.clone())
+            .or_default()
+            .push(mapping.clone());
+    }
+    map
+});

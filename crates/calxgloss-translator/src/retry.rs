@@ -17,14 +17,12 @@
 // ============================================================================
 
 // --- Core types ---
+pub use config::{AUTO_STRATEGY_CYCLE, RetryStrategy};
 pub use config::{RetryConfig, RetryResult, TranslationAttempt};
-pub use config::{RetryStrategy, AUTO_STRATEGY_CYCLE};
 
 // --- Prompt builders ---
 pub use compile_fix::{build_compile_fix_prompt, build_failure_informed_compile_fix_prompt};
-pub use escalate::{
-    build_escalate_prompt_with_context, build_failure_informed_escalate_prompt,
-};
+pub use escalate::{build_escalate_prompt_with_context, build_failure_informed_escalate_prompt};
 pub use prompts::{
     build_edge_case_fix_prompt, build_failure_informed_edge_case_fix_prompt,
     build_failure_informed_test_fix_prompt, build_test_fix_prompt,
@@ -42,11 +40,11 @@ pub use experiment_log::log_prompt_variant_experiment;
 // ============================================================================
 // Internal submodule declarations
 // ============================================================================
-mod experiment_log;
 mod compile_fix;
 mod config;
 mod edge_detection;
 mod escalate;
+mod experiment_log;
 mod helpers;
 mod prompts;
 mod retry_loop;

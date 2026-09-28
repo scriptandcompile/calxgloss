@@ -64,7 +64,10 @@ pub async fn extract_neighboring_context(
 }
 
 /// Extract data structure information from Ghidra.
-pub async fn extract_data_structures(_ghidra: &GhidraClient, _address: u64) -> Vec<calxgloss_prompts::StructuredData> {
+pub async fn extract_data_structures(
+    _ghidra: &GhidraClient,
+    _address: u64,
+) -> Vec<calxgloss_prompts::StructuredData> {
     // GhidraMCP doesn't have a dedicated data-structure endpoint,
     // so we return empty for now. This is a placeholder for future
     // integration with Ghidra's type database.
@@ -72,7 +75,10 @@ pub async fn extract_data_structures(_ghidra: &GhidraClient, _address: u64) -> V
 }
 
 /// Extract type information from Ghidra for the given function.
-pub async fn extract_type_info(_ghidra: &GhidraClient, _function_name: &str) -> Vec<calxgloss_prompts::TypeInfo> {
+pub async fn extract_type_info(
+    _ghidra: &GhidraClient,
+    _function_name: &str,
+) -> Vec<calxgloss_prompts::TypeInfo> {
     // GhidraMCP doesn't expose type inference directly.
     // This is a placeholder for future integration.
     Vec::new()
