@@ -75,6 +75,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Embedded templates (`failure_fix.j2`, `escalate.j2`, `edge_case.j2`)
   updated to render the history section.
 
+### Added
+
+#### `calxgloss-types`
+- **Prompt variant benchmarking types** (`calxgloss-types::benchmark`) —
+  `PromptStrategyEntry` (single attempt outcome), `PromptStrategyLog`
+  (collectible entries), `PromptStrategyStats` with `CategoryStats` and
+  `StrategyStats` (aggregate pass/fail rates), and
+  `current_timestamp()` helper. Full serde serialization for disk
+  persistence.
+
+#### `calxgloss-analysis`
+- **Prompt strategy logger** (`PromptStrategyLogger`) — persists benchmark
+  entries to `<workspace>/re/analysis/prompt_strategy_log.json` with
+  `record()`, `load()`, `compute_stats()`, and `log_path()` methods.
+  Auto-creates directory structure; handles corrupted-file recovery by
+  starting fresh.
+
+#### `calxgloss-translator`
+- **Benchmark logging integration** — `try_translate_with_retry()` now
+  accepts an optional workspace path; `TranslationPipeline` gains
+  `with_workspace()` builder method. Every retry attempt is recorded
+  (DLL name, auto-classified category, strategy label, success/fail,
+  attempt number, timestamp). Skipped silently when no workspace is set.
+
 ### Fixed
 
 #### `calxgloss-config`
