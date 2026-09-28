@@ -127,6 +127,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `calxgloss-types` so downstream consumers get a single source of truth.
   The axum server scaffold (behind `server` feature) and tests are preserved.
 
+#### `calxgloss-reports`
+- **Terminal rendering** (`render_dashboard`) — flat text report with horizontal
+  dividers (`═` / `─`), no vertical borders or corners. Color-coded status
+  summary, dependency-sorted review queue table, blocked units section, and
+  recent activity. Auto-refresh follow mode via `render_dashboard_follow`.
+
+#### `calxgloss-cli`
+- **`dashboard` subcommand** — reads all `re/*` git branches, patch records from
+  `re/patches/`, and baseline files from `re/baseline/` to build and render a
+  structured review dashboard. Supports `--follow` (continuous watch) and
+  `--interval <secs>` (refresh cadence, default 2).
+
+### Fixed
+
+#### `calxgloss-reports`
+- **Table column alignment** — switched from format-width specifiers (which
+  counted invisible ANSI escape codes as characters) to hardcoded column
+  widths per element, so colored headers no longer shift data columns.
+
 ## [0.1.0] — 2025-09-27
 
 ### Added

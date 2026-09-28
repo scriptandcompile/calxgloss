@@ -380,8 +380,11 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "calxgloss-analysis",
+ "calxgloss-git",
  "calxgloss-translator",
  "calxgloss-types",
+ "chrono",
+ "git2",
  "serde_json",
 ]
 

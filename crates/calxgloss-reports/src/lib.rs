@@ -14,6 +14,9 @@
 //! - [`prompt_acceptance`] — Interactive y/n prompt for human acceptance
 //! - [`print_classification_report`] — Display DLL classification results
 //! - [`print_batch_summary`] — Display batch translation results (pass/fail per function)
+//! - [`render_dashboard`] — Display the review dashboard as a text-based table
+
+pub mod dashboard;
 
 use std::io::{self, Write};
 

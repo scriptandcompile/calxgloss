@@ -11,6 +11,7 @@
 //! - `batch-translate` — Translate multiple functions from a single DLL
 //! - `verify` — Verify a previously translated function
 //! - `config` — Show the configuration in force and where each value came from
+//! - `dashboard` — Show a structured terminal review dashboard
 //!
 //! # Configuration
 //!
@@ -32,6 +33,7 @@ use calxgloss_reports::{
     print_batch_summary, print_classification_report, print_failure, print_git_status,
     print_verification_results,
 };
+use calxgloss_reports::dashboard::{DashboardBuilder, render_dashboard, render_dashboard_follow};
 use calxgloss_testgen::TestGenerator;
 use calxgloss_translator::{RetryConfig, RetryStrategy, TranslationPipeline};
 use calxgloss_verify::Verifier;
@@ -223,6 +225,22 @@ enum Command {
         /// Path to baseline test data (default: auto-discovered)
         #[arg(long)]
         baseline_path: Option<PathBuf>,
+    },
+
+    /// Show a structured terminal dashboard of review status
+    ///
+    /// Reads all `re/*` git branches, patch records, and baseline files
+    /// to produce a summary table of translation units and their status.
+    ///
+    /// Use `--follow` to watch for changes and auto-refresh.
+    Dashboard {
+        /// Follow mode: continuously watch for new/changed branches
+        #[arg(long, short)]
+        follow: bool,
+
+        /// Refresh interval in seconds (default: 2, only in --follow mode)
+        #[arg(long, default_value = "2")]
+        interval: u64,
     },
 }
 
@@ -896,6 +914,53 @@ async fn handle_batch_translate(args: &BatchTranslateArgs, settings: &Settings) 
 }
 
 // ============================================================
+// Dashboard command handler
+// ============================================================
+
+async fn handle_dashboard(follow: bool, interval_secs: u64) -> Result<()> {
+    info!("Starting dashboard");
+
+    // Find the git repository — walk up from CWD
+    let mut repo_path = std::env::current_dir()?;
+
+    // Walk up to find the .git directory
+    let mut found_git = false;
+    let mut search_path = repo_path.clone();
+    for _ in 0..10 {
+        if search_path.join(".git").exists() || search_path.join(".git").is_dir() {
+            found_git = true;
+            repo_path = search_path.clone();
+            break;
+        }
+        if !search_path.pop() {
+            break;
+        }
+    }
+
+    if !found_git {
+        // Try the current directory anyway (it might be a repo)
+        repo_path = std::env::current_dir()?;
+    }
+
+    info!(path = ?repo_path, "Found git repository");
+
+    let git = GitManager::open(&repo_path).context("Failed to open git repository")?;
+
+    let interval = std::time::Duration::from_secs(interval_secs);
+
+    if follow {
+        info!(interval_secs = interval_secs, "Entering follow mode");
+        render_dashboard_follow(&git, interval).context("Follow mode failed")?;
+    } else {
+        let builder = DashboardBuilder::new(&git);
+        let dashboard = builder.build().context("Failed to build dashboard")?;
+        render_dashboard(&dashboard, false);
+    }
+
+    Ok(())
+}
+
+// ============================================================
 // Verify command handler
 // ============================================================
 
@@ -1067,6 +1132,11 @@ fn main() -> Result<()> {
                 &rust_source,
                 baseline_path.as_deref(),
             )),
+        Command::Dashboard { follow, interval } => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("Failed to create tokio runtime")?
+            .block_on(handle_dashboard(follow, interval)),
     };
 
     if let Err(ref e) = result {
