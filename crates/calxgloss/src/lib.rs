@@ -106,6 +106,8 @@ pub use calxgloss_translator::Translation;
 pub use calxgloss_translator::TranslationPipeline;
 pub use calxgloss_translator::Translator;
 pub use calxgloss_translator::TranslatorError;
+pub use calxgloss_translator::BatchTranslationResult;
+pub use calxgloss_translator::FunctionResult;
 
 // ============================================================
 // calxgloss-verify — Compilation and behavioral verification
@@ -132,6 +134,7 @@ pub use calxgloss_git::PatchRecord;
 // calxgloss-reports — Terminal output formatting
 // ============================================================
 
+pub use calxgloss_reports::print_batch_summary;
 pub use calxgloss_reports::print_classification_report;
 pub use calxgloss_reports::print_failure;
 pub use calxgloss_reports::print_git_status;

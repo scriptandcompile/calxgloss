@@ -37,6 +37,10 @@ pub use retry::{
     RetryConfig, RetryResult, RetryStrategy, TranslationAttempt, try_translate_with_retry,
 };
 
+pub mod batch;
+
+pub use batch::{BatchTranslationResult, FunctionResult};
+
 use calxgloss_analysis::Analyzer;
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_llm::{LlmClient, LlmMessage};
@@ -766,6 +770,153 @@ impl TranslationPipeline {
     /// Get a reference to the API mappings.
     pub fn api_mappings(&self) -> &ApiMappings {
         &self.api_mappings
+    }
+
+    // =========================================================
+    // Batch translation
+    // =========================================================
+
+    /// Translate multiple functions from a single DLL, one at a time.
+    ///
+    /// For each function, this runs the full translation pipeline with retry
+    /// logic (same as the single-function
+    /// [`try_translate_with_retry`](Self::try_translate_with_retry) path).
+    /// Functions are processed sequentially in the order provided.
+    ///
+    /// Unlike the single-function path, this method **does not perform git
+    /// operations** — that is left to the caller so the CLI can batch the git
+    /// commits or skip them entirely for a dry-run.
+    ///
+    /// # Arguments
+    ///
+    /// * `dll` — The DLL containing all functions to translate.
+    /// * `functions` — Function names to translate.
+    /// * `config` — Retry configuration applied to every function.
+    /// * `verifier` — Verification engine used for checking translations.
+    ///
+    /// # Returns
+    ///
+    /// A [`BatchTranslationResult`] with per-function outcomes.  A function
+    /// counts as a failure when all retry attempts are exhausted without
+    /// producing passing tests.
+    ///
+    /// # Notes
+    ///
+    /// - If the LLM or GhidraMCP server is unreachable, the batch continues
+    ///   with the remaining functions (each failure is recorded individually).
+    /// - The retry strategy (compile_fix → test_fix → escalate) is applied
+    ///   independently to each function.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use calxgloss_translator::TranslationPipeline;
+    /// use calxgloss_verify::Verifier;
+    /// use std::path::Path;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let ghidra = calxgloss_ghidra::GhidraClient::new("http://localhost:8080")?;
+    /// let llm = calxgloss_llm::LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;
+    /// let pipeline = TranslationPipeline::new(ghidra, llm, calxgloss_pal::ApiMappings::default());
+    /// let verifier = Verifier::new(Path::new("/tmp/calxgloss-work"))?;
+    /// let config = calxgloss_translator::RetryConfig::default();
+    ///
+    /// let functions = vec!["DrawSprite".to_string(), "UpdatePosition".to_string()];
+    /// let results = pipeline.batch_translate(
+    ///     "game_logic.dll",
+    ///     &functions,
+    ///     &config,
+    ///     &verifier,
+    /// ).await?;
+    ///
+    /// println!("{} succeeded, {} failed", results.success_count(), results.failure_count());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn batch_translate(
+        &self,
+        dll: &str,
+        functions: &[String],
+        config: &RetryConfig,
+        verifier: &Verifier,
+    ) -> Result<batch::BatchTranslationResult> {
+        debug!(dll, count = functions.len(), "Starting batch translation");
+
+        let mut batch_result = batch::BatchTranslationResult::new(dll.to_string());
+
+        for (idx, function) in functions.iter().enumerate() {
+            info!(
+                dll,
+                function,
+                index = idx + 1,
+                total = functions.len(),
+                "Translating function in batch"
+            );
+
+            match self
+                .try_translate_with_retry(dll, function, config, verifier)
+                .await
+            {
+                Ok(retry_result) => {
+                    if retry_result.success {
+                        info!(
+                            dll,
+                            function,
+                            attempts = retry_result.attempts.len(),
+                            "Batch function succeeded"
+                        );
+                        let rust_code = retry_result
+                            .rust_code
+                            .clone()
+                            .unwrap_or_default();
+                        batch_result.add(batch::FunctionResult::success(
+                            dll.to_string(),
+                            function.clone(),
+                            rust_code,
+                            retry_result,
+                            None, // git handled by caller
+                        ));
+                    } else {
+                        warn!(
+                            dll,
+                            function,
+                            attempts = retry_result.attempts.len(),
+                            "Batch function exhausted all retries"
+                        );
+                        batch_result.add(batch::FunctionResult::failure(
+                            dll.to_string(),
+                            function.clone(),
+                            retry_result,
+                        ));
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        dll,
+                        function,
+                        error = %e,
+                        "Batch function translation failed (pipeline error)"
+                    );
+                    // Create a minimal failed result so the caller sees it
+                    let empty_result = retry::RetryResult::new();
+                    batch_result.add(batch::FunctionResult::failure(
+                        dll.to_string(),
+                        function.clone(),
+                        empty_result,
+                    ));
+                }
+            }
+        }
+
+        info!(
+            dll,
+            total = batch_result.total_count(),
+            success = batch_result.success_count(),
+            failure = batch_result.failure_count(),
+            "Batch translation complete"
+        );
+
+        Ok(batch_result)
     }
 }
 
