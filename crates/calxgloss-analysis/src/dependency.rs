@@ -27,7 +27,7 @@
 //! use calxgloss_analysis::{DependencyTracker, DllClassification, Strategy};
 //! use calxgloss_types::{DllCategory, DependencyNode, ReviewStatus};
 //!
-//! let tracker = DependencyTracker::default();
+//! let tracker = DependencyTracker;
 //!
 //! // Two classified DLLs: one that needs a shim, one that needs reverse engineering
 //! let classifications = vec![
@@ -112,7 +112,7 @@ use crate::DllClassification;
 /// use calxgloss_analysis::{DependencyTracker, DependencyGraphPersistor, DllClassification, Strategy};
 /// use calxgloss_types::{DllCategory, DependencyEdge};
 ///
-/// let tracker = DependencyTracker::default();
+/// let tracker = DependencyTracker;
 ///
 /// // Build a graph from classifications + call graph
 /// let classifications = vec![DllClassification {
@@ -236,7 +236,7 @@ impl DependencyGraphPersistor {
         classifications: &[DllClassification],
         call_graph: &[(&str, Vec<String>)],
     ) -> std::io::Result<DependencyGraph> {
-        let tracker = DependencyTracker::default();
+        let tracker = DependencyTracker;
         let graph = tracker.build(classifications, call_graph);
         self.save(&graph)?;
         Ok(graph)
@@ -309,7 +309,7 @@ impl ShimLayerDeclaration {
 /// use calxgloss_analysis::{DependencyTracker, DllClassification, Strategy, ShimLayerDeclaration};
 /// use calxgloss_types::{DllCategory, ReviewStatus};
 ///
-/// let tracker = DependencyTracker::default();
+/// let tracker = DependencyTracker;
 ///
 /// let classifications = vec![
 ///     DllClassification {
