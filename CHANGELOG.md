@@ -329,6 +329,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   constructing the dashboard from git/file artifacts, ensuring the
   terminal dashboard always shows correct blocked status.
 
+### Added
+
+#### `calxgloss-web`
+- **Axum API server** (`server` feature) — full HTTP API for the
+  review dashboard: `GET /api/dashboard` (queue, graph, counts),
+  `GET /api/units/:id` (unit detail with diff summary, attempt
+  history, revision count), `POST /api/units/:id/accept` (merge
+  branch to main), `POST /api/units/:id/send-back` (rejection with
+  reason), `POST /api/units/:id/patch` (patch request),
+  `GET /api/graph` (dependency graph for visualization),
+  `GET /health` (health check). Uses `DashboardBuilder` from
+  `calxgloss-reports` for data and `GitManager` from `calxgloss-git`
+  for branch operations. `ServerState` holds the repo path; each
+  request reads live Git data. `serve(state, port)` entry point
+  binds to `0.0.0.0:port` for container/remote access.
+- **Response types** — `DashboardResponse`, `DependencyGraphResponse`,
+  `UnitResponse`/`UnitResponseInner` (enriched unit detail),
+  `DiffSummary`, `AttemptRecord`, `ActionResponse`, `ServerError`
+  with `IntoResponse` for proper HTTP status codes.
+- **Request types** — `SendBackRequest` (reason for send-back),
+  `PatchRequest` (issue description).
+
+### Changed
+
+#### all crates
+- Rustfmt reformatting across the workspace: import ordering,
+  struct field layouts, match arms, function signatures, doc
+  comment examples.
+
 ## [0.1.0] — 2025-09-27
 
 ### Added

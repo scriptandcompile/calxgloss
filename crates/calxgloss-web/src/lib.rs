@@ -1,4 +1,4 @@
-//! Calxgloss Web — Web Review UI (scaffolded for post-MVP implementation)
+//! Calxgloss Web — Web Review UI (API layer for the review dashboard)
 //!
 //! This crate houses the review UI for the Calxgloss reverse engineering harness.
 //! The domain data types (`UnitOfWork`, `ReviewDashboard`, `DependencyGraph`, etc.)
@@ -6,10 +6,10 @@
 //!
 //! ## MVP Status
 //!
-//! In the MVP, review happens via terminal output from `calxgloss-reports`.
-//! The web UI is not implemented yet — only the server scaffolding is present.
+//! The MVP used terminal output from `calxgloss-reports` for review.
+//! The web UI's API layer is implemented behind the `server` feature flag.
 //!
-//! ## Future Architecture
+//! ## Architecture
 //!
 //! ```text
 //! ┌──────────────────────────────────────────────────────────────────┐
@@ -50,7 +50,7 @@ pub use calxgloss_types::{
 };
 
 // ============================================================
-// Axum API scaffolding (behind feature flag)
+// Axum API layer (behind feature flag)
 // ============================================================
 
 #[cfg(feature = "server")]
@@ -58,65 +58,40 @@ pub mod server {
     //! Axum HTTP server for the review dashboard API.
     //!
     //! This module is only compiled when the `server` feature is enabled.
-
-    use axum::{
-        Router,
-        routing::{get, post},
-    };
-
-    /// Build the axum router with all API endpoints.
-    pub fn build_router() -> Router {
-        Router::new()
-            .route("/api/dashboard", get(api_get_dashboard))
-            .route("/api/units/{id}", get(api_get_unit))
-            .route("/api/units/{id}/accept", post(api_accept_unit))
-            .route("/api/units/{id}/send-back", post(api_send_back_unit))
-            .route("/api/units/{id}/patch", post(api_request_patch))
-            .route("/api/graph", get(api_get_dependency_graph))
-            .route("/health", get(api_health))
-    }
-
-    // --- API endpoint handlers (scaffolded) ---
-
-    async fn api_get_dashboard() -> &'static str {
-        "{}"
-        // TODO: Query units of work, return dashboard data
-    }
-
-    async fn api_get_unit(axum::extract::Path(_id): axum::extract::Path<String>) -> &'static str {
-        "{}"
-        // TODO: Query single unit of work by ID
-    }
-
-    async fn api_accept_unit(
-        axum::extract::Path(_id): axum::extract::Path<String>,
-    ) -> &'static str {
-        "{}"
-        // TODO: Accept unit — merge branch to main
-    }
-
-    async fn api_send_back_unit(
-        axum::extract::Path(_id): axum::extract::Path<String>,
-    ) -> &'static str {
-        "{}"
-        // TODO: Send back unit with reviewer comments
-    }
-
-    async fn api_request_patch(
-        axum::extract::Path(_id): axum::extract::Path<String>,
-    ) -> &'static str {
-        "{}"
-        // TODO: Request patch for specific issue
-    }
-
-    async fn api_get_dependency_graph() -> &'static str {
-        "{}"
-        // TODO: Build and return dependency graph
-    }
-
-    async fn api_health() -> &'static str {
-        "ok"
-    }
+    //!
+    //! ## API Endpoints
+    //!
+    //! | Method | Path | Handler | Description |
+    //! |--------|------|---------|-------------|
+    //! | `GET` | `/api/dashboard` | `api_get_dashboard` | Full review dashboard with queue, graph, and counts |
+    //! | `GET` | `/api/units/:id` | `api_get_unit` | Detail view for a single unit of work |
+    //! | `POST` | `/api/units/:id/accept` | `api_accept_unit` | Accept unit — merge branch to main |
+    //! | `POST` | `/api/units/:id/send-back` | `api_send_back_unit` | Send back unit with reviewer comments |
+    //! | `POST` | `/api/units/:id/patch` | `api_request_patch` | Request patch for specific issue |
+    //! | `GET` | `/api/graph` | `api_get_dependency_graph` | Dependency graph for visualization |
+    //! | `GET` | `/health` | `api_health` | Health check |
+    //!
+    //! ## Usage
+    //!
+    //! ```no_run
+    //! use calxgloss_web::server::{ServerState, serve};
+    //! use std::path::PathBuf;
+    //!
+    //! #[tokio::main]
+    //! async fn main() -> anyhow::Result<()> {
+    //!     let state = ServerState::new(PathBuf::from("/path/to/repo"));
+    //!     serve(state, 3000).await?;
+    //!     Ok(())
+    //! }
+    //! ```
+    //!
+    //! The server builds the dashboard on every request by reading Git branches,
+    //! patch records, and baseline files from the repository. This means the
+    //! dashboard always reflects the current state of the repository.
+    //!
+    //! For high-traffic deployments, consider adding a caching layer (e.g.,
+    //! Redis) or using `axum::cache` to avoid rebuilding the dashboard on
+    //! every request.
 }
 
 // ============================================================

@@ -97,9 +97,9 @@
 
 > **Goal:** Replace the terminal review interface with a proper web dashboard. The data models in `calxgloss-web` are already scaffolded.
 
-| Step | What | Details |
-|------|------|---------|
-| 5.1 | Implement axum API layer | Wire up the scaffolded `server` module in `calxgloss-web` to real data sources. Endpoints: `GET /api/dashboard`, `GET /api/units/:id`, `POST /api/units/:id/accept`, `POST /api/units/:id/send-back`, `POST /api/units/:id/patch`, `GET /api/graph`. |
+| Step | What | Details | Status |
+|------|------|---------|--------|
+| 5.1 | Implement axum API layer | Wire up the scaffolded `server` module to real data sources. Endpoints: `GET /api/dashboard`, `GET /api/units/:id`, `POST /api/units/:id/accept`, `POST /api/units/:id/send-back`, `POST /api/units/:id/patch`, `GET /api/graph`. Uses `DashboardBuilder` for dashboard/graph data, `GitManager` for accept/reject operations. | ✅ Complete |
 | 5.2 | Implement review queue backend | API reads from git branches and `re/` directory artifacts, constructs `UnitOfWork` instances, sorts by dependency order. |
 | 5.3 | Add WebSocket for live progress | Stream translation progress events during `translate` runs. |
 | 5.4 | Implement Leptos frontend | Build actual UI components: `DashboardView`, `DependencyGraphView`, `UnitOfWorkCard`, `ReviewQueue`, `RecentActivity`. |
