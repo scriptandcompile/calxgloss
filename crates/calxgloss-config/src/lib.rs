@@ -563,12 +563,32 @@ max_retries = 5
         // checkout, so falling through to the user-global path must succeed
         // rather than fail.
         let dir = tempfile::tempdir().unwrap();
+        // Temporarily unset the user-global config path so no user config is
+        // picked up — the dev machine may have `~/.config/calxgloss/config.toml`
+        // which would make `loaded.is_empty()` false.
+        let xdg_previous = std::env::var_os("XDG_CONFIG_HOME");
+        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
+        // Also neutralize `HOME` so `user_config_path()` returns `None`
+        // rather than falling back to `~/.config/calxgloss/config.toml`
+        // which may exist on the dev machine.
+        let home_previous = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", dir.path()) };
         // Point the search at an empty directory by running with the process
         // current directory inside it, where `calxgloss.toml` is absent.
-        let previous = std::env::current_dir().unwrap();
+        let cwd_previous = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
         let loaded = load(None);
-        std::env::set_current_dir(previous).unwrap();
+        std::env::set_current_dir(cwd_previous).unwrap();
+        if let Some(val) = home_previous {
+            unsafe { std::env::set_var("HOME", val) };
+        } else {
+            unsafe { std::env::remove_var("HOME") };
+        }
+        if let Some(val) = xdg_previous {
+            unsafe { std::env::set_var("XDG_CONFIG_HOME", val) };
+        } else {
+            unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
+        }
 
         let loaded = loaded.expect("a missing optional file must not be an error");
         assert!(loaded.is_empty());
@@ -584,11 +604,27 @@ max_retries = 5
     #[test]
     fn test_a_found_file_is_reported() {
         let dir = tempfile::tempdir().unwrap();
-        let previous = std::env::current_dir().unwrap();
+        // Temporarily neutralize user-global config paths so no user config
+        // overrides the project-level value being tested.
+        let xdg_previous = std::env::var_os("XDG_CONFIG_HOME");
+        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
+        let home_previous = std::env::var_os("HOME");
+        unsafe { std::env::set_var("HOME", dir.path()) };
+        let cwd_previous = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
         std::fs::write(PROJECT_FILE, "[llm]\nmodel = \"from-project\"\n").unwrap();
         let loaded = load(None);
-        std::env::set_current_dir(previous).unwrap();
+        std::env::set_current_dir(cwd_previous).unwrap();
+        if let Some(val) = home_previous {
+            unsafe { std::env::set_var("HOME", val) };
+        } else {
+            unsafe { std::env::remove_var("HOME") };
+        }
+        if let Some(val) = xdg_previous {
+            unsafe { std::env::set_var("XDG_CONFIG_HOME", val) };
+        } else {
+            unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
+        }
 
         let loaded = loaded.unwrap();
         assert_eq!(loaded.file.llm.model.as_deref(), Some("from-project"));

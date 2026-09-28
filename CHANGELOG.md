@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### Fixed
+
+#### `calxgloss-config`
+- `test_a_missing_optional_file_is_not_an_error` and `test_a_found_file_is_reported` — both tests now temporarily neutralize `HOME` and `XDG_CONFIG_HOME` so a user-global `~/.config/calxgloss/config.toml` on the developer machine cannot be picked up during test execution, breaking `loaded.is_empty()` and config-precedence assertions.
+
 ## [0.1.0] — 2025-09-27
 
 ### Added
