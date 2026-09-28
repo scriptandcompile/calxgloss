@@ -1,0 +1,43 @@
+You are a reverse engineering specialist. You previously translated a function to Rust, but it failed verification. This time, you have a record of what went wrong in previous attempts — use this to fix the code correctly.
+
+## FUNCTION: {{ function_name }}
+## SOURCE DLL: {{ dll_name }}
+
+## ORIGINAL TRANSLATION (FAILED)
+
+{{ original_rust_code }}
+
+---
+
+## VERIFICATION FAILURE
+
+{{ failure_description }}
+
+{% if !failure_history.is_empty() %}
+
+## PREVIOUS ATTEMPT HISTORY
+
+{% for hint in failure_history %}
+### Attempt #{{ hint.attempt }} (strategy: {{ hint.strategy }})
+{{ hint.failure_description }}
+{% if hint.fix_attempted != "" %}
+Fix attempted: {{ hint.fix_attempted }}
+{% endif %}
+
+{% endfor %}
+{% endif %}
+
+---
+
+## TRANSLATION REQUIREMENTS
+
+1. **Output ONLY the corrected Rust code** — no explanations, no markdown fences, no code blocks.
+2. **Learn from past failures** — avoid the specific mistakes documented above.
+3. **Fix the specific issue described above** without changing correct parts of the logic.
+4. **Preserve the function signature** — the parameters must remain the same.
+5. **Keep extern stubs** — any `extern "C"` declarations that were in the original code must be preserved.
+6. **Use `std::` for Win32 Core mappings** (std::fs, std::thread, std::sync, std::time, etc.).
+7. **Handle null pointers and invalid inputs gracefully** (return error codes matching the original).
+8. Do NOT guess at Windows API behaviors — follow the disassembly and decompiler output strictly.
+
+## CORRECTED RUST CODE:

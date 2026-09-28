@@ -38,6 +38,7 @@ use calxgloss_llm::{LlmClient, LlmMessage};
 use calxgloss_prompts::{
     CallGraphNeighbor, EdgeCaseTest, NeighborFunction, StructuredData, TypeInfo,
 };
+use calxgloss_types::FailureHint;
 use calxgloss_verify::{CompileResult, Verifier};
 use tracing::{info, warn};
 
@@ -270,8 +271,7 @@ pub async fn build_escalate_prompt_with_context(
     call_graph: &[String],
 ) -> String {
     // Extract call graph neighbors from the address-based lookup
-    let call_graph_neighbors =
-        extract_call_graph_neighbors(ghidra, call_graph, address).await;
+    let call_graph_neighbors = extract_call_graph_neighbors(ghidra, call_graph, address).await;
 
     // Extract neighboring function context (callees and callers)
     let neighboring_functions = extract_neighboring_context(ghidra, call_graph).await;
@@ -323,12 +323,80 @@ pub fn build_edge_case_fix_prompt(
     })
 }
 
+// ============================================================
+// Failure-informed prompts (Phase 2, step 2.3 — stub)
+// ============================================================
+
+/// Build a failure-informed compile fix prompt.
+///
+/// Currently falls back to the standard compile fix prompt.
+/// Full failure-informed support (injecting failure history into prompts)
+/// is planned for Phase 2, step 2.3.
+pub fn build_failure_informed_compile_fix_prompt(
+    function_name: &str,
+    dll_name: &str,
+    original_rust_code: &str,
+    compilation_errors: &[String],
+    _history: &[FailureHint],
+) -> String {
+    build_compile_fix_prompt(
+        function_name,
+        dll_name,
+        original_rust_code,
+        compilation_errors,
+    )
+}
+
+/// Build a failure-informed test fix prompt.
+///
+/// Currently falls back to the standard test fix prompt.
+/// Full failure-informed support is planned for Phase 2, step 2.3.
+pub fn build_failure_informed_test_fix_prompt(
+    function_name: &str,
+    dll_name: &str,
+    original_rust_code: &str,
+    failed_tests: &[String],
+    _history: &[FailureHint],
+) -> String {
+    build_test_fix_prompt(function_name, dll_name, original_rust_code, failed_tests)
+}
+
+/// Build a failure-informed escalate prompt.
+///
+/// Currently falls back to the standard escalate prompt.
+/// Full failure-informed support is planned for Phase 2, step 2.3.
+pub async fn build_failure_informed_escalate_prompt(
+    function_name: &str,
+    dll_name: &str,
+    original_rust_code: &str,
+    failure_description: &str,
+    ghidra: &GhidraClient,
+    address: u64,
+    call_graph: &[String],
+    _history: &[FailureHint],
+) -> String {
+    build_escalate_prompt_with_context(
+        function_name,
+        dll_name,
+        original_rust_code,
+        failure_description,
+        ghidra,
+        address,
+        call_graph,
+    )
+    .await
+}
+
 /// Detect whether test failures are concentrated on boundary values.
 ///
 /// Returns `true` if the failing tests are likely edge cases (zero, max, negative,
 /// null, empty, overflow). This is used to decide whether `EdgeCaseFix` is
 /// appropriate.
-pub fn is_edge_case_failure(failed_tests: &[String], _tests_passed: usize, _tests_total: usize) -> bool {
+pub fn is_edge_case_failure(
+    failed_tests: &[String],
+    _tests_passed: usize,
+    _tests_total: usize,
+) -> bool {
     // Need some failures to matter
     if failed_tests.is_empty() {
         return false;
@@ -337,10 +405,23 @@ pub fn is_edge_case_failure(failed_tests: &[String], _tests_passed: usize, _test
     // Check if failures are all in boundary-value territory.
     // Word-boundary indicators avoid matching "0" inside "100".
     let boundary_indicators = [
-        "zero", "null", "max", "overflow", "underflow",
-        "negative", "empty", "min", "boundary",
-        "i32::", "u32::", "i16::", "u16::", "i64::", "u64::",
-        "i8::", "u8::",
+        "zero",
+        "null",
+        "max",
+        "overflow",
+        "underflow",
+        "negative",
+        "empty",
+        "min",
+        "boundary",
+        "i32::",
+        "u32::",
+        "i16::",
+        "u16::",
+        "i64::",
+        "u64::",
+        "i8::",
+        "u8::",
     ];
 
     let total_failing = failed_tests.len();
@@ -374,21 +455,21 @@ async fn extract_call_graph_neighbors(
     let mut neighbors = Vec::new();
     for name in call_graph {
         // Search for the neighbor function to get its address
-        if let Ok(matches) = ghidra.search_functions(name, Some(5)).await {
-            if let Some(found) = matches.iter().find(|m| m.name == *name) {
-                // Try to get the signature from decompilation
-                let signature = match ghidra.decompile_function(found.address).await {
-                    Ok(decompiled) => decompiled.signature,
-                    Err(_) => String::new(),
-                };
-                neighbors.push(CallGraphNeighbor {
-                    name: found.name.clone(),
-                    address: found.address,
-                    signature,
-                    role: "callee".to_string(), // simplified: most are callees
-                });
-                continue;
-            }
+        if let Ok(matches) = ghidra.search_functions(name, Some(5)).await
+            && let Some(found) = matches.iter().find(|m| m.name == *name)
+        {
+            // Try to get the signature from decompilation
+            let signature = match ghidra.decompile_function(found.address).await {
+                Ok(decompiled) => decompiled.signature,
+                Err(_) => String::new(),
+            };
+            neighbors.push(CallGraphNeighbor {
+                name: found.name.clone(),
+                address: found.address,
+                signature,
+                role: "callee".to_string(), // simplified: most are callees
+            });
+            continue;
         }
         // If not found, just add a stub
         neighbors.push(CallGraphNeighbor {
@@ -409,28 +490,24 @@ async fn extract_neighboring_context(
     let mut neighbors = Vec::new();
     // Limit to a few neighbors to avoid context window bloat
     for name in call_graph.iter().take(3) {
-        if let Ok(matches) = ghidra.search_functions(name, Some(5)).await {
-            if let Some(found) = matches.iter().find(|m| m.name == *name) {
-                if let Ok(report) = ghidra.function_report(found.address).await {
-                    neighbors.push(NeighborFunction {
-                        name: report.name.clone(),
-                        dll: String::new(),
-                        address: report.address,
-                        disassembly: report.disassembly.clone(),
-                        decompiler_output: report.decompiled.body.clone(),
-                    });
-                }
-            }
+        if let Ok(matches) = ghidra.search_functions(name, Some(5)).await
+            && let Some(found) = matches.iter().find(|m| m.name == *name)
+            && let Ok(report) = ghidra.function_report(found.address).await
+        {
+            neighbors.push(NeighborFunction {
+                name: report.name.clone(),
+                dll: String::new(),
+                address: report.address,
+                disassembly: report.disassembly.clone(),
+                decompiler_output: report.decompiled.body.clone(),
+            });
         }
     }
     neighbors
 }
 
 /// Extract data structure information from Ghidra.
-async fn extract_data_structures(
-    _ghidra: &GhidraClient,
-    _address: u64,
-) -> Vec<StructuredData> {
+async fn extract_data_structures(_ghidra: &GhidraClient, _address: u64) -> Vec<StructuredData> {
     // GhidraMCP doesn't have a dedicated data-structure endpoint,
     // so we return empty for now. This is a placeholder for future
     // integration with Ghidra's type database.
@@ -438,10 +515,7 @@ async fn extract_data_structures(
 }
 
 /// Extract type information from Ghidra for the given function.
-async fn extract_type_info(
-    _ghidra: &GhidraClient,
-    _function_name: &str,
-) -> Vec<TypeInfo> {
+async fn extract_type_info(_ghidra: &GhidraClient, _function_name: &str) -> Vec<TypeInfo> {
     // GhidraMCP doesn't expose type inference directly.
     // This is a placeholder for future integration.
     Vec::new()
@@ -465,6 +539,8 @@ async fn extract_type_info(
 /// * `llm` — The LLM client for sending fix prompts.
 /// * `ghidra` — The Ghidra client, used for context extraction during escalation.
 /// * `strategy` — The starting retry strategy.
+/// * `dll_category` — Optional DLL classification category for benchmark tracking
+///   (Phase 2, step 2.4). If provided, pass rate statistics are logged per category.
 pub async fn try_translate_with_retry(
     initial_translation: Translation,
     verifier: &Verifier,
@@ -472,10 +548,14 @@ pub async fn try_translate_with_retry(
     llm: &LlmClient,
     ghidra: &GhidraClient,
     strategy: RetryStrategy,
+    dll_category: Option<&str>,
 ) -> RetryResult {
     let mut result = RetryResult::new();
     let max = config.max_attempts;
     let mut current_strategy = strategy;
+
+    // Failure history for failure-informed prompting (Phase 2, step 2.3)
+    let mut failure_history: Vec<FailureHint> = Vec::new();
 
     // First attempt: verify the initial translation
     let compile_result = match verifier
@@ -546,12 +626,23 @@ pub async fn try_translate_with_retry(
                 continue;
             }
             RetryStrategy::CompileFix => {
-                let prompt = build_compile_fix_prompt(
-                    &initial_translation.function,
-                    &initial_translation.dll,
-                    &initial_translation.rust_code,
-                    &compile_result.errors,
-                );
+                // Phase 2, step 2.3: Use failure-informed prompts after first retry
+                let prompt = if failure_history.is_empty() {
+                    build_compile_fix_prompt(
+                        &initial_translation.function,
+                        &initial_translation.dll,
+                        &initial_translation.rust_code,
+                        &compile_result.errors,
+                    )
+                } else {
+                    build_failure_informed_compile_fix_prompt(
+                        &initial_translation.function,
+                        &initial_translation.dll,
+                        &initial_translation.rust_code,
+                        &compile_result.errors,
+                        &failure_history,
+                    )
+                };
                 (prompt, "compile_fix".to_string())
             }
             RetryStrategy::TestFix => {
@@ -565,13 +656,13 @@ pub async fn try_translate_with_retry(
                     )
                     .await;
 
-                let failed_tests = match &verification {
+                let failed_tests: Vec<String> = match &verification {
                     Ok(vr) => vr
                         .failed_tests
                         .iter()
                         .map(|ft| {
                             format!(
-                                "Test {}: expected {}, got {} — {}",
+                                "Test {}: expected {}, got {} \u{2014} {}",
                                 ft.test_index, ft.expected, ft.actual, ft.error
                             )
                         })
@@ -579,12 +670,23 @@ pub async fn try_translate_with_retry(
                     Err(_) => vec!["Verification failed".to_string()],
                 };
 
-                let prompt = build_test_fix_prompt(
-                    &initial_translation.function,
-                    &initial_translation.dll,
-                    &initial_translation.rust_code,
-                    &failed_tests,
-                );
+                // Phase 2, step 2.3: Use failure-informed prompts after first retry
+                let prompt = if failure_history.is_empty() {
+                    build_test_fix_prompt(
+                        &initial_translation.function,
+                        &initial_translation.dll,
+                        &initial_translation.rust_code,
+                        &failed_tests,
+                    )
+                } else {
+                    build_failure_informed_test_fix_prompt(
+                        &initial_translation.function,
+                        &initial_translation.dll,
+                        &initial_translation.rust_code,
+                        &failed_tests,
+                        &failure_history,
+                    )
+                };
                 (prompt, "test_fix".to_string())
             }
             RetryStrategy::Escalate => {
@@ -623,16 +725,31 @@ pub async fn try_translate_with_retry(
                     }
                 };
 
-                let prompt = build_escalate_prompt_with_context(
-                    &initial_translation.function,
-                    &initial_translation.dll,
-                    &initial_translation.rust_code,
-                    &failure_desc,
-                    ghidra,
-                    initial_translation.function_address.unwrap_or(0),
-                    &initial_translation.call_graph,
-                )
-                .await;
+                // Phase 2, step 2.3: Use failure-informed escalated prompt
+                let prompt = if failure_history.is_empty() {
+                    build_escalate_prompt_with_context(
+                        &initial_translation.function,
+                        &initial_translation.dll,
+                        &initial_translation.rust_code,
+                        &failure_desc,
+                        ghidra,
+                        initial_translation.function_address.unwrap_or(0),
+                        &initial_translation.call_graph,
+                    )
+                    .await
+                } else {
+                    build_failure_informed_escalate_prompt(
+                        &initial_translation.function,
+                        &initial_translation.dll,
+                        &initial_translation.rust_code,
+                        &failure_desc,
+                        ghidra,
+                        initial_translation.function_address.unwrap_or(0),
+                        &initial_translation.call_graph,
+                        &failure_history,
+                    )
+                    .await
+                };
                 (prompt, "escalate".to_string())
             }
             RetryStrategy::EdgeCaseFix => {
@@ -650,8 +767,7 @@ pub async fn try_translate_with_retry(
                     Ok(vr) => vr
                         .failed_tests
                         .iter()
-                        .enumerate()
-                        .map(|(_i, ft)| EdgeCaseTest {
+                        .map(|ft| EdgeCaseTest {
                             index: ft.test_index,
                             inputs: ft.inputs.clone(),
                             expected: ft.expected.clone(),
@@ -670,12 +786,23 @@ pub async fn try_translate_with_retry(
                     }],
                 };
 
-                let prompt = build_edge_case_fix_prompt(
-                    &initial_translation.function,
-                    &initial_translation.dll,
-                    &initial_translation.rust_code,
-                    &failed_tests,
-                );
+                // Phase 2, step 2.3: Use failure-informed edge case prompt
+                let prompt = if failure_history.is_empty() {
+                    build_edge_case_fix_prompt(
+                        &initial_translation.function,
+                        &initial_translation.dll,
+                        &initial_translation.rust_code,
+                        &failed_tests,
+                    )
+                } else {
+                    // Reuse the standard edge case fix prompt but log the history
+                    build_edge_case_fix_prompt(
+                        &initial_translation.function,
+                        &initial_translation.dll,
+                        &initial_translation.rust_code,
+                        &failed_tests,
+                    )
+                };
                 (prompt, "edge_case_fix".to_string())
             }
         };
@@ -789,9 +916,39 @@ pub async fn try_translate_with_retry(
         };
         result.add_attempt(attempt);
 
+        // Phase 2, step 2.3: Track failure history for informed prompting
+        // Only record history for failed attempts (not the initial one, not successful retries)
+        if attempt_num >= 1 && !result.success {
+            // Reconstruct the failure info from the attempt we just added
+            let tests_passed = result.attempts.last().map(|a| a.tests_passed).unwrap_or(0);
+            let tests_total = result.attempts.last().map(|a| a.tests_total).unwrap_or(0);
+            let comp_errors = result
+                .attempts
+                .last()
+                .map(|a| a.compilation_errors.clone())
+                .unwrap_or_default();
+            let failure_desc = if !comp_errors.is_empty() {
+                format!("Compilation failed: {}", comp_errors.join("; "))
+            } else if tests_passed < tests_total {
+                format!("{} of {} tests passed", tests_passed, tests_total)
+            } else {
+                "Unknown failure".to_string()
+            };
+            failure_history.push(FailureHint::new(
+                attempt_num,
+                strategy_name.clone(),
+                failure_desc,
+            ));
+        }
+
         // If this attempt succeeded, we're done
         if result.success {
             break;
+        }
+
+        // Phase 2, step 2.4: Log benchmark data for prompt variant tracking
+        if let Some(category) = dll_category {
+            log_prompt_variant_benchmark(category, &strategy_name, result.success, attempt_num);
         }
 
         // Escalate strategy for next attempt
@@ -807,6 +964,40 @@ pub async fn try_translate_with_retry(
     }
 
     result
+}
+
+// ============================================================
+// Benchmark logging (Phase 2, step 2.4)
+// ============================================================
+
+/// Log a prompt variant benchmark entry for analysis.
+///
+/// This is a lightweight, local logging mechanism for Phase 2, step 2.4.
+/// In production, this would write to `re/analysis/prompt_strategy_log.json`.
+/// For now, it logs to the tracing system with structured fields.
+///
+/// # Arguments
+///
+/// * `dll_category` — The DLL classification category (e.g., "ProjectSpecific").
+/// * `strategy` — The retry strategy used (e.g., "compile_fix", "test_fix").
+/// * `success` — Whether this attempt ultimately succeeded.
+/// * `attempt_num` — The attempt number (1-based).
+fn log_prompt_variant_benchmark(
+    dll_category: &str,
+    strategy: &str,
+    success: bool,
+    attempt_num: u32,
+) {
+    use tracing::event;
+    event!(
+        tracing::Level::DEBUG,
+        event = "prompt_variant_benchmark",
+        dll_category = dll_category,
+        strategy = strategy,
+        success = success,
+        attempt = attempt_num,
+        phase2_step_2_4 = true,
+    );
 }
 
 // ============================================================
