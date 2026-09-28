@@ -13,12 +13,13 @@
 //! - [`print_failure`] — Display failed translation with diagnostic details
 //! - [`prompt_acceptance`] — Interactive y/n prompt for human acceptance
 //! - [`print_classification_report`] — Display DLL classification results
+//! - [`print_batch_summary`] — Display batch translation results (pass/fail per function)
 
 use std::io::{self, Write};
 
 use calxgloss_analysis::DllClassification;
 use calxgloss_analysis::Strategy;
-use calxgloss_translator::Translation;
+use calxgloss_translator::{BatchTranslationResult, Translation};
 use calxgloss_types::FailedTest;
 use calxgloss_types::GitBranch;
 use calxgloss_types::VerificationResult;
@@ -455,6 +456,79 @@ fn format_category(category: &calxgloss_types::DllCategory) -> String {
         calxgloss_types::DllCategory::KnownThirdParty => "Known Third-Party".to_string(),
         calxgloss_types::DllCategory::ProjectSpecific => "Project-Specific".to_string(),
         calxgloss_types::DllCategory::UnknownThirdParty => "Unknown Third-Party".to_string(),
+    }
+}
+
+// ============================================================
+// Batch translation summary
+// ============================================================
+
+/// Print a summary of a batch translation run.
+///
+/// Displays:
+/// - A header with the DLL name and total function count
+/// - Per-function pass/fail lines with model used
+/// - A summary row showing total succeeded, failed, and the pass rate
+pub fn print_batch_summary(result: &BatchTranslationResult) {
+    let sep = cyan_bold(&"═".repeat(58));
+    println!();
+    println!("{} Batch Translation — {}", sep, result.dll);
+    println!("{}", sep);
+
+    for (idx, func_result) in result.results.iter().enumerate() {
+        let func_line = format!("  {}. {}", idx + 1, func_result.function);
+
+        if func_result.success {
+            println!("  {} {}", green_bold("\u{2713}"), func_line);
+            if let Some(rust_code) = &func_result.rust_code {
+                let lines = rust_code.lines().count();
+                println!("     {}{} Rust code, {} lines", dim("  model: "), func_result.retry_result.success_strategy.as_deref().unwrap_or("initial"), lines);
+            }
+        } else {
+            println!("  {} {}", red_bold("\u{2717}"), func_line);
+            // Show how many attempts were made
+            let attempts = func_result.retry_result.attempts.len();
+            if attempts > 0 {
+                println!("     {}{} attempts exhausted", dim("  "), attempts);
+            }
+        }
+    }
+
+    println!("{}", sep);
+
+    let total = result.total_count();
+    let success = result.success_count();
+    let failure = result.failure_count();
+
+    let overall_color = if failure == 0 && total > 0 {
+        green_bold
+    } else if success > 0 {
+        yellow_bold
+    } else {
+        red_bold
+    };
+
+    let pass_rate = if total > 0 {
+        success as f64 / total as f64 * 100.0
+    } else {
+        0.0
+    };
+
+    println!(
+        "  {}{} succeeded, {} failed ({:.0}% pass rate)",
+        overall_color(&success.to_string()),
+        white_bold(&dim(" ").to_string()),
+        red_bold(&failure.to_string()),
+        pass_rate
+    );
+
+    if !result.results.is_empty() {
+        let all = result.all_success();
+        let label = if all { "ALL PASS" } else { "INCOMPLETE" };
+        println!(
+            "  {}",
+            if all { green_bold(label) } else { yellow_bold(label) }
+        );
     }
 }
 
