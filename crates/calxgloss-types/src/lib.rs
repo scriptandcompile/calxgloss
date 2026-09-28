@@ -14,6 +14,7 @@
 //! - [`git`] — Branch and commit tracking
 //! - [`error`] — Unified error type (`TypesError`)
 
+pub mod benchmark;
 pub mod complexity;
 pub mod dll;
 pub mod error;
@@ -25,6 +26,7 @@ pub mod verification;
 
 // Re-export public types at the crate root for convenient access.
 
+pub use benchmark::{CategoryStats, PromptStrategyEntry, PromptStrategyLog, PromptStrategyStats, StrategyStats};
 pub use complexity::{FailureHint, FunctionComplexity, PromptVariant, detect_complexity};
 pub use dll::{DllCategory, DllInfo, Export, Import};
 pub use error::TypesError;
