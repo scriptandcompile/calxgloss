@@ -16,29 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`CALXGLOSS_LLM_STRATEGY`), or config file
 
 #### `calxgloss-translator`
-- **Escalate retry strategy** — on verification failure, injects call graph
-  neighbors, neighboring function context, data structures, and type
-  information from Ghidra into the LLM prompt
-- **EdgeCaseFix retry strategy** — targets boundary-value test failures with
-  a dedicated prompt focused on zero/max/negative/null handling
-- **Auto strategy** — cycles through `[compile_fix → test_fix → escalate →
-  edge_case_fix]` on each failure until success or max attempts
-- `TranslationAttempt.tokens_used` — tracks LLM token consumption per attempt
-- `Translation.function_address` and `Translation.call_graph` — carry Ghidra
-  context for use during escalate retries
-- `is_edge_case_failure()` heuristic — detects boundary-value test failures
-  using word-boundary indicators (zero, null, overflow, i32::, etc.)
-- Ghidra context extraction helpers — `extract_call_graph_neighbors()`,
-  `extract_neighboring_context()` (data structures and type info are stubs
-  for future GhidraMCP integration)
-
-#### `calxgloss-prompts`
-- **Escalate prompt** (`escalate.j2`) — includes call graph neighbors,
-  neighboring function disassembly/decompiler output, data structures,
-  and type info alongside the original failure description
-- **Edge case prompt** (`edge_case.j2`) — presents failing boundary-value
-  tests with disassembly hints and explicit requirements for edge-case
-  handling (zero checks, overflow guards, etc.)
+- **Failure-informed retry prompts** — all retry
+  strategies (`CompileFix`, `TestFix`, `Escalate`, `EdgeCaseFix`) now
+  inject a "PREVIOUS ATTEMPT HISTORY" section into LLM prompts when
+  prior attempts have failed. Includes
+  `build_failure_informed_compile_fix_prompt()`,
+  `build_failure_informed_test_fix_prompt()`,
+  `build_failure_informed_escalate_prompt()`, and
+  `build_failure_informed_edge_case_fix_prompt()`.
 
 #### `calxgloss-cli`
 - `--strategy` flag — select the initial retry strategy or `auto` for
@@ -81,11 +66,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   functions to rich or detailed prompts with extra Ghidra context.
 
 #### `calxgloss-prompts`
-- **Failure-informed prompt stubs** (`failure_fix.j2` template,
-  `build_failure_informed_compile_fix_prompt()`,
-  `build_failure_informed_test_fix_prompt()`,
-  `build_failure_informed_escalate_prompt()`) — Phase 2, step 2.3
-  scaffolding that currently falls back to standard prompts.
+- **Failure-informed retry prompts** (Phase 2, step 2.3) — `FixTemplate`,
+  `EscalateTemplate`, and `EdgeCaseTemplate` all now accept a
+  `failure_history: Vec<FailureHint>` field. When non-empty, each template
+  renders a "PREVIOUS ATTEMPT HISTORY" section so the LLM can learn from
+  specific past mistakes. Dedicated `with_history()` constructors and
+  updated `build_escalate_prompt()` / `build_edge_case_prompt()` helpers.
+  Embedded templates (`failure_fix.j2`, `escalate.j2`, `edge_case.j2`)
+  updated to render the history section.
 
 ### Fixed
 
