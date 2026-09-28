@@ -15,6 +15,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::time::Duration;
 
 // ============================================================
@@ -773,6 +774,201 @@ impl ReviewDashboard {
             .iter()
             .filter(|u| matches!(u.status, ReviewStatus::Blocked))
             .collect()
+    }
+
+    /// Auto-mark units as blocked when their dependencies are not in a passing state.
+    ///
+    /// This implements Phase 4 / Step 4.4: **auto-queue unmet units**. When a
+    /// dependency unit (e.g. a shim layer or DLL classification) is in a
+    /// failing status (`SendBack`, `PatchRequested`), all units that transitively
+    /// depend on it are automatically marked as [`Blocked`].
+    ///
+    /// # Failing statuses
+    ///
+    /// A unit is considered to be in a failing status if its status is any of:
+    /// - [`ReviewStatus::SendBack`] — sent back for fixes
+    /// - [`ReviewStatus::PatchRequested`] — patch requested for a specific issue
+    ///
+    /// These statuses indicate the unit is *not yet complete* and therefore
+    /// cannot serve as a valid dependency for downstream units.
+    ///
+    /// # Propagation
+    ///
+    /// Blocking propagates transitively. If A depends on B and B depends on C,
+    /// and C fails:
+    ///
+    /// 1. C is failing → mark B as [`Blocked`]
+    /// 2. B is now failing (blocked) → mark A as [`Blocked`]
+    ///
+    /// Units already in a terminal status (`Accepted`, `Merged`, `Blocked`) are
+    /// left unchanged — the method is idempotent.
+    ///
+    /// # Returns
+    ///
+    /// The number of units that were changed to [`Blocked`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use calxgloss_types::dashboard::{ReviewDashboard, ReviewStatus, UnitOfWork, WorkUnitKind};
+    /// use chrono::Utc;
+    ///
+    /// let mut dashboard = ReviewDashboard::new(vec![
+    ///     UnitOfWork {
+    ///         id: "shim_wgpu".into(),
+    ///         name: "Shim wgpu".into(),
+    ///         kind: WorkUnitKind::ShimLayer,
+    ///         dll: "d3d9.dll".into(),
+    ///         function: None,
+    ///         attempt: 1,
+    ///         status: ReviewStatus::SendBack, // shim failed
+    ///         accepted: false,
+    ///         confidence: None,
+    ///         baseline_tests_passed: None,
+    ///         baseline_tests_total: None,
+    ///         verification_tests_passed: None,
+    ///         verification_tests_total: None,
+    ///         llm_model: None,
+    ///         prompt_tier: None,
+    ///         dependencies: vec![],
+    ///         created_at: Utc::now(),
+    ///         updated_at: Utc::now(),
+    ///         known_gaps: vec![],
+    ///         stale: calxgloss_types::dashboard::Staleness::Fresh,
+    ///     },
+    ///     UnitOfWork {
+    ///         id: "func_draw".into(),
+    ///         name: "func_DrawPrimitive".into(),
+    ///         kind: WorkUnitKind::FunctionTranslation,
+    ///         dll: "game_logic.dll".into(),
+    ///         function: Some("DrawPrimitive".into()),
+    ///         attempt: 1,
+    ///         status: ReviewStatus::Queued,
+    ///         accepted: false,
+    ///         confidence: None,
+    ///         baseline_tests_passed: None,
+    ///         baseline_tests_total: None,
+    ///         verification_tests_passed: None,
+    ///         verification_tests_total: None,
+    ///         llm_model: None,
+    ///         prompt_tier: None,
+    ///         dependencies: vec!["shim_wgpu".into()], // depends on the failing shim
+    ///         created_at: Utc::now(),
+    ///         updated_at: Utc::now(),
+    ///         known_gaps: vec![],
+    ///         stale: calxgloss_types::dashboard::Staleness::Fresh,
+    ///     },
+    /// ]);
+    ///
+    /// let blocked_count = dashboard.auto_block_units();
+    /// assert_eq!(blocked_count, 1);
+    /// assert!(dashboard.review_queue.iter().any(|u| u.id == "func_draw" && matches!(u.status, ReviewStatus::Blocked)));
+    /// ```
+    pub fn auto_block_units(&mut self) -> usize {
+        // Phase 1: identify all failing units (SendBack, PatchRequested)
+        // These are the roots of the blocking cascade.
+        let mut failing: HashMap<String, bool> = HashMap::new();
+        let unit_ids: Vec<String> = self
+            .review_queue
+            .iter()
+            .map(|u| u.id.clone())
+            .collect();
+
+        for id in &unit_ids {
+            let unit = self.review_queue.iter().find(|u| &u.id == id).unwrap();
+            let is_failing = matches!(
+                unit.status,
+                ReviewStatus::SendBack | ReviewStatus::PatchRequested
+            );
+            failing.insert(id.clone(), is_failing);
+        }
+
+        // Phase 2: propagate blocking transitively.
+        //
+        // Build a reverse lookup: for each unit ID, which other units depend on it?
+        let mut depended_on_by: HashMap<String, Vec<String>> = HashMap::new();
+        for unit in &self.review_queue {
+            for dep in &unit.dependencies {
+                depended_on_by
+                    .entry(dep.clone())
+                    .or_default()
+                    .push(unit.id.clone());
+            }
+        }
+
+        // BFS from failing units through the depended-on-by graph.
+        // If a dependency fails, all dependents become blocked.
+        // A blocked unit then counts as failing for further propagation.
+        let mut queue: Vec<String> = failing
+            .iter()
+            .filter(|&(_, &is_failing)| is_failing)
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        while let Some(failing_id) = queue.pop() {
+            // Find all units that depend on this failing unit
+            if let Some(dependents) = depended_on_by.get(&failing_id) {
+                for dependent_id in dependents {
+                    // Only propagate if this dependent isn't already blocked/failing
+                    if let Some(was_failing) = failing.get(dependent_id) {
+                        if !*was_failing {
+                            // Mark as blocked and update state
+                            failing.insert(dependent_id.clone(), true);
+                            queue.push(dependent_id.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Phase 3: apply the blocking changes to the review queue
+        let mut blocked_count = 0usize;
+        for unit in &mut self.review_queue {
+            // Skip units that are already in a terminal status or already blocked.
+            // Also skip units that *are* the failing dependency itself — those
+            // should keep their original status (SendBack/PatchRequested) since
+            // the whole point of auto-blocking is about *dependents* of failing
+            // units, not the failing units themselves.
+            if matches!(
+                unit.status,
+                ReviewStatus::Blocked
+                    | ReviewStatus::Accepted
+                    | ReviewStatus::Merged
+                    | ReviewStatus::SendBack
+                    | ReviewStatus::PatchRequested
+            ) {
+                continue;
+            }
+            if failing.get(&unit.id) == Some(&true) {
+                let old_status = std::mem::replace(&mut unit.status, ReviewStatus::Blocked);
+                if old_status != ReviewStatus::Blocked {
+                    blocked_count += 1;
+                }
+            }
+        }
+
+        // Also apply blocking to recent_activity (e.g. units that were just
+        // accepted but now have an unmet dependency due to another unit failing)
+        for unit in &mut self.recent_activity {
+            if matches!(
+                unit.status,
+                ReviewStatus::Blocked
+                    | ReviewStatus::Accepted
+                    | ReviewStatus::Merged
+                    | ReviewStatus::SendBack
+                    | ReviewStatus::PatchRequested
+            ) {
+                continue;
+            }
+            if failing.get(&unit.id) == Some(&true) {
+                let old_status = std::mem::replace(&mut unit.status, ReviewStatus::Blocked);
+                if old_status != ReviewStatus::Blocked {
+                    blocked_count += 1;
+                }
+            }
+        }
+
+        blocked_count
     }
 
     /// Returns units sorted in dependency order, excluding already-accepted ones.
@@ -1653,5 +1849,509 @@ mod tests {
         assert_eq!(order_ids[1], "shim_y");
         assert_eq!(order_ids[2], "pal_z");
         assert_eq!(order_ids[3], "func_x");
+    }
+
+    // ── Auto-block units tests (Phase 4, Step 4.4) ──
+
+    #[test]
+    fn auto_block_marks_dependent_on_failed_dependency() {
+        let mut dashboard = ReviewDashboard::new(vec![
+            UnitOfWork {
+                id: "shim_wgpu".into(),
+                name: "Shim wgpu".into(),
+                kind: WorkUnitKind::ShimLayer,
+                dll: "d3d9.dll".into(),
+                function: None,
+                attempt: 1,
+                status: ReviewStatus::SendBack,
+                accepted: false,
+                confidence: None,
+                baseline_tests_passed: None,
+                baseline_tests_total: None,
+                verification_tests_passed: None,
+                verification_tests_total: None,
+                llm_model: None,
+                prompt_tier: None,
+                dependencies: vec![],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                known_gaps: vec![],
+                stale: Staleness::Fresh,
+            },
+            UnitOfWork {
+                id: "func_draw".into(),
+                name: "func_DrawPrimitive".into(),
+                kind: WorkUnitKind::FunctionTranslation,
+                dll: "game_logic.dll".into(),
+                function: Some("DrawPrimitive".into()),
+                attempt: 1,
+                status: ReviewStatus::Queued,
+                accepted: false,
+                confidence: None,
+                baseline_tests_passed: None,
+                baseline_tests_total: None,
+                verification_tests_passed: None,
+                verification_tests_total: None,
+                llm_model: None,
+                prompt_tier: None,
+                dependencies: vec!["shim_wgpu".into()],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                known_gaps: vec![],
+                stale: Staleness::Fresh,
+            },
+        ]);
+
+        let blocked_count = dashboard.auto_block_units();
+        assert_eq!(blocked_count, 1);
+
+        let shim = dashboard.review_queue.iter().find(|u| u.id == "shim_wgpu").unwrap();
+        let func = dashboard.review_queue.iter().find(|u| u.id == "func_draw").unwrap();
+
+        // The failed dependency should NOT change its own status
+        assert!(matches!(shim.status, ReviewStatus::SendBack));
+        // The dependent should be blocked
+        assert!(matches!(func.status, ReviewStatus::Blocked));
+        // blocked_units() should find the blocked unit
+        assert_eq!(dashboard.blocked_units().len(), 1);
+        assert_eq!(dashboard.blocked_units()[0].id, "func_draw");
+    }
+
+    #[test]
+    fn auto_block_noop_when_all_deps_accepted() {
+        let mut dashboard = ReviewDashboard::new(vec![
+            UnitOfWork {
+                id: "shim_wgpu".into(),
+                name: "Shim wgpu".into(),
+                kind: WorkUnitKind::ShimLayer,
+                dll: "d3d9.dll".into(),
+                function: None,
+                attempt: 1,
+                status: ReviewStatus::Accepted,
+                accepted: true,
+                confidence: Some(0.9),
+                baseline_tests_passed: None,
+                baseline_tests_total: None,
+                verification_tests_passed: None,
+                verification_tests_total: None,
+                llm_model: None,
+                prompt_tier: None,
+                dependencies: vec![],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                known_gaps: vec![],
+                stale: Staleness::Fresh,
+            },
+            UnitOfWork {
+                id: "func_draw".into(),
+                name: "func_DrawPrimitive".into(),
+                kind: WorkUnitKind::FunctionTranslation,
+                dll: "game_logic.dll".into(),
+                function: Some("DrawPrimitive".into()),
+                attempt: 1,
+                status: ReviewStatus::Queued,
+                accepted: false,
+                confidence: None,
+                baseline_tests_passed: None,
+                baseline_tests_total: None,
+                verification_tests_passed: None,
+                verification_tests_total: None,
+                llm_model: None,
+                prompt_tier: None,
+                dependencies: vec!["shim_wgpu".into()],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                known_gaps: vec![],
+                stale: Staleness::Fresh,
+            },
+        ]);
+
+        let blocked_count = dashboard.auto_block_units();
+        assert_eq!(blocked_count, 0);
+
+        // No units should be blocked
+        assert!(dashboard.review_queue.iter().all(|u| {
+            !matches!(u.status, ReviewStatus::Blocked)
+        }));
+    }
+
+    #[test]
+    fn auto_block_multiple_deps_any_failed_blocks_dependent() {
+        // func_draw depends on both shim_wgpu and pal_graphics.
+        // Only shim_wgpu fails; func_draw should still be blocked.
+        let mut dashboard = ReviewDashboard::new(vec![
+            UnitOfWork {
+                id: "shim_wgpu".into(),
+                name: "Shim wgpu".into(),
+                kind: WorkUnitKind::ShimLayer,
+                dll: "d3d9.dll".into(),
+                function: None,
+                attempt: 1,
+                status: ReviewStatus::SendBack,
+                accepted: false,
+                confidence: None,
+                baseline_tests_passed: None,
+                baseline_tests_total: None,
+                verification_tests_passed: None,
+                verification_tests_total: None,
+                llm_model: None,
+                prompt_tier: None,
+                dependencies: vec![],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                known_gaps: vec![],
+                stale: Staleness::Fresh,
+            },
+            UnitOfWork {
+                id: "pal_graphics".into(),
+                name: "PAL GraphicsDevice".into(),
+                kind: WorkUnitKind::PalTrait,
+                dll: "d3d9.dll".into(),
+                function: None,
+                attempt: 1,
+                status: ReviewStatus::Accepted,
+                accepted: true,
+                confidence: Some(0.95),
+                baseline_tests_passed: None,
+                baseline_tests_total: None,
+                verification_tests_passed: None,
+                verification_tests_total: None,
+                llm_model: None,
+                prompt_tier: None,
+                dependencies: vec![],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                known_gaps: vec![],
+                stale: Staleness::Fresh,
+            },
+            UnitOfWork {
+                id: "func_draw".into(),
+                name: "func_DrawPrimitive".into(),
+                kind: WorkUnitKind::FunctionTranslation,
+                dll: "game_logic.dll".into(),
+                function: Some("DrawPrimitive".into()),
+                attempt: 1,
+                status: ReviewStatus::Queued,
+                accepted: false,
+                confidence: None,
+                baseline_tests_passed: None,
+                baseline_tests_total: None,
+                verification_tests_passed: None,
+                verification_tests_total: None,
+                llm_model: None,
+                prompt_tier: None,
+                dependencies: vec!["shim_wgpu".into(), "pal_graphics".into()],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                known_gaps: vec![],
+                stale: Staleness::Fresh,
+            },
+        ]);
+
+        let blocked_count = dashboard.auto_block_units();
+        assert_eq!(blocked_count, 1);
+
+        let func = dashboard.review_queue.iter().find(|u| u.id == "func_draw").unwrap();
+        assert!(matches!(func.status, ReviewStatus::Blocked));
+    }
+
+    #[test]
+    fn auto_block_propagates_transitively() {
+        // dll_cls → shim_wgpu → func_draw → integrate_batch
+        // If shim_wgpu fails, both func_draw and integrate_batch get blocked.
+        let mut dashboard = ReviewDashboard::new(vec![
+            UnitOfWork {
+                id: "dll_cls".into(),
+                name: "Classify d3d9.dll".into(),
+                kind: WorkUnitKind::DllClassification,
+                dll: "d3d9.dll".into(),
+                function: None,
+                attempt: 1,
+                status: ReviewStatus::Accepted,
+                accepted: true,
+                confidence: Some(0.99),
+                baseline_tests_passed: None,
+                baseline_tests_total: None,
+                verification_tests_passed: None,
+                verification_tests_total: None,
+                llm_model: None,
+                prompt_tier: None,
+                dependencies: vec![],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                known_gaps: vec![],
+                stale: Staleness::Fresh,
+            },
+            UnitOfWork {
+                id: "shim_wgpu".into(),
+                name: "Shim wgpu".into(),
+                kind: WorkUnitKind::ShimLayer,
+                dll: "d3d9.dll".into(),
+                function: None,
+                attempt: 1,
+                status: ReviewStatus::SendBack,
+                accepted: false,
+                confidence: None,
+                baseline_tests_passed: None,
+                baseline_tests_total: None,
+                verification_tests_passed: None,
+                verification_tests_total: None,
+                llm_model: None,
+                prompt_tier: None,
+                dependencies: vec!["dll_cls".into()],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                known_gaps: vec![],
+                stale: Staleness::Fresh,
+            },
+            UnitOfWork {
+                id: "func_draw".into(),
+                name: "func_DrawPrimitive".into(),
+                kind: WorkUnitKind::FunctionTranslation,
+                dll: "game_logic.dll".into(),
+                function: Some("DrawPrimitive".into()),
+                attempt: 1,
+                status: ReviewStatus::Queued,
+                accepted: false,
+                confidence: None,
+                baseline_tests_passed: None,
+                baseline_tests_total: None,
+                verification_tests_passed: None,
+                verification_tests_total: None,
+                llm_model: None,
+                prompt_tier: None,
+                dependencies: vec!["shim_wgpu".into()],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                known_gaps: vec![],
+                stale: Staleness::Fresh,
+            },
+            UnitOfWork {
+                id: "integrate".into(),
+                name: "Integrate batch 001".into(),
+                kind: WorkUnitKind::IntegrationStep,
+                dll: "game_logic.dll".into(),
+                function: None,
+                attempt: 1,
+                status: ReviewStatus::Queued,
+                accepted: false,
+                confidence: None,
+                baseline_tests_passed: None,
+                baseline_tests_total: None,
+                verification_tests_passed: None,
+                verification_tests_total: None,
+                llm_model: None,
+                prompt_tier: None,
+                dependencies: vec!["func_draw".into()],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                known_gaps: vec![],
+                stale: Staleness::Fresh,
+            },
+        ]);
+
+        let blocked_count = dashboard.auto_block_units();
+        assert_eq!(blocked_count, 2); // func_draw + integrate
+
+        // Check each unit's status
+        let statuses: HashMap<&str, &ReviewStatus> = dashboard.review_queue.iter()
+            .chain(dashboard.recent_activity.iter())
+            .map(|u| (u.id.as_str(), &u.status))
+            .collect();
+
+        assert!(matches!(statuses["dll_cls"], ReviewStatus::Accepted));
+        assert!(matches!(statuses["shim_wgpu"], ReviewStatus::SendBack)); // unchanged
+        assert!(matches!(statuses["func_draw"], ReviewStatus::Blocked));
+        assert!(matches!(statuses["integrate"], ReviewStatus::Blocked));
+
+        // blocked_units() should find exactly 2
+        assert_eq!(dashboard.blocked_units().len(), 2);
+    }
+
+    #[test]
+    fn auto_block_respects_terminal_statuses() {
+        // A unit already in Accepted/Merged/Blocked status should NOT be changed.
+        let mut dashboard = ReviewDashboard::new(vec![
+            UnitOfWork {
+                id: "shim_wgpu".into(),
+                name: "Shim wgpu".into(),
+                kind: WorkUnitKind::ShimLayer,
+                dll: "d3d9.dll".into(),
+                function: None,
+                attempt: 1,
+                status: ReviewStatus::SendBack,
+                accepted: false,
+                confidence: None,
+                baseline_tests_passed: None,
+                baseline_tests_total: None,
+                verification_tests_passed: None,
+                verification_tests_total: None,
+                llm_model: None,
+                prompt_tier: None,
+                dependencies: vec![],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                known_gaps: vec![],
+                stale: Staleness::Fresh,
+            },
+            UnitOfWork {
+                id: "func_draw".into(),
+                name: "func_DrawPrimitive (v2)".into(),
+                kind: WorkUnitKind::FunctionTranslation,
+                dll: "game_logic.dll".into(),
+                function: Some("DrawPrimitive".into()),
+                attempt: 2,
+                status: ReviewStatus::Accepted, // already accepted — should NOT change
+                accepted: true,
+                confidence: Some(0.8),
+                baseline_tests_passed: Some(47),
+                baseline_tests_total: Some(47),
+                verification_tests_passed: Some(12),
+                verification_tests_total: Some(12),
+                llm_model: Some("qwen3".into()),
+                prompt_tier: Some(2),
+                dependencies: vec!["shim_wgpu".into()],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                known_gaps: vec![],
+                stale: Staleness::Fresh,
+            },
+        ]);
+
+        let blocked_count = dashboard.auto_block_units();
+        assert_eq!(blocked_count, 0);
+
+        // func_draw has Accepted status so it's in recent_activity, not review_queue
+        let func = dashboard
+            .review_queue
+            .iter()
+            .chain(dashboard.recent_activity.iter())
+            .find(|u| u.id == "func_draw")
+            .unwrap();
+        assert!(matches!(func.status, ReviewStatus::Accepted));
+    }
+
+    #[test]
+    fn auto_block_noop_with_no_units() {
+        let mut dashboard = ReviewDashboard::new(vec![]);
+        let blocked_count = dashboard.auto_block_units();
+        assert_eq!(blocked_count, 0);
+        assert!(dashboard.blocked_units().is_empty());
+    }
+
+    #[test]
+    fn auto_block_patch_requested_blocks_dependents() {
+        // PatchRequested is also a failing status that triggers blocking.
+        let mut dashboard = ReviewDashboard::new(vec![
+            UnitOfWork {
+                id: "pal_graphics".into(),
+                name: "PAL GraphicsDevice".into(),
+                kind: WorkUnitKind::PalTrait,
+                dll: "d3d9.dll".into(),
+                function: None,
+                attempt: 1,
+                status: ReviewStatus::PatchRequested,
+                accepted: false,
+                confidence: None,
+                baseline_tests_passed: None,
+                baseline_tests_total: None,
+                verification_tests_passed: None,
+                verification_tests_total: None,
+                llm_model: None,
+                prompt_tier: None,
+                dependencies: vec![],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                known_gaps: vec![],
+                stale: Staleness::Fresh,
+            },
+            UnitOfWork {
+                id: "func_present".into(),
+                name: "func_Present".into(),
+                kind: WorkUnitKind::FunctionTranslation,
+                dll: "game_logic.dll".into(),
+                function: Some("Present".into()),
+                attempt: 1,
+                status: ReviewStatus::Queued,
+                accepted: false,
+                confidence: None,
+                baseline_tests_passed: None,
+                baseline_tests_total: None,
+                verification_tests_passed: None,
+                verification_tests_total: None,
+                llm_model: None,
+                prompt_tier: None,
+                dependencies: vec!["pal_graphics".into()],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                known_gaps: vec![],
+                stale: Staleness::Fresh,
+            },
+        ]);
+
+        let blocked_count = dashboard.auto_block_units();
+        assert_eq!(blocked_count, 1);
+
+        let func = dashboard.review_queue.iter().find(|u| u.id == "func_present").unwrap();
+        assert!(matches!(func.status, ReviewStatus::Blocked));
+    }
+
+    #[test]
+    fn auto_block_idempotent() {
+        // Calling auto_block_units() multiple times should be a no-op after the first call.
+        let mut dashboard = ReviewDashboard::new(vec![
+            UnitOfWork {
+                id: "shim_wgpu".into(),
+                name: "Shim wgpu".into(),
+                kind: WorkUnitKind::ShimLayer,
+                dll: "d3d9.dll".into(),
+                function: None,
+                attempt: 1,
+                status: ReviewStatus::SendBack,
+                accepted: false,
+                confidence: None,
+                baseline_tests_passed: None,
+                baseline_tests_total: None,
+                verification_tests_passed: None,
+                verification_tests_total: None,
+                llm_model: None,
+                prompt_tier: None,
+                dependencies: vec![],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                known_gaps: vec![],
+                stale: Staleness::Fresh,
+            },
+            UnitOfWork {
+                id: "func_draw".into(),
+                name: "func_DrawPrimitive".into(),
+                kind: WorkUnitKind::FunctionTranslation,
+                dll: "game_logic.dll".into(),
+                function: Some("DrawPrimitive".into()),
+                attempt: 1,
+                status: ReviewStatus::Queued,
+                accepted: false,
+                confidence: None,
+                baseline_tests_passed: None,
+                baseline_tests_total: None,
+                verification_tests_passed: None,
+                verification_tests_total: None,
+                llm_model: None,
+                prompt_tier: None,
+                dependencies: vec!["shim_wgpu".into()],
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                known_gaps: vec![],
+                stale: Staleness::Fresh,
+            },
+        ]);
+
+        let first = dashboard.auto_block_units();
+        let second = dashboard.auto_block_units();
+        let third = dashboard.auto_block_units();
+
+        assert_eq!(first, 1);
+        assert_eq!(second, 0); // already blocked, no change
+        assert_eq!(third, 0);
     }
 }
