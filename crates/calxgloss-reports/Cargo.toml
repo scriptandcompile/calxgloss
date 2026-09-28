@@ -11,6 +11,7 @@ calxgloss-types = { path = "../calxgloss-types" }
 calxgloss-translator = { path = "../calxgloss-translator" }
 calxgloss-analysis = { path = "../calxgloss-analysis" }
 calxgloss-git = { path = "../calxgloss-git" }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }

@@ -5,7 +5,7 @@
 //!
 //! # Purpose
 //!
-//! Phase 2, step 2.4 requires tracking pass rates per retry strategy
+//! tracking pass rates per retry strategy
 //! per DLL category. This logger records every attempt outcome and
 //! stores it in a JSON file that can be read back to compute aggregate
 //! statistics (pass rate, fail rate, etc.) for analysis.

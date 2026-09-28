@@ -33,7 +33,10 @@ use calxgloss_reports::{
     print_batch_summary, print_classification_report, print_failure, print_git_status,
     print_verification_results,
 };
-use calxgloss_reports::dashboard::{DashboardBuilder, render_dashboard, render_dashboard_follow};
+use calxgloss_reports::dashboard::{
+    DashboardBuilder, UnitViewData, ViewTarget, render_dashboard, render_dashboard_follow,
+    render_unit_view,
+};
 use calxgloss_testgen::TestGenerator;
 use calxgloss_translator::{RetryConfig, RetryStrategy, TranslationPipeline};
 use calxgloss_verify::Verifier;
@@ -233,6 +236,7 @@ enum Command {
     /// to produce a summary table of translation units and their status.
     ///
     /// Use `--follow` to watch for changes and auto-refresh.
+    /// Use the `view` subcommand to inspect a single unit of work.
     Dashboard {
         /// Follow mode: continuously watch for new/changed branches
         #[arg(long, short)]
@@ -241,6 +245,33 @@ enum Command {
         /// Refresh interval in seconds (default: 2, only in --follow mode)
         #[arg(long, default_value = "2")]
         interval: u64,
+
+        #[command(subcommand)]
+        command: Option<DashboardSubcommand>,
+    },
+}
+
+/// Subcommands for the dashboard.
+#[derive(Subcommand, Debug)]
+enum DashboardSubcommand {
+    /// Show a detailed view of a single translation unit
+    ///
+    /// Displays justification, diff summary, test results, and attempt history.
+    ///
+    /// # Arguments
+    ///
+    /// * `<target>` — Unit identifier in the format `dll/function` or `dll/function/vN`
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss dashboard view game_logic/DrawPrimitive
+    /// calxgloss dashboard view game_logic/DrawPrimitive/v3
+    /// ```
+    View {
+        /// Unit to view: `<dll>/<function>` or `<dll>/<function>/vN`
+        #[arg(value_name = "TARGET")]
+        target: String,
     },
 }
 
@@ -961,6 +992,55 @@ async fn handle_dashboard(follow: bool, interval_secs: u64) -> Result<()> {
 }
 
 // ============================================================
+// Dashboard view subcommand handler
+// ============================================================
+
+/// Handles the `dashboard view <target>` subcommand.
+async fn handle_dashboard_view(target: &str) -> Result<()> {
+    info!(target = %target, "Starting dashboard view");
+
+    // Parse target using the shared type from reports crate
+    let view_target = ViewTarget::parse(target).context(
+        "Invalid target format. Use: <dll>/<function> or <dll>/<function>/vN",
+    )?;
+    info!(
+        dll = %view_target.dll,
+        function = %view_target.function,
+        attempt = ?view_target.specific_attempt,
+        "Parsed view target"
+    );
+
+    // Find the git repository — walk up from CWD
+    let mut repo_path = std::env::current_dir()?;
+    let mut found_git = false;
+    let mut search_path = repo_path.clone();
+    for _ in 0..10 {
+        if search_path.join(".git").exists() || search_path.join(".git").is_dir() {
+            found_git = true;
+            repo_path = search_path.clone();
+            break;
+        }
+        if !search_path.pop() {
+            break;
+        }
+    }
+    if !found_git {
+        repo_path = std::env::current_dir()?;
+    }
+
+    let git = GitManager::open(&repo_path).context("Failed to open git repository")?;
+
+    // Build the unit view data using the shared type from reports crate
+    let unit_data = UnitViewData::load(&git, &view_target, &repo_path)
+        .context("Failed to load unit view data")?;
+
+    // Render the view
+    render_unit_view(&unit_data);
+
+    Ok(())
+}
+
+// ============================================================
 // Verify command handler
 // ============================================================
 
@@ -1132,7 +1212,22 @@ fn main() -> Result<()> {
                 &rust_source,
                 baseline_path.as_deref(),
             )),
-        Command::Dashboard { follow, interval } => tokio::runtime::Builder::new_current_thread()
+        Command::Dashboard {
+            follow: _,
+            interval: _,
+            command: Some(DashboardSubcommand::View { target }),
+        } => {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_dashboard_view(&target))
+        }
+        Command::Dashboard {
+            follow,
+            interval,
+            command: None,
+        } => tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .context("Failed to create tokio runtime")?

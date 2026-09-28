@@ -8,9 +8,11 @@
 //!
 //! - [`DashboardBuilder`] walks the repository and assembles units of work
 //! - [`render_dashboard`] formats everything for the terminal
+//! - [`render_unit_view`] renders a detailed view of a single unit
+//! - [`UnitViewData`] collects all data needed for a unit view
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use calxgloss_git::GitManager;
@@ -18,6 +20,343 @@ use calxgloss_types::dashboard::{
     ReviewDashboard, ReviewStatus, StatusCounts, UnitOfWork, WorkUnitKind,
 };
 use chrono::Utc;
+
+// ============================================================
+// Unit view data types (Phase 3, Step 3.3)
+// ============================================================
+
+/// Parsed representation of a `dashboard view <target>` argument.
+#[derive(Debug, Clone)]
+pub struct ViewTarget {
+    pub dll: String,
+    pub function: String,
+    pub specific_attempt: Option<u32>,
+}
+
+/// Collected data for rendering a single unit view.
+#[derive(Debug)]
+pub struct UnitViewData {
+    /// Parsed target identifier.
+    pub target: ViewTarget,
+    /// Unit of work info from the dashboard.
+    pub unit: Option<UnitOfWork>,
+    /// Git branch name that this unit lives on.
+    pub branch_name: Option<String>,
+    /// Whether the branch is merged into main.
+    pub merged: bool,
+    /// Diff summary: line changes between branch and main.
+    pub diff_summary: Option<DiffSummary>,
+    /// Patch/attempt history.
+    pub attempt_history: Vec<AttemptInfo>,
+    /// Baseline test results.
+    pub baseline_tests_passed: Option<usize>,
+    pub baseline_tests_total: Option<usize>,
+    /// Classification data for the DLL.
+    pub dll_category: Option<String>,
+    pub dll_strategy: Option<String>,
+}
+
+/// Summary of a git diff between branch and main.
+#[derive(Debug)]
+pub struct DiffSummary {
+    pub files_changed: usize,
+    pub insertions: usize,
+    pub deletions: usize,
+}
+
+/// Information about a single translation attempt.
+#[derive(Debug)]
+pub struct AttemptInfo {
+    pub attempt: u32,
+    pub strategy: String,
+    pub compiled: bool,
+    pub compilation_errors: Vec<String>,
+    pub tests_passed: usize,
+    pub tests_total: usize,
+    pub failed_tests: Vec<String>,
+    pub commit_hash: String,
+    pub committed_at: String,
+    pub is_latest: bool,
+}
+
+impl ViewTarget {
+    /// Parse a target string like `game_logic/DrawPrimitive/v3` or `game_logic/DrawPrimitive`.
+    pub fn parse(s: &str) -> Option<Self> {
+        let parts: Vec<&str> = s.split('/').collect();
+        if parts.len() < 2 || parts.len() > 3 {
+            return None;
+        }
+        let dll = parts[0].to_string();
+        let (function, specific_attempt) = if parts.len() == 3 {
+            // dll/function/vN
+            let func = parts[1];
+            let attempt = parts[2].strip_prefix('v')?.parse().ok()?;
+            (func.to_string(), Some(attempt))
+        } else {
+            // dll/function
+            (parts[1].to_string(), None)
+        };
+        Some(Self {
+            dll,
+            function,
+            specific_attempt,
+        })
+    }
+}
+
+impl UnitViewData {
+    /// Load all data needed to render the unit view.
+    pub fn load(
+        git: &GitManager,
+        target: &ViewTarget,
+        repo_path: &Path,
+    ) -> Result<Self, anyhow::Error> {
+        // 1. Build dashboard to get the unit info and find the branch
+        let builder = DashboardBuilder::new(git);
+        let dashboard = builder.build()?;
+
+        // Find the unit matching our target
+        let unit = dashboard
+            .review_queue
+            .iter()
+            .chain(dashboard.recent_activity.iter())
+            .find(|u| {
+                u.dll == target.dll
+                    && u.function.as_deref() == Some(&target.function)
+                    && (target.specific_attempt.is_none()
+                        || Some(u.attempt) == target.specific_attempt)
+            })
+            .cloned();
+
+        // 2. Find the branch name
+        let default_attempt = unit.as_ref().map(|u| u.attempt).unwrap_or(0);
+        let branch_name = git.list_translation_branches()?.into_iter().find(|b| {
+            b.starts_with("re/")
+                && b.contains(&target.dll)
+                && b.contains(&target.function)
+                && (target.specific_attempt.is_none()
+                    || b.ends_with(&format!(
+                        "v{}",
+                        target.specific_attempt.unwrap_or(default_attempt)
+                    )))
+        });
+
+        // 3. Check if the branch is merged
+        let merged = if let Some(ref bname) = branch_name {
+            Self::is_merged(git, bname)
+        } else {
+            false
+        };
+
+        // 4. Get diff summary
+        let diff_summary = branch_name
+            .as_deref()
+            .and_then(|bname| Self::compute_diff(git, bname).ok())
+            .or(Some(DiffSummary {
+                files_changed: 0,
+                insertions: 0,
+                deletions: 0,
+            }));
+
+        // 5. Get patch records (attempt history)
+        let patch_dir = repo_path
+            .join("re")
+            .join("patches")
+            .join(&target.dll)
+            .join(&target.function);
+        let attempt_history =
+            Self::load_attempt_history(&patch_dir, &target.function, &branch_name);
+
+        // 6. Get baseline test data
+        let baseline_path = repo_path
+            .join("re")
+            .join("baseline")
+            .join(format!("{}.dll", target.dll))
+            .join(&target.function)
+            .join("baseline.json");
+
+        let (baseline_passed, baseline_total) = if baseline_path.exists() {
+            let content = std::fs::read_to_string(&baseline_path).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to read baseline from {}: {e}",
+                    baseline_path.display()
+                )
+            })?;
+            let tests: Vec<calxgloss_types::TestResult> =
+                serde_json::from_str(&content).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to parse baseline from {}: {e}",
+                        baseline_path.display()
+                    )
+                })?;
+            let total = tests.len();
+            let passed = tests.iter().filter(|t| t.passed).count();
+            (Some(passed), Some(total))
+        } else {
+            (None, None)
+        };
+
+        // 7. Get DLL classification data
+        let (dll_category, dll_strategy) = Self::load_classification(repo_path, &target.dll);
+
+        Ok(Self {
+            target: target.clone(),
+            unit,
+            branch_name,
+            merged,
+            diff_summary,
+            attempt_history,
+            baseline_tests_passed: baseline_passed,
+            baseline_tests_total: baseline_total,
+            dll_category,
+            dll_strategy,
+        })
+    }
+
+    /// Check if a branch is merged into main.
+    fn is_merged(git: &GitManager, branch_name: &str) -> bool {
+        git.is_branch_merged_into_main(branch_name).unwrap_or(false)
+    }
+
+    /// Compute diff summary between a branch and main.
+    fn compute_diff(git: &GitManager, branch_name: &str) -> Result<DiffSummary, anyhow::Error> {
+        use git2::{DiffFindOptions, DiffOptions};
+
+        let main_ref = git
+            .repo()
+            .find_branch("main", git2::BranchType::Local)
+            .ok()
+            .and_then(|b| b.get().peel_to_commit().ok());
+
+        let branch_ref = git
+            .repo()
+            .find_branch(branch_name, git2::BranchType::Local)
+            .ok()
+            .and_then(|b| b.get().peel_to_commit().ok());
+
+        let (main_commit, branch_commit) = match (main_ref, branch_ref) {
+            (Some(m), Some(b)) => (m, b),
+            _ => return Err(anyhow::anyhow!("Could not resolve main or branch")),
+        };
+
+        // Compute diff between branch and main
+        let mut diff_opts = DiffOptions::new();
+        let mut diff = git.repo().diff_tree_to_tree(
+            Some(&main_commit.tree()?),
+            Some(&branch_commit.tree()?),
+            Some(&mut diff_opts),
+        )?;
+
+        // Use find options for summary (similarity)
+        let mut find_opts = DiffFindOptions::new();
+        find_opts.renames(true);
+        find_opts.rewrites(true);
+        diff.find_similar(Some(&mut find_opts))?;
+
+        let stats = diff.stats()?;
+        Ok(DiffSummary {
+            files_changed: stats.files_changed(),
+            insertions: stats.insertions(),
+            deletions: stats.deletions(),
+        })
+    }
+
+    /// Load attempt history from patch records.
+    fn load_attempt_history(
+        patch_dir: &PathBuf,
+        _function: &str,
+        branch_name: &Option<String>,
+    ) -> Vec<AttemptInfo> {
+        if !patch_dir.exists() {
+            return Vec::new();
+        }
+
+        let mut attempts = Vec::new();
+
+        if let Ok(entries) = std::fs::read_dir(patch_dir) {
+            for entry in entries.flatten() {
+                let file_name = entry.file_name().to_string_lossy().to_string();
+                if !file_name.ends_with(".json") {
+                    continue;
+                }
+
+                let attempt = file_name
+                    .strip_prefix('v')
+                    .and_then(|s| s.trim_end_matches(".json").parse().ok())
+                    .unwrap_or(0);
+
+                let content = match std::fs::read_to_string(entry.path()) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+
+                let record: calxgloss_git::PatchRecord = match serde_json::from_str(&content) {
+                    Ok(r) => r,
+                    Err(_) => continue,
+                };
+
+                let is_latest = branch_name
+                    .as_deref()
+                    .map(|b| {
+                        let parts: Vec<&str> = b.split('v').collect();
+                        if let Some(last) = parts.last() {
+                            last.parse::<u32>().ok() == Some(attempt)
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false);
+
+                attempts.push(AttemptInfo {
+                    attempt,
+                    strategy: "unknown".to_string(),
+                    compiled: !record.compilation_errors.is_empty(),
+                    compilation_errors: record.compilation_errors,
+                    tests_passed: 0,
+                    tests_total: record.test_failures.len(),
+                    failed_tests: record.test_failures,
+                    commit_hash: record.commit_hash,
+                    committed_at: record.committed_at,
+                    is_latest,
+                });
+            }
+        }
+
+        attempts.sort_by_key(|a| a.attempt);
+        attempts
+    }
+
+    /// Load DLL classification data.
+    fn load_classification(repo_path: &Path, dll: &str) -> (Option<String>, Option<String>) {
+        let classify_dir = repo_path.join("re").join("classify");
+        let file_name = format!("{}.json", dll.trim_end_matches(".dll"));
+        let path = classify_dir.join(&file_name);
+
+        if !path.exists() {
+            return (None, None);
+        }
+
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return (None, None),
+        };
+
+        #[derive(serde::Deserialize)]
+        struct ClassificationRecord {
+            #[serde(rename = "category")]
+            category: Option<String>,
+            #[serde(rename = "strategy")]
+            strategy: Option<String>,
+        }
+
+        let record: ClassificationRecord = match serde_json::from_str(&content) {
+            Ok(r) => r,
+            Err(_) => return (None, None),
+        };
+
+        (record.category, record.strategy)
+    }
+}
 
 // ============================================================
 // ANSI codes (kept in sync with the rest of the crate)
@@ -230,10 +569,7 @@ impl<'a> DashboardBuilder<'a> {
             };
 
             // Add to our collection
-            units_by_key
-                .entry(unit.id.clone())
-                .or_default()
-                .push(unit);
+            units_by_key.entry(unit.id.clone()).or_default().push(unit);
         }
 
         // 5. Also check for classified DLLs that aren't covered by translation branches
@@ -283,10 +619,15 @@ impl<'a> DashboardBuilder<'a> {
             .collect();
 
         for unit in &mut units {
-            if unit.kind == WorkUnitKind::FunctionTranslation {
-                if let Some(class_key) = class_keys.iter().find(|k| k.starts_with("classify/") && unit.dll.ends_with(k.strip_prefix("classify/").unwrap_or(""))) {
-                    unit.dependencies.push(class_key.clone());
-                }
+            if unit.kind == WorkUnitKind::FunctionTranslation
+                && let Some(class_key) = class_keys.iter().find(|k| {
+                    k.starts_with("classify/")
+                        && unit
+                            .dll
+                            .ends_with(k.strip_prefix("classify/").unwrap_or(""))
+                })
+            {
+                unit.dependencies.push(class_key.clone());
             }
         }
 
@@ -328,11 +669,10 @@ impl<'a> DashboardBuilder<'a> {
                     .unwrap_or(0);
 
                 let content = std::fs::read_to_string(entry.path())?;
-                let patch: calxgloss_git::PatchRecord =
-                    match serde_json::from_str(&content) {
-                        Ok(p) => p,
-                        Err(_) => continue,
-                    };
+                let patch: calxgloss_git::PatchRecord = match serde_json::from_str(&content) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
 
                 records.push(PatchRecordEntry {
                     key: format!("{}/{}/v{}", dll, patch.function, attempt),
@@ -381,11 +721,10 @@ impl<'a> DashboardBuilder<'a> {
             }
 
             let content = std::fs::read_to_string(&baseline_path)?;
-            let tests: Vec<calxgloss_types::TestResult> =
-                match serde_json::from_str(&content) {
-                    Ok(t) => t,
-                    Err(_) => continue,
-                };
+            let tests: Vec<calxgloss_types::TestResult> = match serde_json::from_str(&content) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
 
             let test_count = tests.len();
             let pass_count = tests.iter().filter(|t| t.passed).count();
@@ -454,13 +793,12 @@ impl<'a> DashboardBuilder<'a> {
             let branch_parts = parse_branch_name(&branch);
             if let Some(bp) = branch_parts {
                 let branch_key = unit_key(&bp);
-                if branch_key == key {
-                    // Check if this branch is merged (fast-forward into main)
-                    if let Ok(merged) = self.is_branch_merged_into_main(&branch) {
-                        if merged {
-                            return true;
-                        }
-                    }
+                // Check if this branch is merged (fast-forward into main)
+                if branch_key == key
+                    && let Ok(merged) = self.is_branch_merged_into_main(&branch)
+                    && merged
+                {
+                    return true;
                 }
             }
         }
@@ -520,7 +858,10 @@ impl<'a> DashboardBuilder<'a> {
         // Look up patch data for this unit
         let patch_data = patch_records
             .iter()
-            .filter(|pr| pr.key.contains(&parts.dll) && pr.key.contains(&parts.function.as_deref().unwrap_or("")))
+            .filter(|pr| {
+                pr.key.contains(&parts.dll)
+                    && pr.key.contains(parts.function.as_deref().unwrap_or(""))
+            })
             .max_by_key(|pr| pr.attempt);
 
         let patch_info = patch_data.map(|pr| {
@@ -546,10 +887,10 @@ impl<'a> DashboardBuilder<'a> {
             baseline_tests_total: None,
             verification_tests_passed: None,
             verification_tests_total: None,
-            llm_model: patch_data.and_then(|_pr| {
+            llm_model: patch_data.and(
                 // We don't have LLM model in patch records, leave as None
-                None
-            }),
+                None,
+            ),
             prompt_tier: None,
             dependencies: vec![],
             created_at: Utc::now(),
@@ -638,10 +979,7 @@ fn println_content(content: impl AsRef<str>) {
     let s = content.as_ref();
     // Pad or truncate visible (non-ANSI) characters to SEP_WIDTH.
     // Strip ANSI codes first to measure visible width.
-    let visible: String = s
-        .chars()
-        .filter(|c| !c.is_control())
-        .collect();
+    let visible: String = s.chars().filter(|c| !c.is_control()).collect();
     let padded = if visible.len() < SEP_WIDTH {
         format!("{:<SEP_WIDTH$}", s)
     } else {
@@ -740,7 +1078,10 @@ fn render_status_summary(counts: &StatusCounts) {
     let total = counts.total();
     let parts = [
         green_bold(&format!("OK {}", counts.accepted + counts.merged)),
-        yellow_bold(&format!("Pending {}", counts.pending_review + counts.patch_requested)),
+        yellow_bold(&format!(
+            "Pending {}",
+            counts.pending_review + counts.patch_requested
+        )),
         red_bold(&format!("Failed {}", counts.send_back)),
         blue_bold(&format!("Queued {}", counts.queued)),
         dim(&format!("Blocked {}", counts.blocked)),
@@ -753,7 +1094,9 @@ fn render_status_summary(counts: &StatusCounts) {
 fn render_queue_table(units: &[UnitOfWork]) {
     // Header: #  Kind       Function                       Status      Tests    Attempt
     // Header — hardcoded spacing so ANSI codes in bold don't shift columns
-    println_content("  #   Kind       Function                        Status      Tests    Attempt");
+    println_content(
+        "  #   Kind       Function                        Status      Tests    Attempt",
+    );
     hsep();
 
     for (idx, unit) in units.iter().enumerate() {
@@ -779,7 +1122,6 @@ fn render_queue_table(units: &[UnitOfWork]) {
     }
     hsep();
 }
-
 
 fn format_kind(kind: &WorkUnitKind) -> String {
     match kind {
@@ -855,6 +1197,201 @@ fn should_stdin_refresh() -> bool {
     // Non-blocking stdin check is disabled to avoid blocking the follow loop.
     // Auto-refresh provides a good enough UX.
     false
+}
+
+// ============================================================
+// Per-unit quick-view rendering (Phase 3, Step 3.3)
+// ============================================================
+
+/// Render a detailed view of a single translation unit.
+///
+/// Shows justification (DLL classification, branch info), diff summary,
+/// test results, and attempt history.
+pub fn render_unit_view(data: &UnitViewData) {
+    let sep = "─".repeat(SEP_WIDTH);
+    let sep_bold = "═".repeat(SEP_WIDTH);
+
+    // Header
+    println!();
+    println!("{}", sep_bold);
+    println_content(format!(
+        "  Unit View: {}/{}",
+        data.target.dll, data.target.function
+    ));
+    println!("{}", sep);
+
+    // --- Section 1: Unit Info & Status ---
+    println_content("  Unit Info");
+    if let Some(ref unit) = data.unit {
+        println_content(format!("    Name:       {}", unit.name));
+        println_content(format!("    Kind:       {}", unit.kind));
+        println_content(format!(
+            "    Status:     {}",
+            format_status_display(&unit.status)
+        ));
+        println_content(format!(
+            "    Confidence: {:.0}%",
+            unit.confidence.unwrap_or(0.0) * 100.0
+        ));
+        if let Some(ref model) = unit.llm_model {
+            println_content(format!("    LLM Model:  {}", model));
+        }
+        if let Some(tier) = unit.prompt_tier {
+            println_content(format!("    Prompt Tier: {}", tier));
+        }
+        if !unit.dependencies.is_empty() {
+            println_content(format!(
+                "    Dependencies: {}",
+                unit.dependencies.join(", ")
+            ));
+        }
+        if !unit.known_gaps.is_empty() {
+            println_content("    Known Gaps:");
+            for gap in &unit.known_gaps {
+                println_content(format!("      • {}", gap));
+            }
+        }
+    }
+
+    // Branch info
+    if let Some(ref branch) = data.branch_name {
+        let status = if data.merged {
+            green_bold("merged ◆")
+        } else {
+            yellow_bold("unmerged ◉")
+        };
+        println_content(format!("    Branch:     {} ({})", branch, status));
+    } else {
+        println_content("    Branch:     <not found>");
+    }
+
+    // DLL classification
+    if let Some(ref category) = data.dll_category {
+        println_content(format!("    DLL Category: {}", category));
+    }
+    if let Some(ref strategy) = data.dll_strategy {
+        println_content(format!("    Strategy:   {}", strategy));
+    }
+
+    println_content("");
+
+    // --- Section 2: Diff Summary ---
+    println_content("  Diff Summary (branch vs main)");
+    if let Some(ref diff) = data.diff_summary {
+        if diff.files_changed > 0 {
+            let ins = green_bold(&diff.insertions.to_string());
+            let del = red_bold(&diff.deletions.to_string());
+            println_content(format!(
+                "    Files changed: {}  |  +{} lines  |  {}- lines",
+                diff.files_changed, ins, del
+            ));
+        } else {
+            println_content("    No changes (branch is identical to main)");
+        }
+    } else {
+        println_content("    Could not compute diff");
+    }
+    println_content("");
+
+    // --- Section 3: Test Results ---
+    println_content("  Test Results");
+    if let (Some(passed), Some(total)) = (data.baseline_tests_passed, data.baseline_tests_total) {
+        if total > 0 {
+            let rate = (passed as f64 / total as f64 * 100.0).round();
+            let color = if passed == total {
+                green_bold(&format!("{}/{} passed ({:.0}%)", passed, total, rate))
+            } else if rate >= 90.0 {
+                yellow_bold(&format!("{}/{} passed ({:.0}%)", passed, total, rate))
+            } else {
+                red_bold(&format!("{}/{} passed ({:.0}%)", passed, total, rate))
+            };
+            println_content(format!("    Baseline: {}", color));
+        } else {
+            println_content("    Baseline: no tests");
+        }
+    } else {
+        println_content("    Baseline: <no data>");
+    }
+
+    if let (Some(_passed), Some(_total)) = (data.baseline_tests_passed, data.baseline_tests_total) {
+        // Show the attempt-level test results too
+        let latest_attempt = data.attempt_history.last();
+        if let Some(attempt) = latest_attempt {
+            if attempt.tests_total > 0 {
+                let ver_passed = attempt.tests_passed.min(attempt.tests_total);
+                println_content(format!(
+                    "    Verification (latest): {}/{} tests passed",
+                    ver_passed, attempt.tests_total
+                ));
+            } else {
+                println_content("    Verification (latest): no tests run");
+            }
+        }
+    }
+    println_content("");
+
+    // --- Section 4: Attempt History ---
+    println_content("  Attempt History");
+    if data.attempt_history.is_empty() {
+        println_content("    No attempt records found.");
+        println_content("    This unit has not been translated yet.");
+    } else {
+        for attempt in &data.attempt_history {
+            let marker = if attempt.is_latest { " ▶" } else { "  " };
+            let status_icon = if attempt.is_latest
+                && attempt.compiled
+                && attempt.tests_passed == attempt.tests_total
+            {
+                green_bold("\u{2713}")
+            } else if attempt.compilation_errors.is_empty() && attempt.failed_tests.is_empty() {
+                dim("\u{25cb}")
+            } else {
+                red_bold("\u{2717}")
+            };
+
+            println_content(format!(
+                "{}  Attempt #{}  {}  committed: {}",
+                marker,
+                attempt.attempt,
+                status_icon,
+                &attempt.committed_at[..19]
+            ));
+
+            if !attempt.compilation_errors.is_empty() {
+                println_content(format!(
+                    "      Compile errors: {} (first: {})",
+                    attempt.compilation_errors.len(),
+                    &attempt.compilation_errors[0][..attempt.compilation_errors[0].len().min(80)]
+                ));
+            }
+
+            if !attempt.failed_tests.is_empty() {
+                let preview = attempt
+                    .failed_tests
+                    .iter()
+                    .map(|t| {
+                        let truncated = if t.len() > 80 { &t[..80] } else { t };
+                        format!("\"{}\"", truncated)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                println_content(format!(
+                    "      Failed tests: {} (first: {})",
+                    attempt.failed_tests.len(),
+                    preview
+                ));
+            }
+
+            if attempt.compiled && !attempt.compilation_errors.is_empty() {
+                // compiled despite errors (partial success)
+                println_content("      Status: compiled with errors");
+            } else if attempt.compilation_errors.is_empty() {
+                println_content("      Status: clean compile");
+            }
+        }
+    }
+    println!("{}", sep_bold);
+    println!();
 }
 
 #[cfg(test)]
