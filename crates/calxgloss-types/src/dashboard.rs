@@ -18,6 +18,70 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 // ============================================================
+// WorkUnitLevel — dependency priority ordering
+// ============================================================
+
+/// The processing level of a work unit in the dependency graph.
+///
+/// Levels define the *phase* a unit belongs to in the pipeline.
+/// Units at a lower level must be processed before units at a
+/// higher level, even when the DAG has no explicit edge between them.
+///
+/// This ordering implements the requirement from Phase 4 / Step 4.2:
+///
+/// ```text
+/// shim layers → PAL traits → function translations → integration
+/// ```
+///
+/// The level is used to break ties in topological sorting: when two
+/// units have the same topological depth, the one at the lower level
+/// is returned first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+pub enum WorkUnitLevel {
+    /// DLL classification — roots of the dependency graph, no dependencies.
+    #[default]
+    DllClassification = 0,
+    /// Shim layer — translates a DLL's API surface to a crate's API.
+    /// Must come after DLL classification, before any function that uses it.
+    ShimLayer = 1,
+    /// PAL trait — defines an abstraction interface for platform code.
+    /// Must come after shim layers (shims may depend on PAL traits).
+    PalTrait = 2,
+    /// Test case addition — baseline or verification test for a function.
+    TestCaseAddition = 3,
+    /// Function translation — a function translated to Rust.
+    /// Depends on shim layers, PAL traits, and test cases.
+    FunctionTranslation = 4,
+    /// Integration step — restitching a batch of translated functions.
+    /// Must come after all constituent functions.
+    IntegrationStep = 5,
+    /// Bug fix — fixing an incorrect translation.
+    /// Depends on the original function translation.
+    BugFix = 6,
+}
+
+impl WorkUnitLevel {
+    /// Returns a human-readable label for this level.
+    pub fn label(&self) -> &'static str {
+        match self {
+            WorkUnitLevel::DllClassification => "classify",
+            WorkUnitLevel::ShimLayer => "shim",
+            WorkUnitLevel::PalTrait => "pal",
+            WorkUnitLevel::TestCaseAddition => "test",
+            WorkUnitLevel::FunctionTranslation => "func",
+            WorkUnitLevel::IntegrationStep => "integrate",
+            WorkUnitLevel::BugFix => "fix",
+        }
+    }
+}
+
+impl std::fmt::Display for WorkUnitLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.label())
+    }
+}
+
+// ============================================================
 // WorkUnitKind
 // ============================================================
 
@@ -38,6 +102,25 @@ pub enum WorkUnitKind {
     IntegrationStep,
     /// Fixing incorrect translation.
     BugFix,
+}
+
+impl WorkUnitKind {
+    /// Returns the processing level for this kind of work unit.
+    ///
+    /// This determines the unit's priority in topological ordering.
+    /// Units at a lower level are processed first, even when the DAG
+    /// has no explicit edge between them.
+    pub fn level(&self) -> WorkUnitLevel {
+        match self {
+            WorkUnitKind::DllClassification => WorkUnitLevel::DllClassification,
+            WorkUnitKind::ShimLayer => WorkUnitLevel::ShimLayer,
+            WorkUnitKind::PalTrait => WorkUnitLevel::PalTrait,
+            WorkUnitKind::TestCaseAddition => WorkUnitLevel::TestCaseAddition,
+            WorkUnitKind::FunctionTranslation => WorkUnitLevel::FunctionTranslation,
+            WorkUnitKind::IntegrationStep => WorkUnitLevel::IntegrationStep,
+            WorkUnitKind::BugFix => WorkUnitLevel::BugFix,
+        }
+    }
 }
 
 impl std::fmt::Display for WorkUnitKind {
@@ -239,6 +322,40 @@ pub struct DependencyNode {
     pub name: String,
     /// Status of this unit.
     pub status: ReviewStatus,
+    /// Processing level — used for tie-breaking in topological sort.
+    ///
+    /// When two nodes have the same topological depth, the one at
+    /// the lower level is returned first. For example, a shim layer
+    /// at depth 1 is returned before a function translation at depth 1.
+    #[serde(default)]
+    pub level: WorkUnitLevel,
+}
+
+impl DependencyNode {
+    /// Creates a new dependency node.
+    pub fn new(unit_id: impl Into<String>, name: impl Into<String>, status: ReviewStatus) -> Self {
+        Self {
+            unit_id: unit_id.into(),
+            name: name.into(),
+            status,
+            level: WorkUnitLevel::FunctionTranslation, // default: treat as function translation
+        }
+    }
+
+    /// Creates a dependency node with an explicit level.
+    pub fn with_level(
+        unit_id: impl Into<String>,
+        name: impl Into<String>,
+        status: ReviewStatus,
+        level: WorkUnitLevel,
+    ) -> Self {
+        Self {
+            unit_id: unit_id.into(),
+            name: name.into(),
+            status,
+            level,
+        }
+    }
 }
 
 /// An edge representing a dependency relationship between units of work.
@@ -292,14 +409,27 @@ impl DependencyGraph {
 
     /// Returns all nodes in topological order (dependencies first).
     ///
-    /// Uses a depth-based approach: each node is assigned a depth equal to
-    /// the longest dependency chain leading to it. Nodes are then sorted by
-    /// depth, so a node always appears after all its dependencies.
+    /// Uses Kahn's algorithm with **level-aware tie-breaking**: when multiple
+    /// nodes have the same topological depth, nodes at a lower processing level
+    /// are returned first. This enforces the ordering requirement from
+    /// Phase 4 / Step 4.2:
     ///
-    /// This is suitable for ordered batch operations like
-    /// [`ReviewDashboard::accept_all`] — a unit is only returned after all
-    /// of its dependencies.
-    pub fn topological_order(&self) -> Vec<&DependencyNode> {
+    /// ```text
+    /// shim layers → PAL traits → function translations → integration
+    /// ```
+    ///
+    /// # Cycle Detection
+    ///
+    /// If the graph contains a cycle, this method returns the nodes that were
+    /// successfully ordered (those whose dependencies were all resolved), along
+    /// with a list of node IDs that are part of or blocked by the cycle.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of:
+    /// 1. `Vec<&DependencyNode>` — nodes in dependency-then-level order
+    /// 2. `Vec<String>` — node IDs involved in cycles (empty if no cycle)
+    pub fn topological_order(&self) -> (Vec<&DependencyNode>, Vec<String>) {
         // Build adjacency list: for each node (key), which nodes depend on it (values)
         let mut depended_by: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
@@ -329,51 +459,98 @@ impl DependencyGraph {
             *in_degree.entry(edge.from.clone()).or_insert(0) += 1;
         }
 
-        // Kahn's algorithm: process nodes with no dependencies first
+        // Helper to get level of a node by ID
+        let get_level = |id: &str| -> WorkUnitLevel {
+            self.nodes.iter().find(|n| n.unit_id == id).map(|n| n.level)
+                .unwrap_or(WorkUnitLevel::FunctionTranslation)
+        };
+
+        // Kahn's algorithm with level-aware priority queue
         let mut depth: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
+        // Use a Vec as a priority queue, sorted by (depth, level, node_id)
         let mut queue: Vec<String> = in_degree
             .iter()
             .filter(|&(_, deg)| *deg == 0)
             .map(|(id, _)| id.clone())
             .collect();
-        queue.sort();
+        queue.sort_by_key(|id| (0, get_level(id), id.clone()));
+
+        let mut ordered_ids: Vec<String> = Vec::new();
 
         while let Some(current) = queue.first().cloned() {
             queue.remove(0);
-            // Don't overwrite depth if already set (it was set when added to queue)
-            depth.entry(current.clone()).or_insert(0);
+            let current_depth = depth.get(&current).copied().unwrap_or(0);
+            ordered_ids.push(current.clone());
 
-            // Decrement in-degree of all nodes that depend on `current`
-            for dependent in depended_by.get(&current).into_iter().flatten() {
-                let deg = in_degree.get_mut(dependent).unwrap();
-                *deg -= 1;
-                if *deg == 0 {
-                    // All dependencies resolved
-                    let d = depth
-                        .get(&current)
-                        .copied()
-                        .unwrap_or(0)
-                        + 1;
-                    depth.insert(dependent.clone(), d);
-                    queue.push(dependent.clone());
+            // Collect all nodes that become ready from processing `current`
+            let mut newly_ready: Vec<String> = Vec::new();
+            if let Some(deps) = depended_by.get(&current) {
+                for dependent in deps {
+                    let deg = in_degree.get_mut(dependent).unwrap();
+                    *deg -= 1;
+                    if *deg == 0 {
+                        let new_depth = current_depth + 1;
+                        depth.insert(dependent.clone(), new_depth);
+                        newly_ready.push(dependent.clone());
+                    }
                 }
             }
+
+            // Sort newly ready nodes by (depth, level, id) for stable ordering
+            newly_ready.sort_by_key(|id| (depth[id], get_level(id), id.clone()));
+
+            // Insert all newly ready nodes into the queue at correct positions
+            // All have the same depth (current_depth + 1), so we merge-sort them
+            // with the existing queue which may have nodes at higher depths
+            let mut merged = Vec::with_capacity(queue.len() + newly_ready.len());
+            let mut qi = 0;
+            let mut ni = 0;
+
+            while qi < queue.len() && ni < newly_ready.len() {
+                let q_depth = depth.get(&queue[qi]).copied().unwrap_or(0);
+                let q_level = get_level(&queue[qi]);
+                let n_depth = depth[&newly_ready[ni]];
+                let n_level = get_level(&newly_ready[ni]);
+
+                if n_depth < q_depth
+                    || (n_depth == q_depth && n_level < q_level)
+                    || (n_depth == q_depth && n_level == q_level
+                        && newly_ready[ni] <= queue[qi])
+                {
+                    merged.push(newly_ready[ni].clone());
+                    ni += 1;
+                } else {
+                    merged.push(queue[qi].clone());
+                    qi += 1;
+                }
+            }
+
+            while ni < newly_ready.len() {
+                merged.push(newly_ready[ni].clone());
+                ni += 1;
+            }
+            while qi < queue.len() {
+                merged.push(queue[qi].clone());
+                qi += 1;
+            }
+
+            queue = merged;
         }
 
-        // Nodes not reachable (cycles or missing deps) get depth 0
-        for id in &node_ids {
-            depth.entry(id.clone()).or_insert(0);
-        }
+        // Detect cycles: nodes not in ordered_ids have in_degree > 0
+        let cycle_nodes: Vec<String> = node_ids
+            .into_iter()
+            .filter(|id| !ordered_ids.contains(id))
+            .collect();
 
-        // Sort by depth (ascending), with stable tie-breaking by node ID
-        let mut ordered: Vec<&DependencyNode> = self.nodes.iter().collect();
-        ordered.sort_by(|a, b| {
-            let da = depth.get(&a.unit_id).copied().unwrap_or(0);
-            let db = depth.get(&b.unit_id).copied().unwrap_or(0);
-            da.cmp(&db).then_with(|| a.unit_id.cmp(&b.unit_id))
-        });
-        ordered
+        // Build result in order (iterate over ordered_ids, not self.nodes)
+        let ordered: Vec<&DependencyNode> = ordered_ids
+            .iter()
+            .filter_map(|id| self.nodes.iter().find(|n| n.unit_id == *id))
+            .collect();
+
+        (ordered, cycle_nodes)
     }
 }
 
@@ -485,12 +662,13 @@ impl ReviewDashboard {
                 ReviewStatus::Blocked => counts.blocked += 1,
             }
 
-            // Add node to dependency graph
-            graph.nodes.push(DependencyNode {
-                unit_id: unit.id.clone(),
-                name: unit.name.clone(),
-                status: unit.status.clone(),
-            });
+            // Add node to dependency graph with the correct processing level
+            graph.nodes.push(DependencyNode::with_level(
+                unit.id.clone(),
+                unit.name.clone(),
+                unit.status.clone(),
+                unit.kind.level(),
+            ));
 
             // Add edges for dependencies
             for dep in &unit.dependencies {
@@ -512,7 +690,79 @@ impl ReviewDashboard {
         }
     }
 
+    /// Returns the next unit to review in proper dependency-then-level order.
+    ///
+    /// This method uses the full topological sort with level-aware tie-breaking
+    /// to determine the correct next unit. The ordering respects:
+    /// 1. **Dependencies first** — a unit's dependencies must come before it
+    /// 2. **Level priority** — within the same depth: shim < PAL trait < function < integration
+    ///
+    /// Only units with status `Queued` or `PendingReview` are considered.
+    /// Already-accepted units and blocked units are excluded.
+    pub fn next_in_dependency_order(&self) -> Option<&UnitOfWork> {
+        let sorted = self.sorted_queue();
+        sorted.first().copied()
+    }
+
+    /// Returns all non-accepted units sorted in proper dependency-then-level order.
+    ///
+    /// Uses the full topological sort from [`DependencyGraph::topological_order`]
+    /// with level-aware tie-breaking. This is the canonical ordering for
+    /// batch operations like accept-all.
+    pub fn sorted_queue(&self) -> Vec<&UnitOfWork> {
+        let (ordered, cycle_nodes) = self.dependency_graph.topological_order();
+        if !cycle_nodes.is_empty() {
+            // Log cycle detection to stderr (tracing is not a dependency of calxgloss-types)
+            eprintln!(
+                "WARNING: Cycle detected in dependency graph: {:?}. {} nodes excluded from order.",
+                cycle_nodes,
+                cycle_nodes.len()
+            );
+        }
+
+        let id_set: std::collections::HashSet<&str> = ordered.iter().map(|n| n.unit_id.as_str()).collect();
+        let mut result: Vec<&UnitOfWork> = self
+            .review_queue
+            .iter()
+            .chain(self.recent_activity.iter())
+            .filter(|u| !id_set.contains(u.id.as_str()) ||
+                matches!(u.status, ReviewStatus::Queued | ReviewStatus::PendingReview))
+            .collect();
+
+        // Separate: accepted units go last (they're already merged)
+        let mut accepted: Vec<&UnitOfWork> = Vec::new();
+        let mut pending: Vec<&UnitOfWork> = Vec::new();
+        for u in &result {
+            if matches!(u.status, ReviewStatus::Queued | ReviewStatus::PendingReview) {
+                pending.push(*u);
+            } else {
+                accepted.push(*u);
+            }
+        }
+
+        // Re-sort pending in topological + level order
+        pending.sort_by(|a, b| {
+            let ai = ordered.iter().position(|n| n.unit_id == a.id);
+            let bi = ordered.iter().position(|n| n.unit_id == b.id);
+            match (ai, bi) {
+                (Some(i), Some(j)) => i.cmp(&j),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => a.kind.level().cmp(&b.kind.level())
+                    .then_with(|| a.id.cmp(&b.id)),
+            }
+        });
+
+        result.clear();
+        result.extend(pending);
+        result.extend(accepted);
+        result
+    }
+
     /// Returns the next unit to review (first in dependency order).
+    ///
+    /// Deprecated: use [`next_in_dependency_order`](Self::next_in_dependency_order) instead.
+    #[deprecated(since = "0.2.0", note = "Use next_in_dependency_order() instead")]
     pub fn next_to_review(&self) -> Option<&UnitOfWork> {
         self.review_queue.first()
     }
@@ -573,11 +823,16 @@ impl ReviewDashboard {
                         .find(|u| u.id == *id)
                         .map(|u| u.status.clone())
                         .unwrap_or(ReviewStatus::Queued);
-                    DependencyNode {
-                        unit_id: id.to_string(),
-                        name,
-                        status,
-                    }
+
+                    // Look up the WorkUnitKind to get the correct level
+                    let level = self
+                        .review_queue
+                        .iter()
+                        .find(|u| u.id == *id)
+                        .map(|u| u.kind.level())
+                        .unwrap_or(WorkUnitLevel::FunctionTranslation);
+
+                    DependencyNode::with_level(id.to_string(), name, status, level)
                 })
                 .collect(),
             edges: edges
@@ -589,7 +844,8 @@ impl ReviewDashboard {
                 .collect(),
         };
 
-        let ordered_ids: Vec<&str> = graph.topological_order().iter().map(|n| n.unit_id.as_str()).collect();
+        let (ordered_ids, _cycle_nodes) = graph.topological_order();
+        let ordered_ids: Vec<&str> = ordered_ids.iter().map(|n| n.unit_id.as_str()).collect();
 
         // Return units in topological order, preserving original fields
         let id_set: std::collections::HashSet<&str> = ordered_ids.iter().copied().collect();
@@ -650,21 +906,9 @@ mod tests {
     fn dependency_graph_roots() {
         let graph = DependencyGraph {
             nodes: vec![
-                DependencyNode {
-                    unit_id: "dll_classify".into(),
-                    name: "DLL Classification".into(),
-                    status: ReviewStatus::Accepted,
-                },
-                DependencyNode {
-                    unit_id: "shim_wgpu".into(),
-                    name: "Shim wgpu".into(),
-                    status: ReviewStatus::PendingReview,
-                },
-                DependencyNode {
-                    unit_id: "func_draw".into(),
-                    name: "func_DrawPrimitive".into(),
-                    status: ReviewStatus::Queued,
-                },
+                DependencyNode::new("dll_classify", "DLL Classification", ReviewStatus::Accepted),
+                DependencyNode::with_level("shim_wgpu", "Shim wgpu", ReviewStatus::PendingReview, WorkUnitLevel::ShimLayer),
+                DependencyNode::new("func_draw", "func_DrawPrimitive", ReviewStatus::Queued),
             ],
             edges: vec![
                 DependencyEdge {
@@ -688,16 +932,8 @@ mod tests {
     fn dependency_graph_dependents() {
         let graph = DependencyGraph {
             nodes: vec![
-                DependencyNode {
-                    unit_id: "dll_classify".into(),
-                    name: "DLL Classification".into(),
-                    status: ReviewStatus::Accepted,
-                },
-                DependencyNode {
-                    unit_id: "shim_wgpu".into(),
-                    name: "Shim wgpu".into(),
-                    status: ReviewStatus::PendingReview,
-                },
+                DependencyNode::new("dll_classify", "DLL Classification", ReviewStatus::Accepted),
+                DependencyNode::with_level("shim_wgpu", "Shim wgpu", ReviewStatus::PendingReview, WorkUnitLevel::ShimLayer),
             ],
             edges: vec![DependencyEdge {
                 from: "shim_wgpu".into(),
@@ -714,16 +950,8 @@ mod tests {
     fn dependency_graph_dependencies() {
         let graph = DependencyGraph {
             nodes: vec![
-                DependencyNode {
-                    unit_id: "func_draw".into(),
-                    name: "func_DrawPrimitive".into(),
-                    status: ReviewStatus::Queued,
-                },
-                DependencyNode {
-                    unit_id: "shim_wgpu".into(),
-                    name: "Shim wgpu".into(),
-                    status: ReviewStatus::Accepted,
-                },
+                DependencyNode::new("func_draw", "func_DrawPrimitive", ReviewStatus::Queued),
+                DependencyNode::with_level("shim_wgpu", "Shim wgpu", ReviewStatus::Accepted, WorkUnitLevel::ShimLayer),
             ],
             edges: vec![DependencyEdge {
                 from: "func_draw".into(),
@@ -999,26 +1227,10 @@ mod tests {
     fn topological_order_respects_dependencies() {
         let graph = DependencyGraph {
             nodes: vec![
-                DependencyNode {
-                    unit_id: "dll_classify".into(),
-                    name: "DLL Classification".into(),
-                    status: ReviewStatus::Accepted,
-                },
-                DependencyNode {
-                    unit_id: "shim_wgpu".into(),
-                    name: "Shim wgpu".into(),
-                    status: ReviewStatus::PendingReview,
-                },
-                DependencyNode {
-                    unit_id: "func_draw".into(),
-                    name: "func_DrawPrimitive".into(),
-                    status: ReviewStatus::Queued,
-                },
-                DependencyNode {
-                    unit_id: "func_present".into(),
-                    name: "func_Present".into(),
-                    status: ReviewStatus::Queued,
-                },
+                DependencyNode::new("dll_classify", "DLL Classification", ReviewStatus::Accepted),
+                DependencyNode::with_level("shim_wgpu", "Shim wgpu", ReviewStatus::PendingReview, WorkUnitLevel::ShimLayer),
+                DependencyNode::new("func_draw", "func_DrawPrimitive", ReviewStatus::Queued),
+                DependencyNode::new("func_present", "func_Present", ReviewStatus::Queued),
             ],
             edges: vec![
                 DependencyEdge {
@@ -1036,7 +1248,8 @@ mod tests {
             ],
         };
 
-        let ordered = graph.topological_order();
+        let (ordered, cycles) = graph.topological_order();
+        assert!(cycles.is_empty(), "no cycles expected");
         let order_ids: Vec<&str> = ordered.iter().map(|n| n.unit_id.as_str()).collect();
 
         // dll_classify must come first (no dependencies)
@@ -1200,5 +1413,245 @@ mod tests {
         let json = serde_json::to_string(&stale).unwrap();
         let deserialized: Staleness = serde_json::from_str(&json).unwrap();
         assert!(matches!(deserialized, Staleness::Stale(_)));
+    }
+
+    // ── Level-aware topological sort tests (Phase 4, Step 4.2) ──
+
+    #[test]
+    fn level_respects_pipeline_order() {
+        // When two nodes have the same topological depth,
+        // the one at a lower level is returned first.
+        // e.g., a shim layer at depth 1 should come before a PAL trait at depth 1
+        let graph = DependencyGraph {
+            nodes: vec![
+                DependencyNode::with_level("dll_cls", "DLL Classify", ReviewStatus::Accepted, WorkUnitLevel::DllClassification),
+                DependencyNode::with_level("shim_wgpu", "Shim wgpu", ReviewStatus::Queued, WorkUnitLevel::ShimLayer),
+                DependencyNode::with_level("pal_graphics", "PAL GraphicsDevice", ReviewStatus::Queued, WorkUnitLevel::PalTrait),
+                DependencyNode::with_level("func_draw", "func_DrawPrimitive", ReviewStatus::Queued, WorkUnitLevel::FunctionTranslation),
+            ],
+            edges: vec![
+                DependencyEdge { from: "shim_wgpu".into(), to: "dll_cls".into() },
+                DependencyEdge { from: "pal_graphics".into(), to: "dll_cls".into() },
+                // func_draw depends on both shim and PAL
+                DependencyEdge { from: "func_draw".into(), to: "shim_wgpu".into() },
+                DependencyEdge { from: "func_draw".into(), to: "pal_graphics".into() },
+            ],
+        };
+
+        let (ordered, cycles) = graph.topological_order();
+        assert!(cycles.is_empty(), "no cycles expected");
+        let order_ids: Vec<&str> = ordered.iter().map(|n| n.unit_id.as_str()).collect();
+
+        // dll_cls first (depth 0)
+        assert_eq!(order_ids[0], "dll_cls");
+
+        // shim_wgpu before pal_graphics at depth 1 (ShimLayer < PalTrait level)
+        let shim_idx = order_ids.iter().position(|&id| id == "shim_wgpu").unwrap();
+        let pal_idx = order_ids.iter().position(|&id| id == "pal_graphics").unwrap();
+        assert!(shim_idx < pal_idx, "shim layer should come before PAL trait at same depth");
+
+        // func_draw last (depth 2)
+        assert_eq!(order_ids[order_ids.len() - 1], "func_draw");
+    }
+
+    #[test]
+    fn full_pipeline_order() {
+        // Simulates the full pipeline: classify → shim → PAL trait → function → integration
+        let graph = DependencyGraph {
+            nodes: vec![
+                DependencyNode::with_level("dll_cls", "Classify d3d9.dll", ReviewStatus::Accepted, WorkUnitLevel::DllClassification),
+                DependencyNode::with_level("shim_wgpu", "Shim d3d9→wgpu", ReviewStatus::Queued, WorkUnitLevel::ShimLayer),
+                DependencyNode::with_level("pal_graphics", "PAL GraphicsDevice", ReviewStatus::Queued, WorkUnitLevel::PalTrait),
+                DependencyNode::with_level("func_present", "func_Present", ReviewStatus::Queued, WorkUnitLevel::FunctionTranslation),
+                DependencyNode::with_level("func_draw", "func_DrawPrimitive", ReviewStatus::Queued, WorkUnitLevel::FunctionTranslation),
+                DependencyNode::with_level("integrate_batch", "Integrate batch 001", ReviewStatus::Queued, WorkUnitLevel::IntegrationStep),
+            ],
+            edges: vec![
+                DependencyEdge { from: "shim_wgpu".into(), to: "dll_cls".into() },
+                DependencyEdge { from: "pal_graphics".into(), to: "shim_wgpu".into() },
+                DependencyEdge { from: "func_present".into(), to: "pal_graphics".into() },
+                DependencyEdge { from: "func_draw".into(), to: "shim_wgpu".into() },
+                DependencyEdge { from: "func_draw".into(), to: "pal_graphics".into() },
+                DependencyEdge { from: "integrate_batch".into(), to: "func_present".into() },
+                DependencyEdge { from: "integrate_batch".into(), to: "func_draw".into() },
+            ],
+        };
+
+        let (ordered, cycles) = graph.topological_order();
+        assert!(cycles.is_empty(), "no cycles expected");
+        let order_ids: Vec<&str> = ordered.iter().map(|n| n.unit_id.as_str()).collect();
+
+        // Expected order:
+        // 0: dll_cls (depth 0, level 0)
+        // 1: shim_wgpu (depth 1, level 1)
+        // 2: pal_graphics (depth 2, level 2)
+        // 3: func_draw (depth 3, level 4) - depends on shim(1) + pal(2), same depth as func_present
+        // 4: func_present (depth 3, level 4) - depends on pal(2)
+        // 5: integrate_batch (depth 4, level 5)
+
+        assert_eq!(order_ids[0], "dll_cls");
+        assert_eq!(order_ids[1], "shim_wgpu");
+        assert_eq!(order_ids[2], "pal_graphics");
+
+        // func_present depends on pal_graphics at depth 3
+        // func_draw depends on shim_wgpu (depth 2) + pal_graphics (depth 2) = depth 3
+        let present_idx = order_ids.iter().position(|&id| id == "func_present").unwrap();
+        let draw_idx = order_ids.iter().position(|&id| id == "func_draw").unwrap();
+        let int_idx = order_ids.iter().position(|&id| id == "integrate_batch").unwrap();
+
+        assert!(present_idx < int_idx, "function before integration");
+        assert!(draw_idx < int_idx, "function before integration");
+        assert_eq!(order_ids[order_ids.len() - 1], "integrate_batch");
+    }
+
+    #[test]
+    fn cycle_detection() {
+        // Create a cycle: A → B → A
+        let graph = DependencyGraph {
+            nodes: vec![
+                DependencyNode::new("unit_a", "Unit A", ReviewStatus::Queued),
+                DependencyNode::new("unit_b", "Unit B", ReviewStatus::Queued),
+            ],
+            edges: vec![
+                DependencyEdge { from: "unit_a".into(), to: "unit_b".into() },
+                DependencyEdge { from: "unit_b".into(), to: "unit_a".into() },
+            ],
+        };
+
+        let (ordered, cycles) = graph.topological_order();
+        assert!(ordered.is_empty(), "all nodes should be excluded due to cycle");
+        assert_eq!(cycles.len(), 2, "both nodes should be in the cycle list");
+    }
+
+    #[test]
+    fn partial_cycle() {
+        // A → B → C, and C → D (cycle), but A is unaffected
+        let graph = DependencyGraph {
+            nodes: vec![
+                DependencyNode::new("good_a", "Good A", ReviewStatus::Queued),
+                DependencyNode::new("good_b", "Good B", ReviewStatus::Queued),
+                DependencyNode::new("bad_c", "Bad C", ReviewStatus::Queued),
+                DependencyNode::new("bad_d", "Bad D", ReviewStatus::Queued),
+            ],
+            edges: vec![
+                DependencyEdge { from: "good_b".into(), to: "good_a".into() },
+                // Cycle: bad_c → bad_d → bad_c
+                DependencyEdge { from: "bad_c".into(), to: "bad_d".into() },
+                DependencyEdge { from: "bad_d".into(), to: "bad_c".into() },
+            ],
+        };
+
+        let (ordered, cycles) = graph.topological_order();
+        let order_ids: Vec<&str> = ordered.iter().map(|n| n.unit_id.as_str()).collect();
+
+        // Good nodes should still be ordered
+        assert_eq!(order_ids[0], "good_a");
+        assert_eq!(order_ids[1], "good_b");
+        assert_eq!(ordered.len(), 2, "only good nodes should be ordered");
+
+        // Bad nodes should be in cycle list
+        assert!(cycles.contains(&"bad_c".to_string()));
+        assert!(cycles.contains(&"bad_d".to_string()));
+    }
+
+    #[test]
+    fn work_unit_level_ordering() {
+        // Verify that WorkUnitLevel enum ordering matches pipeline phases
+        assert!(WorkUnitLevel::DllClassification < WorkUnitLevel::ShimLayer);
+        assert!(WorkUnitLevel::ShimLayer < WorkUnitLevel::PalTrait);
+        assert!(WorkUnitLevel::PalTrait < WorkUnitLevel::TestCaseAddition);
+        assert!(WorkUnitLevel::TestCaseAddition < WorkUnitLevel::FunctionTranslation);
+        assert!(WorkUnitLevel::FunctionTranslation < WorkUnitLevel::IntegrationStep);
+        assert!(WorkUnitLevel::IntegrationStep < WorkUnitLevel::BugFix);
+
+        // Verify labels
+        assert_eq!(WorkUnitLevel::DllClassification.label(), "classify");
+        assert_eq!(WorkUnitLevel::ShimLayer.label(), "shim");
+        assert_eq!(WorkUnitLevel::PalTrait.label(), "pal");
+        assert_eq!(WorkUnitLevel::FunctionTranslation.label(), "func");
+        assert_eq!(WorkUnitLevel::IntegrationStep.label(), "integrate");
+        assert_eq!(WorkUnitLevel::BugFix.label(), "fix");
+    }
+
+    #[test]
+    fn work_unit_kind_to_level() {
+        assert_eq!(WorkUnitKind::DllClassification.level(), WorkUnitLevel::DllClassification);
+        assert_eq!(WorkUnitKind::ShimLayer.level(), WorkUnitLevel::ShimLayer);
+        assert_eq!(WorkUnitKind::PalTrait.level(), WorkUnitLevel::PalTrait);
+        assert_eq!(WorkUnitKind::TestCaseAddition.level(), WorkUnitLevel::TestCaseAddition);
+        assert_eq!(WorkUnitKind::FunctionTranslation.level(), WorkUnitLevel::FunctionTranslation);
+        assert_eq!(WorkUnitKind::IntegrationStep.level(), WorkUnitLevel::IntegrationStep);
+        assert_eq!(WorkUnitKind::BugFix.level(), WorkUnitLevel::BugFix);
+    }
+
+    #[test]
+    fn dependency_node_constructors() {
+        // Test the new constructor methods
+        let node = DependencyNode::new("id1", "Name 1", ReviewStatus::Queued);
+        assert_eq!(node.unit_id, "id1");
+        assert_eq!(node.level, WorkUnitLevel::FunctionTranslation); // default
+
+        let node = DependencyNode::with_level(
+            "id2", "Name 2", ReviewStatus::PendingReview, WorkUnitLevel::ShimLayer
+        );
+        assert_eq!(node.unit_id, "id2");
+        assert_eq!(node.level, WorkUnitLevel::ShimLayer);
+    }
+
+    #[test]
+    fn empty_graph_topological_order() {
+        let graph = DependencyGraph {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        };
+
+        let (ordered, cycles) = graph.topological_order();
+        assert!(ordered.is_empty());
+        assert!(cycles.is_empty());
+    }
+
+    #[test]
+    fn single_node_no_edges() {
+        let graph = DependencyGraph {
+            nodes: vec![
+                DependencyNode::with_level("solo", "Solo Unit", ReviewStatus::Queued, WorkUnitLevel::ShimLayer),
+            ],
+            edges: Vec::new(),
+        };
+
+        let (ordered, cycles) = graph.topological_order();
+        assert_eq!(ordered.len(), 1);
+        assert_eq!(ordered[0].unit_id, "solo");
+        assert!(cycles.is_empty());
+    }
+
+    #[test]
+    fn level_tiebreaks_same_depth() {
+        // Both shim and PAL depend only on the DLL classification.
+        // At the same depth, shim should come first.
+        let graph = DependencyGraph {
+            nodes: vec![
+                DependencyNode::with_level("dll", "DLL", ReviewStatus::Accepted, WorkUnitLevel::DllClassification),
+                DependencyNode::with_level("func_x", "Func X", ReviewStatus::Queued, WorkUnitLevel::FunctionTranslation),
+                DependencyNode::with_level("shim_y", "Shim Y", ReviewStatus::Queued, WorkUnitLevel::ShimLayer),
+                DependencyNode::with_level("pal_z", "PAL Z", ReviewStatus::Queued, WorkUnitLevel::PalTrait),
+            ],
+            edges: vec![
+                DependencyEdge { from: "func_x".into(), to: "dll".into() },
+                DependencyEdge { from: "shim_y".into(), to: "dll".into() },
+                DependencyEdge { from: "pal_z".into(), to: "dll".into() },
+            ],
+        };
+
+        let (ordered, _cycles) = graph.topological_order();
+        let order_ids: Vec<&str> = ordered.iter().map(|n| n.unit_id.as_str()).collect();
+
+        // dll first
+        assert_eq!(order_ids[0], "dll");
+
+        // Then shim, then pal (same depth, level tie-breaking)
+        assert_eq!(order_ids[1], "shim_y");
+        assert_eq!(order_ids[2], "pal_z");
+        assert_eq!(order_ids[3], "func_x");
     }
 }

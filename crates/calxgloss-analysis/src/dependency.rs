@@ -64,7 +64,7 @@
 //! assert_eq!(graph.nodes.len(), 6); // 2 classifications + 1 shim + 3 functions
 //! ```
 
-use calxgloss_types::{DependencyEdge, DependencyGraph, DependencyNode, ReviewStatus};
+use calxgloss_types::{DependencyEdge, DependencyGraph, DependencyNode, ReviewStatus, dashboard::WorkUnitLevel};
 
 use crate::DllClassification;
 
@@ -203,11 +203,12 @@ impl DependencyTracker {
 
         for cls in classifications {
             let node_id = Self::dll_node_id(&cls.dll);
-            graph.nodes.push(DependencyNode {
-                unit_id: node_id.clone(),
-                name: format!("Classify {}", cls.dll),
-                status: ReviewStatus::Queued,
-            });
+            graph.nodes.push(DependencyNode::with_level(
+                node_id.clone(),
+                format!("Classify {}", cls.dll),
+                ReviewStatus::Queued,
+                WorkUnitLevel::DllClassification,
+            ));
             dll_node_ids.insert(cls.dll.clone(), node_id);
         }
 
@@ -219,11 +220,12 @@ impl DependencyTracker {
         for cls in classifications {
             if let crate::Strategy::CrateReplacement { crate_name } = &cls.strategy {
                 let shim_id = Self::shim_node_id(&cls.dll, crate_name);
-                graph.nodes.push(DependencyNode {
-                    unit_id: shim_id.clone(),
-                    name: format!("Shim {} → {}", cls.dll, crate_name),
-                    status: ReviewStatus::Queued,
-                });
+                graph.nodes.push(DependencyNode::with_level(
+                    shim_id.clone(),
+                    format!("Shim {} → {}", cls.dll, crate_name),
+                    ReviewStatus::Queued,
+                    WorkUnitLevel::ShimLayer,
+                ));
                 shim_node_ids.insert(cls.dll.clone(), shim_id.clone());
                 graph.edges.push(DependencyEdge {
                     from: shim_id,
@@ -244,11 +246,12 @@ impl DependencyTracker {
                     if dll_nodes_added.insert(dll_id.clone()) {}
                 } else {
                     let dll_id = Self::dll_node_id(func_dll);
-                    graph.nodes.push(DependencyNode {
-                        unit_id: dll_id.clone(),
-                        name: format!("Classify {}", func_dll),
-                        status: ReviewStatus::Queued,
-                    });
+                    graph.nodes.push(DependencyNode::with_level(
+                        dll_id.clone(),
+                        format!("Classify {}", func_dll),
+                        ReviewStatus::Queued,
+                        WorkUnitLevel::DllClassification,
+                    ));
                     dll_node_ids.insert(func_dll.clone(), dll_id.clone());
                     dll_nodes_added.insert(dll_id);
                 }
@@ -262,11 +265,11 @@ impl DependencyTracker {
 
         for (func_name, _neighbors) in call_graph {
             let func_id = Self::func_node_id(func_name);
-            graph.nodes.push(DependencyNode {
-                unit_id: func_id.clone(),
-                name: format!("Translate {}", func_name),
-                status: ReviewStatus::Queued,
-            });
+            graph.nodes.push(DependencyNode::new(
+                func_id.clone(),
+                format!("Translate {}", func_name),
+                ReviewStatus::Queued,
+            ));
             function_node_ids.insert(func_name.to_string(), func_id.clone());
         }
 
@@ -333,22 +336,24 @@ impl DependencyTracker {
 
         // Phase 1: DLL classification node
         let dll_id = Self::dll_node_id(&classification.dll);
-        let mut nodes = vec![DependencyNode {
-            unit_id: dll_id.clone(),
-            name: format!("Classify {}", classification.dll),
-            status: ReviewStatus::Queued,
-        }];
+        let mut nodes = vec![DependencyNode::with_level(
+            dll_id.clone(),
+            format!("Classify {}", classification.dll),
+            ReviewStatus::Queued,
+            WorkUnitLevel::DllClassification,
+        )];
         let mut edges = Vec::new();
 
         // Phase 2: Shim layer node (if applicable)
         let mut shim_id: Option<String> = None;
         if let Some(ref decl) = shim_decl {
             let sid = Self::shim_node_id(&classification.dll, &decl.target_crate);
-            nodes.push(DependencyNode {
-                unit_id: sid.clone(),
-                name: format!("Shim {} → {}", classification.dll, decl.target_crate),
-                status: ReviewStatus::Queued,
-            });
+            nodes.push(DependencyNode::with_level(
+                sid.clone(),
+                format!("Shim {} → {}", classification.dll, decl.target_crate),
+                ReviewStatus::Queued,
+                WorkUnitLevel::ShimLayer,
+            ));
             edges.push(DependencyEdge {
                 from: sid.clone(),
                 to: Self::dll_node_id(&classification.dll),
@@ -361,11 +366,11 @@ impl DependencyTracker {
             std::collections::HashMap::new();
         for (func_name, _neighbors) in dll_functions {
             let func_id = Self::func_node_id(func_name);
-            nodes.push(DependencyNode {
-                unit_id: func_id.clone(),
-                name: format!("Translate {}", *func_name),
-                status: ReviewStatus::Queued,
-            });
+            nodes.push(DependencyNode::new(
+                func_id.clone(),
+                format!("Translate {}", *func_name),
+                ReviewStatus::Queued,
+            ));
             func_map.insert((*func_name).to_string(), func_id);
         }
 
@@ -824,7 +829,8 @@ mod tests {
 
         let graph = tracker.build(&classifications, &call_graph);
 
-        let ordered = graph.topological_order();
+        let (ordered, cycles) = graph.topological_order();
+        assert!(cycles.is_empty(), "no cycles expected");
         let order_ids: Vec<&str> = ordered.iter().map(|n| n.unit_id.as_str()).collect();
 
         // Classification must come before shim, shim before function

@@ -147,21 +147,9 @@ mod tests {
     fn dependency_graph_roots() {
         let graph = DependencyGraph {
             nodes: vec![
-                DependencyNode {
-                    unit_id: "dll_classify".into(),
-                    name: "DLL Classification".into(),
-                    status: ReviewStatus::Accepted,
-                },
-                DependencyNode {
-                    unit_id: "shim_wgpu".into(),
-                    name: "Shim wgpu".into(),
-                    status: ReviewStatus::PendingReview,
-                },
-                DependencyNode {
-                    unit_id: "func_draw".into(),
-                    name: "func_DrawPrimitive".into(),
-                    status: ReviewStatus::Queued,
-                },
+                DependencyNode::new("dll_classify", "DLL Classification", ReviewStatus::Accepted),
+                DependencyNode::with_level("shim_wgpu", "Shim wgpu", ReviewStatus::PendingReview, WorkUnitKind::ShimLayer.level()),
+                DependencyNode::new("func_draw", "func_DrawPrimitive", ReviewStatus::Queued),
             ],
             edges: vec![
                 DependencyEdge {
@@ -185,16 +173,8 @@ mod tests {
     fn dependency_graph_dependents() {
         let graph = DependencyGraph {
             nodes: vec![
-                DependencyNode {
-                    unit_id: "dll_classify".into(),
-                    name: "DLL Classification".into(),
-                    status: ReviewStatus::Accepted,
-                },
-                DependencyNode {
-                    unit_id: "shim_wgpu".into(),
-                    name: "Shim wgpu".into(),
-                    status: ReviewStatus::PendingReview,
-                },
+                DependencyNode::new("dll_classify", "DLL Classification", ReviewStatus::Accepted),
+                DependencyNode::with_level("shim_wgpu", "Shim wgpu", ReviewStatus::PendingReview, WorkUnitKind::ShimLayer.level()),
             ],
             edges: vec![DependencyEdge {
                 from: "shim_wgpu".into(),
@@ -211,16 +191,8 @@ mod tests {
     fn dependency_graph_dependencies() {
         let graph = DependencyGraph {
             nodes: vec![
-                DependencyNode {
-                    unit_id: "func_draw".into(),
-                    name: "func_DrawPrimitive".into(),
-                    status: ReviewStatus::Queued,
-                },
-                DependencyNode {
-                    unit_id: "shim_wgpu".into(),
-                    name: "Shim wgpu".into(),
-                    status: ReviewStatus::Accepted,
-                },
+                DependencyNode::new("func_draw", "func_DrawPrimitive", ReviewStatus::Queued),
+                DependencyNode::with_level("shim_wgpu", "Shim wgpu", ReviewStatus::Accepted, WorkUnitKind::ShimLayer.level()),
             ],
             edges: vec![DependencyEdge {
                 from: "func_draw".into(),
