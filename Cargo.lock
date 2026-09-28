@@ -404,6 +404,7 @@ name = "calxgloss-translator"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "askama",
  "calxgloss-analysis",
  "calxgloss-ghidra",
  "calxgloss-llm",
@@ -411,6 +412,7 @@ dependencies = [
  "calxgloss-prompts",
  "calxgloss-testgen",
  "calxgloss-types",
+ "calxgloss-verify",
  "thiserror",
  "tokio",
  "tracing",

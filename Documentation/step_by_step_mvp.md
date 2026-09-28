@@ -1048,12 +1048,12 @@ calxgloss-web — depends on: calxgloss-types (scaffolded only in MVP)
 | `calxgloss-pal` | Library | Windows API → Rust mappings | Required |
 | `calxgloss-analysis` | Library | DLL classification, call graphs, API tagging | Required |
 | `calxgloss-testgen` | Library | FFI stubs, test inputs, baseline execution | Required |
-| `calxgloss-translator` | Library | Ghidra → LLM → Rust pipeline | Required |
+| `calxgloss-translator` | Library | Ghidra → LLM → Rust pipeline + batch translation | Required |
 | `calxgloss-verify` | Library | Compile and test verification | Required |
 | `calxgloss-git` | Library | Git branch/commit/merge automation | Required |
-| `calxgloss-reports` | Library | Terminal output formatting | Required |
+| `calxgloss-reports` | Library | Terminal output formatting (including batch summaries) | Required |
 | `calxgloss` | Library | Re-exports all public APIs | Required |
-| `calxgloss-cli` | Binary | CLI entry point, wires everything together | Required |
+| `calxgloss-cli` | Binary | CLI entry point with `translate` and `batch-translate` commands | Required |
 | `calxgloss-web` | Library | Web review UI (axum + leptos) | Scaffolded only |
 
 ---
@@ -1080,7 +1080,7 @@ Once the MVP proves the core loop works, add features in this order:
 
 1. **Retry logic** — automatic retry with different prompts on test failure (`calxgloss-translator`)
 2. **Prompt template refinement** — refine prompts based on what works (`calxgloss-prompts`)
-3. **Batch translation** — translate all functions in a DLL (`calxgloss-cli`)
+3. **Batch translation** — translate all functions in a DLL (✅ implemented)
 4. **Simple dependency tracking** — link branches when one function calls another (`calxgloss-git`)
 5. **Terminal-based review dashboard** — text-based UI showing queue, status, test results (`calxgloss-reports`)
 6. **Shim layer generation** — start replacing DirectX/GDI with crate equivalents (`calxgloss-analysis`)
