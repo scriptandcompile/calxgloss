@@ -67,6 +67,9 @@ pub struct Translation {
     /// The function name that was translated.
     pub function: String,
 
+    /// The virtual address of the function entry point, if known.
+    pub function_address: Option<u64>,
+
     /// The generated Rust source code.
     pub rust_code: String,
 
@@ -82,6 +85,10 @@ pub struct Translation {
     /// Baseline test inputs generated for this function.
     /// These are used by the verifier to check behavioral equivalence.
     pub baseline_tests: Vec<TestCase>,
+
+    /// Call graph neighbors (callers and callees) from Ghidra analysis.
+    /// Used for context extraction during escalate retries.
+    pub call_graph: Vec<String>,
 }
 
 // ============================================================
@@ -153,11 +160,13 @@ impl Translator {
         Ok(Translation {
             dll: dll.to_string(),
             function: function.to_string(),
+            function_address: None,
             rust_code: response.content,
             prompt_used: prompt,
             model: self.llm.model().to_string(),
             tokens_used: response.tokens_used,
             baseline_tests: Vec::new(),
+            call_graph: Vec::new(),
         })
     }
 
@@ -196,11 +205,13 @@ impl Translator {
         Ok(Translation {
             dll: dll.to_string(),
             function: function.to_string(),
+            function_address: None,
             rust_code: response.content,
             prompt_used: prompt,
             model: self.llm.model().to_string(),
             tokens_used: response.tokens_used,
             baseline_tests: request.baseline_tests,
+            call_graph: Vec::new(),
         })
     }
 
@@ -432,11 +443,13 @@ impl TranslationPipeline {
         Ok(Translation {
             dll: dll.to_string(),
             function: function.to_string(),
+            function_address: Some(function_info.address),
             rust_code: response.content,
             prompt_used: prompt,
             model: self.llm.model().to_string(),
             tokens_used: response.tokens_used,
             baseline_tests,
+            call_graph: function_info.call_graph.clone(),
         })
     }
 
@@ -477,11 +490,13 @@ impl TranslationPipeline {
         Ok(Translation {
             dll: request.dll,
             function: request.function,
+            function_address: None,
             rust_code: response.content,
             prompt_used: prompt,
             model: self.llm.model().to_string(),
             tokens_used: response.tokens_used,
             baseline_tests: request.baseline_tests,
+            call_graph: Vec::new(),
         })
     }
 
@@ -563,6 +578,7 @@ impl TranslationPipeline {
             verifier,
             config,
             &self.llm,
+            &self.ghidra,
             config.strategy.clone(),
         )
         .await;
@@ -967,19 +983,23 @@ mod tests {
         let translation = Translation {
             dll: "game_logic.dll".to_string(),
             function: "DrawSprite".to_string(),
+            function_address: Some(0x1000),
             rust_code: "fn draw_sprite(x: i32, y: i32, texture_index: u32) -> i32 { x + y }"
                 .to_string(),
             prompt_used: "Translate this...".to_string(),
             model: "qwen3".to_string(),
             tokens_used: Some(1024),
             baseline_tests: vec![],
+            call_graph: vec!["helper_func".to_string()],
         };
 
         let cloned = translation.clone();
         assert_eq!(cloned.dll, translation.dll);
         assert_eq!(cloned.function, translation.function);
+        assert_eq!(cloned.function_address, translation.function_address);
         assert_eq!(cloned.rust_code, translation.rust_code);
         assert_eq!(cloned.tokens_used, translation.tokens_used);
+        assert_eq!(cloned.call_graph, translation.call_graph);
     }
 
     #[test]

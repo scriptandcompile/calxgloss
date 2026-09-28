@@ -146,6 +146,9 @@ pub struct LlmSection {
 
     /// Attempts before a translation is abandoned.
     pub max_retries: Option<u32>,
+
+    /// Retry strategy: compile_fix, test_fix, escalate, edge_case_fix, or auto.
+    pub strategy: Option<String>,
 }
 
 /// A commented configuration file listing every recognised key.
@@ -169,6 +172,7 @@ model = "Qwen3.6-35B-A3B-FP8"
 max_tokens = 8192
 temperature = 0.1
 max_retries = 3
+# strategy = "auto"  # compile_fix | test_fix | escalate | edge_case_fix | auto
 "#;
 
 // ============================================================
@@ -369,6 +373,7 @@ impl Layers {
                     max_tokens: usize_var("CALXGLOSS_LLM_MAX_TOKENS"),
                     temperature: f32_var("CALXGLOSS_LLM_TEMPERATURE"),
                     max_retries: u32_var("CALXGLOSS_LLM_MAX_RETRIES"),
+                    strategy: var("CALXGLOSS_LLM_STRATEGY"),
                 },
             },
             file: FileConfig::default(),
