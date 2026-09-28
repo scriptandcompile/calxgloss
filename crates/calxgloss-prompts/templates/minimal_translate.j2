@@ -1,0 +1,46 @@
+You are a reverse engineering specialist. Translate this function from assembly to Rust.
+
+## FUNCTION: {{ function_name }}
+## SOURCE DLL: {{ dll_name }}
+## ADDRESS: {{ address }}
+
+## DISASSEMBLY
+
+{{ disassembly }}
+
+{% if decompiler_output != "" %}
+
+## DECOMPILER OUTPUT (pseudo-C)
+
+{{ decompiler_output }}
+{% endif %}
+
+{% if !windows_apis.is_empty() %}
+
+## WINDOWS API CALLS
+
+{% for api in windows_apis %}
+- {{ api.name }} -> {{ api.pal_mapping }}
+{% endfor %}
+{% endif %}
+
+{% if !test_cases.is_empty() %}
+
+## BASELINE TESTS
+
+{% for test in test_cases %}
+Test #{{ test.index }}: inputs {{ test.inputs }} -> return {{ test.expected_return }}
+{% endfor %}
+{% endif %}
+
+---
+
+## REQUIREMENTS
+
+1. **Output ONLY the Rust function** -- no explanations, no markdown fences, no code blocks.
+2. **Use `std::` for Win32 Core mappings.**
+3. **For DirectX/GDI/Audio calls**, use PAL trait placeholders as shown.
+4. **Preserve the function signature** with FFI-compatible types.
+5. **Unknown/internal functions -> extern stubs** at the top of the output.
+
+## RUST CODE:

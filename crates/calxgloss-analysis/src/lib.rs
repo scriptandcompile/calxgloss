@@ -48,6 +48,7 @@ pub use error::{AnalysisError, Result};
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_pal::ApiMappings;
 use calxgloss_types::{DllCategory, DllInfo, FunctionInfo, WindowsApiCall};
+use calxgloss_types::{FunctionComplexity, PromptVariant};
 use error::AnalysisError as Error;
 use tracing::{debug, info, instrument, warn};
 
@@ -517,6 +518,55 @@ impl Analyzer {
     pub fn ghidra_client(&self) -> &GhidraClient {
         &self.ghidra
     }
+
+    /// Detect the complexity of a function from its disassembly and API usage.
+    ///
+    /// This is the primary mechanism for deciding how much context to
+    /// inject into the LLM prompt. Simple functions get minimal context;
+    /// complex functions get rich contextual information.
+    ///
+    /// # Arguments
+    ///
+    /// * `disassembly` — The raw disassembly text from Ghidra.
+    /// * `tagged_apis` — The Windows API calls identified in the function,
+    ///   used to determine API-category diversity.
+    ///
+    /// # Returns
+    ///
+    /// A [`FunctionComplexity`] classification.
+    pub fn detect_complexity(
+        &self,
+        disassembly: &str,
+        tagged_apis: &[WindowsApiCall],
+    ) -> FunctionComplexity {
+        let api_categories: Vec<String> = tagged_apis
+            .iter()
+            .map(|api| api.category.to_string())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        calxgloss_types::detect_complexity(disassembly, &api_categories)
+    }
+
+    /// Build a [`PromptVariant`] for the given function analysis.
+    ///
+    /// This determines which prompt template and what level of context
+    /// the translation pipeline should use. The default is API-aware
+    /// (step 2.2 of Phase 2).
+    ///
+    /// # Arguments
+    ///
+    /// * `analysis` — The complete function analysis including disassembly
+    ///   and tagged APIs.
+    ///
+    /// # Returns
+    ///
+    /// A [`PromptVariant`] describing the optimal prompt configuration.
+    pub fn build_prompt_variant(&self, analysis: &FunctionAnalysis) -> PromptVariant {
+        let complexity =
+            self.detect_complexity(&analysis.function_info.disassembly, &analysis.tagged_apis);
+        PromptVariant::new(complexity).with_api_aware(true)
+    }
 }
 
 #[cfg(test)]
@@ -705,5 +755,67 @@ mod tests {
         let classification = analyzer.classify_dll_info(&dll_info);
         assert_eq!(classification.exports_count, 2);
         assert_eq!(classification.imports_count, 3);
+    }
+
+    #[test]
+    fn test_detect_complexity_simple_function() {
+        let analyzer = test_analyzer();
+        let tagged_apis: Vec<WindowsApiCall> = vec![];
+        let complexity = analyzer.detect_complexity(
+            "0x00401000: mov eax, [esp+4]\n0x00401004: add eax, ebx\n0x00401007: ret",
+            &tagged_apis,
+        );
+        assert_eq!(complexity, calxgloss_types::FunctionComplexity::Minimal);
+    }
+
+    #[test]
+    fn test_detect_complexity_with_multiple_apis() {
+        let analyzer = test_analyzer();
+        let tagged_apis = vec![
+            WindowsApiCall {
+                name: "CreateFileA".to_string(),
+                category: calxgloss_types::ApiCategory::Win32Core,
+                pal_mapping: "std::fs::File::open".to_string(),
+            },
+            WindowsApiCall {
+                name: "DirectDrawCreate".to_string(),
+                category: calxgloss_types::ApiCategory::DirectX,
+                pal_mapping: "wgpu".to_string(),
+            },
+            WindowsApiCall {
+                name: "MessageBoxA".to_string(),
+                category: calxgloss_types::ApiCategory::Win32Gui,
+                pal_mapping: "dialog".to_string(),
+            },
+        ];
+        let complexity =
+            analyzer.detect_complexity("0x00401000: mov eax, 0\n0x00401004: ret", &tagged_apis);
+        // 3 different API categories → Standard (bumped from Minimal)
+        assert_eq!(complexity, calxgloss_types::FunctionComplexity::Standard);
+    }
+
+    #[test]
+    fn test_build_prompt_variant() {
+        let analyzer = test_analyzer();
+        let analysis = FunctionAnalysis {
+            function_info: FunctionInfo {
+                name: "SimpleFunc".to_string(),
+                address: 0x1000,
+                dll: "test.dll".to_string(),
+                disassembly: "0x00401000: mov eax, 0\n0x00401004: ret".to_string(),
+                decompiler_output: "int SimpleFunc() { return 0; }".to_string(),
+                windows_apis: Vec::new(),
+                call_graph: Vec::new(),
+            },
+            tagged_apis: Vec::new(),
+            call_graph: Vec::new(),
+        };
+
+        let variant = analyzer.build_prompt_variant(&analysis);
+        assert_eq!(
+            variant.complexity,
+            calxgloss_types::FunctionComplexity::Minimal
+        );
+        assert!(variant.api_aware);
     }
 }

@@ -67,3 +67,25 @@ pub struct TranslationResult {
     /// Number of tokens used, if reported by the LLM.
     pub tokens_used: Option<usize>,
 }
+
+/// A Windows API mapping grouped by category, used in rich/detailed
+/// translation prompts to give the LLM extra reference context for
+/// the specific API categories a function touches.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiCategoryMapping {
+    /// The API category name (e.g. `"Win32Core"`, `"DirectX"`).
+    pub category: String,
+    /// The individual API mappings for this category.
+    pub mappings: Vec<ApiMappingItem>,
+}
+
+/// A single Windows API → Rust equivalent mapping.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiMappingItem {
+    /// The Windows API name.
+    pub windows_api: String,
+    /// The cross-platform Rust equivalent.
+    pub rust_equivalent: String,
+    /// Human-readable notes about the mapping.
+    pub notes: String,
+}

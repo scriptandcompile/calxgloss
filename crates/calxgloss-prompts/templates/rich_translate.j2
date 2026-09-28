@@ -1,0 +1,97 @@
+You are a reverse engineering specialist. Translate the following function from assembly to Rust that preserves its observable behavior.
+
+## FUNCTION: {{ function_name }}
+## SOURCE DLL: {{ dll_name }}
+## ADDRESS: {{ address }}
+## COMPLEXITY: rich
+
+---
+
+## DISASSEMBLY
+
+{{ disassembly }}
+
+---
+
+## DECOMPILER OUTPUT (pseudo-C)
+
+{{ decompiler_output }}
+
+---
+
+## WINDOWS API CALLS IDENTIFIED
+
+{% for api in windows_apis %}
+- {{ api.name }} -> {{ api.category }} -> {{ api.pal_mapping }}
+{% endfor %}
+
+{% if no_windows_apis %}
+No Windows API calls were identified in this function.
+{% endif %}
+
+---
+
+## BASELINE TESTS (translated Rust code must produce identical outputs)
+
+{% for test in test_cases %}
+Test #{{ test.index }}:
+  Inputs: {{ test.inputs }}
+  Expected return: {{ test.expected_return }}
+  Side effects: {% if test.side_effects == "[]" %}none{% else %}{{ test.side_effects }}{% endif %}
+{% endfor %}
+
+---
+
+## EXTERNAL FUNCTION HANDLING RULES
+
+Every function the translated code calls falls into exactly one of these categories.
+
+### 1. Known Windows APIs (listed above)
+Replace with the PAL / std equivalent shown in the mapping.
+
+Example:
+```
+CreateFileA("foo.txt")   ->   std::fs::File::open("foo.txt")
+```
+
+### 2. CRT / OS internals NOT listed above
+Functions like `__security_init_cookie`, `__security_check_cookie` are Microsoft C runtime internals.
+Declare them as extern stubs at the top of the output:
+
+```rust
+extern "C" {
+    fn __security_init_cookie();
+    fn __security_check_cookie(cookie: *const core::ffi::c_void);
+}
+```
+
+### 3. Internal DLL functions
+Declare as extern stubs alongside CRT internals.
+
+### 4. Self-translated functions in the same DLL
+Declare as extern stubs. They will be translated independently.
+
+---
+
+## ADVANCED TRANSLATION GUIDELINES (complex function)
+
+This function has significant complexity. Follow these additional guidelines:
+
+1. **Map Windows API calls to their PAL/stdio equivalents** from the mappings above.
+2. **Follow control flow precisely** - every `cmp` + conditional branch must become an if/else or match arm.
+3. **Track data flow** - the decompiler pseudo-C shows variable names; use meaningful Rust names.
+4. **Handle all branches** - if the disassembly has `je .label`, the Rust code must have an else arm.
+5. **Preserve error paths** - if the original returns -1 or 0 on failure, the Rust code must too.
+6. **Be conservative with assumptions** - follow the disassembly strictly. When in doubt, output `todo!()` for complex logic.
+7. **Do NOT guess at Windows API behaviors** - follow the disassembly and decompiler output strictly.
+
+## TRANSLATION REQUIREMENTS
+
+1. **Output ONLY the Rust function -- no explanations, no markdown fences, no code blocks.**
+2. **Use `std::` for Win32 Core mappings.**
+3. **For DirectX/GDI/Audio calls**, use PAL trait placeholders as shown.
+4. **Preserve the function signature** with FFI-compatible types.
+5. **Handle null pointers and invalid inputs gracefully.**
+6. **Unknown / internal functions -> extern stubs.**
+
+## RUST CODE:

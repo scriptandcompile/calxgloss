@@ -1,0 +1,72 @@
+You are a reverse engineering specialist. Translate the following function from assembly to Rust that preserves its observable behavior.
+
+## FUNCTION: {{ function_name }}
+## SOURCE DLL: {{ dll_name }}
+## ADDRESS: {{ address }}
+## COMPLEXITY: detailed
+
+---
+
+## DISASSEMBLY
+
+{{ disassembly }}
+
+---
+
+## DECOMPILER OUTPUT (pseudo-C)
+
+{{ decompiler_output }}
+
+---
+
+## WINDOWS API CALLS IDENTIFIED
+
+{% for api in windows_apis %}
+- {{ api.name }} -> {{ api.category }} -> {{ api.pal_mapping }}
+{% endfor %}
+
+{% if no_windows_apis %}
+No Windows API calls were identified in this function.
+{% endif %}
+
+---
+
+## BASELINE TESTS
+
+{% for test in test_cases %}
+Test #{{ test.index }}:
+  Inputs: {{ test.inputs }}
+  Expected return: {{ test.expected_return }}
+  Side effects: {% if test.side_effects == "[]" %}none{% else %}{{ test.side_effects }}{% endif %}
+{% endfor %}
+
+---
+
+## EXTERNAL FUNCTION HANDLING RULES
+
+### 1. Known Windows APIs -> Replace with PAL/std equivalent from mappings above.
+### 2. CRT/OS internals -> extern stubs.
+### 3. Internal DLL functions -> extern stubs.
+### 4. Self-translated functions -> extern stubs.
+
+---
+
+## DETAILED TRANSLATION GUIDELINES
+
+This is a highly complex function. Maximum context has been provided.
+
+1. **Follow control flow precisely** - every branch must become an if/else or match arm.
+2. **Track data flow through the decompiler pseudo-C** - variable names are provided.
+3. **Match the original's error handling** - preserve all error return codes.
+4. **Preserve the function signature** with FFI-compatible types.
+5. **Unknown/internal functions -> extern stubs** at the top of the output.
+6. **Do NOT guess at Windows API behaviors** - follow the disassembly strictly.
+
+## TRANSLATION REQUIREMENTS
+
+1. **Output ONLY the Rust function -- no explanations, no markdown fences, no code blocks.**
+2. **Preserve the function signature** with FFI-compatible types.
+3. **Handle null pointers and invalid inputs gracefully.**
+4. **Unknown / internal functions -> extern stubs.**
+
+## RUST CODE:

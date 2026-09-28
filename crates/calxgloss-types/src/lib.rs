@@ -14,6 +14,7 @@
 //! - [`git`] — Branch and commit tracking
 //! - [`error`] — Unified error type (`TypesError`)
 
+pub mod complexity;
 pub mod dll;
 pub mod error;
 pub mod function;
@@ -24,12 +25,13 @@ pub mod verification;
 
 // Re-export public types at the crate root for convenient access.
 
+pub use complexity::{FailureHint, FunctionComplexity, PromptVariant, detect_complexity};
 pub use dll::{DllCategory, DllInfo, Export, Import};
 pub use error::TypesError;
 pub use function::{ApiCategory, FunctionInfo, WindowsApiCall};
 pub use git::{GitBranch, GitCommit};
 pub use test::{SideEffect, SideEffectKind, TestCase, TestResult};
-pub use translation::{TranslationRequest, TranslationResult};
+pub use translation::{ApiCategoryMapping, ApiMappingItem, TranslationRequest, TranslationResult};
 pub use verification::{FailedTest, VerificationResult};
 
 // ============================================================

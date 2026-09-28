@@ -45,6 +45,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   automatic cycling through all strategies
 - `retry_strategy` displayed in `config` command output
 
+### Added
+
+#### `calxgloss-types`
+- **Complexity-based prompt selection** (`calxgloss-types::complexity`) —
+  `FunctionComplexity` enum (Minimal / Standard / Rich / Detailed) and
+  `detect_complexity()` function that classifies functions by instruction
+  count, branch density, call depth, and API-category diversity.
+  `PromptVariant` struct for strategy selection and `FailureHint` for
+  recording previous attempt failures.
+- `ApiCategoryMapping` and `ApiMappingItem` — types for grouping Windows
+  API mappings by category in rich and detailed translation prompts.
+
+#### `calxgloss-prompts`
+- **Complexity-aware prompt builder** (`build_complexity_prompt`) — selects
+  the appropriate template based on function complexity: `MinimalTemplate`
+  (≤30 instructions, disassembly + decompiler only), `TranslateTemplate` /
+  `Standard` (31–100, adds API mappings + tests), `RichTemplate` (101–300,
+  adds API category context + advanced guidelines), `DetailedTemplate`
+  (>300, adds call graph + neighbors + data structures + type info).
+- **New template files** — `minimal_translate.j2`, `rich_translate.j2`,
+  `detailed_translate.j2` with complexity-appropriate context and guidance.
+- `ComplexityPromptData` — aggregates all analysis data for use with the
+  complexity-based prompt builder.
+
+#### `calxgloss-analysis`
+- `Analyzer::detect_complexity()` — detects function complexity from
+  disassembly and tagged API calls.
+- `Analyzer::build_prompt_variant()` — builds a `PromptVariant` with
+  complexity classification and API awareness.
+
+#### `calxgloss-translator`
+- `TranslationPipeline::translate()` now uses complexity-based prompt
+  selection, routing simple functions to minimal prompts and complex
+  functions to rich or detailed prompts with extra Ghidra context.
+
+#### `calxgloss-prompts`
+- **Failure-informed prompt stubs** (`failure_fix.j2` template,
+  `build_failure_informed_compile_fix_prompt()`,
+  `build_failure_informed_test_fix_prompt()`,
+  `build_failure_informed_escalate_prompt()`) — Phase 2, step 2.3
+  scaffolding that currently falls back to standard prompts.
+
 ### Fixed
 
 #### `calxgloss-config`

@@ -7,11 +7,12 @@
 //!
 //! # Architecture
 //!
-//! - [`PromptLibrary`] — a collection of named templates (e.g. `"translate"`)
-//!   that can be looked up and rendered in one call.
-//! - [`build_translate_prompt`] — convenience function that assembles all
-//!   context from a [`TranslationRequest`](calxgloss_types::TranslationRequest)
-//!   into a rendered prompt string.
+//! - [`TranslateTemplate`] — renders `translate.j2` (standard prompt)
+//! - [`MinimalTemplate`] — renders `minimal_translate.j2` (simple functions)
+//! - [`RichTemplate`] — renders `rich_translate.j2` (complex functions)
+//! - [`DetailedTemplate`] — renders `detailed_translate.j2` (very complex functions)
+//! - [`build_translate_prompt`] — builds a standard translation prompt
+//! - [`build_complexity_prompt`] — Phase 2, step 2.1: selects template by complexity
 //!
 //! # Template Syntax
 //!
@@ -20,21 +21,81 @@
 //! | Syntax | Meaning |
 //! |---|---|
 //! | `{{var}}` | Substitute variable as string |
-//! | `{{#items}}...{{/items}}` | Iterate over JSON array (via `iter()`) |
 //! | `{% if var %}...{% endif %}` | Conditional (truthy) |
-//! | `{% unless var %}...{% endif %}` | Conditional (falsy, via `!var`) |
+//! | `{% for item in list %}...{% endfor %}` | Loop |
 
 pub mod error;
 
 pub use error::PromptError;
 
 use askama::Template;
-use calxgloss_types::TranslationRequest;
+use calxgloss_types::{ApiCategoryMapping, FunctionComplexity, TranslationRequest};
 use serde_json::json;
 
 // ============================================================
 // Prompt templates (Askama structs)
 // ============================================================
+
+/// Template for minimal translation prompts.
+///
+/// Used for simple functions (≤30 instructions). Contains only
+/// disassembly, decompiler output, and baseline tests — no API context.
+#[derive(Template)]
+#[template(path = "minimal_translate.j2")]
+pub struct MinimalTemplate {
+    /// The function name to translate.
+    pub function_name: String,
+
+    /// The DLL containing the function.
+    pub dll_name: String,
+
+    /// The virtual address of the function entry point.
+    pub address: u64,
+
+    /// Raw disassembly listing from Ghidra.
+    pub disassembly: String,
+
+    /// Pseudo-C decompiler output from Ghidra.
+    pub decompiler_output: String,
+
+    /// Windows API calls identified in the disassembly.
+    pub windows_apis: Vec<calxgloss_types::translation::WindowsApiCall>,
+
+    /// Baseline test cases the translated Rust code must pass.
+    pub test_cases: Vec<TestCaseFormatted>,
+
+    /// Whether there are no Windows API calls (for conditional rendering).
+    pub no_windows_apis: bool,
+}
+
+impl MinimalTemplate {
+    /// Create a new minimal template from a translation request.
+    pub fn from_request(req: &TranslationRequest) -> Self {
+        let test_cases: Vec<TestCaseFormatted> = req
+            .baseline_tests
+            .iter()
+            .enumerate()
+            .map(|(i, test)| TestCaseFormatted {
+                index: i + 1,
+                inputs: test.inputs.clone(),
+                expected_return: test.expected_return.clone(),
+                side_effects: serde_json::to_value(&test.expected_side_effects)
+                    .unwrap_or_else(|_| json!([])),
+            })
+            .collect();
+
+        MinimalTemplate {
+            function_name: req.function.clone(),
+            dll_name: req.dll.clone(),
+            address: 0,
+            disassembly: req.disassembly.clone(),
+            decompiler_output: req.decompiler_output.clone(),
+            windows_apis: req.windows_apis.clone(),
+            test_cases,
+            no_windows_apis: req.windows_apis.is_empty(),
+        }
+    }
+}
 
 /// Template for function translation prompts.
 ///
@@ -68,7 +129,7 @@ pub struct TranslateTemplate {
 }
 
 /// A formatted test case for template rendering.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Clone, Debug)]
 pub struct TestCaseFormatted {
     /// Test case index (1-based).
     pub index: usize,
@@ -376,6 +437,341 @@ pub fn build_edge_case_prompt(
 }
 
 // ============================================================
+// Rich template — for functions with complex control flow (101-300 instructions)
+// ============================================================
+
+/// Template for "rich context" translation prompts.
+///
+/// Used when a function has 101–300 instructions, multiple API categories,
+/// or high branch density. Adds detailed API category mapping rows and
+/// advanced translation guidelines to the standard prompt.
+#[derive(Template)]
+#[template(path = "rich_translate.j2")]
+pub struct RichTemplate {
+    /// The function name to translate.
+    pub function_name: String,
+
+    /// The DLL containing the function.
+    pub dll_name: String,
+
+    /// The virtual address of the function entry point.
+    pub address: u64,
+
+    /// Raw disassembly listing from Ghidra.
+    pub disassembly: String,
+
+    /// Pseudo-C decompiler output from Ghidra.
+    pub decompiler_output: String,
+
+    /// Windows API calls identified in the disassembly.
+    pub windows_apis: Vec<calxgloss_types::translation::WindowsApiCall>,
+
+    /// Whether there are no Windows API calls (for conditional rendering).
+    pub no_windows_apis: bool,
+
+    /// Baseline test cases the translated Rust code must pass.
+    pub test_cases: Vec<TestCaseFormatted>,
+
+    /// API-category-specific mapping rows providing detailed context
+    /// for the APIs used in this function.
+    pub api_category_mappings: Vec<ApiCategoryMapping>,
+}
+
+impl RichTemplate {
+    /// Create a new rich template from a translation request.
+    pub fn from_request(req: &TranslationRequest) -> Self {
+        let test_cases: Vec<TestCaseFormatted> = req
+            .baseline_tests
+            .iter()
+            .enumerate()
+            .map(|(i, test)| TestCaseFormatted {
+                index: i + 1,
+                inputs: test.inputs.clone(),
+                expected_return: test.expected_return.clone(),
+                side_effects: serde_json::to_value(&test.expected_side_effects)
+                    .unwrap_or_else(|_| json!([])),
+            })
+            .collect();
+
+        RichTemplate {
+            function_name: req.function.clone(),
+            dll_name: req.dll.clone(),
+            address: 0,
+            disassembly: req.disassembly.clone(),
+            decompiler_output: req.decompiler_output.clone(),
+            windows_apis: req.windows_apis.clone(),
+            no_windows_apis: req.windows_apis.is_empty(),
+            test_cases,
+            api_category_mappings: Vec::new(),
+        }
+    }
+}
+
+// ============================================================
+// Detailed template — for very complex functions (>300 instructions)
+// ============================================================
+
+/// Template for "detailed context" translation prompts.
+///
+/// Used when a function exceeds 300 instructions or has extreme complexity.
+/// Adds all the context from `RichTemplate` plus call graph neighbors,
+/// neighboring function disassembly, data structures, and type information.
+#[derive(Template)]
+#[template(path = "detailed_translate.j2")]
+pub struct DetailedTemplate {
+    /// The function name to translate.
+    pub function_name: String,
+
+    /// The DLL containing the function.
+    pub dll_name: String,
+
+    /// The virtual address of the function entry point.
+    pub address: u64,
+
+    /// Raw disassembly listing from Ghidra.
+    pub disassembly: String,
+
+    /// Pseudo-C decompiler output from Ghidra.
+    pub decompiler_output: String,
+
+    /// Windows API calls identified in the disassembly.
+    pub windows_apis: Vec<calxgloss_types::translation::WindowsApiCall>,
+
+    /// Whether there are no Windows API calls (for conditional rendering).
+    pub no_windows_apis: bool,
+
+    /// Baseline test cases the translated Rust code must pass.
+    pub test_cases: Vec<TestCaseFormatted>,
+
+    /// API-category-specific mapping rows.
+    pub api_category_mappings: Vec<ApiCategoryMapping>,
+
+    /// Functions directly called by or calling this function.
+    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
+
+    /// Other functions sharing context with this function.
+    pub neighboring_functions: Vec<NeighborFunction>,
+
+    /// Data structures referenced near this function.
+    pub data_structures: Vec<StructuredData>,
+
+    /// Type information inferred by Ghidra.
+    pub type_info: Vec<TypeInfo>,
+}
+
+impl DetailedTemplate {
+    /// Create a new detailed template from a translation request.
+    pub fn from_request(req: &TranslationRequest) -> Self {
+        let test_cases: Vec<TestCaseFormatted> = req
+            .baseline_tests
+            .iter()
+            .enumerate()
+            .map(|(i, test)| TestCaseFormatted {
+                index: i + 1,
+                inputs: test.inputs.clone(),
+                expected_return: test.expected_return.clone(),
+                side_effects: serde_json::to_value(&test.expected_side_effects)
+                    .unwrap_or_else(|_| json!([])),
+            })
+            .collect();
+
+        DetailedTemplate {
+            function_name: req.function.clone(),
+            dll_name: req.dll.clone(),
+            address: 0,
+            disassembly: req.disassembly.clone(),
+            decompiler_output: req.decompiler_output.clone(),
+            windows_apis: req.windows_apis.clone(),
+            no_windows_apis: req.windows_apis.is_empty(),
+            test_cases,
+            api_category_mappings: Vec::new(),
+            call_graph_neighbors: Vec::new(),
+            neighboring_functions: Vec::new(),
+            data_structures: Vec::new(),
+            type_info: Vec::new(),
+        }
+    }
+}
+
+// ============================================================
+// Complexity-aware prompt builder (Phase 2, step 2.1)
+// ============================================================
+
+/// Context data needed to build a complexity-aware prompt.
+///
+/// This aggregates all the pieces the translation pipeline collects
+/// during function analysis, ready to be rendered into whichever
+/// template matches the function's complexity level.
+#[derive(Debug)]
+pub struct ComplexityPromptData {
+    /// The function name to translate.
+    pub function_name: String,
+    /// The DLL containing the function.
+    pub dll_name: String,
+    /// Virtual address of the function entry point.
+    pub address: u64,
+    /// Raw disassembly listing from Ghidra.
+    pub disassembly: String,
+    /// Pseudo-C decompiler output from Ghidra.
+    pub decompiler_output: String,
+    /// Windows API calls identified in the disassembly.
+    pub windows_apis: Vec<calxgloss_types::translation::WindowsApiCall>,
+    /// Baseline test cases.
+    pub test_cases: Vec<TestCaseFormatted>,
+    /// API-category-specific mapping rows.
+    pub api_category_mappings: Vec<ApiCategoryMapping>,
+    /// Call graph neighbors (for detailed template).
+    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
+    /// Neighboring function context (for detailed template).
+    pub neighboring_functions: Vec<NeighborFunction>,
+    /// Data structures (for detailed template).
+    pub data_structures: Vec<StructuredData>,
+    /// Type information (for detailed template).
+    pub type_info: Vec<TypeInfo>,
+}
+
+impl ComplexityPromptData {
+    /// Build [`ComplexityPromptData`] from a [`TranslationRequest`].
+    ///
+    /// This is a convenience constructor that extracts all data from
+    /// a request without the extra analysis fields (call graph, data
+    /// structures, type info). For full analysis data, construct the
+    /// struct directly.
+    pub fn from_request(req: &TranslationRequest) -> Self {
+        let test_cases: Vec<TestCaseFormatted> = req
+            .baseline_tests
+            .iter()
+            .enumerate()
+            .map(|(i, test)| TestCaseFormatted {
+                index: i + 1,
+                inputs: test.inputs.clone(),
+                expected_return: test.expected_return.clone(),
+                side_effects: serde_json::to_value(&test.expected_side_effects)
+                    .unwrap_or_else(|_| json!([])),
+            })
+            .collect();
+
+        Self {
+            function_name: req.function.clone(),
+            dll_name: req.dll.clone(),
+            address: 0,
+            disassembly: req.disassembly.clone(),
+            decompiler_output: req.decompiler_output.clone(),
+            windows_apis: req.windows_apis.clone(),
+            test_cases,
+            api_category_mappings: Vec::new(),
+            call_graph_neighbors: Vec::new(),
+            neighboring_functions: Vec::new(),
+            data_structures: Vec::new(),
+            type_info: Vec::new(),
+        }
+    }
+
+    /// Returns true if this data has no Windows API calls.
+    pub fn has_no_windows_apis(&self) -> bool {
+        self.windows_apis.is_empty()
+    }
+}
+
+/// Build and render a translation prompt, selecting the template
+/// based on the function's complexity level.
+///
+/// This is the main entry point for complexity-based prompt selection.
+/// It creates the appropriate template struct, renders it, and returns
+/// the rendered prompt string.
+///
+/// # Arguments
+///
+/// * `complexity` — The detected complexity level of the function.
+/// * `data` — All context data needed to render the selected template.
+///
+/// # Returns
+///
+/// The rendered prompt string, or an error if rendering fails.
+///
+/// # Complexity-based selection
+///
+/// | Complexity | Template | Context |
+/// |------------|----------|---------|
+/// | `Minimal` (≤30 instructions) | `minimal_translate.j2` | Disassembly + decompiler only |
+/// | `Standard` (31–100 instructions) | `translate.j2` | Disassembly + decompiler + API mappings + tests |
+/// | `Rich` (101–300 instructions) | `rich_translate.j2` | Standard + API category context + advanced guidelines |
+/// | `Detailed` (>300 instructions) | `detailed_translate.j2` | Rich + call graph + neighbors + data structures + type info |
+pub fn build_complexity_prompt(
+    complexity: &FunctionComplexity,
+    data: &ComplexityPromptData,
+) -> Result<String, PromptError> {
+    let rendered = match complexity {
+        FunctionComplexity::Minimal => {
+            let template = MinimalTemplate {
+                function_name: data.function_name.clone(),
+                dll_name: data.dll_name.clone(),
+                address: data.address,
+                disassembly: data.disassembly.clone(),
+                decompiler_output: data.decompiler_output.clone(),
+                windows_apis: data.windows_apis.clone(),
+                test_cases: data.test_cases.clone(),
+                no_windows_apis: data.windows_apis.is_empty(),
+            };
+            template
+                .render()
+                .map_err(|e| PromptError::Render(e.to_string()))?
+        }
+        FunctionComplexity::Standard => {
+            let req = build_std_request(data);
+            let template = TranslateTemplate::from_request(&req);
+            template
+                .render()
+                .map_err(|e| PromptError::Render(e.to_string()))?
+        }
+        FunctionComplexity::Rich => {
+            let req = build_std_request(data);
+            let template = RichTemplate::from_request(&req);
+            template
+                .render()
+                .map_err(|e| PromptError::Render(e.to_string()))?
+        }
+        FunctionComplexity::Detailed => {
+            let req = build_std_request(data);
+            let template = DetailedTemplate::from_request(&req);
+            template
+                .render()
+                .map_err(|e| PromptError::Render(e.to_string()))?
+        }
+    };
+
+    if rendered.trim().is_empty() {
+        return Err(PromptError::EmptyPrompt);
+    }
+    Ok(rendered)
+}
+
+/// Helper to build a minimal TranslationRequest from ComplexityPromptData
+/// so we can reuse the existing template constructors.
+fn build_std_request(data: &ComplexityPromptData) -> TranslationRequest {
+    use calxgloss_types::TestCase;
+    let baseline_tests: Vec<TestCase> = data
+        .test_cases
+        .iter()
+        .map(|tc| TestCase {
+            inputs: tc.inputs.clone(),
+            expected_return: tc.expected_return.clone(),
+            expected_side_effects: serde_json::from_value(tc.side_effects.clone())
+                .unwrap_or_default(),
+        })
+        .collect();
+
+    TranslationRequest {
+        dll: data.dll_name.clone(),
+        function: data.function_name.clone(),
+        disassembly: data.disassembly.clone(),
+        decompiler_output: data.decompiler_output.clone(),
+        windows_apis: data.windows_apis.clone(),
+        baseline_tests,
+    }
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -558,5 +954,55 @@ mod tests {
         assert!(prompt.contains("Zero check for input index"));
         assert!(prompt.contains("x <= 0"));
         assert!(prompt.contains("0x2000"));
+    }
+
+    #[test]
+    fn test_complexity_prompt_selects_minimal_template() {
+        let data = ComplexityPromptData {
+            function_name: "SimpleFunc".to_string(),
+            dll_name: "test.dll".to_string(),
+            address: 0x1000,
+            disassembly: "mov eax, 0\nret".to_string(),
+            decompiler_output: "int SimpleFunc() { return 0; }".to_string(),
+            windows_apis: Vec::new(),
+            test_cases: Vec::new(),
+            api_category_mappings: Vec::new(),
+            call_graph_neighbors: Vec::new(),
+            neighboring_functions: Vec::new(),
+            data_structures: Vec::new(),
+            type_info: Vec::new(),
+        };
+
+        let prompt = build_complexity_prompt(&FunctionComplexity::Minimal, &data).unwrap();
+        assert!(prompt.contains("SimpleFunc"));
+        assert!(prompt.contains("test.dll"));
+        assert!(prompt.contains("DISASSEMBLY"));
+    }
+
+    #[test]
+    fn test_complexity_prompt_selects_standard_template() {
+        let data = ComplexityPromptData {
+            function_name: "StdFunc".to_string(),
+            dll_name: "game.dll".to_string(),
+            address: 0x2000,
+            disassembly: "mov eax, [esp+4]\nadd eax, ebx\nret".to_string(),
+            decompiler_output: "int StdFunc(int x, int y) { return x + y; }".to_string(),
+            windows_apis: vec![calxgloss_types::translation::WindowsApiCall {
+                name: "GetTickCount".to_string(),
+                category: ApiCategory::Win32Core,
+                pal_mapping: "std::time::Instant::now()".to_string(),
+            }],
+            test_cases: Vec::new(),
+            api_category_mappings: Vec::new(),
+            call_graph_neighbors: Vec::new(),
+            neighboring_functions: Vec::new(),
+            data_structures: Vec::new(),
+            type_info: Vec::new(),
+        };
+
+        let prompt = build_complexity_prompt(&FunctionComplexity::Standard, &data).unwrap();
+        assert!(prompt.contains("StdFunc"));
+        assert!(prompt.contains("game.dll"));
+        assert!(prompt.contains("WINDOWS API CALLS IDENTIFIED"));
     }
 }

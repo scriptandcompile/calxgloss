@@ -407,23 +407,28 @@ impl TranslationPipeline {
             "Generated baseline tests"
         );
 
-        // Step 4: Build translation request and prompt
+        // Step 4: Detect function complexity and build translation request
+        let complexity = self
+            .analyzer
+            .detect_complexity(&function_info.disassembly, &function_info.windows_apis);
+        info!(
+            dll,
+            function,
+            complexity = %complexity,
+            "Detected function complexity"
+        );
+
         let request = self.build_translation_request(
             dll,
             function,
             &function_info,
-            tagged_apis,
+            tagged_apis.clone(),
             baseline_tests.clone(),
         );
-        let prompt = build_translate_prompt(&request)?;
-        info!(
-            dll,
-            function,
-            prompt_len = prompt.len(),
-            "Built translation prompt"
-        );
 
-        // Step 5: Send to LLM
+        // Step 5: Build a complexity-aware prompt and send to LLM
+        let data = calxgloss_prompts::ComplexityPromptData::from_request(&request);
+        let prompt = calxgloss_prompts::build_complexity_prompt(&complexity, &data)?;
         let response = self.send_to_llm(&prompt).await?;
 
         if response.content.is_empty() {
@@ -560,7 +565,10 @@ impl TranslationPipeline {
         config: &RetryConfig,
         verifier: &Verifier,
     ) -> Result<RetryResult> {
-        debug!(dll, function, "Starting translation with retry (max {} attempts)", config.max_attempts);
+        debug!(
+            dll,
+            function, "Starting translation with retry (max {} attempts)", config.max_attempts
+        );
 
         // Step 1: Initial translation via the full pipeline
         let initial = self.translate(dll, function).await?;
@@ -573,6 +581,7 @@ impl TranslationPipeline {
         );
 
         // Step 2: Run the retry loop
+        // Phase 2, step 2.4: Pass DLL category for benchmark tracking
         let result = retry::try_translate_with_retry(
             initial,
             verifier,
@@ -580,6 +589,7 @@ impl TranslationPipeline {
             &self.llm,
             &self.ghidra,
             config.strategy.clone(),
+            Some(dll),
         )
         .await;
 
@@ -881,10 +891,7 @@ impl TranslationPipeline {
                             attempts = retry_result.attempts.len(),
                             "Batch function succeeded"
                         );
-                        let rust_code = retry_result
-                            .rust_code
-                            .clone()
-                            .unwrap_or_default();
+                        let rust_code = retry_result.rust_code.clone().unwrap_or_default();
                         batch_result.add(batch::FunctionResult::success(
                             dll.to_string(),
                             function.clone(),
