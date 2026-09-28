@@ -645,6 +645,7 @@ max_retries = 5
         let mut guard = EnvGuard::new();
         guard.set("XDG_CONFIG_HOME", None);
         guard.set("HOME", Some(dir.path().to_string_lossy().into_owned()));
+        guard.set("CALXGLOSS_LLM_MODEL", None);
         guard.chdir(dir.path());
         std::fs::write(PROJECT_FILE, "[llm]\nmodel = \"from-project\"\n").unwrap();
         let loaded = load(None);
