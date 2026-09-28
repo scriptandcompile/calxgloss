@@ -482,7 +482,16 @@ pub fn print_batch_summary(result: &BatchTranslationResult) {
             println!("  {} {}", green_bold("\u{2713}"), func_line);
             if let Some(rust_code) = &func_result.rust_code {
                 let lines = rust_code.lines().count();
-                println!("     {}{} Rust code, {} lines", dim("  model: "), func_result.retry_result.success_strategy.as_deref().unwrap_or("initial"), lines);
+                println!(
+                    "     {}{} Rust code, {} lines",
+                    dim("  model: "),
+                    func_result
+                        .retry_result
+                        .success_strategy
+                        .as_deref()
+                        .unwrap_or("initial"),
+                    lines
+                );
             }
         } else {
             println!("  {} {}", red_bold("\u{2717}"), func_line);
@@ -527,7 +536,11 @@ pub fn print_batch_summary(result: &BatchTranslationResult) {
         let label = if all { "ALL PASS" } else { "INCOMPLETE" };
         println!(
             "  {}",
-            if all { green_bold(label) } else { yellow_bold(label) }
+            if all {
+                green_bold(label)
+            } else {
+                yellow_bold(label)
+            }
         );
     }
 }

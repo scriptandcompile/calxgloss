@@ -101,13 +101,13 @@ pub use calxgloss_testgen::parse_signature;
 // calxgloss-translator — Translation pipeline
 // ============================================================
 
+pub use calxgloss_translator::BatchTranslationResult;
+pub use calxgloss_translator::FunctionResult;
 pub use calxgloss_translator::Result as TranslatorResult;
 pub use calxgloss_translator::Translation;
 pub use calxgloss_translator::TranslationPipeline;
 pub use calxgloss_translator::Translator;
 pub use calxgloss_translator::TranslatorError;
-pub use calxgloss_translator::BatchTranslationResult;
-pub use calxgloss_translator::FunctionResult;
 
 // ============================================================
 // calxgloss-verify — Compilation and behavioral verification
