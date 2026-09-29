@@ -2,17 +2,17 @@
 
 use axum::{
     Json,
-    extract::{Path, Request, State},
-    extract::FromRequest,
-    response::Response,
     body::Bytes,
+    extract::FromRequest,
+    extract::{Path, Request, State},
+    response::Response,
 };
 use tracing::info;
 
 use super::{
-    ServerState, ActionResponse, DiffFile, DiffHunk, DiffLine, DiffLineType, DiffResponse, DiffSummary,
-    GhidraApiCall, GhidraContext, GhidraContextResponse, PatchRequest, QueueEntry,
-    QueuePosition, QueueResponse, SendBackRequest, ServerError, UnitResponse, UnitResponseInner,
+    ActionResponse, DiffFile, DiffHunk, DiffLine, DiffLineType, DiffResponse, DiffSummary,
+    GhidraApiCall, GhidraContext, GhidraContextResponse, PatchRequest, QueueEntry, QueuePosition,
+    QueueResponse, SendBackRequest, ServerError, ServerState, UnitResponse, UnitResponseInner,
 };
 use calxgloss_types::ReviewStatus;
 
@@ -64,14 +64,15 @@ pub async fn trace_middleware(
     response
 }
 
-/// ─── GET /api/dashboard ──────────────────────────────────────────────
+// ─── GET /api/dashboard ──────────────────────────────────────────────
 
 /// Returns the full review dashboard including queue, dependency graph,
 /// recent activity, and status counts.
 pub async fn api_get_dashboard(
     State(state): State<ServerState>,
 ) -> Result<Json<super::DashboardResponse>, ServerError> {
-    let dashboard = super::build_dashboard(state.repo_path()).map_err(|e| ServerError::internal(&e.to_string()))?;
+    let dashboard = super::build_dashboard(state.repo_path())
+        .map_err(|e| ServerError::internal(&e.to_string()))?;
     let queue_metadata = super::QueueMetadata {
         total: dashboard.review_queue.len(),
         queued: dashboard.status_counts.queued,
@@ -85,14 +86,15 @@ pub async fn api_get_dashboard(
     }))
 }
 
-/// ─── GET /api/units/:id ──────────────────────────────────────────────
+// ─── GET /api/units/:id ──────────────────────────────────────────────
 
 /// Returns detailed information for a single unit of work.
 pub async fn api_get_unit(
     State(state): State<ServerState>,
     Path(unit_id): Path<String>,
 ) -> Result<Json<UnitResponse>, ServerError> {
-    let dashboard = super::build_dashboard(state.repo_path()).map_err(|e| ServerError::internal(&e.to_string()))?;
+    let dashboard = super::build_dashboard(state.repo_path())
+        .map_err(|e| ServerError::internal(&e.to_string()))?;
 
     let unit = dashboard
         .review_queue
@@ -101,10 +103,10 @@ pub async fn api_get_unit(
         .find(|u| u.id == unit_id)
         .ok_or_else(|| ServerError::not_found("Unit not found"))?;
 
-    let diff_summary = compute_diff_summary(&state, &unit);
+    let diff_summary = compute_diff_summary(&state, unit);
     let attempt_history = load_attempt_history(state.repo_path(), &unit_id);
-    let revision_count = compute_revision_count(&state, &unit);
-    let queue_position = compute_queue_position(&dashboard, &unit);
+    let revision_count = compute_revision_count(&state, unit);
+    let queue_position = compute_queue_position(&dashboard, unit);
 
     Ok(Json(UnitResponse {
         success: true,
@@ -137,7 +139,7 @@ pub async fn api_get_unit(
     }))
 }
 
-/// ─── POST /api/units/:id/accept ──────────────────────────────────────
+// ─── POST /api/units/:id/accept ──────────────────────────────────────
 
 /// Accepts a unit of work: merges its Git branch into `main` and records the acceptance.
 ///
@@ -179,9 +181,9 @@ pub async fn api_accept_unit(
     let git = calxgloss_git::GitManager::open(state.repo_path())
         .map_err(|e| ServerError::internal(&format!("Failed to open repo: {e}")))?;
 
-    let result = git.accept_branch(&branch).map_err(|e| {
-        ServerError::internal(&format!("Failed to accept branch: {e}"))
-    })?;
+    let result = git
+        .accept_branch(&branch)
+        .map_err(|e| ServerError::internal(&format!("Failed to accept branch: {e}")))?;
 
     let merge_hash = match &result {
         calxgloss_git::MergeResult::Merged { merge_hash } => Some(merge_hash.clone()),
@@ -201,7 +203,7 @@ pub async fn api_accept_unit(
     }))
 }
 
-/// ─── POST /api/units/:id/send-back ───────────────────────────────────
+// ─── POST /api/units/:id/send-back ───────────────────────────────────
 
 /// Sends a unit back to the LLM with reviewer comments.
 ///
@@ -211,7 +213,9 @@ pub async fn api_send_back_unit(
     Path(unit_id): Path<String>,
     OptionalJson(body): OptionalJson<SendBackRequest>,
 ) -> Result<Json<ActionResponse>, ServerError> {
-    let reason = body.map(|b| b.reason).unwrap_or_else(|| "Needs revision".to_string());
+    let reason = body
+        .map(|b| b.reason)
+        .unwrap_or_else(|| "Needs revision".to_string());
 
     // If ActionsState is present, use it
     if let Some(actions) = combined.actions {
@@ -254,15 +258,11 @@ pub async fn api_send_back_unit(
         merge_hash: None,
         branch_name: Some(branch.name),
         message: format!("Unit sent back: {reason}"),
-        rejection_path: Some(
-            rejection_path
-                .to_string_lossy()
-                .to_string(),
-        ),
+        rejection_path: Some(rejection_path.to_string_lossy().to_string()),
     }))
 }
 
-/// ─── POST /api/units/:id/patch ──────────────────────────────────────
+// ─── POST /api/units/:id/patch ──────────────────────────────────────
 
 /// Requests a patch for a unit of work, identifying the specific issue.
 ///
@@ -276,7 +276,9 @@ pub async fn api_request_patch(
     Path(unit_id): Path<String>,
     OptionalJson(body): OptionalJson<PatchRequest>,
 ) -> Result<Json<ActionResponse>, ServerError> {
-    let issue = body.map(|b| b.issue).unwrap_or_else(|| "Unknown issue".to_string());
+    let issue = body
+        .map(|b| b.issue)
+        .unwrap_or_else(|| "Unknown issue".to_string());
 
     // If ActionsState is present, use the real implementation
     if let Some(actions) = combined.actions {
@@ -301,8 +303,7 @@ pub async fn api_request_patch(
     let branch_name = format!(
         "re/{}{}/v{}",
         unit.dll,
-        unit
-            .function
+        unit.function
             .as_deref()
             .map(|f| format!("/{f}"))
             .unwrap_or_default(),
@@ -319,56 +320,61 @@ pub async fn api_request_patch(
     }))
 }
 
-/// ─── GET /api/graph ──────────────────────────────────────────────────
+// ─── GET /api/graph ──────────────────────────────────────────────────
 
 /// Returns the dependency graph for visualization in the web UI.
 pub async fn api_get_dependency_graph(
     State(state): State<ServerState>,
 ) -> Result<Json<super::DependencyGraphResponse>, ServerError> {
-    let dashboard = super::build_dashboard(state.repo_path()).map_err(|e| ServerError::internal(&e.to_string()))?;
+    let dashboard = super::build_dashboard(state.repo_path())
+        .map_err(|e| ServerError::internal(&e.to_string()))?;
     Ok(Json(super::DependencyGraphResponse::ok(
         dashboard.dependency_graph,
     )))
 }
 
-/// ─── GET /api/queue ──────────────────────────────────────────────────
+// ─── GET /api/queue ──────────────────────────────────────────────────
 
 /// Returns the full review queue sorted by dependency order.
 pub async fn api_get_queue(
     State(state): State<ServerState>,
 ) -> Result<Json<QueueResponse>, ServerError> {
-    let dashboard = super::build_dashboard(state.repo_path()).map_err(|e| ServerError::internal(&e.to_string()))?;
+    let dashboard = super::build_dashboard(state.repo_path())
+        .map_err(|e| ServerError::internal(&e.to_string()))?;
     Ok(Json(QueueResponse::from_dashboard(&dashboard)))
 }
 
-/// ─── GET /api/queue/next ─────────────────────────────────────────────
+// ─── GET /api/queue/next ─────────────────────────────────────────────
 
 /// Returns the next unit in the review queue based on dependency order.
 pub async fn api_get_next_unit(
     State(state): State<ServerState>,
 ) -> Result<Json<Option<QueueEntry>>, ServerError> {
-    let dashboard = super::build_dashboard(state.repo_path()).map_err(|e| ServerError::internal(&e.to_string()))?;
-    Ok(Json(
-        dashboard
-            .next_in_dependency_order()
-            .map(|u| QueueEntry {
-                id: u.id.clone(),
-                name: u.name.clone(),
-                kind: u.kind.to_string(),
-                dll: u.dll.clone(),
-                function: u.function.clone(),
-                status: u.status.to_string(),
-                stale: u.stale.to_string(),
-                blocked: matches!(u.status, ReviewStatus::Blocked),
-            }),
-    ))
+    let dashboard = super::build_dashboard(state.repo_path())
+        .map_err(|e| ServerError::internal(&e.to_string()))?;
+    Ok(Json(dashboard.next_in_dependency_order().map(|u| {
+        QueueEntry {
+            id: u.id.clone(),
+            name: u.name.clone(),
+            kind: u.kind.to_string(),
+            dll: u.dll.clone(),
+            function: u.function.clone(),
+            status: u.status.to_string(),
+            stale: u.stale.to_string(),
+            blocked: matches!(u.status, ReviewStatus::Blocked),
+        }
+    })))
 }
 
 // ─── Helper functions ─────────────────────────────────────────────────
 
 /// Find a unit by ID using the repository's review dashboard.
-fn find_unit(state: &ServerState, unit_id: &str) -> Result<calxgloss_types::UnitOfWork, ServerError> {
-    let dashboard = super::build_dashboard(state.repo_path()).map_err(|e| ServerError::internal(&e.to_string()))?;
+fn find_unit(
+    state: &ServerState,
+    unit_id: &str,
+) -> Result<calxgloss_types::UnitOfWork, ServerError> {
+    let dashboard = super::build_dashboard(state.repo_path())
+        .map_err(|e| ServerError::internal(&e.to_string()))?;
     dashboard
         .review_queue
         .iter()
@@ -389,7 +395,7 @@ fn compute_queue_position(
     QueuePosition { index, total }
 }
 
-/// ─── GET /health ─────────────────────────────────────────────────────
+// ─── GET /health ─────────────────────────────────────────────────────
 
 /// Health check endpoint.
 pub async fn api_health(
@@ -402,7 +408,7 @@ pub async fn api_health(
     })))
 }
 
-/// ─── GET /api/units/:id/diff ─────────────────────────────────────────
+// ─── GET /api/units/:id/diff ─────────────────────────────────────────
 
 /// Returns the full line-by-line diff between a unit's branch and main.
 pub async fn api_get_unit_diff(
@@ -425,7 +431,7 @@ pub async fn api_get_unit_diff(
     Ok(Json(DiffResponse::ok(diff_files)))
 }
 
-/// ─── GET /api/units/:id/ghidra ───────────────────────────────────────
+// ─── GET /api/units/:id/ghidra ───────────────────────────────────────
 
 /// Returns Ghidra context (decompiler output, disassembly, API tags) for a unit's function.
 pub async fn api_get_unit_ghidra(
@@ -450,20 +456,21 @@ pub async fn api_get_unit_ghidra(
 }
 
 /// Compute a diff summary between a unit's branch and `main`.
-fn compute_diff_summary(
-    state: &ServerState,
-    unit: &calxgloss_types::UnitOfWork,
-) -> DiffSummary {
+fn compute_diff_summary(state: &ServerState, unit: &calxgloss_types::UnitOfWork) -> DiffSummary {
     let dll = &unit.dll;
     if let Some(function) = unit.function.as_deref() {
         let branch_name = format!("re/{dll}/{function}v{}", unit.attempt);
-        if let Ok(git) = calxgloss_git::GitManager::open(state.repo_path()) {
-            if let Ok(summary) = compute_branch_diff(&git, &branch_name) {
-                return summary;
-            }
+        if let Ok(git) = calxgloss_git::GitManager::open(state.repo_path())
+            && let Ok(summary) = compute_branch_diff(&git, &branch_name)
+        {
+            return summary;
         }
     }
-    DiffSummary { files_changed: 0, insertions: 0, deletions: 0 }
+    DiffSummary {
+        files_changed: 0,
+        insertions: 0,
+        deletions: 0,
+    }
 }
 
 /// Compute a diff summary for a specific branch.
@@ -487,7 +494,13 @@ fn compute_branch_diff(
 
     let (main_commit, branch_commit) = match (main_ref, branch_ref) {
         (Some(m), Some(b)) => (m, b),
-        _ => return Ok(DiffSummary { files_changed: 0, insertions: 0, deletions: 0 }),
+        _ => {
+            return Ok(DiffSummary {
+                files_changed: 0,
+                insertions: 0,
+                deletions: 0,
+            });
+        }
     };
 
     let mut diff_opts = DiffOptions::new();
@@ -624,18 +637,34 @@ fn parse_diff_hunks(raw: &str) -> Vec<DiffHunk> {
                         let diff_line = DiffLine {
                             kind,
                             content,
-                            new_line: if matches!(kind, DiffLineType::Addition | DiffLineType::Context) {
+                            new_line: if matches!(
+                                kind,
+                                DiffLineType::Addition | DiffLineType::Context
+                            ) {
                                 let l = new_line;
-                                if matches!(kind, DiffLineType::Addition) { new_line += 1; }
-                                else { new_line += 1; }
+                                if matches!(kind, DiffLineType::Addition) {
+                                    new_line += 1;
+                                } else {
+                                    new_line += 1;
+                                }
                                 Some(l)
-                            } else { None },
-                            old_line: if matches!(kind, DiffLineType::Deletion | DiffLineType::Context) {
+                            } else {
+                                None
+                            },
+                            old_line: if matches!(
+                                kind,
+                                DiffLineType::Deletion | DiffLineType::Context
+                            ) {
                                 let l = old_line;
-                                if matches!(kind, DiffLineType::Deletion) { old_line += 1; }
-                                else { old_line += 1; }
+                                if matches!(kind, DiffLineType::Deletion) {
+                                    old_line += 1;
+                                } else {
+                                    old_line += 1;
+                                }
                                 Some(l)
-                            } else { None },
+                            } else {
+                                None
+                            },
                         };
                         hunk_lines.push(diff_line);
                     }
@@ -707,7 +736,10 @@ fn load_ghidra_artifacts(
     let func_file = analysis_dir.join(format!("{function}.json"));
 
     if !func_file.exists() {
-        return Err(anyhow::anyhow!("Ghidra analysis file not found: {}", func_file.display()));
+        return Err(anyhow::anyhow!(
+            "Ghidra analysis file not found: {}",
+            func_file.display()
+        ));
     }
 
     let content = std::fs::read_to_string(&func_file)?;
@@ -726,7 +758,9 @@ fn load_ghidra_artifacts(
     let artifact: GhidraArtifact = serde_json::from_str(&content)?;
 
     Ok(GhidraContext {
-        function_name: artifact.function_name.unwrap_or_else(|| function.to_string()),
+        function_name: artifact
+            .function_name
+            .unwrap_or_else(|| function.to_string()),
         address: None,
         dll: Some(dll.to_string()),
         decompiler_output: artifact.decompiler_output,
@@ -780,10 +814,7 @@ fn parse_diff_block(block: &str) -> Option<DiffFile> {
 }
 
 /// Load attempt history for a unit from patch records on disk.
-fn load_attempt_history(
-    repo_path: &std::path::Path,
-    unit_id: &str,
-) -> Vec<super::AttemptRecord> {
+fn load_attempt_history(repo_path: &std::path::Path, unit_id: &str) -> Vec<super::AttemptRecord> {
     let (dll, function, _attempt) = if let Some(attempt_suffix) = unit_id.rsplit_once('/') {
         let base = attempt_suffix.0;
         if let Some(v) = attempt_suffix.1.strip_prefix('v') {
@@ -799,7 +830,11 @@ fn load_attempt_history(
         return Vec::new();
     };
 
-    let patch_dir = repo_path.join("re").join("patches").join(dll).join(function);
+    let patch_dir = repo_path
+        .join("re")
+        .join("patches")
+        .join(dll)
+        .join(function);
     if !patch_dir.exists() {
         return Vec::new();
     }
@@ -821,11 +856,10 @@ fn load_attempt_history(
                 Err(_) => continue,
             };
 
-            let record: calxgloss_git::PatchRecord =
-                match serde_json::from_str(&content) {
-                    Ok(r) => r,
-                    Err(_) => continue,
-                };
+            let record: calxgloss_git::PatchRecord = match serde_json::from_str(&content) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
 
             records.push(super::AttemptRecord {
                 attempt,
@@ -845,10 +879,7 @@ fn load_attempt_history(
 }
 
 /// Compute the total number of revisions (attempts) for a unit.
-fn compute_revision_count(
-    state: &ServerState,
-    unit: &calxgloss_types::UnitOfWork,
-) -> usize {
+fn compute_revision_count(state: &ServerState, unit: &calxgloss_types::UnitOfWork) -> usize {
     let dll = &unit.dll;
     if let Some(function) = unit.function.as_deref() {
         let branch_prefix = format!("re/{dll}/{function}v");
@@ -882,4 +913,3 @@ pub async fn static_fallback(path: axum::extract::Path<String>) -> axum::respons
         axum::response::Html("<h1>404 Not Found</h1>".to_string())
     }
 }
-

@@ -108,7 +108,7 @@ pub struct DiffSummary {
     pub deletions: usize,
 }
 
-/// ─── Line-by-line diff types ──────────────────────────────────────────
+// ─── Line-by-line diff types ──────────────────────────────────────────
 
 /// Type of a diff line.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -385,7 +385,10 @@ pub struct DiffResponse {
 
 impl DiffResponse {
     pub fn ok(diff: Vec<DiffFile>) -> Self {
-        Self { success: true, diff }
+        Self {
+            success: true,
+            diff,
+        }
     }
 }
 
@@ -401,11 +404,19 @@ pub struct GhidraContextResponse {
 
 impl GhidraContextResponse {
     pub fn ok(ctx: GhidraContext) -> Self {
-        Self { success: true, context: Some(ctx), error: None }
+        Self {
+            success: true,
+            context: Some(ctx),
+            error: None,
+        }
     }
 
     pub fn not_found(func: &str) -> Self {
-        Self { success: true, context: None, error: Some(format!("Ghidra context not available for function: {func}")) }
+        Self {
+            success: true,
+            context: None,
+            error: Some(format!("Ghidra context not available for function: {func}")),
+        }
     }
 }
 
@@ -434,7 +445,8 @@ impl axum::response::IntoResponse for ServerError {
         let body = serde_json::to_string(&serde_json::json!({
             "error": true,
             "message": message,
-        })).unwrap_or_default();
+        }))
+        .unwrap_or_default();
 
         let mut response = axum::response::Response::new(body.into());
         *response.status_mut() = status;

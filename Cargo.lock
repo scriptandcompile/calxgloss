@@ -340,6 +340,7 @@ dependencies = [
  "calxgloss-testgen",
  "calxgloss-translator",
  "calxgloss-verify",
+ "calxgloss-web",
  "clap",
  "serde_json",
  "tempfile",
