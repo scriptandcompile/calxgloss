@@ -64,7 +64,9 @@
 //! assert_eq!(graph.nodes.len(), 6); // 2 classifications + 1 shim + 3 functions
 //! ```
 
-use calxgloss_types::{DependencyEdge, DependencyGraph, DependencyNode, ReviewStatus, dashboard::WorkUnitLevel};
+use calxgloss_types::{
+    DependencyEdge, DependencyGraph, DependencyNode, ReviewStatus, dashboard::WorkUnitLevel,
+};
 
 use crate::DllClassification;
 
@@ -1201,7 +1203,9 @@ mod tests {
         )];
         let call_graph_b = vec![("CreateFile", vec![])];
         let graph_b = tracker.build(&classifications_b, &call_graph_b);
-        persistor.save(&graph_b).expect("second save should succeed");
+        persistor
+            .save(&graph_b)
+            .expect("second save should succeed");
 
         // Should have the 2-node version, not the 3-node version
         let loaded = persistor.load().expect("should load overwritten graph");
@@ -1223,9 +1227,7 @@ mod tests {
             .save(&empty_graph)
             .expect("save empty graph should succeed");
 
-        let loaded = persistor
-            .load()
-            .expect("load empty graph should succeed");
+        let loaded = persistor.load().expect("load empty graph should succeed");
         assert!(loaded.nodes.is_empty());
         assert!(loaded.edges.is_empty());
     }
@@ -1241,11 +1243,17 @@ mod tests {
 
         // Saving the graph should create all intermediate directories
         let tracker = DependencyTracker;
-        let classifications = vec![test_classification("test.dll", DllCategory::ProjectSpecific, None)];
+        let classifications = vec![test_classification(
+            "test.dll",
+            DllCategory::ProjectSpecific,
+            None,
+        )];
         let call_graph = vec![("TestFunc", vec![])];
         let graph = tracker.build(&classifications, &call_graph);
 
-        persistor.save(&graph).expect("save should create directories");
+        persistor
+            .save(&graph)
+            .expect("save should create directories");
         assert!(persistor.graph_path().exists());
     }
 }
