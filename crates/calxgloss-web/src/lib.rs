@@ -70,10 +70,13 @@ pub mod server {
     //! | `POST` | `/api/units/:id/patch` | `api_request_patch` | Request patch for specific issue |
     //! | `GET` | `/api/graph` | `api_get_dependency_graph` | Dependency graph for visualization |
     //! | `GET` | `/health` | `api_health` | Health check |
+    //! | `GET` | `/api/events/upgrade` | `api_events_upgrade` | WebSocket upgrade for live progress (Phase 5, Step 5.3) |
     //!
     //! ## Usage
     //!
-    //! ```no_run
+    //! ### Basic HTTP server
+    //!
+    //! ```no_run,ignore
     //! use calxgloss_web::server::{ServerState, serve};
     //! use std::path::PathBuf;
     //!
@@ -81,6 +84,30 @@ pub mod server {
     //! async fn main() -> anyhow::Result<()> {
     //!     let state = ServerState::new(PathBuf::from("/path/to/repo"));
     //!     serve(state, 3000).await?;
+    //!     Ok(())
+    //! }
+    //! ```
+    //!
+    //! ### With WebSocket live progress
+    //!
+    //! ```no_run,ignore
+    //! use calxgloss_web::server::{
+    //!     ServerState, SessionManager, EventsBridge, build_router_with_ws,
+    //! };
+    //! use std::path::PathBuf;
+    //!
+    //! #[tokio::main]
+    //! async fn main() -> anyhow::Result<()> {
+    //!     let state = ServerState::new(PathBuf::from("/path/to/repo"));
+    //!     let (manager, event_tx) = SessionManager::new();
+    //!     let bridge = EventsBridge::new(128);
+    //!
+    //!     // Feed events from the translation pipeline into the bridge
+    //!     // bridge.emit(event);
+    //!
+    //!     let router = build_router_with_ws(state, manager, bridge);
+    //!     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
+    //!     axum::serve(listener, router).await?;
     //!     Ok(())
     //! }
     //! ```
@@ -111,11 +138,11 @@ pub mod server {
 
 #[cfg(test)]
 mod tests {
+    use calxgloss_types::dashboard::Staleness;
     use calxgloss_types::{
         DependencyEdge, DependencyGraph, DependencyNode, ReviewDashboard, ReviewStatus,
         StatusCounts, UnitOfWork, WorkUnitKind,
     };
-    use calxgloss_types::dashboard::Staleness;
     use chrono::Utc;
 
     #[test]
@@ -123,7 +150,12 @@ mod tests {
         let graph = DependencyGraph {
             nodes: vec![
                 DependencyNode::new("dll_classify", "DLL Classification", ReviewStatus::Accepted),
-                DependencyNode::with_level("shim_wgpu", "Shim wgpu", ReviewStatus::PendingReview, WorkUnitKind::ShimLayer.level()),
+                DependencyNode::with_level(
+                    "shim_wgpu",
+                    "Shim wgpu",
+                    ReviewStatus::PendingReview,
+                    WorkUnitKind::ShimLayer.level(),
+                ),
                 DependencyNode::new("func_draw", "func_DrawPrimitive", ReviewStatus::Queued),
             ],
             edges: vec![
@@ -149,7 +181,12 @@ mod tests {
         let graph = DependencyGraph {
             nodes: vec![
                 DependencyNode::new("dll_classify", "DLL Classification", ReviewStatus::Accepted),
-                DependencyNode::with_level("shim_wgpu", "Shim wgpu", ReviewStatus::PendingReview, WorkUnitKind::ShimLayer.level()),
+                DependencyNode::with_level(
+                    "shim_wgpu",
+                    "Shim wgpu",
+                    ReviewStatus::PendingReview,
+                    WorkUnitKind::ShimLayer.level(),
+                ),
             ],
             edges: vec![DependencyEdge {
                 from: "shim_wgpu".into(),
@@ -167,7 +204,12 @@ mod tests {
         let graph = DependencyGraph {
             nodes: vec![
                 DependencyNode::new("func_draw", "func_DrawPrimitive", ReviewStatus::Queued),
-                DependencyNode::with_level("shim_wgpu", "Shim wgpu", ReviewStatus::Accepted, WorkUnitKind::ShimLayer.level()),
+                DependencyNode::with_level(
+                    "shim_wgpu",
+                    "Shim wgpu",
+                    ReviewStatus::Accepted,
+                    WorkUnitKind::ShimLayer.level(),
+                ),
             ],
             edges: vec![DependencyEdge {
                 from: "func_draw".into(),

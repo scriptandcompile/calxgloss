@@ -2,15 +2,17 @@
 //!
 //! This module is only compiled when the `server` feature is enabled.
 
+mod events;
 mod handlers;
 mod types;
 
 pub use self::handlers::*;
 pub use self::types::*;
+pub use events::{EventsBridge, SessionManager, WebSocketHandler};
 
 use axum::{
     Router,
-    extract::DefaultBodyLimit,
+    extract::{DefaultBodyLimit, WebSocketUpgrade},
     middleware,
     routing::{get, post},
 };
@@ -79,6 +81,56 @@ pub fn build_router(state: ServerState) -> Router {
         .layer(middleware::from_fn(handlers::trace_middleware))
         .layer(DefaultBodyLimit::max(16 * 1024))
         .with_state(state)
+}
+
+/// Build a router with WebSocket support for live progress streaming.
+///
+/// This is an extension of [`build_router`] that adds:
+/// - `GET /api/events/upgrade` — WebSocket upgrade for live progress (Phase 5, Step 5.3)
+///
+/// The returned router carries two additional state objects:
+/// - `SessionManager` — manages active WebSocket connections
+/// - `EventsBridge` — bridges pipeline events into the session manager
+///
+/// # Usage
+///
+/// ```no_run
+/// use calxgloss_web::server::{build_router_with_ws, ServerState, SessionManager, EventsBridge};
+/// use axum::Router;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let (manager, event_tx) = SessionManager::new();
+/// let bridge = EventsBridge::new(128);
+///
+/// let state = ServerState::new("/path/to/repo".into());
+/// let router: Router = build_router_with_ws(state, manager, bridge);
+/// # Ok(())
+/// # }
+/// ```
+pub fn build_router_with_ws(
+    state: ServerState,
+    manager: SessionManager,
+    bridge: EventsBridge,
+) -> Router {
+    let base = build_router(state);
+    base.with_state(manager)
+        .with_state(bridge)
+        .route("/api/events/upgrade", get(api_events_upgrade))
+}
+
+/// WebSocket upgrade handler for live progress events.
+///
+/// Registers the client with the session manager and starts streaming
+/// progress events over the WebSocket connection.
+pub async fn api_events_upgrade(
+    ws: WebSocketUpgrade,
+    axum::extract::State(manager): axum::extract::State<SessionManager>,
+) -> axum::response::Response {
+    ws.on_upgrade(move |ws| async move {
+        let (handler, _sender) = manager.register_client().await;
+        handler.process(ws).await;
+    })
+    .into_response()
 }
 
 /// Start the API server on the given address.

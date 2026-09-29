@@ -2,17 +2,37 @@
 
 use crate::Translation;
 use crate::retry::{
-    RetryConfig, RetryResult, RetryStrategy, TranslationAttempt, build_compile_fix_prompt,
-    build_edge_case_fix_prompt, build_escalate_prompt_with_context,
+    EscalatePromptCtx, RetryConfig, RetryResult, RetryStrategy, TranslationAttempt,
+    build_compile_fix_prompt, build_edge_case_fix_prompt, build_escalate_prompt_with_context,
     build_failure_informed_compile_fix_prompt, build_failure_informed_edge_case_fix_prompt,
     build_failure_informed_escalate_prompt, build_failure_informed_test_fix_prompt,
     build_test_fix_prompt, log_prompt_variant_experiment,
 };
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_llm::{LlmClient, LlmMessage};
-use calxgloss_types::FailureHint;
+use calxgloss_types::{FailureHint, ProgressEvent};
 use calxgloss_verify::{CompileResult, Verifier};
 use tracing::{info, warn};
+
+/// Context for the retry loop.
+///
+/// Groups the parameters that `try_translate_with_retry` needs so callers
+/// can build a single struct instead of passing 7 separate arguments.
+/// Reduces the public function signature to 2 parameters.
+pub struct RetryLoopCtx<'a> {
+    /// Verification engine for checking translations.
+    pub verifier: &'a Verifier,
+    /// LLM client for sending fix prompts.
+    pub llm: &'a LlmClient,
+    /// Ghidra client, used for context extraction during escalation.
+    pub ghidra: &'a GhidraClient,
+    /// Retry configuration.
+    pub config: &'a RetryConfig,
+    /// Optional workspace path for experiment logging.
+    pub workspace: Option<&'a std::path::Path>,
+    /// Optional progress event emitter for live WebSocket streaming.
+    pub events: Option<&'a calxgloss_types::TranslationEvents>,
+}
 
 /// Execute a translation with retry logic.
 ///
@@ -24,34 +44,50 @@ use tracing::{info, warn};
 /// 5. Escalates strategy after each failure
 /// 6. Returns a [`RetryResult`] with all attempt details
 /// 7. Logs experiment data per attempt
+/// 8. Emits [`ProgressEvent`] instances via the optional events channel
 ///
 /// # Arguments
 ///
 /// * `initial_translation` — The initial [`Translation`] to verify and retry.
-/// * `verifier` — The verification engine.
-/// * `config` — Retry configuration.
-/// * `llm` — The LLM client for sending fix prompts.
-/// * `ghidra` — The Ghidra client, used for context extraction during escalation.
-/// * `strategy` — The starting retry strategy.
-/// * `workspace` — Optional workspace path for experiment logging.
+/// * `ctx` — A [`RetryLoopCtx`] holding the verifier, LLM, Ghidra client,
+///   configuration, and optional extras.
 pub async fn try_translate_with_retry(
     initial_translation: Translation,
-    verifier: &Verifier,
-    config: &RetryConfig,
-    llm: &LlmClient,
-    ghidra: &GhidraClient,
-    strategy: RetryStrategy,
-    workspace: Option<&std::path::Path>,
+    ctx: &RetryLoopCtx<'_>,
 ) -> RetryResult {
     let mut result = RetryResult::new();
-    let max = config.max_attempts;
-    let mut current_strategy = strategy;
+    let max = ctx.config.max_attempts;
+    let mut current_strategy = ctx.config.strategy.clone();
 
     // Failure history for failure-informed prompting
     let mut failure_history: Vec<FailureHint> = Vec::new();
 
+    let dll = initial_translation.dll.clone();
+    let function = initial_translation.function.clone();
+
+    // Helper: emit a TranslationAttemptCompleted event if events are wired up
+    let emit_attempt = |result: &RetryResult, attempt_num: u32, strategy: &str| {
+        if let Some(em) = ctx.events {
+            let attempt = &result.attempts[attempt_num as usize - 1];
+            let _ = em.emit(ProgressEvent::TranslationAttemptCompleted {
+                dll: dll.clone(),
+                function: function.clone(),
+                attempt: attempt_num,
+                success: attempt.is_successful(),
+                compiled: attempt.compiled,
+                tests_passed: attempt.tests_passed,
+                tests_total: attempt.tests_total,
+                compilation_errors: attempt.compilation_errors.clone(),
+                failed_tests: attempt.failed_tests.clone(),
+                strategy: strategy.to_string(),
+                tokens_used: attempt.tokens_used,
+            });
+        }
+    };
+
     // First attempt: verify the initial translation
-    let compile_result = match verifier
+    let compile_result = match ctx
+        .verifier
         .compile(
             &initial_translation.dll,
             &initial_translation.function,
@@ -71,6 +107,9 @@ pub async fn try_translate_with_retry(
         }
     };
 
+    // Clone errors for later use in prompt building
+    let initial_errors = compile_result.errors.clone();
+
     let attempt = TranslationAttempt {
         attempt: 1,
         rust_code: initial_translation.rust_code.clone(),
@@ -83,6 +122,7 @@ pub async fn try_translate_with_retry(
         tokens_used: initial_translation.tokens_used,
     };
     result.add_attempt(attempt);
+    emit_attempt(&result, 1, "initial");
 
     // If the first attempt succeeded, we're done
     if result.success {
@@ -116,6 +156,7 @@ pub async fn try_translate_with_retry(
                     strategy: "skip_default".to_string(),
                     tokens_used: None,
                 });
+                emit_attempt(&result, attempt_num, "skip_default");
                 continue;
             }
             RetryStrategy::CompileFix => {
@@ -125,14 +166,14 @@ pub async fn try_translate_with_retry(
                         &initial_translation.function,
                         &initial_translation.dll,
                         &initial_translation.rust_code,
-                        &compile_result.errors,
+                        &initial_errors,
                     )
                 } else {
                     build_failure_informed_compile_fix_prompt(
                         &initial_translation.function,
                         &initial_translation.dll,
                         &initial_translation.rust_code,
-                        &compile_result.errors,
+                        &initial_errors,
                         &failure_history,
                     )
                 };
@@ -140,7 +181,8 @@ pub async fn try_translate_with_retry(
             }
             RetryStrategy::TestFix => {
                 // Run verification first to get failing tests
-                let verification = verifier
+                let verification = ctx
+                    .verifier
                     .verify(
                         &initial_translation.dll,
                         &initial_translation.function,
@@ -185,15 +227,16 @@ pub async fn try_translate_with_retry(
             RetryStrategy::Escalate => {
                 // Build an escalated prompt with additional Ghidra context.
                 // The initial translation carries the function address and call graph.
-                let failure_desc = if !compile_result.errors.is_empty() {
+                let failure_desc = if !initial_errors.is_empty() {
                     format!(
                         "Compilation failed with {} error(s):\n\n{}",
-                        compile_result.errors.len(),
-                        compile_result.errors.join("\n\n")
+                        initial_errors.len(),
+                        initial_errors.join("\n\n")
                     )
                 } else {
                     // Get test failure details if compilation passed
-                    let verification = verifier
+                    let verification = ctx
+                        .verifier
                         .verify(
                             &initial_translation.dll,
                             &initial_translation.function,
@@ -218,36 +261,32 @@ pub async fn try_translate_with_retry(
                     }
                 };
 
+                // Build the context struct for escalation
+                let addr = initial_translation.function_address.unwrap_or(0);
+                let call_graph = initial_translation.call_graph.clone();
+                let escalation_ctx = EscalatePromptCtx {
+                    function_name: function.clone(),
+                    dll_name: dll.clone(),
+                    original_rust_code: initial_translation.rust_code.clone(),
+                    failure_description: failure_desc,
+                    ghidra: ctx.ghidra.clone(),
+                    address: addr,
+                    call_graph,
+                    history: failure_history.clone(),
+                };
+
                 // Use failure-informed escalated prompt
                 let prompt = if failure_history.is_empty() {
-                    build_escalate_prompt_with_context(
-                        &initial_translation.function,
-                        &initial_translation.dll,
-                        &initial_translation.rust_code,
-                        &failure_desc,
-                        ghidra,
-                        initial_translation.function_address.unwrap_or(0),
-                        &initial_translation.call_graph,
-                    )
-                    .await
+                    build_escalate_prompt_with_context(escalation_ctx).await
                 } else {
-                    build_failure_informed_escalate_prompt(
-                        &initial_translation.function,
-                        &initial_translation.dll,
-                        &initial_translation.rust_code,
-                        &failure_desc,
-                        ghidra,
-                        initial_translation.function_address.unwrap_or(0),
-                        &initial_translation.call_graph,
-                        &failure_history,
-                    )
-                    .await
+                    build_failure_informed_escalate_prompt(escalation_ctx).await
                 };
                 (prompt, "escalate".to_string())
             }
             RetryStrategy::EdgeCaseFix => {
                 // Get test failure details and build an edge-case-focused prompt
-                let verification = verifier
+                let verification = ctx
+                    .verifier
                     .verify(
                         &initial_translation.dll,
                         &initial_translation.function,
@@ -302,7 +341,7 @@ pub async fn try_translate_with_retry(
 
         // Send fix prompt to LLM
         let messages = vec![LlmMessage::user(&prompt)];
-        let response = match llm.complete(&messages).await {
+        let response = match ctx.llm.complete(&messages).await {
             Ok(r) => r,
             Err(e) => {
                 warn!(
@@ -321,6 +360,7 @@ pub async fn try_translate_with_retry(
                     strategy: strategy_name.clone(),
                     tokens_used: None,
                 });
+                emit_attempt(&result, attempt_num, &strategy_name);
                 // Continue to next attempt (might get a different strategy)
                 continue;
             }
@@ -345,11 +385,13 @@ pub async fn try_translate_with_retry(
                 strategy: strategy_name.clone(),
                 tokens_used,
             });
+            emit_attempt(&result, attempt_num, &strategy_name);
             continue;
         }
 
         // Verify the fix attempt
-        let compile_result = match verifier
+        let compile_result = match ctx
+            .verifier
             .compile(
                 &initial_translation.dll,
                 &initial_translation.function,
@@ -368,7 +410,8 @@ pub async fn try_translate_with_retry(
 
         // Get test results
         let (tests_passed, tests_total, failed_tests) = if compile_result.success {
-            match verifier
+            match ctx
+                .verifier
                 .verify(
                     &initial_translation.dll,
                     &initial_translation.function,
@@ -400,14 +443,15 @@ pub async fn try_translate_with_retry(
             attempt: attempt_num,
             rust_code: new_rust_code,
             compiled: compile_result.success,
-            compilation_errors: compile_result.errors,
+            compilation_errors: compile_result.errors.clone(),
             tests_passed,
             tests_total,
-            failed_tests,
+            failed_tests: failed_tests.clone(),
             strategy: strategy_name.clone(),
             tokens_used,
         };
         result.add_attempt(attempt);
+        emit_attempt(&result, attempt_num, &strategy_name);
 
         // Track failure history for informed prompting
         // Only record history for failed attempts (not the initial one, not successful retries)
@@ -446,11 +490,11 @@ pub async fn try_translate_with_retry(
             &strategy_name,
             result.success,
             attempt_num,
-            workspace,
+            ctx.workspace,
         );
 
         // Escalate strategy for next attempt
-        if config.escalate_on_failure {
+        if ctx.config.escalate_on_failure {
             current_strategy = match current_strategy {
                 RetryStrategy::CompileFix => RetryStrategy::TestFix,
                 RetryStrategy::TestFix => RetryStrategy::Escalate,

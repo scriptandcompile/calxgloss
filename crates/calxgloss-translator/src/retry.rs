@@ -20,9 +20,14 @@
 pub use config::{AUTO_STRATEGY_CYCLE, RetryStrategy};
 pub use config::{RetryConfig, RetryResult, TranslationAttempt};
 
+// --- Context ---
+pub use retry_loop::RetryLoopCtx;
+
 // --- Prompt builders ---
 pub use compile_fix::{build_compile_fix_prompt, build_failure_informed_compile_fix_prompt};
-pub use escalate::{build_escalate_prompt_with_context, build_failure_informed_escalate_prompt};
+pub use escalate::{
+    EscalatePromptCtx, build_escalate_prompt_with_context, build_failure_informed_escalate_prompt,
+};
 pub use prompts::{
     build_edge_case_fix_prompt, build_failure_informed_edge_case_fix_prompt,
     build_failure_informed_test_fix_prompt, build_test_fix_prompt,

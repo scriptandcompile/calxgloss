@@ -23,6 +23,7 @@ pub mod error;
 pub mod experiment_log;
 pub mod function;
 pub mod git;
+pub mod progress;
 pub mod test;
 pub mod translation;
 pub mod verification;
@@ -41,6 +42,7 @@ pub use experiment_log::{
 };
 pub use function::{ApiCategory, FunctionInfo, WindowsApiCall};
 pub use git::{GitBranch, GitCommit};
+pub use progress::{ProgressEvent, TranslationEvents};
 pub use test::{SideEffect, SideEffectKind, TestCase, TestResult};
 pub use translation::{ApiCategoryMapping, ApiMappingItem, TranslationRequest, TranslationResult};
 pub use verification::{FailedTest, VerificationResult};

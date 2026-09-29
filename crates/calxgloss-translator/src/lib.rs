@@ -47,7 +47,9 @@ use calxgloss_llm::{LlmClient, LlmMessage};
 use calxgloss_pal::ApiMappings;
 use calxgloss_prompts::build_translate_prompt;
 use calxgloss_testgen::TestGenerator;
-use calxgloss_types::{Export, FunctionInfo, TestCase, TranslationRequest};
+use calxgloss_types::{
+    Export, FunctionInfo, ProgressEvent, TestCase, TranslationEvents, TranslationRequest,
+};
 use calxgloss_verify::Verifier;
 use tracing::{debug, info, instrument, warn};
 
@@ -309,6 +311,12 @@ pub struct TranslationPipeline {
 
     /// Optional workspace root path for experiment logging.
     workspace: Option<std::path::PathBuf>,
+
+    /// Optional broadcast channel for progress events.
+    /// When present, events are emitted at key pipeline milestones
+    /// and can be consumed by a WebSocket server for live progress.
+    #[allow(dead_code)]
+    events: Option<TranslationEvents>,
 }
 
 impl TranslationPipeline {
@@ -326,6 +334,7 @@ impl TranslationPipeline {
             exports: Vec::new(),
             target_dll: None,
             workspace: None,
+            events: None,
         }
     }
 
@@ -336,6 +345,23 @@ impl TranslationPipeline {
     pub fn with_workspace(mut self, workspace: impl Into<std::path::PathBuf>) -> Self {
         self.workspace = Some(workspace.into());
         self
+    }
+
+    /// Attach a progress event emitter for live WebSocket streaming.
+    ///
+    /// When set, the pipeline emits [`ProgressEvent`] instances at every
+    /// major milestone. Subscribers to the channel (typically a WebSocket
+    /// server) can relay these events to connected clients in real time.
+    pub fn with_events(mut self, events: TranslationEvents) -> Self {
+        self.events = Some(events);
+        self
+    }
+
+    /// Emit a progress event if an event emitter was attached.
+    fn emit(&self, event: ProgressEvent) {
+        if let Some(ref emitter) = self.events {
+            let _ = emitter.emit(event);
+        }
     }
 
     /// Set the test generator for baseline test creation.
@@ -395,9 +421,23 @@ impl TranslationPipeline {
     pub async fn translate(&self, dll: &str, function: &str) -> Result<Translation> {
         debug!(dll, function, "Starting translation pipeline");
 
+        // Emit: translation started
+        self.emit(ProgressEvent::TranslationStarted {
+            dll: dll.to_string(),
+            function: function.to_string(),
+        });
+
         // Step 1: Fetch function metadata from Ghidra
         let function_info = self.fetch_function(dll, function).await?;
         info!(dll, function, "Fetched function metadata");
+
+        // Emit: Ghidra fetch complete
+        self.emit(ProgressEvent::GhidraFetchComplete {
+            dll: dll.to_string(),
+            function: function.to_string(),
+            address: Some(function_info.address),
+            disassembly_lines: function_info.disassembly.lines().count(),
+        });
 
         // Step 2: Fetch imports and tag Windows APIs
         let imports = self.fetch_imports(dll).await?;
@@ -409,6 +449,13 @@ impl TranslationPipeline {
             "Tagged Windows APIs"
         );
 
+        // Emit: API tagging complete
+        self.emit(ProgressEvent::ApiTaggingComplete {
+            dll: dll.to_string(),
+            function: function.to_string(),
+            tagged_apis: tagged_apis.len(),
+        });
+
         // Step 3: Generate baseline test inputs
         let baseline_tests = self
             .generate_baseline_tests(&function_info, &imports)
@@ -419,6 +466,13 @@ impl TranslationPipeline {
             tests = baseline_tests.len(),
             "Generated baseline tests"
         );
+
+        // Emit: tests generated
+        self.emit(ProgressEvent::TestsGenerated {
+            dll: dll.to_string(),
+            function: function.to_string(),
+            test_count: baseline_tests.len(),
+        });
 
         // Step 4: Detect function complexity and build translation request
         let complexity = self
@@ -440,6 +494,13 @@ impl TranslationPipeline {
         );
 
         // Step 5: Build a complexity-aware prompt and send to LLM
+        self.emit(ProgressEvent::LlmCallStart {
+            dll: dll.to_string(),
+            function: function.to_string(),
+            attempt: 1,
+            strategy: "initial".to_string(),
+        });
+
         let data = calxgloss_prompts::ComplexityPromptData::from_request(&request);
         let prompt = calxgloss_prompts::build_complexity_prompt(&complexity, &data)?;
         let response = self.send_to_llm(&prompt).await?;
@@ -449,6 +510,15 @@ impl TranslationPipeline {
                 code_len: response.content.len(),
             });
         }
+
+        // Emit: LLM call complete
+        self.emit(ProgressEvent::LlmCallComplete {
+            dll: dll.to_string(),
+            function: function.to_string(),
+            attempt: 1,
+            code_length: response.content.len(),
+            tokens_used: response.tokens_used,
+        });
 
         info!(
             dll,
@@ -570,7 +640,7 @@ impl TranslationPipeline {
     /// # Ok(())
     /// # }
     /// ```
-    #[instrument(skip(self, config, verifier), fields(dll, function))]
+    #[instrument(skip(self, config, verifier), fields(dll, function, retries = config.max_attempts))]
     pub async fn try_translate_with_retry(
         &self,
         dll: &str,
@@ -594,19 +664,23 @@ impl TranslationPipeline {
         );
 
         // Step 2: Run the retry loop
-        // Pass workspace path for experiment logging
-        let result = retry::try_translate_with_retry(
-            initial,
+        let ctx = retry::RetryLoopCtx {
             verifier,
+            llm: &self.llm,
+            ghidra: &self.ghidra,
             config,
-            &self.llm,
-            &self.ghidra,
-            config.strategy.clone(),
-            self.workspace.as_deref(),
-        )
-        .await;
+            workspace: self.workspace.as_deref(),
+            events: self.events.as_ref(),
+        };
+        let result = retry::try_translate_with_retry(initial, &ctx).await;
 
         if result.success {
+            self.emit(ProgressEvent::TranslationCompleted {
+                dll: dll.to_string(),
+                function: function.to_string(),
+                total_attempts: result.attempts.len(),
+                success_strategy: result.success_strategy.clone(),
+            });
             info!(
                 dll,
                 function,
@@ -615,6 +689,11 @@ impl TranslationPipeline {
                 "Translation succeeded via retry loop"
             );
         } else {
+            self.emit(ProgressEvent::TranslationFailed {
+                dll: dll.to_string(),
+                function: function.to_string(),
+                total_attempts: result.attempts.len(),
+            });
             warn!(
                 dll,
                 function,

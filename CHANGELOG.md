@@ -373,6 +373,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   struct field layouts, match arms, function signatures, doc
   comment examples.
 
+### Phase 5, Step 5.3 — WebSocket Live Progress Streaming
+
+#### `calxgloss-types`
+- **`ProgressEvent` enum** — typed events emitted at pipeline milestones:
+  `TranslationStarted`, `GhidraFetchComplete`, `ApiTaggingComplete`,
+  `TestsGenerated`, `LlmCallStart`, `LlmCallComplete`,
+  `TranslationAttemptCompleted`, `TranslationCompleted`, and
+  `TranslationFailed`. All variants carry `dll`/`function` identifiers plus
+  attempt-specific metadata; fully serializable via `serde` for JSON
+  transport over WebSockets.
+- **`TranslationEvents`** — broadcast-channel wrapper (`tokio::sync::broadcast`)
+  for publishing progress events. `emit()` returns the subscriber count,
+  `subscribe()` creates a new receiver. Callers don't need to handle errors —
+  lost events when no subscribers are present are silently discarded.
+
+#### `calxgloss-translator`
+- **Pipeline event emission** — `TranslationPipeline::with_events()` attaches
+  a `TranslationEvents` instance; `emit()` publishes events at every major
+  milestone during `translate()` and `try_translate_with_retry()`.
+- **`RetryLoopCtx` struct** — bundles verifier, LLM, Ghidra, config, workspace
+  path, and event emitter into a single argument for `try_translate_with_retry()`,
+  reducing the public function signature from 7 to 2 parameters.
+- **`EscalatePromptCtx` struct** — groups context data for the escalation prompt
+  builder (function name, DLL, code, failure description, Ghidra client,
+  address, call graph, failure history), simplifying the 8-parameter API.
+- **Per-attempt progress events** — the retry loop now emits
+  `TranslationAttemptCompleted` after every attempt (initial, compile-fix,
+  test-fix, escalate, edge-case-fix), so WebSocket clients can display
+  real-time per-attempt status (compiled, tests passed, strategy label).
+
+#### `calxgloss-web`
+- **WebSocket server** (`server::events` module) — `SessionManager` owns a
+  background broadcast loop that fans out `ProgressEvent` instances from an
+  `mpsc` channel to all registered WebSocket clients.
+- **`EventsBridge`** — connects the pipeline's `TranslationEvents` broadcast
+  sender to the `SessionManager`'s `mpsc` channel, bridging the two channel
+  types into a single streaming pipeline.
+- **`WebSocketHandler`** — accepts an `axum::extract::WebSocket`, splits it
+  into read/write halves, and drives concurrent event forwarding and
+  keep-alive pings. Auto-cleans up on disconnect.
+- **`build_router_with_ws()`** — extension of `build_router()` that mounts the
+  `/api/events/upgrade` WebSocket upgrade route. Carries `SessionManager` and
+  `EventsBridge` as additional axum state objects.
+- **`api_events_upgrade()`** — WebSocket upgrade handler that registers the
+  client with the session manager and starts streaming.
+- **`[lints.cargo]`** — `unused_dependencies = "allow"` in Cargo.toml to
+  suppress manifest-level warnings on `cfg(feature = "server")` gated
+  optional dependencies (axum, calxgloss-reports, uuid).
+- Removed unused `tokio-tungstenite` dependency; the WebSocket implementation
+  uses axum's native `axum[ws]` support instead.
+
 ## [0.1.0] — 2025-09-27
 
 ### Added
