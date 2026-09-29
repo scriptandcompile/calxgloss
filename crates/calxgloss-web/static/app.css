@@ -1094,3 +1094,239 @@ svg {
         display: none;
     }
 }
+
+/* ─── Diff Viewer ─────────────────────────────────────────────────────── */
+
+.diff-viewer {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+.diff-tabs {
+    display: flex;
+    gap: 0;
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+.diff-tab {
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-muted);
+    border-bottom: 2px solid transparent;
+    transition: all var(--transition-fast);
+    cursor: pointer;
+}
+
+.diff-tab:hover {
+    color: var(--text-secondary);
+}
+
+.diff-tab.active {
+    color: var(--accent-blue);
+    border-bottom-color: var(--accent-blue);
+}
+
+.diff-content {
+    overflow-x: auto;
+    max-height: 600px;
+    overflow-y: auto;
+}
+
+.diff-file {
+    margin-bottom: 0;
+}
+
+.diff-file-header {
+    padding: 6px 12px;
+    background: var(--bg-tertiary);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border-subtle);
+    border-top: 1px solid var(--border-subtle);
+}
+
+.diff-file-header .path {
+    color: var(--accent-blue);
+}
+
+.diff-file-header .rename {
+    color: var(--accent-cyan);
+    font-size: 11px;
+    margin-left: 8px;
+}
+
+.diff-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.diff-table td {
+    padding: 0 0 0 0;
+    vertical-align: top;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre;
+}
+
+.diff-line {
+    display: flex;
+}
+
+.diff-line-num {
+    display: flex;
+    flex-direction: column;
+    padding: 0 8px;
+    text-align: right;
+    color: var(--text-muted);
+    user-select: none;
+    min-width: 40px;
+    border-right: 1px solid var(--border-subtle);
+    background: var(--bg-primary);
+}
+
+.diff-line-num .old {
+    color: var(--text-muted);
+}
+
+.diff-line-num .new {
+    color: var(--text-muted);
+}
+
+.diff-line-num.empty {
+    padding: 0 8px;
+}
+
+.diff-line-body {
+    padding: 0 8px;
+    min-width: 0;
+}
+
+/* Line type colors */
+.diff-line.addition .diff-line-body {
+    background: var(--accent-green-dim);
+    color: var(--accent-green);
+}
+
+.diff-line.addition .diff-line-body::before {
+    content: "+";
+    margin-right: 6px;
+    font-weight: 700;
+}
+
+.diff-line.deletion .diff-line-body {
+    background: var(--accent-red-dim);
+    color: var(--accent-red);
+}
+
+.diff-line.deletion .diff-line-body::before {
+    content: "-";
+    margin-right: 6px;
+    font-weight: 700;
+}
+
+.diff-line.context .diff-line-body {
+    color: var(--text-secondary);
+}
+
+.diff-line.context .diff-line-body::before {
+    content: " ";
+    margin-right: 6px;
+    color: var(--text-muted);
+}
+
+/* Hunk header */
+.diff-line.hunk-header {
+    background: var(--bg-tertiary);
+}
+
+.diff-line.hunk-header .diff-line-body {
+    color: var(--accent-blue);
+    font-weight: 600;
+}
+
+.diff-line.hunk-header .diff-line-body::before {
+    content: "@";
+    margin-right: 6px;
+    color: var(--accent-blue);
+}
+
+/* ─── Ghidra Context Viewer ───────────────────────────────────────────── */
+
+.ghidra-viewer {
+    display: none;
+    flex-direction: column;
+    gap: 0;
+}
+
+.ghidra-viewer.active {
+    display: flex;
+}
+
+.ghidra-decompiler {
+    padding: 12px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: var(--text-secondary);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    max-height: 300px;
+    overflow-y: auto;
+    margin-bottom: 12px;
+}
+
+.ghidra-disassembly {
+    padding: 12px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre;
+    color: var(--text-muted);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.ghidra-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+}
+
+.ghidra-api-calls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 12px;
+}
+
+.ghidra-api-tag {
+    padding: 3px 10px;
+    border-radius: 12px;
+    background: var(--accent-purple-dim);
+    color: var(--accent-purple);
+    font-size: 11px;
+    font-family: var(--font-mono);
+}
+
+.ghidra-empty {
+    padding: 20px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
+}

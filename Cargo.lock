@@ -501,6 +501,7 @@ dependencies = [
  "anyhow",
  "axum",
  "axum-extra",
+ "calxgloss-ghidra",
  "calxgloss-git",
  "calxgloss-reports",
  "calxgloss-types",

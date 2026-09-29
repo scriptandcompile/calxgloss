@@ -10,7 +10,8 @@ use axum::{
 use tracing::info;
 
 use super::{
-    ServerState, ActionResponse, DiffSummary, PatchRequest, QueueEntry,
+    ServerState, ActionResponse, DiffFile, DiffHunk, DiffLine, DiffLineType, DiffResponse, DiffSummary,
+    GhidraApiCall, GhidraContext, GhidraContextResponse, PatchRequest, QueueEntry,
     QueuePosition, QueueResponse, SendBackRequest, ServerError, UnitResponse, UnitResponseInner,
 };
 use calxgloss_types::ReviewStatus;
@@ -335,6 +336,53 @@ pub async fn api_health(
     })))
 }
 
+/// ─── GET /api/units/:id/diff ─────────────────────────────────────────
+
+/// Returns the full line-by-line diff between a unit's branch and main.
+pub async fn api_get_unit_diff(
+    State(state): State<ServerState>,
+    Path(unit_id): Path<String>,
+) -> Result<Json<DiffResponse>, ServerError> {
+    let unit = find_unit(&state, &unit_id)?;
+
+    let branch_name = match (unit.dll.as_str(), unit.function.as_deref()) {
+        (dll, Some(func)) => format!("re/{dll}/{func}v{}", unit.attempt),
+        (dll, None) => format!("re/{dll}v{}", unit.attempt),
+    };
+
+    let git = calxgloss_git::GitManager::open(state.repo_path())
+        .map_err(|e| ServerError::internal(&format!("Failed to open repo: {e}")))?;
+
+    let diff_files = compute_line_diff(&git, &branch_name)
+        .map_err(|e| ServerError::internal(&format!("Failed to compute diff: {e}")))?;
+
+    Ok(Json(DiffResponse::ok(diff_files)))
+}
+
+/// ─── GET /api/units/:id/ghidra ───────────────────────────────────────
+
+/// Returns Ghidra context (decompiler output, disassembly, API tags) for a unit's function.
+pub async fn api_get_unit_ghidra(
+    State(state): State<ServerState>,
+    Path(unit_id): Path<String>,
+) -> Result<Json<GhidraContextResponse>, ServerError> {
+    let unit = find_unit(&state, &unit_id)?;
+
+    let func_name = match unit.function {
+        Some(ref f) if !f.is_empty() => f.clone(),
+        _ => return Ok(Json(GhidraContextResponse::not_found(&unit_id))),
+    };
+
+    let dll = unit.dll.clone();
+
+    // Try to read Ghidra data from analysis artifacts on disk
+    if let Ok(ctx) = load_ghidra_artifacts(state.repo_path(), &dll, &func_name) {
+        return Ok(Json(GhidraContextResponse::ok(ctx)));
+    }
+
+    Ok(Json(GhidraContextResponse::not_found(&func_name)))
+}
+
 /// Compute a diff summary between a unit's branch and `main`.
 fn compute_diff_summary(
     state: &ServerState,
@@ -393,6 +441,275 @@ fn compute_branch_diff(
         files_changed: stats.files_changed(),
         insertions: stats.insertions(),
         deletions: stats.deletions(),
+    })
+}
+
+/// Compute a full line-by-line diff between a branch and `main`, returning
+/// structured `DiffFile` entries suitable for a line-by-line diff viewer.
+fn compute_line_diff(
+    git: &calxgloss_git::GitManager,
+    branch_name: &str,
+) -> Result<Vec<DiffFile>, anyhow::Error> {
+    let main_ref = git
+        .repo()
+        .find_branch("main", git2::BranchType::Local)
+        .ok()
+        .and_then(|b| b.get().peel_to_commit().ok())
+        .map(|c| c.id().to_string());
+
+    let branch_ref = git
+        .repo()
+        .find_branch(branch_name, git2::BranchType::Local)
+        .ok()
+        .and_then(|b| b.get().peel_to_commit().ok())
+        .map(|c| c.id().to_string());
+
+    let (main_hash, branch_hash) = match (main_ref, branch_ref) {
+        (Some(m), Some(b)) => (m, b),
+        _ => return Ok(Vec::new()),
+    };
+
+    // Run `git diff main...branch` to get a unified diff
+    let diff_output = std::process::Command::new("git")
+        .args(["diff", "--no-color", "--", &main_hash, &branch_hash])
+        .current_dir(git.repo().path())
+        .output()
+        .map_err(|e| anyhow::anyhow!("Failed to run git diff: {e}"))?;
+
+    if !diff_output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    let raw_text = std::str::from_utf8(&diff_output.stdout)
+        .map_err(|e| anyhow::anyhow!("Invalid UTF-8 in git diff output: {e}"))?;
+
+    // Parse raw unified diff into files
+    let blocks: Vec<&str> = raw_text
+        .split("\n@@ -")
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+
+    let mut files = Vec::new();
+    for block in blocks {
+        let full_block = format!("@@ -{block}");
+        if let Some(file) = parse_diff_block(&full_block) {
+            files.push(file);
+        }
+    }
+
+    Ok(files)
+}
+
+/// Parse the raw text output of `git diff --unified` into structured hunks.
+fn parse_diff_hunks(raw: &str) -> Vec<DiffHunk> {
+    let mut hunks = Vec::new();
+    let lines: Vec<&str> = raw.lines().collect();
+    let mut i = 0;
+
+    while i < lines.len() {
+        let line = lines[i];
+        // Detect hunk header: @@ -old_start,old_count +new_start,new_count @@ header
+        if line.starts_with("@@") && line.ends_with("@@") {
+            let mut hunk_lines = Vec::new();
+            let header = Some(line.to_string());
+
+            // Parse hunk metadata
+            let new_start = extract_hunk_number(line, true).unwrap_or(1);
+            let new_lines = extract_hunk_line_count(line, true).unwrap_or(0);
+            let old_start = extract_hunk_number(line, false).unwrap_or(1);
+            let old_lines = extract_hunk_line_count(line, false).unwrap_or(0);
+
+            let mut new_line = new_start;
+            let mut old_line = old_start;
+
+            i += 1; // skip header line
+
+            // Collect lines until the next hunk header or EOF
+            while i < lines.len() {
+                let next_line = lines[i];
+                match next_line {
+                    s if s.starts_with("@@") => break,
+                    s if s.starts_with("diff --git") => break,
+                    s if s.starts_with("index ") => break,
+                    s if s.starts_with("new file") => break,
+                    s if s.starts_with("deleted file") => break,
+                    s if s.starts_with("old mode") => break,
+                    s if s.starts_with("new mode") => break,
+                    s if s.starts_with("similarity index") => break,
+                    s if s.starts_with("rename from") => break,
+                    s if s.starts_with("rename to") => break,
+                    s if s.starts_with("copy from") => break,
+                    s if s.starts_with("copy to") => break,
+                    s if s.starts_with("--- ") => break,
+                    s if s.starts_with("+++ ") => break,
+                    s if s.starts_with("\\ No newline") => {
+                        i += 1; // skip annotation
+                        continue;
+                    }
+                    _ => {
+                        i += 1;
+                        let kind = match next_line.chars().next() {
+                            Some('+') => DiffLineType::Addition,
+                            Some('-') => DiffLineType::Deletion,
+                            _ => DiffLineType::Context,
+                        };
+
+                        let content: String = next_line.chars().skip(1).collect();
+                        let diff_line = DiffLine {
+                            kind,
+                            content,
+                            new_line: if matches!(kind, DiffLineType::Addition | DiffLineType::Context) {
+                                let l = new_line;
+                                if matches!(kind, DiffLineType::Addition) { new_line += 1; }
+                                else { new_line += 1; }
+                                Some(l)
+                            } else { None },
+                            old_line: if matches!(kind, DiffLineType::Deletion | DiffLineType::Context) {
+                                let l = old_line;
+                                if matches!(kind, DiffLineType::Deletion) { old_line += 1; }
+                                else { old_line += 1; }
+                                Some(l)
+                            } else { None },
+                        };
+                        hunk_lines.push(diff_line);
+                    }
+                }
+            }
+
+            hunks.push(DiffHunk {
+                new_start,
+                new_lines,
+                old_start,
+                old_lines,
+                header,
+                lines: hunk_lines,
+            });
+        } else {
+            i += 1;
+        }
+    }
+
+    hunks
+}
+
+/// Extract the start number from a hunk header.
+fn extract_hunk_number(hunk_header: &str, is_new: bool) -> Option<usize> {
+    let parts: Vec<&str> = hunk_header.split(|c: char| c == ' ' || c == ',').collect();
+    // Format: @@ -old_start,old_count +new_start,new_count @@
+    // Find the part starting with + (new file) or - (old file)
+    for part in parts {
+        let part = part.trim();
+        if is_new && part.starts_with('+') {
+            return part[1..].parse().ok();
+        }
+        if !is_new && part.starts_with('-') {
+            return part[1..].parse().ok();
+        }
+    }
+    None
+}
+
+/// Extract the line count from a hunk header.
+fn extract_hunk_line_count(hunk_header: &str, is_new: bool) -> Option<usize> {
+    let parts: Vec<&str> = hunk_header.split(|c: char| c == ' ' || c == ',').collect();
+    for part in parts {
+        let part = part.trim();
+        if is_new && part.starts_with('+') {
+            // Could be just the start number without a comma
+            if let Some(idx) = part.find(',') {
+                return part[idx + 1..].parse().ok();
+            }
+        }
+        if !is_new && part.starts_with('-') {
+            if let Some(idx) = part.find(',') {
+                return part[idx + 1..].parse().ok();
+            }
+        }
+    }
+    None
+}
+
+// ─── Ghidra Context Helpers ─────────────────────────────────────────────
+
+/// Load Ghidra artifacts from the analysis directory on disk.
+fn load_ghidra_artifacts(
+    repo_path: &std::path::Path,
+    dll: &str,
+    function: &str,
+) -> Result<GhidraContext, anyhow::Error> {
+    let analysis_dir = repo_path.join("re").join("analysis").join(dll);
+    let func_file = analysis_dir.join(format!("{function}.json"));
+
+    if !func_file.exists() {
+        return Err(anyhow::anyhow!("Ghidra analysis file not found: {}", func_file.display()));
+    }
+
+    let content = std::fs::read_to_string(&func_file)?;
+
+    // Try to deserialize as a FunctionInfo from calxgloss-types
+    #[derive(serde::Deserialize)]
+    struct GhidraArtifact {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        decompiler_output: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        windows_apis: Option<Vec<GhidraApiCall>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        function_name: Option<String>,
+    }
+
+    let artifact: GhidraArtifact = serde_json::from_str(&content)?;
+
+    Ok(GhidraContext {
+        function_name: artifact.function_name.unwrap_or_else(|| function.to_string()),
+        address: None,
+        dll: Some(dll.to_string()),
+        decompiler_output: artifact.decompiler_output,
+        disassembly: None,
+        windows_apis: artifact.windows_apis,
+        note: None,
+    })
+}
+
+/// Parse a diff block (starting with `@@`) into a `DiffFile` with file name and hunks.
+fn parse_diff_block(block: &str) -> Option<DiffFile> {
+    let lines: Vec<&str> = block.lines().collect();
+    if lines.is_empty() {
+        return None;
+    }
+
+    // Extract file path from hunk header
+    // Format: @@ -old_start,old_count +new_start,new_count @@ file_path
+    let header_line = lines[0];
+    let path = if header_line.contains("@@") {
+        // Find the last @@ and take everything after it
+        if let Some(at_idx) = header_line.rfind("@@") {
+            let after_at = header_line[at_idx + 2..].trim();
+            if after_at.is_empty() {
+                "unknown".to_string()
+            } else {
+                after_at.to_string()
+            }
+        } else {
+            "unknown".to_string()
+        }
+    } else {
+        "unknown".to_string()
+    };
+
+    // Re-parse using the unified diff parser (which already handles @@ lines)
+    let hunks = parse_diff_hunks(block);
+
+    if hunks.is_empty() {
+        return None;
+    }
+
+    Some(DiffFile {
+        path,
+        old_path: None,
+        added: false,
+        deleted: false,
+        renamed: false,
+        hunks,
     })
 }
 

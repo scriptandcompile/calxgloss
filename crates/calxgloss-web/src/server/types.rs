@@ -1,8 +1,6 @@
 //! Response types for the review dashboard API.
 
-use axum::response::IntoResponse;
 use axum::http::StatusCode;
-use axum::response::Json;
 use calxgloss_types::{ReviewDashboard, ReviewStatus};
 use serde::{Deserialize, Serialize};
 
@@ -108,6 +106,72 @@ pub struct DiffSummary {
     pub files_changed: usize,
     pub insertions: usize,
     pub deletions: usize,
+}
+
+/// ─── Line-by-line diff types ──────────────────────────────────────────
+
+/// Type of a diff line.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffLineType {
+    /// Context line (unchanged).
+    Context,
+    /// Added line.
+    Addition,
+    /// Removed line.
+    Deletion,
+}
+
+/// A single line in a diff hunks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffLine {
+    /// Line type.
+    #[serde(rename = "type")]
+    pub kind: DiffLineType,
+    /// The line content (without the type-prefix character like + / - / space).
+    pub content: String,
+    /// Line number in the new file (None for deletions).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub new_line: Option<usize>,
+    /// Line number in the old file (None for additions).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_line: Option<usize>,
+}
+
+/// A contiguous group of diff lines.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffHunk {
+    /// New file start line.
+    pub new_start: usize,
+    /// New file line count in this hunk.
+    pub new_lines: usize,
+    /// Old file start line.
+    pub old_start: usize,
+    /// Old file line count in this hunk.
+    pub old_lines: usize,
+    /// Optional header text from git (e.g. `@@ -1,3 +1,4 @@ fn foo`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    /// The individual lines in this hunk.
+    pub lines: Vec<DiffLine>,
+}
+
+/// A single file's diff content.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffFile {
+    /// File path in the repo.
+    pub path: String,
+    /// Old path before rename/move (if applicable).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_path: Option<String>,
+    /// Whether this file was added (no old side).
+    pub added: bool,
+    /// Whether this file was deleted (no new side).
+    pub deleted: bool,
+    /// Whether this file was renamed.
+    pub renamed: bool,
+    /// The diff hunks for this file.
+    pub hunks: Vec<DiffHunk>,
 }
 
 /// Information about a single translation attempt.
@@ -257,6 +321,92 @@ pub enum ServerError {
 
     #[error("Bad request: {0}")]
     BadRequest(String),
+}
+
+// ─── Ghidra context types ──────────────────────────────────────────────
+
+/// Ghidra disassembly listing line.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GhidraDisasmLine {
+    /// Address in hex.
+    pub address: String,
+    /// Raw instruction bytes as hex.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<String>,
+    /// Disassembled instruction text.
+    pub instruction: String,
+    /// Ghidra comment or annotation (if any).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+}
+
+/// Ghidra context for a function — decompiler output, disassembly, and metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GhidraContext {
+    /// Function name.
+    pub function_name: String,
+    /// Function address.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    /// DLL this function belongs to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dll: Option<String>,
+    /// Ghidra decompiler (pseudo-C) output.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decompiler_output: Option<String>,
+    /// Disassembly listing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disassembly: Option<Vec<GhidraDisasmLine>>,
+    /// Windows API calls identified in the function.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub windows_apis: Option<Vec<GhidraApiCall>>,
+    /// Note from Ghidra analysis.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// A Windows API call identified in Ghidra analysis.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GhidraApiCall {
+    /// API name (e.g., "CreateFileA").
+    pub name: String,
+    /// API category (e.g., "win32_file", "directx9").
+    pub category: String,
+    /// PAL/crate mapping target.
+    pub pal_mapping: String,
+}
+
+/// Wrapper for successful diff responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffResponse {
+    pub success: bool,
+    pub diff: Vec<DiffFile>,
+}
+
+impl DiffResponse {
+    pub fn ok(diff: Vec<DiffFile>) -> Self {
+        Self { success: true, diff }
+    }
+}
+
+/// Wrapper for successful Ghidra context responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GhidraContextResponse {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<GhidraContext>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl GhidraContextResponse {
+    pub fn ok(ctx: GhidraContext) -> Self {
+        Self { success: true, context: Some(ctx), error: None }
+    }
+
+    pub fn not_found(func: &str) -> Self {
+        Self { success: true, context: None, error: Some(format!("Ghidra context not available for function: {func}")) }
+    }
 }
 
 impl ServerError {

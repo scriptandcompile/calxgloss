@@ -69,6 +69,8 @@
 
         async dashboard() { return API.get("/api/dashboard"); },
         async unit(id) { return API.get(`/api/units/${encodeURIComponent(id)}`); },
+        async unitDiff(id) { return API.get(`/api/units/${encodeURIComponent(id)}/diff`); },
+        async unitGhidra(id) { return API.get(`/api/units/${encodeURIComponent(id)}/ghidra`); },
         async acceptUnit(id) { return API.post(`/api/units/${encodeURIComponent(id)}/accept`); },
         async sendBackUnit(id, reason) { return API.post(`/api/units/${encodeURIComponent(id)}/send-back`, { reason }); },
         async patchUnit(id, issue) { return API.post(`/api/units/${encodeURIComponent(id)}/patch`, { issue }); },
@@ -719,8 +721,14 @@
                 <div id="detail-content">
                     ${renderDetailOverview(u)}
                     ${renderDetailActions(u)}
+                    ${renderDiffTab(u)}
                 </div>
             `;
+
+            // Load diff data
+            loadDiffView(unitId);
+            loadGhidraView(unitId);
+
         } catch (err) {
             body.innerHTML = `<div class="empty-state">Failed to load unit details: ${err.message}</div>`;
         }
@@ -882,6 +890,173 @@
                 </div>
             </div>
         `;
+    }
+
+    // ─── Diff Tab ─────────────────────────────────────────────────────────
+
+    function renderDiffTab(u) {
+        const hasDiff = u.diff_summary.files_changed > 0;
+
+        return `
+            <div class="detail-section" id="diff-section">
+                <div class="diff-tabs">
+                    <button class="diff-tab active" data-diff-tab="diff">Diff (${u.diff_summary.insertions}+ ${u.diff_summary.deletions}-)</button>
+                    <button class="diff-tab" data-diff-tab="ghidra">Ghidra Context</button>
+                </div>
+                <div class="diff-content" id="diff-viewer">
+                    ${hasDiff
+                        ? '<div id="diff-body" class="diff-viewer"><div class="spinner"></div></div>'
+                        : '<div class="ghidra-empty">No diff available for this unit.</div>'
+                    }
+                </div>
+                <div class="diff-content" id="ghidra-viewer" style="display:none">
+                    <div id="ghidra-body" class="ghidra-viewer">
+                        <div class="spinner"></div>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    async function loadDiffView(unitId) {
+        try {
+            const res = await API.unitDiff(unitId);
+            const files = res.diff || [];
+
+            const body = document.getElementById("diff-body");
+            if (!body) return;
+
+            if (files.length === 0) {
+                body.innerHTML = '<div class="ghidra-empty">No changes vs. main.</div>';
+                return;
+            }
+
+            let html = "";
+            for (const file of files) {
+                html += `<div class="diff-file">`;
+                if (file.renamed && file.old_path) {
+                    html += `<div class="diff-file-header">
+                        <span class="path">${escapeHtml(file.path)}</span>
+                        <span class="rename">← ${escapeHtml(file.old_path)}</span>
+                    </div>`;
+                } else {
+                    html += `<div class="diff-file-header"><span class="path">${escapeHtml(file.path)}</span></div>`;
+                }
+
+                html += `<table class="diff-table">`;
+                for (const hunk of file.hunks) {
+                    if (hunk.header) {
+                        html += `<tr class="diff-line hunk-header">
+                            <td class="diff-line-body">${escapeHtml(hunk.header)}</td>
+                        </tr>`;
+                    }
+                    for (const line of hunk.lines) {
+                        const cls = line.kind === "addition" ? "addition"
+                            : line.kind === "deletion" ? "deletion" : "context";
+                        html += `<tr class="diff-line ${cls}">
+                            <td class="diff-line-num">
+                                ${line.old_line != null ? `<span class="old">${line.old_line}</span>` : '<span class="empty">&nbsp;</span>'}
+                            </td>
+                            <td class="diff-line-num">
+                                ${line.new_line != null ? `<span class="new">${line.new_line}</span>` : '<span class="empty">&nbsp;</span>'}
+                            </td>
+                            <td class="diff-line-body">${escapeHtml(line.content)}</td>
+                        </tr>`;
+                    }
+                }
+                html += `</table></div>`;
+            }
+
+            body.innerHTML = html;
+
+            // Set up diff tab switching
+            setupDiffTabs();
+        } catch (err) {
+            const body = document.getElementById("diff-body");
+            if (body) body.innerHTML = `<div class="ghidra-empty">Failed to load diff: ${escapeHtml(err.message)}</div>`;
+        }
+    }
+
+    async function loadGhidraView(unitId) {
+        try {
+            const res = await API.unitGhidra(unitId);
+            const ctx = res.context;
+
+            const body = document.getElementById("ghidra-body");
+            if (!body) return;
+
+            if (!ctx) {
+                body.innerHTML = `<div class="ghidra-empty">${escapeHtml(res.error || "No Ghidra context available.")}</div>`;
+                return;
+            }
+
+            let html = "";
+
+            // Ghidra metadata
+            html += `<div style="padding:8px 12px;font-size:12px;color:var(--text-muted)">`;
+            if (ctx.dll) html += `DLL: <strong style="color:var(--text-secondary)">${escapeHtml(ctx.dll)}</strong> &nbsp;`;
+            if (ctx.function_name) html += `Function: <strong style="color:var(--text-secondary)">${escapeHtml(ctx.function_name)}</strong>`;
+            if (ctx.address) html += ` &nbsp;Addr: <code>${escapeHtml(ctx.address)}</code>`;
+            html += `</div>`;
+
+            // Windows API calls
+            if (ctx.windows_apis && ctx.windows_apis.length > 0) {
+                html += `<div class="ghidra-label">Identified API Calls</div>`;
+                html += `<div class="ghidra-api-calls">`;
+                for (const api of ctx.windows_apis) {
+                    html += `<span class="ghidra-api-tag">${escapeHtml(api.name)} → ${escapeHtml(api.pal_mapping)}</span>`;
+                }
+                html += `</div>`;
+            }
+
+            // Decompiler output
+            if (ctx.decompiler_output) {
+                html += `<div class="ghidra-label">Decompiler (Pseudo-C)</div>`;
+                html += `<div class="ghidra-decompiler">${escapeHtml(ctx.decompiler_output)}</div>`;
+            }
+
+            // Disassembly
+            if (ctx.disassembly && ctx.disassembly.length > 0) {
+                html += `<div class="ghidra-label">Disassembly</div>`;
+                html += `<div class="ghidra-disassembly">`;
+                for (const line of ctx.disassembly) {
+                    html += `<div>${escapeHtml(line.address)}&nbsp;&nbsp;${escapeHtml(line.instruction)}</div>`;
+                }
+                html += `</div>`;
+            }
+
+            body.innerHTML = html;
+        } catch (err) {
+            const body = document.getElementById("ghidra-body");
+            if (body) body.innerHTML = `<div class="ghidra-empty">Failed to load Ghidra context: ${escapeHtml(err.message)}</div>`;
+        }
+    }
+
+    function setupDiffTabs() {
+        const tabs = document.querySelectorAll(".diff-tab");
+        const diffViewer = document.getElementById("diff-viewer");
+        const ghidraViewer = document.getElementById("ghidra-viewer");
+
+        tabs.forEach(tab => {
+            tab.addEventListener("click", () => {
+                const tabName = tab.dataset.diffTab;
+                tabs.forEach(t => t.classList.toggle("active", t === tab));
+
+                if (tabName === "diff") {
+                    diffViewer.style.display = "";
+                    ghidraViewer.style.display = "none";
+                } else {
+                    diffViewer.style.display = "none";
+                    ghidraViewer.style.display = "";
+                }
+            });
+        });
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement("div");
+        div.textContent = text;
+        return div.innerHTML;
     }
 
     // ─── Render: Graph Legend ───────────────────────────────────────────

@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Phase 5, Step 5.5 — Web Review UI: Diff Viewer + Ghidra Context
+
+#### `calxgloss-web`
+- **Line-by-line diff API** — `GET /api/units/:id/diff` returns structured
+  `DiffFile`/`DiffHunk`/`DiffLine` entries with line-by-line highlighting
+  (addition, deletion, context) between a unit's branch and `main`. Parses
+  raw unified diff output into a JSON representation suitable for
+  client-side rendering.
+- **Ghidra context API** — `GET /api/units/:id/ghidra` returns Ghidra
+  analysis data (decompiler pseudo-C, disassembly listing, identified
+  Windows API calls with PAL mappings) loaded from on-disk analysis
+  artifacts. Returns graceful "not found" when no analysis is available.
+- **Diff viewer component** — tabbed detail-panel view with "Diff" and
+  "Ghidra Context" tabs. Renders line-by-line diffs with green-highlighted
+  additions, red-highlighted deletions, dual line-number gutter, and
+  hunk-header markers. Shows file rename annotations.
+- **Ghidra context viewer** — displays decompiler output in a scrollable
+  code block, disassembly listing with address/instruction columns, and
+  tagged Windows API calls with PAL mappings. Loads metadata (DLL,
+  function name, address) from analysis artifacts.
+- **New API response types** — `DiffLineType`, `DiffLine`, `DiffHunk`,
+  `DiffFile`, `DiffResponse`, `GhidraDisasmLine`, `GhidraContext`,
+  `GhidraApiCall`, `GhidraContextResponse`.
+- **`calxgloss-ghidra` optional dependency** — added to `server` feature
+  for future GhidraMCP integration.
+
 ### Added
 
 #### `calxgloss-config`
