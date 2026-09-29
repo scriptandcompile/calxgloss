@@ -13,6 +13,7 @@
 //! - `verify` — Verify a previously translated function
 //! - `config` — Show the configuration in force and where each value came from
 //! - `dashboard` — Show a structured terminal review dashboard
+//! - `serve` — Start the web review UI HTTP server
 //! - `auto` — Detect project state and run the next step automatically
 //!
 //! If called with no subcommand, the tool defaults to `auto` mode: it scans
@@ -300,6 +301,35 @@ enum Command {
         /// Skip git operations
         #[arg(long)]
         skip_git: bool,
+    },
+
+    /// Start the web review UI server
+    ///
+    /// Launches an HTTP server that serves the review dashboard frontend
+    /// and exposes a REST API for branch acceptance, send-back, and patch
+    /// requests.
+    ///
+    /// # Arguments
+    ///
+    /// * `--repo` — Path to the resultant (Git) repository. Defaults to the
+    ///   current directory.
+    /// * `--port` — TCP port to listen on (default: 3000).
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss serve                    # Uses current directory, port 3000
+    /// calxgloss serve --repo /data/game_re  # Custom repo path
+    /// calxgloss serve --port 8080        # Custom port
+    /// ```
+    Serve {
+        /// Path to the Git repository to review
+        #[arg(long, short)]
+        repo: Option<PathBuf>,
+
+        /// Port to listen on (default: 3000)
+        #[arg(long, short = 'p', default_value = "3000")]
+        port: u16,
     },
 }
 
@@ -2201,6 +2231,122 @@ async fn handle_verify(
 }
 
 // ============================================================
+// Serve command handler
+// ============================================================
+
+/// Handles the `serve` subcommand: starts the web review UI HTTP server.
+async fn handle_serve(repo: Option<PathBuf>, port: u16) -> Result<()> {
+    info!(repo = ?repo, port, "Starting web review UI server");
+
+    // Determine the repository path: explicit --repo > CWD > git discovery
+    let repo_path = match repo {
+        Some(path) => {
+            if !path.exists() {
+                anyhow::bail!(
+                    "Repository path does not exist: {}\n\nMake sure the path points to the \
+                     resultant (git) workspace that contains the translation work.",
+                    path.display()
+                );
+            }
+            path
+        }
+        None => {
+            // Try git discovery, fall back to CWD
+            let cwd = std::env::current_dir()
+                .context("Failed to determine current directory")?;
+            let mut search = cwd.clone();
+            let mut found = false;
+            for _ in 0..10 {
+                if search.join(".git").exists() || search.join(".git").is_dir() {
+                    info!(path = %search.display(), "Discovered git repository");
+                    found = true;
+                    break;
+                }
+                if !search.pop() {
+                    break;
+                }
+            }
+            if !found {
+                info!(
+                    path = %cwd.display(),
+                    "No git repository found; using current directory"
+                );
+            }
+            if found {
+                search
+            } else {
+                cwd
+            }
+        }
+    };
+
+    let server_state = calxgloss_web::ServerState::new(repo_path.clone());
+
+    // Print startup banner
+    println!();
+    println_content(format!(
+        "  {}",
+        bold(&format!("Calxgloss Review UI — serving at http://127.0.0.1:{port}"))
+    ));
+    hsep();
+    println_content("");
+    println_content(format!(
+        "  Repository: {}",
+        bold(&repo_path.display().to_string())
+    ));
+    println_content(format!("  Port:       {port}"));
+    println_content(format!(
+        "  Dashboard:  {}",
+        bold(&format!("http://127.0.0.1:{port}/"))
+    ));
+    println_content(format!(
+        "  API root:   {}",
+        bold(&format!("http://127.0.0.1:{port}/api/"))
+    ));
+    println_content("");
+    println_content("  Press Ctrl+C to stop");
+    println!();
+    println_content(
+        "Endpoints:",
+    );
+    println_content(
+        "    GET  /                  Dashboard frontend",
+    );
+    println_content(
+        "    GET  /api/dashboard     Full review dashboard JSON",
+    );
+    println_content(
+        "    GET  /api/queue         Review queue (dependency-ordered)",
+    );
+    println_content(
+        "    GET  /api/graph         Dependency graph data",
+    );
+    println_content(
+        "    GET  /api/units/:id     Unit detail",
+    );
+    println_content(
+        "    GET  /api/units/:id/diff  Git diff between branch and main",
+    );
+    println_content(
+        "    POST /api/units/:id/accept    Accept (merge to main)",
+    );
+    println_content(
+        "    POST /api/units/:id/send-back Send back with comments",
+    );
+    println_content(
+        "    POST /api/units/:id/patch     Request patch (retry translation)",
+    );
+    println!();
+    hsep_bold();
+    println!();
+
+    // Start the axum server
+    calxgloss_web::serve(server_state, port).await?;
+
+    Ok(())
+}
+
+// ============================================================
 // Entry point
 // ============================================================
 
@@ -2358,6 +2504,13 @@ fn main() -> Result<()> {
                 skip_git,
                 &settings,
             )),
+        Command::Serve { repo, port } => {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_serve(repo, port))
+        }
     };
 
     if let Err(ref e) = result {
