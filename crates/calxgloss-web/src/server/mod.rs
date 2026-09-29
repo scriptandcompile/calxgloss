@@ -15,6 +15,7 @@ use axum::{
     extract::{DefaultBodyLimit, WebSocketUpgrade},
     middleware,
     routing::{get, post},
+    extract::FromRef,
 };
 use calxgloss_reports::dashboard::DashboardBuilder;
 use calxgloss_types::ReviewDashboard;
@@ -22,32 +23,41 @@ use std::path::{Path, PathBuf};
 use tracing::info;
 
 /// Shared state for the API server.
-///
-/// Holds the repository path so that dashboard and unit data can be
-/// read from Git branches and translation artifacts on each request.
+#[derive(Clone)]
 pub struct ServerState {
-    /// Path to the Git repository that tracks translation work.
     repo_path: PathBuf,
 }
 
 impl ServerState {
-    /// Creates a new server state pointing at the given repository path.
-    pub fn new(repo_path: PathBuf) -> Self {
-        Self { repo_path }
-    }
+    pub fn new(repo_path: PathBuf) -> Self { Self { repo_path } }
+    pub fn repo_path(&self) -> &Path { &self.repo_path }
+}
 
-    /// Returns the repository path.
-    pub fn repo_path(&self) -> &Path {
-        &self.repo_path
+/// Combined state for WebSocket support.
+#[derive(Clone)]
+pub struct CombinedState {
+    pub server: ServerState,
+    pub manager: Option<SessionManager>,
+    pub bridge: Option<EventsBridge>,
+}
+
+impl FromRef<CombinedState> for ServerState {
+    fn from_ref(c: &CombinedState) -> Self { c.server.clone() }
+}
+
+impl FromRef<CombinedState> for SessionManager {
+    fn from_ref(c: &CombinedState) -> Self {
+        c.manager.clone().expect("SessionManager not configured")
+    }
+}
+
+impl FromRef<CombinedState> for EventsBridge {
+    fn from_ref(c: &CombinedState) -> Self {
+        c.bridge.clone().expect("EventsBridge not configured")
     }
 }
 
 /// Builds a [`ReviewDashboard`] from the state of a Git repository.
-///
-/// This function is used by both the API server and any other consumer
-/// that needs the current dashboard view. It walks the repository's
-/// translation branches, patch records, and baseline files to construct
-/// a complete picture of all units of work.
 pub fn build_dashboard(repo_path: &Path) -> Result<ReviewDashboard, anyhow::Error> {
     let git = calxgloss_git::GitManager::open(repo_path)?;
     let builder = DashboardBuilder::new(&git);
@@ -56,18 +66,34 @@ pub fn build_dashboard(repo_path: &Path) -> Result<ReviewDashboard, anyhow::Erro
 }
 
 /// Build the axum router with all API endpoints.
-///
-/// Routes:
-/// - `GET /api/dashboard` — Full review dashboard (queue, counts, recent activity)
-/// - `GET /api/units/:id` — Detail view for a single unit of work
-/// - `POST /api/units/:id/accept` — Accept unit (merge branch to main)
-/// - `POST /api/units/:id/send-back` — Send back unit with reviewer comments
-/// - `POST /api/units/:id/patch` — Request a patch for a specific issue
-/// - `GET /api/queue` — Dependency-sorted review queue (Phase 5, Step 5.2)
-/// - `GET /api/queue/next` — Next unit to review (Phase 5, Step 5.2)
-/// - `GET /api/graph` — Dependency graph for visualization
-/// - `GET /health` — Health check
 pub fn build_router(state: ServerState) -> Router {
+    Router::new()
+        .route("/", get(handlers::serve_index))
+        .route("/api/dashboard", get(handlers::api_get_dashboard))
+        .route("/api/units/:id", get(handlers::api_get_unit))
+        .route("/api/units/:id/accept", post(handlers::api_accept_unit))
+        .route("/api/units/:id/send-back", post(handlers::api_send_back_unit))
+        .route("/api/units/:id/patch", post(handlers::api_request_patch))
+        .route("/api/queue", get(handlers::api_get_queue))
+        .route("/api/queue/next", get(handlers::api_get_next_unit))
+        .route("/api/graph", get(handlers::api_get_dependency_graph))
+        .route("/health", get(handlers::api_health))
+        .fallback_service(axum::routing::get(handlers::static_fallback))
+        .layer(middleware::from_fn(handlers::trace_middleware))
+        .layer(DefaultBodyLimit::max(16 * 1024))
+        .with_state(CombinedState {
+            server: state,
+            manager: None,
+            bridge: None,
+        })
+}
+
+/// Build a router with WebSocket support.
+pub fn build_router_with_ws(
+    state: ServerState,
+    manager: SessionManager,
+    bridge: EventsBridge,
+) -> Router {
     Router::new()
         .route("/api/dashboard", get(handlers::api_get_dashboard))
         .route("/api/units/:id", get(handlers::api_get_unit))
@@ -78,65 +104,31 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/queue/next", get(handlers::api_get_next_unit))
         .route("/api/graph", get(handlers::api_get_dependency_graph))
         .route("/health", get(handlers::api_health))
+        .route("/", get(handlers::serve_index))
+        .fallback_service(axum::routing::get(handlers::static_fallback))
+        .route("/api/events/upgrade", get(api_events_upgrade_ws))
         .layer(middleware::from_fn(handlers::trace_middleware))
         .layer(DefaultBodyLimit::max(16 * 1024))
-        .with_state(state)
-}
-
-/// Build a router with WebSocket support for live progress streaming.
-///
-/// This is an extension of [`build_router`] that adds:
-/// - `GET /api/events/upgrade` — WebSocket upgrade for live progress (Phase 5, Step 5.3)
-///
-/// The returned router carries two additional state objects:
-/// - `SessionManager` — manages active WebSocket connections
-/// - `EventsBridge` — bridges pipeline events into the session manager
-///
-/// # Usage
-///
-/// ```no_run
-/// use calxgloss_web::server::{build_router_with_ws, ServerState, SessionManager, EventsBridge};
-/// use axum::Router;
-///
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// let (manager, event_tx) = SessionManager::new();
-/// let bridge = EventsBridge::new(128);
-///
-/// let state = ServerState::new("/path/to/repo".into());
-/// let router: Router = build_router_with_ws(state, manager, bridge);
-/// # Ok(())
-/// # }
-/// ```
-pub fn build_router_with_ws(
-    state: ServerState,
-    manager: SessionManager,
-    bridge: EventsBridge,
-) -> Router {
-    let base = build_router(state);
-    base.with_state(manager)
-        .with_state(bridge)
-        .route("/api/events/upgrade", get(api_events_upgrade))
+        .with_state(CombinedState {
+            server: state,
+            manager: Some(manager),
+            bridge: Some(bridge),
+        })
 }
 
 /// WebSocket upgrade handler for live progress events.
-///
-/// Registers the client with the session manager and starts streaming
-/// progress events over the WebSocket connection.
-pub async fn api_events_upgrade(
+async fn api_events_upgrade_ws(
     ws: WebSocketUpgrade,
-    axum::extract::State(manager): axum::extract::State<SessionManager>,
+    axum::extract::State(combined): axum::extract::State<CombinedState>,
 ) -> axum::response::Response {
+    let manager = combined.manager.expect("SessionManager not configured");
     ws.on_upgrade(move |ws| async move {
         let (handler, _sender) = manager.register_client().await;
         handler.process(ws).await;
     })
-    .into_response()
 }
 
 /// Start the API server on the given address.
-///
-/// Binds to `0.0.0.0:port` so the server is accessible from outside
-/// the host machine (useful for containerized or remote development).
 pub async fn serve(state: ServerState, port: u16) -> Result<(), anyhow::Error> {
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     info!("API server listening on {}", listener.local_addr()?);

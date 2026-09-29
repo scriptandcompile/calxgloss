@@ -1,6 +1,9 @@
 //! Response types for the review dashboard API.
 
-use calxgloss_types::ReviewStatus;
+use axum::response::IntoResponse;
+use axum::http::StatusCode;
+use axum::response::Json;
+use calxgloss_types::{ReviewDashboard, ReviewStatus};
 use serde::{Deserialize, Serialize};
 
 /// Wrapper for successful API responses carrying the full dashboard.
@@ -183,7 +186,7 @@ impl QueueResponse {
         let queue: Vec<QueueEntry> = sorted
             .iter()
             .enumerate()
-            .map(|(idx, u)| QueueEntry {
+            .map(|(_idx, u)| QueueEntry {
                 id: u.id.clone(),
                 name: u.name.clone(),
                 kind: u.kind.to_string(),
@@ -256,21 +259,6 @@ pub enum ServerError {
     BadRequest(String),
 }
 
-impl axum::response::IntoResponse for ServerError {
-    fn into_response(self) -> axum::response::Response {
-        let (status, message) = match self {
-            ServerError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
-            ServerError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
-            ServerError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
-        };
-
-        (status, Json(serde_json::json!({
-            "error": true,
-            "message": message,
-        }))).into_response()
-    }
-}
-
 impl ServerError {
     pub fn internal(msg: &str) -> Self {
         Self::Internal(msg.to_string())
@@ -282,5 +270,24 @@ impl ServerError {
 
     pub fn bad_request(msg: &str) -> Self {
         Self::BadRequest(msg.to_string())
+    }
+}
+
+impl axum::response::IntoResponse for ServerError {
+    fn into_response(self) -> axum::response::Response {
+        let (status, message) = match self {
+            ServerError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
+            ServerError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
+            ServerError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+        };
+
+        let body = serde_json::to_string(&serde_json::json!({
+            "error": true,
+            "message": message,
+        })).unwrap_or_default();
+
+        let mut response = axum::response::Response::new(body.into());
+        *response.status_mut() = status;
+        response
     }
 }

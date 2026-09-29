@@ -2,19 +2,46 @@
 
 use axum::{
     Json,
-    extract::{Path, State},
-    http::StatusCode,
+    extract::{Path, Request, State},
+    extract::FromRequest,
+    response::Response,
+    body::Bytes,
 };
 use tracing::info;
 
 use super::{
-    ServerState, ActionResponse, DiffSummary, PatchRequest, QueueMetadata, QueuePosition,
-    QueueResponse, ReviewDashboard, ServerError, UnitResponse,
+    ServerState, ActionResponse, DiffSummary, PatchRequest, QueueEntry,
+    QueuePosition, QueueResponse, SendBackRequest, ServerError, UnitResponse, UnitResponseInner,
 };
 use calxgloss_types::ReviewStatus;
 
+/// Optional JSON body extractor — returns None when no body is present.
+pub struct OptionalJson<T>(pub Option<T>);
+
+impl<S, T> FromRequest<S> for OptionalJson<T>
+where
+    T: serde::de::DeserializeOwned + Send,
+    S: Send + Sync,
+{
+    type Rejection = Response;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let body_bytes = match Bytes::from_request(req, state).await {
+            Ok(bytes) => bytes,
+            Err(_) => return Ok(OptionalJson(None)),
+        };
+        if body_bytes.is_empty() {
+            return Ok(OptionalJson(None));
+        }
+        match serde_json::from_slice(&body_bytes) {
+            Ok(val) => Ok(OptionalJson(Some(val))),
+            Err(_) => Ok(OptionalJson(None)),
+        }
+    }
+}
+
 /// Middleware: log every incoming request with method, path, and status.
-async fn trace_middleware(
+pub async fn trace_middleware(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -40,16 +67,10 @@ async fn trace_middleware(
 
 /// Returns the full review dashboard including queue, dependency graph,
 /// recent activity, and status counts.
-///
-/// The dashboard is built from the Git repository's translation branches,
-/// patch records, baseline files, and classification data.
-///
-/// The response includes queue metadata (total, queued, pending, blocked counts)
-/// to support the frontend's queue management UI.
 pub async fn api_get_dashboard(
     State(state): State<ServerState>,
 ) -> Result<Json<super::DashboardResponse>, ServerError> {
-    let dashboard = super::build_dashboard(state.repo_path())?;
+    let dashboard = super::build_dashboard(state.repo_path()).map_err(|e| ServerError::internal(&e.to_string()))?;
     let queue_metadata = super::QueueMetadata {
         total: dashboard.review_queue.len(),
         queued: dashboard.status_counts.queued,
@@ -66,16 +87,11 @@ pub async fn api_get_dashboard(
 /// ─── GET /api/units/:id ──────────────────────────────────────────────
 
 /// Returns detailed information for a single unit of work.
-///
-/// The unit ID is a path-like string such as `game_logic/DrawPrimitive/v3`
-/// or `classify/game_logic.dll`. The handler searches the review queue and
-/// recent activity for a matching unit, then enriches the response with
-/// diff summary, attempt history from Git, and queue position.
 pub async fn api_get_unit(
     State(state): State<ServerState>,
     Path(unit_id): Path<String>,
 ) -> Result<Json<UnitResponse>, ServerError> {
-    let dashboard = super::build_dashboard(state.repo_path())?;
+    let dashboard = super::build_dashboard(state.repo_path()).map_err(|e| ServerError::internal(&e.to_string()))?;
 
     let unit = dashboard
         .review_queue
@@ -122,8 +138,7 @@ pub async fn api_get_unit(
 
 /// ─── POST /api/units/:id/accept ──────────────────────────────────────
 
-/// Accepts a unit of work: merges its Git branch into `main` and records
-/// the acceptance. Returns the merge result details.
+/// Accepts a unit of work: merges its Git branch into `main` and records the acceptance.
 pub async fn api_accept_unit(
     State(state): State<ServerState>,
     Path(unit_id): Path<String>,
@@ -158,19 +173,17 @@ pub async fn api_accept_unit(
         merge_hash,
         branch_name: Some(branch.name),
         message: "Unit accepted and merged to main".to_string(),
+        rejection_path: None,
     }))
 }
 
 /// ─── POST /api/units/:id/send-back ───────────────────────────────────
 
 /// Sends a unit back to the LLM with reviewer comments.
-///
-/// Accepts an optional JSON body with a `reason` field. If not provided,
-/// a default reason of "Needs revision" is used.
 pub async fn api_send_back_unit(
     State(state): State<ServerState>,
     Path(unit_id): Path<String>,
-    axum::extension::OptionalJson(body): axum::extension::OptionalJson<SendBackRequest>,
+    OptionalJson(body): OptionalJson<SendBackRequest>,
 ) -> Result<Json<ActionResponse>, ServerError> {
     let unit = find_unit(&state, &unit_id)?;
     let reason = body.map(|b| b.reason).unwrap_or_else(|| "Needs revision".to_string());
@@ -208,23 +221,15 @@ pub async fn api_send_back_unit(
 /// ─── POST /api/units/:id/patch ──────────────────────────────────────
 
 /// Requests a patch for a unit of work, identifying the specific issue.
-///
-/// Accepts an optional JSON body with an `issue` field describing the
-/// problem. If not provided, defaults to "Unknown issue".
 pub async fn api_request_patch(
     State(state): State<ServerState>,
     Path(unit_id): Path<String>,
-    axum::extension::OptionalJson(body): axum::extension::OptionalJson<PatchRequest>,
+    OptionalJson(body): OptionalJson<PatchRequest>,
 ) -> Result<Json<ActionResponse>, ServerError> {
     let unit = find_unit(&state, &unit_id)?;
     let issue = body.map(|b| b.issue).unwrap_or_else(|| "Unknown issue".to_string());
 
     info!("Unit {unit_id} patch requested — issue: {issue:?}");
-
-    // The patch record (if one exists) already contains the unit's metadata.
-    // The web UI simply surfaces this request to trigger a new LLM attempt.
-    // The actual patch generation happens via the CLI `translate` command
-    // which picks up the patch request from the unit queue.
 
     let branch_name = format!(
         "re/{}{}/v{}",
@@ -243,19 +248,17 @@ pub async fn api_request_patch(
         merge_hash: None,
         branch_name: Some(branch_name),
         message: format!("Patch requested: {issue}"),
+        rejection_path: None,
     }))
 }
 
 /// ─── GET /api/graph ──────────────────────────────────────────────────
 
 /// Returns the dependency graph for visualization in the web UI.
-///
-/// The graph is built from the review dashboard and includes all nodes
-/// (units of work) and edges (dependency relationships between them).
 pub async fn api_get_dependency_graph(
     State(state): State<ServerState>,
 ) -> Result<Json<super::DependencyGraphResponse>, ServerError> {
-    let dashboard = super::build_dashboard(state.repo_path())?;
+    let dashboard = super::build_dashboard(state.repo_path()).map_err(|e| ServerError::internal(&e.to_string()))?;
     Ok(Json(super::DependencyGraphResponse::ok(
         dashboard.dependency_graph,
     )))
@@ -264,38 +267,20 @@ pub async fn api_get_dependency_graph(
 /// ─── GET /api/queue ──────────────────────────────────────────────────
 
 /// Returns the full review queue sorted by dependency order.
-///
-/// Units are ordered so that:
-/// 1. Dependencies come before dependents (topological order)
-/// 2. At the same depth, shim layers come before PAL traits, which come
-///    before function translations, which come before integration steps
-/// 3. Stale units (pending >24h) and critical units (pending >48h) are
-///    flagged in the response
-///
-/// Only units with status `Queued`, `PendingReview`, or `Blocked` are
-/// included — accepted and merged units are excluded.
 pub async fn api_get_queue(
     State(state): State<ServerState>,
 ) -> Result<Json<QueueResponse>, ServerError> {
-    let dashboard = super::build_dashboard(state.repo_path())?;
+    let dashboard = super::build_dashboard(state.repo_path()).map_err(|e| ServerError::internal(&e.to_string()))?;
     Ok(Json(QueueResponse::from_dashboard(&dashboard)))
 }
 
 /// ─── GET /api/queue/next ─────────────────────────────────────────────
 
 /// Returns the next unit in the review queue based on dependency order.
-///
-/// This is the first unit in the topologically-sorted queue that has
-/// status `Queued` or `PendingReview`. If all units are accepted or
-/// blocked, returns `null`.
-///
-/// This endpoint is designed for the "review one at a time" workflow:
-/// the frontend calls this to get the next unit to review, then calls
-/// the action endpoints (accept, send-back, patch) to process it.
 pub async fn api_get_next_unit(
     State(state): State<ServerState>,
 ) -> Result<Json<Option<QueueEntry>>, ServerError> {
-    let dashboard = super::build_dashboard(state.repo_path())?;
+    let dashboard = super::build_dashboard(state.repo_path()).map_err(|e| ServerError::internal(&e.to_string()))?;
     Ok(Json(
         dashboard
             .next_in_dependency_order()
@@ -316,7 +301,7 @@ pub async fn api_get_next_unit(
 
 /// Find a unit by ID using the repository's review dashboard.
 fn find_unit(state: &ServerState, unit_id: &str) -> Result<calxgloss_types::UnitOfWork, ServerError> {
-    let dashboard = super::build_dashboard(state.repo_path())?;
+    let dashboard = super::build_dashboard(state.repo_path()).map_err(|e| ServerError::internal(&e.to_string()))?;
     dashboard
         .review_queue
         .iter()
@@ -327,23 +312,19 @@ fn find_unit(state: &ServerState, unit_id: &str) -> Result<calxgloss_types::Unit
 }
 
 /// Compute the position of a unit in the dependency-ordered queue.
-///
-/// Returns `None` if the unit is already accepted or not in the active queue.
-fn compute_queue_position(dashboard: &ReviewDashboard, unit: &calxgloss_types::UnitOfWork) -> QueuePosition {
+fn compute_queue_position(
+    dashboard: &calxgloss_types::ReviewDashboard,
+    unit: &calxgloss_types::UnitOfWork,
+) -> QueuePosition {
     let sorted = dashboard.sorted_queue();
     let total = sorted.len();
-
     let index = sorted.iter().position(|u| u.id == unit.id);
-    QueuePosition {
-        index,
-        total,
-    }
+    QueuePosition { index, total }
 }
 
 /// ─── GET /health ─────────────────────────────────────────────────────
 
-/// Health check endpoint. Returns `ok` when the server is running and
-/// the repository is accessible.
+/// Health check endpoint.
 pub async fn api_health(
     State(state): State<ServerState>,
 ) -> Result<Json<serde_json::Value>, ServerError> {
@@ -359,22 +340,16 @@ fn compute_diff_summary(
     state: &ServerState,
     unit: &calxgloss_types::UnitOfWork,
 ) -> DiffSummary {
-    if let (Some(dll), Some(function)) = (&unit.dll, &unit.function.as_deref()) {
-        let branch_name = format!(
-            "re/{dll}/{function}v{}",
-            unit.attempt
-        );
+    let dll = &unit.dll;
+    if let Some(function) = unit.function.as_deref() {
+        let branch_name = format!("re/{dll}/{function}v{}", unit.attempt);
         if let Ok(git) = calxgloss_git::GitManager::open(state.repo_path()) {
             if let Ok(summary) = compute_branch_diff(&git, &branch_name) {
                 return summary;
             }
         }
     }
-    DiffSummary {
-        files_changed: 0,
-        insertions: 0,
-        deletions: 0,
-    }
+    DiffSummary { files_changed: 0, insertions: 0, deletions: 0 }
 }
 
 /// Compute a diff summary for a specific branch.
@@ -398,11 +373,7 @@ fn compute_branch_diff(
 
     let (main_commit, branch_commit) = match (main_ref, branch_ref) {
         (Some(m), Some(b)) => (m, b),
-        _ => return Ok(DiffSummary {
-            files_changed: 0,
-            insertions: 0,
-            deletions: 0,
-        }),
+        _ => return Ok(DiffSummary { files_changed: 0, insertions: 0, deletions: 0 }),
     };
 
     let mut diff_opts = DiffOptions::new();
@@ -426,11 +397,11 @@ fn compute_branch_diff(
 }
 
 /// Load attempt history for a unit from patch records on disk.
-fn load_attempt_history(repo_path: &std::path::Path, unit_id: &str) -> Vec<super::AttemptRecord> {
-    // Extract DLL and function from the unit ID
-    // Unit IDs look like: "game_logic/DrawPrimitive/v3" or "classify/game_logic.dll"
+fn load_attempt_history(
+    repo_path: &std::path::Path,
+    unit_id: &str,
+) -> Vec<super::AttemptRecord> {
     let (dll, function, _attempt) = if let Some(attempt_suffix) = unit_id.rsplit_once('/') {
-        // Has attempt: "dll/function/vN"
         let base = attempt_suffix.0;
         if let Some(v) = attempt_suffix.1.strip_prefix('v') {
             let attempt = v.parse::<u32>().unwrap_or(0);
@@ -445,25 +416,18 @@ fn load_attempt_history(repo_path: &std::path::Path, unit_id: &str) -> Vec<super
         return Vec::new();
     };
 
-    let patch_dir = repo_path
-        .join("re")
-        .join("patches")
-        .join(dll)
-        .join(function);
-
+    let patch_dir = repo_path.join("re").join("patches").join(dll).join(function);
     if !patch_dir.exists() {
         return Vec::new();
     }
 
     let mut records = Vec::new();
-
     if let Ok(entries) = std::fs::read_dir(&patch_dir) {
         for entry in entries.flatten() {
             let file_name = entry.file_name().to_string_lossy().to_string();
             if !file_name.ends_with(".json") {
                 continue;
             }
-
             let attempt = file_name
                 .strip_prefix('v')
                 .and_then(|s| s.trim_end_matches(".json").parse().ok())
@@ -474,10 +438,11 @@ fn load_attempt_history(repo_path: &std::path::Path, unit_id: &str) -> Vec<super
                 Err(_) => continue,
             };
 
-            let record: calxgloss_git::PatchRecord = match serde_json::from_str(&content) {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
+            let record: calxgloss_git::PatchRecord =
+                match serde_json::from_str(&content) {
+                    Ok(r) => r,
+                    Err(_) => continue,
+                };
 
             records.push(super::AttemptRecord {
                 attempt,
@@ -497,8 +462,12 @@ fn load_attempt_history(repo_path: &std::path::Path, unit_id: &str) -> Vec<super
 }
 
 /// Compute the total number of revisions (attempts) for a unit.
-fn compute_revision_count(state: &ServerState, unit: &calxgloss_types::UnitOfWork) -> usize {
-    if let (Some(dll), Some(function)) = (&unit.dll, &unit.function.as_deref()) {
+fn compute_revision_count(
+    state: &ServerState,
+    unit: &calxgloss_types::UnitOfWork,
+) -> usize {
+    let dll = &unit.dll;
+    if let Some(function) = unit.function.as_deref() {
         let branch_prefix = format!("re/{dll}/{function}v");
         if let Ok(git) = calxgloss_git::GitManager::open(state.repo_path()) {
             if let Ok(all_branches) = git.list_branches() {
@@ -511,3 +480,23 @@ fn compute_revision_count(state: &ServerState, unit: &calxgloss_types::UnitOfWor
     }
     1
 }
+
+/// Serve the frontend index page.
+pub async fn serve_index() -> axum::response::Html<String> {
+    axum::response::Html(
+        std::fs::read_to_string("static/index.html")
+            .unwrap_or_else(|_| "<!DOCTYPE html><html><head><title>Calxgloss</title></head><body><div id=\"app\"></div></body></html>".to_string())
+    )
+}
+
+/// Fallback for static file requests.
+pub async fn static_fallback(path: axum::extract::Path<String>) -> axum::response::Html<String> {
+    let file_path = format!("static/{}", path.0);
+    if std::path::Path::new(&file_path).exists() {
+        let content = std::fs::read_to_string(&file_path).unwrap_or_default();
+        axum::response::Html(content)
+    } else {
+        axum::response::Html("<h1>404 Not Found</h1>".to_string())
+    }
+}
+
