@@ -532,6 +532,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed unused `tokio-tungstenite` dependency; the WebSocket implementation
   uses axum's native `axum[ws]` support instead.
 
+### Added
+
+#### `calxgloss-cli`
+- **`serve` subcommand** — starts the web review UI HTTP server. Resolves the
+  repository path from an explicit `--repo` flag, git discovery, or CWD;
+  defaults to port 3000 (`-p`). Prints a formatted startup banner listing all
+  available API endpoints. Wires up the existing `calxgloss-web` axum server
+  (behind the `server` feature) so the review dashboard is reachable at
+  `http://127.0.0.1:{port}/`.
+
+#### `calxgloss-web`
+- Fixed axum 0.8 route syntax — all three router builders
+  (`build_router`, `build_router_with_actions`, `build_router_with_ws`) now
+  use `{id}` capture groups instead of the legacy `:id` syntax that caused
+  the server to panic on startup.
+
 ## [0.1.0] — 2025-09-27
 
 ### Added
