@@ -33,7 +33,9 @@ use anyhow::{Context, Result};
 use calxgloss::DllCategory;
 use calxgloss::GitBranch;
 use calxgloss_analysis::Analyzer;
-use calxgloss_config::{FileConfig, GhidraSection, Layers, LlmSection, Resolved, PROJECT_FILE, EXAMPLE, load};
+use calxgloss_config::{
+    EXAMPLE, FileConfig, GhidraSection, Layers, LlmSection, PROJECT_FILE, Resolved, load,
+};
 use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use calxgloss_git::{BranchCreationPolicy, DependencyPolicy, GitManager};
 use calxgloss_llm::{LlmClient, LlmConfig};
@@ -703,21 +705,15 @@ async fn handle_classify(dlls: &[String], settings: &Settings) -> Result<()> {
 fn handle_init() -> Result<()> {
     let path = PathBuf::from(PROJECT_FILE);
     let config = EXAMPLE.to_string();
-    std::fs::write(&path, &config).with_context(|| {
-        format!(
-            "Failed to write configuration to {}",
-            path.display()
-        )
-    })?;
+    std::fs::write(&path, &config)
+        .with_context(|| format!("Failed to write configuration to {}", path.display()))?;
     println!(
         "  {} Created {}",
         green_bold("✓"),
         bold(&path.display().to_string())
     );
     println!();
-    println_content(
-        "Edit this file with your GhidraMCP and LLM server addresses.",
-    );
+    println_content("Edit this file with your GhidraMCP and LLM server addresses.");
     println_content("Then run `calxgloss auto` to start the pipeline.");
     println_content("");
     println_content("  ghidra.url → GhidraMCP server endpoint");
@@ -749,10 +745,11 @@ fn scan_dlls(target_dir: &Path) -> Vec<String> {
 
 /// Check whether a classification record exists for the given DLL.
 fn classification_record_exists(base_path: &Path, dll: &str) -> bool {
-    let record = base_path.join("re").join("classify").join(&format!(
-        "{}.json",
-        dll.replace('/', "_").replace('\\', "_")
-    ));
+    let sanitized: String = dll.chars().map(|c| match c {
+        '/' | '\\' => '_',
+        other => other,
+    }).collect();
+    let record = base_path.join("re").join("classify").join(format!("{sanitized}.json"));
     record.is_file()
 }
 
@@ -769,14 +766,23 @@ async fn handle_auto(
     // Determine the target directory: CLI flag > config > CWD
     let target_dir = target
         .clone()
-        .or_else(|| settings.target_dir.as_ref().map(|r| PathBuf::from(&r.value)))
+        .or_else(|| {
+            settings
+                .target_dir
+                .as_ref()
+                .map(|r| PathBuf::from(&r.value))
+        })
         .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
 
     info!(path = ?target_dir, "Auto mode: using target directory");
 
     // Discover or accept DLL list
     let dlls = if let Some(ref dll_list) = dlls_arg {
-        dll_list.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+        dll_list
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
     } else {
         scan_dlls(&target_dir)
     };
@@ -787,9 +793,7 @@ async fn handle_auto(
             red_bold("✗"),
             target_dir.display()
         );
-        println_content(
-            "Specify DLLs explicitly: calxgloss auto --dlls \"eqgame.dll,eqmain.dll\"",
-        );
+        println_content("Specify DLLs explicitly: calxgloss auto --dlls \"eqgame.dll,eqmain.dll\"");
         anyhow::bail!("No DLLs found");
     }
 
@@ -863,11 +867,8 @@ async fn handle_auto(
     }
 
     // Ask which DLL to translate
-    println!("");
-    println!(
-        "  {} Which DLL would you like to translate?",
-        bold("?")
-    );
+    println!();
+    println!("  {} Which DLL would you like to translate?", bold("?"));
     println!();
     for (i, dll) in classified.iter().enumerate() {
         let num = i + 1;
@@ -924,7 +925,10 @@ async fn handle_auto(
     }
 
     let function_names: Vec<String> = summaries.into_iter().map(|s| s.name).collect();
-    info!(count = function_names.len(), "Enumerated functions from Ghidra");
+    info!(
+        count = function_names.len(),
+        "Enumerated functions from Ghidra"
+    );
 
     // Get LLM settings
     let llm_url = settings.require_llm_url()?;
@@ -957,16 +961,15 @@ async fn handle_auto(
     llm_config = llm_config
         .with_max_tokens(max_tokens)
         .with_temperature(temperature);
-    let llm = calxgloss_llm::LlmClient::new(llm_config)
-        .context("Failed to create LLM client")?;
+    let llm = calxgloss_llm::LlmClient::new(llm_config).context("Failed to create LLM client")?;
 
     // Initialize analyzer, test generator
     let api_mappings = calxgloss_pal::ApiMappings::default();
     let testgen = calxgloss_testgen::TestGenerator::new(&output_dir);
 
     // Build translation pipeline
-    let pipeline =
-        calxgloss_translator::TranslationPipeline::new(ghidra, llm, api_mappings).with_testgen(testgen);
+    let pipeline = calxgloss_translator::TranslationPipeline::new(ghidra, llm, api_mappings)
+        .with_testgen(testgen);
 
     // Git setup
     let mut git = if !skip_git {
@@ -1009,7 +1012,10 @@ async fn handle_auto(
             std::fs::create_dir_all(output_path.parent().unwrap())
                 .context("Failed to create output directory")?;
             std::fs::write(&output_path, rust_code).with_context(|| {
-                format!("Failed to write translated code to {}", output_path.display())
+                format!(
+                    "Failed to write translated code to {}",
+                    output_path.display()
+                )
             })?;
 
             let branch_result = git_manager
@@ -1092,9 +1098,7 @@ async fn handle_auto(
     }
 
     println!();
-    println_content(
-        "To review, run: calxgloss dashboard",
-    );
+    println_content("To review, run: calxgloss dashboard");
     println_content(
         "To see the web UI (requires server feature): cargo run --features server --bin web_server",
     );
@@ -2252,8 +2256,7 @@ async fn handle_serve(repo: Option<PathBuf>, port: u16) -> Result<()> {
         }
         None => {
             // Try git discovery, fall back to CWD
-            let cwd = std::env::current_dir()
-                .context("Failed to determine current directory")?;
+            let cwd = std::env::current_dir().context("Failed to determine current directory")?;
             let mut search = cwd.clone();
             let mut found = false;
             for _ in 0..10 {
@@ -2272,11 +2275,7 @@ async fn handle_serve(repo: Option<PathBuf>, port: u16) -> Result<()> {
                     "No git repository found; using current directory"
                 );
             }
-            if found {
-                search
-            } else {
-                cwd
-            }
+            if found { search } else { cwd }
         }
     };
 
@@ -2286,7 +2285,9 @@ async fn handle_serve(repo: Option<PathBuf>, port: u16) -> Result<()> {
     println!();
     println_content(format!(
         "  {}",
-        bold(&format!("Calxgloss Review UI — serving at http://127.0.0.1:{port}"))
+        bold(&format!(
+            "Calxgloss Review UI — serving at http://127.0.0.1:{port}"
+        ))
     ));
     hsep();
     println_content("");
@@ -2306,36 +2307,16 @@ async fn handle_serve(repo: Option<PathBuf>, port: u16) -> Result<()> {
     println_content("");
     println_content("  Press Ctrl+C to stop");
     println!();
-    println_content(
-        "Endpoints:",
-    );
-    println_content(
-        "    GET  /                  Dashboard frontend",
-    );
-    println_content(
-        "    GET  /api/dashboard     Full review dashboard JSON",
-    );
-    println_content(
-        "    GET  /api/queue         Review queue (dependency-ordered)",
-    );
-    println_content(
-        "    GET  /api/graph         Dependency graph data",
-    );
-    println_content(
-        "    GET  /api/units/:id     Unit detail",
-    );
-    println_content(
-        "    GET  /api/units/:id/diff  Git diff between branch and main",
-    );
-    println_content(
-        "    POST /api/units/:id/accept    Accept (merge to main)",
-    );
-    println_content(
-        "    POST /api/units/:id/send-back Send back with comments",
-    );
-    println_content(
-        "    POST /api/units/:id/patch     Request patch (retry translation)",
-    );
+    println_content("Endpoints:");
+    println_content("    GET  /                  Dashboard frontend");
+    println_content("    GET  /api/dashboard     Full review dashboard JSON");
+    println_content("    GET  /api/queue         Review queue (dependency-ordered)");
+    println_content("    GET  /api/graph         Dependency graph data");
+    println_content("    GET  /api/units/:id     Unit detail");
+    println_content("    GET  /api/units/:id/diff  Git diff between branch and main");
+    println_content("    POST /api/units/:id/accept    Accept (merge to main)");
+    println_content("    POST /api/units/:id/send-back Send back with comments");
+    println_content("    POST /api/units/:id/patch     Request patch (retry translation)");
     println!();
     hsep_bold();
     println!();
@@ -2375,7 +2356,10 @@ fn main() -> Result<()> {
     // The global flags form the highest-priority layer, shared by every
     // subcommand so `config` reports the same values a real run would use.
     let flags = FileConfig {
-        target_dir: cli.target_dir.as_ref().map(|p| p.to_string_lossy().to_string()),
+        target_dir: cli
+            .target_dir
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
         ghidra: GhidraSection {
             url: cli.ghidra_url.clone(),
             api_key: cli.ghidra_api_key.clone(),
@@ -2504,13 +2488,11 @@ fn main() -> Result<()> {
                 skip_git,
                 &settings,
             )),
-        Command::Serve { repo, port } => {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .context("Failed to create tokio runtime")?
-                .block_on(handle_serve(repo, port))
-        }
+        Command::Serve { repo, port } => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("Failed to create tokio runtime")?
+            .block_on(handle_serve(repo, port)),
     };
 
     if let Err(ref e) = result {

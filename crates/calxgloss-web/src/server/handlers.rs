@@ -642,11 +642,7 @@ fn parse_diff_hunks(raw: &str) -> Vec<DiffHunk> {
                                 DiffLineType::Addition | DiffLineType::Context
                             ) {
                                 let l = new_line;
-                                if matches!(kind, DiffLineType::Addition) {
-                                    new_line += 1;
-                                } else {
-                                    new_line += 1;
-                                }
+                                new_line += 1;
                                 Some(l)
                             } else {
                                 None
@@ -656,11 +652,7 @@ fn parse_diff_hunks(raw: &str) -> Vec<DiffHunk> {
                                 DiffLineType::Deletion | DiffLineType::Context
                             ) {
                                 let l = old_line;
-                                if matches!(kind, DiffLineType::Deletion) {
-                                    old_line += 1;
-                                } else {
-                                    old_line += 1;
-                                }
+                                old_line += 1;
                                 Some(l)
                             } else {
                                 None
@@ -689,7 +681,7 @@ fn parse_diff_hunks(raw: &str) -> Vec<DiffHunk> {
 
 /// Extract the start number from a hunk header.
 fn extract_hunk_number(hunk_header: &str, is_new: bool) -> Option<usize> {
-    let parts: Vec<&str> = hunk_header.split(|c: char| c == ' ' || c == ',').collect();
+    let parts: Vec<&str> = hunk_header.split([' ', ',']).collect();
     // Format: @@ -old_start,old_count +new_start,new_count @@
     // Find the part starting with + (new file) or - (old file)
     for part in parts {
@@ -706,7 +698,7 @@ fn extract_hunk_number(hunk_header: &str, is_new: bool) -> Option<usize> {
 
 /// Extract the line count from a hunk header.
 fn extract_hunk_line_count(hunk_header: &str, is_new: bool) -> Option<usize> {
-    let parts: Vec<&str> = hunk_header.split(|c: char| c == ' ' || c == ',').collect();
+    let parts: Vec<&str> = hunk_header.split([' ', ',']).collect();
     for part in parts {
         let part = part.trim();
         if is_new && part.starts_with('+') {
@@ -715,10 +707,11 @@ fn extract_hunk_line_count(hunk_header: &str, is_new: bool) -> Option<usize> {
                 return part[idx + 1..].parse().ok();
             }
         }
-        if !is_new && part.starts_with('-') {
-            if let Some(idx) = part.find(',') {
-                return part[idx + 1..].parse().ok();
-            }
+        if !is_new
+            && part.starts_with('-')
+            && let Some(idx) = part.find(',')
+        {
+            return part[idx + 1..].parse().ok();
         }
     }
     None
@@ -883,13 +876,13 @@ fn compute_revision_count(state: &ServerState, unit: &calxgloss_types::UnitOfWor
     let dll = &unit.dll;
     if let Some(function) = unit.function.as_deref() {
         let branch_prefix = format!("re/{dll}/{function}v");
-        if let Ok(git) = calxgloss_git::GitManager::open(state.repo_path()) {
-            if let Ok(all_branches) = git.list_branches() {
-                return all_branches
-                    .iter()
-                    .filter(|b| b.starts_with(&branch_prefix))
-                    .count();
-            }
+        if let Ok(git) = calxgloss_git::GitManager::open(state.repo_path())
+            && let Ok(all_branches) = git.list_branches()
+        {
+            return all_branches
+                .iter()
+                .filter(|b| b.starts_with(&branch_prefix))
+                .count();
         }
     }
     1

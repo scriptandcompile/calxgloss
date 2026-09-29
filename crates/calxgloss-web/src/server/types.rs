@@ -249,8 +249,7 @@ impl QueueResponse {
 
         let queue: Vec<QueueEntry> = sorted
             .iter()
-            .enumerate()
-            .map(|(_idx, u)| QueueEntry {
+            .map(|u| QueueEntry {
                 id: u.id.clone(),
                 name: u.name.clone(),
                 kind: u.kind.to_string(),
