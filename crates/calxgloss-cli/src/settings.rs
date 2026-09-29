@@ -43,8 +43,10 @@ pub struct Settings {
     pub max_retries: Resolved<u32>,
     /// Which retry strategy to use.
     pub retry_strategy: Option<Resolved<String>>,
-    /// Target directory for DLLs and output.
+    /// Target directory for DLLs (read-only).
     pub target_dir: Option<Resolved<String>>,
+    /// Repo directory for output (git, src/, scratch).
+    pub repo_dir: Option<Resolved<String>>,
     /// Where the configuration file was read from, for diagnostics.
     pub config_path: Option<PathBuf>,
     /// Every location that was checked for a configuration file.
@@ -135,6 +137,12 @@ impl Settings {
                 flags.target_dir.clone(),
                 layers.env.target_dir.clone(),
                 layers.file.target_dir.clone(),
+                None,
+            ),
+            repo_dir: layers.resolve(
+                flags.repo_dir.clone(),
+                layers.env.repo_dir.clone(),
+                layers.file.repo_dir.clone(),
                 None,
             ),
             config_path: loaded.path.clone(),
@@ -289,6 +297,9 @@ pub fn render(s: &Settings) -> String {
 
     out.push_str("target_dir\n");
     row(&mut out, "path", s.target_dir.as_ref(), false);
+
+    out.push_str("\nrepo_dir\n");
+    row(&mut out, "path", s.repo_dir.as_ref(), false);
 
     out.push_str("\nghidra\n");
     row(&mut out, "url", Some(&s.ghidra_url), false);

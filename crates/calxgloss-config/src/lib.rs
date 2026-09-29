@@ -107,8 +107,11 @@ pub enum ConfigError {
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FileConfig {
-    /// Directory containing DLLs and where output is written.
+    /// Directory containing DLLs (read-only; binaries are read from here).
     pub target_dir: Option<String>,
+
+    /// Where translation output is written (src/, re/, scratch, git repo).
+    pub repo_dir: Option<String>,
 
     /// How to reach GhidraMCP.
     pub ghidra: GhidraSection,
@@ -164,8 +167,12 @@ pub const EXAMPLE: &str = r#"# Calxgloss configuration.
 # (CALXGLOSS_GHIDRA_URL, CALXGLOSS_LLM_URL, CALXGLOSS_LLM_MODEL, ...) take
 # precedence over this file.
 
-# Directory containing DLLs and where output is written.
-# target_dir = "/path/to/your/project"
+# Directory containing DLLs (read-only; binaries are read from here).
+# target_dir = "/path/to/binaries"
+
+# Where translation output goes: src/, re/, scratch, git repo.
+# Defaults to the directory where `calxgloss.toml` is found (CWD).
+# repo_dir = "/path/to/workspace"
 
 [ghidra]
 url = "http://127.0.0.1:8080"
@@ -369,6 +376,7 @@ impl Layers {
             flags: FileConfig::default(),
             env: FileConfig {
                 target_dir: var("CALXGLOSS_TARGET_DIR"),
+                repo_dir: var("CALXGLOSS_REPO_DIR"),
                 ghidra: GhidraSection {
                     url: var("CALXGLOSS_GHIDRA_URL"),
                     api_key: var("CALXGLOSS_GHIDRA_API_KEY"),

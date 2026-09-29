@@ -112,6 +112,14 @@ struct Cli {
     #[arg(long, global = true, value_name = "DIR")]
     target_dir: Option<PathBuf>,
 
+    /// Repo directory for translation output
+    ///
+    /// Overrides the `repo_dir` setting in the config file. This is the
+    /// directory where `src/`, `re/`, scratch, and the `.git` repo are
+    /// created. Defaults to the directory where `calxgloss.toml` is found.
+    #[arg(long, global = true, value_name = "DIR")]
+    repo_dir: Option<PathBuf>,
+
     /// GhidraMCP server URL (default: http://127.0.0.1:8080)
     #[arg(long, global = true)]
     ghidra_url: Option<String>,
@@ -824,12 +832,12 @@ fn classification_record_exists(base_path: &Path, dll: &str) -> bool {
 /// result reporting.  Both `handle_auto` and `handle_live` call this.
 async fn run_translation_for_dll(
     dll: &str,
-    target_dir: &Path,
+    output_dir: &Path,
     skip_git: bool,
     settings: &Settings,
     events: Option<&TranslationEvents>,
 ) -> Result<()> {
-    let output_dir = target_dir.to_path_buf();
+    // output_dir is the workspace directory — git, src/, scratch all live here.
 
     // Get Ghidra client to list functions
     let ghidra_url = &settings.ghidra_url.value;
@@ -1051,7 +1059,7 @@ async fn handle_auto(
 ) -> Result<()> {
     info!("Auto mode: detecting project state");
 
-    // Determine the target directory: CLI flag > config > CWD
+    // Determine the target directory (DLLs are read from here): CLI flag > config > CWD
     let target_dir = target
         .clone()
         .or_else(|| {
@@ -1062,7 +1070,15 @@ async fn handle_auto(
         })
         .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
 
+    // Determine the repo directory (scratch/git/src/re are created here): CLI flag > config > CWD
+    let repo_dir = settings
+        .repo_dir
+        .as_ref()
+        .map(|r| PathBuf::from(&r.value))
+        .unwrap_or(target_dir.clone());
+
     info!(path = ?target_dir, "Auto mode: using target directory");
+    info!(path = ?repo_dir, "Auto mode: using repo directory");
 
     // Discover or accept DLL list
     let dlls = if let Some(ref dll_list) = dlls_arg {
@@ -1097,7 +1113,7 @@ async fn handle_auto(
         println_content(format!(
             "  • {}{}",
             bold(dll),
-            if classification_record_exists(&target_dir, dll) {
+            if classification_record_exists(&repo_dir, dll) {
                 format!("  [{}] already classified", yellow_bold("done"))
             } else {
                 format!("  [{}] needs classification", red_bold("pending"))
@@ -1109,12 +1125,12 @@ async fn handle_auto(
     // Determine which DLLs are classified and which are not
     let mut classified: Vec<String> = dlls
         .iter()
-        .filter(|d| classification_record_exists(&target_dir, d))
+        .filter(|d| classification_record_exists(&repo_dir, d))
         .cloned()
         .collect();
     let unclassified: Vec<String> = dlls
         .iter()
-        .filter(|d| !classification_record_exists(&target_dir, d))
+        .filter(|d| !classification_record_exists(&repo_dir, d))
         .cloned()
         .collect();
 
@@ -1161,7 +1177,7 @@ async fn handle_auto(
         return Ok(());
     }
 
-    let output_dir = target_dir.clone();
+    let output_dir = repo_dir;
 
     if continue_mode {
         // Translate all classified DLLs in sequence (non-interactive).
@@ -1273,8 +1289,16 @@ async fn handle_translate(args: &TranslateArgs, settings: &Settings) -> Result<(
     // `target` is the path the function is being translated out of, used here
     // only to place the output. Ghidra identifies the program itself, so the
     // path is not sent to it.
-    let target_dir = target.parent().unwrap_or(target).to_path_buf();
-    let output_dir = output_dir.clone().unwrap_or(target_dir);
+    let _target_dir = target.parent().unwrap_or(target).to_path_buf();
+    let output_dir = output_dir
+        .clone()
+        .or_else(|| {
+            settings
+                .repo_dir
+                .as_ref()
+                .map(|r| PathBuf::from(&r.value))
+        })
+        .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
 
     // Create output directory structure
     let modules_dir = output_dir.join("src").join("modules");
@@ -1625,8 +1649,16 @@ async fn handle_batch_translate(args: &BatchTranslateArgs, settings: &Settings) 
         anyhow::bail!("Specify either --functions \"Func1,Func2\" or --all-functions");
     };
 
-    let target_dir = target.parent().unwrap_or(target).to_path_buf();
-    let output_dir = output_dir.clone().unwrap_or(target_dir);
+    let _target_dir = target.parent().unwrap_or(target).to_path_buf();
+    let output_dir = output_dir
+        .clone()
+        .or_else(|| {
+            settings
+                .repo_dir
+                .as_ref()
+                .map(|r| PathBuf::from(&r.value))
+        })
+        .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
 
     // Create output directory structure
     let modules_dir = output_dir.join("src").join("modules");
@@ -2352,47 +2384,18 @@ async fn handle_verify(
 // ============================================================
 
 /// Handles the `serve` subcommand: starts the web review UI HTTP server.
-async fn handle_serve(repo: Option<PathBuf>, port: u16) -> Result<()> {
-    info!(repo = ?repo, port, "Starting web review UI server");
+async fn handle_serve(repo_dir: &Path, port: u16) -> Result<()> {
+    info!(repo = ?repo_dir, port, "Starting web review UI server");
 
-    // Determine the repository path: explicit --repo > CWD > git discovery
-    let repo_path = match repo {
-        Some(path) => {
-            if !path.exists() {
-                anyhow::bail!(
-                    "Repository path does not exist: {}\n\nMake sure the path points to the \
-                     resultant (git) workspace that contains the translation work.",
-                    path.display()
-                );
-            }
-            path
-        }
-        None => {
-            // Try git discovery, fall back to CWD
-            let cwd = std::env::current_dir().context("Failed to determine current directory")?;
-            let mut search = cwd.clone();
-            let mut found = false;
-            for _ in 0..10 {
-                if search.join(".git").exists() || search.join(".git").is_dir() {
-                    info!(path = %search.display(), "Discovered git repository");
-                    found = true;
-                    break;
-                }
-                if !search.pop() {
-                    break;
-                }
-            }
-            if !found {
-                info!(
-                    path = %cwd.display(),
-                    "No git repository found; using current directory"
-                );
-            }
-            if found { search } else { cwd }
-        }
-    };
+    if !repo_dir.exists() {
+        anyhow::bail!(
+            "Repository path does not exist: {}\n\nMake sure the path points to the \
+             resultant (git) workspace that contains the translation work.",
+            repo_dir.display()
+        );
+    }
 
-    let server_state = calxgloss_web::ServerState::new(repo_path.clone());
+    let server_state = calxgloss_web::ServerState::new(repo_dir.to_path_buf());
 
     // Print startup banner
     println!();
@@ -2406,7 +2409,7 @@ async fn handle_serve(repo: Option<PathBuf>, port: u16) -> Result<()> {
     println_content("");
     println_content(format!(
         "  Repository: {}",
-        bold(&repo_path.display().to_string())
+        bold(&repo_dir.display().to_string())
     ));
     println_content(format!("  Port:       {port}"));
     println_content(format!(
@@ -2496,29 +2499,33 @@ async fn handle_live(
     let events = TranslationEvents::new(256);
     let events_clone = events.clone();
 
+    // Resolve repo_dir from settings so it can be moved into the spawned task.
+    let serve_repo_dir = settings
+        .repo_dir
+        .as_ref()
+        .map(|r| PathBuf::from(&r.value));
+
     let serve_handle = tokio::spawn(async move {
-        // Determine the repository path the same way handle_serve does.
-        let repo_path = match repo {
+        // Resolve repo_dir: --repo flag > settings > git discovery > CWD.
+        let repo_dir = match repo {
             Some(path) => path,
-            None => {
-                let cwd = std::env::current_dir()
-                    .context("Failed to determine current directory")
-                    .unwrap_or_else(|_| PathBuf::from("."));
-                let mut search = cwd.clone();
-                for _ in 0..10 {
-                    if search.join(".git").exists() || search.join(".git").is_dir() {
-                        break;
+            None => serve_repo_dir
+                .clone()
+                .or_else(|| {
+                    let cwd = std::env::current_dir()
+                        .expect("Failed to determine current directory");
+                    let mut search = cwd.clone();
+                    for _ in 0..10 {
+                        if search.join(".git").exists() || search.join(".git").is_dir() {
+                            return Some(search);
+                        }
+                        if !search.pop() {
+                            break;
+                        }
                     }
-                    if !search.pop() {
-                        break;
-                    }
-                }
-                if search.join(".git").exists() || search.join(".git").is_dir() {
-                    search
-                } else {
-                    cwd
-                }
-            }
+                    Some(cwd)
+                })
+                .expect("Failed to determine repo directory"),
         };
 
         // Bind the listener and signal readiness — this happens outside of
@@ -2533,7 +2540,7 @@ async fn handle_live(
         let local_addr = listener.local_addr().unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], port)));
         let _ = ready_tx.send(Ok(local_addr));
 
-        let server_state = calxgloss_web::ServerState::new(repo_path);
+        let server_state = calxgloss_web::ServerState::new(repo_dir);
 
         // Build the router with WebSocket support so the frontend can stream
         // progress events over the upgrade endpoint.
@@ -2644,6 +2651,10 @@ fn main() -> Result<()> {
     let flags = FileConfig {
         target_dir: cli
             .target_dir
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
+        repo_dir: cli
+            .repo_dir
             .as_ref()
             .map(|p| p.to_string_lossy().to_string()),
         ghidra: GhidraSection {
@@ -2776,11 +2787,22 @@ fn main() -> Result<()> {
                 false, // interactive mode — prompt user, stop after classification
                 None,  // no event emitter in interactive mode
             )),
-        Command::Serve { repo, port } => tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("Failed to create tokio runtime")?
-            .block_on(handle_serve(repo, port)),
+        Command::Serve { repo, port } => {
+            let repo_dir = repo
+                .clone()
+                .or_else(|| {
+                    settings
+                        .repo_dir
+                        .as_ref()
+                        .map(|r| PathBuf::from(&r.value))
+                })
+                .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_serve(&repo_dir, port))
+        }
         Command::Live {
             target,
             dlls,

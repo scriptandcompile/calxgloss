@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Auto flags**: `--target` (directory), `--dlls` (explicit comma-separated list), `--all-functions`, `--classify-only`, `--skip-git`.
 - **`target_dir` in config** — `calxgloss.toml` can now set `target_dir = "..."` at the top level. Auto mode resolves: CLI flag > config file > CWD. `CALXGLOSS_TARGET_DIR` environment variable also supported.
 - **`--target-dir` global CLI flag** — overrides config `target_dir`.
+- **`--repo-dir` global CLI flag** — overrides config `repo_dir`.
+- **`target_dir` and `repo_dir` in config** — `calxgloss.toml` can set `target_dir = "..."` (binary directory, read-only) and `repo_dir = "..."` (workspace directory where `src/`, `re/`, scratch, and `.git` are created). Resolved in order: CLI flag > config file > env var (`CALXGLOSS_TARGET_DIR` / `CALXGLOSS_REPO_DIR`) > CWD.
+- **Two-directory model**: `target_dir` (where DLLs/EXEs live) and `repo_dir` (where translation output is written) are now separate. By default `repo_dir` falls back to `target_dir` for backwards compatibility, but setting both allows the workspace to live outside the binary directory.
 - **`scan_dlls()` helper** — looks for `.dll` files in the target directory.
 - **`classification_record_exists()` helper** — checks whether a `re/classify/<dll>.json` file already exists.
 - **Config render** — `calxgloss config` now shows `target_dir` path and source.
