@@ -102,6 +102,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   automatic cycling through all strategies
 - `retry_strategy` displayed in `config` command output
 
+### Phase 5, Step 5.7 — Web Review Actions: Accept, Send-Back, and Patch
+
+#### `calxgloss-web`
+- **Actions backend module** (`server::actions`) — `accept_unit()`,
+  `send_back_unit()`, and `request_patch()` integrate human review actions
+  into Git operations and the async translation pipeline.
+- **`ActionsState` + `build_router_with_actions()`** — provides shared state
+  and a router builder that wires all three review actions into `calxgloss-git`
+  and `calxgloss-translator`.  The existing `build_router()` remains
+  functional with legacy direct-Git paths (backward compatible).
+- **Accept action** — merges the unit's branch into `main` via
+  `calxgloss-git::GitManager::accept_branch()` and writes a persistent
+  `re/actions/<unit_id>.json` record.
+- **Send-back action** — writes a rejection record to `re/rejections/` and
+  persists the action state.
+- **Patch action** — creates a `v{N+1}` branch via
+  `calxgloss-git::next_attempt_branch()`, writes a patch request record to
+  `re/patches/`, and spawns an async retry translation via
+  `tokio::task::spawn`.  Git2 objects are safely dropped before the `await`
+  using `catch_unwind`; a fresh `GitManager` is opened post-pipeline to
+  commit the successful result.
+
+#### `calxgloss-web` (handler delegation)
+- **Accept, send-back, and patch handlers** now delegate to the actions
+  module when `ActionsState` is configured, returning rich `ActionResult`
+  data.  The basic router falls back to legacy direct-Git operations.
+
+#### `calxgloss-git`
+- **`GitManager::next_attempt_branch()`** — increments the attempt number
+  and creates a new `GitBranch` for the next retry version.
+
+#### `calxgloss-web` (dependencies)
+- Added optional dependencies on `calxgloss-translator`, `calxgloss-verify`,
+  `calxgloss-llm`, and `calxgloss-pal` behind the `server` feature for
+  full pipeline integration.
+
 ### Added
 
 #### `calxgloss-types`

@@ -105,7 +105,7 @@
 | 5.4 | Implement HTML/JS/CSS frontend | Build actual UI components: `DashboardView`, `DependencyGraphView`, `UnitOfWorkCard`, `ReviewQueue`, `RecentActivity`. Served statically by the axum server. |
 | 5.5 | Add diff viewer | Render `git diff` output with line-by-line highlighting, showing Ghidra notes alongside Rust code. |
 | 5.6 | Add dependency graph visualization | Render the DAG with SVG or Canvas, interactive zoom/pan. |
-| 5.7 | Human review actions → git operations | Accept/reject/send-back actions call into `calxgloss-git` and `calxgloss-translator`. |
+| 5.7 | Human review actions → git operations | Accept/reject/send-back actions call into `calxgloss-git` and `calxgloss-translator`. | ✅ Complete |
 | 5.8 | End-to-end test | Run web server in CI, headless browser, verify data renders correctly. |
 
 ---
