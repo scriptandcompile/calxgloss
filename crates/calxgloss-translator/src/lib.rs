@@ -640,7 +640,6 @@ impl TranslationPipeline {
     /// # Ok(())
     /// # }
     /// ```
-    #[instrument(skip(self, config, verifier), fields(dll, function, retries = config.max_attempts))]
     pub async fn try_translate_with_retry(
         &self,
         dll: &str,
