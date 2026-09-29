@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Phase 5, Step 5.7 — CLI: `init` Command and Smart `auto` Workflow
+
+#### `calxgloss-cli`
+- **`init` subcommand** — creates a `calxgloss.toml` in the current directory
+  with a fully commented-out template listing every `[ghidra]` and `[llm]` key
+  with sensible defaults.
+- **`auto` subcommand** — detects project state and runs the next step
+  automatically. Scans the target directory for `.dll` files, checks whether
+  classification records exist in `re/classify/`, and either runs classification
+  first (if any DLLs are unclassified) or prompts the user to select a DLL for
+  batch translation.
+- **No-subcommand defaults to `auto`** — calling `calxgloss-cli` with no
+  subcommand is equivalent to `calxloss-cli auto`.
+- **Auto flags**: `--target` (directory), `--dlls` (explicit comma-separated
+  list), `--all-functions`, `--classify-only`, `--skip-git`.
+- **`scan_dlls()` helper** — recursively looks for `.dll` files in the target
+  directory.
+- **`classification_record_exists()` helper** — checks whether a `re/classify/
+  <dll>.json` file already exists.
+
 ### Phase 5, Step 5.6 — Web Review UI: Dependency Graph Visualization
 
 #### `calxgloss-web` (static frontend)

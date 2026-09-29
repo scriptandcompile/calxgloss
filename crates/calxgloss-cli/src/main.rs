@@ -6,12 +6,19 @@
 //!
 //! # Commands
 //!
+//! - `init` — Create a `calxgloss.toml` configuration file
 //! - `classify` — Classify DLLs for a target executable
 //! - `translate` — Translate a single function from disassembly to Rust
 //! - `batch-translate` — Translate multiple functions from a single DLL
 //! - `verify` — Verify a previously translated function
 //! - `config` — Show the configuration in force and where each value came from
 //! - `dashboard` — Show a structured terminal review dashboard
+//! - `auto` — Detect project state and run the next step automatically
+//!
+//! If called with no subcommand, the tool defaults to `auto` mode: it scans
+//! the current directory, reads any existing config, determines whether DLLs
+//! still need classification or if batch translation should start, and runs
+//! the appropriate step.
 //!
 //! # Configuration
 //!
@@ -25,7 +32,7 @@ use anyhow::{Context, Result};
 use calxgloss::DllCategory;
 use calxgloss::GitBranch;
 use calxgloss_analysis::Analyzer;
-use calxgloss_config::{FileConfig, GhidraSection, Layers, LlmSection, Resolved, load};
+use calxgloss_config::{FileConfig, GhidraSection, Layers, LlmSection, Resolved, PROJECT_FILE, EXAMPLE, load};
 use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use calxgloss_git::{BranchCreationPolicy, DependencyPolicy, GitManager};
 use calxgloss_llm::{LlmClient, LlmConfig};
@@ -132,7 +139,7 @@ struct Cli {
     strategy: Option<String>,
 
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 /// Arguments for the `translate` subcommand.
@@ -192,6 +199,12 @@ struct BatchTranslateArgs {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Create a `calxgloss.toml` configuration file in the current directory.
+    ///
+    /// Writes a commented-out template with example settings for `[ghidra]`
+    /// and `[llm]` sections. If a file already exists, it is overwritten.
+    Init,
+
     /// Classify DLLs, choosing how to treat each one
     Classify {
         /// The DLLs to classify are named here because Ghidra serves a single
@@ -252,6 +265,35 @@ enum Command {
 
         #[command(subcommand)]
         command: Option<DashboardSubcommand>,
+    },
+
+    /// Automatically detect project state and run the next step.
+    ///
+    /// Scans the target directory for DLLs, checks whether classification
+    /// records exist in `re/classify/`, and either runs classification or
+    /// batch translation accordingly.
+    ///
+    /// If a `calxgloss.toml` is missing, prompts to create one first.
+    Auto {
+        /// Path to the target executable directory
+        #[arg(long)]
+        target: Option<PathBuf>,
+
+        /// DLLs to process (default: scan the target directory for .dll files)
+        #[arg(long)]
+        dlls: Option<String>,
+
+        /// Translate all exported functions (requires classification to be complete)
+        #[arg(long)]
+        all_functions: bool,
+
+        /// Only classify DLLs, do not proceed to translation
+        #[arg(long)]
+        classify_only: bool,
+
+        /// Skip git operations
+        #[arg(long)]
+        skip_git: bool,
     },
 }
 
@@ -615,6 +657,412 @@ async fn handle_classify(dlls: &[String], settings: &Settings) -> Result<()> {
     print_classification_report(&classifications);
 
     info!(count = classifications.len(), "Classification complete");
+    Ok(())
+}
+
+// ============================================================
+// Init command handler
+// ============================================================
+
+fn handle_init() -> Result<()> {
+    let path = PathBuf::from(PROJECT_FILE);
+    let config = EXAMPLE.to_string();
+    std::fs::write(&path, &config).with_context(|| {
+        format!(
+            "Failed to write configuration to {}",
+            path.display()
+        )
+    })?;
+    println!(
+        "  {} Created {}",
+        green_bold("✓"),
+        bold(&path.display().to_string())
+    );
+    println!();
+    println_content(
+        "Edit this file with your GhidraMCP and LLM server addresses.",
+    );
+    println_content("Then run `calxgloss auto` to start the pipeline.");
+    println_content("");
+    println_content("  ghidra.url → GhidraMCP server endpoint");
+    println_content("  llm.url    → OpenAI-compatible LLM server");
+    println_content("  llm.model  → model identifier the server reports");
+    println!();
+    Ok(())
+}
+
+// ============================================================
+// Auto command handler — smart pipeline dispatcher
+// ============================================================
+
+/// Scans a directory for DLL files.
+fn scan_dlls(target_dir: &Path) -> Vec<String> {
+    let mut dlls = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(target_dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let file_name = entry.file_name();
+            let name = file_name.to_string_lossy().to_lowercase();
+            if name.ends_with(".dll") {
+                dlls.push(file_name.to_string_lossy().to_string());
+            }
+        }
+    }
+    dlls.sort();
+    dlls
+}
+
+/// Check whether a classification record exists for the given DLL.
+fn classification_record_exists(base_path: &Path, dll: &str) -> bool {
+    let record = base_path.join("re").join("classify").join(&format!(
+        "{}.json",
+        dll.replace('/', "_").replace('\\', "_")
+    ));
+    record.is_file()
+}
+
+async fn handle_auto(
+    target: Option<PathBuf>,
+    dlls_arg: Option<String>,
+    _all_functions: bool,
+    classify_only: bool,
+    skip_git: bool,
+    settings: &Settings,
+) -> Result<()> {
+    info!("Auto mode: detecting project state");
+
+    // Determine the target directory
+    let target_dir = target
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
+
+    info!(path = ?target_dir, "Auto mode: using target directory");
+
+    // Discover or accept DLL list
+    let dlls = if let Some(ref dll_list) = dlls_arg {
+        dll_list.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+    } else {
+        scan_dlls(&target_dir)
+    };
+
+    if dlls.is_empty() {
+        println!(
+            "  {} No DLL files found in {}.",
+            red_bold("✗"),
+            target_dir.display()
+        );
+        println_content(
+            "Specify DLLs explicitly: calxgloss auto --dlls \"eqgame.dll,eqmain.dll\"",
+        );
+        anyhow::bail!("No DLLs found");
+    }
+
+    println!();
+    hsep_bold();
+    println_content(format!(
+        "  Calxgloss Auto — {} DLL(s) found",
+        bold(&dlls.len().to_string())
+    ));
+    hsep();
+    println_content("");
+    for dll in &dlls {
+        println_content(format!(
+            "  • {}{}",
+            bold(dll),
+            if classification_record_exists(&target_dir, dll) {
+                format!("  [{}] already classified", yellow_bold("done"))
+            } else {
+                format!("  [{}] needs classification", red_bold("pending"))
+            }
+        ));
+    }
+    println_content("");
+
+    // Determine which DLLs are classified and which are not
+    let classified: Vec<String> = dlls
+        .iter()
+        .filter(|d| classification_record_exists(&target_dir, d))
+        .cloned()
+        .collect();
+    let unclassified: Vec<String> = dlls
+        .iter()
+        .filter(|d| !classification_record_exists(&target_dir, d))
+        .cloned()
+        .collect();
+
+    // Step 1: Classify unclassified DLLs
+    if !unclassified.is_empty() {
+        println!(
+            "  {} Classifying {} unclassified DLL(s)…",
+            cyan_bold("→"),
+            bold(&unclassified.len().to_string())
+        );
+        println_content("");
+        handle_classify(&unclassified, settings).await?;
+        println_content("");
+        println_content(
+            "Classification complete. Review the report above, then run again to translate.",
+        );
+        println!();
+        return Ok(());
+    }
+
+    // All DLLs are classified
+    if classified.is_empty() {
+        println_content("No classified DLLs found; nothing to do.");
+        return Ok(());
+    }
+
+    println!(
+        "  {} {} DLL(s) classified, ready for translation",
+        green_bold("✓"),
+        bold(&classified.len().to_string())
+    );
+    println_content("");
+
+    if classify_only {
+        println_content("Classification complete. All DLLs are classified.");
+        println_content("Re-run without --classify-only to start translation.");
+        return Ok(());
+    }
+
+    // Ask which DLL to translate
+    println!("");
+    println!(
+        "  {} Which DLL would you like to translate?",
+        bold("?")
+    );
+    println!();
+    for (i, dll) in classified.iter().enumerate() {
+        let num = i + 1;
+        println_content(format!("  {}  {}", num, bold(dll)));
+    }
+    println_content("");
+    println_content("Enter a number (or 0 to cancel):");
+    print!("  > ");
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).ok();
+    let choice: usize = input.trim().parse().unwrap_or(0);
+
+    if choice == 0 || choice > classified.len() {
+        println!();
+        println_content("Cancelled.");
+        return Ok(());
+    }
+
+    let dll = &classified[choice - 1];
+    println!();
+    println!(
+        "  {} Translating functions from {}…",
+        cyan_bold("→"),
+        bold(dll)
+    );
+    println!();
+
+    // Run batch translate for the selected DLL
+    let _target_path = target_dir.canonicalize().unwrap_or(target_dir.clone());
+    let output_dir = target_dir.clone();
+
+    // Get Ghidra client to list functions
+    let ghidra_url = &settings.ghidra_url.value;
+    let mut ghidra_config = GhidraConfig::new(ghidra_url)
+        .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
+    if let Some(key) = &settings.ghidra_api_key {
+        ghidra_config = ghidra_config.with_api_key(key.value.clone());
+    }
+    let ghidra = GhidraClient::from_config(ghidra_config)
+        .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))?;
+
+    // List functions from Ghidra
+    let summaries = ghidra
+        .list_functions()
+        .await
+        .with_context(|| "Failed to list functions from GhidraMCP")?;
+
+    if summaries.is_empty() {
+        warn!("GhidraMCP returned no functions");
+        println_content("No functions found in the open Ghidra program.");
+        return Ok(());
+    }
+
+    let function_names: Vec<String> = summaries.into_iter().map(|s| s.name).collect();
+    info!(count = function_names.len(), "Enumerated functions from Ghidra");
+
+    // Get LLM settings
+    let llm_url = settings.require_llm_url()?;
+    let llm_model = settings.require_llm_model()?;
+    let max_tokens = settings.max_tokens.value;
+    let temperature = settings.temperature.value;
+    let max_retries = settings.max_retries.value;
+
+    let retry_strategy = match &settings.retry_strategy {
+        Some(r) => parse_retry_strategy(&r.value)?,
+        None => RetryStrategy::CompileFix,
+    };
+
+    info!(
+        dll = %dll,
+        function_count = function_names.len(),
+        "Starting batch translation"
+    );
+
+    // Initialize output directory
+    let modules_dir = output_dir.join("src").join("modules");
+    std::fs::create_dir_all(&modules_dir).context("Failed to create modules directory")?;
+
+    // Initialize LLM client
+    let mut llm_config = calxgloss_llm::LlmConfig::new(llm_url, llm_model)
+        .with_context(|| format!("Failed to parse LLM URL: {}", llm_url))?;
+    if let Some(key) = &settings.llm_api_key {
+        llm_config = llm_config.with_api_key(key.value.clone());
+    }
+    llm_config = llm_config
+        .with_max_tokens(max_tokens)
+        .with_temperature(temperature);
+    let llm = calxgloss_llm::LlmClient::new(llm_config)
+        .context("Failed to create LLM client")?;
+
+    // Initialize analyzer, test generator
+    let api_mappings = calxgloss_pal::ApiMappings::default();
+    let testgen = calxgloss_testgen::TestGenerator::new(&output_dir);
+
+    // Build translation pipeline
+    let pipeline =
+        calxgloss_translator::TranslationPipeline::new(ghidra, llm, api_mappings).with_testgen(testgen);
+
+    // Git setup
+    let mut git = if !skip_git {
+        info!("Initializing git repository");
+        let git_config = calxgloss_git::InitConfig::default();
+        Some(
+            calxgloss_git::GitManager::init_repo(&output_dir, Some(git_config))
+                .context("Failed to initialize git repository")?,
+        )
+    } else {
+        info!("Skipping git operations");
+        None
+    };
+
+    // Initialize verifier for retry loop
+    let verifier = Verifier::new(&output_dir).context("Failed to create verifier")?;
+
+    let retry_config = RetryConfig {
+        max_attempts: max_retries,
+        strategy: retry_strategy,
+        escalate_on_failure: true,
+    };
+
+    // Run batch translation
+    let mut batch_result = pipeline
+        .batch_translate(dll, &function_names, &retry_config, &verifier)
+        .await
+        .with_context(|| format!("Batch translation failed for DLL: {}", dll))?;
+
+    // Git operations: commit each successful function
+    if let Some(ref mut git_manager) = git {
+        for func_result in batch_result.results.iter_mut() {
+            if !func_result.success {
+                continue;
+            }
+            let rust_code = func_result.rust_code.as_ref().unwrap();
+            let output_path = modules_dir
+                .join(&func_result.function)
+                .join("translated.rs");
+            std::fs::create_dir_all(output_path.parent().unwrap())
+                .context("Failed to create output directory")?;
+            std::fs::write(&output_path, rust_code).with_context(|| {
+                format!("Failed to write translated code to {}", output_path.display())
+            })?;
+
+            let branch_result = git_manager
+                .create_branch(
+                    dll,
+                    &func_result.function,
+                    1,
+                    Some(&BranchCreationPolicy::Warn(DependencyPolicy {
+                        category: DllCategory::ProjectSpecific,
+                        crate_replacement: None,
+                    })),
+                )
+                .context("Failed to create git branch")?;
+
+            let branch_info = &branch_result.branch;
+            print_git_status(branch_info, false);
+
+            let output_path_str = output_path.to_string_lossy().to_string();
+            let _commit = git_manager
+                .commit(
+                    branch_info,
+                    &format!(
+                        "re/auto/{}: translate {} (batch attempt)",
+                        func_result.function, dll
+                    ),
+                    &[&output_path_str],
+                )
+                .context("Failed to commit translated code")?;
+
+            let merge_result = git_manager
+                .merge_to_main(branch_info)
+                .context("Failed to merge branch to main")?;
+
+            match &merge_result {
+                calxgloss_git::MergeResult::Merged { merge_hash } => {
+                    info!(hash = %merge_hash, "Translation accepted and merged");
+                }
+                calxgloss_git::MergeResult::AlreadyUpToDate => {
+                    info!("Branch was already up to date with main");
+                }
+                calxgloss_git::MergeResult::Conflicts {
+                    conflicted_files,
+                    error,
+                } => {
+                    warn!(files = ?conflicted_files, error = %error, "Merge conflicts");
+                }
+            }
+            func_result.branch = Some(branch_info.clone());
+        }
+    }
+
+    print_batch_summary(&batch_result);
+
+    if batch_result.all_success() {
+        println!(
+            "\n  {}",
+            green_bold(&format!(
+                "Batch complete: all {} functions translated successfully",
+                batch_result.total_count()
+            ))
+        );
+    } else if batch_result.any_success() {
+        println!(
+            "\n  {}",
+            yellow_bold(&format!(
+                "Batch complete: {} succeeded, {} failed out of {} functions",
+                batch_result.success_count(),
+                batch_result.failure_count(),
+                batch_result.total_count()
+            ))
+        );
+    } else {
+        println!(
+            "\n  {}",
+            red_bold(&format!(
+                "Batch complete: all {} functions failed",
+                batch_result.total_count()
+            ))
+        );
+    }
+
+    println!();
+    println_content(
+        "To review, run: calxgloss dashboard",
+    );
+    println_content(
+        "To see the web UI (requires server feature): cargo run --features server --bin web_server",
+    );
+    println!();
+
     Ok(())
 }
 
@@ -1791,7 +2239,15 @@ fn main() -> Result<()> {
     let settings = Settings::resolve(&layers, flags, &loaded);
 
     // Run the appropriate command
-    let result = match cli.command {
+    // No subcommand defaults to `auto` mode.
+    let command = cli.command.unwrap_or(Command::Auto {
+        target: None,
+        dlls: None,
+        all_functions: false,
+        classify_only: false,
+        skip_git: false,
+    });
+    let result = match command {
         Command::Config => {
             print!("{}", settings::render(&settings));
             Ok(())
@@ -1871,6 +2327,29 @@ fn main() -> Result<()> {
             .build()
             .context("Failed to create tokio runtime")?
             .block_on(handle_dashboard(follow, interval)),
+        Command::Init => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("Failed to create tokio runtime")?
+            .block_on(async { handle_init() }),
+        Command::Auto {
+            target,
+            dlls,
+            all_functions,
+            classify_only,
+            skip_git,
+        } => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("Failed to create tokio runtime")?
+            .block_on(handle_auto(
+                target,
+                dlls,
+                all_functions,
+                classify_only,
+                skip_git,
+                &settings,
+            )),
     };
 
     if let Err(ref e) = result {
