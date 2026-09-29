@@ -82,6 +82,26 @@ pub enum ProgressEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         tokens_used: Option<usize>,
     },
+    /// The full prompt sent to the LLM (raw request body).
+    LlmRequest {
+        dll: String,
+        function: String,
+        attempt: u32,
+        strategy: String,
+        /// The prompt text that will be sent to the LLM.
+        prompt: String,
+    },
+    /// The full response received from the LLM.
+    LlmResponse {
+        dll: String,
+        function: String,
+        attempt: u32,
+        strategy: String,
+        /// The raw text content returned by the LLM.
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tokens_used: Option<usize>,
+    },
     /// A translation attempt was verified (compile + test results).
     TranslationAttemptCompleted {
         dll: String,
@@ -170,6 +190,32 @@ impl std::fmt::Display for ProgressEvent {
                     "LLM returned {code_length} bytes for {function} ({dll}) attempt #{attempt}"
                 )
             }
+            ProgressEvent::LlmRequest {
+                dll,
+                function,
+                attempt,
+                strategy,
+                ..
+            } => {
+                write!(
+                    f,
+                    "LLM prompt sent: {function} ({dll}) attempt #{attempt} [{strategy}]"
+                )
+            }
+            ProgressEvent::LlmResponse {
+                dll,
+                function,
+                attempt,
+                strategy,
+                content,
+                ..
+            } => {
+                write!(
+                    f,
+                    "LLM response received: {function} ({dll}) attempt #{attempt} [{strategy}] — {} chars",
+                    content.len()
+                )
+            }
             ProgressEvent::TranslationAttemptCompleted {
                 dll,
                 function,
@@ -216,7 +262,10 @@ impl std::fmt::Display for ProgressEvent {
 /// Create one per translation session. Call [`Self::emit`] to publish events,
 /// and [`Self::subscribe`] to create a receiver that can be passed to the
 /// WebSocket server.
-#[derive(Debug)]
+///
+/// `TranslationEvents` is cloneable — each clone shares the same underlying
+/// broadcast channel, so you can pass it to multiple pipeline instances.
+#[derive(Debug, Clone)]
 pub struct TranslationEvents {
     sender: broadcast::Sender<ProgressEvent>,
 }

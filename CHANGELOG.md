@@ -69,6 +69,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `DashboardBuilder::build()` now calls `auto_block_units()` after constructing the dashboard from git/file artifacts, ensuring the terminal dashboard always shows correct blocked status.
 
 ### `calxgloss-types`
+- **`ProgressEvent::LlmRequest` / `LlmResponse`** — new event variants emitting the full prompt sent to the LLM and the full response received, including DLL/function identifiers, attempt number, strategy label, prompt text, response content, and token usage. Display impls show concise summaries.
+- **`TranslationEvents` is `Clone`** — each clone shares the same underlying broadcast channel, so it can be passed to multiple pipeline instances simultaneously.
+- **`SessionManager::new_with_broadcast()`** — creates a session manager that drives the broadcast loop from an existing `broadcast::Receiver`, allowing the translation pipeline's `TranslationEvents` channel to feed directly into the WebSocket server without an intermediate `mpsc` bridge.
 - **Dashboard data model** (`calxgloss-types::dashboard`) — new module with all review dashboard types, replacing the duplicate scaffolding in `calxgloss-web`: `WorkUnitKind` (7 unit types), `ReviewStatus` (7 statuses), `UnitOfWork` (full metadata struct with timestamps, test counts, confidence, dependencies, known gaps), `DependencyNode` / `DependencyEdge` / `DependencyGraph` (DAG with `roots()`, `dependents()`, `dependencies()` traversal), `StatusCounts` (aggregated counts with `total()`), `ReviewDashboard` (assembles units into a viewable dashboard with dependency-sorted queue, recent activity, and status counts), and `ReviewAction` / `ReviewActionKind` (human review actions). All types derive `serde::Serialize` and `serde::Deserialize`.
 - `chrono` dependency — added to `calxgloss-types` for `DateTime<Utc>` fields in `UnitOfWork` timestamps.
 - **Complexity-based prompt selection** (`calxgloss-types::complexity`) — `FunctionComplexity` enum (Minimal / Standard / Rich / Detailed) and `detect_complexity()` function that classifies functions by instruction count, branch density, call depth, and API-category diversity. `PromptVariant` struct for strategy selection and `FailureHint` for recording previous attempt failures.
@@ -92,6 +95,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Failure-informed retry prompts** — `FixTemplate`, `EscalateTemplate`, and `EdgeCaseTemplate` all now accept a `failure_history: Vec<FailureHint>` field. When non-empty, each template renders a "PREVIOUS ATTEMPT HISTORY" section so the LLM can learn from specific past mistakes. Dedicated `with_history()` constructors and updated `build_escalate_prompt()` / `build_edge_case_prompt()` helpers. Embedded templates (`failure_fix.j2`, `escalate.j2`, `edge_case.j2`) updated to render the history section.
 
 ### `calxgloss-translator`
+- **LLM I/O event emission** — `TranslationPipeline::translate()` and `try_translate_with_retry()` now emit `LlmRequest` and `LlmResponse` events before and after every LLM call (initial and all retry attempts), carrying full prompt text, response content, attempt number, and strategy label.
 - **Failure-informed retry prompts** — all retry strategies (`CompileFix`, `TestFix`, `Escalate`, `EdgeCaseFix`) now inject a "PREVIOUS ATTEMPT HISTORY" section into LLM prompts when prior attempts have failed. Includes `build_failure_informed_compile_fix_prompt()`, `build_failure_informed_test_fix_prompt()`, `build_failure_informed_escalate_prompt()`, and `build_failure_informed_edge_case_fix_prompt()`.
 - `TranslationPipeline::translate()` now uses complexity-based prompt selection, routing simple functions to minimal prompts and complex functions to rich or detailed prompts with extra Ghidra context.
 - **Experiment logging integration** — `try_translate_with_retry()` now accepts an optional workspace path; `TranslationPipeline` gains `with_workspace()` builder method. Every retry attempt is recorded (DLL name, auto-classified category, strategy label, success/fail, attempt number, timestamp). Skipped silently when no workspace is set.
@@ -118,10 +122,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Diff viewer component** — tabbed detail-panel view with "Diff" and "Ghidra Context" tabs. Renders line-by-line diffs with green-highlighted additions, red-highlighted deletions, dual line-number gutter, and hunk-header markers. Shows file rename annotations.
 - **Ghidra context viewer** — displays decompiler output in a scrollable code block, disassembly listing with address/instruction columns, and tagged Windows API calls with PAL mappings. Loads metadata (DLL, function name, address) from analysis artifacts.
 - **New API response types** — `DiffLineType`, `DiffLine`, `DiffHunk`, `DiffFile`, `DiffResponse`, `GhidraDisasmLine`, `GhidraContext`, `GhidraApiCall`, `GhidraContextResponse`.
-- **WebSocket server** (`server::events` module) — `SessionManager` owns a background broadcast loop that fans out `ProgressEvent` instances from an `mpsc` channel to all registered WebSocket clients.
-- **`EventsBridge`** — connects the pipeline's `TranslationEvents` broadcast sender to the `SessionManager`'s `mpsc` channel, bridging the two channel types into a single streaming pipeline.
-- **`WebSocketHandler`** — accepts an `axum::extract::WebSocket`, splits it into read/write halves, and drives concurrent event forwarding and keep-alive pings. Auto-cleans up on disconnect.
-- **`build_router_with_ws()`** — extension of `build_router()` that mounts the `/api/events/upgrade` WebSocket upgrade route. Carries `SessionManager` and `EventsBridge` as additional axum state objects.
+- **WebSocket server** (`server::events` module) — `SessionManager` owns a background broadcast loop that fans out `ProgressEvent` instances from a `broadcast::Receiver` to all registered WebSocket clients.
+- **`SessionManager::new_with_broadcast()`** — creates a session manager that drives the broadcast loop from an existing broadcast receiver, connecting a `TranslationEvents` channel directly to the WebSocket server without an intermediate `mpsc` bridge.
+- **`build_router_with_ws()`** — extension of `build_router()` that mounts the `/api/events/upgrade` WebSocket upgrade route. Carries `SessionManager` as additional axum state (no longer requires `EventsBridge`).
 - **`api_events_upgrade()`** — WebSocket upgrade handler that registers the client with the session manager and starts streaming.
 - **Dependency-sorted review queue endpoints** — `GET /api/queue` returns the full review queue sorted by dependency order (topological + level tie-breaking), with metadata on total/queued/pending/blocked counts. `GET /api/queue/next` returns the single next unit to review in the "review one at a time" workflow. Both endpoints exclude accepted and merged units; `Blocked` units are flagged in the response.
 - **Queue metadata on dashboard** — `GET /api/dashboard` now includes optional `queue_metadata` with total, queued, pending-review, and blocked counts.
@@ -147,6 +150,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Graph view now wraps header buttons in a `.view-controls` div.
 - Adds overlay `.graph-controls` div with "Fit" / "Reset" buttons.
 - Adds `#zoom-indicator` element for current zoom percentage display.
+- **LLM I/O log view** — new "LLM I/O" tab in the web UI that displays a real-time log of LLM requests and responses, with full prompt/response content, DLL/function identifiers, attempt numbers, strategy labels, timestamps, and per-entry truncation (500-char preview with full length). Clear button available.
+
+### `calxgloss-cli`
+- **`live` event emission** — creates a shared `TranslationEvents` instance and passes it through `run_translation_for_dll()` so the translation pipeline can stream LLM I/O events to the WebSocket server. `auto` mode passes `None` (no streaming).
 
 ### `calxgloss-ghidra`
 - Added optional dependency for future GhidraMCP integration behind the `server` feature.

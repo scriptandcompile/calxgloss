@@ -339,6 +339,17 @@ pub async fn try_translate_with_retry(
             }
         };
 
+        // Emit: LLM request (full prompt) for this retry attempt
+        if let Some(em) = ctx.events {
+            let _ = em.emit(ProgressEvent::LlmRequest {
+                dll: initial_translation.dll.clone(),
+                function: initial_translation.function.clone(),
+                attempt: attempt_num,
+                strategy: strategy_name.clone(),
+                prompt: prompt.clone(),
+            });
+        }
+
         // Send fix prompt to LLM
         let messages = vec![LlmMessage::user(&prompt)];
         let response = match ctx.llm.complete(&messages).await {
@@ -365,6 +376,18 @@ pub async fn try_translate_with_retry(
                 continue;
             }
         };
+
+        // Emit: LLM response (full content) for this retry attempt
+        if let Some(em) = ctx.events {
+            let _ = em.emit(ProgressEvent::LlmResponse {
+                dll: initial_translation.dll.clone(),
+                function: initial_translation.function.clone(),
+                attempt: attempt_num,
+                strategy: strategy_name.clone(),
+                content: response.content.clone(),
+                tokens_used: response.tokens_used,
+            });
+        }
 
         let new_rust_code = response.content.trim().to_string();
         let tokens_used = response.tokens_used;

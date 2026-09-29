@@ -925,6 +925,12 @@
         if (viewName === "graph" && State.graphRendererFull) {
             setTimeout(() => State.graphRendererFull._resize(), 50);
         }
+
+        if (viewName === "llm-log" && State.currentView !== "llm-log") {
+            // Focus the log container when switching to LLM log view
+            const container = document.getElementById("llm-log-container");
+            if (container) container.focus();
+        }
     }
 
     // ─── Render: Status Cards ───────────────────────────────────────────
@@ -1601,6 +1607,9 @@
             }
         });
 
+        // LLM I/O log clear button
+        document.getElementById("btn-clear-llm-log")?.addEventListener("click", clearLlmLog);
+
         // Graph click handler — opens detail panel for clicked node
         function handleGraphNodeClick(node) {
             showDetail(node.id);
@@ -1719,9 +1728,101 @@
         });
     }
 
+    // ─── LLM I/O Log ────────────────────────────────────────────────────
+
+    const llmLogEntries = [];
+    const LLM_LOG_MAX = 200;
+
+    function addLlmLogEntry(type, dll, func, attempt, strategy, content) {
+        const entry = {
+            type,  // "request" or "response"
+            dll,
+            func,
+            attempt,
+            strategy,
+            content,
+            timestamp: new Date(),
+        };
+        llmLogEntries.push(entry);
+
+        // Trim old entries
+        while (llmLogEntries.length > LLM_LOG_MAX) {
+            llmLogEntries.shift();
+        }
+
+        renderLlmLog();
+    }
+
+    function renderLlmLog() {
+        const container = document.getElementById("llm-log-entries");
+        const empty = document.getElementById("llm-log-empty");
+        if (!container) return;
+
+        if (llmLogEntries.length === 0) {
+            empty.style.display = "flex";
+            container.innerHTML = "";
+            return;
+        }
+
+        empty.style.display = "none";
+
+        const html = llmLogEntries.map((e) => {
+            const typeLabel = e.type === "request" ? "Request" : "Response";
+            const ts = e.timestamp.toLocaleTimeString();
+            const summary = `${e.dll}!${e.func} (attempt #${e.attempt}, ${e.strategy})`;
+            const contentPreview = e.content.length > 500
+                ? e.content.substring(0, 500) + "\n… (truncated, full: " + e.content.length + " chars)"
+                : e.content;
+
+            return `<div class="llm-log-entry">
+                <div class="llm-log-entry-header ${e.type}">
+                    ${typeLabel}
+                    <span class="meta">${ts} · ${summary}</span>
+                </div>
+                <div class="llm-log-entry-body">${escapeHtml(contentPreview)}</div>
+            </div>`;
+        }).join("");
+
+        container.innerHTML = html;
+    }
+
+    function clearLlmLog() {
+        llmLogEntries.length = 0;
+        renderLlmLog();
+    }
+
+    function escapeHtml(str) {
+        return str
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;");
+    }
+
     // ─── WebSocket Event Handler ────────────────────────────────────────
 
     function handleWSMessage(event) {
+        // Handle LLM I/O events
+        if (event.event === "llm_request") {
+            addLlmLogEntry(
+                "request",
+                event.dll,
+                event.function,
+                event.attempt,
+                event.strategy,
+                event.prompt
+            );
+        } else if (event.event === "llm_response") {
+            addLlmLogEntry(
+                "response",
+                event.dll,
+                event.function,
+                event.attempt,
+                event.strategy,
+                event.content
+            );
+        }
+
         // Silently refresh data on any progress event
         // Could also update the UI incrementally with specific event types
         loadDashboard();

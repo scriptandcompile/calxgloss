@@ -27,6 +27,9 @@ pub use calxgloss_types::dashboard::{
     ReviewDashboard, ReviewStatus, StatusCounts, UnitOfWork, WorkUnitKind,
 };
 
+// Progress event types
+pub use calxgloss_types::progress::{ProgressEvent, TranslationEvents};
+
 // ============================================================
 // calxgloss-ghidra — GhidraMCP HTTP client
 // ============================================================

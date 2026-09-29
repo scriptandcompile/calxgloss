@@ -134,7 +134,6 @@ pub fn build_router_with_actions(
 pub fn build_router_with_ws(
     state: ServerState,
     manager: SessionManager,
-    bridge: EventsBridge,
 ) -> Router {
     Router::new()
         .route("/api/dashboard", get(handlers::api_get_dashboard))
@@ -156,7 +155,7 @@ pub fn build_router_with_ws(
         .with_state(CombinedState {
             server: state,
             manager: Some(manager),
-            bridge: Some(bridge),
+            bridge: None,
             actions: None,
         })
 }

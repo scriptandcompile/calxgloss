@@ -21,6 +21,7 @@
             <button class="nav-tab active" data-view="dashboard">Dashboard</button>
             <button class="nav-tab" data-view="queue">Review Queue</button>
             <button class="nav-tab" data-view="graph">Dependency Graph</button>
+            <button class="nav-tab" data-view="llm-log">LLM I/O</button>
         </nav>
         <div class="topbar-right">
             <span id="live-indicator" class="live-dot" title="Live updates active">●</span>
@@ -106,6 +107,22 @@
                     <button id="btn-reset-graph-full" class="btn btn-sm">Reset</button>
                 </div>
                 <div id="zoom-indicator" class="graph-zoom-indicator">100%</div>
+            </div>
+        </section>
+
+        <!-- LLM I/O Log view -->
+        <section id="view-llm-log" class="view">
+            <div class="view-header">
+                <h2>LLM I/O Log</h2>
+                <div class="view-controls">
+                    <button id="btn-clear-llm-log" class="btn btn-sm btn-secondary">Clear</button>
+                </div>
+            </div>
+            <div id="llm-log-container" class="llm-log-container">
+                <div id="llm-log-empty" class="llm-log-empty">
+                    <p>No LLM events yet. Start a live translation to see prompts and responses.</p>
+                </div>
+                <div id="llm-log-entries" class="llm-log-entries"></div>
             </div>
         </section>
     </main>

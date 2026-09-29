@@ -503,6 +503,16 @@ impl TranslationPipeline {
 
         let data = calxgloss_prompts::ComplexityPromptData::from_request(&request);
         let prompt = calxgloss_prompts::build_complexity_prompt(&complexity, &data)?;
+
+        // Emit: LLM request (full prompt)
+        self.emit(ProgressEvent::LlmRequest {
+            dll: dll.to_string(),
+            function: function.to_string(),
+            attempt: 1,
+            strategy: "initial".to_string(),
+            prompt: prompt.clone(),
+        });
+
         let response = self.send_to_llm(&prompt).await?;
 
         if response.content.is_empty() {
@@ -510,6 +520,16 @@ impl TranslationPipeline {
                 code_len: response.content.len(),
             });
         }
+
+        // Emit: LLM response (full content)
+        self.emit(ProgressEvent::LlmResponse {
+            dll: dll.to_string(),
+            function: function.to_string(),
+            attempt: 1,
+            strategy: "initial".to_string(),
+            content: response.content.clone(),
+            tokens_used: response.tokens_used,
+        });
 
         // Emit: LLM call complete
         self.emit(ProgressEvent::LlmCallComplete {

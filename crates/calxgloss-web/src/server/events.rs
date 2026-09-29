@@ -2,7 +2,7 @@
 
 use calxgloss_types::ProgressEvent;
 use futures_util::{StreamExt, SinkExt};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex};
 use tracing::{info, warn};
 use axum::extract::ws::WebSocket;
 
@@ -29,6 +29,28 @@ impl SessionManager {
         )
     }
 
+    /// Create a session manager that drives the broadcast loop from an
+    /// existing broadcast receiver (e.g., from `TranslationEvents`).
+    ///
+    /// This lets the translation pipeline's broadcast channel feed directly
+    /// into the WebSocket server without an intermediate mpsc bridge.
+    pub fn new_with_broadcast(
+        receiver: broadcast::Receiver<ProgressEvent>,
+    ) -> Self {
+        let clients = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let (cmd_tx, cmd_rx) = mpsc::channel::<WsCommand>(64);
+        let clients_clone = clients.clone();
+        tokio::spawn(broadcast_loop_from_broadcast(
+            clients_clone,
+            receiver,
+            cmd_rx,
+        ));
+        Self {
+            clients,
+            commands: cmd_tx,
+        }
+    }
+
     pub async fn register_client(&self) -> (WebSocketHandler, mpsc::Sender<ProgressEvent>) {
         let (tx, rx) = mpsc::channel::<ProgressEvent>(128);
         let _ = self.commands.send(WsCommand::Register(tx.clone())).await;
@@ -53,6 +75,44 @@ async fn broadcast_loop(
                 clients.retain(|tx| !tx.is_closed());
                 for tx in clients.iter() {
                     let _ = tx.send(event.clone()).await;
+                }
+            }
+            Some(cmd) = commands.recv() => match cmd {
+                WsCommand::Register(tx) => {
+                    let mut clients = clients.lock().await;
+                    clients.push(tx);
+                }
+            },
+            else => break,
+        }
+    }
+}
+
+/// Broadcast loop that reads from a broadcast receiver instead of an mpsc
+/// receiver. Used by `SessionManager::new_with_broadcast()` to connect
+/// a `TranslationEvents` channel directly to the WebSocket server.
+async fn broadcast_loop_from_broadcast(
+    clients: std::sync::Arc<Mutex<Vec<mpsc::Sender<ProgressEvent>>>>,
+    mut events: broadcast::Receiver<ProgressEvent>,
+    mut commands: mpsc::Receiver<WsCommand>,
+) {
+    loop {
+        tokio::select! {
+            result = events.recv() => {
+                match result {
+                    Ok(event) => {
+                        let mut clients = clients.lock().await;
+                        clients.retain(|tx| !tx.is_closed());
+                        for tx in clients.iter() {
+                            let _ = tx.send(event.clone()).await;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(lagged = n, "Event subscriber lagged; dropping events");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        break;
+                    }
                 }
             }
             Some(cmd) = commands.recv() => match cmd {

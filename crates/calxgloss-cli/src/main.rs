@@ -51,6 +51,7 @@ use calxgloss_reports::{
 };
 use calxgloss_testgen::TestGenerator;
 use calxgloss_translator::{RetryConfig, RetryStrategy, TranslationPipeline};
+use calxgloss::TranslationEvents;
 use calxgloss_verify::Verifier;
 use clap::{Args, Parser, Subcommand};
 use tracing::{debug, error, info, warn};
@@ -826,6 +827,7 @@ async fn run_translation_for_dll(
     target_dir: &Path,
     skip_git: bool,
     settings: &Settings,
+    events: Option<&TranslationEvents>,
 ) -> Result<()> {
     let output_dir = target_dir.to_path_buf();
 
@@ -895,8 +897,11 @@ async fn run_translation_for_dll(
     let testgen = calxgloss_testgen::TestGenerator::new(&output_dir);
 
     // Build translation pipeline
-    let pipeline = calxgloss_translator::TranslationPipeline::new(ghidra, llm, api_mappings)
+    let mut pipeline = calxgloss_translator::TranslationPipeline::new(ghidra, llm, api_mappings)
         .with_testgen(testgen);
+    if let Some(events) = events {
+        pipeline = pipeline.with_events(events.clone());
+    }
 
     // Git setup
     let mut git = if !skip_git {
@@ -1042,6 +1047,7 @@ async fn handle_auto(
     skip_git: bool,
     settings: &Settings,
     continue_mode: bool,
+    events: Option<&TranslationEvents>,
 ) -> Result<()> {
     info!("Auto mode: detecting project state");
 
@@ -1174,7 +1180,7 @@ async fn handle_auto(
                 bold(dll)
             );
             println!();
-            run_translation_for_dll(dll, &output_dir, skip_git, settings).await?;
+            run_translation_for_dll(dll, &output_dir, skip_git, settings, events).await?;
         }
     } else {
         // Ask which DLL to translate (interactive mode).
@@ -1209,8 +1215,7 @@ async fn handle_auto(
         );
         println!();
 
-        run_translation_for_dll(dll, &output_dir, skip_git, settings).await?;
-    }
+        run_translation_for_dll(dll, &output_dir, skip_git, settings, events).await?;    }
 
     Ok(())
 }
@@ -2485,6 +2490,12 @@ async fn handle_live(
     let (ready_tx, ready_rx) =
         tokio::sync::oneshot::channel::<std::result::Result<std::net::SocketAddr, anyhow::Error>>();
 
+    // Create the shared event channel before spawning.  The broadcast sender
+    // is clonable, so we pass a clone to the serve task and keep the original
+    // for the pipeline.
+    let events = TranslationEvents::new(256);
+    let events_clone = events.clone();
+
     let serve_handle = tokio::spawn(async move {
         // Determine the repository path the same way handle_serve does.
         let repo_path = match repo {
@@ -2526,10 +2537,9 @@ async fn handle_live(
 
         // Build the router with WebSocket support so the frontend can stream
         // progress events over the upgrade endpoint.
-        let (manager, event_tx) = calxgloss_web::SessionManager::new();
-        let bridge = calxgloss_web::EventsBridge::from(event_tx);
-        let router =
-            calxgloss_web::build_router_with_ws(server_state.clone(), manager, bridge);
+        let event_rx = events_clone.subscribe();
+        let manager = calxgloss_web::SessionManager::new_with_broadcast(event_rx);
+        let router = calxgloss_web::build_router_with_ws(server_state.clone(), manager);
         let _ = calxgloss_web::serve_with_listener(
             listener,
             router,
@@ -2571,6 +2581,7 @@ async fn handle_live(
         skip_git,
         settings,
         true, // continue mode — don't stop after classification, translate all
+        Some(&events), // pass event emitter for live progress streaming
     )
     .await;
 
@@ -2763,6 +2774,7 @@ fn main() -> Result<()> {
                 skip_git,
                 &settings,
                 false, // interactive mode — prompt user, stop after classification
+                None,  // no event emitter in interactive mode
             )),
         Command::Serve { repo, port } => tokio::runtime::Builder::new_current_thread()
             .enable_all()
