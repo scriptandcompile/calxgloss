@@ -101,6 +101,12 @@ struct Cli {
     #[arg(long, global = true, value_name = "FILE")]
     config: Option<PathBuf>,
 
+    /// Target directory for DLLs and output
+    ///
+    /// Overrides the `target_dir` setting in the config file.
+    #[arg(long, global = true, value_name = "DIR")]
+    target_dir: Option<PathBuf>,
+
     /// GhidraMCP server URL (default: http://127.0.0.1:8080)
     #[arg(long, global = true)]
     ghidra_url: Option<String>,
@@ -730,9 +736,10 @@ async fn handle_auto(
 ) -> Result<()> {
     info!("Auto mode: detecting project state");
 
-    // Determine the target directory
+    // Determine the target directory: CLI flag > config > CWD
     let target_dir = target
         .clone()
+        .or_else(|| settings.target_dir.as_ref().map(|r| PathBuf::from(&r.value)))
         .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
 
     info!(path = ?target_dir, "Auto mode: using target directory");
@@ -2222,6 +2229,7 @@ fn main() -> Result<()> {
     // The global flags form the highest-priority layer, shared by every
     // subcommand so `config` reports the same values a real run would use.
     let flags = FileConfig {
+        target_dir: cli.target_dir.as_ref().map(|p| p.to_string_lossy().to_string()),
         ghidra: GhidraSection {
             url: cli.ghidra_url.clone(),
             api_key: cli.ghidra_api_key.clone(),

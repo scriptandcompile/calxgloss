@@ -23,10 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   subcommand is equivalent to `calxloss-cli auto`.
 - **Auto flags**: `--target` (directory), `--dlls` (explicit comma-separated
   list), `--all-functions`, `--classify-only`, `--skip-git`.
-- **`scan_dlls()` helper** — recursively looks for `.dll` files in the target
-  directory.
+- **`target_dir` in config** — `calxgloss.toml` can now set `target_dir = "..."`
+  at the top level. Auto mode resolves: CLI flag > config file > CWD.
+  `CALXGLOSS_TARGET_DIR` environment variable also supported.
+- **`--target-dir` global CLI flag** — overrides config `target_dir`.
+- **`scan_dlls()` helper** — looks for `.dll` files in the target directory.
 - **`classification_record_exists()` helper** — checks whether a `re/classify/
   <dll>.json` file already exists.
+- **Config render** — `calxgloss config` now shows `target_dir` path and source.
 
 ### Phase 5, Step 5.6 — Web Review UI: Dependency Graph Visualization
 
@@ -50,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Adds overlay `.graph-controls` div with "Fit" / "Reset" buttons.
 - Adds `#zoom-indicator` element for current zoom percentage display.
 
-### Phase 5, Step 5.5 — Web Review UI: Diff Viewer + Ghidra Context
+### Web Review UI: Diff Viewer + Ghidra Context
 
 #### `calxgloss-web`
 - **Line-by-line diff API** — `GET /api/units/:id/diff` returns structured
@@ -134,7 +138,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   functions to rich or detailed prompts with extra Ghidra context.
 
 #### `calxgloss-prompts`
-- **Failure-informed retry prompts** (Phase 2, step 2.3) — `FixTemplate`,
+- **Failure-informed retry prompts**  — `FixTemplate`,
   `EscalateTemplate`, and `EdgeCaseTemplate` all now accept a
   `failure_history: Vec<FailureHint>` field. When non-empty, each template
   renders a "PREVIOUS ATTEMPT HISTORY" section so the LLM can learn from
@@ -206,7 +210,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BranchCreationPolicy::Warn` to `create_branch`, enabling dependency-aware branch
   creation with warning-level enforcement during translation.
 
-### Phase 3 — Terminal Review Dashboard
+### Terminal Review Dashboard
 
 #### `calxgloss-types`
 - **Dashboard data model** (`calxgloss-types::dashboard`) — new module with all
@@ -337,7 +341,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `calxgloss-prompts`, `calxgloss-reports`, `calxgloss-translator`,
   `calxgloss-types`.
 
-### Phase 4, Step 4.2 — Topological Sort with Level-Aware Tie-Breaking
+### Topological Sort with Level-Aware Tie-Breaking
 
 #### `calxgloss-types`
 - **`WorkUnitLevel`** enum — defines 7 processing-phase levels for
@@ -381,7 +385,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DependencyNode::with_level()` constructors.
 
 
-### Phase 4, Step 4.5 — Persist Dependency Graph
+### Persist Dependency Graph
 
 #### `calxgloss-analysis`
 - **`DependencyGraphPersistor`** — persists a `DependencyGraph` to
@@ -391,7 +395,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `re/analysis/` directory structure. Returns `None` on missing or
   corrupt files rather than erroring.
 
-### Phase 4, Step 4.4 — Auto-queue Unmet Units
+### Auto-queue Unmet Units
 
 #### `calxgloss-types`
 - **`ReviewDashboard::auto_block_units()`** — automatically marks units
@@ -441,7 +445,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   struct field layouts, match arms, function signatures, doc
   comment examples.
 
-### Phase 5, Step 5.3 — WebSocket Live Progress Streaming
+### WebSocket Live Progress Streaming
 
 #### `calxgloss-types`
 - **`ProgressEvent` enum** — typed events emitted at pipeline milestones:

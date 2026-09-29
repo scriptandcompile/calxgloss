@@ -107,6 +107,9 @@ pub enum ConfigError {
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FileConfig {
+    /// Directory containing DLLs and where output is written.
+    pub target_dir: Option<String>,
+
     /// How to reach GhidraMCP.
     pub ghidra: GhidraSection,
 
@@ -160,6 +163,9 @@ pub const EXAMPLE: &str = r#"# Calxgloss configuration.
 # Every key is optional. Command-line flags and environment variables
 # (CALXGLOSS_GHIDRA_URL, CALXGLOSS_LLM_URL, CALXGLOSS_LLM_MODEL, ...) take
 # precedence over this file.
+
+# Directory containing DLLs and where output is written.
+# target_dir = "/path/to/your/project"
 
 [ghidra]
 url = "http://127.0.0.1:8080"
@@ -362,6 +368,7 @@ impl Layers {
         Self {
             flags: FileConfig::default(),
             env: FileConfig {
+                target_dir: var("CALXGLOSS_TARGET_DIR"),
                 ghidra: GhidraSection {
                     url: var("CALXGLOSS_GHIDRA_URL"),
                     api_key: var("CALXGLOSS_GHIDRA_API_KEY"),
