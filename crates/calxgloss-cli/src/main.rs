@@ -2523,7 +2523,19 @@ async fn handle_live(
         let _ = ready_tx.send(Ok(local_addr));
 
         let server_state = calxgloss_web::ServerState::new(repo_path);
-        let _ = calxgloss_web::serve_with_listener(listener, server_state).await.map_err(|e| {
+
+        // Build the router with WebSocket support so the frontend can stream
+        // progress events over the upgrade endpoint.
+        let (manager, event_tx) = calxgloss_web::SessionManager::new();
+        let bridge = calxgloss_web::EventsBridge::from(event_tx);
+        let router =
+            calxgloss_web::build_router_with_ws(server_state.clone(), manager, bridge);
+        let _ = calxgloss_web::serve_with_listener(
+            listener,
+            router,
+        )
+        .await
+        .map_err(|e| {
             error!("Review UI server error: {e}");
         });
     });

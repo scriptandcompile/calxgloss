@@ -213,14 +213,16 @@ pub async fn serve(
     Ok(())
 }
 
-/// Start the API server using a pre-bound TCP listener.
+/// Start the API server using a pre-bound TCP listener and a pre-built
+/// router.
 ///
 /// Used internally by `handle_live` to bind outside of `serve()` so that
-/// bind failures can be reported through the ready channel.
+/// bind failures can be reported through the ready channel. The caller
+/// builds the router (with or without WebSocket support) before passing it in.
 pub async fn serve_with_listener(
     listener: tokio::net::TcpListener,
-    state: ServerState,
+    router: Router,
 ) -> Result<(), anyhow::Error> {
-    axum::serve(listener, build_router(state)).await?;
+    axum::serve(listener, router).await?;
     Ok(())
 }

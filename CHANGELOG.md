@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`serve` readiness signal** — the ready signal fires only after `TcpListener::bind()` succeeds, so the server is actually reachable before the caller proceeds. Bind failures are reported through the channel instead of being misinterpreted as panics.
 - **`live` subcommand** — runs `auto` (batch translation) and `serve` (web UI) concurrently in one process. After classification completes, proceeds to translate all classified DLLs automatically (no interactive prompt). The web UI stays running throughout; pressing Ctrl+C stops both.
 - **`live` server readiness** — the TCP listener is bound inside the serve task and the ready signal fires only after the socket is actively listening. Bind failures (e.g. port in use) are reported through the channel instead of being misinterpreted as a server panic.
+- **`live` WebSocket support** — `handle_live` now builds the router with `build_router_with_ws()`, mounting `/api/events/upgrade` so the frontend can stream progress events via WebSocket. `serve_with_listener()` takes a pre-built `Router` so callers can choose the WS-enabled or basic router.
 - **`run_translation_for_dll()` extracted** — shared helper so both `auto` and `live` reuse the same translation plumbing.
 - **`auto` continue mode** — new `continue_mode: bool` parameter; when enabled, `auto` translates all classified DLLs sequentially without the interactive per-DLL prompt, and newly-classified DLLs are folded into the translation loop.
 
