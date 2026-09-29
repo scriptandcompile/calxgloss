@@ -889,20 +889,121 @@ fn compute_revision_count(state: &ServerState, unit: &calxgloss_types::UnitOfWor
 }
 
 /// Serve the frontend index page.
+///
+/// Reads from the `static/` directory relative to this crate's manifest
+/// directory so it works regardless of the process's current working dir.
 pub async fn serve_index() -> axum::response::Html<String> {
+    let base = env!("CARGO_MANIFEST_DIR");
+    let path = std::path::Path::new(base).join("static/index.html");
     axum::response::Html(
-        std::fs::read_to_string("static/index.html")
-            .unwrap_or_else(|_| "<!DOCTYPE html><html><head><title>Calxgloss</title></head><body><div id=\"app\"></div></body></html>".to_string())
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| {
+                eprintln!("Failed to read {}: {}", path.display(), e);
+                "<!DOCTYPE html><html><head><title>Calxgloss</title></head><body><h1>Static frontend not found</h1></body></html>".to_string()
+            })
     )
 }
 
 /// Fallback for static file requests.
-pub async fn static_fallback(path: axum::extract::Path<String>) -> axum::response::Html<String> {
-    let file_path = format!("static/{}", path.0);
-    if std::path::Path::new(&file_path).exists() {
-        let content = std::fs::read_to_string(&file_path).unwrap_or_default();
-        axum::response::Html(content)
-    } else {
-        axum::response::Html("<h1>404 Not Found</h1>".to_string())
+///
+/// Reads from the `static/` directory relative to this crate's manifest
+/// directory. Uses the raw request URI since `axum::extract::Path` doesn't
+/// work with `fallback_service`.
+pub async fn static_fallback(
+    req: axum::http::Request<axum::body::Body>,
+) -> (
+    axum::http::StatusCode,
+    [(axum::http::header::HeaderName, axum::http::header::HeaderValue); 1],
+    axum::response::Html<String>,
+) {
+    use axum::http::header;
+    use axum::http::{Method, StatusCode};
+
+    // Parse the path from the request URI
+    let path_str = req.uri().path().to_string();
+
+    // Only handle GET requests, reject everything else
+    if req.method() != Method::GET {
+        return (
+            StatusCode::METHOD_NOT_ALLOWED,
+            [(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static("text/plain"),
+            )],
+            axum::response::Html("405 Method Not Allowed".to_string()),
+        );
     }
+
+    // Reject path traversal
+    if path_str.contains("..") {
+        return (
+            StatusCode::BAD_REQUEST,
+            [(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static("text/plain"),
+            )],
+            axum::response::Html("400 Bad Request".to_string()),
+        );
+    }
+
+    let base = env!("CARGO_MANIFEST_DIR");
+    let file_path = std::path::Path::new(base)
+        .join("static")
+        .join(path_str.trim_start_matches('/'));
+
+    if !file_path.exists() {
+        return (
+            StatusCode::NOT_FOUND,
+            [(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static("text/html"),
+            )],
+            axum::response::Html("<h1>404 Not Found</h1>".to_string()),
+        );
+    }
+
+    // Read the file content
+    let content = match std::fs::read_to_string(&file_path) {
+        Ok(c) => c,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(
+                    header::CONTENT_TYPE,
+                    header::HeaderValue::from_static("text/plain"),
+                )],
+                axum::response::Html("500 Internal Server Error".to_string()),
+            );
+        }
+    };
+
+    // Set appropriate content types based on file extension
+    let ext = file_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    let content_type = match ext {
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "js" => "application/javascript",
+        "json" => "application/json",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "ico" => "image/x-icon",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        _ => "application/octet-stream",
+    };
+
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            header::HeaderValue::from_static(content_type),
+        )],
+        axum::response::Html(content),
+    )
 }

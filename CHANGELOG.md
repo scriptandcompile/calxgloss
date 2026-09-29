@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `handle_translate` and `handle_batch_translate` now pass `BranchCreationPolicy::Warn` to `create_branch`, enabling dependency-aware branch creation with warning-level enforcement during translation.
 - **`serve` subcommand** — starts the web review UI HTTP server. Resolves the repository path from an explicit `--repo` flag, git discovery, or CWD; defaults to port 3000 (`-p`). Prints a formatted startup banner listing all available API endpoints. Wires up the existing `calxgloss-web` axum server (behind the `server` feature) so the review dashboard is reachable at `http://127.0.0.1:{port}/`.
 - **`live` subcommand** — runs `auto` (batch translation) and `serve` (web UI) concurrently in one process. After classification completes, proceeds to translate all classified DLLs automatically (no interactive prompt). The web UI stays running throughout; pressing Ctrl+C stops both.
+- **`live` server readiness** — the TCP listener is bound inside the serve task and the ready signal fires only after the socket is actively listening. Bind failures (e.g. port in use) are reported through the channel instead of being misinterpreted as a server panic.
 - **`run_translation_for_dll()` extracted** — shared helper so both `auto` and `live` reuse the same translation plumbing.
 - **`auto` continue mode** — new `continue_mode: bool` parameter; when enabled, `auto` translates all classified DLLs sequentially without the interactive per-DLL prompt, and newly-classified DLLs are folded into the translation loop.
 
@@ -140,6 +141,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed unused `tokio-tungstenite` dependency; the WebSocket implementation uses axum's native `axum[ws]` support instead.
 - Added optional dependencies on `calxgloss-translator`, `calxgloss-verify`, `calxgloss-llm`, and `calxgloss-pal` behind the `server` feature for full pipeline integration.
 - Fixed axum 0.8 route syntax — all three router builders (`build_router`, `build_router_with_actions`, `build_router_with_ws`) now use `{id}` capture groups instead of the legacy `:id` syntax that caused the server to panic on startup.
+- **Static file serving** — `serve_index()` and `static_fallback()` now resolve paths relative to `CARGO_MANIFEST_DIR` instead of the process CWD, so static assets (`index.html`, `app.js`, `app.css`) are served correctly regardless of where the server is launched. `static_fallback()` was rewritten to extract the path from the raw request URI (the old `axum::extract::Path<String>` parameter was incompatible with `fallback_service`, which is why JS and CSS files returned 404).
 - Graph view now wraps header buttons in a `.view-controls` div.
 - Adds overlay `.graph-controls` div with "Fit" / "Reset" buttons.
 - Adds `#zoom-indicator` element for current zoom percentage display.
