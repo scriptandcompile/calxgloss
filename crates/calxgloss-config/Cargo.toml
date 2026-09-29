@@ -13,5 +13,5 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-serial_test = "3"
+serial_test = "4.0.1"
 tempfile = "3"
