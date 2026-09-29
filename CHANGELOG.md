@@ -105,6 +105,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `test_a_missing_optional_file_is_not_an_error` and `test_a_found_file_is_reported` — both tests now temporarily neutralize `HOME`, `XDG_CONFIG_HOME`, and `CALXGLOSS_LLM_MODEL` so a user-global config or shell-profile env var cannot be picked up during test execution, breaking `loaded.is_empty()` and config-precedence assertions.
 
 
+### Added
+
+#### `calxgloss-web`
+- **Dependency-sorted review queue endpoints** — `GET /api/queue` returns the full
+  review queue sorted by dependency order (topological + level tie-breaking), with
+  metadata on total/queued/pending/blocked counts. `GET /api/queue/next` returns the
+  single next unit to review in the "review one at a time" workflow. Both endpoints
+  exclude accepted and merged units; `Blocked` units are flagged in the response.
+- **Queue metadata on dashboard** — `GET /api/dashboard` now includes optional
+  `queue_metadata` with total, queued, pending-review, and blocked counts.
+- **Queue position on unit detail** — `GET /api/units/:id` now includes
+  `queue_position` (zero-based index in the dependency-sorted queue and total queue size)
+  for each unit. New response types: `QueueMetadata`, `QueuePosition`, `QueueResponse`,
+  `QueueEntry`.
+
 #### `calxgloss-git`
 - **Shim-layer dependency enforcement on branch creation** — `create_branch` accepts an
   optional `BranchCreationPolicy` parameter (`Skip`, `Warn`, or `Enforce`). The checker

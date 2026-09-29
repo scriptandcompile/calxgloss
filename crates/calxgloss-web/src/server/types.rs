@@ -1,5 +1,6 @@
 //! Response types for the review dashboard API.
 
+use calxgloss_types::ReviewStatus;
 use serde::{Deserialize, Serialize};
 
 /// Wrapper for successful API responses carrying the full dashboard.
@@ -7,6 +8,9 @@ use serde::{Deserialize, Serialize};
 pub struct DashboardResponse {
     pub success: bool,
     pub dashboard: ReviewDashboard,
+    /// Optional queue metadata computed at request time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue_metadata: Option<QueueMetadata>,
 }
 
 impl DashboardResponse {
@@ -14,6 +18,7 @@ impl DashboardResponse {
         Self {
             success: true,
             dashboard,
+            queue_metadata: None,
         }
     }
 }
@@ -90,6 +95,8 @@ pub struct UnitResponseInner {
     pub attempt_history: Vec<AttemptRecord>,
     /// Total number of revisions (attempts) for this unit.
     pub revision_count: usize,
+    /// Position of this unit in the dependency-ordered review queue.
+    pub queue_position: QueuePosition,
 }
 
 /// Summary of a git diff between a branch and main.
@@ -111,6 +118,93 @@ pub struct AttemptRecord {
     pub failed_tests: Vec<String>,
     pub commit_hash: String,
     pub committed_at: String,
+}
+
+/// Metadata about the review queue's current state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueueMetadata {
+    /// Total number of units in the queue (queued + pending + blocked).
+    pub total: usize,
+    /// Number of units awaiting initial review (Queued).
+    pub queued: usize,
+    /// Number of units under human review (PendingReview).
+    pub pending_review: usize,
+    /// Number of units blocked by unmet dependencies.
+    pub blocked: usize,
+}
+
+/// Position of a unit within the dependency-ordered review queue.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueuePosition {
+    /// Zero-based index in the dependency-ordered queue.
+    /// `None` if the unit is already accepted or not in the active queue.
+    pub index: Option<usize>,
+    /// Total number of units in the active queue.
+    pub total: usize,
+}
+
+/// Response for the review queue endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueueResponse {
+    /// The sorted queue of units waiting for review.
+    pub queue: Vec<QueueEntry>,
+    /// Metadata about the queue state.
+    pub metadata: QueueMetadata,
+}
+
+/// A single entry in the dependency-ordered review queue.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueueEntry {
+    /// Unit ID.
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// Kind of work unit.
+    pub kind: String,
+    /// Associated DLL.
+    pub dll: String,
+    /// Associated function (if applicable).
+    pub function: Option<String>,
+    /// Current review status.
+    pub status: String,
+    /// Staleness indicator.
+    pub stale: String,
+    /// Whether this unit is blocked by unmet dependencies.
+    #[serde(default)]
+    pub blocked: bool,
+}
+
+impl QueueResponse {
+    /// Builds a queue response from a [`ReviewDashboard`].
+    pub fn from_dashboard(dashboard: &ReviewDashboard) -> Self {
+        let sorted = dashboard.sorted_queue();
+        let total = sorted.len();
+
+        let queue: Vec<QueueEntry> = sorted
+            .iter()
+            .enumerate()
+            .map(|(idx, u)| QueueEntry {
+                id: u.id.clone(),
+                name: u.name.clone(),
+                kind: u.kind.to_string(),
+                dll: u.dll.clone(),
+                function: u.function.clone(),
+                status: u.status.to_string(),
+                stale: u.stale.to_string(),
+                blocked: matches!(u.status, ReviewStatus::Blocked),
+            })
+            .collect();
+
+        QueueResponse {
+            queue,
+            metadata: QueueMetadata {
+                total,
+                queued: dashboard.status_counts.queued,
+                pending_review: dashboard.status_counts.pending_review,
+                blocked: dashboard.status_counts.blocked,
+            },
+        }
+    }
 }
 
 /// Response for review action endpoints (accept, send-back, patch).

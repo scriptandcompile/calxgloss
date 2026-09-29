@@ -61,6 +61,8 @@ pub fn build_dashboard(repo_path: &Path) -> Result<ReviewDashboard, anyhow::Erro
 /// - `POST /api/units/:id/accept` — Accept unit (merge branch to main)
 /// - `POST /api/units/:id/send-back` — Send back unit with reviewer comments
 /// - `POST /api/units/:id/patch` — Request a patch for a specific issue
+/// - `GET /api/queue` — Dependency-sorted review queue (Phase 5, Step 5.2)
+/// - `GET /api/queue/next` — Next unit to review (Phase 5, Step 5.2)
 /// - `GET /api/graph` — Dependency graph for visualization
 /// - `GET /health` — Health check
 pub fn build_router(state: ServerState) -> Router {
@@ -70,6 +72,8 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/units/:id/accept", post(handlers::api_accept_unit))
         .route("/api/units/:id/send-back", post(handlers::api_send_back_unit))
         .route("/api/units/:id/patch", post(handlers::api_request_patch))
+        .route("/api/queue", get(handlers::api_get_queue))
+        .route("/api/queue/next", get(handlers::api_get_next_unit))
         .route("/api/graph", get(handlers::api_get_dependency_graph))
         .route("/health", get(handlers::api_health))
         .layer(middleware::from_fn(handlers::trace_middleware))

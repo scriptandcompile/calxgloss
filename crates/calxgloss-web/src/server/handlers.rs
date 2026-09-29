@@ -8,9 +8,10 @@ use axum::{
 use tracing::info;
 
 use super::{
-    ServerState, ActionResponse, AcceptRequest, DiffSummary, PatchRequest, ReviewDashboard,
-    ServerError, UnitResponse,
+    ServerState, ActionResponse, DiffSummary, PatchRequest, QueueMetadata, QueuePosition,
+    QueueResponse, ReviewDashboard, ServerError, UnitResponse,
 };
+use calxgloss_types::ReviewStatus;
 
 /// Middleware: log every incoming request with method, path, and status.
 async fn trace_middleware(
@@ -42,11 +43,24 @@ async fn trace_middleware(
 ///
 /// The dashboard is built from the Git repository's translation branches,
 /// patch records, baseline files, and classification data.
+///
+/// The response includes queue metadata (total, queued, pending, blocked counts)
+/// to support the frontend's queue management UI.
 pub async fn api_get_dashboard(
     State(state): State<ServerState>,
 ) -> Result<Json<super::DashboardResponse>, ServerError> {
     let dashboard = super::build_dashboard(state.repo_path())?;
-    Ok(Json(super::DashboardResponse::ok(dashboard)))
+    let queue_metadata = super::QueueMetadata {
+        total: dashboard.review_queue.len(),
+        queued: dashboard.status_counts.queued,
+        pending_review: dashboard.status_counts.pending_review,
+        blocked: dashboard.status_counts.blocked,
+    };
+    Ok(Json(super::DashboardResponse {
+        success: true,
+        dashboard,
+        queue_metadata: Some(queue_metadata),
+    }))
 }
 
 /// ─── GET /api/units/:id ──────────────────────────────────────────────
@@ -56,7 +70,7 @@ pub async fn api_get_dashboard(
 /// The unit ID is a path-like string such as `game_logic/DrawPrimitive/v3`
 /// or `classify/game_logic.dll`. The handler searches the review queue and
 /// recent activity for a matching unit, then enriches the response with
-/// diff summary and attempt history from Git.
+/// diff summary, attempt history from Git, and queue position.
 pub async fn api_get_unit(
     State(state): State<ServerState>,
     Path(unit_id): Path<String>,
@@ -70,9 +84,10 @@ pub async fn api_get_unit(
         .find(|u| u.id == unit_id)
         .ok_or_else(|| ServerError::not_found("Unit not found"))?;
 
-    let diff_summary = compute_diff_summary(&state, unit);
+    let diff_summary = compute_diff_summary(&state, &unit);
     let attempt_history = load_attempt_history(state.repo_path(), &unit_id);
-    let revision_count = compute_revision_count(&state, unit);
+    let revision_count = compute_revision_count(&state, &unit);
+    let queue_position = compute_queue_position(&dashboard, &unit);
 
     Ok(Json(UnitResponse {
         success: true,
@@ -100,6 +115,7 @@ pub async fn api_get_unit(
             diff_summary,
             attempt_history,
             revision_count,
+            queue_position,
         },
     }))
 }
@@ -245,18 +261,55 @@ pub async fn api_get_dependency_graph(
     )))
 }
 
-/// ─── GET /health ─────────────────────────────────────────────────────
+/// ─── GET /api/queue ──────────────────────────────────────────────────
 
-/// Health check endpoint. Returns `ok` when the server is running and
-/// the repository is accessible.
-pub async fn api_health(
+/// Returns the full review queue sorted by dependency order.
+///
+/// Units are ordered so that:
+/// 1. Dependencies come before dependents (topological order)
+/// 2. At the same depth, shim layers come before PAL traits, which come
+///    before function translations, which come before integration steps
+/// 3. Stale units (pending >24h) and critical units (pending >48h) are
+///    flagged in the response
+///
+/// Only units with status `Queued`, `PendingReview`, or `Blocked` are
+/// included — accepted and merged units are excluded.
+pub async fn api_get_queue(
     State(state): State<ServerState>,
-) -> Result<Json<serde_json::Value>, ServerError> {
-    let repo_accessible = state.repo_path().exists();
-    Ok(Json(serde_json::json!({
-        "status": "ok",
-        "repo_accessible": repo_accessible,
-    })))
+) -> Result<Json<QueueResponse>, ServerError> {
+    let dashboard = super::build_dashboard(state.repo_path())?;
+    Ok(Json(QueueResponse::from_dashboard(&dashboard)))
+}
+
+/// ─── GET /api/queue/next ─────────────────────────────────────────────
+
+/// Returns the next unit in the review queue based on dependency order.
+///
+/// This is the first unit in the topologically-sorted queue that has
+/// status `Queued` or `PendingReview`. If all units are accepted or
+/// blocked, returns `null`.
+///
+/// This endpoint is designed for the "review one at a time" workflow:
+/// the frontend calls this to get the next unit to review, then calls
+/// the action endpoints (accept, send-back, patch) to process it.
+pub async fn api_get_next_unit(
+    State(state): State<ServerState>,
+) -> Result<Json<Option<QueueEntry>>, ServerError> {
+    let dashboard = super::build_dashboard(state.repo_path())?;
+    Ok(Json(
+        dashboard
+            .next_in_dependency_order()
+            .map(|u| QueueEntry {
+                id: u.id.clone(),
+                name: u.name.clone(),
+                kind: u.kind.to_string(),
+                dll: u.dll.clone(),
+                function: u.function.clone(),
+                status: u.status.to_string(),
+                stale: u.stale.to_string(),
+                blocked: matches!(u.status, ReviewStatus::Blocked),
+            }),
+    ))
 }
 
 // ─── Helper functions ─────────────────────────────────────────────────
@@ -271,6 +324,34 @@ fn find_unit(state: &ServerState, unit_id: &str) -> Result<calxgloss_types::Unit
         .find(|u| u.id == unit_id)
         .cloned()
         .ok_or_else(|| ServerError::not_found(&format!("Unit not found: {unit_id}")))
+}
+
+/// Compute the position of a unit in the dependency-ordered queue.
+///
+/// Returns `None` if the unit is already accepted or not in the active queue.
+fn compute_queue_position(dashboard: &ReviewDashboard, unit: &calxgloss_types::UnitOfWork) -> QueuePosition {
+    let sorted = dashboard.sorted_queue();
+    let total = sorted.len();
+
+    let index = sorted.iter().position(|u| u.id == unit.id);
+    QueuePosition {
+        index,
+        total,
+    }
+}
+
+/// ─── GET /health ─────────────────────────────────────────────────────
+
+/// Health check endpoint. Returns `ok` when the server is running and
+/// the repository is accessible.
+pub async fn api_health(
+    State(state): State<ServerState>,
+) -> Result<Json<serde_json::Value>, ServerError> {
+    let repo_accessible = state.repo_path().exists();
+    Ok(Json(serde_json::json!({
+        "status": "ok",
+        "repo_accessible": repo_accessible,
+    })))
 }
 
 /// Compute a diff summary between a unit's branch and `main`.
