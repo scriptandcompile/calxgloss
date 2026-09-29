@@ -15,6 +15,7 @@
 //! - `dashboard` — Show a structured terminal review dashboard
 //! - `serve` — Start the web review UI HTTP server
 //! - `auto` — Detect project state and run the next step automatically
+//! - `live` — Start both `auto` and `serve` concurrently
 //!
 //! If called with no subcommand, the tool defaults to `auto` mode: it scans
 //! the current directory, reads any existing config, determines whether DLLs
@@ -332,6 +333,62 @@ enum Command {
         /// Port to listen on (default: 3000)
         #[arg(long, short = 'p', default_value = "3000")]
         port: u16,
+    },
+
+    /// Start the translation pipeline and web review UI together
+    ///
+    /// Runs `auto` (classification + batch translation) in the foreground
+    /// and `serve` (web review UI) in the background, both in the same
+    /// process.  Pressing Ctrl+C stops both.
+    ///
+    /// This is the recommended entry point for day-to-day work: translation
+    /// happens while you review units in the browser.
+    ///
+    /// # Arguments
+    ///
+    /// * `--port` — TCP port for the review UI (default: 3000).
+    /// * `--repo` — Path to the Git repository to review.
+    /// * `--target` — Path to the target executable directory (passed to auto).
+    /// * `--dlls` — Comma-separated DLL names (passed to auto).
+    /// * `--all-functions` — Translate all exported functions (passed to auto).
+    /// * `--classify-only` — Only classify, do not translate (passed to auto).
+    /// * `--skip-git` — Skip git operations (passed to auto).
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss live                           # Start auto + UI on port 3000
+    /// calxgloss live --port 8080               # Custom port
+    /// calxgloss live --dlls "eqgame,eqmain"    # Pre-select DLLs
+    /// ```
+    Live {
+        /// Port to listen on (default: 3000)
+        #[arg(long, short = 'p', default_value = "3000")]
+        port: u16,
+
+        /// Path to the Git repository to review
+        #[arg(long, short)]
+        repo: Option<PathBuf>,
+
+        /// Path to the target executable directory
+        #[arg(long)]
+        target: Option<PathBuf>,
+
+        /// DLLs to process, comma-separated
+        #[arg(long)]
+        dlls: Option<String>,
+
+        /// Translate all exported functions (requires classification to be complete)
+        #[arg(long)]
+        all_functions: bool,
+
+        /// Only classify DLLs, do not proceed to translation
+        #[arg(long)]
+        classify_only: bool,
+
+        /// Skip git operations
+        #[arg(long)]
+        skip_git: bool,
     },
 }
 
@@ -745,162 +802,32 @@ fn scan_dlls(target_dir: &Path) -> Vec<String> {
 
 /// Check whether a classification record exists for the given DLL.
 fn classification_record_exists(base_path: &Path, dll: &str) -> bool {
-    let sanitized: String = dll.chars().map(|c| match c {
-        '/' | '\\' => '_',
-        other => other,
-    }).collect();
-    let record = base_path.join("re").join("classify").join(format!("{sanitized}.json"));
+    let sanitized: String = dll
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' => '_',
+            other => other,
+        })
+        .collect();
+    let record = base_path
+        .join("re")
+        .join("classify")
+        .join(format!("{sanitized}.json"));
     record.is_file()
 }
 
-async fn handle_auto(
-    target: Option<PathBuf>,
-    dlls_arg: Option<String>,
-    _all_functions: bool,
-    classify_only: bool,
+/// Run batch translation for a single DLL.
+///
+/// This function encapsulates all the plumbing needed to translate one DLL:
+/// Ghidra setup, LLM client, test generator, pipeline, git operations, and
+/// result reporting.  Both `handle_auto` and `handle_live` call this.
+async fn run_translation_for_dll(
+    dll: &str,
+    target_dir: &Path,
     skip_git: bool,
     settings: &Settings,
 ) -> Result<()> {
-    info!("Auto mode: detecting project state");
-
-    // Determine the target directory: CLI flag > config > CWD
-    let target_dir = target
-        .clone()
-        .or_else(|| {
-            settings
-                .target_dir
-                .as_ref()
-                .map(|r| PathBuf::from(&r.value))
-        })
-        .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
-
-    info!(path = ?target_dir, "Auto mode: using target directory");
-
-    // Discover or accept DLL list
-    let dlls = if let Some(ref dll_list) = dlls_arg {
-        dll_list
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect()
-    } else {
-        scan_dlls(&target_dir)
-    };
-
-    if dlls.is_empty() {
-        println!(
-            "  {} No DLL files found in {}.",
-            red_bold("✗"),
-            target_dir.display()
-        );
-        println_content("Specify DLLs explicitly: calxgloss auto --dlls \"eqgame.dll,eqmain.dll\"");
-        anyhow::bail!("No DLLs found");
-    }
-
-    println!();
-    hsep_bold();
-    println_content(format!(
-        "  Calxgloss Auto — {} DLL(s) found",
-        bold(&dlls.len().to_string())
-    ));
-    hsep();
-    println_content("");
-    for dll in &dlls {
-        println_content(format!(
-            "  • {}{}",
-            bold(dll),
-            if classification_record_exists(&target_dir, dll) {
-                format!("  [{}] already classified", yellow_bold("done"))
-            } else {
-                format!("  [{}] needs classification", red_bold("pending"))
-            }
-        ));
-    }
-    println_content("");
-
-    // Determine which DLLs are classified and which are not
-    let classified: Vec<String> = dlls
-        .iter()
-        .filter(|d| classification_record_exists(&target_dir, d))
-        .cloned()
-        .collect();
-    let unclassified: Vec<String> = dlls
-        .iter()
-        .filter(|d| !classification_record_exists(&target_dir, d))
-        .cloned()
-        .collect();
-
-    // Step 1: Classify unclassified DLLs
-    if !unclassified.is_empty() {
-        println!(
-            "  {} Classifying {} unclassified DLL(s)…",
-            cyan_bold("→"),
-            bold(&unclassified.len().to_string())
-        );
-        println_content("");
-        handle_classify(&unclassified, settings).await?;
-        println_content("");
-        println_content(
-            "Classification complete. Review the report above, then run again to translate.",
-        );
-        println!();
-        return Ok(());
-    }
-
-    // All DLLs are classified
-    if classified.is_empty() {
-        println_content("No classified DLLs found; nothing to do.");
-        return Ok(());
-    }
-
-    println!(
-        "  {} {} DLL(s) classified, ready for translation",
-        green_bold("✓"),
-        bold(&classified.len().to_string())
-    );
-    println_content("");
-
-    if classify_only {
-        println_content("Classification complete. All DLLs are classified.");
-        println_content("Re-run without --classify-only to start translation.");
-        return Ok(());
-    }
-
-    // Ask which DLL to translate
-    println!();
-    println!("  {} Which DLL would you like to translate?", bold("?"));
-    println!();
-    for (i, dll) in classified.iter().enumerate() {
-        let num = i + 1;
-        println_content(format!("  {}  {}", num, bold(dll)));
-    }
-    println_content("");
-    println_content("Enter a number (or 0 to cancel):");
-    print!("  > ");
-    std::io::Write::flush(&mut std::io::stdout()).ok();
-
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input).ok();
-    let choice: usize = input.trim().parse().unwrap_or(0);
-
-    if choice == 0 || choice > classified.len() {
-        println!();
-        println_content("Cancelled.");
-        return Ok(());
-    }
-
-    let dll = &classified[choice - 1];
-    println!();
-    println!(
-        "  {} Translating functions from {}…",
-        cyan_bold("→"),
-        bold(dll)
-    );
-    println!();
-
-    // Run batch translate for the selected DLL
-    let _target_path = target_dir.canonicalize().unwrap_or(target_dir.clone());
-    let output_dir = target_dir.clone();
+    let output_dir = target_dir.to_path_buf();
 
     // Get Ghidra client to list functions
     let ghidra_url = &settings.ghidra_url.value;
@@ -1103,6 +1030,187 @@ async fn handle_auto(
         "To see the web UI (requires server feature): cargo run --features server --bin web_server",
     );
     println!();
+
+    Ok(())
+}
+
+async fn handle_auto(
+    target: Option<PathBuf>,
+    dlls_arg: Option<String>,
+    _all_functions: bool,
+    classify_only: bool,
+    skip_git: bool,
+    settings: &Settings,
+    continue_mode: bool,
+) -> Result<()> {
+    info!("Auto mode: detecting project state");
+
+    // Determine the target directory: CLI flag > config > CWD
+    let target_dir = target
+        .clone()
+        .or_else(|| {
+            settings
+                .target_dir
+                .as_ref()
+                .map(|r| PathBuf::from(&r.value))
+        })
+        .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
+
+    info!(path = ?target_dir, "Auto mode: using target directory");
+
+    // Discover or accept DLL list
+    let dlls = if let Some(ref dll_list) = dlls_arg {
+        dll_list
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    } else {
+        scan_dlls(&target_dir)
+    };
+
+    if dlls.is_empty() {
+        println!(
+            "  {} No DLL files found in {}.",
+            red_bold("✗"),
+            target_dir.display()
+        );
+        println_content("Specify DLLs explicitly: calxgloss auto --dlls \"eqgame.dll,eqmain.dll\"");
+        anyhow::bail!("No DLLs found");
+    }
+
+    println!();
+    hsep_bold();
+    println_content(format!(
+        "  Calxgloss Auto — {} DLL(s) found",
+        bold(&dlls.len().to_string())
+    ));
+    hsep();
+    println_content("");
+    for dll in &dlls {
+        println_content(format!(
+            "  • {}{}",
+            bold(dll),
+            if classification_record_exists(&target_dir, dll) {
+                format!("  [{}] already classified", yellow_bold("done"))
+            } else {
+                format!("  [{}] needs classification", red_bold("pending"))
+            }
+        ));
+    }
+    println_content("");
+
+    // Determine which DLLs are classified and which are not
+    let mut classified: Vec<String> = dlls
+        .iter()
+        .filter(|d| classification_record_exists(&target_dir, d))
+        .cloned()
+        .collect();
+    let unclassified: Vec<String> = dlls
+        .iter()
+        .filter(|d| !classification_record_exists(&target_dir, d))
+        .cloned()
+        .collect();
+
+    // Step 1: Classify unclassified DLLs
+    if !unclassified.is_empty() {
+        println!(
+            "  {} Classifying {} unclassified DLL(s)…",
+            cyan_bold("→"),
+            bold(&unclassified.len().to_string())
+        );
+        println_content("");
+        handle_classify(&unclassified, settings).await?;
+        println_content("");
+        if !continue_mode {
+            println_content(
+                "Classification complete. Review the report above, then run again to translate.",
+            );
+            println!();
+            return Ok(());
+        }
+        println_content("Classification complete. Starting translation…");
+
+        // Newly classified DLLs are now ready — fold them into the classified list
+        // so the translation loop picks them up.
+        classified.extend(unclassified);
+    }
+
+    // All DLLs are classified
+    if classified.is_empty() {
+        println_content("No classified DLLs found; nothing to do.");
+        return Ok(());
+    }
+
+    println!(
+        "  {} {} DLL(s) classified, ready for translation",
+        green_bold("✓"),
+        bold(&classified.len().to_string())
+    );
+    println_content("");
+
+    if classify_only {
+        println_content("Classification complete. All DLLs are classified.");
+        println_content("Re-run without --classify-only to start translation.");
+        return Ok(());
+    }
+
+    let output_dir = target_dir.clone();
+
+    if continue_mode {
+        // Translate all classified DLLs in sequence (non-interactive).
+        println!();
+        println!(
+            "  {} Translating {} DLL(s) in sequence…",
+            cyan_bold("→"),
+            bold(&classified.len().to_string())
+        );
+        println!();
+
+        for dll in &classified {
+            println!(
+                "  {} Translating functions from {}…",
+                cyan_bold("→"),
+                bold(dll)
+            );
+            println!();
+            run_translation_for_dll(dll, &output_dir, skip_git, settings).await?;
+        }
+    } else {
+        // Ask which DLL to translate (interactive mode).
+        println!();
+        println!("  {} Which DLL would you like to translate?", bold("?"));
+        println!();
+        for (i, dll) in classified.iter().enumerate() {
+            let num = i + 1;
+            println_content(format!("  {}  {}", num, bold(dll)));
+        }
+        println_content("");
+        println_content("Enter a number (or 0 to cancel):");
+        print!("  > ");
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).ok();
+        let choice: usize = input.trim().parse().unwrap_or(0);
+
+        if choice == 0 || choice > classified.len() {
+            println!();
+            println_content("Cancelled.");
+            return Ok(());
+        }
+
+        let dll = &classified[choice - 1];
+        println!();
+        println!(
+            "  {} Translating functions from {}…",
+            cyan_bold("→"),
+            bold(dll)
+        );
+        println!();
+
+        run_translation_for_dll(dll, &output_dir, skip_git, settings).await?;
+    }
 
     Ok(())
 }
@@ -2328,6 +2436,146 @@ async fn handle_serve(repo: Option<PathBuf>, port: u16) -> Result<()> {
 }
 
 // ============================================================
+// Live command handler — auto + serve concurrently
+// ============================================================
+
+/// Handles the `live` subcommand: starts both the auto pipeline and the
+/// web review UI in the same process.
+async fn handle_live(
+    target: Option<PathBuf>,
+    dlls: Option<String>,
+    all_functions: bool,
+    classify_only: bool,
+    skip_git: bool,
+    repo: Option<PathBuf>,
+    port: u16,
+    settings: &Settings,
+) -> Result<()> {
+    info!(
+        port,
+        repo = ?repo,
+        classify_only,
+        skip_git,
+        "Starting live mode: auto + serve"
+    );
+
+    // Print startup banner
+    println!();
+    hsep_bold();
+    println_content("  Calxgloss Live — Auto Pipeline + Review UI");
+    hsep();
+    println_content("");
+
+    let port_str = port.to_string();
+    println_content(format!(
+        "  Review UI:    {}",
+        bold(&format!("http://127.0.0.1:{port_str}"))
+    ));
+    println_content("  Translation:  running in foreground");
+    println_content("");
+    println_content("  Press Ctrl+C to stop both");
+    println!();
+    hsep_bold();
+    println!();
+
+    // Spawn the serve task in the background.  We use a oneshot channel so
+    // we know whether it started successfully.
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<()>>();
+
+    let serve_handle = tokio::spawn(async move {
+        // Determine the repository path the same way handle_serve does.
+        let repo_path = match repo {
+            Some(path) => path,
+            None => {
+                let cwd = std::env::current_dir()
+                    .context("Failed to determine current directory")
+                    .unwrap_or_else(|_| PathBuf::from("."));
+                let mut search = cwd.clone();
+                for _ in 0..10 {
+                    if search.join(".git").exists() || search.join(".git").is_dir() {
+                        break;
+                    }
+                    if !search.pop() {
+                        break;
+                    }
+                }
+                if search.join(".git").exists() || search.join(".git").is_dir() {
+                    search
+                } else {
+                    cwd
+                }
+            }
+        };
+
+        let server_state = calxgloss_web::ServerState::new(repo_path);
+
+        // Signal that the server is up (or about to be) before entering the
+        // long-running serve loop.
+        let _ = ready_tx.send(Ok(()));
+
+        calxgloss_web::serve(server_state, port).await
+    });
+
+    // Wait briefly for the server to signal readiness — fail fast if it
+    // panicked during startup.
+    match tokio::time::timeout(std::time::Duration::from_secs(5), ready_rx).await {
+        Ok(Ok(Ok(()))) => {}
+        Ok(Ok(Err(e))) => {
+            serve_handle.abort();
+            let _ = serve_handle.await;
+            anyhow::bail!("Failed to start review UI: {}", e);
+        }
+        Ok(Err(_)) => {
+            serve_handle.abort();
+            let _ = serve_handle.await;
+            anyhow::bail!("Serve task panicked while starting");
+        }
+        Err(_) => {
+            debug!("Server startup signal not received in time; continuing anyway");
+        }
+    }
+
+    // Run the auto pipeline in the foreground (this blocks until complete).
+    let auto_result = handle_auto(
+        target,
+        dlls,
+        all_functions,
+        classify_only,
+        skip_git,
+        settings,
+        true, // continue mode — don't stop after classification, translate all
+    )
+    .await;
+
+    // Auto is done — shut down the server gracefully.
+    // The server handle is a tokio::JoinHandle; we drop it which sends the
+    // cancel signal to the spawned task.  Then wait for cleanup.
+    serve_handle.abort();
+    let _ = serve_handle.await;
+
+    match auto_result {
+        Ok(()) => {
+            println!();
+            hsep_bold();
+            println_content("  Auto pipeline finished.");
+            println_content("  Review UI stopped.");
+            hsep_bold();
+            println!();
+            Ok(())
+        }
+        Err(e) => {
+            println!();
+            hsep_bold();
+            println_content("  Auto pipeline failed.");
+            println_content(format!("  Error: {}", red_bold(&e.to_string())));
+            hsep_bold();
+            println!();
+            Err(e)
+        }
+    }
+}
+
+// ============================================================
 // Entry point
 // ============================================================
 
@@ -2487,12 +2735,35 @@ fn main() -> Result<()> {
                 classify_only,
                 skip_git,
                 &settings,
+                false, // interactive mode — prompt user, stop after classification
             )),
         Command::Serve { repo, port } => tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .context("Failed to create tokio runtime")?
             .block_on(handle_serve(repo, port)),
+        Command::Live {
+            target,
+            dlls,
+            all_functions,
+            classify_only,
+            skip_git,
+            repo,
+            port,
+        } => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("Failed to create tokio runtime")?
+            .block_on(handle_live(
+                target,
+                dlls,
+                all_functions,
+                classify_only,
+                skip_git,
+                repo,
+                port,
+                &settings,
+            )),
     };
 
     if let Err(ref e) = result {
