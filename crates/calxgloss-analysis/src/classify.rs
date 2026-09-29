@@ -81,6 +81,18 @@ const WINDOWS_OS_DLLS: &[&str] = &[
     "bcryptprimitives.dll",
     "ucrtbase.dll",
     "vcruntime140.dll",
+    "vcruntime140_1.dll",
+    "vcruntime140_atomic_wait.dll",
+    "msvcp140.dll",
+    "msvcp140_1.dll",
+    "msvcp140_2.dll",
+    "msvcp140_atomic_wait.dll",
+    "msvcp_win.dll",
+    "msvcp90.dll",
+    "msvcr100.dll",
+    "msvcr110.dll",
+    "msvcr120.dll",
+    "concrt140.dll",
     "api-ms-win-crt",
     "ext-ms-win-crt",
 ];
@@ -147,6 +159,11 @@ const KNOWN_THIRD_PARTY_DLLS: &[(&str, &str)] = &[
     ("snappy.dll", "snap"),
     ("lz4.dll", "lz4"),
     ("xxhash.dll", "xxhash-rust"),
+    // Scripting — V8 JavaScript engine
+    ("v8.dll", "v8"),
+    ("v8_libbase.dll", "v8"),
+    ("v8_libplatform.dll", "v8"),
+    ("v8_zlib.dll", "v8"),
     // Scripting
     ("lua51.dll", "mlua"),
     ("lua5.1.dll", "mlua"),
@@ -172,6 +189,12 @@ const KNOWN_THIRD_PARTY_DLLS: &[(&str, &str)] = &[
     ("psapi.dll", "psutil"),
     ("dbghelp.dll", "pdb-parser"),
     ("miniz.dll", "miniz_oxide"),
+    // Gaming / platform
+    ("steam_api64.dll", "steamworks"),
+    // Node.js / Electron
+    ("node.dll", "nodejs-ffi"),
+    ("libnode.dll", "nodejs-ffi"),
+    ("libuv.dll", "uv"),
     // VB6 Runtime
     ("msvbvm60.dll", "vb6runtime"),
     ("msvbvm50.dll", "vb6runtime"),
