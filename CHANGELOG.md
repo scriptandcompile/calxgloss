@@ -13,11 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`auto` subcommand** — detects project state and runs the next step automatically. Scans the target directory for `.dll` files, checks whether classification records exist in `re/classify/`, and either runs classification first (if any DLLs are unclassified) or prompts the user to select a DLL for batch translation.
 - **No-subcommand defaults to `auto`** — calling `calxgloss-cli` with no subcommand is equivalent to `calxloss-cli auto`.
 - **Auto flags**: `--target` (directory), `--dlls` (explicit comma-separated list), `--all-functions`, `--classify-only`, `--skip-git`.
-- **`target_dir` in config** — `calxgloss.toml` can now set `target_dir = "..."` at the top level. Auto mode resolves: CLI flag > config file > CWD. `CALXGLOSS_TARGET_DIR` environment variable also supported.
+- **`target_dir` in config** — `calxgloss.toml` can set `target_dir = "..."` at the top level. This is the directory containing DLLs/EXEs and is **required** for all commands that do real work. Resolved: CLI flag > config file > env var (`CALXGLOSS_TARGET_DIR`).
 - **`--target-dir` global CLI flag** — overrides config `target_dir`.
 - **`--repo-dir` global CLI flag** — overrides config `repo_dir`.
-- **`target_dir` and `repo_dir` in config** — `calxgloss.toml` can set `target_dir = "..."` (binary directory, read-only) and `repo_dir = "..."` (workspace directory where `src/`, `re/`, scratch, and `.git` are created). Resolved in order: CLI flag > config file > env var (`CALXGLOSS_TARGET_DIR` / `CALXGLOSS_REPO_DIR`) > CWD.
-- **Two-directory model**: `target_dir` (where DLLs/EXEs live) and `repo_dir` (where translation output is written) are now separate. By default `repo_dir` falls back to `target_dir` for backwards compatibility, but setting both allows the workspace to live outside the binary directory.
+- **`repo_dir` in config** — `calxgloss.toml` can set `repo_dir = "..."` at the top level. This is the workspace directory where `src/`, `re/`, scratch, and `.git` are created. Defaults to CWD if not set. Resolved: CLI flag > config file > env var (`CALXGLOSS_REPO_DIR`) > CWD.
 - **`scan_dlls()` helper** — looks for `.dll` files in the target directory.
 - **`classification_record_exists()` helper** — checks whether a `re/classify/<dll>.json` file already exists.
 - **Config render** — `calxgloss config` now shows `target_dir` path and source.

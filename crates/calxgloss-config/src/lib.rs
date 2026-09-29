@@ -167,11 +167,10 @@ pub const EXAMPLE: &str = r#"# Calxgloss configuration.
 # (CALXGLOSS_GHIDRA_URL, CALXGLOSS_LLM_URL, CALXGLOSS_LLM_MODEL, ...) take
 # precedence over this file.
 
-# Directory containing DLLs (read-only; binaries are read from here).
+# Directory containing DLLs and EXEs (required).
 # target_dir = "/path/to/binaries"
 
-# Where translation output goes: src/, re/, scratch, git repo.
-# Defaults to the directory where `calxgloss.toml` is found (CWD).
+# Where translation output goes: src/, re/, scratch, git repo (defaults to CWD).
 # repo_dir = "/path/to/workspace"
 
 [ghidra]

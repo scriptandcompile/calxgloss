@@ -33,6 +33,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use calxgloss::DllCategory;
 use calxgloss::GitBranch;
+use calxgloss::TranslationEvents;
 use calxgloss_analysis::Analyzer;
 use calxgloss_config::{
     EXAMPLE, FileConfig, GhidraSection, Layers, LlmSection, PROJECT_FILE, Resolved, load,
@@ -51,7 +52,6 @@ use calxgloss_reports::{
 };
 use calxgloss_testgen::TestGenerator;
 use calxgloss_translator::{RetryConfig, RetryStrategy, TranslationPipeline};
-use calxgloss::TranslationEvents;
 use calxgloss_verify::Verifier;
 use clap::{Args, Parser, Subcommand};
 use tracing::{debug, error, info, warn};
@@ -902,7 +902,7 @@ async fn run_translation_for_dll(
 
     // Initialize analyzer, test generator
     let api_mappings = calxgloss_pal::ApiMappings::default();
-    let testgen = calxgloss_testgen::TestGenerator::new(&output_dir);
+    let testgen = calxgloss_testgen::TestGenerator::new(output_dir);
 
     // Build translation pipeline
     let mut pipeline = calxgloss_translator::TranslationPipeline::new(ghidra, llm, api_mappings)
@@ -916,7 +916,7 @@ async fn run_translation_for_dll(
         info!("Initializing git repository");
         let git_config = calxgloss_git::InitConfig::default();
         Some(
-            calxgloss_git::GitManager::init_repo(&output_dir, Some(git_config))
+            calxgloss_git::GitManager::init_repo(output_dir, Some(git_config))
                 .context("Failed to initialize git repository")?,
         )
     } else {
@@ -925,7 +925,7 @@ async fn run_translation_for_dll(
     };
 
     // Initialize verifier for retry loop
-    let verifier = Verifier::new(&output_dir).context("Failed to create verifier")?;
+    let verifier = Verifier::new(output_dir).context("Failed to create verifier")?;
 
     let retry_config = RetryConfig {
         max_attempts: max_retries,
@@ -1059,23 +1059,22 @@ async fn handle_auto(
 ) -> Result<()> {
     info!("Auto mode: detecting project state");
 
-    // Determine the target directory (DLLs are read from here): CLI flag > config > CWD
-    let target_dir = target
-        .clone()
-        .or_else(|| {
-            settings
-                .target_dir
-                .as_ref()
-                .map(|r| PathBuf::from(&r.value))
-        })
-        .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
+    // target_dir is required: it's the directory containing DLLs/EXEs.
+    let target_dir = settings
+        .target_dir
+        .as_ref()
+        .map(|r| PathBuf::from(&r.value))
+        .or_else(|| target.clone())
+        .ok_or_else(|| anyhow::anyhow!(
+            "target_dir is required.\n\nSet it via:\n  --target-dir <path>\n  [target_dir] in calxgloss.toml\n  CALXGLOSS_TARGET_DIR env var"
+        ))?;
 
-    // Determine the repo directory (scratch/git/src/re are created here): CLI flag > config > CWD
+    // repo_dir defaults to CWD if not set.
     let repo_dir = settings
         .repo_dir
         .as_ref()
         .map(|r| PathBuf::from(&r.value))
-        .unwrap_or(target_dir.clone());
+        .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
 
     info!(path = ?target_dir, "Auto mode: using target directory");
     info!(path = ?repo_dir, "Auto mode: using repo directory");
@@ -1231,7 +1230,8 @@ async fn handle_auto(
         );
         println!();
 
-        run_translation_for_dll(dll, &output_dir, skip_git, settings, events).await?;    }
+        run_translation_for_dll(dll, &output_dir, skip_git, settings, events).await?;
+    }
 
     Ok(())
 }
@@ -1292,12 +1292,7 @@ async fn handle_translate(args: &TranslateArgs, settings: &Settings) -> Result<(
     let _target_dir = target.parent().unwrap_or(target).to_path_buf();
     let output_dir = output_dir
         .clone()
-        .or_else(|| {
-            settings
-                .repo_dir
-                .as_ref()
-                .map(|r| PathBuf::from(&r.value))
-        })
+        .or_else(|| settings.repo_dir.as_ref().map(|r| PathBuf::from(&r.value)))
         .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
 
     // Create output directory structure
@@ -1652,12 +1647,7 @@ async fn handle_batch_translate(args: &BatchTranslateArgs, settings: &Settings) 
     let _target_dir = target.parent().unwrap_or(target).to_path_buf();
     let output_dir = output_dir
         .clone()
-        .or_else(|| {
-            settings
-                .repo_dir
-                .as_ref()
-                .map(|r| PathBuf::from(&r.value))
-        })
+        .or_else(|| settings.repo_dir.as_ref().map(|r| PathBuf::from(&r.value)))
         .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
 
     // Create output directory structure
@@ -2500,33 +2490,14 @@ async fn handle_live(
     let events_clone = events.clone();
 
     // Resolve repo_dir from settings so it can be moved into the spawned task.
-    let serve_repo_dir = settings
-        .repo_dir
-        .as_ref()
-        .map(|r| PathBuf::from(&r.value));
+    let serve_repo_dir = settings.repo_dir.as_ref().map(|r| PathBuf::from(&r.value));
 
     let serve_handle = tokio::spawn(async move {
-        // Resolve repo_dir: --repo flag > settings > git discovery > CWD.
-        let repo_dir = match repo {
-            Some(path) => path,
-            None => serve_repo_dir
-                .clone()
-                .or_else(|| {
-                    let cwd = std::env::current_dir()
-                        .expect("Failed to determine current directory");
-                    let mut search = cwd.clone();
-                    for _ in 0..10 {
-                        if search.join(".git").exists() || search.join(".git").is_dir() {
-                            return Some(search);
-                        }
-                        if !search.pop() {
-                            break;
-                        }
-                    }
-                    Some(cwd)
-                })
-                .expect("Failed to determine repo directory"),
-        };
+        // repo_dir: --repo flag > settings > CWD.
+        let repo_dir = repo
+            .clone()
+            .or_else(|| serve_repo_dir.clone())
+            .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
 
         // Bind the listener and signal readiness — this happens outside of
         // serve() so we can report bind failures through the channel.
@@ -2537,7 +2508,9 @@ async fn handle_live(
                 return;
             }
         };
-        let local_addr = listener.local_addr().unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], port)));
+        let local_addr = listener
+            .local_addr()
+            .unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], port)));
         let _ = ready_tx.send(Ok(local_addr));
 
         let server_state = calxgloss_web::ServerState::new(repo_dir);
@@ -2547,14 +2520,11 @@ async fn handle_live(
         let event_rx = events_clone.subscribe();
         let manager = calxgloss_web::SessionManager::new_with_broadcast(event_rx);
         let router = calxgloss_web::build_router_with_ws(server_state.clone(), manager);
-        let _ = calxgloss_web::serve_with_listener(
-            listener,
-            router,
-        )
-        .await
-        .map_err(|e| {
-            error!("Review UI server error: {e}");
-        });
+        let _ = calxgloss_web::serve_with_listener(listener, router)
+            .await
+            .map_err(|e| {
+                error!("Review UI server error: {e}");
+            });
     });
 
     // Wait briefly for the server to signal readiness — fail fast if it
@@ -2587,7 +2557,7 @@ async fn handle_live(
         classify_only,
         skip_git,
         settings,
-        true, // continue mode — don't stop after classification, translate all
+        true,          // continue mode — don't stop after classification, translate all
         Some(&events), // pass event emitter for live progress streaming
     )
     .await;
@@ -2672,6 +2642,21 @@ fn main() -> Result<()> {
         },
     };
     let settings = Settings::resolve(&layers, flags, &loaded);
+
+    // target_dir is required for all commands that do real work.
+    // `config` is the only command that doesn't need it, so we check
+    // here and fail fast with a helpful message.
+    if let Some(ref target) = cli.command {
+        match target {
+            Command::Config => {}
+            _ if settings.target_dir.is_none() => {
+                anyhow::bail!(
+                    "target_dir is required.\n\nSet it via:\n  --target-dir <path>\n  [target_dir] in calxgloss.toml\n  CALXGLOSS_TARGET_DIR env var"
+                );
+            }
+            _ => {}
+        }
+    }
 
     // Run the appropriate command
     // No subcommand defaults to `auto` mode.
@@ -2790,13 +2775,10 @@ fn main() -> Result<()> {
         Command::Serve { repo, port } => {
             let repo_dir = repo
                 .clone()
-                .or_else(|| {
-                    settings
-                        .repo_dir
-                        .as_ref()
-                        .map(|r| PathBuf::from(&r.value))
-                })
-                .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
+                .or_else(|| settings.repo_dir.as_ref().map(|r| PathBuf::from(&r.value)))
+                .unwrap_or_else(|| {
+                    std::env::current_dir().expect("Failed to read current directory")
+                });
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
