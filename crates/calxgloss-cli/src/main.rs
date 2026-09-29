@@ -2430,7 +2430,7 @@ async fn handle_serve(repo: Option<PathBuf>, port: u16) -> Result<()> {
     println!();
 
     // Start the axum server
-    calxgloss_web::serve(server_state, port).await?;
+    calxgloss_web::serve(server_state, port, None).await?;
 
     Ok(())
 }
@@ -2478,9 +2478,12 @@ async fn handle_live(
     hsep_bold();
     println!();
 
-    // Spawn the serve task in the background.  We use a oneshot channel so
-    // we know whether it started successfully.
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<Result<()>>();
+    // Spawn the serve task in the background.  The task binds the TCP listener
+    // and sends the ready signal itself so the caller knows when the socket is
+    // actually reachable.  Errors before the bind (or bind failures) are also
+    // reported through the channel to avoid a spurious "panicked" message.
+    let (ready_tx, ready_rx) =
+        tokio::sync::oneshot::channel::<std::result::Result<std::net::SocketAddr, anyhow::Error>>();
 
     let serve_handle = tokio::spawn(async move {
         // Determine the repository path the same way handle_serve does.
@@ -2507,30 +2510,42 @@ async fn handle_live(
             }
         };
 
+        // Bind the listener and signal readiness — this happens outside of
+        // serve() so we can report bind failures through the channel.
+        let listener = match tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await {
+            Ok(l) => l,
+            Err(e) => {
+                let _ = ready_tx.send(Err(e.into()));
+                return;
+            }
+        };
+        let local_addr = listener.local_addr().unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], port)));
+        let _ = ready_tx.send(Ok(local_addr));
+
         let server_state = calxgloss_web::ServerState::new(repo_path);
-
-        // Signal that the server is up (or about to be) before entering the
-        // long-running serve loop.
-        let _ = ready_tx.send(Ok(()));
-
-        calxgloss_web::serve(server_state, port).await
+        let _ = calxgloss_web::serve_with_listener(listener, server_state).await.map_err(|e| {
+            error!("Review UI server error: {e}");
+        });
     });
 
     // Wait briefly for the server to signal readiness — fail fast if it
     // panicked during startup.
+    // Timeout → Receiver::recv() → inner Result
     match tokio::time::timeout(std::time::Duration::from_secs(5), ready_rx).await {
-        Ok(Ok(Ok(()))) => {}
+        Ok(Ok(Ok(addr))) => {
+            debug!(%addr, "Review UI is ready");
+        }
         Ok(Ok(Err(e))) => {
             serve_handle.abort();
             let _ = serve_handle.await;
-            anyhow::bail!("Failed to start review UI: {}", e);
+            anyhow::bail!("Failed to start review UI: {e}");
         }
-        Ok(Err(_)) => {
+        Ok(Err(_recv_err)) => {
             serve_handle.abort();
             let _ = serve_handle.await;
-            anyhow::bail!("Serve task panicked while starting");
+            anyhow::bail!("Serve task panicked while starting (recv error)");
         }
-        Err(_) => {
+        Err(_elapsed) => {
             debug!("Server startup signal not received in time; continuing anyway");
         }
     }

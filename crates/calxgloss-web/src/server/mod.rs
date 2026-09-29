@@ -174,9 +174,53 @@ async fn api_events_upgrade_ws(
 }
 
 /// Start the API server on the given address.
-pub async fn serve(state: ServerState, port: u16) -> Result<(), anyhow::Error> {
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
-    info!("API server listening on {}", listener.local_addr()?);
+///
+/// If `ready` is provided, its sender is notified (with the local address)
+/// immediately after the TCP listener is bound, before any requests are
+/// accepted.  Callers can use this to wait until the server is reachable
+/// before proceeding.
+///
+/// **Note:** `ready_tx` is consumed even on bind failure so that the caller
+/// never has to handle a `RecvError`.  The error is sent through the channel
+/// instead.
+pub async fn serve(
+    state: ServerState,
+    port: u16,
+    ready: Option<
+        tokio::sync::oneshot::Sender<std::result::Result<std::net::SocketAddr, anyhow::Error>>,
+    >,
+) -> Result<(), anyhow::Error> {
+    let listener = match tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await {
+        Ok(l) => l,
+        Err(e) => {
+            let io_err = std::io::Error::new(e.kind(), e.to_string());
+            let err: anyhow::Error = io_err.into();
+            if let Some(tx) = ready {
+                let _ = tx.send(Err(e.into()));
+            }
+            return Err(err);
+        }
+    };
+    let local_addr = listener.local_addr()?;
+    info!("API server listening on {local_addr}");
+
+    // Signal readiness **after** the socket is bound and listening.
+    if let Some(tx) = ready {
+        let _ = tx.send(Ok(local_addr));
+    }
+
+    axum::serve(listener, build_router(state)).await?;
+    Ok(())
+}
+
+/// Start the API server using a pre-bound TCP listener.
+///
+/// Used internally by `handle_live` to bind outside of `serve()` so that
+/// bind failures can be reported through the ready channel.
+pub async fn serve_with_listener(
+    listener: tokio::net::TcpListener,
+    state: ServerState,
+) -> Result<(), anyhow::Error> {
     axum::serve(listener, build_router(state)).await?;
     Ok(())
 }
