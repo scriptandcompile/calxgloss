@@ -16,7 +16,7 @@
 - **Prompt refinement** — `Escalate` strategy is unimplemented (warns "not yet implemented — falling back to compile_fix")
 - **Terminal review dashboard** — CLI has per-function output but no structured queue/dashboard
 - **Dependency-aware work queue** — no DAG, no topological sort, no blocked-unit detection
-- **Web review UI** — only data models; no axum server, no leptos frontend, no endpoints
+- **Web review UI** — only data models; no axum server, no frontend, no endpoints
 - **Shim layer generation** — DLLs classified as `CrateReplacement` are skipped; no auto-generated shims
 - **Fault detection** — nothing implemented
 - **Context tiers** — `escalate_on_failure` flag exists but tiered context logic is not implemented
@@ -102,7 +102,7 @@
 | 5.1 | Implement axum API layer | Wire up the scaffolded `server` module to real data sources. Endpoints: `GET /api/dashboard`, `GET /api/units/:id`, `POST /api/units/:id/accept`, `POST /api/units/:id/send-back`, `POST /api/units/:id/patch`, `GET /api/graph`. Uses `DashboardBuilder` for dashboard/graph data, `GitManager` for accept/reject operations. | ✅ Complete |
 | 5.2 | Implement review queue backend | API reads from git branches and `re/` directory artifacts, constructs `UnitOfWork` instances, sorts by dependency order. |
 | 5.3 | Add WebSocket for live progress | Stream translation progress events during `translate` runs. |
-| 5.4 | Implement Leptos frontend | Build actual UI components: `DashboardView`, `DependencyGraphView`, `UnitOfWorkCard`, `ReviewQueue`, `RecentActivity`. |
+| 5.4 | Implement HTML/JS/CSS frontend | Build actual UI components: `DashboardView`, `DependencyGraphView`, `UnitOfWorkCard`, `ReviewQueue`, `RecentActivity`. Served statically by the axum server. |
 | 5.5 | Add diff viewer | Render `git diff` output with line-by-line highlighting, showing Ghidra notes alongside Rust code. |
 | 5.6 | Add dependency graph visualization | Render the DAG with SVG or Canvas, interactive zoom/pan. |
 | 5.7 | Human review actions → git operations | Accept/reject/send-back actions call into `calxgloss-git` and `calxgloss-translator`. |

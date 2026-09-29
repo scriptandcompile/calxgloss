@@ -749,7 +749,7 @@ STAGE 3: Integration
 - **Binary analysis**: `ldd`/`objdump` for supplementary dependency and format info
 - **Local LLM**: Locally-hosted model (e.g., vLLM, Ollama, llama.cpp) with sufficient context window (128k+ tokens)
 - **Git**: Version control for all work units; branch naming automation
-- **Web UI framework**: Rust-based web server (e.g., `axum` + `leptos`/`dioxus` or `actix-web` + `svelte` frontend) for the review interface
+- **Web UI framework**: Rust-based web server (e.g., `axum` or `actix-web`) serving a plain HTML/JS/CSS frontend for the review interface
 - **LLM client library**: `reqwest` + JSON parsing for local LLM API communication (OpenAI-compatible or Ollama API)
 - **Prompt template engine**: Handle structured prompt generation with context-tier variables
 - **Dependency graph visualization**: Render graph of branches, dependencies, and merge paths (e.g., `d3-graph` or `vis.js` in the web UI)
