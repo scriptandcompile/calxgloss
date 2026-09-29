@@ -2,10 +2,12 @@
 //!
 //! This module is only compiled when the `server` feature is enabled.
 
+mod actions;
 mod events;
 mod handlers;
 mod types;
 
+pub use self::actions::*;
 pub use self::handlers::*;
 pub use self::types::*;
 pub use events::{EventsBridge, SessionManager, WebSocketHandler};
@@ -33,12 +35,14 @@ impl ServerState {
     pub fn repo_path(&self) -> &Path { &self.repo_path }
 }
 
-/// Combined state for WebSocket support.
+/// Combined state for WebSocket support and review actions.
 #[derive(Clone)]
 pub struct CombinedState {
     pub server: ServerState,
     pub manager: Option<SessionManager>,
     pub bridge: Option<EventsBridge>,
+    /// Review action backend — wires accept/send-back/patch into Git + Translator.
+    pub actions: Option<ActionsState>,
 }
 
 impl FromRef<CombinedState> for ServerState {
@@ -54,6 +58,12 @@ impl FromRef<CombinedState> for SessionManager {
 impl FromRef<CombinedState> for EventsBridge {
     fn from_ref(c: &CombinedState) -> Self {
         c.bridge.clone().expect("EventsBridge not configured")
+    }
+}
+
+impl FromRef<CombinedState> for ActionsState {
+    fn from_ref(c: &CombinedState) -> Self {
+        c.actions.clone().expect("ActionsState not configured")
     }
 }
 
@@ -87,6 +97,36 @@ pub fn build_router(state: ServerState) -> Router {
             server: state,
             manager: None,
             bridge: None,
+            actions: None,
+        })
+}
+
+/// Build a router with WebSocket support and review-actions backend.
+pub fn build_router_with_actions(
+    state: ServerState,
+    actions: ActionsState,
+) -> Router {
+    Router::new()
+        .route("/", get(handlers::serve_index))
+        .route("/api/dashboard", get(handlers::api_get_dashboard))
+        .route("/api/units/:id", get(handlers::api_get_unit))
+        .route("/api/units/:id/diff", get(handlers::api_get_unit_diff))
+        .route("/api/units/:id/ghidra", get(handlers::api_get_unit_ghidra))
+        .route("/api/units/:id/accept", post(handlers::api_accept_unit))
+        .route("/api/units/:id/send-back", post(handlers::api_send_back_unit))
+        .route("/api/units/:id/patch", post(handlers::api_request_patch))
+        .route("/api/queue", get(handlers::api_get_queue))
+        .route("/api/queue/next", get(handlers::api_get_next_unit))
+        .route("/api/graph", get(handlers::api_get_dependency_graph))
+        .route("/health", get(handlers::api_health))
+        .fallback_service(axum::routing::get(handlers::static_fallback))
+        .layer(middleware::from_fn(handlers::trace_middleware))
+        .layer(DefaultBodyLimit::max(16 * 1024))
+        .with_state(CombinedState {
+            server: state,
+            manager: None,
+            bridge: None,
+            actions: Some(actions),
         })
 }
 
@@ -117,6 +157,7 @@ pub fn build_router_with_ws(
             server: state,
             manager: Some(manager),
             bridge: Some(bridge),
+            actions: None,
         })
 }
 

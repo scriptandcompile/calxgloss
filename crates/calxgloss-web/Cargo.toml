@@ -20,6 +20,10 @@ axum = { version = "0.8", optional = true, features = ["ws"] }
 axum-extra = { version = "0.10", optional = true, features = ["erased-json", "query"] }
 calxgloss-reports = { path = "../calxgloss-reports", optional = true }
 calxgloss-ghidra = { path = "../calxgloss-ghidra", optional = true }
+calxgloss-translator = { path = "../calxgloss-translator", optional = true }
+calxgloss-verify = { path = "../calxgloss-verify", optional = true }
+calxgloss-llm = { path = "../calxgloss-llm", optional = true }
+calxgloss-pal = { path = "../calxgloss-pal", optional = true }
 git2 = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
@@ -36,6 +40,10 @@ server = [
     "dep:axum-extra",
     "dep:calxgloss-reports",
     "dep:calxgloss-ghidra",
+    "dep:calxgloss-translator",
+    "dep:calxgloss-verify",
+    "dep:calxgloss-llm",
+    "dep:calxgloss-pal",
     "dep:git2",
     "dep:thiserror",
     "dep:tokio",

@@ -140,10 +140,33 @@ pub async fn api_get_unit(
 /// ─── POST /api/units/:id/accept ──────────────────────────────────────
 
 /// Accepts a unit of work: merges its Git branch into `main` and records the acceptance.
+///
+/// When the `ActionsState` is configured (via `build_router_with_actions`), this
+/// delegates to [`calxgloss_web::server::actions::accept_unit`] which also writes
+/// a persistent action record.  In the basic router (no actions backend) the Git
+/// operation runs directly as before.
 pub async fn api_accept_unit(
-    State(state): State<ServerState>,
+    State(combined): State<super::CombinedState>,
     Path(unit_id): Path<String>,
 ) -> Result<Json<ActionResponse>, ServerError> {
+    // If ActionsState is present, use it — it provides richer side-effects
+    // (persistent action state, translator integration).
+    if let Some(actions) = combined.actions {
+        let result = super::actions::accept_unit(&actions, &unit_id)
+            .await
+            .map_err(|e| ServerError::internal(&e.to_string()))?;
+        return Ok(Json(ActionResponse {
+            unit_id: result.unit_id,
+            action: result.action,
+            merge_hash: result.merge_hash,
+            branch_name: result.branch_name,
+            message: result.message,
+            rejection_path: result.rejection_path,
+        }));
+    }
+
+    // Legacy path: direct Git operation (basic router, no actions backend)
+    let state = combined.server;
     let unit = find_unit(&state, &unit_id)?;
 
     let branch = calxgloss_types::GitBranch::new(
@@ -181,13 +204,33 @@ pub async fn api_accept_unit(
 /// ─── POST /api/units/:id/send-back ───────────────────────────────────
 
 /// Sends a unit back to the LLM with reviewer comments.
+///
+/// When `ActionsState` is present this also writes a persistent action record.
 pub async fn api_send_back_unit(
-    State(state): State<ServerState>,
+    State(combined): State<super::CombinedState>,
     Path(unit_id): Path<String>,
     OptionalJson(body): OptionalJson<SendBackRequest>,
 ) -> Result<Json<ActionResponse>, ServerError> {
-    let unit = find_unit(&state, &unit_id)?;
     let reason = body.map(|b| b.reason).unwrap_or_else(|| "Needs revision".to_string());
+
+    // If ActionsState is present, use it
+    if let Some(actions) = combined.actions {
+        let result = super::actions::send_back_unit(&actions, &unit_id, &reason)
+            .await
+            .map_err(|e| ServerError::internal(&e.to_string()))?;
+        return Ok(Json(ActionResponse {
+            unit_id: result.unit_id,
+            action: result.action,
+            merge_hash: result.merge_hash,
+            branch_name: result.branch_name,
+            message: result.message,
+            rejection_path: result.rejection_path,
+        }));
+    }
+
+    // Legacy path
+    let state = combined.server;
+    let unit = find_unit(&state, &unit_id)?;
 
     let branch = calxgloss_types::GitBranch::new(
         &unit.dll,
@@ -222,15 +265,38 @@ pub async fn api_send_back_unit(
 /// ─── POST /api/units/:id/patch ──────────────────────────────────────
 
 /// Requests a patch for a unit of work, identifying the specific issue.
+///
+/// This is the real implementation (step 5.7): it delegates to
+/// [`calxgloss_web::server::actions::request_patch`] which:
+/// 1. Creates a new version branch (v{N+1}) via `calxgloss-git`.
+/// 2. Persists the patch request record to `re/patches/`.
+/// 3. Spawns an async retry translation via `calxgloss-translator`.
 pub async fn api_request_patch(
-    State(state): State<ServerState>,
+    State(combined): State<super::CombinedState>,
     Path(unit_id): Path<String>,
     OptionalJson(body): OptionalJson<PatchRequest>,
 ) -> Result<Json<ActionResponse>, ServerError> {
-    let unit = find_unit(&state, &unit_id)?;
     let issue = body.map(|b| b.issue).unwrap_or_else(|| "Unknown issue".to_string());
 
-    info!("Unit {unit_id} patch requested — issue: {issue:?}");
+    // If ActionsState is present, use the real implementation
+    if let Some(actions) = combined.actions {
+        let result = super::actions::request_patch(&actions, &unit_id, &issue)
+            .await
+            .map_err(|e| ServerError::internal(&e.to_string()))?;
+        return Ok(Json(ActionResponse {
+            unit_id: result.unit_id,
+            action: result.action,
+            merge_hash: result.merge_hash,
+            branch_name: result.branch_name,
+            message: result.message,
+            rejection_path: result.rejection_path,
+        }));
+    }
+
+    // Fallback for basic router (no translator integration): return stub response
+    // This keeps the API working even without the full pipeline set up.
+    let state = combined.server;
+    let unit = find_unit(&state, &unit_id)?;
 
     let branch_name = format!(
         "re/{}{}/v{}",
