@@ -235,6 +235,57 @@ svg {
     cursor: grabbing;
 }
 
+/* ─── Graph Tooltip ─────────────────────────────────────────────────── */
+
+.graph-tooltip {
+    position: absolute;
+    top: 0;
+    left: 0;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+    font-size: 12px;
+    pointer-events: none;
+    z-index: 100;
+    box-shadow: var(--shadow-md);
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity 120ms ease;
+}
+
+.graph-tooltip.visible {
+    opacity: 1;
+}
+
+.graph-tooltip-name {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 2px;
+}
+
+.graph-tooltip-meta {
+    display: flex;
+    gap: 12px;
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.graph-tooltip-meta span {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.graph-tooltip-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+/* ─── Graph Legend ──────────────────────────────────────────────────── */
+
 .graph-legend {
     padding: 8px 14px;
     border-top: 1px solid var(--border-subtle);
@@ -602,6 +653,42 @@ svg {
     position: relative;
 }
 
+.graph-container .graph-controls {
+    position: absolute;
+    bottom: 12px;
+    left: 12px;
+    display: flex;
+    gap: 6px;
+    z-index: 10;
+}
+
+.graph-controls .btn {
+    font-size: 11px;
+    padding: 4px 10px;
+    background: var(--bg-secondary);
+    border-color: var(--border-color);
+    color: var(--text-secondary);
+}
+
+.graph-controls .btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.graph-zoom-indicator {
+    position: absolute;
+    bottom: 12px;
+    right: 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    padding: 4px 10px;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    z-index: 10;
+}
+
 #graph-canvas-full {
     width: 100%;
     height: 100%;
@@ -610,6 +697,10 @@ svg {
 
 #graph-canvas-full:active {
     cursor: grabbing;
+}
+
+#graph-canvas-full.selecting {
+    cursor: crosshair;
 }
 
 /* ─── Detail Panel ──────────────────────────────────────────────────── */

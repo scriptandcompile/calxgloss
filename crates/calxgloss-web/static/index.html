@@ -94,11 +94,18 @@
         <section id="view-graph" class="view">
             <div class="view-header">
                 <h2>Dependency Graph</h2>
-                <button id="btn-fit-graph" class="btn btn-sm">Fit to View</button>
-                <button id="btn-reset-graph" class="btn btn-sm">Reset Zoom</button>
+                <div class="view-controls">
+                    <button id="btn-fit-graph" class="btn btn-sm">Fit to View</button>
+                    <button id="btn-reset-graph" class="btn btn-sm">Reset Zoom</button>
+                </div>
             </div>
             <div class="graph-container">
                 <canvas id="graph-canvas-full"></canvas>
+                <div class="graph-controls">
+                    <button id="btn-fit-graph-full" class="btn btn-sm">Fit</button>
+                    <button id="btn-reset-graph-full" class="btn btn-sm">Reset</button>
+                </div>
+                <div id="zoom-indicator" class="graph-zoom-indicator">100%</div>
             </div>
         </section>
     </main>

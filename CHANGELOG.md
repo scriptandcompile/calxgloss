@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Phase 5, Step 5.6 — Web Review UI: Dependency Graph Visualization
+
+#### `calxgloss-web` (static frontend)
+- **Enhanced `GraphRenderer`** — replaced basic BFS layout with a Sugiyama-style layered layout: longest-path layer assignment, 3-pass barycenter crossing reduction, centered node placement within each layer.
+- **Bezier curve edges** — edges now use cubic Bézier curves routed from the source node's right edge to the target node's left edge, with adaptive control points. Replaces straight-line edges for clearer readability on complex graphs.
+- **Hover tooltip** — a styled tooltip follows the cursor showing the node name, status (with colored dot), and kind label when hovering over a graph node.
+- **Node selection & highlighting** — clicking a node selects it and highlights only directly connected nodes (dependencies + dependents), dimming all others. Clicking the same node deselects; clicking empty space clears selection.
+- **Click-to-detail integration** — clicking any graph node opens the unit detail panel (same as clicking queue items), showing overview, test results, diff, Ghidra context, and review actions.
+- **Status indicator dots** — each node has a small colored dot (top-right corner) showing the unit's status (green=accepted, yellow=pending, red=sendback, orange=blocked, blue=queued, purple=merged).
+- **Proper fit-to-view** — `_fitView()` computes the bounding box with padding, clamps scale to 30%-150%, and centers the graph. Double-click canvas to fit.
+- **Keyboard shortcuts** (graph view): `+`/`-` zoom in/out, arrow keys pan, `0` reset fit-to-view, `Escape` deselect.
+- **Wheel zoom toward cursor** — zooms centered on the mouse pointer position instead of the canvas center.
+- **Overlay graph controls** — "Fit" and "Reset" buttons in the graph view container, plus a zoom percentage indicator (bottom-right).
+- **`escapeHtml()` utility** — moved to top level (was duplicated) to prevent XSS in diff and Ghidra viewers.
+- **API graph node mapping** — `_mapGraphNode()` now handles both old API format (with `level` field) and new format (with `kind` field).
+- **CSS additions** — `.graph-tooltip`, `.graph-controls`, `.graph-zoom-indicator`, `.graph-tooltip-dot` styles for tooltip, overlay controls, and status dots.
+
+#### `calxgloss-web` (HTML)
+- Graph view now wraps header buttons in a `.view-controls` div.
+- Adds overlay `.graph-controls` div with "Fit" / "Reset" buttons.
+- Adds `#zoom-indicator` element for current zoom percentage display.
+
 ### Phase 5, Step 5.5 — Web Review UI: Diff Viewer + Ghidra Context
 
 #### `calxgloss-web`
