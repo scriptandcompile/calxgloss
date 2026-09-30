@@ -80,6 +80,7 @@
         async nextUnit() { return API.get("/api/queue/next"); },
         async graph() { return API.get("/api/graph"); },
         async health() { return API.get("/health"); },
+        async pipeline() { return API.get("/api/pipeline"); },
     };
 
     // ─── WebSocket Manager ─────────────────────────────────────────────
@@ -1116,6 +1117,7 @@
         document.querySelector(".detail-unit-id").textContent = unitId;
         const badge = document.querySelector(".detail-status-badge");
 
+        const body = document.getElementById("detail-body");
         try {
             const res = await API.unit(unitId);
             const u = res.unit;
@@ -1123,7 +1125,6 @@
             badge.className = `detail-status-badge ${u.status.toLowerCase().replace(/\s+/g, "_")}`;
             badge.textContent = STATUS_LABELS[u.status] || u.status;
 
-            const body = document.getElementById("detail-body");
             body.innerHTML = `
                 <div id="detail-content">
                     ${renderDetailOverview(u)}
@@ -1501,9 +1502,108 @@
             if (State.graphRendererFull) {
                 State.graphRendererFull.setData(nodes, edges);
             }
+
+            // Load pipeline progress in parallel
+            loadPipelineProgress();
         } catch (err) {
             showToast(`Failed to load dashboard: ${err.message}`, "error");
         }
+    }
+
+    // ─── Pipeline Progress ───────────────────────────────────────────────
+
+    async function loadPipelineProgress() {
+        try {
+            const res = await API.pipeline();
+            renderPipelineProgress(res);
+        } catch (err) {
+            // Silently fail — pipeline panel is optional
+            console.debug("Failed to load pipeline progress:", err.message);
+        }
+    }
+
+    function renderPipelineProgress(data) {
+        const panel = document.getElementById("pipeline-panel");
+        const summary = document.getElementById("pipeline-summary");
+        const dllsContainer = document.getElementById("pipeline-dlls");
+
+        if (!panel || !summary || !dllsContainer) return;
+
+        const total = data.total_dlls || 0;
+        const classified = data.classified_count || 0;
+        const batchDone = data.batch_complete_count || 0;
+        const translating = data.currently_translating || [];
+
+        // Show panel only if there's something to show
+        if (total === 0) {
+            panel.style.display = "none";
+            return;
+        }
+
+        panel.style.display = "block";
+        summary.textContent = `${classified} classified, ${batchDone} translated, ${translating.length} translating`;
+
+        // Build DLL progress items
+        const dlls = data.dlls || [];
+        if (dlls.length === 0) {
+            dllsContainer.innerHTML = '<div class="empty-state" style="padding:12px">No DLLs discovered yet.</div>';
+            return;
+        }
+
+        dllsContainer.innerHTML = dlls.map(dll => {
+            const name = dll.dll || "unknown";
+            const hasClassification = !!dll.classification;
+            const hasBatch = !!dll.batch;
+            const isTranslating = !!dll.in_progress;
+
+            let statusClass = "pending";
+            let statusText = "Pending";
+
+            if (isTranslating) {
+                statusClass = "translating";
+                const progress = dll.in_progress;
+                const pct = progress.total_entries > 0
+                    ? Math.round((progress.completed_entries / progress.total_entries) * 100)
+                    : 0;
+                statusText = `<div class="pipeline-progress-bar"><div class="pipeline-progress-fill" style="width:${pct}%"></div></div>`;
+            } else if (hasBatch) {
+                statusClass = "complete";
+                const b = dll.batch;
+                statusText = `${b.success_count}/${b.total_functions} OK`;
+            } else if (hasClassification) {
+                statusClass = "classified";
+                statusText = dll.classification.category;
+            }
+
+            // Classification details
+            let meta = "";
+            if (dll.classification) {
+                const c = dll.classification;
+                let parts = [c.strategy];
+                if (c.exported_symbols > 0 || c.imported_symbols > 0) {
+                    parts.push(`${c.exported_symbols}↑ ${c.imported_symbols}↓`);
+                }
+                if (c.crate_replacement) {
+                    parts.push(`→ ${c.crate_replacement}`);
+                }
+                meta = parts.join(" · ");
+            } else if (dll.batch) {
+                const b = dll.batch;
+                if (b.failure_count > 0) {
+                    meta = `${b.failure_count} failed · ${b.total_tokens} tokens`;
+                } else {
+                    meta = `${b.total_tokens} tokens`;
+                }
+            }
+
+            return `
+                <div class="pipeline-dll-item">
+                    <span class="pipeline-dll-name">${escapeHtml(name)}</span>
+                    <span class="pipeline-dll-status ${statusClass}">${statusText}</span>
+                    ${meta ? `<span class="pipeline-dll-meta">${escapeHtml(meta)}</span>` : ""}
+                </div>
+            `;
+        }).join("");
     }
 
     // Map API graph node to frontend format (handles old and new API formats)
@@ -1795,19 +1895,21 @@
         empty.style.display = "none";
 
         const html = llmLogEntries.map((e) => {
-            const typeLabel = e.type === "request" ? "Request" : "Response";
+            const typeLabel = e.type === "request" ? "Request" : e.type === "error" ? "⚠ Error" : "Response";
             const ts = e.timestamp.toLocaleTimeString();
             const summary = `${e.dll}!${e.func} (attempt #${e.attempt}, ${e.strategy})`;
-            const contentPreview = e.content.length > 500
-                ? e.content.substring(0, 500) + "\n… (truncated, full: " + e.content.length + " chars)"
-                : e.content;
+            // Only escape < and > so JSON/Code stays readable in <pre>
+            const safe = e.content
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;");
 
             return `<div class="llm-log-entry">
                 <div class="llm-log-entry-header ${e.type}">
                     ${typeLabel}
-                    <span class="meta">${ts} · ${summary}</span>
+                    <span class="meta">${ts} · ${summary} (${e.content.length} chars)</span>
                 </div>
-                <div class="llm-log-entry-body">${escapeHtml(contentPreview)}</div>
+                <div class="llm-log-entry-body"><pre>${safe}</pre></div>
             </div>`;
         }).join("");
 
@@ -1851,6 +1953,27 @@
             );
         }
 
+        // Handle classification completion
+        if (event.event === "classification_complete") {
+            showToast(
+                `Classified ${event.dll} → ${event.category}`,
+                "success"
+            );
+            // Reload pipeline to show updated status
+            loadPipelineProgress();
+        }
+
+        // Handle batch summary
+        if (event.event === "batch_summary") {
+            const b = event;
+            showToast(
+                `Batch ${event.dll}: ${b.success_count}/${b.total_functions} succeeded`,
+                b.failure_count > 0 ? "warning" : "success"
+            );
+            // Reload pipeline to show updated status
+            loadPipelineProgress();
+        }
+
         // Handle LLM I/O events
         if (event.event === "llm_request") {
             console.log("[WS] LLM request:", event.dll, event.function, "prompt length:", event.prompt?.length);
@@ -1871,6 +1994,16 @@
                 event.attempt,
                 event.strategy,
                 event.content
+            );
+        } else if (event.event === "llm_call_failed") {
+            console.warn("[WS] LLM call failed:", event.dll, event.function, event.error);
+            addLlmLogEntry(
+                "error",
+                event.dll,
+                event.function,
+                event.attempt,
+                event.strategy,
+                `Error: ${event.error}`
             );
         }
 

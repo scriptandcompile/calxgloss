@@ -1500,6 +1500,11 @@ svg {
     color: var(--accent-green);
 }
 
+.llm-log-entry-header.error {
+    background: var(--status-error-bg);
+    color: var(--status-error-fg);
+}
+
 .llm-log-entry-header .meta {
     margin-left: auto;
     color: var(--text-muted);
@@ -1522,6 +1527,17 @@ svg {
     background: var(--bg-secondary);
 }
 
+.llm-log-entry-body pre {
+    margin: 0;
+    padding: 0;
+    font-family: inherit;
+    font-size: inherit;
+    line-height: inherit;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: inherit;
+}
+
 .llm-log-entry-body::-webkit-scrollbar {
     width: 4px;
 }
@@ -1529,4 +1545,104 @@ svg {
 .llm-log-entry-body::-webkit-scrollbar-thumb {
     background: var(--border-color);
     border-radius: 2px;
+}
+
+/* ─── Pipeline Progress Panel ─────────────────────────────────────── */
+
+.pipeline-panel {
+    margin: 16px 0;
+    padding: 16px;
+    background: var(--bg-secondary);
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+}
+
+.pipeline-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+
+.pipeline-panel-header h2 {
+    font-size: 16px;
+    font-weight: 600;
+    margin: 0;
+    color: var(--text-primary);
+}
+
+.pipeline-dlls {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.pipeline-dll-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    border-radius: 6px;
+    font-size: 13px;
+}
+
+.pipeline-dll-name {
+    font-weight: 600;
+    color: var(--text-primary);
+    min-width: 160px;
+}
+
+.pipeline-dll-status {
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.pipeline-dll-status.classified {
+    background: var(--status-accepted-bg);
+    color: var(--status-accepted-fg);
+}
+
+.pipeline-dll-status.translating {
+    background: var(--status-in-progress-bg);
+    color: var(--status-in-progress-fg);
+    animation: pulse 2s ease-in-out infinite;
+}
+
+.pipeline-dll-status.complete {
+    background: var(--status-merged-bg);
+    color: var(--status-merged-fg);
+}
+
+.pipeline-dll-status.pending {
+    background: var(--status-queued-bg);
+    color: var(--status-queued-fg);
+}
+
+.pipeline-dll-meta {
+    color: var(--text-secondary);
+    font-size: 11px;
+    margin-left: auto;
+}
+
+.pipeline-progress-bar {
+    width: 80px;
+    height: 6px;
+    background: var(--bg-primary);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.pipeline-progress-fill {
+    height: 100%;
+    background: var(--status-in-progress-fg);
+    border-radius: 3px;
+    transition: width 0.3s ease;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
 }
