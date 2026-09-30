@@ -932,7 +932,6 @@
         currentView: "dashboard",
         selectedUnitId: null,
         units: [],
-        graphRenderer: null,
         graphRendererFull: null,
         wsManager: null,
         statusFilter: "all",
@@ -950,7 +949,10 @@
         });
 
         if (viewName === "graph" && State.graphRendererFull) {
-            setTimeout(() => State.graphRendererFull._resize(), 50);
+            setTimeout(() => {
+                State.graphRendererFull._resize();
+                State.graphRendererFull.resetZoom();
+            }, 50);
         }
 
         if (viewName === "llm-log" && State.currentView !== "llm-log") {
@@ -1111,6 +1113,14 @@
 
     async function showDetail(unitId) {
         State.selectedUnitId = unitId;
+
+        // If on queue view, show inline detail; otherwise use sidebar panel
+        if (State.currentView === "queue") {
+            await renderInlineDetail(unitId);
+            renderFullQueue(State.dashboard, unitId);
+            return;
+        }
+
         const panel = document.getElementById("detail-panel");
 
         // Set header
@@ -1144,9 +1154,59 @@
         panel.classList.add("open");
     }
 
+    async function renderInlineDetail(unitId) {
+        const titleEl = document.getElementById("queue-detail-title");
+        const closeBtn = document.getElementById("queue-detail-close");
+        const body = document.getElementById("queue-detail-body");
+
+        if (!titleEl || !body) return;
+
+        try {
+            const res = await API.unit(unitId);
+            const u = res.unit;
+
+            titleEl.textContent = u.function
+                ? `${u.dll}!${u.function}`
+                : `Classify ${u.dll}`;
+            titleEl.title = u.id;
+            closeBtn.style.display = "";
+
+            body.innerHTML = `
+                <div id="detail-content">
+                    ${renderDetailOverview(u)}
+                    ${renderDetailActions(u)}
+                    ${renderDiffTab(u)}
+                </div>
+            `;
+
+            // Load diff data
+            loadDiffView(unitId);
+            loadGhidraView(unitId);
+
+        } catch (err) {
+            body.innerHTML = `<div class="empty-state">Failed to load unit details: ${err.message}</div>`;
+            closeBtn.style.display = "none";
+        }
+    }
+
     function hideDetail() {
-        document.getElementById("detail-panel").classList.remove("open");
+        const panel = document.getElementById("detail-panel");
+        panel.classList.remove("open");
         State.selectedUnitId = null;
+
+        // Clear inline detail if on queue view
+        if (State.currentView === "queue") {
+            const titleEl = document.getElementById("queue-detail-title");
+            const closeBtn = document.getElementById("queue-detail-close");
+            const body = document.getElementById("queue-detail-body");
+            if (titleEl) {
+                titleEl.textContent = "Select a unit to review";
+                titleEl.title = "";
+            }
+            if (closeBtn) closeBtn.style.display = "none";
+            if (body) body.innerHTML = '<div class="empty-state">Click an item in the list to review it.</div>';
+            State.selectedUnitId = null;
+        }
     }
 
     function renderDetailOverview(u) {
@@ -1461,17 +1521,6 @@
         });
     }
 
-    // ─── Render: Graph Legend ───────────────────────────────────────────
-
-    function renderGraphLegend(container) {
-        if (!container) return;
-        container.innerHTML = Object.entries(KIND_COLORS).map(([kind, color]) => `
-            <div class="legend-item">
-                <div class="legend-dot" style="background:${color}"></div>
-                <span>${KIND_LABELS[kind] || kind}</span>
-            </div>
-        `).join("");
-    }
 
     // ─── Data Loading ───────────────────────────────────────────────────
 
@@ -1647,41 +1696,34 @@
             tab.addEventListener("click", () => switchView(tab.dataset.view));
         });
 
-        // Sidebar toggle
-        const sidebar = document.getElementById("sidebar");
-        const main = document.getElementById("main");
-        document.getElementById("sidebar-toggle").addEventListener("click", () => {
-            sidebar.classList.toggle("collapsed");
-            main.classList.toggle("expanded");
-            setTimeout(() => State.graphRenderer?._resize(), 300);
-        });
-        document.getElementById("sidebar-close").addEventListener("click", () => {
-            sidebar.classList.add("collapsed");
-            main.classList.add("expanded");
-            setTimeout(() => State.graphRenderer?._resize(), 300);
-        });
+
 
         // Refresh button
         document.getElementById("btn-refresh").addEventListener("click", loadDashboard);
 
-        // Queue list clicks (event delegation)
+        // Queue list clicks (dashboard) — switch to queue view
         document.getElementById("queue-list").addEventListener("click", (e) => {
             const item = e.target.closest(".queue-item");
             if (!item) return;
-            showDetail(item.dataset.unitId);
+            switchView("queue");
+            renderFullQueue(State.dashboard, item.dataset.unitId);
+            renderInlineDetail(item.dataset.unitId);
         });
 
-        // Full queue list clicks (event delegation)
+        // Full queue list clicks (queue view) — show inline detail
         document.getElementById("full-queue-list").addEventListener("click", (e) => {
             const item = e.target.closest(".queue-item-full");
             if (!item) return;
             State.selectedUnitId = item.dataset.unitId;
-            showDetail(item.dataset.unitId);
+            renderInlineDetail(item.dataset.unitId);
             renderFullQueue(State.dashboard, State.selectedUnitId);
         });
 
         // Detail panel close
         document.getElementById("detail-close").addEventListener("click", hideDetail);
+
+        // Back to list (inline queue view)
+        document.getElementById("queue-detail-close").addEventListener("click", hideDetail);
 
         // Detail panel actions
         document.addEventListener("click", (e) => {
@@ -1708,18 +1750,6 @@
             State.statusFilter = filterSelect.value;
             if (State.dashboard) {
                 renderFullQueue(State.dashboard, State.selectedUnitId);
-            }
-        });
-
-        // Graph view buttons (sidebar header)
-        document.getElementById("btn-fit-graph")?.addEventListener("click", () => {
-            if (State.graphRendererFull) {
-                State.graphRendererFull.resetZoom();
-            }
-        });
-        document.getElementById("btn-reset-graph")?.addEventListener("click", () => {
-            if (State.graphRendererFull) {
-                State.graphRendererFull.resetZoom();
             }
         });
 
@@ -1758,13 +1788,6 @@
             }
         });
 
-        // Graph view keyboard shortcuts for sidebar graph
-        document.addEventListener("keydown", (e) => {
-            if (State.currentView === "graph" && State.graphRenderer) {
-                // Don't conflict with sidebar keyboard (sidebar is usually collapsed in graph view)
-            }
-        });
-
         // Keyboard shortcuts for queue navigation
         document.addEventListener("keydown", (e) => {
             if (State.currentView === "graph") return; // handled above
@@ -1796,11 +1819,6 @@
                     }
                 }
             }
-        });
-
-        // Sidebar graph click handler
-        document.getElementById("graph-canvas")?.addEventListener("click", (e) => {
-            State.graphRenderer?.handleCanvasClick(e);
         });
 
         // Full-screen graph click handler
@@ -2025,17 +2043,10 @@
     async function init() {
         setupEventListeners();
 
-        // Initialize graph renderers
-        State.graphRenderer = new GraphRenderer(document.getElementById("graph-canvas"));
+        // Initialize full-screen graph renderer
         State.graphRendererFull = new GraphRenderer(document.getElementById("graph-canvas-full"), {
             onZoomChange: updateZoomIndicator,
         });
-
-        // Connect click-to-detail for sidebar graph
-        State.graphRenderer.onNodeClick = (node) => showDetail(node.id);
-
-        // Render legend
-        renderGraphLegend(document.getElementById("graph-legend"));
 
         // Initialize WebSocket for live updates
         console.log("[WS] Initializing WebSocket manager");
