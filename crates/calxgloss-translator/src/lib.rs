@@ -1051,6 +1051,7 @@ impl TranslationPipeline {
     /// # Ok(())
     /// # }
     /// ```
+    #[allow(clippy::type_complexity)]
     pub async fn batch_translate(
         &self,
         dll: &str,
