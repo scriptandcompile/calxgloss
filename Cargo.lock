@@ -315,10 +315,12 @@ dependencies = [
 name = "calxgloss-analysis"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
  "calxgloss-ghidra",
  "calxgloss-pal",
  "calxgloss-types",
  "chrono",
+ "goblin",
  "serde_json",
  "thiserror",
  "tracing",

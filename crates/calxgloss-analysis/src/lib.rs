@@ -28,7 +28,8 @@
 //!
 //! // Classify the DLLs you care about
 //! let names = vec!["eqmain.dll".to_string()];
-//! let classifications = analyzer.classify_dlls(&names).await?;
+//! let target_dir = std::path::Path::new("/path/to/targets");
+//! let classifications = analyzer.classify_dlls(&names, target_dir).await?;
 //! for classification in &classifications {
 //!     println!(
 //!         "{:20} → {:?} ({:?})",
@@ -214,7 +215,16 @@ impl Analyzer {
             Vec::new()
         });
 
-        // Classify based on DLL filename
+        Ok(self.build_classification(dll, exports.len(), imports.len()))
+    }
+
+    /// Build a classification from filename and symbol counts.
+    fn build_classification(
+        &self,
+        dll: &str,
+        exports_count: usize,
+        imports_count: usize,
+    ) -> DllClassification {
         let category = classify_dll_name(dll);
         let crate_replacement = crate_replacement_for(dll, &category);
 
@@ -234,8 +244,8 @@ impl Analyzer {
             dll: dll.to_string(),
             category,
             strategy,
-            exports_count: exports.len(),
-            imports_count: imports.len(),
+            exports_count,
+            imports_count,
             crate_replacement,
         };
 
@@ -248,12 +258,17 @@ impl Analyzer {
             "Classified DLL"
         );
 
-        Ok(classification)
+        classification
     }
 
-    /// Classifies each of the named DLLs using [`classify_dll`].
+    /// Classifies each of the named DLLs.
     ///
-    /// The names are supplied by the caller because Ghidra has no way to
+    /// Symbol counts are read from the PE header on disk (via `goblin`), which
+    /// gives accurate per-DLL export/import counts. If a DLL file is missing
+    /// from `target_dir` the call falls back to the currently-open Ghidra
+    /// program.
+    ///
+    /// The DLL names are supplied by the caller because Ghidra has no way to
     /// enumerate them: it serves a single open program and exposes no listing of
     /// what else a target links against. Where the list comes from — a
     /// directory scan, a manifest, a hand-written list — is the caller's
@@ -270,21 +285,49 @@ impl Analyzer {
     /// let analyzer = Analyzer::new(ghidra, ApiMappings::default());
     ///
     /// let names = vec!["eqmain.dll".to_string(), "eqgui.dll".to_string()];
-    /// for c in analyzer.classify_dlls(&names).await? {
+    /// let target_dir = std::path::Path::new("/path/to/targets");
+    /// for c in analyzer.classify_dlls(&names, target_dir).await? {
     ///     println!("{}: {:?}", c.dll, c.strategy);
     /// }
     /// # Ok(())
     /// # }
     /// ```
-    #[instrument(skip(self, dlls), fields(count = dlls.len(), base_url = %self.ghidra.base_url()))]
-    pub async fn classify_dlls(&self, dlls: &[String]) -> Result<Vec<DllClassification>> {
+    #[instrument(skip(self, dlls, target_dir), fields(count = dlls.len(), base_url = %self.ghidra.base_url()))]
+    pub async fn classify_dlls(
+        &self,
+        dlls: &[String],
+        target_dir: &std::path::Path,
+    ) -> Result<Vec<DllClassification>> {
         let mut classifications = Vec::with_capacity(dlls.len());
         for dll in dlls {
-            classifications.push(self.classify_dll(dll).await?);
+            let classification = self.classify_dll_with_target(dll, target_dir).await?;
+            classifications.push(classification);
         }
 
         info!(count = classifications.len(), "Classified all DLLs");
         Ok(classifications)
+    }
+
+    /// Classify one DLL, reading symbol counts from the PE header on disk.
+    async fn classify_dll_with_target(
+        &self,
+        dll: &str,
+        target_dir: &std::path::Path,
+    ) -> Result<DllClassification> {
+        use anyhow::Context;
+
+        let dll_path = target_dir.join(dll);
+
+        // Try PE header parse first — gives accurate per-DLL counts.
+        let bytes = std::fs::read(&dll_path)
+            .with_context(|| format!("Failed to read {}", dll_path.display()))?;
+        let pe = goblin::pe::PE::parse(&bytes)
+            .with_context(|| format!("Failed to parse PE headers for {}", dll_path.display()))?;
+
+        let exports_count = pe.exports.len();
+        let imports_count = pe.imports.len();
+
+        Ok(self.build_classification(dll, exports_count, imports_count))
     }
 
     /// Performs complete analysis on a single function.

@@ -759,10 +759,10 @@ fn parse_branch_for_accept(branch: &str) -> (String, String, u32) {
 // Classify command handler
 // ============================================================
 
-async fn handle_classify(dlls: &[String], settings: &Settings) -> Result<()> {
+async fn handle_classify(dlls: &[String], target_dir: &Path, settings: &Settings) -> Result<()> {
     info!(count = dlls.len(), "Classifying DLLs");
 
-    // Initialize Ghidra client
+    // Initialize Ghidra client (needed only for fallback when PE parse fails)
     let ghidra_url = &settings.ghidra_url.value;
     let mut config = GhidraConfig::new(ghidra_url)
         .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
@@ -778,7 +778,8 @@ async fn handle_classify(dlls: &[String], settings: &Settings) -> Result<()> {
     let api_mappings = ApiMappings::default();
     let analyzer = Analyzer::new(ghidra, api_mappings);
 
-    let classifications = analyzer.classify_dlls(dlls).await?;
+    // Symbol counts come from PE headers on disk — accurate per-DLL.
+    let classifications = analyzer.classify_dlls(dlls, target_dir).await?;
 
     // Print report
     print_classification_report(&classifications);
@@ -1158,7 +1159,7 @@ async fn handle_auto(
             bold(&unclassified.len().to_string())
         );
         println_content("");
-        handle_classify(&unclassified, settings).await?;
+        handle_classify(&unclassified, &target_dir, settings).await?;
         println_content("");
         if !continue_mode {
             println_content(
@@ -2685,11 +2686,19 @@ fn main() -> Result<()> {
             print!("{}", settings::render(&settings));
             Ok(())
         }
-        Command::Classify { dll } => tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("Failed to create tokio runtime")?
-            .block_on(handle_classify(&dll, &settings)),
+        Command::Classify { dll } => {
+            let target_dir = settings
+                .target_dir
+                .as_ref()
+                .map(|t| PathBuf::from(&t.value))
+                .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
+            let target_dir = target_dir.as_ref();
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_classify(&dll, target_dir, &settings))
+        }
         Command::Translate(args) => {
             let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()

@@ -13,6 +13,8 @@ chrono = { workspace = true }
 calxgloss-types = { path = "../calxgloss-types" }
 calxgloss-ghidra = { path = "../calxgloss-ghidra" }
 calxgloss-pal = { path = "../calxgloss-pal" }
+goblin = { version = "0.10.7", default-features = false, features = ["pe32", "pe64"] }
+anyhow = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

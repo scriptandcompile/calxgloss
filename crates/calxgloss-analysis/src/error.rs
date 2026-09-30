@@ -12,6 +12,10 @@ pub enum AnalysisError {
     #[error("GhidraMCP error: {0}")]
     Ghidra(#[from] calxgloss_ghidra::GhidraError),
 
+    /// An I/O or general error occurred.
+    #[error("{0}")]
+    Io(#[from] anyhow::Error),
+
     /// A DLL name was empty or unparseable.
     #[error("empty DLL name")]
     EmptyDllName,
