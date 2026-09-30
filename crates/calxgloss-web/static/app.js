@@ -343,6 +343,8 @@
             const PAD_Y = 40;
             const LAYER_GAP = 100;
             const NODE_GAP = 20;
+            const ROW_GAP = 10;
+            const MAX_COLS = 4;
 
             // Build adjacency maps
             const nodeSet = new Set(this.nodes.map(n => n.id));
@@ -421,27 +423,40 @@
                 }
             }
 
-            // Step 3: Compute content dimensions
-            let maxLayerCount = 0;
+            // Step 3: Compute content dimensions with multi-row wrapping per layer
+            let maxRowsInLayer = 1;
+            let maxNodesInLayer = 0;
             layerGroups.forEach(g => {
-                if (g.length > maxLayerCount) maxLayerCount = g.length;
+                if (g.length > maxNodesInLayer) maxNodesInLayer = g.length;
             });
-            const totalWidth = Math.max(this._w || 800, maxLayerCount * (NODE_W + NODE_GAP) + PAD_X * 2);
-            const totalHeight = (maxLayer + 1) * (NODE_H + LAYER_GAP) - LAYER_GAP + PAD_Y * 2;
+            const totalWidth = Math.max(this._w || 800, maxNodesInLayer * (NODE_W + NODE_GAP) + PAD_X * 2);
+
+            // Calculate max rows needed by any layer
+            layerGroups.forEach(g => {
+                const rows = Math.ceil(g.length / MAX_COLS);
+                if (rows > maxRowsInLayer) maxRowsInLayer = rows;
+            });
+
+            // Each layer gets space for maxRowsInLayer rows, plus layer gap
+            const layerHeight = NODE_H * maxRowsInLayer + (maxRowsInLayer - 1) * ROW_GAP + LAYER_GAP;
+            const totalHeight = (maxLayer + 1) * layerHeight + PAD_Y * 2;
 
             this._totalWidth = totalWidth;
             this._totalHeight = totalHeight;
 
-            // Step 4: Position nodes in each layer, centered within the layer
+            // Step 4: Position nodes in each layer as a grid (up to MAX_COLS columns)
             layerGroups.forEach((group, layerNum) => {
                 const count = group.length;
-                const groupWidth = count * NODE_W + (count - 1) * NODE_GAP;
+                const numCols = Math.min(count, MAX_COLS);
+                const groupWidth = numCols * NODE_W + (numCols - 1) * NODE_GAP;
                 const startX = (totalWidth - groupWidth) / 2;
-                const y = PAD_Y + layerNum * (NODE_H + LAYER_GAP);
+                const layerTop = PAD_Y + layerNum * layerHeight;
 
                 group.forEach((node, idx) => {
-                    node._x = startX + idx * (NODE_W + NODE_GAP);
-                    node._y = y;
+                    const col = idx % numCols;
+                    const row = Math.floor(idx / numCols);
+                    node._x = startX + col * (NODE_W + NODE_GAP);
+                    node._y = layerTop + row * (NODE_H + ROW_GAP);
                     node._w = NODE_W;
                     node._h = NODE_H;
                     node._layer = layerNum;
