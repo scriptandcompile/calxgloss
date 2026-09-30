@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`--target-dir` global CLI flag** — overrides config `target_dir`.
 - **`--repo-dir` global CLI flag** — overrides config `repo_dir`.
 - **`repo_dir` in config** — `calxgloss.toml` can set `repo_dir = "..."` at the top level. This is the workspace directory where `src/`, `re/`, scratch, and `.git` are created. Defaults to CWD if not set. Resolved: CLI flag > config file > env var (`CALXGLOSS_REPO_DIR`) > CWD.
+- **`live` and `serve` always use CWD for repo_dir** — these commands operate on the workspace where the user runs them, so config file and env var overrides are ignored. Only an explicit `--repo` flag can change the directory.
 - **`scan_dlls()` helper** — looks for `.dll` files in the target directory.
 - **`classification_record_exists()` helper** — checks whether a `re/classify/<dll>.json` file already exists.
 - **Config render** — `calxgloss config` now shows `target_dir` path and source.
@@ -35,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`live` WebSocket support** — `handle_live` now builds the router with `build_router_with_ws()`, mounting `/api/events/upgrade` so the frontend can stream progress events via WebSocket. `serve_with_listener()` takes a pre-built `Router` so callers can choose the WS-enabled or basic router.
 - **`run_translation_for_dll()` extracted** — shared helper so both `auto` and `live` reuse the same translation plumbing.
 - **`auto` continue mode** — new `continue_mode: bool` parameter; when enabled, `auto` translates all classified DLLs sequentially without the interactive per-DLL prompt, and newly-classified DLLs are folded into the translation loop.
+
+### `calxgloss-verify`
+- Shared PAL stubs moved into a single `scratch/pal/` crate — each verification project now depends on it via path dependency instead of having ~16 KB of stub types, traits, and implementations duplicated inline in its `lib.rs`.
 
 ### `calxgloss-config`
 - `LlmSection.strategy` — retry strategy configuration (compile_fix, test_fix, escalate, edge_case_fix, auto) via CLI flag, environment variable (`CALXGLOSS_LLM_STRATEGY`), or config file.
@@ -95,6 +99,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **New template files** — `minimal_translate.j2`, `rich_translate.j2`, `detailed_translate.j2` with complexity-appropriate context and guidance.
 - `ComplexityPromptData` — aggregates all analysis data for use with the complexity-based prompt builder.
 - **Failure-informed retry prompts** — `FixTemplate`, `EscalateTemplate`, and `EdgeCaseTemplate` all now accept a `failure_history: Vec<FailureHint>` field. When non-empty, each template renders a "PREVIOUS ATTEMPT HISTORY" section so the LLM can learn from specific past mistakes. Dedicated `with_history()` constructors and updated `build_escalate_prompt()` / `build_edge_case_prompt()` helpers. Embedded templates (`failure_fix.j2`, `escalate.j2`, `edge_case.j2`) updated to render the history section.
+- **`[package.metadata.askama]`** — `autoescape = "none"` set so templates render raw HTML without escaping.
 
 ### `calxgloss-translator`
 - **LLM I/O event emission** — `TranslationPipeline::translate()` and `try_translate_with_retry()` now emit `LlmRequest` and `LlmResponse` events before and after every LLM call (initial and all retry attempts), carrying full prompt text, response content, attempt number, and strategy label.
@@ -106,6 +111,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`EscalatePromptCtx` struct** — groups context data for the escalation prompt builder (function name, DLL, code, failure description, Ghidra client, address, call graph, failure history), simplifying the 8-parameter API.
 - **Per-attempt progress events** — the retry loop now emits `TranslationAttemptCompleted` after every attempt (initial, compile-fix, test-fix, escalate, edge-case-fix), so WebSocket clients can display real-time per-attempt status (compiled, tests passed, strategy label).
 - **Removed `#[instrument]` from `try_translate_with_retry`** — the tracing macro added deep nesting to the async future type (`Instrumented<ManuallyDrop<coroutine>>`), which caused the compiler's `Send` recursion limit to be exceeded when `tokio::task::spawn` checked the full type chain from `actions.rs`.
+- **Trims leading/trailing whitespace** from disassembly and decompiler output before sending to the LLM, keeping prompts cleaner and avoiding wasted tokens.
 
 ### `calxgloss-web`
 - **Axum API server** (`server` feature) — full HTTP API for the review dashboard: `GET /api/dashboard` (queue, graph, counts), `GET /api/units/:id` (unit detail with diff summary, attempt history, revision count), `POST /api/units/:id/accept` (merge branch to main), `POST /api/units/:id/send-back` (rejection with reason), `POST /api/units/:id/patch` (patch request), `GET /api/graph` (dependency graph for visualization), `GET /health` (health check). Uses `DashboardBuilder` from `calxgloss-reports` for data and `GitManager` from `calxgloss-git` for branch operations. `ServerState` holds the repo path; each request reads live Git data. `serve(state, port)` entry point binds to `0.0.0.0:port` for container/remote access.
@@ -145,6 +151,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **API graph node mapping** — `_mapGraphNode()` now handles both old API format (with `level` field) and new format (with `kind` field).
 - **CSS additions** — `.graph-tooltip`, `.graph-controls`, `.graph-zoom-indicator`, `.graph-tooltip-dot` styles for tooltip, overlay controls, and status dots.
 - **`[lints.cargo]`** — `unused_dependencies = "allow"` in Cargo.toml to suppress manifest-level warnings on `cfg(feature = "server")` gated optional dependencies (axum, calxgloss-reports, uuid).
+- **Debug logging** — WebSocket broadcast loop and client-side JS manager now emit detailed logs (connection lifecycle, event forwarding, client counts) to aid troubleshooting.
 - Removed unused `tokio-tungstenite` dependency; the WebSocket implementation uses axum's native `axum[ws]` support instead.
 - Added optional dependencies on `calxgloss-translator`, `calxgloss-verify`, `calxgloss-llm`, and `calxgloss-pal` behind the `server` feature for full pipeline integration.
 - Fixed axum 0.8 route syntax — all three router builders (`build_router`, `build_router_with_actions`, `build_router_with_ws`) now use `{id}` capture groups instead of the legacy `:id` syntax that caused the server to panic on startup.
