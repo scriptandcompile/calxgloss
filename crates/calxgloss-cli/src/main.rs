@@ -846,8 +846,45 @@ async fn handle_classify(
             .context("Failed to commit classification records");
     }
 
+    // Generate shim layer suggestions for CrateReplacement DLLs.
+    let report = analyzer.suggest_shim_layers(&classifications);
+    if !report.is_empty() {
+        let shim_dir = repo_dir.join("re").join("shims");
+        std::fs::create_dir_all(&shim_dir).with_context(|| {
+            format!("Failed to create shim suggestions directory: {}", shim_dir.display())
+        })?;
+
+        let suggestion_path = shim_dir.join("suggestions.json");
+        let json = serde_json::to_string_pretty(&report).with_context(|| {
+            "Failed to serialize shim suggestions report"
+        })?;
+        std::fs::write(&suggestion_path, &json).with_context(|| {
+            format!("Failed to write shim suggestions to {}", suggestion_path.display())
+        })?;
+        info!(
+            count = report.total_dlls(),
+            suggestion_path = %suggestion_path.display(),
+            "Wrote shim layer suggestions"
+        );
+
+        // Commit shim suggestions to git (unless skip_git).
+        if !skip_git
+            && let Ok(git) = GitManager::open(repo_dir)
+        {
+            let _commit = git
+                .commit_to_main(
+                    &format!(
+                        "shim: generate suggestions for {} crate-replacement DLL(s)",
+                        report.total_dlls()
+                    ),
+                    &[suggestion_path.to_string_lossy().to_string()],
+                )
+                .context("Failed to commit shim suggestions");
+        }
+    }
+
     // Print report
-    print_classification_report(&classifications);
+    print_classification_report(&classifications, &report);
 
     info!(count = classifications.len(), "Classification complete");
     Ok(())

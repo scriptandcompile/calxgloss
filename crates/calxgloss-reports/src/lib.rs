@@ -22,6 +22,7 @@ use std::io::{self, Write};
 
 use calxgloss_analysis::DllClassification;
 use calxgloss_analysis::Strategy;
+use calxgloss_analysis::ShimSuggestionReport;
 use calxgloss_translator::{BatchTranslationResult, Translation};
 use calxgloss_types::FailedTest;
 use calxgloss_types::GitBranch;
@@ -382,8 +383,13 @@ pub fn prompt_acceptance() -> bool {
 /// Print a DLL classification report.
 ///
 /// Displays the DLL name, its category, the recommended strategy,
-/// and counts of exports and imports.
-pub fn print_classification_report(classifications: &[DllClassification]) {
+/// and counts of exports and imports. When shim suggestions are
+/// provided, also displays a shim-layer summary section showing
+/// expected shim complexity for crate-replacement DLLs.
+pub fn print_classification_report(
+    classifications: &[DllClassification],
+    shim_report: &ShimSuggestionReport,
+) {
     let sep = cyan_bold(&"═".repeat(58));
     println!("{} DLL Classification Report", sep);
     println!();
@@ -424,6 +430,44 @@ pub fn print_classification_report(classifications: &[DllClassification]) {
             println!("  {}{}", dim("    Crate: "), dim(replacement));
         }
         println!();
+    }
+
+    // Per-DLL shim suggestion details.
+    if !shim_report.is_empty() {
+        println!("{}", cyan_bold(&"─".repeat(58)));
+        println!("  {} Shim Layer Suggestions", bold(&dim("SHIM LAYERS")));
+        println!();
+
+        for suggestion in &shim_report.suggestions {
+            let complexity_color = match suggestion.estimated_complexity {
+                calxgloss_types::ComplexityScore::Low => green_bold,
+                calxgloss_types::ComplexityScore::Medium => yellow_bold,
+                calxgloss_types::ComplexityScore::High => red_bold,
+            };
+
+            println!(
+                "  {} {} → {}",
+                dim("  DLL:"),
+                white_bold(&suggestion.source_dll),
+                dim(&suggestion.target_crate)
+            );
+            println!(
+                "    {} {} estimated mappings",
+                dim("  Exports:"),
+                suggestion.estimated_mappings
+            );
+            println!(
+                "    {} {}",
+                dim("  Complexity:"),
+                complexity_color(&format!("{:?}", suggestion.estimated_complexity))
+            );
+            println!(
+                "    {} {:.0}% confidence",
+                dim("  Confidence:"),
+                suggestion.estimated_confidence * 100.0
+            );
+            println!();
+        }
     }
 
     println!("{}", sep);
