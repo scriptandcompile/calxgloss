@@ -53,6 +53,13 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tracing::{debug, error, info, instrument, warn};
 
+/// Shared PAL stub content, embedded at compile time from `src/pal/src/stub_content.rs`.
+///
+/// This file is kept in sync with `stubs.rs` by the build script.  The constant
+/// is written to `scratch/pal/src/stub_content.rs` when the first scratch project
+/// is created, so the scratch project can `include!` it.
+pub const PAL_STUB_CONTENT: &str = include_str!("pal/src/stub_content.rs");
+
 // ============================================================
 // Public API
 // ============================================================
@@ -221,12 +228,50 @@ impl Verifier {
 
     // ---- Internal helpers ----
 
+    /// Ensure the shared PAL crate exists at `{work_dir}/scratch/pal/`.
+    ///
+    /// The PAL crate is created once per workspace.  All scratch projects
+    /// depend on it, so this only needs to run once before any scaffold.
+    fn ensure_pal_crate(&self) {
+        let pal_dir = self.work_dir.join("scratch").join("pal");
+        if pal_dir.join("src").join("stub_content.rs").is_file() {
+            return;
+        }
+
+        debug!(path = %pal_dir.display(), "Creating shared PAL crate");
+        let _ = std::fs::create_dir_all(pal_dir.join("src"));
+
+        // Cargo.toml for the shared PAL crate
+        let cargo_toml = r#"[package]
+name = "calxgloss-pal"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+"#;
+        std::fs::write(pal_dir.join("Cargo.toml"), cargo_toml).ok();
+
+        // lib.rs that includes the embedded stub content
+        let lib_rs = r#"// Stub content from stubs.rs.
+include!("stub_content.rs");
+"#;
+        std::fs::write(pal_dir.join("src").join("lib.rs"), lib_rs).ok();
+
+        // Copy stub content (embedded at compile time via include_str!)
+        let content_path = pal_dir.join("src").join("stub_content.rs");
+        let existing = std::fs::read_to_string(&content_path).ok();
+        if existing != Some(PAL_STUB_CONTENT.to_string()) {
+            let _ = std::fs::write(&content_path, PAL_STUB_CONTENT);
+        }
+    }
+
     /// Scaffold a minimal Cargo project for compilation verification.
     fn scaffold_project(&self, dll: &str, function: &str, rust_code: &str) -> Result<PathBuf> {
+        self.ensure_pal_crate();
         let project_dir = self.create_scratch_dir(dll, function);
 
         let cargo_toml = format!(
-            "[package]\nname = \"{}_verify\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\nname = \"{}_lib\"\npath = \"src/lib.rs\"\n",
+            "[package]\nname = \"{}_verify\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\npal = {{ path = \"../pal\", package = \"calxgloss-pal\" }}\n\n[lib]\nname = \"{}_lib\"\npath = \"src/lib.rs\"\n",
             sanitize_crate_name(dll),
             sanitize_identifier(function),
         );
@@ -238,8 +283,8 @@ impl Verifier {
 
         let mut lib_rs = String::new();
         lib_rs.push_str("#![allow(dead_code, unused_imports, unused_variables, clippy::new_without_default, clippy::default_trait_access, clippy::missing_errors_doc)]\n\n");
-        lib_rs.push_str(&Stubs::all());
-        lib_rs.push_str("\n// ===== Translated function =====\n\n");
+        lib_rs.push_str("use pal::*;\n\n");
+        lib_rs.push_str("// ===== Translated function =====\n\n");
         lib_rs.push_str(rust_code);
 
         std::fs::write(project_dir.join("src").join("lib.rs"), lib_rs)
@@ -257,10 +302,11 @@ impl Verifier {
         rust_code: &str,
         baseline_tests: &[TestCase],
     ) -> Result<PathBuf> {
+        self.ensure_pal_crate();
         let project_dir = self.create_scratch_dir(dll, function);
 
         let cargo_toml = format!(
-            "[package]\nname = \"{}_verify\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\nname = \"{}_lib\"\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"{}_runner\"\npath = \"src/main.rs\"\n",
+            "[package]\nname = \"{}_verify\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\npal = {{ path = \"../pal\", package = \"calxgloss-pal\" }}\nserde_json = \"1\"\n\n[lib]\nname = \"{}_lib\"\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"{}_runner\"\npath = \"src/main.rs\"\n",
             sanitize_crate_name(dll),
             sanitize_identifier(function),
             sanitize_identifier(function),
@@ -271,11 +317,11 @@ impl Verifier {
         std::fs::create_dir_all(project_dir.join("src"))
             .context("Failed to create src directory")?;
 
-        // Write stubs + translated code for lib.rs
+        // Write stubs (from pal crate) + translated code for lib.rs
         let mut lib_rs = String::new();
         lib_rs.push_str("#![allow(dead_code, unused_imports, unused_variables, clippy::new_without_default, clippy::default_trait_access, clippy::missing_errors_doc)]\n\n");
-        lib_rs.push_str(&Stubs::all());
-        lib_rs.push_str("\n// ===== Translated function =====\n\n");
+        lib_rs.push_str("use pal::*;\n\n");
+        lib_rs.push_str("// ===== Translated function =====\n\n");
         lib_rs.push_str(rust_code);
         std::fs::write(project_dir.join("src").join("lib.rs"), lib_rs)
             .context("Failed to write lib.rs")?;
@@ -318,9 +364,10 @@ impl Verifier {
     fn generate_test_harness(&self, function: &str, baseline_tests: &[TestCase]) -> String {
         let mut code = String::new();
 
-        // Import the translated library
+        // Import the translated library and shared PAL types
         let lib_name = sanitize_crate_name(function);
         code.push_str(&format!("use {}_lib::*;\n", lib_name));
+        code.push_str("use pal::*;\n");
         code.push_str("use serde_json::Value;\n\n");
 
         code.push_str(
@@ -939,7 +986,8 @@ error[E0308]: mismatched types
         assert!(project.join("src").join("lib.rs").exists());
 
         let lib_rs = std::fs::read_to_string(project.join("src").join("lib.rs")).unwrap();
-        assert!(lib_rs.contains("pub trait"));
+        // Traits are now in the pal module, not directly in lib.rs
+        assert!(lib_rs.contains("use pal::*") || lib_rs.contains("pub trait"));
         assert!(lib_rs.contains("pub fn my_func"));
 
         let _ = fs::remove_dir_all(&dir);
