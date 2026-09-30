@@ -18,6 +18,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::FailedTest;
+
 /// A single API mapping between an original DLL export and a target crate API.
 ///
 /// Each entry describes how to translate one call from the original DLL's
@@ -321,6 +323,95 @@ pub fn dll_to_module_name(dll_name: &str) -> String {
         .to_lowercase()
 }
 
+/// Result of verifying a shim layer's behavior against baseline tests.
+///
+/// Produced by [`calxgloss_verify::Verifier::verify_shim`] after the shim
+/// code is compiled and tested in a sandboxed scratch project. Reports
+/// compilation status, per-mapping test results, and overall pass rate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShimVerificationResult {
+    /// Whether the shim code compiled without errors.
+    pub compiled: bool,
+
+    /// Compilation error messages, if compilation failed.
+    pub compilation_errors: Vec<String>,
+
+    /// Compilation warnings, if any were emitted.
+    pub compilation_warnings: Vec<String>,
+
+    /// Number of shim mapping tests that passed.
+    pub tests_passed: usize,
+
+    /// Total number of shim mapping tests executed.
+    pub tests_total: usize,
+
+    /// Edge-case tests that passed.
+    pub edge_tests_passed: usize,
+
+    /// Edge-case tests that were executed.
+    pub edge_tests_total: usize,
+
+    /// Detailed information about each shim test that failed.
+    pub failed_tests: Vec<FailedTest>,
+
+    /// Per-mapping pass counts.  Each entry corresponds one-to-one with
+    /// the mappings in the shim layer that was verified.
+    pub mapping_results: Vec<ShimMappingTestResult>,
+}
+
+impl ShimVerificationResult {
+    /// Returns the total number of tests executed (mapping + edge-case).
+    pub fn total_tests(&self) -> usize {
+        self.tests_total + self.edge_tests_total
+    }
+
+    /// Returns the total number of tests that passed (mapping + edge-case).
+    pub fn total_passed(&self) -> usize {
+        self.tests_passed + self.edge_tests_passed
+    }
+
+    /// Returns `true` if the shim passed all tests on all mappings.
+    pub fn all_passed(&self) -> bool {
+        self.compiled
+            && self.total_passed() == self.total_tests()
+            && self.total_tests() > 0
+    }
+
+    /// Returns the overall pass rate as a floating-point ratio in `[0.0, 1.0]`.
+    ///
+    /// Returns `1.0` when there are no tests, and `0.0` when there are tests
+    /// but none passed.
+    pub fn pass_rate(&self) -> f64 {
+        let total = self.total_tests();
+        if total == 0 {
+            return 1.0;
+        }
+        self.total_passed() as f64 / total as f64
+    }
+}
+
+/// Per-mapping test result within a [`ShimVerificationResult`].
+///
+/// Each entry records how many of the mapping's associated tests
+/// (parameter test + edge-case tests) passed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShimMappingTestResult {
+    /// The original API function name (e.g., `"Direct3DCreate9"`).
+    pub original_api: String,
+
+    /// The target crate API path.
+    pub crate_api: String,
+
+    /// Number of tests that passed for this mapping.
+    pub passed: usize,
+
+    /// Total number of tests for this mapping.
+    pub total: usize,
+
+    /// Detailed failures for this mapping.
+    pub failures: Vec<FailedTest>,
+}
+
 impl PartialOrd for ComplexityScore {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
@@ -471,5 +562,123 @@ mod tests {
         assert_eq!(item.rust_equivalent, "encoder.set_bind_group");
         assert!(item.notes.contains("Maps DirectX"));
         assert!(item.notes.contains("UINT → stage_index"));
+    }
+
+    #[test]
+    fn test_shim_verification_result_all_passed() {
+        let result = ShimVerificationResult {
+            compiled: true,
+            compilation_errors: Vec::new(),
+            compilation_warnings: Vec::new(),
+            tests_passed: 5,
+            tests_total: 5,
+            edge_tests_passed: 3,
+            edge_tests_total: 3,
+            failed_tests: Vec::new(),
+            mapping_results: Vec::new(),
+        };
+        assert!(result.all_passed());
+        assert_eq!(result.total_tests(), 8);
+        assert_eq!(result.total_passed(), 8);
+        assert!((result.pass_rate() - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_shim_verification_result_compilation_failed() {
+        let result = ShimVerificationResult {
+            compiled: false,
+            compilation_errors: vec!["type mismatch".to_string()],
+            compilation_warnings: Vec::new(),
+            tests_passed: 0,
+            tests_total: 0,
+            edge_tests_passed: 0,
+            edge_tests_total: 0,
+            failed_tests: Vec::new(),
+            mapping_results: Vec::new(),
+        };
+        assert!(!result.all_passed());
+        assert_eq!(result.total_tests(), 0);
+        assert!((result.pass_rate() - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_shim_verification_result_partial_pass() {
+        let result = ShimVerificationResult {
+            compiled: true,
+            compilation_errors: Vec::new(),
+            compilation_warnings: vec!["unused variable".to_string()],
+            tests_passed: 3,
+            tests_total: 5,
+            edge_tests_passed: 1,
+            edge_tests_total: 3,
+            failed_tests: Vec::new(),
+            mapping_results: Vec::new(),
+        };
+        assert!(!result.all_passed());
+        assert_eq!(result.total_tests(), 8);
+        assert_eq!(result.total_passed(), 4);
+        let rate = result.pass_rate();
+        assert!((rate - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_shim_verification_result_empty() {
+        let result = ShimVerificationResult {
+            compiled: false,
+            compilation_errors: Vec::new(),
+            compilation_warnings: Vec::new(),
+            tests_passed: 0,
+            tests_total: 0,
+            edge_tests_passed: 0,
+            edge_tests_total: 0,
+            failed_tests: Vec::new(),
+            mapping_results: Vec::new(),
+        };
+        assert!(!result.all_passed());
+        assert_eq!(result.total_tests(), 0);
+        assert!((result.pass_rate() - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_shim_mapping_test_result_serialization() {
+        let mapping_result = ShimMappingTestResult {
+            original_api: "Present".to_string(),
+            crate_api: "queue.submit".to_string(),
+            passed: 2,
+            total: 3,
+            failures: Vec::new(),
+        };
+        let json = serde_json::to_string(&mapping_result).unwrap();
+        let deserialized: ShimMappingTestResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.original_api, "Present");
+        assert_eq!(deserialized.passed, 2);
+        assert_eq!(deserialized.total, 3);
+    }
+
+    #[test]
+    fn test_shim_verification_result_serialization() {
+        let result = ShimVerificationResult {
+            compiled: true,
+            compilation_errors: Vec::new(),
+            compilation_warnings: vec!["warning1".to_string()],
+            tests_passed: 1,
+            tests_total: 2,
+            edge_tests_passed: 1,
+            edge_tests_total: 1,
+            failed_tests: Vec::new(),
+            mapping_results: vec![ShimMappingTestResult {
+                original_api: "Present".to_string(),
+                crate_api: "queue.submit".to_string(),
+                passed: 2,
+                total: 2,
+                failures: Vec::new(),
+            }],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let deserialized: ShimVerificationResult = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.compiled);
+        assert_eq!(deserialized.tests_passed, 1);
+        assert_eq!(deserialized.edge_tests_total, 1);
+        assert_eq!(deserialized.mapping_results.len(), 1);
     }
 }

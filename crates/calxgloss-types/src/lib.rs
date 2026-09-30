@@ -39,7 +39,8 @@ pub use dashboard::{
 };
 pub use dll::{DllCategory, DllInfo, Export, Import};
 pub use shim::{
-    ComplexityScore, ReturnMapping, ShimApiMapping, ShimLayer, dll_to_module_name,
+    ComplexityScore, ReturnMapping, ShimApiMapping, ShimLayer, ShimMappingTestResult,
+    ShimVerificationResult, dll_to_module_name,
 };
 pub use error::TypesError;
 pub use experiment_log::{
