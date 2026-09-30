@@ -992,9 +992,10 @@ impl TranslationPipeline {
     /// [`try_translate_with_retry`](Self::try_translate_with_retry) path).
     /// Functions are processed sequentially in the order provided.
     ///
-    /// Unlike the single-function path, this method **does not perform git
-    /// operations** — that is left to the caller so the CLI can batch the git
-    /// commits or skip them entirely for a dry-run.
+    /// The caller can provide a callback (`on_function_completed`) that is
+    /// invoked **immediately after each function completes** (before moving on
+    /// to the next). This enables incremental git commits and per-function
+    /// post-processing without blocking subsequent translations.
     ///
     /// # Arguments
     ///
@@ -1002,6 +1003,10 @@ impl TranslationPipeline {
     /// * `functions` — Function names to translate.
     /// * `config` — Retry configuration applied to every function.
     /// * `verifier` — Verification engine used for checking translations.
+    /// * `on_function_completed` — Optional closure called after each function
+    ///   completes. Receives the DLL name, function name, a mutable reference to
+    ///   the [`batch::FunctionResult`], and a boolean indicating whether the
+    ///   caller should continue processing the remaining functions.
     ///
     /// # Returns
     ///
@@ -1015,6 +1020,9 @@ impl TranslationPipeline {
     ///   with the remaining functions (each failure is recorded individually).
     /// - The retry strategy (compile_fix → test_fix → escalate) is applied
     ///   independently to each function.
+    /// - The callback is called on the **same task** that is running the batch;
+    ///   it should return `true` quickly to avoid delaying the next function.
+    ///   If the callback returns `false`, the batch stops early.
     ///
     /// # Example
     ///
@@ -1036,6 +1044,7 @@ impl TranslationPipeline {
     ///     &functions,
     ///     &config,
     ///     &verifier,
+    ///     Some(&mut |_dll, _function, _result| true), // keep going
     /// ).await?;
     ///
     /// println!("{} succeeded, {} failed", results.success_count(), results.failure_count());
@@ -1048,6 +1057,7 @@ impl TranslationPipeline {
         functions: &[String],
         config: &RetryConfig,
         verifier: &Verifier,
+        mut on_function_completed: Option<&mut dyn FnMut(&str, &str, &mut batch::FunctionResult) -> bool>,
     ) -> Result<batch::BatchTranslationResult> {
         debug!(dll, count = functions.len(), "Starting batch translation");
 
@@ -1062,7 +1072,7 @@ impl TranslationPipeline {
                 "Translating function in batch"
             );
 
-            match self
+            let mut result = match self
                 .try_translate_with_retry(dll, function, config, verifier)
                 .await
             {
@@ -1075,13 +1085,13 @@ impl TranslationPipeline {
                             "Batch function succeeded"
                         );
                         let rust_code = retry_result.rust_code.clone().unwrap_or_default();
-                        batch_result.add(batch::FunctionResult::success(
+                        batch::FunctionResult::success(
                             dll.to_string(),
                             function.clone(),
                             rust_code,
                             retry_result,
-                            None, // git handled by caller
-                        ));
+                            None, // git handled by caller via callback
+                        )
                     } else {
                         warn!(
                             dll,
@@ -1089,11 +1099,11 @@ impl TranslationPipeline {
                             attempts = retry_result.attempts.len(),
                             "Batch function exhausted all retries"
                         );
-                        batch_result.add(batch::FunctionResult::failure(
+                        batch::FunctionResult::failure(
                             dll.to_string(),
                             function.clone(),
                             retry_result,
-                        ));
+                        )
                     }
                 }
                 Err(e) => {
@@ -1105,12 +1115,36 @@ impl TranslationPipeline {
                     );
                     // Create a minimal failed result so the caller sees it
                     let empty_result = retry::RetryResult::new();
-                    batch_result.add(batch::FunctionResult::failure(
+                    batch::FunctionResult::failure(
                         dll.to_string(),
                         function.clone(),
                         empty_result,
-                    ));
+                    )
                 }
+            };
+
+            let success = result.success;
+            batch_result.add(result.clone());
+
+            // Emit progress event for real-time tracking
+            self.emit(ProgressEvent::FunctionCompleted {
+                dll: dll.to_string(),
+                function: function.clone(),
+                success,
+                attempts: 0, // filled by caller after git branch creation
+                branch: None, // filled by caller after git branch creation
+            });
+
+            // Invoke the caller's callback (e.g., for incremental git commits)
+            let continue_batch = if let Some(ref mut cb) = on_function_completed {
+                cb(dll, function, &mut result)
+            } else {
+                true
+            };
+
+            if !continue_batch {
+                info!(dll, function, "Batch stopped early by callback");
+                break;
             }
         }
 

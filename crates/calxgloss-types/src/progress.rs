@@ -173,6 +173,23 @@ pub enum ProgressEvent {
         /// Number of imported symbols.
         imported_symbols: usize,
     },
+    /// A function in a batch translation has completed (succeeded or failed).
+    ///
+    /// Emitted **immediately after each function completes** during batch
+    /// translation, before moving on to the next function. This enables
+    /// incremental git commits and real-time progress tracking per-function.
+    FunctionCompleted {
+        dll: String,
+        function: String,
+        /// Whether this function's translation ultimately succeeded.
+        success: bool,
+        /// Total attempts used for this function (including retries).
+        attempts: usize,
+        /// Git branch name assigned to this function (if git is enabled),
+        /// populated by the caller after the event is emitted.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+    },
     /// Batch translation for a DLL has completed (summary across all functions).
     BatchSummary {
         dll: String,
@@ -327,6 +344,23 @@ impl std::fmt::Display for ProgressEvent {
             }
             ProgressEvent::ClassificationComplete { dll, category, .. } => {
                 write!(f, "Classified {dll} as {category}")
+            }
+            ProgressEvent::FunctionCompleted {
+                dll,
+                function,
+                success,
+                attempts,
+                branch,
+            } => {
+                let status = if *success { "✓" } else { "✗" };
+                let branch_info = branch
+                    .as_deref()
+                    .map(|b| format!(" [{b}]"))
+                    .unwrap_or_default();
+                write!(
+                    f,
+                    "Batch {status} for {function} ({dll}) in {attempts} attempt(s){branch_info}"
+                )
             }
             ProgressEvent::BatchSummary {
                 dll,

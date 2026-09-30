@@ -25,6 +25,7 @@
 //!     &functions,
 //!     &config,
 //!     &verifier,
+//!     None, // git handled by caller via callback
 //! ).await?;
 //!
 //! println!("{} succeeded, {} failed", results.success_count(), results.failure_count());

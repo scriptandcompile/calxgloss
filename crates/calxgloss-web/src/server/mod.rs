@@ -159,7 +159,8 @@ impl ProgressState {
             | ProgressEvent::LlmResponse { .. }
             | ProgressEvent::TranslationAttemptCompleted { .. }
             | ProgressEvent::TranslationCompleted { .. }
-            | ProgressEvent::TranslationFailed { .. } => {
+            | ProgressEvent::TranslationFailed { .. }
+            | ProgressEvent::FunctionCompleted { .. } => {
                 self.on_translation_event(event).await;
             }
             ProgressEvent::ClassificationComplete {
@@ -285,6 +286,20 @@ impl ProgressState {
                 if let Some(entry) = entries.get_mut(&format!("{dll}/{function}")) {
                     entry.status = Complete;
                     entry.last_event_at = std::time::Instant::now();
+                }
+            }
+            ProgressEvent::FunctionCompleted { dll, function, success, .. } => {
+                if let Some(entry) = entries.get_mut(&format!("{dll}/{function}")) {
+                    // Batch-level completion marks the unit as done.
+                    entry.status = Complete;
+                    entry.last_event_at = std::time::Instant::now();
+                    // Optionally differentiate success/failure in the stored data
+                    // by updating the strategy field to reflect the outcome.
+                    entry.strategy = if *success {
+                        "batch_ok".to_string()
+                    } else {
+                        "batch_failed".to_string()
+                    };
                 }
             }
             // ClassificationComplete and BatchSummary are handled in on_event

@@ -1028,79 +1028,95 @@ async fn run_translation_for_dll(
         escalate_on_failure: true,
     };
 
-    // Run batch translation
-    let mut batch_result = pipeline
-        .batch_translate(dll, &function_names, &retry_config, &verifier)
+    // Run batch translation with an inline callback that handles git operations
+    // for each function immediately after it completes.
+    //
+    // This enables incremental git commits: as soon as a function's translation
+    // pipeline finishes (including retries), the result is written, committed,
+    // and merged — before the next function even starts.
+    let batch_result = pipeline
+        .batch_translate(
+            dll,
+            &function_names,
+            &retry_config,
+            &verifier,
+            Some(&mut |_dll, _function, func_result| {
+                if !func_result.success {
+                    return true;
+                }
+
+                let rust_code = func_result.rust_code.as_ref().unwrap();
+                let output_path = modules_dir
+                    .join(&func_result.function)
+                    .join("translated.rs");
+                if let Err(e) = std::fs::create_dir_all(output_path.parent().unwrap())
+                    .context("Failed to create output directory")
+                {
+                    warn!(error = %e, "Failed to create output directory");
+                    return true;
+                }
+                if let Err(e) = std::fs::write(&output_path, rust_code)
+                    .with_context(|| {
+                        format!(
+                            "Failed to write translated code to {}",
+                            output_path.display()
+                        )
+                    })
+                {
+                    warn!(error = %e, "Failed to write translated code");
+                    return true;
+                }
+
+                if let Some(ref mut git_manager) = git {
+                    if let Ok(branch_result) = git_manager.create_branch(
+                        dll,
+                        &func_result.function,
+                        1,
+                        Some(&BranchCreationPolicy::Warn(DependencyPolicy {
+                            category: DllCategory::ProjectSpecific,
+                            crate_replacement: None,
+                        })),
+                    ) {
+                        let branch_info = &branch_result.branch;
+                        print_git_status(branch_info, false);
+
+                        if let Some(output_path_str) = output_path.to_str() {
+                            if let Ok(_commit) = git_manager.commit(
+                                branch_info,
+                                &format!(
+                                    "re/auto/{}: translate {} (batch attempt)",
+                                    func_result.function, dll
+                                ),
+                                &[output_path_str],
+                            ) {
+                                if let Ok(merge_result) =
+                                    git_manager.merge_to_main(branch_info)
+                                {
+                                    match &merge_result {
+                                        calxgloss_git::MergeResult::Merged { merge_hash } => {
+                                            info!(hash = %merge_hash, "Translation accepted and merged");
+                                        }
+                                        calxgloss_git::MergeResult::AlreadyUpToDate => {
+                                            info!("Branch was already up to date with main");
+                                        }
+                                        calxgloss_git::MergeResult::Conflicts {
+                                            conflicted_files,
+                                            error,
+                                        } => {
+                                            warn!(files = ?conflicted_files, error = %error, "Merge conflicts");
+                                        }
+                                    }
+                                    func_result.branch = Some(branch_info.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                true
+            }),
+        )
         .await
         .with_context(|| format!("Batch translation failed for DLL: {}", dll))?;
-
-    // Git operations: commit each successful function
-    if let Some(ref mut git_manager) = git {
-        for func_result in batch_result.results.iter_mut() {
-            if !func_result.success {
-                continue;
-            }
-            let rust_code = func_result.rust_code.as_ref().unwrap();
-            let output_path = modules_dir
-                .join(&func_result.function)
-                .join("translated.rs");
-            std::fs::create_dir_all(output_path.parent().unwrap())
-                .context("Failed to create output directory")?;
-            std::fs::write(&output_path, rust_code).with_context(|| {
-                format!(
-                    "Failed to write translated code to {}",
-                    output_path.display()
-                )
-            })?;
-
-            let branch_result = git_manager
-                .create_branch(
-                    dll,
-                    &func_result.function,
-                    1,
-                    Some(&BranchCreationPolicy::Warn(DependencyPolicy {
-                        category: DllCategory::ProjectSpecific,
-                        crate_replacement: None,
-                    })),
-                )
-                .context("Failed to create git branch")?;
-
-            let branch_info = &branch_result.branch;
-            print_git_status(branch_info, false);
-
-            let output_path_str = output_path.to_string_lossy().to_string();
-            let _commit = git_manager
-                .commit(
-                    branch_info,
-                    &format!(
-                        "re/auto/{}: translate {} (batch attempt)",
-                        func_result.function, dll
-                    ),
-                    &[&output_path_str],
-                )
-                .context("Failed to commit translated code")?;
-
-            let merge_result = git_manager
-                .merge_to_main(branch_info)
-                .context("Failed to merge branch to main")?;
-
-            match &merge_result {
-                calxgloss_git::MergeResult::Merged { merge_hash } => {
-                    info!(hash = %merge_hash, "Translation accepted and merged");
-                }
-                calxgloss_git::MergeResult::AlreadyUpToDate => {
-                    info!("Branch was already up to date with main");
-                }
-                calxgloss_git::MergeResult::Conflicts {
-                    conflicted_files,
-                    error,
-                } => {
-                    warn!(files = ?conflicted_files, error = %error, "Merge conflicts");
-                }
-            }
-            func_result.branch = Some(branch_info.clone());
-        }
-    }
 
     print_batch_summary(&batch_result);
 
@@ -1821,82 +1837,91 @@ async fn handle_batch_translate(args: &BatchTranslateArgs, settings: &Settings, 
         escalate_on_failure: true,
     };
 
-    // Run batch translation
-    let mut batch_result = pipeline
-        .batch_translate(dll, &function_list, &retry_config, &verifier)
+    // Run batch translation with an inline callback that handles git operations
+    // for each function immediately after it completes.
+    let batch_result = pipeline
+        .batch_translate(
+            dll,
+            &function_list,
+            &retry_config,
+            &verifier,
+            Some(&mut |_dll, _function, func_result| {
+                if !func_result.success {
+                    return true;
+                }
+
+                let rust_code = func_result.rust_code.as_ref().unwrap();
+                let output_path = modules_dir
+                    .join(&func_result.function)
+                    .join("translated.rs");
+                if let Err(e) = std::fs::create_dir_all(output_path.parent().unwrap())
+                    .context("Failed to create output directory")
+                {
+                    warn!(error = %e, "Failed to create output directory");
+                    return true;
+                }
+                if let Err(e) = std::fs::write(&output_path, rust_code)
+                    .with_context(|| {
+                        format!(
+                            "Failed to write translated code to {}",
+                            output_path.display()
+                        )
+                    })
+                {
+                    warn!(error = %e, "Failed to write translated code");
+                    return true;
+                }
+
+                if let Some(ref mut git_manager) = git {
+                    if let Ok(branch_result) = git_manager.create_branch(
+                        dll,
+                        &func_result.function,
+                        1,
+                        Some(&BranchCreationPolicy::Warn(DependencyPolicy {
+                            category: DllCategory::ProjectSpecific,
+                            crate_replacement: None,
+                        })),
+                    ) {
+                        let branch_info = &branch_result.branch;
+                        print_git_status(branch_info, false);
+
+                        if let Some(output_path_str) = output_path.to_str() {
+                            if let Ok(_commit) = git_manager.commit(
+                                branch_info,
+                                &format!(
+                                    "re/batch/{}: translate {} (batch attempt)",
+                                    func_result.function, dll
+                                ),
+                                &[output_path_str],
+                            ) {
+                                if let Ok(merge_result) =
+                                    git_manager.merge_to_main(branch_info)
+                                {
+                                    match &merge_result {
+                                        calxgloss_git::MergeResult::Merged { merge_hash } => {
+                                            info!(hash = %merge_hash, "Translation accepted and merged");
+                                        }
+                                        calxgloss_git::MergeResult::AlreadyUpToDate => {
+                                            info!("Branch was already up to date with main");
+                                        }
+                                        calxgloss_git::MergeResult::Conflicts {
+                                            conflicted_files,
+                                            error,
+                                        } => {
+                                            warn!(files = ?conflicted_files, error = %error, "Merge conflicts");
+                                        }
+                                    }
+                                    func_result.branch = Some(branch_info.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                true
+            }),
+        )
         .await
         .with_context(|| format!("Batch translation failed for DLL: {}", dll))?;
-
-    // Git operations: commit each function that succeeded
-    if let Some(ref mut git_manager) = git {
-        for func_result in batch_result.results.iter_mut() {
-            if !func_result.success {
-                continue;
-            }
-
-            let rust_code = func_result.rust_code.as_ref().unwrap();
-            let output_path = modules_dir
-                .join(&func_result.function)
-                .join("translated.rs");
-            std::fs::create_dir_all(output_path.parent().unwrap())
-                .context("Failed to create output directory")?;
-            std::fs::write(&output_path, rust_code).with_context(|| {
-                format!(
-                    "Failed to write translated code to {}",
-                    output_path.display()
-                )
-            })?;
-
-            let branch_result = git_manager
-                .create_branch(
-                    dll,
-                    &func_result.function,
-                    1,
-                    Some(&BranchCreationPolicy::Warn(DependencyPolicy {
-                        category: DllCategory::ProjectSpecific,
-                        crate_replacement: None,
-                    })),
-                )
-                .context("Failed to create git branch")?;
-
-            let branch_info = &branch_result.branch;
-            print_git_status(branch_info, false);
-
-            let output_path_str = output_path.to_string_lossy().to_string();
-            let _commit = git_manager
-                .commit(
-                    branch_info,
-                    &format!(
-                        "re/batch/{}: translate {} (batch attempt)",
-                        func_result.function, dll
-                    ),
-                    &[&output_path_str],
-                )
-                .context("Failed to commit translated code")?;
-
-            let merge_result = git_manager
-                .merge_to_main(branch_info)
-                .context("Failed to merge branch to main")?;
-
-            match &merge_result {
-                calxgloss_git::MergeResult::Merged { merge_hash } => {
-                    info!(hash = %merge_hash, "Translation accepted and merged");
-                }
-                calxgloss_git::MergeResult::AlreadyUpToDate => {
-                    info!("Branch was already up to date with main");
-                }
-                calxgloss_git::MergeResult::Conflicts {
-                    conflicted_files,
-                    error,
-                } => {
-                    warn!(files = ?conflicted_files, error = %error, "Merge conflicts");
-                }
-            }
-
-            // Set the branch on the result (we already have a mutable ref via enumerate)
-            func_result.branch = Some(branch_info.clone());
-        }
-    }
 
     // Print batch summary
     print_batch_summary(&batch_result);

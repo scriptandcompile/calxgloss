@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### `calxgloss-translator`
+- **`batch_translate()` accepts a per-function callback** — the batch method now takes an optional `&mut dyn FnMut(&str, &str, &mut FunctionResult) -> bool` closure that is invoked immediately after each function's translation pipeline (including retries) completes, before the next function is processed. The callback can perform post-processing (e.g. writing files, git operations) incrementally. Returns `true` to continue the batch or `false` to stop early.
+
+### `calxgloss-cli`
+- **Incremental git commits during batch translation** — `run_translation_for_dll()` and `handle_batch_translate()` now commit and merge each function immediately after its translation succeeds, rather than deferring all git work until the entire batch finishes. Each function's Rust code is written, a `re/{dll}/{function}v1` branch is created, the file is committed, and the branch is merged to `main` before the next function is processed.
+
+### `calxgloss-types`
+- **`ProgressEvent::FunctionCompleted`** — new event emitted immediately after each function completes during batch translation, carrying `dll`, `function`, `success`, `attempts`, and `branch` fields.
+
+### `calxgloss-web`
+- **Progress state handles `FunctionCompleted`** — the `ProgressState` now processes the new `FunctionCompleted` event, marking the corresponding unit as `Complete` in the live progress dashboard.
+
 ### `calxgloss-web`
 - **`api_get_unit` merges live progress state** — the unit detail endpoint now also consults the `ProgressState` and creates synthetic units for in-progress translations (IDs prefixed with `live/`), so clicking a live unit no longer returns 404.
 - **LLM request/response log renders raw text** — content is now shown inside `<pre>` with only `<`, `>`, and `&` escaped, so JSON and code (e.g. `{"param_0":0}`) displays correctly instead of HTML-entity-encoded (`&#34;param_0&#34;:0`).
