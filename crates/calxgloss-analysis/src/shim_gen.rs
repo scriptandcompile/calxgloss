@@ -24,22 +24,18 @@ use calxgloss_types::{ComplexityScore, ReturnMapping, ShimApiMapping, ShimLayer}
 /// Configuration controlling how aggressively the generator fills in
 /// stubs versus leaving `TODO` markers for manual review.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub enum ShimGenerationMode {
     /// Generate complete, compilable code where possible. Leave `TODO` only
     /// for mappings that require significant manual work (e.g. complex type
     /// conversions or multi-step API sequences).
+    #[default]
     Complete,
 
     /// Generate skeletal stubs for all mappings, with clear `TODO` comments
     /// explaining what each function needs to implement. Useful for getting
     /// the overall structure right before filling in details.
     Skeletal,
-}
-
-impl Default for ShimGenerationMode {
-    fn default() -> Self {
-        Self::Complete
-    }
 }
 
 /// Generates Rust source code for a shim layer.
@@ -82,7 +78,7 @@ pub fn generate_shim_source(shim: &ShimLayer, mode: ShimGenerationMode) -> Strin
     if !output.ends_with('\n') {
         output.push('\n');
     }
-    output.push_str("\n");
+    output.push('\n');
 
     // Use declarations for the target crate.
     append_use_declarations(&mut output, shim);
@@ -506,7 +502,7 @@ fn shim_return_type(return_mapping: &ReturnMapping) -> String {
 
 fn append_complete_body(output: &mut String, mapping: &ShimApiMapping) {
     let target_api = escape_crate_path(&mapping.crate_api);
-    let crate_root = shim_crate_root(&mapping.crate_api.split("::").next().unwrap_or(""));
+    let crate_root = shim_crate_root(mapping.crate_api.split("::").next().unwrap_or(""));
     let call_args = convert_call_args(&mapping.crate_params, &mapping.original_params);
 
     match &mapping.return_mapping {
