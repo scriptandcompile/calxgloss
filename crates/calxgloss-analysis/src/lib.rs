@@ -53,6 +53,9 @@ pub use dependency::*;
 pub use error::{AnalysisError, Result};
 pub use experiment_log::*;
 
+// Re-export shim suggestion types from calxgloss-types.
+pub use calxgloss_types::ShimSuggestionReport;
+
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_pal::ApiMappings;
 use calxgloss_types::{DllCategory, DllInfo, FunctionInfo, WindowsApiCall};
@@ -570,6 +573,38 @@ impl Analyzer {
         &self.ghidra
     }
 
+    /// Generate shim layer suggestions for all crate-replacement DLLs.
+    ///
+    /// After classification, this function estimates the expected shim complexity
+    /// for each DLL whose strategy is `CrateReplacement`. The estimation is based
+    /// on export/import symbol counts and known crate patterns — no LLM call is needed.
+    ///
+    /// # Arguments
+    ///
+    /// * `classifications` — The full classification results to filter.
+    ///
+    /// # Returns
+    ///
+    /// A [`calxgloss_types::ShimSuggestionReport`] containing one suggestion per
+    /// crate-replacement DLL, or an empty report if no DLLs need shim layers.
+    pub fn suggest_shim_layers(
+        &self,
+        classifications: &[DllClassification],
+    ) -> calxgloss_types::ShimSuggestionReport {
+        let suggestions: Vec<calxgloss_types::ShimSuggestion> = classifications
+            .iter()
+            .filter_map(|c| {
+                if matches!(c.strategy, Strategy::CrateReplacement { .. }) {
+                    Some(suggest_shim(c))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        calxgloss_types::ShimSuggestionReport { suggestions }
+    }
+
     /// Detect the complexity of a function from its disassembly and API usage.
     ///
     /// This is the primary mechanism for deciding how much context to
@@ -618,6 +653,86 @@ impl Analyzer {
             self.detect_complexity(&analysis.function_info.disassembly, &analysis.tagged_apis);
         PromptVariant::new(complexity).with_api_aware(true)
     }
+}
+
+/// Generate a shim suggestion for a single crate-replacement DLL.
+///
+/// Estimates complexity from the DLL's export/import symbol counts and
+/// known crate characteristics. Well-known crates (wgpu, cpal) receive
+/// higher confidence scores because their API patterns are better understood.
+pub fn suggest_shim(classification: &DllClassification) -> calxgloss_types::ShimSuggestion {
+    let estimated_mappings = classification.exports_count;
+
+    let (estimated_complexity, confidence) = estimate_complexity(
+        classification,
+        estimated_mappings,
+        classification.imports_count,
+    );
+
+    calxgloss_types::ShimSuggestion {
+        source_dll: classification.dll.clone(),
+        target_crate: classification.crate_replacement.clone().unwrap_or_default(),
+        estimated_mappings,
+        estimated_complexity,
+        estimated_confidence: confidence,
+    }
+}
+
+/// Estimates the shim complexity and confidence for a single DLL.
+///
+/// The complexity heuristic uses:
+/// - Export count as the primary complexity driver
+/// - Import count as a secondary factor (more imports → more interop)
+/// - Known crate patterns for confidence calibration
+fn estimate_complexity(
+    classification: &DllClassification,
+    exports: usize,
+    imports: usize,
+) -> (calxgloss_types::ComplexityScore, f64) {
+    // Score = exports * 5 + imports * 3, weighted by crate familiarity
+    let raw_score = (exports as f64) * 5.0 + (imports as f64) * 3.0;
+
+    // Known crates get higher base confidence because their API patterns
+    // are well-documented and the translation is more predictable.
+    let crate_name = classification
+        .crate_replacement
+        .as_deref()
+        .unwrap_or("");
+    let crate_familiarity: f64 = match crate_name {
+        "wgpu" | "cpal" | "fmod-rs" => 0.9,
+        "vb6runtime" => 0.85,
+        "tiny-skia" => 0.8,
+        _ => 0.6,
+    };
+
+    // Confidence decreases slightly with very high export counts
+    // (harder to predict accurately) and increases with low counts.
+    let count_factor: f64 = if exports == 0 {
+        0.7
+    } else if exports <= 10 {
+        0.95
+    } else if exports <= 50 {
+        0.85
+    } else if exports <= 100 {
+        0.75
+    } else {
+        0.6
+    };
+
+    let confidence = (crate_familiarity * 0.6_f64 + count_factor * 0.4_f64).min(1.0_f64);
+
+    // Determine complexity tier from weighted score
+    let weighted_score = raw_score * (1.0 + (imports as f64) / 100.0);
+
+    let complexity = if weighted_score < 50.0 {
+        calxgloss_types::ComplexityScore::Low
+    } else if weighted_score < 200.0 {
+        calxgloss_types::ComplexityScore::Medium
+    } else {
+        calxgloss_types::ComplexityScore::High
+    };
+
+    (complexity, confidence)
 }
 
 #[cfg(test)]
@@ -868,5 +983,189 @@ mod tests {
             calxgloss_types::FunctionComplexity::Minimal
         );
         assert!(variant.api_aware);
+    }
+
+    #[test]
+    fn test_suggest_shim_d3d9() {
+        let classification = DllClassification {
+            dll: "d3d9.dll".to_string(),
+            category: DllCategory::MicrosoftSdk,
+            strategy: Strategy::CrateReplacement {
+                crate_name: "wgpu".to_string(),
+            },
+            exports_count: 200,
+            imports_count: 5,
+            crate_replacement: Some("wgpu".to_string()),
+        };
+
+        let suggestion = suggest_shim(&classification);
+        assert_eq!(suggestion.source_dll, "d3d9.dll");
+        assert_eq!(suggestion.target_crate, "wgpu");
+        assert_eq!(suggestion.estimated_mappings, 200);
+        assert!(matches!(
+            suggestion.estimated_complexity,
+            calxgloss_types::ComplexityScore::High
+        ));
+        assert!(suggestion.estimated_confidence > 0.0);
+    }
+
+    #[test]
+    fn test_suggest_shim_kernel32_no_filtering() {
+        // suggest_shim generates a suggestion regardless of strategy;
+        // filtering to CrateReplacement only happens in suggest_shim_layers.
+        let classification = DllClassification {
+            dll: "kernel32.dll".to_string(),
+            category: DllCategory::WindowsOs,
+            strategy: Strategy::PalMapping,
+            exports_count: 500,
+            imports_count: 0,
+            crate_replacement: None,
+        };
+
+        let suggestion = suggest_shim(&classification);
+        // No filtering here — suggestion is still generated
+        assert_eq!(suggestion.estimated_mappings, 500);
+        assert!(suggestion.target_crate.is_empty());
+    }
+
+    #[test]
+    fn test_suggest_shim_fmod() {
+        let classification = DllClassification {
+            dll: "fmod.dll".to_string(),
+            category: DllCategory::KnownThirdParty,
+            strategy: Strategy::CrateReplacement {
+                crate_name: "fmod-rs".to_string(),
+            },
+            exports_count: 80,
+            imports_count: 2,
+            crate_replacement: Some("fmod-rs".to_string()),
+        };
+
+        let suggestion = suggest_shim(&classification);
+        assert_eq!(suggestion.source_dll, "fmod.dll");
+        assert_eq!(suggestion.target_crate, "fmod-rs");
+        assert_eq!(suggestion.estimated_mappings, 80);
+        assert!(suggestion.estimated_confidence > 0.8);
+    }
+
+    #[test]
+    fn test_suggest_shim_small_dll() {
+        let classification = DllClassification {
+            dll: "tiny_lib.dll".to_string(),
+            category: DllCategory::KnownThirdParty,
+            strategy: Strategy::CrateReplacement {
+                crate_name: "lz4".to_string(),
+            },
+            exports_count: 3,
+            imports_count: 1,
+            crate_replacement: Some("lz4".to_string()),
+        };
+
+        let suggestion = suggest_shim(&classification);
+        assert_eq!(suggestion.estimated_mappings, 3);
+        assert!(matches!(
+            suggestion.estimated_complexity,
+            calxgloss_types::ComplexityScore::Low
+        ));
+    }
+
+    #[test]
+    fn test_suggest_shim_layers_filters_correctly() {
+        let analyzer = test_analyzer();
+        let classifications = vec![
+            DllClassification {
+                dll: "d3d9.dll".to_string(),
+                category: DllCategory::MicrosoftSdk,
+                strategy: Strategy::CrateReplacement {
+                    crate_name: "wgpu".to_string(),
+                },
+                exports_count: 50,
+                imports_count: 10,
+                crate_replacement: Some("wgpu".to_string()),
+            },
+            DllClassification {
+                dll: "kernel32.dll".to_string(),
+                category: DllCategory::WindowsOs,
+                strategy: Strategy::PalMapping,
+                exports_count: 500,
+                imports_count: 0,
+                crate_replacement: None,
+            },
+            DllClassification {
+                dll: "game_logic.dll".to_string(),
+                category: DllCategory::ProjectSpecific,
+                strategy: Strategy::ReverseEngineer,
+                exports_count: 100,
+                imports_count: 5,
+                crate_replacement: None,
+            },
+            DllClassification {
+                dll: "fmod.dll".to_string(),
+                category: DllCategory::KnownThirdParty,
+                strategy: Strategy::CrateReplacement {
+                    crate_name: "fmod-rs".to_string(),
+                },
+                exports_count: 80,
+                imports_count: 2,
+                crate_replacement: Some("fmod-rs".to_string()),
+            },
+        ];
+
+        let report = analyzer.suggest_shim_layers(&classifications);
+        assert_eq!(report.total_dlls(), 2);
+        assert_eq!(report.low_complexity_count(), 0);
+        // fmod (80*5 + 2*3 = 406) → High, d3d9 (50*5 + 10*3 = 280) → High
+        assert_eq!(report.high_complexity_count(), 2);
+        assert!(!report.is_empty());
+    }
+
+    #[test]
+    fn test_suggest_shim_layers_empty() {
+        let analyzer = test_analyzer();
+        let classifications = vec![
+            DllClassification {
+                dll: "kernel32.dll".to_string(),
+                category: DllCategory::WindowsOs,
+                strategy: Strategy::PalMapping,
+                exports_count: 500,
+                imports_count: 0,
+                crate_replacement: None,
+            },
+            DllClassification {
+                dll: "game_logic.dll".to_string(),
+                category: DllCategory::ProjectSpecific,
+                strategy: Strategy::ReverseEngineer,
+                exports_count: 100,
+                imports_count: 5,
+                crate_replacement: None,
+            },
+        ];
+
+        let report = analyzer.suggest_shim_layers(&classifications);
+        assert!(report.is_empty());
+        assert_eq!(report.total_dlls(), 0);
+        assert_eq!(report.average_confidence(), 0.0);
+    }
+
+    #[test]
+    fn test_estimate_complexity_zero_exports() {
+        let classification = DllClassification {
+            dll: "empty.dll".to_string(),
+            category: DllCategory::MicrosoftSdk,
+            strategy: Strategy::CrateReplacement {
+                crate_name: "wgpu".to_string(),
+            },
+            exports_count: 0,
+            imports_count: 0,
+            crate_replacement: Some("wgpu".to_string()),
+        };
+
+        let suggestion = suggest_shim(&classification);
+        assert_eq!(suggestion.estimated_mappings, 0);
+        assert!(matches!(
+            suggestion.estimated_complexity,
+            calxgloss_types::ComplexityScore::Low
+        ));
+        assert!(suggestion.estimated_confidence >= 0.0 && suggestion.estimated_confidence <= 1.0);
     }
 }
