@@ -175,6 +175,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### `calxgloss-ghidra`
 - Added optional dependency for future GhidraMCP integration behind the `server` feature.
+- **Empty cross-reference responses handled gracefully** — `xrefs_to`, `xrefs_from`, and `function_xrefs` treat a 200 with empty body (sent by GhidraMCP when a function has no callers/callees) as valid empty results instead of surfacing a "server returned an empty response" error.
 
 ### All crates
 - Removed references to implementation phases and steps from doc-comments and inline comments. The planning document (`step_by_step.md`) remains as the planning reference; source comments now describe what the code does, not which phase it came from. Affected crates: `calxgloss-analysis`, `calxgloss-pal`, `calxgloss-prompts`, `calxgloss-reports`, `calxgloss-translator`, `calxgloss-types`.

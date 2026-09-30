@@ -457,14 +457,24 @@ impl GhidraClient {
     // =========================================================
 
     /// References to `address` — who points at it.
+    ///
+    /// The server returns a 200 with an empty body when there are no
+    /// cross-references, which is a valid "no results" response rather than
+    /// an error.
     #[instrument(skip(self), fields(address = format_args!("{address:#x}")))]
     pub async fn xrefs_to(&self, address: u64, limit: Option<usize>) -> Result<Vec<Xref>> {
         let mut params: Vec<(&str, String)> = vec![("address", Self::addr(address))];
         if let Some(n) = limit {
             params.push(("limit", n.to_string()));
         }
-        let body = self.get_text("xrefs_to", &params).await?;
-        Ok(parse::parse_xrefs(&body))
+        let body = self.get_text("xrefs_to", &params).await;
+        match body {
+            Ok(body) => Ok(parse::parse_xrefs(&body)),
+            Err(GhidraError::Reported {
+                message: ref m, ..
+            }) if m == "the server returned an empty response" => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
     }
 
     /// References from `address` — what it points at.
@@ -472,25 +482,45 @@ impl GhidraClient {
     /// A function's *entry* has no outgoing references, because nothing inside
     /// it is the source. Pass the address of a call instruction to learn its
     /// target.
+    ///
+    /// The server returns a 200 with an empty body when there are no
+    /// cross-references, which is a valid "no results" response rather than
+    /// an error.
     #[instrument(skip(self), fields(address = format_args!("{address:#x}")))]
     pub async fn xrefs_from(&self, address: u64, limit: Option<usize>) -> Result<Vec<Xref>> {
         let mut params: Vec<(&str, String)> = vec![("address", Self::addr(address))];
         if let Some(n) = limit {
             params.push(("limit", n.to_string()));
         }
-        let body = self.get_text("xrefs_from", &params).await?;
-        Ok(parse::parse_xrefs(&body))
+        let body = self.get_text("xrefs_from", &params).await;
+        match body {
+            Ok(body) => Ok(parse::parse_xrefs(&body)),
+            Err(GhidraError::Reported {
+                message: ref m, ..
+            }) if m == "the server returned an empty response" => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
     }
 
     /// References to a function, found by name.
+    ///
+    /// The server returns a 200 with an empty body when there are no
+    /// cross-references, which is a valid "no results" response rather than
+    /// an error.
     #[instrument(skip(self), fields(function))]
     pub async fn function_xrefs(&self, function: &str, limit: Option<usize>) -> Result<Vec<Xref>> {
         let mut params: Vec<(&str, String)> = vec![("name", function.to_string())];
         if let Some(n) = limit {
             params.push(("limit", n.to_string()));
         }
-        let body = self.get_text("function_xrefs", &params).await?;
-        Ok(parse::parse_xrefs(&body))
+        let body = self.get_text("function_xrefs", &params).await;
+        match body {
+            Ok(body) => Ok(parse::parse_xrefs(&body)),
+            Err(GhidraError::Reported {
+                message: ref m, ..
+            }) if m == "the server returned an empty response" => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
     }
 
     /// Names of the functions that call the function at `address`.
