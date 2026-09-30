@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Shim layer types** — `ShimApiMapping`, `ShimLayer`, `ComplexityScore`, and `ReturnMapping` define the API contract for translating a Windows DLL's exported surface to an equivalent Rust crate. Mappings carry original and target signatures, parameter transformation descriptions, complexity scores, and optional return-value handling. `ShimLayer` provides aggregate helpers (`total_complexity()`, `overall_complexity()`, `mapping_count()`) and converts to existing `ApiMappingItem` for prompt inclusion.
 - `ShimVerificationResult` — result of verifying a shim layer against tests; reports compilation status, per-mapping test counts (main + edge-case), failures, and per-mapping breakdowns. Provides `total_tests()`, `total_passed()`, `all_passed()`, and `pass_rate()` helpers.
 - `ShimMappingTestResult` — per-mapping test result with `original_api`, `crate_api`, pass count, total count, and detailed failures.
+- **`ShimSuggestion`** — per-DLL shim layer estimate with `source_dll`, `target_crate`, `estimated_mappings`, `estimated_complexity` (Low/Medium/High), and `estimated_confidence` in `[0.0, 1.0]`. Produced automatically from classification data without an LLM call.
+- **`ShimSuggestionReport`** — aggregation of all `ShimSuggestion` instances for crate-replacement DLLs. Provides `total_dlls()`, `low_complexity_count()`, `medium_complexity_count()`, `high_complexity_count()`, `is_empty()`, and `average_confidence()`.
 - **`ProgressEvent::FunctionCompleted`** — new event emitted immediately after each function completes during batch translation, carrying `dll`, `function`, `success`, `attempts`, and `branch` fields.
 
 ### `calxgloss-web`
@@ -37,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`body` variable scope fix in `showDetail`** — moved `const body` declaration outside the `try/catch` block so the error handler can reference it.
 
 ### `calxgloss-cli`
+- **`classify` generates shim layer suggestions** — after classifying DLLs, automatically produces complexity estimates for all crate-replacement DLLs and persists them to `re/shims/suggestions.json`. The suggestions file is committed to git on main.
 - **`init` subcommand** — creates a `calxgloss.toml` in the current directory with a fully commented-out template listing every `[ghidra]` and `[llm]` key with sensible defaults.
 - **`auto` subcommand** — detects project state and runs the next step automatically. Scans the target directory for `.dll` files, checks whether classification records exist in `re/classify/`, and either runs classification first (if any DLLs are unclassified) or prompts the user to select a DLL for batch translation.
 - **No-subcommand defaults to `auto`** — calling `calxgloss-cli` with no subcommand is equivalent to `calxloss-cli auto`.
@@ -83,6 +86,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`DependencyGraphPersistor`** — persists a `DependencyGraph` to `<workspace>/re/analysis/dependency_graph.json`. Provides `save()`, `load()`, `graph_path()`, and a convenience `build_and_save()` that combines `DependencyTracker::build()` with `save()`. Auto-creates the `re/analysis/` directory structure. Returns `None` on missing or corrupt files rather than erroring.
 - `Analyzer::detect_complexity()` — detects function complexity from disassembly and tagged API calls.
 - `Analyzer::build_prompt_variant()` — builds a `PromptVariant` with complexity classification and API awareness.
+- **`Analyzer::suggest_shim_layers()`** — generates shim layer complexity estimates for all crate-replacement DLLs from classification data. Uses a heuristic scoring formula (`exports * 5 + imports * 3`, weighted by crate familiarity and export-count factor) to produce estimated complexity (Low/Medium/High) and confidence scores without an LLM call. Re-exports `ShimSuggestionReport` from `calxgloss_types`.
 - **`DependencyTracker::build()` / `for_dll()`** — now assign correct `WorkUnitLevel` (`DllClassification`, `ShimLayer`) to nodes they create, instead of using default struct field syntax.
 - **Prompt strategy logger** (`PromptStrategyLogger`) — persists experiment entries to `<workspace>/re/analysis/prompt_strategy_log.json` with `record()`, `load()`, `compute_stats()`, and `log_path()` methods. Auto-creates directory structure; handles corrupted-file recovery by starting fresh.
 - **Shim mapping auto-generation** (`shim` module) — `generate_shim_mappings()` sends a structured prompt to the LLM containing the DLL name, target crate, and all exported function signatures; the LLM returns a JSON array of `ShimApiMapping` entries. Includes `CrateContext` hints (description, common patterns, pitfalls) for wgpu, tiny-skia, cpal, fmod-rs, and vb6runtime to guide the LLM. Response parser strips markdown code fences, maps string values to typed enums, and handles missing optional fields gracefully.
@@ -104,6 +108,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### `calxgloss-reports`
 - **Terminal rendering** (`render_dashboard`) — flat text report with horizontal dividers (`═` / `─`), no vertical borders or corners. Color-coded status summary, dependency-sorted review queue table, blocked units section, and recent activity. Auto-refresh follow mode via `render_dashboard_follow`.
 - **`render_unit_view()`** — renders a detailed single-unit view with sections: unit info (kind, status, confidence, dependencies), branch status (merged/unmerged), DLL classification, diff summary (files changed, insertions, deletions), baseline and verification test results, and attempt history loaded from patch records.
+- **`print_classification_report()`** now displays a SHIM LAYERS section showing per-DLL shim suggestion details: target crate, estimated mapping count, complexity (color-coded: green/yellow/red), and confidence percentage. Accepts a `ShimSuggestionReport` alongside classifications.
 - `ViewTarget` — parses `dll/function` or `dll/function/vN` target strings.
 - `UnitViewData` — collects all data for a unit view (unit info, branch name, merge status, diff summary, attempt history, baseline tests, DLL classification).
 - **Dependency diff summary** — computes `git diff` stats between branch and main (files changed, insertions, deletions).
