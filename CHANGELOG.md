@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### `calxgloss-types`
 - **Shim layer types** — `ShimApiMapping`, `ShimLayer`, `ComplexityScore`, and `ReturnMapping` define the API contract for translating a Windows DLL's exported surface to an equivalent Rust crate. Mappings carry original and target signatures, parameter transformation descriptions, complexity scores, and optional return-value handling. `ShimLayer` provides aggregate helpers (`total_complexity()`, `overall_complexity()`, `mapping_count()`) and converts to existing `ApiMappingItem` for prompt inclusion.
+- `ShimVerificationResult` — result of verifying a shim layer against tests; reports compilation status, per-mapping test counts (main + edge-case), failures, and per-mapping breakdowns. Provides `total_tests()`, `total_passed()`, `all_passed()`, and `pass_rate()` helpers.
+- `ShimMappingTestResult` — per-mapping test result with `original_api`, `crate_api`, pass count, total count, and detailed failures.
 - **`ProgressEvent::FunctionCompleted`** — new event emitted immediately after each function completes during batch translation, carrying `dll`, `function`, `success`, `attempts`, and `branch` fields.
 
 ### `calxgloss-web`
@@ -65,6 +67,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### `calxgloss-verify`
 - Shared PAL stubs moved into a single `scratch/pal/` crate — each verification project now depends on it via path dependency instead of having ~16 KB of stub types, traits, and implementations duplicated inline in its `lib.rs`.
+- **`Verifier::verify_shim()`** — verifies a shim layer by scaffolding a sandboxed Cargo project, compiling the generated shim source, running `cargo test`, and parsing the output. Accepts raw shim source and test code strings, scaffolds a project with the target crate as a dependency, and returns a `ShimVerificationResult` with compilation status, per-mapping test counts (main + edge-case), and detailed failure information.
+- **`parse_shim_test_results()`** — parses `cargo test` output for shim test results. Extracts individual test names, categorizes them as parameter tests (`test_<fn>_params`) or edge-case tests (`test_<fn>_edge_*`), groups results by mapping function name, and returns per-mapping pass counts with detailed failure records.
+- `parse_test_line()` — parses individual `cargo test` output lines to extract test names and pass/fail status.
+- `extract_mapping_function()` — extracts the original API function name from a test name by stripping module prefix, `test_` prefix, and `_params` / `_edge_*` suffixes.
 
 ### `calxgloss-config`
 - `LlmSection.strategy` — retry strategy configuration (compile_fix, test_fix, escalate, edge_case_fix, auto) via CLI flag, environment variable (`CALXGLOSS_LLM_STRATEGY`), or config file.
