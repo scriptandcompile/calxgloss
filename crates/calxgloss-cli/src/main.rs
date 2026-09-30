@@ -311,7 +311,7 @@ enum Command {
 
     /// Automatically detect project state and run the next step.
     ///
-    /// Scans the target directory for DLLs, checks whether classification
+    /// Scans the target directory for DLLs and EXEs, checks whether classification
     /// records exist in `re/classify/`, and either runs classification or
     /// batch translation accordingly.
     ///
@@ -321,7 +321,7 @@ enum Command {
         #[arg(long)]
         target: Option<PathBuf>,
 
-        /// DLLs to process (default: scan the target directory for .dll files)
+        /// DLLs or EXEs to process (default: scan the target directory for .dll and .exe files)
         #[arg(long)]
         dlls: Option<String>,
 
@@ -868,23 +868,23 @@ fn handle_init() -> Result<()> {
 // Auto command handler — smart pipeline dispatcher
 // ============================================================
 
-/// Scans a directory for DLL files.
-fn scan_dlls(target_dir: &Path) -> Vec<String> {
-    let mut dlls = Vec::new();
+/// Scans a directory for DLL and EXE files.
+fn scan_targets(target_dir: &Path) -> Vec<String> {
+    let mut targets = Vec::new();
     if let Ok(entries) = std::fs::read_dir(target_dir) {
         for entry in entries.filter_map(|e| e.ok()) {
             let file_name = entry.file_name();
             let name = file_name.to_string_lossy().to_lowercase();
-            if name.ends_with(".dll") {
-                dlls.push(file_name.to_string_lossy().to_string());
+            if name.ends_with(".dll") || name.ends_with(".exe") {
+                targets.push(file_name.to_string_lossy().to_string());
             }
         }
     }
-    dlls.sort();
-    dlls
+    targets.sort();
+    targets
 }
 
-/// Check whether a classification record exists for the given DLL.
+/// Check whether a classification record exists for the given file.
 fn classification_record_exists(base_path: &Path, dll: &str) -> bool {
     let sanitized: String = dll
         .chars()
@@ -1156,23 +1156,23 @@ async fn handle_auto(
             .filter(|s| !s.is_empty())
             .collect()
     } else {
-        scan_dlls(&target_dir)
+        scan_targets(&target_dir)
     };
 
     if dlls.is_empty() {
         println!(
-            "  {} No DLL files found in {}.",
+            "  {} No DLL/EXE files found in {}.",
             red_bold("✗"),
             target_dir.display()
         );
-        println_content("Specify DLLs explicitly: calxgloss auto --dlls \"eqgame.dll,eqmain.dll\"");
-        anyhow::bail!("No DLLs found");
+        println_content("Specify files explicitly: calxgloss auto --dlls \"eqgame.dll,myapp.exe\"");
+        anyhow::bail!("No files found");
     }
 
     println!();
     hsep_bold();
     println_content(format!(
-        "  Calxgloss Auto — {} DLL(s) found",
+        "  Calxgloss Auto — {} file(s) found",
         bold(&dlls.len().to_string())
     ));
     hsep();
@@ -1202,10 +1202,10 @@ async fn handle_auto(
         .cloned()
         .collect();
 
-    // Step 1: Classify unclassified DLLs
+    // Step 1: Classify unclassified files
     if !unclassified.is_empty() {
         println!(
-            "  {} Classifying {} unclassified DLL(s)…",
+            "  {} Classifying {} unclassified file(s)…",
             cyan_bold("→"),
             bold(&unclassified.len().to_string())
         );
@@ -1226,21 +1226,21 @@ async fn handle_auto(
         classified.extend(unclassified);
     }
 
-    // All DLLs are classified
+    // All files are classified
     if classified.is_empty() {
-        println_content("No classified DLLs found; nothing to do.");
+        println_content("No classified files found; nothing to do.");
         return Ok(());
     }
 
     println!(
-        "  {} {} DLL(s) classified, ready for translation",
+        "  {} {} file(s) classified, ready for translation",
         green_bold("✓"),
         bold(&classified.len().to_string())
     );
     println_content("");
 
     if classify_only {
-        println_content("Classification complete. All DLLs are classified.");
+        println_content("Classification complete. All files are classified.");
         println_content("Re-run without --classify-only to start translation.");
         return Ok(());
     }
@@ -1248,10 +1248,10 @@ async fn handle_auto(
     let output_dir = repo_dir;
 
     if continue_mode {
-        // Translate all classified DLLs in sequence (non-interactive).
+        // Translate all classified files in sequence (non-interactive).
         println!();
         println!(
-            "  {} Translating {} DLL(s) in sequence…",
+            "  {} Translating {} file(s) in sequence…",
             cyan_bold("→"),
             bold(&classified.len().to_string())
         );
@@ -1267,9 +1267,9 @@ async fn handle_auto(
             run_translation_for_dll(dll, &output_dir, skip_git, settings, events).await?;
         }
     } else {
-        // Ask which DLL to translate (interactive mode).
+        // Ask which file to translate (interactive mode).
         println!();
-        println!("  {} Which DLL would you like to translate?", bold("?"));
+        println!("  {} Which file would you like to translate?", bold("?"));
         println!();
         for (i, dll) in classified.iter().enumerate() {
             let num = i + 1;
