@@ -3,7 +3,7 @@
 use calxgloss_types::ProgressEvent;
 use futures_util::{StreamExt, SinkExt};
 use tokio::sync::{broadcast, mpsc, Mutex};
-use tracing::{info, warn};
+use tracing::{info, warn, debug};
 use axum::extract::ws::WebSocket;
 
 #[derive(Clone)]
@@ -54,6 +54,7 @@ impl SessionManager {
     pub async fn register_client(&self) -> (WebSocketHandler, mpsc::Sender<ProgressEvent>) {
         let (tx, rx) = mpsc::channel::<ProgressEvent>(128);
         let _ = self.commands.send(WsCommand::Register(tx.clone())).await;
+        debug!("WS client registered, total clients: {}", self.client_count());
         (WebSocketHandler::new(rx), tx)
     }
 
@@ -96,15 +97,22 @@ async fn broadcast_loop_from_broadcast(
     mut events: broadcast::Receiver<ProgressEvent>,
     mut commands: mpsc::Receiver<WsCommand>,
 ) {
+    debug!("Broadcast loop started");
     loop {
         tokio::select! {
             result = events.recv() => {
                 match result {
                     Ok(event) => {
+                        debug!("Broadcast loop received event: {}", event);
                         let mut clients = clients.lock().await;
                         clients.retain(|tx| !tx.is_closed());
-                        for tx in clients.iter() {
-                            let _ = tx.send(event.clone()).await;
+                        if clients.is_empty() {
+                            debug!("No WS clients connected, dropping event: {}", event);
+                        } else {
+                            debug!("Forwarding event {} to {} clients", event, clients.len());
+                            for tx in clients.iter() {
+                                let _ = tx.send(event.clone()).await;
+                            }
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -119,6 +127,7 @@ async fn broadcast_loop_from_broadcast(
                 WsCommand::Register(tx) => {
                     let mut clients = clients.lock().await;
                     clients.push(tx);
+                    debug!("Client registered, total: {}", clients.len());
                 }
             },
             else => break,
