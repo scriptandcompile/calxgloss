@@ -328,6 +328,11 @@ impl ProgressState {
     pub async fn len(&self) -> usize {
         self.entries.read().await.len()
     }
+
+    /// Returns whether there are any currently in-flight units.
+    pub async fn is_empty(&self) -> bool {
+        self.entries.read().await.is_empty()
+    }
 }
 
 /// Builds a [`ReviewDashboard`] from the state of a Git repository.

@@ -51,7 +51,6 @@ use calxgloss_types::{
     Export, FunctionInfo, ProgressEvent, TestCase, TranslationEvents, TranslationRequest,
 };
 use calxgloss_verify::Verifier;
-use tokio;
 use tracing::{debug, info, instrument, warn};
 
 // ============================================================
@@ -515,14 +514,7 @@ impl TranslationPipeline {
         });
 
         let response = self
-            .send_to_llm(
-                &prompt,
-                self.events.as_ref(),
-                dll,
-                function,
-                1,
-                "initial",
-            )
+            .send_to_llm(&prompt, self.events.as_ref(), dll, function, 1, "initial")
             .await?;
 
         if response.content.is_empty() {
@@ -920,7 +912,6 @@ impl TranslationPipeline {
             let dll_s = dll.to_string();
             let function_s = function.to_string();
             let strategy_s = strategy.to_string();
-            let attempt = attempt;
 
             // Clone values before moving into the keepalive closure
             let dll_kp = dll_s.clone();

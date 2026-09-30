@@ -832,18 +832,19 @@ async fn handle_classify(
     }
 
     // Commit classification records to git (unless skip_git).
-    if !skip_git && !written.is_empty() {
-        if let Ok(git) = GitManager::open(repo_dir) {
-            let _commit = git
-                .commit_to_main(
-                    &format!(
-                        "classify: record classification for {} DLL(s)",
-                        written.len()
-                    ),
-                    &written,
-                )
-                .context("Failed to commit classification records");
-        }
+    if !skip_git
+        && !written.is_empty()
+        && let Ok(git) = GitManager::open(repo_dir)
+    {
+        let _commit = git
+            .commit_to_main(
+                &format!(
+                    "classify: record classification for {} DLL(s)",
+                    written.len()
+                ),
+                &written,
+            )
+            .context("Failed to commit classification records");
     }
 
     // Print report
@@ -1164,6 +1165,7 @@ async fn run_translation_for_dll(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_auto(
     target: Option<PathBuf>,
     dlls_arg: Option<String>,
@@ -2555,6 +2557,7 @@ async fn handle_serve(repo_dir: PathBuf, port: u16) -> Result<()> {
 
 /// Handles the `live` subcommand: starts both the auto pipeline and the
 /// web review UI in the same process.
+#[allow(clippy::too_many_arguments)]
 async fn handle_live(
     target: Option<PathBuf>,
     dlls: Option<String>,

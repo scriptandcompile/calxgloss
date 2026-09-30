@@ -6,13 +6,16 @@ use tokio::sync::{broadcast, mpsc, Mutex};
 use tracing::{info, warn, debug};
 use axum::extract::ws::WebSocket;
 
+/// Callback type for intercepting progress events before forwarding to clients.
+type EventCallback = std::sync::Arc<
+    std::sync::Mutex<Option<Box<dyn Fn(&ProgressEvent) + Send + Sync + 'static>>>,
+>;
+
 #[derive(Clone)]
 pub struct SessionManager {
     clients: std::sync::Arc<Mutex<Vec<mpsc::Sender<ProgressEvent>>>>,
     commands: mpsc::Sender<WsCommand>,
-    callback: std::sync::Arc<
-        std::sync::Mutex<Option<Box<dyn Fn(&ProgressEvent) + Send + Sync + 'static>>>,
-    >,
+    callback: EventCallback,
 }
 
 enum WsCommand {
@@ -58,9 +61,8 @@ impl SessionManager {
         let clients = std::sync::Arc::new(Mutex::new(Vec::new()));
         let (cmd_tx, cmd_rx) = mpsc::channel::<WsCommand>(64);
         let clients_clone = clients.clone();
-        let callback: std::sync::Arc<
-            std::sync::Mutex<Option<Box<dyn Fn(&ProgressEvent) + Send + Sync + 'static>>>,
-        > = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let callback: EventCallback =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
         let callback_clone = callback.clone();
         tokio::spawn(broadcast_loop_from_broadcast(
             clients_clone,
@@ -120,9 +122,7 @@ async fn broadcast_loop_from_broadcast(
     clients: std::sync::Arc<Mutex<Vec<mpsc::Sender<ProgressEvent>>>>,
     mut events: broadcast::Receiver<ProgressEvent>,
     mut commands: mpsc::Receiver<WsCommand>,
-    callback: std::sync::Arc<
-        std::sync::Mutex<Option<Box<dyn Fn(&ProgressEvent) + Send + Sync + 'static>>>,
-    >,
+    callback: EventCallback,
 ) {
     debug!("Broadcast loop started");
     loop {
