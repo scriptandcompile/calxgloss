@@ -55,8 +55,8 @@ fn resolve_live_repo_dir(cli_repo: Option<&PathBuf>) -> PathBuf {
 use anyhow::{Context, Result};
 use calxgloss::DllCategory;
 use calxgloss::GitBranch;
-use calxgloss::TranslationEvents;
 use calxgloss::ProgressEvent;
+use calxgloss::TranslationEvents;
 use calxgloss_analysis::Analyzer;
 use calxgloss_config::{
     EXAMPLE, FileConfig, GhidraSection, Layers, LlmSection, PROJECT_FILE, Resolved, load,
@@ -792,7 +792,10 @@ async fn handle_classify(
     // Write classification records to disk and commit.
     let classify_dir = repo_dir.join("re").join("classify");
     std::fs::create_dir_all(&classify_dir).with_context(|| {
-        format!("Failed to create classification directory: {}", classify_dir.display())
+        format!(
+            "Failed to create classification directory: {}",
+            classify_dir.display()
+        )
     })?;
 
     let mut written = Vec::new();
@@ -808,12 +811,8 @@ async fn handle_classify(
         let record_path = classify_dir.join(format!("{sanitized}.json"));
         let json = serde_json::to_string_pretty(&c)
             .with_context(|| format!("Failed to serialize classification for {}", c.dll))?;
-        std::fs::write(&record_path, &json).with_context(|| {
-            format!(
-                "Failed to write classification record for {}",
-                c.dll
-            )
-        })?;
+        std::fs::write(&record_path, &json)
+            .with_context(|| format!("Failed to write classification record for {}", c.dll))?;
         let record_path_str = record_path.to_string_lossy().to_string();
         written.push(record_path_str.clone());
         info!(dll = %c.dll, record = %record_path_str, "Wrote classification record");
@@ -1055,20 +1054,18 @@ async fn run_translation_for_dll(
                     warn!(error = %e, "Failed to create output directory");
                     return true;
                 }
-                if let Err(e) = std::fs::write(&output_path, rust_code)
-                    .with_context(|| {
-                        format!(
-                            "Failed to write translated code to {}",
-                            output_path.display()
-                        )
-                    })
-                {
+                if let Err(e) = std::fs::write(&output_path, rust_code).with_context(|| {
+                    format!(
+                        "Failed to write translated code to {}",
+                        output_path.display()
+                    )
+                }) {
                     warn!(error = %e, "Failed to write translated code");
                     return true;
                 }
 
-                if let Some(ref mut git_manager) = git {
-                    if let Ok(branch_result) = git_manager.create_branch(
+                if let Some(ref mut git_manager) = git
+                    && let Ok(branch_result) = git_manager.create_branch(
                         dll,
                         &func_result.function,
                         1,
@@ -1076,40 +1073,37 @@ async fn run_translation_for_dll(
                             category: DllCategory::ProjectSpecific,
                             crate_replacement: None,
                         })),
-                    ) {
-                        let branch_info = &branch_result.branch;
-                        print_git_status(branch_info, false);
+                    )
+                {
+                    let branch_info = &branch_result.branch;
+                    print_git_status(branch_info, false);
 
-                        if let Some(output_path_str) = output_path.to_str() {
-                            if let Ok(_commit) = git_manager.commit(
-                                branch_info,
-                                &format!(
-                                    "re/auto/{}: translate {} (batch attempt)",
-                                    func_result.function, dll
-                                ),
-                                &[output_path_str],
-                            ) {
-                                if let Ok(merge_result) =
-                                    git_manager.merge_to_main(branch_info)
-                                {
-                                    match &merge_result {
-                                        calxgloss_git::MergeResult::Merged { merge_hash } => {
-                                            info!(hash = %merge_hash, "Translation accepted and merged");
-                                        }
-                                        calxgloss_git::MergeResult::AlreadyUpToDate => {
-                                            info!("Branch was already up to date with main");
-                                        }
-                                        calxgloss_git::MergeResult::Conflicts {
-                                            conflicted_files,
-                                            error,
-                                        } => {
-                                            warn!(files = ?conflicted_files, error = %error, "Merge conflicts");
-                                        }
-                                    }
-                                    func_result.branch = Some(branch_info.clone());
-                                }
+                    if let Some(output_path_str) = output_path.to_str()
+                        && let Ok(_commit) = git_manager.commit(
+                            branch_info,
+                            &format!(
+                                "re/auto/{}: translate {} (batch attempt)",
+                                func_result.function, dll
+                            ),
+                            &[output_path_str],
+                        )
+                        && let Ok(merge_result) = git_manager.merge_to_main(branch_info)
+                    {
+                        match &merge_result {
+                            calxgloss_git::MergeResult::Merged { merge_hash } => {
+                                info!(hash = %merge_hash, "Translation accepted and merged");
+                            }
+                            calxgloss_git::MergeResult::AlreadyUpToDate => {
+                                info!("Branch was already up to date with main");
+                            }
+                            calxgloss_git::MergeResult::Conflicts {
+                                conflicted_files,
+                                error,
+                            } => {
+                                warn!(files = ?conflicted_files, error = %error, "Merge conflicts");
                             }
                         }
+                        func_result.branch = Some(branch_info.clone());
                     }
                 }
                 true
@@ -1270,7 +1264,15 @@ async fn handle_auto(
             bold(&unclassified.len().to_string())
         );
         println_content("");
-        handle_classify(&unclassified, &target_dir, &repo_dir, skip_git, settings, events).await?;
+        handle_classify(
+            &unclassified,
+            &target_dir,
+            &repo_dir,
+            skip_git,
+            settings,
+            events,
+        )
+        .await?;
         println_content("");
         if !continue_mode {
             println_content(
@@ -1369,7 +1371,11 @@ async fn handle_auto(
 // Translate command handler
 // ============================================================
 
-async fn handle_translate(args: &TranslateArgs, settings: &Settings, repo_dir: PathBuf) -> Result<()> {
+async fn handle_translate(
+    args: &TranslateArgs,
+    settings: &Settings,
+    repo_dir: PathBuf,
+) -> Result<()> {
     let TranslateArgs {
         target,
         dll,
@@ -1381,9 +1387,7 @@ async fn handle_translate(args: &TranslateArgs, settings: &Settings, repo_dir: P
     let (target, dll, function) = (target.as_path(), dll.as_str(), function.as_str());
     let skip_git = *skip_git;
     // Use the output_dir arg if provided, otherwise use the resolved repo_dir.
-    let output_dir = output_dir
-        .clone()
-        .unwrap_or(repo_dir);
+    let output_dir = output_dir.clone().unwrap_or(repo_dir);
 
     // Demanded here rather than at startup: `classify` and `verify` never talk
     // to the LLM, so making the endpoint mandatory for them would force users
@@ -1697,7 +1701,11 @@ async fn handle_translate(args: &TranslateArgs, settings: &Settings, repo_dir: P
 // Batch translate command handler
 // ============================================================
 
-async fn handle_batch_translate(args: &BatchTranslateArgs, settings: &Settings, repo_dir: PathBuf) -> Result<()> {
+async fn handle_batch_translate(
+    args: &BatchTranslateArgs,
+    settings: &Settings,
+    repo_dir: PathBuf,
+) -> Result<()> {
     let BatchTranslateArgs {
         target,
         dll,
@@ -1709,9 +1717,7 @@ async fn handle_batch_translate(args: &BatchTranslateArgs, settings: &Settings, 
     let (target, dll) = (target.as_path(), dll.as_str());
     let skip_git = *skip_git;
     // Use the output_dir arg if provided, otherwise use the resolved repo_dir.
-    let output_dir = output_dir
-        .clone()
-        .unwrap_or(repo_dir);
+    let output_dir = output_dir.clone().unwrap_or(repo_dir);
 
     let llm_url = settings.require_llm_url()?;
     let llm_model = settings.require_llm_model()?;
@@ -1860,20 +1866,18 @@ async fn handle_batch_translate(args: &BatchTranslateArgs, settings: &Settings, 
                     warn!(error = %e, "Failed to create output directory");
                     return true;
                 }
-                if let Err(e) = std::fs::write(&output_path, rust_code)
-                    .with_context(|| {
-                        format!(
-                            "Failed to write translated code to {}",
-                            output_path.display()
-                        )
-                    })
-                {
+                if let Err(e) = std::fs::write(&output_path, rust_code).with_context(|| {
+                    format!(
+                        "Failed to write translated code to {}",
+                        output_path.display()
+                    )
+                }) {
                     warn!(error = %e, "Failed to write translated code");
                     return true;
                 }
 
-                if let Some(ref mut git_manager) = git {
-                    if let Ok(branch_result) = git_manager.create_branch(
+                if let Some(ref mut git_manager) = git
+                    && let Ok(branch_result) = git_manager.create_branch(
                         dll,
                         &func_result.function,
                         1,
@@ -1881,42 +1885,40 @@ async fn handle_batch_translate(args: &BatchTranslateArgs, settings: &Settings, 
                             category: DllCategory::ProjectSpecific,
                             crate_replacement: None,
                         })),
-                    ) {
-                        let branch_info = &branch_result.branch;
-                        print_git_status(branch_info, false);
+                    )
+                {
+                    let branch_info = &branch_result.branch;
+                    print_git_status(branch_info, false);
 
-                        if let Some(output_path_str) = output_path.to_str() {
-                            if let Ok(_commit) = git_manager.commit(
-                                branch_info,
-                                &format!(
-                                    "re/batch/{}: translate {} (batch attempt)",
-                                    func_result.function, dll
-                                ),
-                                &[output_path_str],
-                            ) {
-                                if let Ok(merge_result) =
-                                    git_manager.merge_to_main(branch_info)
-                                {
-                                    match &merge_result {
-                                        calxgloss_git::MergeResult::Merged { merge_hash } => {
-                                            info!(hash = %merge_hash, "Translation accepted and merged");
-                                        }
-                                        calxgloss_git::MergeResult::AlreadyUpToDate => {
-                                            info!("Branch was already up to date with main");
-                                        }
-                                        calxgloss_git::MergeResult::Conflicts {
-                                            conflicted_files,
-                                            error,
-                                        } => {
-                                            warn!(files = ?conflicted_files, error = %error, "Merge conflicts");
-                                        }
-                                    }
-                                    func_result.branch = Some(branch_info.clone());
-                                }
+                    if let Some(output_path_str) = output_path.to_str()
+                        && let Ok(_commit) = git_manager.commit(
+                            branch_info,
+                            &format!(
+                                "re/batch/{}: translate {} (batch attempt)",
+                                func_result.function, dll
+                            ),
+                            &[output_path_str],
+                        )
+                        && let Ok(merge_result) = git_manager.merge_to_main(branch_info)
+                    {
+                        match &merge_result {
+                            calxgloss_git::MergeResult::Merged { merge_hash } => {
+                                info!(hash = %merge_hash, "Translation accepted and merged");
+                            }
+                            calxgloss_git::MergeResult::AlreadyUpToDate => {
+                                info!("Branch was already up to date with main");
+                            }
+                            calxgloss_git::MergeResult::Conflicts {
+                                conflicted_files,
+                                error,
+                            } => {
+                                warn!(files = ?conflicted_files, error = %error, "Merge conflicts");
                             }
                         }
+                        func_result.branch = Some(branch_info.clone());
                     }
                 }
+
                 true
             }),
         )
@@ -2822,7 +2824,9 @@ fn main() -> Result<()> {
                 .target_dir
                 .as_ref()
                 .map(|t| PathBuf::from(&t.value))
-                .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
+                .unwrap_or_else(|| {
+                    std::env::current_dir().expect("Failed to read current directory")
+                });
             let target_dir = target_dir.as_ref();
             let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
             let skip_git = false;
@@ -2830,7 +2834,9 @@ fn main() -> Result<()> {
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_classify(&dll, target_dir, &repo_dir, skip_git, &settings, None))
+                .block_on(handle_classify(
+                    &dll, target_dir, &repo_dir, skip_git, &settings, None,
+                ))
         }
         Command::Translate(args) => {
             let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);

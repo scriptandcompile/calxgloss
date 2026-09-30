@@ -1057,7 +1057,9 @@ impl TranslationPipeline {
         functions: &[String],
         config: &RetryConfig,
         verifier: &Verifier,
-        mut on_function_completed: Option<&mut dyn FnMut(&str, &str, &mut batch::FunctionResult) -> bool>,
+        mut on_function_completed: Option<
+            &mut dyn FnMut(&str, &str, &mut batch::FunctionResult) -> bool,
+        >,
     ) -> Result<batch::BatchTranslationResult> {
         debug!(dll, count = functions.len(), "Starting batch translation");
 
@@ -1115,11 +1117,7 @@ impl TranslationPipeline {
                     );
                     // Create a minimal failed result so the caller sees it
                     let empty_result = retry::RetryResult::new();
-                    batch::FunctionResult::failure(
-                        dll.to_string(),
-                        function.clone(),
-                        empty_result,
-                    )
+                    batch::FunctionResult::failure(dll.to_string(), function.clone(), empty_result)
                 }
             };
 
@@ -1131,7 +1129,7 @@ impl TranslationPipeline {
                 dll: dll.to_string(),
                 function: function.clone(),
                 success,
-                attempts: 0, // filled by caller after git branch creation
+                attempts: 0,  // filled by caller after git branch creation
                 branch: None, // filled by caller after git branch creation
             });
 

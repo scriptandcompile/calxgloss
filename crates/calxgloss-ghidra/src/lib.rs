@@ -470,9 +470,11 @@ impl GhidraClient {
         let body = self.get_text("xrefs_to", &params).await;
         match body {
             Ok(body) => Ok(parse::parse_xrefs(&body)),
-            Err(GhidraError::Reported {
-                message: ref m, ..
-            }) if m == "the server returned an empty response" => Ok(Vec::new()),
+            Err(GhidraError::Reported { message: ref m, .. })
+                if m == "the server returned an empty response" =>
+            {
+                Ok(Vec::new())
+            }
             Err(e) => Err(e),
         }
     }
@@ -495,9 +497,11 @@ impl GhidraClient {
         let body = self.get_text("xrefs_from", &params).await;
         match body {
             Ok(body) => Ok(parse::parse_xrefs(&body)),
-            Err(GhidraError::Reported {
-                message: ref m, ..
-            }) if m == "the server returned an empty response" => Ok(Vec::new()),
+            Err(GhidraError::Reported { message: ref m, .. })
+                if m == "the server returned an empty response" =>
+            {
+                Ok(Vec::new())
+            }
             Err(e) => Err(e),
         }
     }
@@ -516,9 +520,11 @@ impl GhidraClient {
         let body = self.get_text("function_xrefs", &params).await;
         match body {
             Ok(body) => Ok(parse::parse_xrefs(&body)),
-            Err(GhidraError::Reported {
-                message: ref m, ..
-            }) if m == "the server returned an empty response" => Ok(Vec::new()),
+            Err(GhidraError::Reported { message: ref m, .. })
+                if m == "the server returned an empty response" =>
+            {
+                Ok(Vec::new())
+            }
             Err(e) => Err(e),
         }
     }

@@ -699,11 +699,7 @@ impl GitManager {
     ///
     /// This is used for metadata records (classification, patch notes, etc.)
     /// that do not belong on per-function translation branches.
-    pub fn commit_to_main(
-        &self,
-        message: &str,
-        files: &[String],
-    ) -> Result<GitCommit, TypesError> {
+    pub fn commit_to_main(&self, message: &str, files: &[String]) -> Result<GitCommit, TypesError> {
         let mut index = self
             .repo
             .index()
@@ -985,10 +981,15 @@ impl GitManager {
     /// next-attempt branch so the review UI can queue a retry translation.
     ///
     /// Returns the new `GitBranch` ready to be used for the retry attempt.
-    pub fn next_attempt_branch(&self, dll: &str, function: &str, current_attempt: u32) -> Result<GitBranch, TypesError> {
-        let next_attempt = current_attempt.checked_add(1).ok_or_else(|| {
-            TypesError::InvalidBranchName("Attempt number overflow".to_string())
-        })?;
+    pub fn next_attempt_branch(
+        &self,
+        dll: &str,
+        function: &str,
+        current_attempt: u32,
+    ) -> Result<GitBranch, TypesError> {
+        let next_attempt = current_attempt
+            .checked_add(1)
+            .ok_or_else(|| TypesError::InvalidBranchName("Attempt number overflow".to_string()))?;
 
         GitBranch::new(dll, function, next_attempt)
     }
