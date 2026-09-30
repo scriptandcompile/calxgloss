@@ -1,15 +1,14 @@
 //! WebSocket connection management for live progress streaming.
 
-use calxgloss_types::ProgressEvent;
-use futures_util::{StreamExt, SinkExt};
-use tokio::sync::{broadcast, mpsc, Mutex};
-use tracing::{info, warn, debug};
 use axum::extract::ws::WebSocket;
+use calxgloss_types::ProgressEvent;
+use futures_util::{SinkExt, StreamExt};
+use tokio::sync::{Mutex, broadcast, mpsc};
+use tracing::{debug, info, warn};
 
 /// Callback type for intercepting progress events before forwarding to clients.
-type EventCallback = std::sync::Arc<
-    std::sync::Mutex<Option<Box<dyn Fn(&ProgressEvent) + Send + Sync + 'static>>>,
->;
+type EventCallback =
+    std::sync::Arc<std::sync::Mutex<Option<Box<dyn Fn(&ProgressEvent) + Send + Sync + 'static>>>>;
 
 #[derive(Clone)]
 pub struct SessionManager {
@@ -55,14 +54,11 @@ impl SessionManager {
     ///
     /// This lets the translation pipeline's broadcast channel feed directly
     /// into the WebSocket server without an intermediate mpsc bridge.
-    pub fn new_with_broadcast(
-        receiver: broadcast::Receiver<ProgressEvent>,
-    ) -> Self {
+    pub fn new_with_broadcast(receiver: broadcast::Receiver<ProgressEvent>) -> Self {
         let clients = std::sync::Arc::new(Mutex::new(Vec::new()));
         let (cmd_tx, cmd_rx) = mpsc::channel::<WsCommand>(64);
         let clients_clone = clients.clone();
-        let callback: EventCallback =
-            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let callback: EventCallback = std::sync::Arc::new(std::sync::Mutex::new(None));
         let callback_clone = callback.clone();
         tokio::spawn(broadcast_loop_from_broadcast(
             clients_clone,
@@ -80,7 +76,10 @@ impl SessionManager {
     pub async fn register_client(&self) -> (WebSocketHandler, mpsc::Sender<ProgressEvent>) {
         let (tx, rx) = mpsc::channel::<ProgressEvent>(128);
         let _ = self.commands.send(WsCommand::Register(tx.clone())).await;
-        debug!("WS client registered, total clients: {}", self.client_count());
+        debug!(
+            "WS client registered, total clients: {}",
+            self.client_count()
+        );
         (WebSocketHandler::new(rx), tx)
     }
 
@@ -191,7 +190,11 @@ impl WebSocketHandler {
                         continue;
                     }
                 };
-                if ws_tx.send(axum::extract::ws::Message::Text(json.into())).await.is_err() {
+                if ws_tx
+                    .send(axum::extract::ws::Message::Text(json.into()))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }

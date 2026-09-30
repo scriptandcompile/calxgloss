@@ -92,19 +92,15 @@ pub async fn api_get_dashboard(
         };
 
         // Update review_queue: mark matching units as InProgress.
-        let mut matched_keys: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let mut matched_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         for unit in &mut dashboard.review_queue {
             if match_unit(unit) {
-                let old = std::mem::replace(
-                    &mut unit.status,
-                    calxgloss_types::ReviewStatus::InProgress,
-                );
+                let old =
+                    std::mem::replace(&mut unit.status, calxgloss_types::ReviewStatus::InProgress);
                 if !matches!(
                     old,
-                    calxgloss_types::ReviewStatus::Accepted
-                        | calxgloss_types::ReviewStatus::Merged
+                    calxgloss_types::ReviewStatus::Accepted | calxgloss_types::ReviewStatus::Merged
                 ) {
                     unit.updated_at = chrono::Utc::now();
                 }
@@ -194,8 +190,7 @@ pub async fn api_get_unit(
         let in_progress_keys: std::collections::HashSet<&str> =
             entries.keys().map(|k| k.as_str()).collect();
 
-        let mut matched_keys: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let mut matched_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         // Update existing units that match progress entries
         for unit in &mut dashboard.review_queue {
@@ -1075,7 +1070,10 @@ pub async fn static_fallback(
     req: axum::http::Request<axum::body::Body>,
 ) -> (
     axum::http::StatusCode,
-    [(axum::http::header::HeaderName, axum::http::header::HeaderValue); 1],
+    [(
+        axum::http::header::HeaderName,
+        axum::http::header::HeaderValue,
+    ); 1],
     axum::response::Html<String>,
 ) {
     use axum::http::header;
@@ -1140,10 +1138,7 @@ pub async fn static_fallback(
     };
 
     // Set appropriate content types based on file extension
-    let ext = file_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let content_type = match ext {
         "html" | "htm" => "text/html",
         "css" => "text/css",
@@ -1197,10 +1192,7 @@ pub async fn api_get_progress(
         .collect();
 
     let count = in_progress.len();
-    Json(super::ProgressResponse {
-        in_progress,
-        count,
-    })
+    Json(super::ProgressResponse { in_progress, count })
 }
 
 /// Handle GET /api/pipeline — return overall pipeline progress.
@@ -1222,13 +1214,17 @@ pub async fn api_get_pipeline(
 
     // Convert to owned HashMaps for O(1) lookups by DLL name
     let classifications: std::collections::HashMap<String, super::ClassificationInfo> =
-        classifications_raw.into_iter().map(|c| (c.dll.clone(), c)).collect();
-    let batch_summaries: std::collections::HashMap<String, super::BatchInfo> =
-        batch_summaries_raw.into_iter().map(|b| (b.dll.clone(), b)).collect();
+        classifications_raw
+            .into_iter()
+            .map(|c| (c.dll.clone(), c))
+            .collect();
+    let batch_summaries: std::collections::HashMap<String, super::BatchInfo> = batch_summaries_raw
+        .into_iter()
+        .map(|b| (b.dll.clone(), b))
+        .collect();
 
     // Snapshot entries before dropping the lock to avoid nested borrows
-    let entries_snapshot: std::collections::HashMap<String, super::ProgressEntry> =
-        entries.clone();
+    let entries_snapshot: std::collections::HashMap<String, super::ProgressEntry> = entries.clone();
 
     // Collect all DLL names from all three sources
     let mut dll_names: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -1262,24 +1258,18 @@ pub async fn api_get_pipeline(
         let batch = batch_summaries.get(dll).cloned();
 
         // Check if this DLL is currently being translated
-        let current_translating = currently_translating
-            .iter()
-            .find(|d| **d == *dll)
-            .map(|d| {
-                let dll_entries: Vec<_> = entries_snapshot
-                    .values()
-                    .filter(|e| e.dll == **d)
-                    .collect();
-                let completed = dll_entries
-                    .iter()
-                    .filter(|e| matches!(e.status, super::ProgressUnitStatus::Complete))
-                    .count();
-                super::CurrentDllStatus {
-                    dll: d.clone(),
-                    total_entries: dll_entries.len(),
-                    completed_entries: completed,
-                }
-            });
+        let current_translating = currently_translating.iter().find(|d| **d == *dll).map(|d| {
+            let dll_entries: Vec<_> = entries_snapshot.values().filter(|e| e.dll == **d).collect();
+            let completed = dll_entries
+                .iter()
+                .filter(|e| matches!(e.status, super::ProgressUnitStatus::Complete))
+                .count();
+            super::CurrentDllStatus {
+                dll: d.clone(),
+                total_entries: dll_entries.len(),
+                completed_entries: completed,
+            }
+        });
 
         dlls.push(super::PipelineDllProgress {
             dll: dll.clone(),

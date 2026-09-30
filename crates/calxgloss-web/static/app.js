@@ -955,7 +955,12 @@
             }, 50);
         }
 
-        if (viewName === "llm-log" && State.currentView !== "llm-log") {
+        // Render full queue when switching to queue view
+        if (viewName === "queue" && State.dashboard) {
+            renderFullQueue(State.dashboard, State.selectedUnitId);
+        }
+
+        if (viewName === "llm-log") {
             // Focus the log container when switching to LLM log view
             const container = document.getElementById("llm-log-container");
             if (container) container.focus();
@@ -995,7 +1000,7 @@
         const iconClass = unit.status.toLowerCase().replace(/\s+/g, "_");
         const name = unit.kind === "dll_classification"
             ? `Classify ${unit.dll}`
-            : unit.function ? `${unit.dll}/${unit.function}` : unit.dll;
+            : unit.function ? `${unit.dll} ${unit.function}` : unit.dll;
 
         return `
             <div class="queue-item ${selected ? "selected" : ""}" data-unit-id="${unit.id}">
@@ -1095,13 +1100,12 @@
             const iconClass = u.status.toLowerCase().replace(/\s+/g, "_");
             const name = u.kind === "dll_classification"
                 ? `Classify ${u.dll}`
-                : u.function ? `${u.dll}/${u.function}` : u.dll;
+                : u.function ? `${u.dll} ${u.function}` : u.dll;
 
             return `
                 <div class="queue-item-full ${u.id === selectedId ? "selected" : ""}" data-unit-id="${u.id}">
                     <div class="queue-item-icon ${iconClass}"></div>
-                    <div class="qi-name" title="${name}">${name}</div>
-                    <div class="qi-dll">${u.dll}</div>
+                    <div class="qi-name" title="${u.id}">${name}</div>
                     <div class="qi-status ${iconClass}">${STATUS_LABELS[u.status] || u.status}</div>
                     <div class="qi-attempt">v${u.attempt}</div>
                 </div>

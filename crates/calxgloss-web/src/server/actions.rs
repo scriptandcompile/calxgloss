@@ -62,9 +62,8 @@ fn persist_action_state(
     record: &ReviewActionRecord,
 ) -> Result<PathBuf, TypesError> {
     let actions_dir = repo_path.join("re").join("actions");
-    std::fs::create_dir_all(&actions_dir).map_err(|e| {
-        TypesError::InvalidBranchName(format!("Failed to create actions dir: {e}"))
-    })?;
+    std::fs::create_dir_all(&actions_dir)
+        .map_err(|e| TypesError::InvalidBranchName(format!("Failed to create actions dir: {e}")))?;
 
     let action_file = actions_dir.join(format!("{}.json", record.unit_id));
     let json = serde_json::to_string_pretty(record).map_err(TypesError::Serialization)?;
@@ -80,9 +79,16 @@ fn persist_action_state(
 // ============================================================
 
 /// Accept a unit of work: merge the branch to main and persist the action.
-pub async fn accept_unit(state: &ActionsState, unit_id: &str) -> Result<ActionResult, anyhow::Error> {
+pub async fn accept_unit(
+    state: &ActionsState,
+    unit_id: &str,
+) -> Result<ActionResult, anyhow::Error> {
     let unit = lookup_unit(state, unit_id)?;
-    let branch = GitBranch::new(&unit.dll, unit.function.as_deref().unwrap_or(""), unit.attempt)?;
+    let branch = GitBranch::new(
+        &unit.dll,
+        unit.function.as_deref().unwrap_or(""),
+        unit.attempt,
+    )?;
     let git = GitManager::open(state.repo_path())?;
 
     // Merge the branch (write acceptance record)
@@ -123,7 +129,11 @@ pub async fn send_back_unit(
     reason: &str,
 ) -> Result<ActionResult, anyhow::Error> {
     let unit = lookup_unit(state, unit_id)?;
-    let branch = GitBranch::new(&unit.dll, unit.function.as_deref().unwrap_or(""), unit.attempt)?;
+    let branch = GitBranch::new(
+        &unit.dll,
+        unit.function.as_deref().unwrap_or(""),
+        unit.attempt,
+    )?;
     let git = GitManager::open(state.repo_path())?;
 
     // Write rejection record
@@ -163,7 +173,11 @@ pub async fn request_patch(
     let git = GitManager::open(state.repo_path())?;
 
     // Create the next-attempt branch
-    let next_branch = git.next_attempt_branch(&unit.dll, unit.function.as_deref().unwrap_or(""), unit.attempt)?;
+    let next_branch = git.next_attempt_branch(
+        &unit.dll,
+        unit.function.as_deref().unwrap_or(""),
+        unit.attempt,
+    )?;
 
     // Create the branch in git (from main)
     let policy = match unit.kind.clone() {
@@ -171,21 +185,32 @@ pub async fn request_patch(
             // For function translations, check shim dependencies
             let shim_map = ShimDependencyMap::new();
             let shim_crate = shim_map.get(&unit.dll).map(|s| s.to_string());
-            Some(calxgloss_git::BranchCreationPolicy::Warn(calxgloss_git::DependencyPolicy {
-                category: calxgloss_types::DllCategory::ProjectSpecific,
-                crate_replacement: shim_crate,
-            }))
+            Some(calxgloss_git::BranchCreationPolicy::Warn(
+                calxgloss_git::DependencyPolicy {
+                    category: calxgloss_types::DllCategory::ProjectSpecific,
+                    crate_replacement: shim_crate,
+                },
+            ))
         }
         _ => None,
     };
 
-    let _branch_result = git.create_branch(&unit.dll, unit.function.as_deref().unwrap_or(""), next_branch.attempt, policy.as_ref())?;
+    let _branch_result = git.create_branch(
+        &unit.dll,
+        unit.function.as_deref().unwrap_or(""),
+        next_branch.attempt,
+        policy.as_ref(),
+    )?;
 
     // Write the patch request record (so the dashboard knows what to fix)
-    let patch_dir = state.repo_path().join("re").join("patches").join(&next_branch.dll).join(&next_branch.function);
-    std::fs::create_dir_all(&patch_dir).map_err(|e| {
-        TypesError::InvalidBranchName(format!("Failed to create patch dir: {e}"))
-    })?;
+    let patch_dir = state
+        .repo_path()
+        .join("re")
+        .join("patches")
+        .join(&next_branch.dll)
+        .join(&next_branch.function);
+    std::fs::create_dir_all(&patch_dir)
+        .map_err(|e| TypesError::InvalidBranchName(format!("Failed to create patch dir: {e}")))?;
 
     let patch_record_path = patch_dir.join(format!("v{}.json", next_branch.attempt));
     let patch_record = serde_json::json!({
@@ -200,8 +225,11 @@ pub async fn request_patch(
         "commit_hash": "",
         "patch_request": issue.to_string(),
     });
-    std::fs::write(&patch_record_path, serde_json::to_string_pretty(&patch_record).map_err(TypesError::Serialization)?)
-        .map_err(|e| TypesError::InvalidBranchName(format!("Failed to write patch record: {e}")))?;
+    std::fs::write(
+        &patch_record_path,
+        serde_json::to_string_pretty(&patch_record).map_err(TypesError::Serialization)?,
+    )
+    .map_err(|e| TypesError::InvalidBranchName(format!("Failed to write patch record: {e}")))?;
 
     // Persist action state
     let record = ReviewActionRecord {
@@ -230,9 +258,7 @@ pub async fn request_patch(
         }
     });
 
-    info!(
-        "Unit {unit_id} patch requested for attempt {attempt} — issue: {issue:?}"
-    );
+    info!("Unit {unit_id} patch requested for attempt {attempt} — issue: {issue:?}");
 
     Ok(ActionResult {
         unit_id: unit_id.to_string(),
@@ -262,8 +288,8 @@ async fn run_patch_retry(
     )
     .map_err(|e| anyhow::anyhow!("Ghidra client: {e}"))?;
 
-    let llm_url = std::env::var("LLM_URL")
-        .unwrap_or_else(|_| "http://localhost:11434/v1".to_string());
+    let llm_url =
+        std::env::var("LLM_URL").unwrap_or_else(|_| "http://localhost:11434/v1".to_string());
     let llm_model = std::env::var("LLM_MODEL").unwrap_or_else(|_| "qwen3".to_string());
 
     let llm = calxgloss_llm::LlmClient::from_url(&llm_url, &llm_model)
@@ -272,8 +298,8 @@ async fn run_patch_retry(
     let pipeline = TranslationPipeline::new(ghidra, llm, calxgloss_pal::ApiMappings::default())
         .with_workspace(repo_path.to_path_buf());
 
-    let verifier = calxgloss_verify::Verifier::new(repo_path)
-        .map_err(|e| anyhow::anyhow!("Verifier: {e}"))?;
+    let verifier =
+        calxgloss_verify::Verifier::new(repo_path).map_err(|e| anyhow::anyhow!("Verifier: {e}"))?;
 
     let config = RetryConfig::default();
 
@@ -284,43 +310,44 @@ async fn run_patch_retry(
     // We use a helper closure that does all the git setup and returns the
     // minimal info needed after the pipeline await.
     let git = GitManager::open(repo_path)?;
-    let setup_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(git2::Oid, std::path::PathBuf), anyhow::Error> {
-        // Get main's OID
-        let main_ref = git
-            .repo()
-            .find_branch("main", git2::BranchType::Local)
-            .map_err(|_| TypesError::InvalidBranchName("main branch not found".to_string()))?;
-        let main_commit = main_ref
-            .get()
-            .peel_to_commit()
-            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to resolve main: {e}")))?;
-        let main_oid = main_commit.id();
+    let setup_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        || -> Result<(git2::Oid, std::path::PathBuf), anyhow::Error> {
+            // Get main's OID
+            let main_ref = git
+                .repo()
+                .find_branch("main", git2::BranchType::Local)
+                .map_err(|_| TypesError::InvalidBranchName("main branch not found".to_string()))?;
+            let main_commit = main_ref.get().peel_to_commit().map_err(|e| {
+                TypesError::InvalidBranchName(format!("Failed to resolve main: {e}"))
+            })?;
+            let main_oid = main_commit.id();
 
-        // Create the branch reference pointing to main's commit
-        let branch_ref_name = format!("refs/heads/{}", branch.name);
-        git.repo()
-            .reference(&branch_ref_name, main_oid, true, &branch.name)
-            .map_err(|e| anyhow::anyhow!("Branch creation failed: {e}"))?;
+            // Create the branch reference pointing to main's commit
+            let branch_ref_name = format!("refs/heads/{}", branch.name);
+            git.repo()
+                .reference(&branch_ref_name, main_oid, true, &branch.name)
+                .map_err(|e| anyhow::anyhow!("Branch creation failed: {e}"))?;
 
-        let mut checkout_opts = git2::build::CheckoutBuilder::new();
-        checkout_opts.force();
+            let mut checkout_opts = git2::build::CheckoutBuilder::new();
+            checkout_opts.force();
 
-        git.repo()
-            .set_head(&branch_ref_name)
-            .map_err(|e| anyhow::anyhow!("Failed to set HEAD: {e}"))?;
+            git.repo()
+                .set_head(&branch_ref_name)
+                .map_err(|e| anyhow::anyhow!("Failed to set HEAD: {e}"))?;
 
-        let main_commit = main_ref
-            .get()
-            .peel_to_commit()
-            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to peel main: {e}")))?;
-        let main_obj = main_commit.as_object();
+            let main_commit = main_ref
+                .get()
+                .peel_to_commit()
+                .map_err(|e| TypesError::InvalidBranchName(format!("Failed to peel main: {e}")))?;
+            let main_obj = main_commit.as_object();
 
-        git.repo()
-            .reset(main_obj, git2::ResetType::Hard, Some(&mut checkout_opts))
-            .map_err(|e| anyhow::anyhow!("Failed to reset: {e}"))?;
+            git.repo()
+                .reset(main_obj, git2::ResetType::Hard, Some(&mut checkout_opts))
+                .map_err(|e| anyhow::anyhow!("Failed to reset: {e}"))?;
 
-        Ok((main_oid, repo_path.to_path_buf()))
-    }));
+            Ok((main_oid, repo_path.to_path_buf()))
+        },
+    ));
 
     if setup_result.is_err() {
         return Err(anyhow::anyhow!("Failed to set up branch for patch retry"));
@@ -340,15 +367,15 @@ async fn run_patch_retry(
     if result.success {
         // Commit the successful translation to the branch
         // Write the generated Rust code to the appropriate module file
-        let rust_code = result.rust_code.as_ref().expect("success implies code present");
+        let rust_code = result
+            .rust_code
+            .as_ref()
+            .expect("success implies code present");
         let modules_dir = repo_path.join("src").join("modules");
         std::fs::create_dir_all(&modules_dir).ok();
 
         // Determine the source file name (e.g., game_logic.rs for game_logic.dll)
-        let src_file_name = dll
-            .replace(".dll", "")
-            .replace(".DLL", "")
-            + ".rs";
+        let src_file_name = dll.replace(".dll", "").replace(".DLL", "") + ".rs";
         let dest_path = modules_dir.join(&src_file_name);
 
         // Append the function to the existing module file
@@ -366,7 +393,9 @@ async fn run_patch_retry(
         let branch_ref = git
             .repo()
             .find_branch(&branch.name, git2::BranchType::Local)
-            .map_err(|_| TypesError::InvalidBranchName(format!("Branch {} not found", branch.name)))?;
+            .map_err(|_| {
+                TypesError::InvalidBranchName(format!("Branch {} not found", branch.name))
+            })?;
         git.repo()
             .set_head(&format!("refs/heads/{}", branch.name))
             .map_err(|e| anyhow::anyhow!("Failed to set HEAD: {e}"))?;
@@ -382,9 +411,8 @@ async fn run_patch_retry(
             .map_err(|e| anyhow::anyhow!("Failed to reset: {e}"))?;
 
         // Commit
-        let commit_msg = format!(
-            "re/{dll}/{function}v{attempt}: translate {function} to Rust (patch retry)",
-        );
+        let commit_msg =
+            format!("re/{dll}/{function}v{attempt}: translate {function} to Rust (patch retry)",);
         let _commit = git.commit(
             &branch,
             &commit_msg,
@@ -392,7 +420,11 @@ async fn run_patch_retry(
         )?;
 
         // Write the successful patch record
-        let patch_dir = repo_path.join("re").join("patches").join(dll).join(function);
+        let patch_dir = repo_path
+            .join("re")
+            .join("patches")
+            .join(dll)
+            .join(function);
         let patch_record_path = patch_dir.join(format!("v{}.json", attempt));
         let mut patch_record = serde_json::json!({
             "dll": dll,
@@ -411,13 +443,9 @@ async fn run_patch_retry(
         let json = serde_json::to_string_pretty(&patch_record)?;
         std::fs::write(&patch_record_path, json)?;
 
-        info!(
-            "Patch retry succeeded for {dll}/{function} v{attempt} — committed"
-        );
+        info!("Patch retry succeeded for {dll}/{function} v{attempt} — committed");
     } else {
-        warn!(
-            "Patch retry exhausted all attempts for {dll}/{function} v{attempt}"
-        );
+        warn!("Patch retry exhausted all attempts for {dll}/{function} v{attempt}");
     }
 
     Ok(())
@@ -453,7 +481,10 @@ pub struct ActionResult {
 }
 
 /// Look up a unit of work from the dashboard data on disk.
-fn lookup_unit(state: &ActionsState, unit_id: &str) -> Result<calxgloss_types::UnitOfWork, anyhow::Error> {
+fn lookup_unit(
+    state: &ActionsState,
+    unit_id: &str,
+) -> Result<calxgloss_types::UnitOfWork, anyhow::Error> {
     let dashboard = super::build_dashboard(state.repo_path())?;
     dashboard
         .review_queue

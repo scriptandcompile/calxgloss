@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### `calxgloss-web`
 - **Progress state handles `FunctionCompleted`** — the `ProgressState` now processes the new `FunctionCompleted` event, marking the corresponding unit as `Complete` in the live progress dashboard.
+- **Review Queue tab now populates on tab switch** — switching to the tab immediately renders the full queue list, no longer requires clicking a dashboard item first.
+- **Queue item names include the function** — queue items now display `DLL function Status vN` (e.g. `LaunchPad.exe FUN_004011d0 InProgress v1`) instead of showing only the DLL name.
+- **Review Queue view has a two-column layout** — the tab now shows an inline detail view (left) alongside the queue item list (right), replacing the previous floating sidebar panel.
+- **Removed left sidebar dependency graph** — the collapsible sidebar panel that held a small dependency graph has been removed, along with the sidebar toggle button.
 
 ### `calxgloss-web`
 - **`api_get_unit` merges live progress state** — the unit detail endpoint now also consults the `ProgressState` and creates synthetic units for in-progress translations (IDs prefixed with `live/`), so clicking a live unit no longer returns 404.

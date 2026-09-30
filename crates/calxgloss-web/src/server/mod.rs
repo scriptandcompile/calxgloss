@@ -14,10 +14,10 @@ pub use events::{EventsBridge, SessionManager, WebSocketHandler};
 
 use axum::{
     Router,
+    extract::FromRef,
     extract::{DefaultBodyLimit, WebSocketUpgrade},
     middleware,
     routing::{get, post},
-    extract::FromRef,
 };
 use calxgloss_reports::dashboard::DashboardBuilder;
 use calxgloss_types::{ProgressEvent, ReviewDashboard};
@@ -34,8 +34,12 @@ pub struct ServerState {
 }
 
 impl ServerState {
-    pub fn new(repo_path: PathBuf) -> Self { Self { repo_path } }
-    pub fn repo_path(&self) -> &Path { &self.repo_path }
+    pub fn new(repo_path: PathBuf) -> Self {
+        Self { repo_path }
+    }
+    pub fn repo_path(&self) -> &Path {
+        &self.repo_path
+    }
 }
 
 /// Combined state for WebSocket support and review actions.
@@ -51,7 +55,9 @@ pub struct CombinedState {
 }
 
 impl FromRef<CombinedState> for ServerState {
-    fn from_ref(c: &CombinedState) -> Self { c.server.clone() }
+    fn from_ref(c: &CombinedState) -> Self {
+        c.server.clone()
+    }
 }
 
 impl FromRef<CombinedState> for SessionManager {
@@ -247,7 +253,13 @@ impl ProgressState {
                     entry.last_event_at = std::time::Instant::now();
                 }
             }
-            ProgressEvent::LlmCallStart { dll, function, attempt, strategy, .. } => {
+            ProgressEvent::LlmCallStart {
+                dll,
+                function,
+                attempt,
+                strategy,
+                ..
+            } => {
                 let key = format!("{dll}/{function}");
                 if let Some(entry) = entries.get_mut(&key) {
                     entry.attempt = *attempt;
@@ -288,7 +300,12 @@ impl ProgressState {
                     entry.last_event_at = std::time::Instant::now();
                 }
             }
-            ProgressEvent::FunctionCompleted { dll, function, success, .. } => {
+            ProgressEvent::FunctionCompleted {
+                dll,
+                function,
+                success,
+                ..
+            } => {
                 if let Some(entry) = entries.get_mut(&format!("{dll}/{function}")) {
                     // Batch-level completion marks the unit as done.
                     entry.status = Complete;
@@ -316,27 +333,31 @@ impl ProgressState {
     /// Returns a snapshot of classification results as serializable info.
     pub async fn classifications(&self) -> Vec<super::ClassificationInfo> {
         let map = self.classifications.read().await;
-        map.values().map(|v| super::ClassificationInfo {
-            dll: v.dll.clone(),
-            category: v.category.clone(),
-            strategy: v.strategy.clone(),
-            crate_replacement: v.crate_replacement.clone(),
-            exported_symbols: v.exported_symbols,
-            imported_symbols: v.imported_symbols,
-        }).collect()
+        map.values()
+            .map(|v| super::ClassificationInfo {
+                dll: v.dll.clone(),
+                category: v.category.clone(),
+                strategy: v.strategy.clone(),
+                crate_replacement: v.crate_replacement.clone(),
+                exported_symbols: v.exported_symbols,
+                imported_symbols: v.imported_symbols,
+            })
+            .collect()
     }
 
     /// Returns a snapshot of batch summary results as serializable info.
     pub async fn batch_summaries(&self) -> Vec<super::BatchInfo> {
         let map = self.batch_summaries.read().await;
-        map.values().map(|v| super::BatchInfo {
-            dll: v.dll.clone(),
-            total_functions: v.total_functions,
-            success_count: v.success_count,
-            failure_count: v.failure_count,
-            total_attempts: v.total_attempts,
-            total_tokens: v.total_tokens,
-        }).collect()
+        map.values()
+            .map(|v| super::BatchInfo {
+                dll: v.dll.clone(),
+                total_functions: v.total_functions,
+                success_count: v.success_count,
+                failure_count: v.failure_count,
+                total_attempts: v.total_attempts,
+                total_tokens: v.total_tokens,
+            })
+            .collect()
     }
 
     /// Returns the number of currently in-flight units.
@@ -367,7 +388,10 @@ pub fn build_router(state: ServerState) -> Router {
         .route("/api/units/{id}/diff", get(handlers::api_get_unit_diff))
         .route("/api/units/{id}/ghidra", get(handlers::api_get_unit_ghidra))
         .route("/api/units/{id}/accept", post(handlers::api_accept_unit))
-        .route("/api/units/{id}/send-back", post(handlers::api_send_back_unit))
+        .route(
+            "/api/units/{id}/send-back",
+            post(handlers::api_send_back_unit),
+        )
         .route("/api/units/{id}/patch", post(handlers::api_request_patch))
         .route("/api/queue", get(handlers::api_get_queue))
         .route("/api/queue/next", get(handlers::api_get_next_unit))
@@ -386,10 +410,7 @@ pub fn build_router(state: ServerState) -> Router {
 }
 
 /// Build a router with WebSocket support and review-actions backend.
-pub fn build_router_with_actions(
-    state: ServerState,
-    actions: ActionsState,
-) -> Router {
+pub fn build_router_with_actions(state: ServerState, actions: ActionsState) -> Router {
     Router::new()
         .route("/", get(handlers::serve_index))
         .route("/api/dashboard", get(handlers::api_get_dashboard))
@@ -397,7 +418,10 @@ pub fn build_router_with_actions(
         .route("/api/units/{id}/diff", get(handlers::api_get_unit_diff))
         .route("/api/units/{id}/ghidra", get(handlers::api_get_unit_ghidra))
         .route("/api/units/{id}/accept", post(handlers::api_accept_unit))
-        .route("/api/units/{id}/send-back", post(handlers::api_send_back_unit))
+        .route(
+            "/api/units/{id}/send-back",
+            post(handlers::api_send_back_unit),
+        )
         .route("/api/units/{id}/patch", post(handlers::api_request_patch))
         .route("/api/queue", get(handlers::api_get_queue))
         .route("/api/queue/next", get(handlers::api_get_next_unit))
@@ -441,7 +465,10 @@ pub fn build_router_with_ws(
         .route("/api/units/{id}/diff", get(handlers::api_get_unit_diff))
         .route("/api/units/{id}/ghidra", get(handlers::api_get_unit_ghidra))
         .route("/api/units/{id}/accept", post(handlers::api_accept_unit))
-        .route("/api/units/{id}/send-back", post(handlers::api_send_back_unit))
+        .route(
+            "/api/units/{id}/send-back",
+            post(handlers::api_send_back_unit),
+        )
         .route("/api/units/{id}/patch", post(handlers::api_request_patch))
         .route("/api/queue", get(handlers::api_get_queue))
         .route("/api/queue/next", get(handlers::api_get_next_unit))
