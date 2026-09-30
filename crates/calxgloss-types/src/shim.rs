@@ -298,6 +298,29 @@ impl ShimApiMapping {
     }
 }
 
+/// Converts a DLL filename into a valid Rust module name.
+///
+/// Strips the `.dll` extension (if present) and replaces hyphens
+/// and dots with underscores, converting the result to lowercase.
+///
+/// # Examples
+///
+/// ```
+/// use calxgloss_types::dll_to_module_name;
+///
+/// assert_eq!(dll_to_module_name("d3d9.dll"), "d3d9");
+/// assert_eq!(dll_to_module_name("fmod.dll"), "fmod");
+/// assert_eq!(dll_to_module_name("my_lib.dll"), "my_lib");
+/// assert_eq!(dll_to_module_name("kernel32"), "kernel32");
+/// ```
+pub fn dll_to_module_name(dll_name: &str) -> String {
+    dll_name
+        .trim_end_matches(".dll")
+        .trim_end_matches(".DLL")
+        .replace(['-', '.'], "_")
+        .to_lowercase()
+}
+
 impl PartialOrd for ComplexityScore {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
