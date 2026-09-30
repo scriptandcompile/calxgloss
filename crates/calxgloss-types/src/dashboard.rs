@@ -149,6 +149,8 @@ pub enum ReviewStatus {
     Queued,
     /// Currently under human review.
     PendingReview,
+    /// Currently being translated by the pipeline (live/running).
+    InProgress,
     /// Human accepted this unit — merged to main.
     Accepted,
     /// Human sent back for fixes.
@@ -166,6 +168,7 @@ impl std::fmt::Display for ReviewStatus {
         match self {
             ReviewStatus::Queued => write!(f, "queued"),
             ReviewStatus::PendingReview => write!(f, "pending_review"),
+            ReviewStatus::InProgress => write!(f, "in_progress"),
             ReviewStatus::Accepted => write!(f, "accepted"),
             ReviewStatus::SendBack => write!(f, "send_back"),
             ReviewStatus::PatchRequested => write!(f, "patch_requested"),
@@ -561,6 +564,7 @@ impl DependencyGraph {
 pub struct StatusCounts {
     pub queued: usize,
     pub pending_review: usize,
+    pub in_progress: usize,
     pub accepted: usize,
     pub send_back: usize,
     pub patch_requested: usize,
@@ -573,6 +577,7 @@ impl StatusCounts {
     pub fn total(&self) -> usize {
         self.queued
             + self.pending_review
+            + self.in_progress
             + self.accepted
             + self.send_back
             + self.patch_requested
@@ -585,9 +590,10 @@ impl std::fmt::Display for StatusCounts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "queued: {}, pending: {}, accepted: {}, send_back: {}, patch: {}, merged: {}, blocked: {}",
+            "queued: {}, pending: {}, in_progress: {}, accepted: {}, send_back: {}, patch: {}, merged: {}, blocked: {}",
             self.queued,
             self.pending_review,
+            self.in_progress,
             self.accepted,
             self.send_back,
             self.patch_requested,
@@ -653,6 +659,7 @@ impl ReviewDashboard {
             match unit.status {
                 ReviewStatus::Queued => counts.queued += 1,
                 ReviewStatus::PendingReview => counts.pending_review += 1,
+                ReviewStatus::InProgress => counts.in_progress += 1,
                 ReviewStatus::Accepted => counts.accepted += 1,
                 ReviewStatus::SendBack => counts.send_back += 1,
                 ReviewStatus::PatchRequested => counts.patch_requested += 1,
@@ -1251,6 +1258,7 @@ mod tests {
     fn review_status_display() {
         assert_eq!(ReviewStatus::Queued.to_string(), "queued");
         assert_eq!(ReviewStatus::PendingReview.to_string(), "pending_review");
+        assert_eq!(ReviewStatus::InProgress.to_string(), "in_progress");
         assert_eq!(ReviewStatus::Accepted.to_string(), "accepted");
         assert_eq!(ReviewStatus::SendBack.to_string(), "send_back");
         assert_eq!(ReviewStatus::PatchRequested.to_string(), "patch_requested");
@@ -1286,6 +1294,7 @@ mod tests {
         let counts = StatusCounts {
             queued: 3,
             pending_review: 2,
+            in_progress: 0,
             accepted: 5,
             send_back: 1,
             patch_requested: 0,
@@ -1295,6 +1304,7 @@ mod tests {
         let display = format!("{}", counts);
         assert!(display.contains("queued: 3"));
         assert!(display.contains("pending: 2"));
+        assert!(display.contains("in_progress: 0"));
         assert!(display.contains("accepted: 5"));
         assert_eq!(counts.total(), 16);
     }
@@ -1304,6 +1314,7 @@ mod tests {
         let counts = StatusCounts {
             queued: 1,
             pending_review: 2,
+            in_progress: 3,
             accepted: 3,
             send_back: 4,
             patch_requested: 5,
@@ -1314,6 +1325,7 @@ mod tests {
         let deserialized: StatusCounts = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.queued, 1);
         assert_eq!(deserialized.pending_review, 2);
+        assert_eq!(deserialized.in_progress, 3);
         assert_eq!(deserialized.accepted, 3);
         assert_eq!(deserialized.send_back, 4);
         assert_eq!(deserialized.patch_requested, 5);
@@ -1326,6 +1338,7 @@ mod tests {
         let statuses = vec![
             ReviewStatus::Queued,
             ReviewStatus::PendingReview,
+            ReviewStatus::InProgress,
             ReviewStatus::Accepted,
             ReviewStatus::SendBack,
             ReviewStatus::PatchRequested,

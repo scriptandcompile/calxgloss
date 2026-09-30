@@ -10,6 +10,7 @@
     const STATUS_COLORS = {
         queued: "#6c8cff",
         pending_review: "#facc15",
+        in_progress: "#22d3ee",
         accepted: "#4ade80",
         sendback: "#f87171",
         blocked: "#fb923c",
@@ -19,6 +20,7 @@
     const STATUS_LABELS = {
         queued: "Queued",
         pending_review: "Pending Review",
+        in_progress: "⟳ In Progress",
         accepted: "Accepted",
         sendback: "Send Back",
         blocked: "Blocked",
@@ -967,6 +969,7 @@
         const cards = [
             { cls: "queued", label: "Queued", value: counts.queued },
             { cls: "pending", label: "Pending Review", value: counts.pending_review },
+            { cls: "in_progress", label: "In Progress", value: counts.in_progress },
             { cls: "accepted", label: "Accepted", value: counts.accepted },
             { cls: "sendback", label: "Send Back", value: counts.send_back },
             { cls: "blocked", label: "Blocked", value: counts.blocked },
@@ -1072,6 +1075,7 @@
             const statusMap = {
                 queued: "queued",
                 pending_review: "pending_review",
+                in_progress: "in_progress",
                 blocked: "blocked",
             };
             units = units.filter(u => u.status.toLowerCase().replace(/\s+/g, "_") === statusMap[filter]);
@@ -1828,6 +1832,25 @@
     function handleWSMessage(event) {
         console.log("[WS] handleWSMessage event:", event.event);
 
+        // Handle translation start — show a toast notification
+        if (event.event === "translation_started") {
+            showToast(
+                `Translating ${event.function || "classify"} (${event.dll})`,
+                "info"
+            );
+            // Update the live indicator
+            const indicator = document.getElementById("live-indicator");
+            if (indicator) indicator.classList.add("active");
+        }
+
+        // Handle translation completion
+        if (event.event === "translation_completed" || event.event === "translation_failed") {
+            showToast(
+                `${event.event === "translation_completed" ? "✓" : "✗"} Done: ${event.function || "classify"} (${event.dll})`,
+                event.event === "translation_completed" ? "success" : "error"
+            );
+        }
+
         // Handle LLM I/O events
         if (event.event === "llm_request") {
             console.log("[WS] LLM request:", event.dll, event.function, "prompt length:", event.prompt?.length);
@@ -1851,8 +1874,7 @@
             );
         }
 
-        // Silently refresh data on any progress event
-        // Could also update the UI incrementally with specific event types
+        // Silently refresh dashboard data on any progress event
         loadDashboard();
     }
 

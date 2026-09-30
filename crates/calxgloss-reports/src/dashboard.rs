@@ -418,6 +418,7 @@ fn status_symbol(status: &ReviewStatus) -> &str {
     match status {
         ReviewStatus::Queued => "  ?",
         ReviewStatus::PendingReview => " ◉",
+        ReviewStatus::InProgress => " ⟳",
         ReviewStatus::Accepted => " ✓",
         ReviewStatus::SendBack => " ✗",
         ReviewStatus::PatchRequested => " ⚑",
@@ -1258,6 +1259,7 @@ fn format_status_display(status: &ReviewStatus) -> String {
     let text = match status {
         ReviewStatus::Queued => "queued",
         ReviewStatus::PendingReview => "pending",
+        ReviewStatus::InProgress => "in_progress",
         ReviewStatus::Accepted => "accepted",
         ReviewStatus::SendBack => "send_back",
         ReviewStatus::PatchRequested => "patch",

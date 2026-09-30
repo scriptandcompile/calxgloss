@@ -34,6 +34,7 @@
 
     --status-queued: var(--accent-blue);
     --status-pending: var(--accent-yellow);
+    --status-in-progress: var(--accent-cyan);
     --status-accepted: var(--accent-green);
     --status-sendback: var(--accent-red);
     --status-blocked: var(--accent-orange);
@@ -389,6 +390,7 @@ svg {
 
 .status-card.queued .status-card-value { color: var(--status-queued); }
 .status-card.pending .status-card-value { color: var(--status-pending); }
+.status-card.in_progress .status-card-value { color: var(--status-in-progress); }
 .status-card.accepted .status-card-value { color: var(--status-accepted); }
 .status-card.sendback .status-card-value { color: var(--status-sendback); }
 .status-card.blocked .status-card-value { color: var(--status-blocked); }
@@ -490,6 +492,7 @@ svg {
 
 .queue-item-icon.queued { background: var(--status-queued); }
 .queue-item-icon.pending { background: var(--status-pending); }
+.queue-item-icon.in_progress { background: var(--status-in-progress); }
 .queue-item-icon.blocked { background: var(--status-blocked); }
 .queue-item-icon.sendback { background: var(--status-sendback); }
 .queue-item-icon.accepted { background: var(--status-accepted); }
@@ -759,6 +762,7 @@ svg {
 
 .detail-status-badge.queued { background: var(--accent-blue); color: var(--text-inverse); }
 .detail-status-badge.pending_review { background: var(--accent-yellow); color: var(--text-inverse); }
+.detail-status-badge.in_progress { background: var(--accent-cyan); color: var(--text-inverse); }
 .detail-status-badge.blocked { background: var(--accent-orange); color: var(--text-inverse); }
 .detail-status-badge.sendback { background: var(--accent-red); color: var(--text-inverse); }
 .detail-status-badge.accepted { background: var(--accent-green); color: var(--text-inverse); }

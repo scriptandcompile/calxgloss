@@ -452,3 +452,32 @@ impl axum::response::IntoResponse for ServerError {
         response
     }
 }
+
+// ─── Progress response types ─────────────────────────────────────────
+
+/// Information about a unit currently being translated.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProgressInfo {
+    pub dll: String,
+    pub function: String,
+    pub attempt: u32,
+    pub strategy: String,
+    pub status: String,
+    pub elapsed_secs: f64,
+}
+
+/// Response for the live progress endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProgressResponse {
+    pub in_progress: Vec<ProgressInfo>,
+    pub count: usize,
+}
+
+impl ProgressResponse {
+    pub fn empty() -> Self {
+        Self {
+            in_progress: Vec::new(),
+            count: 0,
+        }
+    }
+}

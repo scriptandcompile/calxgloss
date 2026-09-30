@@ -10,6 +10,9 @@ use axum::extract::ws::WebSocket;
 pub struct SessionManager {
     clients: std::sync::Arc<Mutex<Vec<mpsc::Sender<ProgressEvent>>>>,
     commands: mpsc::Sender<WsCommand>,
+    callback: std::sync::Arc<
+        std::sync::Mutex<Option<Box<dyn Fn(&ProgressEvent) + Send + Sync + 'static>>>,
+    >,
 }
 
 enum WsCommand {
@@ -24,9 +27,24 @@ impl SessionManager {
         let clients_clone = clients.clone();
         tokio::spawn(broadcast_loop(clients_clone, event_rx, cmd_rx));
         (
-            Self { clients, commands: cmd_tx },
+            Self {
+                clients,
+                commands: cmd_tx,
+                callback: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            },
             event_tx,
         )
+    }
+
+    /// Attach a callback that is invoked for every event before it is
+    /// forwarded to WebSocket clients.  This lets the server update
+    /// its own state (e.g. `ProgressState`) without duplicating the
+    /// broadcast loop.
+    pub fn set_event_callback<F>(&self, cb: F)
+    where
+        F: Fn(&ProgressEvent) + Send + Sync + 'static,
+    {
+        *self.callback.lock().unwrap() = Some(Box::new(cb));
     }
 
     /// Create a session manager that drives the broadcast loop from an
@@ -40,14 +58,20 @@ impl SessionManager {
         let clients = std::sync::Arc::new(Mutex::new(Vec::new()));
         let (cmd_tx, cmd_rx) = mpsc::channel::<WsCommand>(64);
         let clients_clone = clients.clone();
+        let callback: std::sync::Arc<
+            std::sync::Mutex<Option<Box<dyn Fn(&ProgressEvent) + Send + Sync + 'static>>>,
+        > = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let callback_clone = callback.clone();
         tokio::spawn(broadcast_loop_from_broadcast(
             clients_clone,
             receiver,
             cmd_rx,
+            callback_clone,
         ));
         Self {
             clients,
             commands: cmd_tx,
+            callback,
         }
     }
 
@@ -96,6 +120,9 @@ async fn broadcast_loop_from_broadcast(
     clients: std::sync::Arc<Mutex<Vec<mpsc::Sender<ProgressEvent>>>>,
     mut events: broadcast::Receiver<ProgressEvent>,
     mut commands: mpsc::Receiver<WsCommand>,
+    callback: std::sync::Arc<
+        std::sync::Mutex<Option<Box<dyn Fn(&ProgressEvent) + Send + Sync + 'static>>>,
+    >,
 ) {
     debug!("Broadcast loop started");
     loop {
@@ -103,6 +130,13 @@ async fn broadcast_loop_from_broadcast(
             result = events.recv() => {
                 match result {
                     Ok(event) => {
+                        // Invoke callback (updates ProgressState, etc.)
+                        {
+                            if let Some(cb) = callback.lock().unwrap().as_ref() {
+                                cb(&event);
+                            }
+                        }
+
                         debug!("Broadcast loop received event: {}", event);
                         let mut clients = clients.lock().await;
                         clients.retain(|tx| !tx.is_closed());

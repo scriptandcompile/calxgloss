@@ -2568,7 +2568,11 @@ async fn handle_live(
     let events = TranslationEvents::new(256);
     let events_clone = events.clone();
 
+    // Progress state for live dashboard updates.
+    let progress = calxgloss_web::ProgressState::new();
+
     let serve_repo_dir = repo_dir.clone();
+    let serve_progress = progress.clone();
 
     let serve_handle = tokio::spawn(async move {
         let repo_dir = serve_repo_dir;
@@ -2593,7 +2597,8 @@ async fn handle_live(
         // progress events over the upgrade endpoint.
         let event_rx = events_clone.subscribe();
         let manager = calxgloss_web::SessionManager::new_with_broadcast(event_rx);
-        let router = calxgloss_web::build_router_with_ws(server_state.clone(), manager);
+        let router =
+            calxgloss_web::build_router_with_ws(server_state.clone(), manager, serve_progress);
         let _ = calxgloss_web::serve_with_listener(listener, router)
             .await
             .map_err(|e| {

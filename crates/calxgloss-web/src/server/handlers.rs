@@ -68,11 +68,103 @@ pub async fn trace_middleware(
 
 /// Returns the full review dashboard including queue, dependency graph,
 /// recent activity, and status counts.
+///
+/// When the server is running in live mode (e.g. `calxgloss live`), this
+/// also merges in-progress translation state so units currently being
+/// translated appear as `"in_progress"` on the dashboard.
 pub async fn api_get_dashboard(
-    State(state): State<ServerState>,
+    State(combined): State<super::CombinedState>,
 ) -> Result<Json<super::DashboardResponse>, ServerError> {
-    let dashboard = super::build_dashboard(state.repo_path())
+    let server_state = combined.server.clone();
+    let mut dashboard = super::build_dashboard(server_state.repo_path())
         .map_err(|e| ServerError::internal(&e.to_string()))?;
+
+    // Merge live progress: update units currently being translated.
+    if let Some(progress) = &combined.progress {
+        let entries = progress.read().await.snapshot().await;
+        let in_progress_ids: std::collections::HashSet<&str> =
+            entries.keys().map(|k| k.as_str()).collect();
+
+        // Helper: match a dashboard unit against a progress entry.
+        let match_unit = |u: &calxgloss_types::UnitOfWork| -> bool {
+            let key = format!("{}/{}", u.dll, u.function.as_deref().unwrap_or(""));
+            in_progress_ids.contains(key.as_str())
+        };
+
+        // Update review_queue: mark matching units as InProgress.
+        let mut matched_keys: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
+        for unit in &mut dashboard.review_queue {
+            if match_unit(unit) {
+                let old = std::mem::replace(
+                    &mut unit.status,
+                    calxgloss_types::ReviewStatus::InProgress,
+                );
+                if !matches!(
+                    old,
+                    calxgloss_types::ReviewStatus::Accepted
+                        | calxgloss_types::ReviewStatus::Merged
+                ) {
+                    unit.updated_at = chrono::Utc::now();
+                }
+                let key = format!("{}/{}", unit.dll, unit.function.as_deref().unwrap_or(""));
+                matched_keys.insert(key);
+            }
+        }
+
+        // Also check recent_activity
+        for unit in &mut dashboard.recent_activity {
+            if match_unit(unit) {
+                unit.status = calxgloss_types::ReviewStatus::InProgress;
+                unit.updated_at = chrono::Utc::now();
+                let key = format!("{}/{}", unit.dll, unit.function.as_deref().unwrap_or(""));
+                matched_keys.insert(key);
+            }
+        }
+
+        // Add synthetic units for in-progress items not yet in the dashboard
+        for (key, entry) in &entries {
+            if matched_keys.contains(key) {
+                continue;
+            }
+            // Create a synthetic unit for this in-progress translation.
+            let name = if entry.function.is_empty() {
+                format!("Classify {}", entry.dll)
+            } else {
+                format!("{}!{}", entry.dll, entry.function)
+            };
+            let unit_id = format!("live/{}/v{}", key, entry.attempt);
+
+            dashboard.review_queue.push(calxgloss_types::UnitOfWork {
+                id: unit_id,
+                name,
+                kind: calxgloss_types::WorkUnitKind::FunctionTranslation,
+                dll: entry.dll.clone(),
+                function: if entry.function.is_empty() {
+                    None
+                } else {
+                    Some(entry.function.clone())
+                },
+                attempt: entry.attempt,
+                status: calxgloss_types::ReviewStatus::InProgress,
+                accepted: false,
+                confidence: None,
+                baseline_tests_passed: None,
+                baseline_tests_total: None,
+                verification_tests_passed: None,
+                verification_tests_total: None,
+                llm_model: None,
+                prompt_tier: None,
+                dependencies: Vec::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                known_gaps: Vec::new(),
+                stale: calxgloss_types::dashboard::Staleness::Fresh,
+            });
+        }
+    }
+
     let queue_metadata = super::QueueMetadata {
         total: dashboard.review_queue.len(),
         queued: dashboard.status_counts.queued,
@@ -1006,4 +1098,37 @@ pub async fn static_fallback(
         )],
         axum::response::Html(content),
     )
+}
+
+/// Handle GET /api/progress — return in-flight translation units.
+pub async fn api_get_progress(
+    State(combined): State<super::CombinedState>,
+) -> Json<super::ProgressResponse> {
+    let progress = match &combined.progress {
+        Some(p) => p,
+        None => return Json(super::ProgressResponse::empty()),
+    };
+
+    let entries = progress.read().await.snapshot().await;
+
+    let in_progress: Vec<super::ProgressInfo> = entries
+        .values()
+        .map(|e| {
+            let elapsed = e.started_at.elapsed().as_secs_f64();
+            super::ProgressInfo {
+                dll: e.dll.clone(),
+                function: e.function.clone(),
+                attempt: e.attempt,
+                strategy: e.strategy.clone(),
+                status: format!("{:?}", e.status).to_lowercase().replace('_', " "),
+                elapsed_secs: (elapsed * 1000.0).round() / 1000.0,
+            }
+        })
+        .collect();
+
+    let count = in_progress.len();
+    Json(super::ProgressResponse {
+        in_progress,
+        count,
+    })
 }

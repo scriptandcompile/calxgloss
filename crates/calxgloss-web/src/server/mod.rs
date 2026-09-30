@@ -20,8 +20,11 @@ use axum::{
     extract::FromRef,
 };
 use calxgloss_reports::dashboard::DashboardBuilder;
-use calxgloss_types::ReviewDashboard;
+use calxgloss_types::{ProgressEvent, ReviewDashboard};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use tracing::info;
 
 /// Shared state for the API server.
@@ -43,6 +46,8 @@ pub struct CombinedState {
     pub bridge: Option<EventsBridge>,
     /// Review action backend — wires accept/send-back/patch into Git + Translator.
     pub actions: Option<ActionsState>,
+    /// Live translation progress — tracks units currently being translated.
+    pub progress: Option<Arc<RwLock<ProgressState>>>,
 }
 
 impl FromRef<CombinedState> for ServerState {
@@ -64,6 +69,140 @@ impl FromRef<CombinedState> for EventsBridge {
 impl FromRef<CombinedState> for ActionsState {
     fn from_ref(c: &CombinedState) -> Self {
         c.actions.clone().expect("ActionsState not configured")
+    }
+}
+
+// ============================================================
+// Live Progress State
+// ============================================================
+
+/// Tracks translation units currently in progress.
+///
+/// Created when `handle_live` starts the server with an event channel,
+/// updated by processing `ProgressEvent` messages, and served by the
+/// `/api/progress` endpoint so the dashboard can merge live status
+/// with the git-backed state.
+#[derive(Debug, Clone, Default)]
+pub struct ProgressState {
+    /// Map of "dll/function" → current progress info for a live translation.
+    entries: Arc<RwLock<std::collections::HashMap<String, ProgressEntry>>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProgressEntry {
+    pub dll: String,
+    pub function: String,
+    pub attempt: u32,
+    pub strategy: String,
+    pub started_at: std::time::Instant,
+    pub status: ProgressUnitStatus,
+    pub last_event_at: std::time::Instant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgressUnitStatus {
+    Translating,
+    LlmCall,
+    Compiling,
+    Testing,
+    Complete,
+}
+
+impl ProgressState {
+    pub fn new() -> Self {
+        Self {
+            entries: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        }
+    }
+
+    /// Update progress state from a translation progress event.
+    pub async fn on_event(&self, event: &ProgressEvent) {
+        use ProgressUnitStatus::*;
+
+        let mut entries = self.entries.write().await;
+
+        match event {
+            ProgressEvent::TranslationStarted { dll, function } => {
+                let key = format!("{dll}/{function}");
+                entries.insert(
+                    key,
+                    ProgressEntry {
+                        dll: dll.clone(),
+                        function: function.clone(),
+                        attempt: 1,
+                        strategy: String::new(),
+                        started_at: std::time::Instant::now(),
+                        status: Translating,
+                        last_event_at: std::time::Instant::now(),
+                    },
+                );
+            }
+            ProgressEvent::GhidraFetchComplete { dll, function, .. } => {
+                if let Some(entry) = entries.get_mut(&format!("{dll}/{function}")) {
+                    entry.status = Translating;
+                    entry.last_event_at = std::time::Instant::now();
+                }
+            }
+            ProgressEvent::ApiTaggingComplete { dll, function, .. } => {
+                if let Some(entry) = entries.get_mut(&format!("{dll}/{function}")) {
+                    entry.status = Translating;
+                    entry.last_event_at = std::time::Instant::now();
+                }
+            }
+            ProgressEvent::TestsGenerated { dll, function, .. } => {
+                if let Some(entry) = entries.get_mut(&format!("{dll}/{function}")) {
+                    entry.status = Translating;
+                    entry.last_event_at = std::time::Instant::now();
+                }
+            }
+            ProgressEvent::LlmCallStart { dll, function, attempt, strategy, .. } => {
+                let key = format!("{dll}/{function}");
+                if let Some(entry) = entries.get_mut(&key) {
+                    entry.attempt = *attempt;
+                    entry.strategy = strategy.clone();
+                    entry.status = LlmCall;
+                    entry.last_event_at = std::time::Instant::now();
+                }
+            }
+            ProgressEvent::LlmCallComplete { dll, function, .. } => {
+                if let Some(entry) = entries.get_mut(&format!("{dll}/{function}")) {
+                    entry.status = Compiling;
+                    entry.last_event_at = std::time::Instant::now();
+                }
+            }
+            ProgressEvent::LlmRequest { .. } | ProgressEvent::LlmResponse { .. } => {
+                // Informational — status stays as LlmCall
+            }
+            ProgressEvent::TranslationAttemptCompleted { dll, function, .. } => {
+                if let Some(entry) = entries.get_mut(&format!("{dll}/{function}")) {
+                    entry.status = Testing;
+                    entry.last_event_at = std::time::Instant::now();
+                }
+            }
+            ProgressEvent::TranslationCompleted { dll, function, .. } => {
+                if let Some(entry) = entries.get_mut(&format!("{dll}/{function}")) {
+                    entry.status = Complete;
+                    entry.last_event_at = std::time::Instant::now();
+                }
+            }
+            ProgressEvent::TranslationFailed { dll, function, .. } => {
+                if let Some(entry) = entries.get_mut(&format!("{dll}/{function}")) {
+                    entry.status = Complete;
+                    entry.last_event_at = std::time::Instant::now();
+                }
+            }
+        }
+    }
+
+    /// Returns a snapshot of all progress entries.
+    pub async fn snapshot(&self) -> std::collections::HashMap<String, ProgressEntry> {
+        self.entries.read().await.clone()
+    }
+
+    /// Returns the number of currently in-flight units.
+    pub async fn len(&self) -> usize {
+        self.entries.read().await.len()
     }
 }
 
@@ -98,6 +237,7 @@ pub fn build_router(state: ServerState) -> Router {
             manager: None,
             bridge: None,
             actions: None,
+            progress: None,
         })
 }
 
@@ -127,6 +267,7 @@ pub fn build_router_with_actions(
             manager: None,
             bridge: None,
             actions: Some(actions),
+            progress: None,
         })
 }
 
@@ -134,7 +275,21 @@ pub fn build_router_with_actions(
 pub fn build_router_with_ws(
     state: ServerState,
     manager: SessionManager,
+    progress: ProgressState,
 ) -> Router {
+    // Wire the session manager's callback so that every translation
+    // progress event also updates the in-memory ProgressState.
+    let progress_clone = progress.clone();
+    manager.set_event_callback(move |event| {
+        // Run the async update on a blocking thread since on_event
+        // uses tokio::sync::RwLock (non-blocking).
+        let p = progress_clone.clone();
+        let evt = event.clone();
+        tokio::spawn(async move {
+            p.on_event(&evt).await;
+        });
+    });
+
     Router::new()
         .route("/api/dashboard", get(handlers::api_get_dashboard))
         .route("/api/units/{id}", get(handlers::api_get_unit))
@@ -146,6 +301,7 @@ pub fn build_router_with_ws(
         .route("/api/queue", get(handlers::api_get_queue))
         .route("/api/queue/next", get(handlers::api_get_next_unit))
         .route("/api/graph", get(handlers::api_get_dependency_graph))
+        .route("/api/progress", get(handlers::api_get_progress))
         .route("/health", get(handlers::api_health))
         .route("/", get(handlers::serve_index))
         .fallback_service(axum::routing::get(handlers::static_fallback))
@@ -157,6 +313,7 @@ pub fn build_router_with_ws(
             manager: Some(manager),
             bridge: None,
             actions: None,
+            progress: Some(Arc::new(RwLock::new(progress))),
         })
 }
 
