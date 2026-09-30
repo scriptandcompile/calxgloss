@@ -2406,7 +2406,12 @@ async fn handle_verify(
         cyan_bold(&"═".repeat(58))
     );
     println!("  {}{}", white_bold("  Function: "), function);
-    println!("  {}{}", white_bold("  DLL: "), dll);
+    let label = if dll.to_lowercase().ends_with(".exe") {
+        "File:"
+    } else {
+        "DLL:"
+    };
+    println!("  {}{}", white_bold(&format!("  {label} ")), dll);
     println!("  {}{}", white_bold("  Source: "), rust_source.display());
     println!("{}", cyan_bold(&"═".repeat(58)));
     print_verification_results(&verification);
