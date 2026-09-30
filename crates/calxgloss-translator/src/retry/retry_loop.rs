@@ -9,8 +9,8 @@ use crate::retry::{
     build_test_fix_prompt, log_prompt_variant_experiment,
 };
 use calxgloss_ghidra::GhidraClient;
-use calxgloss_llm::{LlmClient, LlmMessage};
-use calxgloss_types::{FailureHint, ProgressEvent};
+use calxgloss_llm::{LlmClient, LlmError, LlmMessage};
+use calxgloss_types::{FailureHint, ProgressEvent, TranslationEvents};
 use calxgloss_verify::{CompileResult, Verifier};
 use tracing::{info, warn};
 
@@ -350,9 +350,29 @@ pub async fn try_translate_with_retry(
             });
         }
 
-        // Send fix prompt to LLM
+        // Send fix prompt to LLM with keepalive progress updates
         let messages = vec![LlmMessage::user(&prompt)];
-        let response = match ctx.llm.complete(&messages).await {
+
+        // Emit: LLM call started
+        if let Some(em) = ctx.events {
+            let _ = em.emit(ProgressEvent::LlmCallStart {
+                dll: initial_translation.dll.clone(),
+                function: initial_translation.function.clone(),
+                attempt: attempt_num,
+                strategy: strategy_name.clone(),
+            });
+        }
+
+        let response = match llm_call_with_keepalive(
+            ctx.llm,
+            &messages,
+            &initial_translation,
+            attempt_num,
+            &strategy_name,
+            ctx.events,
+        )
+        .await
+        {
             Ok(r) => r,
             Err(e) => {
                 warn!(
@@ -529,6 +549,77 @@ pub async fn try_translate_with_retry(
     }
 
     result
+}
+
+/// Call the LLM with periodic progress keepalive events.
+///
+/// While the HTTP request is in flight, emits `LlmCallInProgress` events every
+/// 30 seconds so the caller (and the web UI) know the request hasn't hung.
+fn llm_call_with_keepalive<'a>(
+    llm: &'a LlmClient,
+    messages: &'a [LlmMessage],
+    initial_translation: &'a Translation,
+    attempt_num: u32,
+    strategy: &str,
+    events: Option<&'a TranslationEvents>,
+) -> impl std::future::Future<Output = Result<calxgloss_llm::LlmResponse, LlmError>> + 'a {
+    let dll = initial_translation.dll.clone();
+    let function = initial_translation.function.clone();
+    let messages = messages.to_vec();
+    let events = events.cloned();
+    let attempt = attempt_num;
+    let strategy = strategy.to_string();
+
+    async move {
+        let keepalive_interval = std::time::Duration::from_secs(30);
+
+        // Spawn a keepalive task that emits progress events every 30s
+        let events_clone = events.clone();
+        let dll_kp = dll.clone();
+        let function_kp = function.clone();
+        let strategy_kp = strategy.clone();
+        let attempt_kp = attempt;
+        let keepalive_handle = tokio::task::spawn(async move {
+            let mut elapsed = keepalive_interval;
+            if let Some(em) = events_clone {
+                loop {
+                    tokio::time::sleep(keepalive_interval).await;
+                    let secs = elapsed.as_secs();
+                    let _ = em.emit(ProgressEvent::LlmCallInProgress {
+                        dll: dll_kp.clone(),
+                        function: function_kp.clone(),
+                        attempt: attempt_kp,
+                        strategy: strategy_kp.clone(),
+                        elapsed_secs: secs,
+                    });
+                    elapsed += keepalive_interval;
+                }
+            }
+        });
+
+        // Race the HTTP request against the keepalive handle (which runs forever)
+        let result = llm.complete(&messages).await;
+
+        // Cancel the keepalive task — drop the handle to stop the loop
+        keepalive_handle.abort();
+
+        match &result {
+            Ok(_) => {}
+            Err(e) => {
+                if let Some(em) = events {
+                    let _ = em.emit(ProgressEvent::LlmCallFailed {
+                        dll: dll.clone(),
+                        function: function.clone(),
+                        attempt,
+                        strategy: strategy.clone(),
+                        error: e.to_string(),
+                    });
+                }
+            }
+        }
+
+        result
+    }
 }
 
 // ============================================================

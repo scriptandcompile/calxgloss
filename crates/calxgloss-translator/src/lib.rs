@@ -51,6 +51,7 @@ use calxgloss_types::{
     Export, FunctionInfo, ProgressEvent, TestCase, TranslationEvents, TranslationRequest,
 };
 use calxgloss_verify::Verifier;
+use tokio;
 use tracing::{debug, info, instrument, warn};
 
 // ============================================================
@@ -513,7 +514,16 @@ impl TranslationPipeline {
             prompt: prompt.clone(),
         });
 
-        let response = self.send_to_llm(&prompt).await?;
+        let response = self
+            .send_to_llm(
+                &prompt,
+                self.events.as_ref(),
+                dll,
+                function,
+                1,
+                "initial",
+            )
+            .await?;
 
         if response.content.is_empty() {
             return Err(TranslatorError::EmptyCode {
@@ -580,7 +590,16 @@ impl TranslationPipeline {
         }
 
         let prompt = build_translate_prompt(&request)?;
-        let response = self.send_to_llm(&prompt).await?;
+        let response = self
+            .send_to_llm(
+                &prompt,
+                self.events.as_ref(),
+                &request.dll,
+                &request.function,
+                1,
+                "initial",
+            )
+            .await?;
 
         if response.content.is_empty() {
             return Err(TranslatorError::EmptyCode {
@@ -881,9 +900,71 @@ impl TranslationPipeline {
     }
 
     /// Send a prompt to the LLM and extract the Rust code response.
-    async fn send_to_llm(&self, prompt: &str) -> Result<calxgloss_llm::LlmResponse> {
+    ///
+    /// If `events` is provided, emits `LlmCallInProgress` keepalive events
+    /// every 30 seconds while the request is in flight.
+    async fn send_to_llm(
+        &self,
+        prompt: &str,
+        events: Option<&TranslationEvents>,
+        dll: &str,
+        function: &str,
+        attempt: u32,
+        strategy: &str,
+    ) -> Result<calxgloss_llm::LlmResponse> {
         let messages = vec![LlmMessage::user(prompt)];
-        let response = self.llm.complete(&messages).await?;
+
+        let response = if let Some(em) = events {
+            let em = em.clone();
+            let em_err = em.clone();
+            let dll_s = dll.to_string();
+            let function_s = function.to_string();
+            let strategy_s = strategy.to_string();
+            let attempt = attempt;
+
+            // Clone values before moving into the keepalive closure
+            let dll_kp = dll_s.clone();
+            let function_kp = function_s.clone();
+            let strategy_kp = strategy_s.clone();
+
+            // Spawn a keepalive task that emits progress events every 30s
+            let keepalive_handle = tokio::task::spawn(async move {
+                let interval = std::time::Duration::from_secs(30);
+                let mut elapsed = interval;
+                loop {
+                    tokio::time::sleep(interval).await;
+                    let secs = elapsed.as_secs();
+                    let _ = em.emit(ProgressEvent::LlmCallInProgress {
+                        dll: dll_kp.clone(),
+                        function: function_kp.clone(),
+                        attempt,
+                        strategy: strategy_kp.clone(),
+                        elapsed_secs: secs,
+                    });
+                    elapsed += interval;
+                }
+            });
+
+            let result = self.llm.complete(&messages).await;
+            keepalive_handle.abort();
+
+            match &result {
+                Ok(_) => {}
+                Err(e) => {
+                    let _ = em_err.emit(ProgressEvent::LlmCallFailed {
+                        dll: dll_s.clone(),
+                        function: function_s.clone(),
+                        attempt,
+                        strategy: strategy_s.clone(),
+                        error: e.to_string(),
+                    });
+                }
+            }
+
+            result
+        } else {
+            self.llm.complete(&messages).await
+        }?;
 
         debug!(
             code_len = response.content.len(),

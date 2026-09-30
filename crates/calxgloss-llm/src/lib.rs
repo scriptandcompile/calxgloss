@@ -276,7 +276,7 @@ struct StreamDelta {
 ///
 /// Supports both standard completions and streaming responses.
 /// Compatible with Ollama, vLLM, llama.cpp, and other local LLM runners.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LlmClient {
     config: LlmConfig,
     http: Client,

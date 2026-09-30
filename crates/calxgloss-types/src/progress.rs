@@ -139,6 +139,54 @@ pub enum ProgressEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         success_strategy: Option<String>,
     },
+    /// LLM call is still in progress (keepalive heartbeat).
+    /// Emitted periodically to indicate the request has not hung.
+    LlmCallInProgress {
+        dll: String,
+        function: String,
+        attempt: u32,
+        strategy: String,
+        /// How many seconds the call has been running.
+        elapsed_secs: u64,
+    },
+    /// LLM call failed with an error (HTTP/network failure, timeout, etc.).
+    LlmCallFailed {
+        dll: String,
+        function: String,
+        attempt: u32,
+        strategy: String,
+        /// The error message from the LLM client.
+        error: String,
+    },
+    /// A DLL classification has completed.
+    ClassificationComplete {
+        dll: String,
+        /// The assigned category.
+        category: String,
+        /// The strategy used.
+        strategy: String,
+        /// Crate replacement target (if any).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        crate_replacement: Option<String>,
+        /// Number of exported symbols.
+        exported_symbols: usize,
+        /// Number of imported symbols.
+        imported_symbols: usize,
+    },
+    /// Batch translation for a DLL has completed (summary across all functions).
+    BatchSummary {
+        dll: String,
+        /// Total functions attempted.
+        total_functions: usize,
+        /// Functions that succeeded.
+        success_count: usize,
+        /// Functions that failed.
+        failure_count: usize,
+        /// Total translation attempts across all functions.
+        total_attempts: usize,
+        /// Total tokens consumed.
+        total_tokens: usize,
+    },
 }
 
 impl std::fmt::Display for ProgressEvent {
@@ -251,6 +299,46 @@ impl std::fmt::Display for ProgressEvent {
                 write!(
                     f,
                     "Translation completed for {function} ({dll}) in {total_attempts} attempts"
+                )
+            }
+            ProgressEvent::LlmCallFailed {
+                dll,
+                function,
+                attempt,
+                strategy,
+                error,
+            } => {
+                write!(
+                    f,
+                    "LLM call failed for {function} ({dll}) attempt #{attempt} [{strategy}]: {error}"
+                )
+            }
+            ProgressEvent::LlmCallInProgress {
+                dll,
+                function,
+                attempt,
+                strategy,
+                elapsed_secs,
+            } => {
+                write!(
+                    f,
+                    "LLM call still in progress — {function} ({dll}) attempt #{attempt} [{strategy}] ({elapsed_secs}s elapsed)"
+                )
+            }
+            ProgressEvent::ClassificationComplete { dll, category, .. } => {
+                write!(f, "Classified {dll} as {category}")
+            }
+            ProgressEvent::BatchSummary {
+                dll,
+                total_functions,
+                success_count,
+                failure_count,
+                total_attempts,
+                total_tokens,
+            } => {
+                write!(
+                    f,
+                    "Batch summary for {dll}: {success_count}/{total_functions} succeeded, {failure_count} failed after {total_attempts} attempts ({total_tokens} tokens)"
                 )
             }
         }

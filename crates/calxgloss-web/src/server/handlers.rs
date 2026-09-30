@@ -182,11 +182,77 @@ pub async fn api_get_dashboard(
 
 /// Returns detailed information for a single unit of work.
 pub async fn api_get_unit(
-    State(state): State<ServerState>,
+    State(combined): State<super::CombinedState>,
     Path(unit_id): Path<String>,
 ) -> Result<Json<UnitResponse>, ServerError> {
-    let dashboard = super::build_dashboard(state.repo_path())
+    let mut dashboard = super::build_dashboard(combined.server.repo_path())
         .map_err(|e| ServerError::internal(&e.to_string()))?;
+
+    // Merge live progress entries (in-progress translations not yet in the dashboard).
+    if let Some(progress) = &combined.progress {
+        let entries = progress.read().await.snapshot().await;
+        let in_progress_keys: std::collections::HashSet<&str> =
+            entries.keys().map(|k| k.as_str()).collect();
+
+        let mut matched_keys: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
+        // Update existing units that match progress entries
+        for unit in &mut dashboard.review_queue {
+            let key = format!("{}/{}", unit.dll, unit.function.as_deref().unwrap_or(""));
+            if in_progress_keys.contains(key.as_str()) {
+                unit.status = calxgloss_types::ReviewStatus::InProgress;
+                unit.updated_at = chrono::Utc::now();
+                matched_keys.insert(key);
+            }
+        }
+        for unit in &mut dashboard.recent_activity {
+            let key = format!("{}/{}", unit.dll, unit.function.as_deref().unwrap_or(""));
+            if in_progress_keys.contains(key.as_str()) {
+                unit.status = calxgloss_types::ReviewStatus::InProgress;
+                matched_keys.insert(key);
+            }
+        }
+
+        // Add synthetic units for in-progress entries not yet in the dashboard
+        for (key, entry) in &entries {
+            if matched_keys.contains(key.as_str()) {
+                continue;
+            }
+            let name = if entry.function.is_empty() {
+                format!("Classify {}", entry.dll)
+            } else {
+                format!("{}!{}", entry.dll, entry.function)
+            };
+            let synthetic_id = format!("live/{}/v{}", key, entry.attempt);
+            dashboard.review_queue.push(calxgloss_types::UnitOfWork {
+                id: synthetic_id,
+                name,
+                kind: calxgloss_types::WorkUnitKind::FunctionTranslation,
+                dll: entry.dll.clone(),
+                function: if entry.function.is_empty() {
+                    None
+                } else {
+                    Some(entry.function.clone())
+                },
+                attempt: entry.attempt,
+                status: calxgloss_types::ReviewStatus::InProgress,
+                accepted: false,
+                confidence: None,
+                baseline_tests_passed: None,
+                baseline_tests_total: None,
+                verification_tests_passed: None,
+                verification_tests_total: None,
+                llm_model: None,
+                prompt_tier: None,
+                dependencies: Vec::new(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+                known_gaps: Vec::new(),
+                stale: calxgloss_types::dashboard::Staleness::Fresh,
+            });
+        }
+    }
 
     let unit = dashboard
         .review_queue
@@ -194,6 +260,10 @@ pub async fn api_get_unit(
         .chain(dashboard.recent_activity.iter())
         .find(|u| u.id == unit_id)
         .ok_or_else(|| ServerError::not_found("Unit not found"))?;
+
+    let state = ServerState {
+        repo_path: combined.server.repo_path.to_path_buf(),
+    };
 
     let diff_summary = compute_diff_summary(&state, unit);
     let attempt_history = load_attempt_history(state.repo_path(), &unit_id);
@@ -1130,5 +1200,101 @@ pub async fn api_get_progress(
     Json(super::ProgressResponse {
         in_progress,
         count,
+    })
+}
+
+/// Handle GET /api/pipeline — return overall pipeline progress.
+///
+/// This endpoint aggregates classification results, batch summaries,
+/// and live translation state to give a high-level view of the
+/// pipeline's current status.
+pub async fn api_get_pipeline(
+    State(combined): State<super::CombinedState>,
+) -> Json<super::PipelineProgressResponse> {
+    let progress = match &combined.progress {
+        Some(p) => p,
+        None => return Json(super::PipelineProgressResponse::empty(0)),
+    };
+
+    let entries = progress.read().await.snapshot().await;
+    let classifications_raw = progress.read().await.classifications().await;
+    let batch_summaries_raw = progress.read().await.batch_summaries().await;
+
+    // Convert to owned HashMaps for O(1) lookups by DLL name
+    let classifications: std::collections::HashMap<String, super::ClassificationInfo> =
+        classifications_raw.into_iter().map(|c| (c.dll.clone(), c)).collect();
+    let batch_summaries: std::collections::HashMap<String, super::BatchInfo> =
+        batch_summaries_raw.into_iter().map(|b| (b.dll.clone(), b)).collect();
+
+    // Snapshot entries before dropping the lock to avoid nested borrows
+    let entries_snapshot: std::collections::HashMap<String, super::ProgressEntry> =
+        entries.clone();
+
+    // Collect all DLL names from all three sources
+    let mut dll_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // From live translation entries (group by DLL)
+    for entry in entries_snapshot.values() {
+        dll_names.insert(entry.dll.clone());
+    }
+
+    let total_dlls = dll_names.len();
+    let dll_names_vec: Vec<String> = {
+        let mut v: Vec<String> = dll_names.into_iter().collect();
+        v.sort();
+        v
+    };
+
+    // Find DLLs currently being translated (have entries with non-Complete status)
+    let currently_translating: Vec<String> = entries_snapshot
+        .values()
+        .filter(|e| !matches!(e.status, super::ProgressUnitStatus::Complete))
+        .map(|e| e.dll.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    // Build per-DLL progress
+    let mut dlls = Vec::new();
+    for (order, dll) in dll_names_vec.iter().enumerate() {
+        let classification = classifications.get(dll).cloned();
+
+        let batch = batch_summaries.get(dll).cloned();
+
+        // Check if this DLL is currently being translated
+        let current_translating = currently_translating
+            .iter()
+            .find(|d| **d == *dll)
+            .map(|d| {
+                let dll_entries: Vec<_> = entries_snapshot
+                    .values()
+                    .filter(|e| e.dll == **d)
+                    .collect();
+                let completed = dll_entries
+                    .iter()
+                    .filter(|e| matches!(e.status, super::ProgressUnitStatus::Complete))
+                    .count();
+                super::CurrentDllStatus {
+                    dll: d.clone(),
+                    total_entries: dll_entries.len(),
+                    completed_entries: completed,
+                }
+            });
+
+        dlls.push(super::PipelineDllProgress {
+            dll: dll.clone(),
+            classification,
+            batch,
+            in_progress: current_translating,
+            order,
+        });
+    }
+
+    Json(super::PipelineProgressResponse {
+        total_dlls,
+        classified_count: classifications.len(),
+        batch_complete_count: batch_summaries.len(),
+        currently_translating,
+        dlls,
     })
 }
