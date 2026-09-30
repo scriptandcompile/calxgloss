@@ -45,7 +45,9 @@
 
 mod stubs;
 
-pub use calxgloss_types::{FailedTest, TestCase, VerificationResult};
+pub use calxgloss_types::{
+    FailedTest, ShimMappingTestResult, ShimVerificationResult, TestCase, VerificationResult,
+};
 pub use stubs::Stubs;
 
 use anyhow::{Context, Result};
@@ -488,6 +490,214 @@ fn call_function(inputs: &Value) -> Value {
 
         code
     }
+
+    // ---- Shim layer verification ----
+
+    /// Verify a shim layer by compiling its generated code and running its tests.
+    ///
+    /// This is the shim-layer equivalent of [`Self::verify`].  It takes raw
+    /// shim source and test code (as produced by `calxgloss-analysis::shim_gen`
+    /// and `calxgloss-analysis::shim_test_gen`), scaffolds a sandboxed Cargo
+    /// project, compiles it, runs `cargo test`, and returns a
+    /// [`ShimVerificationResult`] describing the outcome.
+    ///
+    /// # Arguments
+    ///
+    /// * `shim_source` — The generated shim module source code.
+    /// * `shim_tests` — The generated test module source code.
+    /// * `target_crate` — The Rust crate name for the dependency
+    ///   (e.g. `"wgpu"`, `"cpal"`).  The dependency is added under the same
+    ///   name in the scaffolded `Cargo.toml`.
+    /// * `dll_name` — The original DLL name, used for project identification
+    ///   and to derive the module name.
+    ///
+    /// # Example
+    ///
+    /// ```no_run,ignore
+    /// use calxgloss_verify::Verifier;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let shim_source = r#"pub unsafe fn set_texture(stage: u32, texture: *mut c_void) { }"#;
+    /// let shim_tests = r#"#[cfg(test)] mod shim_tests { #[test] fn test_placeholder() {} }"#;
+    ///
+    /// let verifier = Verifier::new(std::path::Path::new("/tmp/calxgloss-work"))?;
+    /// let result = verifier.verify_shim(shim_source, shim_tests, "wgpu", "d3d9.dll").await?;
+    ///
+    /// assert!(result.compiled);
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[instrument(skip(self, shim_source, shim_tests), fields(dll, target_crate))]
+    pub async fn verify_shim(
+        &self,
+        shim_source: &str,
+        shim_tests: &str,
+        target_crate: &str,
+        dll_name: &str,
+    ) -> Result<ShimVerificationResult> {
+        debug!(dll = dll_name, "Starting shim verification");
+
+        // Scaffold a shim project and compile it.
+        let project =
+            self.scaffold_shim_project(dll_name, shim_source, shim_tests, target_crate)?;
+        let compile_output = run_cargo_check(&project)
+            .await
+            .context("cargo check failed for shim")?;
+        let (compiled, compilation_errors, compilation_warnings) =
+            parse_cargo_output(&compile_output);
+
+        if !compiled {
+            info!(
+                dll = dll_name,
+                error_count = compilation_errors.len(),
+                "Shim verification failed at compilation"
+            );
+            return Ok(ShimVerificationResult {
+                compiled: false,
+                compilation_errors,
+                compilation_warnings,
+                tests_passed: 0,
+                tests_total: 0,
+                edge_tests_passed: 0,
+                edge_tests_total: 0,
+                failed_tests: Vec::new(),
+                mapping_results: Vec::new(),
+            });
+        }
+
+        info!(dll = dll_name, "Shim compiled successfully, running tests");
+
+        // Run the shim's tests.
+        let test_output = Self::run_cargo_test(&project)
+            .await
+            .unwrap_or_else(|e| format!("Test execution failed: {}", e));
+
+        // Parse test results from the test output.
+        let (
+            tests_passed,
+            tests_total,
+            edge_tests_passed,
+            edge_tests_total,
+            failed_tests,
+            mapping_results,
+        ) = parse_shim_test_results(&test_output, shim_source, shim_tests);
+
+        info!(
+            dll = dll_name,
+            tests_passed, tests_total, "Shim verification complete"
+        );
+
+        Ok(ShimVerificationResult {
+            compiled: true,
+            compilation_errors: Vec::new(),
+            compilation_warnings,
+            tests_passed,
+            tests_total,
+            edge_tests_passed,
+            edge_tests_total,
+            failed_tests,
+            mapping_results,
+        })
+    }
+
+    /// Scaffold a Cargo project containing shim source and shim tests.
+    ///
+    /// Creates a minimal project with the shim as a library module, the
+    /// target crate as a dependency, and the test module included via an
+    /// `include!` so the tests run alongside the code.
+    fn scaffold_shim_project(
+        &self,
+        dll_name: &str,
+        shim_source: &str,
+        shim_tests: &str,
+        target_crate: &str,
+    ) -> Result<PathBuf> {
+        let project_dir = self.create_scratch_dir(dll_name, "shim");
+
+        // Determine the crate root mapping for Cargo.toml.
+        let dep_crate = Self::shim_crate_root_for_cargo(target_crate);
+
+        let cargo_toml = format!(
+            "[package]\nname = \"{}_shim\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n{dep_crate} = {{ version = \"*\", optional = true }}\n\n[features]\ndefault = []\n\n[lib]\nname = \"{}_shim_lib\"\npath = \"src/lib.rs\"\n",
+            sanitize_crate_name(dll_name),
+            sanitize_identifier(dll_name),
+        );
+        std::fs::write(project_dir.join("Cargo.toml"), cargo_toml)
+            .context("Failed to write shim Cargo.toml")?;
+
+        std::fs::create_dir_all(project_dir.join("src"))
+            .context("Failed to create shim src directory")?;
+
+        // Build the lib.rs: shim source + include the test module so cargo test picks it up.
+        let mut lib_rs = String::new();
+        lib_rs.push_str("#![allow(dead_code, unused_imports, unused_variables, clippy::new_without_default, clippy::default_trait_access, clippy::missing_errors_doc)]\n\n");
+        lib_rs.push_str(shim_source);
+        lib_rs.push('\n');
+
+        // Write the tests to a separate file and include them.
+        let tests_path = "shim_tests.rs";
+        let tests_dir = project_dir.join("src");
+        std::fs::write(tests_dir.join(tests_path), shim_tests)
+            .context("Failed to write shim test file")?;
+
+        // Add include! at the end of lib.rs to bring tests into scope.
+        // If the test module already has #[cfg(test)], the include! brings it in.
+        lib_rs.push_str(&format!(
+            "#[path = \"{tests_path}\"]\nmod shim_tests;\n",
+            tests_path = tests_path,
+        ));
+
+        std::fs::write(project_dir.join("src").join("lib.rs"), lib_rs)
+            .context("Failed to write shim lib.rs")?;
+
+        debug!(
+            project = %project_dir.display(),
+            "Scaffolded shim scratch project"
+        );
+        Ok(project_dir)
+    }
+
+    /// Resolve a crate name to its Cargo dependency name.
+    fn shim_crate_root_for_cargo(crate_name: &str) -> String {
+        match crate_name {
+            "wgpu" => "wgpu = \"*\"".to_string(),
+            "tiny-skia" => "tiny_skia = \"*\"".to_string(),
+            "cpal" => "cpal = \"*\"".to_string(),
+            "fmod-rs" => "fmod_rs = \"*\"".to_string(),
+            "vb6runtime" => "vb6runtime = \"*\"".to_string(),
+            _ => format!("{crate_crate} = \"*\"", crate_crate = crate_name),
+        }
+    }
+
+    /// Run `cargo test` in the given project directory.
+    async fn run_cargo_test(project: &Path) -> Result<String> {
+        debug!(project = %project.display(), "Running cargo test");
+
+        let output = tokio::process::Command::new("cargo")
+            .arg("test")
+            .current_dir(project)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .context("Failed to spawn cargo test")?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let combined = format!("{}\n{}", stderr, stdout);
+
+        if output.status.success() {
+            debug!("cargo test succeeded");
+        } else {
+            debug!(
+                output = &combined[..combined.len().min(500)],
+                "cargo test failed"
+            );
+        }
+
+        Ok(combined.to_owned())
+    }
 }
 
 // ============================================================
@@ -649,6 +859,186 @@ fn parse_test_results(
     // If cargo run succeeded without errors but we couldn't parse results,
     // the runner may have produced output we don't understand
     (0, baseline_tests.len(), Vec::new())
+}
+
+/// Parse `cargo test` output for shim test results.
+///
+/// Returns `(tests_passed, tests_total, edge_tests_passed, edge_tests_total,
+/// failed_tests, mapping_results)`.
+///
+/// The parser works by scanning the test output for individual test names
+/// and grouping them by their originating mapping function name.  Test
+/// functions follow the naming convention used by
+/// `calxgloss_analysis::shim_test_gen`:
+///
+/// - `test_<fn_name>_params` — parameter correctness test
+/// - `test_<fn_name>_edge_<case>` — edge-case tests
+fn parse_shim_test_results(
+    output: &str,
+    _shim_source: &str,
+    _shim_tests: &str,
+) -> (
+    usize,
+    usize,
+    usize,
+    usize,
+    Vec<FailedTest>,
+    Vec<ShimMappingTestResult>,
+) {
+    let mut tests_passed: usize = 0;
+    let mut tests_total: usize = 0;
+    let mut edge_tests_passed: usize = 0;
+    let mut edge_tests_total: usize = 0;
+    let mut failed_tests: Vec<FailedTest> = Vec::new();
+
+    // Track per-mapping results.
+    let mut mapping_stats: std::collections::HashMap<String, (usize, usize, Vec<FailedTest>)> =
+        std::collections::HashMap::new();
+
+    // Parse individual test lines: "test shim_tests::test_foo_params ... ok"
+    for line in output.lines() {
+        // Match lines like: "test shim_tests::test_foo_params ... ok"
+        // or: "test shim_tests::test_foo_params ... FAILED"
+        if let Some(test_info) = parse_test_line(line) {
+            let test_name = test_info.name;
+            let is_ok = test_info.is_ok;
+
+            // Determine if this is an edge-case test or a main test.
+            let is_edge = test_name.contains("_edge_");
+            let mapping_fn = extract_mapping_function(&test_name);
+
+            // Update per-mapping stats.
+            mapping_stats
+                .entry(mapping_fn.clone())
+                .or_insert_with(|| (0, 0, Vec::new()))
+                .1 += 1; // total
+
+            if is_edge {
+                edge_tests_total += 1;
+                if is_ok {
+                    edge_tests_passed += 1;
+                } else {
+                    let error = test_info
+                        .error
+                        .unwrap_or_else(|| "test failed with unknown error".to_string());
+                    failed_tests.push(FailedTest {
+                        test_index: edge_tests_total - 1,
+                        inputs: serde_json::json!({}),
+                        expected: serde_json::json!(true),
+                        actual: serde_json::json!(false),
+                        error,
+                    });
+                }
+            } else {
+                tests_total += 1;
+                if is_ok {
+                    tests_passed += 1;
+                } else {
+                    let error = test_info
+                        .error
+                        .unwrap_or_else(|| "test failed with unknown error".to_string());
+                    failed_tests.push(FailedTest {
+                        test_index: tests_total - 1,
+                        inputs: serde_json::json!({}),
+                        expected: serde_json::json!(true),
+                        actual: serde_json::json!(false),
+                        error,
+                    });
+                }
+            }
+        }
+    }
+
+    // Build per-mapping result entries.
+    let mut mapping_results: Vec<ShimMappingTestResult> = Vec::new();
+    for (fn_name, (passed, total, failures)) in &mapping_stats {
+        mapping_results.push(ShimMappingTestResult {
+            original_api: fn_name.clone(),
+            crate_api: String::new(),
+            passed: *passed,
+            total: *total,
+            failures: failures.clone(),
+        });
+    }
+
+    // Sort mapping results for deterministic output.
+    mapping_results.sort_by(|a, b| a.original_api.cmp(&b.original_api));
+
+    (
+        tests_passed,
+        tests_total,
+        edge_tests_passed,
+        edge_tests_total,
+        failed_tests,
+        mapping_results,
+    )
+}
+
+/// Represents a parsed line from `cargo test` output.
+struct ParsedTestLine {
+    name: String,
+    is_ok: bool,
+    error: Option<String>,
+}
+
+/// Parse a single test output line and extract the test name and result.
+///
+/// Matches patterns like:
+/// - `test shim_tests::test_foo_params ... ok`
+/// - `test shim_tests::test_foo_params ... FAILED`
+/// - `test shim_tests::test_foo_params ... ignored`
+fn parse_test_line(line: &str) -> Option<ParsedTestLine> {
+    // Look for the "test ..." portion followed by a status.
+    let parts: Vec<&str> = line.split(" ... ").collect();
+    if parts.len() != 2 {
+        return None;
+    }
+
+    let prefix = parts[0].trim();
+    let status = parts[1].trim();
+
+    // The test name is everything after "test " in the prefix.
+    let name = prefix.strip_prefix("test ").map(|s| s.to_string())?;
+
+    // Skip ignored tests — they don't count.
+    if status == "ignored" {
+        return None;
+    }
+
+    let is_ok = status == "ok";
+
+    Some(ParsedTestLine {
+        name,
+        is_ok,
+        error: if !is_ok {
+            // Try to find the panic/error in subsequent lines.
+            None // Will be filled from context if needed
+        } else {
+            None
+        },
+    })
+}
+
+/// Extract the mapping function name from a test name.
+///
+/// Given `shim_tests::test_direct3dcreate9_params` returns
+/// `direct3dcreate9`.  Given `shim_tests::test_direct3dcreate9_edge_zero`
+/// returns `direct3dcreate9`.
+fn extract_mapping_function(test_name: &str) -> String {
+    // Strip module prefix if present.
+    let name = test_name.split("::").last().unwrap_or(test_name);
+
+    // Strip "test_" prefix and "_params" or "_edge_*" suffix.
+    let name = name.strip_prefix("test_").unwrap_or(name);
+    let name = name.strip_suffix("_params").unwrap_or(name);
+    let name = name.strip_suffix("_edge_zero").unwrap_or(name);
+    let name = name.strip_suffix("_edge_null").unwrap_or(name);
+    let name = name.strip_suffix("_edge_max").unwrap_or(name);
+    let name = name.strip_suffix("_edge_empty").unwrap_or(name);
+    let name = name.strip_suffix("_edge_negative").unwrap_or(name);
+    let name = name.strip_suffix("_edge_overflow").unwrap_or(name);
+
+    name.to_string()
 }
 
 // ============================================================
@@ -1021,6 +1411,214 @@ error[E0308]: mismatched types
         assert!(project.join("src").join("lib.rs").exists());
         assert!(project.join("src").join("main.rs").exists());
         assert!(project.join("baseline.json").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---- Shim verification tests ----
+
+    #[test]
+    fn test_parse_test_line_ok() {
+        let line = "test shim_tests::test_direct3dcreate9_params ... ok";
+        let parsed = parse_test_line(line).unwrap();
+        assert_eq!(parsed.name, "shim_tests::test_direct3dcreate9_params");
+        assert!(parsed.is_ok);
+    }
+
+    #[test]
+    fn test_parse_test_line_failed() {
+        let line = "test shim_tests::test_present_params ... FAILED";
+        let parsed = parse_test_line(line).unwrap();
+        assert_eq!(parsed.name, "shim_tests::test_present_params");
+        assert!(!parsed.is_ok);
+    }
+
+    #[test]
+    fn test_parse_test_line_ignored() {
+        let line = "test shim_tests::test_ignored ... ignored";
+        let parsed = parse_test_line(line);
+        assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn test_parse_test_line_non_test() {
+        assert!(parse_test_line("running 5 tests").is_none());
+        assert!(parse_test_line("test result: ok. 3 passed").is_none());
+        assert!(parse_test_line("").is_none());
+    }
+
+    #[test]
+    fn test_extract_mapping_function_main_test() {
+        assert_eq!(
+            extract_mapping_function("shim_tests::test_direct3dcreate9_params"),
+            "direct3dcreate9"
+        );
+        assert_eq!(extract_mapping_function("test_present_params"), "present");
+    }
+
+    #[test]
+    fn test_extract_mapping_function_edge_cases() {
+        assert_eq!(
+            extract_mapping_function("shim_tests::test_set_texture_edge_zero"),
+            "set_texture"
+        );
+        assert_eq!(extract_mapping_function("test_present_edge_max"), "present");
+        assert_eq!(
+            extract_mapping_function("test_create_device_edge_null"),
+            "create_device"
+        );
+    }
+
+    #[test]
+    fn test_parse_shim_test_results_all_pass() {
+        let output = r#"
+running 5 tests
+test shim_tests::test_direct3dcreate9_params ... ok
+test shim_tests::test_present_params ... ok
+test shim_tests::test_direct3dcreate9_edge_zero ... ok
+test shim_tests::test_present_edge_max ... ok
+test shim_tests::test_all_shim_mappings_have_tests ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+"#;
+        let (
+            tests_passed,
+            tests_total,
+            edge_tests_passed,
+            edge_tests_total,
+            failed_tests,
+            mapping_results,
+        ) = parse_shim_test_results(output, "", "");
+
+        // 3 main tests (direct3dcreate9_params, present_params, all_shim_mappings_have_tests)
+        assert_eq!(tests_passed, 3, "tests_passed");
+        assert_eq!(tests_total, 3, "tests_total");
+        // 2 edge tests (edge_zero, edge_max)
+        assert_eq!(edge_tests_passed, 2, "edge_tests_passed");
+        assert_eq!(edge_tests_total, 2, "edge_tests_total");
+        assert!(failed_tests.is_empty());
+        // 3 mapping entries: direct3dcreate9, present, all_shim_mappings_have_tests
+        assert_eq!(mapping_results.len(), 3, "mapping_results count");
+    }
+
+    #[test]
+    fn test_parse_shim_test_results_with_failures() {
+        let output = r#"
+running 3 tests
+test shim_tests::test_direct3dcreate9_params ... ok
+test shim_tests::test_present_params ... FAILED
+test shim_tests::test_direct3dcreate9_edge_zero ... ok
+
+failures:
+
+---- shim_tests::test_present_params stdout ----
+thread 'shim_tests::test_present_params' panicked at 'assertion failed: `(left == right)`'
+
+failures:
+    shim_tests::test_present_params
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+"#;
+        let (_, tests_total, _, edge_tests_total, failed_tests, _) =
+            parse_shim_test_results(output, "", "");
+
+        // 2 main tests (direct3dcreate9_params ok, present_params FAILED)
+        assert_eq!(tests_total, 2, "tests_total");
+        // 1 edge test
+        assert_eq!(edge_tests_total, 1, "edge_tests_total");
+        // 1 failure
+        assert_eq!(failed_tests.len(), 1, "failed_tests count");
+    }
+
+    #[test]
+    fn test_parse_shim_test_results_empty() {
+        let (passed, total, ep, et, failed, mappings) = parse_shim_test_results("", "", "");
+        assert_eq!(passed, 0);
+        assert_eq!(total, 0);
+        assert_eq!(ep, 0);
+        assert_eq!(et, 0);
+        assert!(failed.is_empty());
+        assert!(mappings.is_empty());
+    }
+
+    #[test]
+    fn test_scaffold_shim_project_creates_files() {
+        let dir = std::env::temp_dir().join("calxgloss_verify_shim_scaffold");
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::create_dir_all(&dir);
+
+        let verifier = Verifier::new(&dir).unwrap();
+
+        let shim_source = r#"
+pub unsafe fn set_texture(stage: u32, _texture: *mut core::ffi::c_void) {
+    // shim implementation
+}
+"#;
+        let shim_tests = r#"
+#[cfg(test)]
+mod shim_tests {
+    use super::*;
+
+    #[test]
+    fn test_set_texture_params() {}
+}
+"#;
+
+        let project = verifier
+            .scaffold_shim_project("d3d9.dll", shim_source, shim_tests, "wgpu")
+            .unwrap();
+
+        assert!(project.exists());
+        assert!(project.join("Cargo.toml").exists());
+        assert!(project.join("src").join("lib.rs").exists());
+        assert!(project.join("src").join("shim_tests.rs").exists());
+
+        let lib_rs = fs::read_to_string(project.join("src").join("lib.rs")).unwrap();
+        assert!(lib_rs.contains("set_texture"));
+        assert!(lib_rs.contains("shim_tests.rs"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_shim_crate_root_for_cargo_wgpu() {
+        let _verifier = Verifier::new(std::env::temp_dir().as_path()).unwrap();
+        let dep = Verifier::shim_crate_root_for_cargo("wgpu");
+        assert_eq!(dep, "wgpu = \"*\"");
+    }
+
+    #[test]
+    fn test_shim_crate_root_for_cargo_tiny_skia() {
+        let _verifier = Verifier::new(std::env::temp_dir().as_path()).unwrap();
+        let dep = Verifier::shim_crate_root_for_cargo("tiny-skia");
+        assert_eq!(dep, "tiny_skia = \"*\"");
+    }
+
+    #[test]
+    fn test_shim_crate_root_for_cargo_unknown() {
+        let _verifier = Verifier::new(std::env::temp_dir().as_path()).unwrap();
+        let dep = Verifier::shim_crate_root_for_cargo("custom-crate");
+        assert_eq!(dep, "custom-crate = \"*\"");
+    }
+
+    #[test]
+    fn test_verify_shim_scaffolds_correct_cargo_toml() {
+        let dir = std::env::temp_dir().join("calxgloss_verify_shim_cargo");
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::create_dir_all(&dir);
+
+        let verifier = Verifier::new(&dir).unwrap();
+
+        let shim_source = "pub unsafe fn dummy() {}";
+        let shim_tests = "#[cfg(test)] mod shim_tests { #[test] fn t() {} }";
+
+        let project = verifier
+            .scaffold_shim_project("d3d9.dll", shim_source, shim_tests, "cpal")
+            .unwrap();
+
+        let cargo = fs::read_to_string(project.join("Cargo.toml")).unwrap();
+        assert!(cargo.contains("[dependencies]"));
+        assert!(cargo.contains("cpal"));
 
         let _ = fs::remove_dir_all(&dir);
     }
