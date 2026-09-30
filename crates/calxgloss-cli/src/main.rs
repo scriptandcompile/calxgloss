@@ -870,18 +870,23 @@ fn handle_init() -> Result<()> {
 
 /// Scans a directory for DLL and EXE files.
 fn scan_targets(target_dir: &Path) -> Vec<String> {
-    let mut targets = Vec::new();
+    let mut exe_files = Vec::new();
+    let mut dll_files = Vec::new();
     if let Ok(entries) = std::fs::read_dir(target_dir) {
         for entry in entries.filter_map(|e| e.ok()) {
             let file_name = entry.file_name();
             let name = file_name.to_string_lossy().to_lowercase();
-            if name.ends_with(".dll") || name.ends_with(".exe") {
-                targets.push(file_name.to_string_lossy().to_string());
+            if name.ends_with(".exe") {
+                exe_files.push(file_name.to_string_lossy().to_string());
+            } else if name.ends_with(".dll") {
+                dll_files.push(file_name.to_string_lossy().to_string());
             }
         }
     }
-    targets.sort();
-    targets
+    exe_files.sort();
+    dll_files.sort();
+    exe_files.extend(dll_files);
+    exe_files
 }
 
 /// Check whether a classification record exists for the given file.
