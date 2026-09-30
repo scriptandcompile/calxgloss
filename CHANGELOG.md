@@ -79,6 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Analyzer::build_prompt_variant()` — builds a `PromptVariant` with complexity classification and API awareness.
 - **`DependencyTracker::build()` / `for_dll()`** — now assign correct `WorkUnitLevel` (`DllClassification`, `ShimLayer`) to nodes they create, instead of using default struct field syntax.
 - **Prompt strategy logger** (`PromptStrategyLogger`) — persists experiment entries to `<workspace>/re/analysis/prompt_strategy_log.json` with `record()`, `load()`, `compute_stats()`, and `log_path()` methods. Auto-creates directory structure; handles corrupted-file recovery by starting fresh.
+- **Shim mapping auto-generation** (`shim` module) — `generate_shim_mappings()` sends a structured prompt to the LLM containing the DLL name, target crate, and all exported function signatures; the LLM returns a JSON array of `ShimApiMapping` entries. Includes `CrateContext` hints (description, common patterns, pitfalls) for wgpu, tiny-skia, cpal, fmod-rs, and vb6runtime to guide the LLM. Response parser strips markdown code fences, maps string values to typed enums, and handles missing optional fields gracefully.
 
 ### `calxgloss-git`
 - **`accept_branch()`** — merges a branch into `main` and writes an acceptance record to `re/accepts/{dll}/{function}/vN.json` for dashboard visibility.

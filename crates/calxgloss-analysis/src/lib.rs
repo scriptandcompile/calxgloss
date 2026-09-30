@@ -44,6 +44,7 @@ mod classify;
 pub mod dependency;
 pub mod error;
 pub mod experiment_log;
+pub mod shim;
 
 pub use classify::*;
 pub use dependency::*;

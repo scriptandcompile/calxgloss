@@ -317,6 +317,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "calxgloss-ghidra",
+ "calxgloss-llm",
  "calxgloss-pal",
  "calxgloss-types",
  "chrono",

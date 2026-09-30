@@ -12,10 +12,11 @@ chrono = { workspace = true }
 [dependencies]
 calxgloss-types = { path = "../calxgloss-types" }
 calxgloss-ghidra = { path = "../calxgloss-ghidra" }
+calxgloss-llm = { path = "../calxgloss-llm" }
 calxgloss-pal = { path = "../calxgloss-pal" }
 goblin = { version = "0.10.7", default-features = false, features = ["pe32", "pe64"] }
 serde = { workspace = true }
-anyhow = { workspace = true }
 serde_json = { workspace = true }
+anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
