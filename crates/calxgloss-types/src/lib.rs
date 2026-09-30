@@ -2,13 +2,14 @@
 //!
 //! This crate defines the core types used across all Calxgloss crates,
 //! including DLL analysis, function metadata, test cases, translation
-//! requests/responses, verification results, Git automation, and the
-//! review dashboard data model.
+//! requests/responses, verification results, Git automation, the
+//! review dashboard data model, and shim layer API contracts.
 //!
 //! # Module Organization
 //!
 //! - [`dll`] — DLL classification and symbol information
 //! - [`function`] — Function disassembly, decompiler output, and API tagging
+//! - [`shim`] — Shim layer API contract for crate-replacement DLLs
 //! - [`test`] — Test case generation and baseline execution
 //! - [`translation`] — LLM translation requests and results
 //! - [`verification`] — Compilation and behavioral verification results
@@ -24,6 +25,7 @@ pub mod experiment_log;
 pub mod function;
 pub mod git;
 pub mod progress;
+pub mod shim;
 pub mod test;
 pub mod translation;
 pub mod verification;
@@ -36,6 +38,9 @@ pub use dashboard::{
     ReviewDashboard, ReviewStatus, StatusCounts, UnitOfWork, WorkUnitKind,
 };
 pub use dll::{DllCategory, DllInfo, Export, Import};
+pub use shim::{
+    ComplexityScore, ReturnMapping, ShimApiMapping, ShimLayer,
+};
 pub use error::TypesError;
 pub use experiment_log::{
     CategoryStats, PromptStrategyEntry, PromptStrategyLog, PromptStrategyStats, StrategyStats,
@@ -143,5 +148,34 @@ mod tests {
         assert_eq!(deserialized.rust_code, "fn hello() {}");
         assert_eq!(deserialized.model, "qwen3-235b");
         assert_eq!(deserialized.tokens_used, Some(4096));
+    }
+
+    #[test]
+    fn test_shim_api_mapping_serialization() {
+        let mapping = ShimApiMapping::new(
+            "SetTexture".to_string(),
+            "encoder.set_bind_group".to_string(),
+            ComplexityScore::Medium,
+        );
+        let json = serde_json::to_string(&mapping).unwrap();
+        let deserialized: ShimApiMapping = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.original_api, "SetTexture");
+        assert_eq!(deserialized.crate_api, "encoder.set_bind_group");
+        assert_eq!(deserialized.complexity, ComplexityScore::Medium);
+    }
+
+    #[test]
+    fn test_shim_layer_serialization() {
+        let mut shim = ShimLayer::new("d3d9.dll".to_string(), "wgpu".to_string());
+        shim.add_mapping(ShimApiMapping::new(
+            "Present".to_string(),
+            "queue.submit".to_string(),
+            ComplexityScore::Low,
+        ));
+        let json = serde_json::to_string(&shim).unwrap();
+        let deserialized: ShimLayer = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.source_dll, "d3d9.dll");
+        assert_eq!(deserialized.target_crate, "wgpu");
+        assert_eq!(deserialized.mapping_count(), 1);
     }
 }

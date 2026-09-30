@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Incremental git commits during batch translation** — `run_translation_for_dll()` and `handle_batch_translate()` now commit and merge each function immediately after its translation succeeds, rather than deferring all git work until the entire batch finishes. Each function's Rust code is written, a `re/{dll}/{function}v1` branch is created, the file is committed, and the branch is merged to `main` before the next function is processed.
 
 ### `calxgloss-types`
+- **Shim layer types** — `ShimApiMapping`, `ShimLayer`, `ComplexityScore`, and `ReturnMapping` define the API contract for translating a Windows DLL's exported surface to an equivalent Rust crate. Mappings carry original and target signatures, parameter transformation descriptions, complexity scores, and optional return-value handling. `ShimLayer` provides aggregate helpers (`total_complexity()`, `overall_complexity()`, `mapping_count()`) and converts to existing `ApiMappingItem` for prompt inclusion.
 - **`ProgressEvent::FunctionCompleted`** — new event emitted immediately after each function completes during batch translation, carrying `dll`, `function`, `success`, `attempts`, and `branch` fields.
 
 ### `calxgloss-web`
