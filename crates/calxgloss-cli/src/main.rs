@@ -56,6 +56,7 @@ use anyhow::{Context, Result};
 use calxgloss::DllCategory;
 use calxgloss::GitBranch;
 use calxgloss::TranslationEvents;
+use calxgloss::ProgressEvent;
 use calxgloss_analysis::Analyzer;
 use calxgloss_config::{
     EXAMPLE, FileConfig, GhidraSection, Layers, LlmSection, PROJECT_FILE, Resolved, load,
@@ -765,6 +766,7 @@ async fn handle_classify(
     repo_dir: &Path,
     skip_git: bool,
     settings: &Settings,
+    events: Option<&TranslationEvents>,
 ) -> Result<()> {
     info!(count = dlls.len(), "Classifying DLLs");
 
@@ -815,6 +817,18 @@ async fn handle_classify(
         let record_path_str = record_path.to_string_lossy().to_string();
         written.push(record_path_str.clone());
         info!(dll = %c.dll, record = %record_path_str, "Wrote classification record");
+
+        // Emit classification complete event for live mode
+        if let Some(events) = events {
+            events.emit(ProgressEvent::ClassificationComplete {
+                dll: c.dll.clone(),
+                category: format!("{:?}", c.category),
+                strategy: format!("{:?}", c.strategy),
+                crate_replacement: c.crate_replacement.clone(),
+                exported_symbols: c.exports_count,
+                imported_symbols: c.imports_count,
+            });
+        }
     }
 
     // Commit classification records to git (unless skip_git).
@@ -1089,6 +1103,29 @@ async fn run_translation_for_dll(
 
     print_batch_summary(&batch_result);
 
+    // Emit batch summary event for live mode
+    if let Some(events) = events {
+        let total_attempts: usize = batch_result
+            .results
+            .iter()
+            .map(|r| r.retry_result.attempts.len())
+            .sum();
+        let total_tokens: usize = batch_result
+            .results
+            .iter()
+            .flat_map(|r| &r.retry_result.attempts)
+            .filter_map(|a| a.tokens_used)
+            .sum();
+        events.emit(ProgressEvent::BatchSummary {
+            dll: dll.to_string(),
+            total_functions: batch_result.total_count(),
+            success_count: batch_result.success_count(),
+            failure_count: batch_result.failure_count(),
+            total_attempts,
+            total_tokens,
+        });
+    }
+
     if batch_result.all_success() {
         println!(
             "\n  {}",
@@ -1215,7 +1252,7 @@ async fn handle_auto(
             bold(&unclassified.len().to_string())
         );
         println_content("");
-        handle_classify(&unclassified, &target_dir, &repo_dir, skip_git, settings).await?;
+        handle_classify(&unclassified, &target_dir, &repo_dir, skip_git, settings, events).await?;
         println_content("");
         if !continue_mode {
             println_content(
@@ -2765,7 +2802,7 @@ fn main() -> Result<()> {
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_classify(&dll, target_dir, &repo_dir, skip_git, &settings))
+                .block_on(handle_classify(&dll, target_dir, &repo_dir, skip_git, &settings, None))
         }
         Command::Translate(args) => {
             let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);

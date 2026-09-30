@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### `calxgloss-web`
+- **`api_get_unit` merges live progress state** — the unit detail endpoint now also consults the `ProgressState` and creates synthetic units for in-progress translations (IDs prefixed with `live/`), so clicking a live unit no longer returns 404.
+- **LLM request/response log renders raw text** — content is now shown inside `<pre>` with only `<`, `>`, and `&` escaped, so JSON and code (e.g. `{"param_0":0}`) displays correctly instead of HTML-entity-encoded (`&#34;param_0&#34;:0`).
+- **Pipeline Progress panel** — new panel showing per-DLL status: classification category/strategy, in-progress translation with progress bar, and batch completion counts. Emitted on `classification_complete` and `batch_summary` WebSocket events.
+- **`body` variable scope fix in `showDetail`** — moved `const body` declaration outside the `try/catch` block so the error handler can reference it.
+
 ### `calxgloss-cli`
 - **`init` subcommand** — creates a `calxgloss.toml` in the current directory with a fully commented-out template listing every `[ghidra]` and `[llm]` key with sensible defaults.
 - **`auto` subcommand** — detects project state and runs the next step automatically. Scans the target directory for `.dll` files, checks whether classification records exist in `re/classify/`, and either runs classification first (if any DLLs are unclassified) or prompts the user to select a DLL for batch translation.

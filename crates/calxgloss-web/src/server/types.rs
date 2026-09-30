@@ -481,3 +481,80 @@ impl ProgressResponse {
         }
     }
 }
+
+/// Pipeline-level progress for a single DLL.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipelineDllProgress {
+    /// DLL/EXE file name.
+    pub dll: String,
+    /// Whether the DLL has been classified.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub classification: Option<ClassificationInfo>,
+    /// Whether batch translation has completed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub batch: Option<BatchInfo>,
+    /// Current in-progress translation status (if any).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub in_progress: Option<CurrentDllStatus>,
+    /// The order this DLL appears in the pipeline (0-based).
+    pub order: usize,
+}
+
+/// Classification info from a ClassificationComplete event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClassificationInfo {
+    /// DLL this classification is for.
+    pub dll: String,
+    pub category: String,
+    pub strategy: String,
+    pub crate_replacement: Option<String>,
+    pub exported_symbols: usize,
+    pub imported_symbols: usize,
+}
+
+/// Batch summary info from a BatchSummary event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchInfo {
+    /// DLL this batch summary is for.
+    pub dll: String,
+    pub total_functions: usize,
+    pub success_count: usize,
+    pub failure_count: usize,
+    pub total_attempts: usize,
+    pub total_tokens: usize,
+}
+
+/// Current DLL being translated.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CurrentDllStatus {
+    pub dll: String,
+    pub total_entries: usize,
+    pub completed_entries: usize,
+}
+
+/// Overall pipeline progress response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipelineProgressResponse {
+    /// Total number of DLLs/EXEs discovered.
+    pub total_dlls: usize,
+    /// Classification complete count.
+    pub classified_count: usize,
+    /// Batch translation complete count.
+    pub batch_complete_count: usize,
+    /// DLLs currently being translated (in ProgressState entries).
+    pub currently_translating: Vec<String>,
+    /// Per-DLL progress information.
+    pub dlls: Vec<PipelineDllProgress>,
+}
+
+impl PipelineProgressResponse {
+    pub fn empty(total_dlls: usize) -> Self {
+        Self {
+            total_dlls,
+            classified_count: 0,
+            batch_complete_count: 0,
+            currently_translating: Vec::new(),
+            dlls: Vec::new(),
+        }
+    }
+}

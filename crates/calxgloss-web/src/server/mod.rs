@@ -76,6 +76,28 @@ impl FromRef<CombinedState> for ActionsState {
 // Live Progress State
 // ============================================================
 
+/// A single DLL classification result, tracked during live translation.
+#[derive(Debug)]
+struct ClassificationResult {
+    dll: String,
+    category: String,
+    strategy: String,
+    crate_replacement: Option<String>,
+    exported_symbols: usize,
+    imported_symbols: usize,
+}
+
+/// Batch summary for a DLL after all functions are translated.
+#[derive(Debug)]
+struct BatchResult {
+    dll: String,
+    total_functions: usize,
+    success_count: usize,
+    failure_count: usize,
+    total_attempts: usize,
+    total_tokens: usize,
+}
+
 /// Tracks translation units currently in progress.
 ///
 /// Created when `handle_live` starts the server with an event channel,
@@ -86,6 +108,10 @@ impl FromRef<CombinedState> for ActionsState {
 pub struct ProgressState {
     /// Map of "dll/function" → current progress info for a live translation.
     entries: Arc<RwLock<std::collections::HashMap<String, ProgressEntry>>>,
+    /// Classification results keyed by DLL name.
+    classifications: Arc<RwLock<std::collections::HashMap<String, ClassificationResult>>>,
+    /// Batch summary results keyed by DLL name.
+    batch_summaries: Arc<RwLock<std::collections::HashMap<String, BatchResult>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -113,13 +139,77 @@ impl ProgressState {
     pub fn new() -> Self {
         Self {
             entries: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            classifications: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            batch_summaries: Arc::new(RwLock::new(std::collections::HashMap::new())),
         }
     }
 
     /// Update progress state from a translation progress event.
     pub async fn on_event(&self, event: &ProgressEvent) {
-        use ProgressUnitStatus::*;
+        match event {
+            ProgressEvent::TranslationStarted { .. }
+            | ProgressEvent::GhidraFetchComplete { .. }
+            | ProgressEvent::ApiTaggingComplete { .. }
+            | ProgressEvent::TestsGenerated { .. }
+            | ProgressEvent::LlmCallStart { .. }
+            | ProgressEvent::LlmCallComplete { .. }
+            | ProgressEvent::LlmCallFailed { .. }
+            | ProgressEvent::LlmCallInProgress { .. }
+            | ProgressEvent::LlmRequest { .. }
+            | ProgressEvent::LlmResponse { .. }
+            | ProgressEvent::TranslationAttemptCompleted { .. }
+            | ProgressEvent::TranslationCompleted { .. }
+            | ProgressEvent::TranslationFailed { .. } => {
+                self.on_translation_event(event).await;
+            }
+            ProgressEvent::ClassificationComplete {
+                dll,
+                category,
+                strategy,
+                crate_replacement,
+                exported_symbols,
+                imported_symbols,
+            } => {
+                let mut classifications = self.classifications.write().await;
+                classifications.insert(
+                    dll.clone(),
+                    ClassificationResult {
+                        dll: dll.clone(),
+                        category: category.clone(),
+                        strategy: strategy.clone(),
+                        crate_replacement: crate_replacement.clone(),
+                        exported_symbols: *exported_symbols,
+                        imported_symbols: *imported_symbols,
+                    },
+                );
+            }
+            ProgressEvent::BatchSummary {
+                dll,
+                total_functions,
+                success_count,
+                failure_count,
+                total_attempts,
+                total_tokens,
+            } => {
+                let mut batch_summaries = self.batch_summaries.write().await;
+                batch_summaries.insert(
+                    dll.clone(),
+                    BatchResult {
+                        dll: dll.clone(),
+                        total_functions: *total_functions,
+                        success_count: *success_count,
+                        failure_count: *failure_count,
+                        total_attempts: *total_attempts,
+                        total_tokens: *total_tokens,
+                    },
+                );
+            }
+        }
+    }
 
+    /// Handle translation-specific events (updates entries HashMap).
+    async fn on_translation_event(&self, event: &ProgressEvent) {
+        use ProgressUnitStatus::*;
         let mut entries = self.entries.write().await;
 
         match event {
@@ -171,8 +261,13 @@ impl ProgressState {
                     entry.last_event_at = std::time::Instant::now();
                 }
             }
-            ProgressEvent::LlmRequest { .. } | ProgressEvent::LlmResponse { .. } => {
-                // Informational — status stays as LlmCall
+            ProgressEvent::LlmRequest { dll, function, .. }
+            | ProgressEvent::LlmResponse { dll, function, .. }
+            | ProgressEvent::LlmCallInProgress { dll, function, .. } => {
+                // Informational — status stays as LlmCall; update heartbeat
+                if let Some(entry) = entries.get_mut(&format!("{dll}/{function}")) {
+                    entry.last_event_at = std::time::Instant::now();
+                }
             }
             ProgressEvent::TranslationAttemptCompleted { dll, function, .. } => {
                 if let Some(entry) = entries.get_mut(&format!("{dll}/{function}")) {
@@ -192,12 +287,41 @@ impl ProgressState {
                     entry.last_event_at = std::time::Instant::now();
                 }
             }
+            // ClassificationComplete and BatchSummary are handled in on_event
+            // directly; they should never reach here, but we need exhaustiveness.
+            _ => {}
         }
     }
 
     /// Returns a snapshot of all progress entries.
     pub async fn snapshot(&self) -> std::collections::HashMap<String, ProgressEntry> {
         self.entries.read().await.clone()
+    }
+
+    /// Returns a snapshot of classification results as serializable info.
+    pub async fn classifications(&self) -> Vec<super::ClassificationInfo> {
+        let map = self.classifications.read().await;
+        map.values().map(|v| super::ClassificationInfo {
+            dll: v.dll.clone(),
+            category: v.category.clone(),
+            strategy: v.strategy.clone(),
+            crate_replacement: v.crate_replacement.clone(),
+            exported_symbols: v.exported_symbols,
+            imported_symbols: v.imported_symbols,
+        }).collect()
+    }
+
+    /// Returns a snapshot of batch summary results as serializable info.
+    pub async fn batch_summaries(&self) -> Vec<super::BatchInfo> {
+        let map = self.batch_summaries.read().await;
+        map.values().map(|v| super::BatchInfo {
+            dll: v.dll.clone(),
+            total_functions: v.total_functions,
+            success_count: v.success_count,
+            failure_count: v.failure_count,
+            total_attempts: v.total_attempts,
+            total_tokens: v.total_tokens,
+        }).collect()
     }
 
     /// Returns the number of currently in-flight units.
@@ -292,6 +416,7 @@ pub fn build_router_with_ws(
 
     Router::new()
         .route("/api/dashboard", get(handlers::api_get_dashboard))
+        .route("/api/pipeline", get(handlers::api_get_pipeline))
         .route("/api/units/{id}", get(handlers::api_get_unit))
         .route("/api/units/{id}/diff", get(handlers::api_get_unit_diff))
         .route("/api/units/{id}/ghidra", get(handlers::api_get_unit_ghidra))
