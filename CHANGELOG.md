@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+- **`call_graph_assisted_translation.md`** — detailed plan for implementing root & leaf call graph analysis to skip known runtime functions, prioritize translation order, and enrich translation prompts with semantic context from API usage patterns.
+
 ### `calxgloss-translator`
 - **`batch_translate()` accepts a per-function callback** — the batch method now takes an optional `&mut dyn FnMut(&str, &str, &mut FunctionResult) -> bool` closure that is invoked immediately after each function's translation pipeline (including retries) completes, before the next function is processed. The callback can perform post-processing (e.g. writing files, git operations) incrementally. Returns `true` to continue the batch or `false` to stop early.
 
