@@ -55,6 +55,7 @@ use calxgloss_pal::ApiMappings;
 use calxgloss_types::{DllCategory, DllInfo, FunctionInfo, WindowsApiCall};
 use calxgloss_types::{FunctionComplexity, PromptVariant};
 use error::AnalysisError as Error;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, warn};
 
 // ============================================================
@@ -67,7 +68,7 @@ use tracing::{debug, info, instrument, warn};
 /// - [`PalMapping`] — map Windows APIs to PAL trait methods
 /// - [`CrateReplacement`] — find a Rust crate and write a shim layer
 /// - [`ReverseEngineer`] — reverse engineer from disassembly
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Strategy {
     /// Use PAL mapping to replace Windows APIs with cross-platform Rust equivalents.
     PalMapping,
@@ -87,7 +88,7 @@ pub enum Strategy {
 /// Produced by [`Analyzer::classify_dll`] or [`Analyzer::classify_target`].
 /// Contains the DLL's category, the recommended strategy, symbol counts,
 /// and any crate replacement name.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DllClassification {
     /// The DLL filename (e.g., `game_logic.dll`).
     pub dll: String,

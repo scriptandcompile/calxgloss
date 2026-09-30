@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### `calxgloss-analysis`
 - **`classify_dlls` reads PE headers for symbol counts** — export and import counts are now read from each DLL's PE header on disk via `goblin`, giving accurate per-DLL values instead of the stale counts from whichever program happens to be open in Ghidra. Missing or unreadable DLLs fall back to the Ghidra client. The method now takes a `target_dir` argument so it knows where to find the files.
+- **Classification records persisted to disk** — `handle_classify` now writes `re/classify/{dll}.json` for every DLL and commits them to `main`. Subsequent `auto` runs detect existing records and skip re-classification. `Strategy` and `DllClassification` derive `Serialize`/`Deserialize` for JSON output.
 - **Dependency tracker** (`DependencyTracker`) — builds a `DependencyGraph` from DLL classifications and Ghidra call graph data. Automatically derives shim layer declarations from crate-replacement classifications. Produces a DAG in dependency order: DLL classifications (roots) → shim layers → function translations (depending on shim + call graph neighbors). `for_dll()` method for incremental single-DLL builds.
 - `ShimLayerDeclaration` — declares a shim layer for a crate-replacement DLL; extracted from `DllClassification` via `from_classification()`.
 - **`DependencyGraphPersistor`** — persists a `DependencyGraph` to `<workspace>/re/analysis/dependency_graph.json`. Provides `save()`, `load()`, `graph_path()`, and a convenience `build_and_save()` that combines `DependencyTracker::build()` with `save()`. Auto-creates the `re/analysis/` directory structure. Returns `None` on missing or corrupt files rather than erroring.
@@ -59,6 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`is_branch_merged_into_main()`** — checks if a branch is an ancestor of `main` via `graph_ahead_behind()`.
 - **`GitManager::next_attempt_branch()`** — increments the attempt number and creates a new `GitBranch` for the next retry version.
 - **Shim-layer dependency enforcement on branch creation** — `create_branch` accepts an optional `BranchCreationPolicy` parameter (`Skip`, `Warn`, or `Enforce`). The checker resolves the required shim layer branches for `MicrosoftSdk` and `KnownThirdParty` DLLs (e.g. `d3d9.dll` → `re/shim/wgpu`) by consulting a hardcoded mapping in `ShimDependencyMap`, then queries Git to verify each required branch is an ancestor of `main`. Enforce mode blocks creation when unmet; Warn mode logs a warning and proceeds.
+- **`commit_to_main()`** — commits files directly to the `main` branch without creating a separate branch first. Used for metadata records like DLL classification.
 - `DependencyCheckResult`, `DependencyChecker`, `ShimDependencyMap`, `BranchCreationPolicy`, `DependencyPolicy` — new types in `calxgloss-git` for dependency resolution and policy enforcement.
 - `ShimDependencyMap` — hardcoded lookup covering 22 DLL → crate mappings across DirectX, audio, 2D graphics, UI frameworks, and geometry libraries.
 

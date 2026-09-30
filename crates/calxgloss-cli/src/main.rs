@@ -759,7 +759,13 @@ fn parse_branch_for_accept(branch: &str) -> (String, String, u32) {
 // Classify command handler
 // ============================================================
 
-async fn handle_classify(dlls: &[String], target_dir: &Path, settings: &Settings) -> Result<()> {
+async fn handle_classify(
+    dlls: &[String],
+    target_dir: &Path,
+    repo_dir: &Path,
+    skip_git: bool,
+    settings: &Settings,
+) -> Result<()> {
     info!(count = dlls.len(), "Classifying DLLs");
 
     // Initialize Ghidra client (needed only for fallback when PE parse fails)
@@ -780,6 +786,51 @@ async fn handle_classify(dlls: &[String], target_dir: &Path, settings: &Settings
 
     // Symbol counts come from PE headers on disk — accurate per-DLL.
     let classifications = analyzer.classify_dlls(dlls, target_dir).await?;
+
+    // Write classification records to disk and commit.
+    let classify_dir = repo_dir.join("re").join("classify");
+    std::fs::create_dir_all(&classify_dir).with_context(|| {
+        format!("Failed to create classification directory: {}", classify_dir.display())
+    })?;
+
+    let mut written = Vec::new();
+    for c in &classifications {
+        let sanitized: String = c
+            .dll
+            .chars()
+            .map(|ch| match ch {
+                '/' | '\\' => '_',
+                other => other,
+            })
+            .collect();
+        let record_path = classify_dir.join(format!("{sanitized}.json"));
+        let json = serde_json::to_string_pretty(&c)
+            .with_context(|| format!("Failed to serialize classification for {}", c.dll))?;
+        std::fs::write(&record_path, &json).with_context(|| {
+            format!(
+                "Failed to write classification record for {}",
+                c.dll
+            )
+        })?;
+        let record_path_str = record_path.to_string_lossy().to_string();
+        written.push(record_path_str.clone());
+        info!(dll = %c.dll, record = %record_path_str, "Wrote classification record");
+    }
+
+    // Commit classification records to git (unless skip_git).
+    if !skip_git && !written.is_empty() {
+        if let Ok(git) = GitManager::open(repo_dir) {
+            let _commit = git
+                .commit_to_main(
+                    &format!(
+                        "classify: record classification for {} DLL(s)",
+                        written.len()
+                    ),
+                    &written,
+                )
+                .context("Failed to commit classification records");
+        }
+    }
 
     // Print report
     print_classification_report(&classifications);
@@ -1159,7 +1210,7 @@ async fn handle_auto(
             bold(&unclassified.len().to_string())
         );
         println_content("");
-        handle_classify(&unclassified, &target_dir, settings).await?;
+        handle_classify(&unclassified, &target_dir, &repo_dir, skip_git, settings).await?;
         println_content("");
         if !continue_mode {
             println_content(
@@ -2693,11 +2744,13 @@ fn main() -> Result<()> {
                 .map(|t| PathBuf::from(&t.value))
                 .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
             let target_dir = target_dir.as_ref();
+            let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
+            let skip_git = false;
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_classify(&dll, target_dir, &settings))
+                .block_on(handle_classify(&dll, target_dir, &repo_dir, skip_git, &settings))
         }
         Command::Translate(args) => {
             let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);

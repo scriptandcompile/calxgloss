@@ -695,6 +695,76 @@ impl GitManager {
         })
     }
 
+    /// Commits files directly to the `main` branch.
+    ///
+    /// This is used for metadata records (classification, patch notes, etc.)
+    /// that do not belong on per-function translation branches.
+    pub fn commit_to_main(
+        &self,
+        message: &str,
+        files: &[String],
+    ) -> Result<GitCommit, TypesError> {
+        let mut index = self
+            .repo
+            .index()
+            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to get index: {}", e)))?;
+
+        let mut added_files = Vec::new();
+        for file_path in files {
+            let path = Path::new(file_path);
+            if let Err(e) = index.add_path(path) {
+                warn!("Failed to stage '{}': {}", file_path, e);
+            } else {
+                added_files.push(file_path.to_string());
+            }
+        }
+
+        if added_files.is_empty() {
+            return Err(TypesError::InvalidBranchName(
+                "No files were staged".to_string(),
+            ));
+        }
+
+        let tree_id = index
+            .write_tree()
+            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to write tree: {}", e)))?;
+        let tree = self
+            .repo
+            .find_tree(tree_id)
+            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to find tree: {}", e)))?;
+
+        let main_ref = self
+            .repo
+            .find_branch("main", git2::BranchType::Local)
+            .map_err(|_| TypesError::InvalidBranchName("'main' branch not found".to_string()))?;
+        let main_commit = main_ref
+            .get()
+            .peel_to_commit()
+            .map_err(|e| TypesError::InvalidBranchName(format!("Failed to resolve main: {}", e)))?;
+        let _main_oid = main_commit.id();
+
+        let sig = make_signature(&self.repo, &self.init_config)?;
+
+        let commit_oid = self
+            .repo
+            .commit(
+                Some("refs/heads/main"),
+                &sig,
+                &sig,
+                message,
+                &tree,
+                &[&main_commit],
+            )
+            .map_err(|e| TypesError::InvalidBranchName(format!("Commit creation failed: {}", e)))?;
+
+        Ok(GitCommit {
+            branch: "main".to_string(),
+            message: message.to_string(),
+            hash: commit_oid.to_string(),
+            files: added_files,
+        })
+    }
+
     /// Merges a branch into `main`.
     pub fn merge_to_main(&self, branch: &GitBranch) -> Result<MergeResult, TypesError> {
         info!("Merging branch '{}' into main", branch.name);

@@ -321,6 +321,7 @@ dependencies = [
  "calxgloss-types",
  "chrono",
  "goblin",
+ "serde",
  "serde_json",
  "thiserror",
  "tracing",
