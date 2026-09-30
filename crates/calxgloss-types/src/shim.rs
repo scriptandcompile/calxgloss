@@ -480,7 +480,7 @@ impl ShimSuggestion {
 
 /// A report containing shim layer suggestions for all crate-replacement DLLs.
 ///
-/// Produced after the classification phase. Each entry corresponds to a DLL
+/// Produced after DLL classification. Each entry corresponds to a DLL
 /// whose category is `MicrosoftSdk` or `KnownThirdParty`, meaning it will
 /// need a shim layer to bridge the original API to a Rust crate.
 ///
