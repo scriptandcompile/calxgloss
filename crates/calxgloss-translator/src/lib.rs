@@ -229,8 +229,8 @@ impl Translator {
         let req = TranslationRequest {
             dll: dll.to_string(),
             function: function.to_string(),
-            disassembly: disassembly.to_string(),
-            decompiler_output: decompiler_output.to_string(),
+            disassembly: disassembly.trim().to_string(),
+            decompiler_output: decompiler_output.trim().to_string(),
             windows_apis: Vec::new(),
             baseline_tests: Vec::new(),
         };
@@ -873,8 +873,8 @@ impl TranslationPipeline {
         TranslationRequest {
             dll: dll.to_string(),
             function: function.to_string(),
-            disassembly: function_info.disassembly.clone(),
-            decompiler_output: function_info.decompiler_output.clone(),
+            disassembly: function_info.disassembly.trim().to_string(),
+            decompiler_output: function_info.decompiler_output.trim().to_string(),
             windows_apis: tagged_apis,
             baseline_tests,
         }

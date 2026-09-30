@@ -55,8 +55,8 @@ pub async fn extract_neighboring_context(
                 name: report.name.clone(),
                 dll: String::new(),
                 address: report.address,
-                disassembly: report.disassembly.clone(),
-                decompiler_output: report.decompiled.body.clone(),
+                disassembly: report.disassembly.trim().to_string(),
+                decompiler_output: report.decompiled.body.trim().to_string(),
             });
         }
     }
