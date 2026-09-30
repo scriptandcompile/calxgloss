@@ -412,6 +412,150 @@ pub struct ShimMappingTestResult {
     pub failures: Vec<FailedTest>,
 }
 
+/// A suggested shim layer for a crate-replacement DLL.
+///
+/// Produced automatically after DLL classification. It estimates
+/// the mapping complexity from symbol counts and known crate patterns
+/// without requiring an LLM call. The suggestion is persisted to
+/// `re/shims/<dll_name>/suggestion.json` so the reviewer can inspect
+/// expected shim size and complexity before triggering the full
+/// LLM-driven mapping generation.
+///
+/// # Example
+///
+/// ```
+/// use calxgloss_types::{ShimSuggestion, ComplexityScore};
+///
+/// let suggestion = ShimSuggestion {
+///     source_dll: "d3d9.dll".to_string(),
+///     target_crate: "wgpu".to_string(),
+///     estimated_mappings: 47,
+///     estimated_complexity: ComplexityScore::High,
+///     estimated_confidence: 0.85,
+/// };
+/// assert_eq!(suggestion.source_dll, "d3d9.dll");
+/// assert_eq!(suggestion.estimated_complexity, ComplexityScore::High);
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShimSuggestion {
+    /// The original DLL filename (e.g., `"d3d9.dll"`).
+    pub source_dll: String,
+
+    /// The target Rust crate name (e.g., `"wgpu"`).
+    pub target_crate: String,
+
+    /// Estimated number of exported functions that will need mapping.
+    ///
+    /// This is derived from the DLL's export count at classification time.
+    /// The actual mapping count after LLM generation may differ.
+    #[serde(default)]
+    pub estimated_mappings: usize,
+
+    /// Estimated implementation complexity based on symbol counts
+    /// and known crate patterns.
+    #[serde(default)]
+    pub estimated_complexity: ComplexityScore,
+
+    /// Confidence in the complexity estimate, in `[0.0, 1.0]`.
+    ///
+    /// Higher values indicate more reliable estimates, typically
+    /// because the target crate is well-known (e.g., wgpu, cpal) and
+    /// the DLL's export count matches expected patterns.
+    #[serde(default)]
+    pub estimated_confidence: f64,
+}
+
+impl ShimSuggestion {
+    /// Creates a new shim suggestion with the given DLL and crate name.
+    pub fn new(source_dll: String, target_crate: String) -> Self {
+        Self {
+            source_dll,
+            target_crate,
+            estimated_mappings: 0,
+            estimated_complexity: ComplexityScore::Low,
+            estimated_confidence: 0.0,
+        }
+    }
+}
+
+/// A report containing shim layer suggestions for all crate-replacement DLLs.
+///
+/// Produced after the classification phase. Each entry corresponds to a DLL
+/// whose category is `MicrosoftSdk` or `KnownThirdParty`, meaning it will
+/// need a shim layer to bridge the original API to a Rust crate.
+///
+/// The report includes a summary with total DLL count, complexity distribution,
+/// and an overall implementation readiness estimate.
+///
+/// # Example
+///
+/// ```
+/// use calxgloss_types::{ShimSuggestion, ShimSuggestionReport, ComplexityScore};
+///
+/// let report = ShimSuggestionReport {
+///     suggestions: vec![
+///         ShimSuggestion {
+///             source_dll: "d3d9.dll".to_string(),
+///             target_crate: "wgpu".to_string(),
+///             estimated_mappings: 47,
+///             estimated_complexity: ComplexityScore::High,
+///             estimated_confidence: 0.85,
+///         },
+///     ],
+/// };
+/// assert_eq!(report.total_dlls(), 1);
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShimSuggestionReport {
+    /// The individual shim suggestions, one per crate-replacement DLL.
+    pub suggestions: Vec<ShimSuggestion>,
+}
+
+impl ShimSuggestionReport {
+    /// Returns the total number of suggested shim layers.
+    pub fn total_dlls(&self) -> usize {
+        self.suggestions.len()
+    }
+
+    /// Returns the number of suggested shim layers with low complexity.
+    pub fn low_complexity_count(&self) -> usize {
+        self.suggestions
+            .iter()
+            .filter(|s| matches!(s.estimated_complexity, ComplexityScore::Low))
+            .count()
+    }
+
+    /// Returns the number of suggested shim layers with medium complexity.
+    pub fn medium_complexity_count(&self) -> usize {
+        self.suggestions
+            .iter()
+            .filter(|s| matches!(s.estimated_complexity, ComplexityScore::Medium))
+            .count()
+    }
+
+    /// Returns the number of suggested shim layers with high complexity.
+    pub fn high_complexity_count(&self) -> usize {
+        self.suggestions
+            .iter()
+            .filter(|s| matches!(s.estimated_complexity, ComplexityScore::High))
+            .count()
+    }
+
+    /// Returns `true` if no shim layer suggestions were generated.
+    pub fn is_empty(&self) -> bool {
+        self.suggestions.is_empty()
+    }
+
+    /// Returns the average estimated confidence across all suggestions.
+    pub fn average_confidence(&self) -> f64 {
+        if self.suggestions.is_empty() {
+            return 0.0;
+        }
+        let total: f64 = self.suggestions.iter().map(|s| s.estimated_confidence).sum();
+        total / self.suggestions.len() as f64
+    }
+}
+
 impl PartialOrd for ComplexityScore {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
