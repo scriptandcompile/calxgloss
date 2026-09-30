@@ -30,6 +30,28 @@
 
 use std::path::{Path, PathBuf};
 
+/// Resolve the repo directory: `--repo` flag > settings > CWD.
+///
+/// This is the single point of resolution for commands that use the
+/// config-file / env-var layer (`auto`, `translate`, `batch-translate`).
+fn resolve_repo_dir(cli_repo: Option<&PathBuf>, settings: &Settings) -> PathBuf {
+    cli_repo
+        .cloned()
+        .or_else(|| settings.repo_dir.as_ref().map(|r| PathBuf::from(&r.value)))
+        .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"))
+}
+
+/// Resolve the repo directory for `live` and `serve`: `--repo` flag > CWD.
+///
+/// These commands always operate on the workspace in the current directory
+/// (where `.git`, `src/`, `scratch/` live).  Config file and env-var
+/// overrides are ignored — only an explicit `--repo` flag can change this.
+fn resolve_live_repo_dir(cli_repo: Option<&PathBuf>) -> PathBuf {
+    cli_repo
+        .cloned()
+        .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"))
+}
+
 use anyhow::{Context, Result};
 use calxgloss::DllCategory;
 use calxgloss::GitBranch;
@@ -116,7 +138,8 @@ struct Cli {
     ///
     /// Overrides the `repo_dir` setting in the config file. This is the
     /// directory where `src/`, `re/`, scratch, and the `.git` repo are
-    /// created. Defaults to the directory where `calxgloss.toml` is found.
+    /// created. For `live`/`serve` defaults to CWD and ignores config/env.
+    /// For other commands defaults to CWD if no config setting is present.
     #[arg(long, global = true, value_name = "DIR")]
     repo_dir: Option<PathBuf>,
 
@@ -1056,6 +1079,7 @@ async fn handle_auto(
     settings: &Settings,
     continue_mode: bool,
     events: Option<&TranslationEvents>,
+    repo_dir: PathBuf,
 ) -> Result<()> {
     info!("Auto mode: detecting project state");
 
@@ -1068,13 +1092,6 @@ async fn handle_auto(
         .ok_or_else(|| anyhow::anyhow!(
             "target_dir is required.\n\nSet it via:\n  --target-dir <path>\n  [target_dir] in calxgloss.toml\n  CALXGLOSS_TARGET_DIR env var"
         ))?;
-
-    // repo_dir defaults to CWD if not set.
-    let repo_dir = settings
-        .repo_dir
-        .as_ref()
-        .map(|r| PathBuf::from(&r.value))
-        .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
 
     info!(path = ?target_dir, "Auto mode: using target directory");
     info!(path = ?repo_dir, "Auto mode: using repo directory");
@@ -1240,7 +1257,7 @@ async fn handle_auto(
 // Translate command handler
 // ============================================================
 
-async fn handle_translate(args: &TranslateArgs, settings: &Settings) -> Result<()> {
+async fn handle_translate(args: &TranslateArgs, settings: &Settings, repo_dir: PathBuf) -> Result<()> {
     let TranslateArgs {
         target,
         dll,
@@ -1251,6 +1268,10 @@ async fn handle_translate(args: &TranslateArgs, settings: &Settings) -> Result<(
     } = args;
     let (target, dll, function) = (target.as_path(), dll.as_str(), function.as_str());
     let skip_git = *skip_git;
+    // Use the output_dir arg if provided, otherwise use the resolved repo_dir.
+    let output_dir = output_dir
+        .clone()
+        .unwrap_or(repo_dir);
 
     // Demanded here rather than at startup: `classify` and `verify` never talk
     // to the LLM, so making the endpoint mandatory for them would force users
@@ -1290,10 +1311,6 @@ async fn handle_translate(args: &TranslateArgs, settings: &Settings) -> Result<(
     // only to place the output. Ghidra identifies the program itself, so the
     // path is not sent to it.
     let _target_dir = target.parent().unwrap_or(target).to_path_buf();
-    let output_dir = output_dir
-        .clone()
-        .or_else(|| settings.repo_dir.as_ref().map(|r| PathBuf::from(&r.value)))
-        .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
 
     // Create output directory structure
     let modules_dir = output_dir.join("src").join("modules");
@@ -1568,7 +1585,7 @@ async fn handle_translate(args: &TranslateArgs, settings: &Settings) -> Result<(
 // Batch translate command handler
 // ============================================================
 
-async fn handle_batch_translate(args: &BatchTranslateArgs, settings: &Settings) -> Result<()> {
+async fn handle_batch_translate(args: &BatchTranslateArgs, settings: &Settings, repo_dir: PathBuf) -> Result<()> {
     let BatchTranslateArgs {
         target,
         dll,
@@ -1579,6 +1596,10 @@ async fn handle_batch_translate(args: &BatchTranslateArgs, settings: &Settings) 
     } = args;
     let (target, dll) = (target.as_path(), dll.as_str());
     let skip_git = *skip_git;
+    // Use the output_dir arg if provided, otherwise use the resolved repo_dir.
+    let output_dir = output_dir
+        .clone()
+        .unwrap_or(repo_dir);
 
     let llm_url = settings.require_llm_url()?;
     let llm_model = settings.require_llm_model()?;
@@ -1645,10 +1666,6 @@ async fn handle_batch_translate(args: &BatchTranslateArgs, settings: &Settings) 
     };
 
     let _target_dir = target.parent().unwrap_or(target).to_path_buf();
-    let output_dir = output_dir
-        .clone()
-        .or_else(|| settings.repo_dir.as_ref().map(|r| PathBuf::from(&r.value)))
-        .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
 
     // Create output directory structure
     let modules_dir = output_dir.join("src").join("modules");
@@ -2374,7 +2391,7 @@ async fn handle_verify(
 // ============================================================
 
 /// Handles the `serve` subcommand: starts the web review UI HTTP server.
-async fn handle_serve(repo_dir: &Path, port: u16) -> Result<()> {
+async fn handle_serve(repo_dir: PathBuf, port: u16) -> Result<()> {
     info!(repo = ?repo_dir, port, "Starting web review UI server");
 
     if !repo_dir.exists() {
@@ -2385,9 +2402,7 @@ async fn handle_serve(repo_dir: &Path, port: u16) -> Result<()> {
         );
     }
 
-    let server_state = calxgloss_web::ServerState::new(repo_dir.to_path_buf());
-
-    // Print startup banner
+    // Print startup banner before moving repo_dir into ServerState
     println!();
     println_content(format!(
         "  {}",
@@ -2413,6 +2428,8 @@ async fn handle_serve(repo_dir: &Path, port: u16) -> Result<()> {
     println_content("");
     println_content("  Press Ctrl+C to stop");
     println!();
+
+    let server_state = calxgloss_web::ServerState::new(repo_dir);
     println_content("Endpoints:");
     println_content("    GET  /                  Dashboard frontend");
     println_content("    GET  /api/dashboard     Full review dashboard JSON");
@@ -2445,13 +2462,13 @@ async fn handle_live(
     all_functions: bool,
     classify_only: bool,
     skip_git: bool,
-    repo: Option<PathBuf>,
+    repo_dir: PathBuf,
     port: u16,
     settings: &Settings,
 ) -> Result<()> {
     info!(
         port,
-        repo = ?repo,
+        repo = ?repo_dir,
         classify_only,
         skip_git,
         "Starting live mode: auto + serve"
@@ -2489,15 +2506,10 @@ async fn handle_live(
     let events = TranslationEvents::new(256);
     let events_clone = events.clone();
 
-    // Resolve repo_dir from settings so it can be moved into the spawned task.
-    let serve_repo_dir = settings.repo_dir.as_ref().map(|r| PathBuf::from(&r.value));
+    let serve_repo_dir = repo_dir.clone();
 
     let serve_handle = tokio::spawn(async move {
-        // repo_dir: --repo flag > settings > CWD.
-        let repo_dir = repo
-            .clone()
-            .or_else(|| serve_repo_dir.clone())
-            .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
+        let repo_dir = serve_repo_dir;
 
         // Bind the listener and signal readiness — this happens outside of
         // serve() so we can report bind failures through the channel.
@@ -2559,6 +2571,7 @@ async fn handle_live(
         settings,
         true,          // continue mode — don't stop after classification, translate all
         Some(&events), // pass event emitter for live progress streaming
+        repo_dir,      // resolved repo_dir (same value used by serve task)
     )
     .await;
 
@@ -2677,16 +2690,22 @@ fn main() -> Result<()> {
             .build()
             .context("Failed to create tokio runtime")?
             .block_on(handle_classify(&dll, &settings)),
-        Command::Translate(args) => tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("Failed to create tokio runtime")?
-            .block_on(handle_translate(&args, &settings)),
-        Command::BatchTranslate(args) => tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("Failed to create tokio runtime")?
-            .block_on(handle_batch_translate(&args, &settings)),
+        Command::Translate(args) => {
+            let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_translate(&args, &settings, repo_dir))
+        }
+        Command::BatchTranslate(args) => {
+            let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_batch_translate(&args, &settings, repo_dir))
+        }
         Command::Verify {
             dll,
             function,
@@ -2758,32 +2777,34 @@ fn main() -> Result<()> {
             all_functions,
             classify_only,
             skip_git,
-        } => tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("Failed to create tokio runtime")?
-            .block_on(handle_auto(
-                target,
-                dlls,
-                all_functions,
-                classify_only,
-                skip_git,
-                &settings,
-                false, // interactive mode — prompt user, stop after classification
-                None,  // no event emitter in interactive mode
-            )),
-        Command::Serve { repo, port } => {
-            let repo_dir = repo
-                .clone()
-                .or_else(|| settings.repo_dir.as_ref().map(|r| PathBuf::from(&r.value)))
-                .unwrap_or_else(|| {
-                    std::env::current_dir().expect("Failed to read current directory")
-                });
+        } => {
+            let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_serve(&repo_dir, port))
+                .block_on(handle_auto(
+                    target,
+                    dlls,
+                    all_functions,
+                    classify_only,
+                    skip_git,
+                    &settings,
+                    false, // interactive mode — prompt user, stop after classification
+                    None,  // no event emitter in interactive mode
+                    repo_dir,
+                ))
+        }
+        Command::Serve { port, .. } => {
+            // serve always uses CWD as repo_dir — config / env overrides are
+            // ignored because the workspace (where .git, src/, scratch/ live)
+            // is always where the user runs the command from.
+            let repo_dir = resolve_live_repo_dir(cli.repo_dir.as_ref());
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_serve(repo_dir, port))
         }
         Command::Live {
             target,
@@ -2791,22 +2812,28 @@ fn main() -> Result<()> {
             all_functions,
             classify_only,
             skip_git,
-            repo,
             port,
-        } => tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("Failed to create tokio runtime")?
-            .block_on(handle_live(
-                target,
-                dlls,
-                all_functions,
-                classify_only,
-                skip_git,
-                repo,
-                port,
-                &settings,
-            )),
+            ..
+        } => {
+            // live always uses CWD as repo_dir — config / env overrides are
+            // ignored because the workspace (where .git, src/, scratch/ live)
+            // is always where the user runs the command from.
+            let repo_dir = resolve_live_repo_dir(cli.repo_dir.as_ref());
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_live(
+                    target,
+                    dlls,
+                    all_functions,
+                    classify_only,
+                    skip_git,
+                    repo_dir,
+                    port,
+                    &settings,
+                ))
+        }
     };
 
     if let Err(ref e) = result {
