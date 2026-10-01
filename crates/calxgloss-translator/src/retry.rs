@@ -50,7 +50,7 @@ mod config;
 mod edge_detection;
 mod escalate;
 mod experiment_log;
-mod helpers;
+pub(crate) mod helpers;
 mod prompts;
 mod retry_loop;
 

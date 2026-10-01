@@ -39,6 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Template `with_tests_translate.j2` renders function metadata, test summary, disassembly, decompiler output, tagged APIs, call graph neighbors, baseline test results with PASSED/FAILED markers and error details, external function handling rules, translation requirements, and example output format
   - Template handles empty test results gracefully with fallback text when no tests are available yet
   - `TranslationPipeline::translate()` routes to with-tests prompt when `ContextTier::WithTests` is selected
+ - **Tier 3 module context prompt** — sends full disassembly, Ghidra pseudo-C decompiler output, tagged Windows API calls, call graph neighbors, baseline test results with pass/fail status, full neighboring function context (disassembly + pseudo-C for each neighbor), and shared data structure definitions (fields, types, byte offsets). This tier is used for complex functions whose translation requires understanding shared calling conventions, data layouts, or helper patterns from adjacent functions in the same module.
+   - `ModuleContextPromptData` struct with `from_request()` and `from_request_with_context()` constructors
+   - `ModuleContextTemplate` Askama template struct
+   - `build_module_context_prompt()` convenience function
+   - Template `module_context_translate.j2` renders function metadata, test summary, disassembly, decompiler output, tagged APIs, call graph neighbors, baseline test results with PASSED/FAILED markers and error details, full neighboring function context (disassembly + pseudo-C for each neighbor), shared data structure definitions (name, size, fields with types and offsets), external function handling rules, and translation requirements
+   - Pipeline fetches neighboring function code and data structures from Ghidra via `extract_call_graph_neighbors()`, `extract_neighboring_context()`, and `extract_data_structures()` helpers when `ContextTier::ModuleContext` is selected
 
 #### Fault detection
 

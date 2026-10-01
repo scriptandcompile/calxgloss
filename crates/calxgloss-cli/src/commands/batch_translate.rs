@@ -152,8 +152,7 @@ pub async fn handle_batch_translate(
     };
 
     // Initialize verifier for retry loop
-    let verifier =
-        Verifier::new(&output_dir).context("Failed to create verifier")?;
+    let verifier = Verifier::new(&output_dir).context("Failed to create verifier")?;
 
     // Configure retry behavior
     let retry_config = RetryConfig {

@@ -9,6 +9,7 @@
 //! - [`build_stub_prompt`] — Tier 0 stub generation
 //! - [`build_disassembly_prompt`] — Tier 1 disassembly-only prompt
 //! - [`build_with_tests_prompt`] — Tier 2 full context with tests
+//! - [`build_module_context_prompt`] — Tier 3 module context with neighbors
 //! - [`build_complexity_prompt`] — complexity-aware prompt selection
 //! - [`extract_signature_from_decompiler`] — extract function signature
 
@@ -16,12 +17,14 @@ use askama::Template;
 use calxgloss_types::{FunctionComplexity, TranslationRequest};
 
 use super::context::{
-    ComplexityPromptData, DisassemblyPromptData, StubPromptData, WithTestsPromptData,
+    ComplexityPromptData, DisassemblyPromptData, ModuleContextPromptData, StubPromptData,
+    WithTestsPromptData,
 };
 use super::error::PromptError;
 use super::templates::{
     BoundaryValue, CallGraphNeighbor, EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate,
-    MinimalTemplate, RichTemplate, StubTemplate, TranslateTemplate, WithTestsTemplate,
+    MinimalTemplate, ModuleContextTemplate, RichTemplate, StubTemplate, TranslateTemplate,
+    WithTestsTemplate,
 };
 
 // ============================================================
@@ -181,6 +184,29 @@ pub fn build_disassembly_prompt(data: &DisassemblyPromptData) -> Result<String, 
 /// call graph neighbors, and baseline test results with pass/fail status.
 pub fn build_with_tests_prompt(data: &WithTestsPromptData) -> Result<String, PromptError> {
     let template = WithTestsTemplate::from_data(data);
+
+    template
+        .render()
+        .map_err(|e| PromptError::Render(e.to_string()))
+}
+
+// ============================================================
+// Module context prompt builder (Tier 3)
+// ============================================================
+
+/// Builds a Tier 3 module context prompt with neighboring function code
+/// and shared data structures.
+///
+/// Contains full disassembly, decompiler output, tagged Windows API calls,
+/// call graph neighbors, baseline test results with pass/fail status, and
+/// full context from neighboring functions (disassembly + decompiler output)
+/// plus any data structures referenced near the target function.
+///
+/// This tier is used for complex functions whose translation requires
+/// understanding shared calling conventions, data layouts, or helper
+/// patterns from adjacent functions in the same module.
+pub fn build_module_context_prompt(data: &ModuleContextPromptData) -> Result<String, PromptError> {
+    let template = ModuleContextTemplate::from_data(data);
 
     template
         .render()

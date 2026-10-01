@@ -371,6 +371,31 @@ impl TranslationPipeline {
                 let data = calxgloss_prompts::WithTestsPromptData::from_request(&request);
                 calxgloss_prompts::build_with_tests_prompt(&data)?
             }
+            ContextTier::ModuleContext => {
+                let call_graph_neighbors = crate::retry::helpers::extract_call_graph_neighbors(
+                    &self.ghidra,
+                    &function_info.call_graph,
+                    function_info.address,
+                )
+                .await;
+                let neighboring_functions = crate::retry::helpers::extract_neighboring_context(
+                    &self.ghidra,
+                    &function_info.call_graph,
+                )
+                .await;
+                let data_structures = crate::retry::helpers::extract_data_structures(
+                    &self.ghidra,
+                    function_info.address,
+                )
+                .await;
+                let data = calxgloss_prompts::ModuleContextPromptData::from_request_with_context(
+                    &request,
+                    call_graph_neighbors,
+                    neighboring_functions,
+                    data_structures,
+                );
+                calxgloss_prompts::build_module_context_prompt(&data)?
+            }
             _ => {
                 let data = calxgloss_prompts::ComplexityPromptData::from_request(&request);
                 calxgloss_prompts::build_complexity_prompt(&complexity, &data)?

@@ -1,0 +1,224 @@
+You are a reverse engineering specialist. Translate the following function from assembly to Rust that preserves its observable behavior.
+
+## FUNCTION: {{ function_name }}
+## SOURCE DLL: {{ dll_name }}
+## ADDRESS: {{ address }}
+
+---
+
+## BASELINE TEST SUMMARY
+
+{% if test_results.is_empty() %}
+Baseline tests have not been executed yet. The tests below represent the behavioral contract your translation must satisfy.
+{% else %}
+**{{ test_results.len() }} test(s)** in the baseline.
+{% endif %}
+
+---
+
+## DISASSEMBLY
+
+{{ disassembly }}
+
+---
+
+## DECOMPILER OUTPUT (pseudo-C)
+
+{{ decompiler_output }}
+
+---
+
+## WINDOWS API CALLS IDENTIFIED
+
+{% for api in windows_apis %}
+- {{ api.name }} → {{ api.category }} → {{ api.pal_mapping }}
+{% endfor %}
+
+{% if no_windows_apis %}
+No Windows API calls were identified in this function.
+{% endif %}
+
+---
+
+## CALL GRAPH NEIGHBORS
+
+{% if !call_graph_neighbors.is_empty() %}
+Functions directly called by or calling this function.
+
+{% for neighbor in call_graph_neighbors %}
+- **{{ neighbor.name }}** ({{ neighbor.role }})
+  {% if neighbor.signature != "" %}Signature: {{ neighbor.signature }}{% else %}Signature: (not available){% endif %}
+{% endfor %}
+{% else %}
+No call graph neighbors were available.
+{% endif %}
+
+---
+
+## BASELINE TESTS (translated Rust code must produce identical outputs)
+
+{% for test in test_results %}
+Test #{{ test.index }}{% if test.passed %} — PASSED{% else %} — FAILED{% endif %}:
+  Inputs: {{ test.inputs }}
+  Expected return: {{ test.expected }}{% if test.passed %}
+  Actual return: {{ test.actual }}{% else %}
+  Actual return: {{ test.actual }}
+  Error: {{ test.error }}{% endif %}
+  Side effects: {% if test.side_effects == "[]" %}none{% else %}{{ test.side_effects }}{% endif %}
+
+{% endfor %}
+
+{% if test_results.is_empty() %}
+No baseline tests are available for this function yet. Generate tests by calling the original binary
+with boundary values (zero, max, negative, typical inputs) and record the expected outputs.
+{% endif %}
+
+---
+
+## NEIGHBORING FUNCTION CONTEXT
+
+{% if !neighboring_functions.is_empty() %}
+The following functions share code patterns, data structures, or call conventions
+with this function. Review them for context when translating:
+
+{% for neighbor in neighboring_functions %}
+### Function: {{ neighbor.name }} ({{ neighbor.dll }})
+Address: {{ neighbor.address }}
+
+Disassembly:
+```
+{{ neighbor.disassembly }}
+```
+
+Pseudo-C:
+```c
+{{ neighbor.decompiler_output }}
+```
+
+{% endfor %}
+{% else %}
+No neighboring function context available.
+{% endif %}
+
+---
+
+## SHARED DATA STRUCTURES
+
+{% if !data_structures.is_empty() %}
+The following data structures are used in or near this function:
+
+{% for ds in data_structures %}
+### {{ ds.name }}
+Size: {{ ds.size }} bytes
+Fields:
+{% for field in ds.fields %}
+- `{{ field.name }}` : {{ field.type_ }} {% if field.offset != -1 %}(offset: {{ field.offset }}){% endif %}
+{% endfor %}
+
+{% endfor %}
+{% else %}
+No data structure context available.
+{% endif %}
+
+---
+
+## EXTERNAL FUNCTION HANDLING RULES
+
+Every function the translated code calls falls into exactly one of these categories.
+Follow the rule for each category — do NOT mix strategies.
+
+### 1. Known Windows APIs (listed above)
+Replace with the PAL / std equivalent shown in the mapping.
+
+Example:
+```
+CreateFileA("foo.txt")   →   std::fs::File::open("foo.txt")
+```
+
+### 2. CRT / OS internals NOT listed above
+Functions like `__security_init_cookie`, `__security_check_cookie`, `__report_gsfailure`
+are Microsoft C runtime internals. **Do NOT call them directly.** Instead declare them
+as extern stubs at the top of the output:
+
+```rust
+extern "C" {
+    fn __security_init_cookie();
+    fn __security_check_cookie(cookie: *const core::ffi::c_void);
+    fn __report_gsfailure(reason: u32) -> !;
+}
+```
+
+These stubs are provided by the verification harness. Your function code then calls
+them through the extern block — the body is a no-op during verification.
+
+### 3. Internal DLL functions
+Functions like `dllmain_dispatch` or any function that is defined inside the target
+DLL (not a Windows API or CRT function) are **not available** to the compiled stub.
+Declare them as extern stubs alongside the CRT internals:
+
+```rust
+extern "C" {
+    fn dllmain_dispatch(hinst: *mut core::ffi::c_void, fdw_reason: u32, reserved: *mut core::ffi::c_void);
+}
+```
+
+### 4. Self-translated functions in the same DLL
+If function A calls function B and both belong to the same project DLL, declare B
+as an extern stub. It will be translated independently and linked at restitch time:
+
+```rust
+extern "C" {
+    fn helper_compute_x(x: i32, y: i32) -> i32;
+}
+```
+
+---
+
+## TRANSLATION REQUIREMENTS
+
+1. **Output ONLY the Rust function — no explanations, no markdown fences, no code blocks.**
+2. **Use `std::` for Win32 Core mappings** (std::fs, std::thread, std::sync, std::time, etc.).
+3. **For DirectX/GDI/Audio calls**, use PAL trait placeholders as shown in the mappings above.
+4. **Preserve the function signature** with FFI-compatible types.
+5. **Handle null pointers and invalid inputs gracefully** (return error codes matching the original).
+6. **Do NOT guess at Windows API behaviors** — follow the disassembly and decompiler output strictly.
+7. **Unknown / internal functions → extern stubs.** Any call to a function NOT in the "WINDOWS API CALLS
+   IDENTIFIED" section must be declared as an `extern "C"` stub at the top of the output (see rules above).
+   This includes CRT internals (`__security_*`), DLL-internal dispatchers (`dllmain_dispatch`), and
+   other project functions.
+8. **Pass all baseline tests.** Every test listed above must produce the expected return value.
+   If tests are marked as FAILED, study the error message and adjust the translation to match.
+9. **Use neighboring function context.** When the neighboring functions section shows code that
+   reveals calling conventions, data structure layouts, or helper patterns, incorporate that
+   context into your translation. Pay special attention to functions that share data structures
+   or use the same calling convention.
+
+---
+
+## EXAMPLE OUTPUT FORMAT
+
+If the function calls both a known API and an internal function, the output should look like:
+
+```rust
+extern "C" {
+    fn dllmain_dispatch(hinst: *mut core::ffi::c_void, fdw_reason: u32, reserved: *mut core::ffi::c_void);
+    fn __security_init_cookie();
+}
+
+pub extern "system" fn entry(param_0: *mut core::ffi::c_void, param_1: u32, param_2: *mut core::ffi::c_void) {
+    if param_1 == 1 {
+        unsafe { __security_init_cookie(); }
+    }
+    dllmain_dispatch(param_0, param_1, param_2);
+}
+```
+
+Note:
+- Unknown functions declared as `extern "C"` at the top
+- Known API calls replaced with std:: equivalents
+- Only the extern declarations and the translated function body are output
+- No mod declarations, no imports, no surrounding prose
+
+---
+
+## RUST CODE:

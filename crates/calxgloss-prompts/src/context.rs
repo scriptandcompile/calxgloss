@@ -7,9 +7,10 @@
 //! - [`StubPromptData`] — Tier 0: function stub only (name, signature, call graph)
 //! - [`DisassemblyPromptData`] — Tier 1: disassembly + decompiler output
 //! - [`WithTestsPromptData`] — Tier 2: full context with baseline test results
+//! - [`ModuleContextPromptData`] — Tier 3: module context with neighbors + data structures
 //! - [`ComplexityPromptData`] — Tier 3+: complexity-aware rich context
 
-use super::templates::{CallGraphNeighbor, FormattedTestResult};
+use super::templates::{CallGraphNeighbor, FormattedTestResult, NeighborFunction, StructuredData};
 use calxgloss_types::{ApiCategory, TestCase, TranslationRequest};
 use serde::Serialize;
 
@@ -136,6 +137,116 @@ impl WithTestsPromptData {
             no_windows_apis: req.windows_apis.is_empty(),
             call_graph_neighbors: Vec::new(),
             test_results,
+        }
+    }
+}
+
+// ============================================================
+// Tier 3 — Module context prompt data
+// ============================================================
+
+/// Prompt data for a Tier 3 (module context) translation request.
+///
+/// Extends Tier 2 with neighboring function context and shared data
+/// structures. This tier is used when a function's translation requires
+/// understanding its neighbors — shared data layouts, calling conventions,
+/// or helper function patterns.
+#[derive(Debug, Clone, Serialize)]
+pub struct ModuleContextPromptData {
+    pub function_name: String,
+    pub dll_name: String,
+    pub address: u64,
+    pub disassembly: String,
+    pub decompiler_output: String,
+    pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
+    pub no_windows_apis: bool,
+    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
+    pub test_results: Vec<FormattedTestResult>,
+    pub neighboring_functions: Vec<NeighborFunction>,
+    pub data_structures: Vec<StructuredData>,
+}
+
+impl ModuleContextPromptData {
+    /// Build module context prompt data from a [`TranslationRequest`].
+    ///
+    /// Only the request's core fields are populated. Neighboring functions,
+    /// data structures, and call graph neighbors are left empty — call
+    /// [`from_request_with_context`] instead when that extra context is
+    /// available from Ghidra.
+    pub fn from_request(req: &TranslationRequest) -> Self {
+        let test_results: Vec<FormattedTestResult> = req
+            .baseline_tests
+            .iter()
+            .enumerate()
+            .map(|(i, test)| FormattedTestResult::from_baseline(test, i + 1))
+            .collect();
+
+        let windows_apis: Vec<calxgloss_types::WindowsApiCall> = req
+            .windows_apis
+            .iter()
+            .map(|api| calxgloss_types::WindowsApiCall {
+                name: api.name.clone(),
+                category: api.category.clone(),
+                pal_mapping: api.pal_mapping.clone(),
+            })
+            .collect();
+
+        Self {
+            function_name: req.function.clone(),
+            dll_name: req.dll.clone(),
+            address: 0,
+            disassembly: req.disassembly.clone(),
+            decompiler_output: req.decompiler_output.clone(),
+            windows_apis,
+            no_windows_apis: req.windows_apis.is_empty(),
+            call_graph_neighbors: Vec::new(),
+            test_results,
+            neighboring_functions: Vec::new(),
+            data_structures: Vec::new(),
+        }
+    }
+
+    /// Build module context prompt data from a [`TranslationRequest`] with
+    /// additional Ghidra-derived context.
+    ///
+    /// Use this constructor when neighboring function code and data structure
+    /// information have been fetched from Ghidra.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_request_with_context(
+        req: &TranslationRequest,
+        call_graph_neighbors: Vec<CallGraphNeighbor>,
+        neighboring_functions: Vec<NeighborFunction>,
+        data_structures: Vec<StructuredData>,
+    ) -> Self {
+        let test_results: Vec<FormattedTestResult> = req
+            .baseline_tests
+            .iter()
+            .enumerate()
+            .map(|(i, test)| FormattedTestResult::from_baseline(test, i + 1))
+            .collect();
+
+        let windows_apis: Vec<calxgloss_types::WindowsApiCall> = req
+            .windows_apis
+            .iter()
+            .map(|api| calxgloss_types::WindowsApiCall {
+                name: api.name.clone(),
+                category: api.category.clone(),
+                pal_mapping: api.pal_mapping.clone(),
+            })
+            .collect();
+
+        Self {
+            function_name: req.function.clone(),
+            dll_name: req.dll.clone(),
+            address: 0,
+            disassembly: req.disassembly.clone(),
+            decompiler_output: req.decompiler_output.clone(),
+            windows_apis,
+            no_windows_apis: req.windows_apis.is_empty(),
+            call_graph_neighbors,
+            test_results,
+            neighboring_functions,
+            data_structures,
         }
     }
 }

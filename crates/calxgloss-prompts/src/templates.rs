@@ -12,6 +12,7 @@
 //! - [`DetailedTemplate`] — Very complex functions (>300 instructions)
 //! - [`StubTemplate`] — Tier 0: function stub only
 //! - [`WithTestsTemplate`] — Tier 2: disassembly + decompiler + tests
+//! - [`ModuleContextTemplate`] — Tier 3: module context with neighbors + data structures
 
 use askama::Template;
 use calxgloss_types::{ApiCategoryMapping, FailureHint, TranslationRequest};
@@ -728,6 +729,62 @@ impl WithTestsTemplate {
             no_windows_apis: data.no_windows_apis,
             call_graph_neighbors: data.call_graph_neighbors.clone(),
             test_results: data.test_results.clone(),
+        }
+    }
+}
+
+// ============================================================
+// Module context template — Tier 3: disassembly + tests + neighbors
+// ============================================================
+
+/// Template for Tier 3 translation prompts (disassembly + decompiler + tests
+/// + neighboring function context + shared data structures).
+///
+/// Contains full disassembly, Ghidra pseudo-C, tagged Windows API calls,
+/// call graph neighbors, baseline test results, neighboring function code
+/// and decompiler output, and shared data structure definitions.
+#[derive(Template)]
+#[template(path = "module_context_translate.j2")]
+pub struct ModuleContextTemplate {
+    /// The function name to translate.
+    pub function_name: String,
+    /// The DLL containing the function.
+    pub dll_name: String,
+    /// Virtual address of the function entry point.
+    pub address: u64,
+    /// Raw disassembly listing from Ghidra.
+    pub disassembly: String,
+    /// Pseudo-C decompiler output from Ghidra.
+    pub decompiler_output: String,
+    /// Windows API calls identified in the disassembly.
+    pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
+    /// Whether there are no Windows API calls.
+    pub no_windows_apis: bool,
+    /// Functions directly called by or calling this function.
+    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
+    /// Baseline test results with pass/fail status and error details.
+    pub test_results: Vec<FormattedTestResult>,
+    /// Neighboring functions with full disassembly and decompiler output.
+    pub neighboring_functions: Vec<NeighborFunction>,
+    /// Data structures referenced near the target function.
+    pub data_structures: Vec<StructuredData>,
+}
+
+impl ModuleContextTemplate {
+    /// Create a new module context template from tier-3 data.
+    pub fn from_data(data: &super::context::ModuleContextPromptData) -> Self {
+        ModuleContextTemplate {
+            function_name: data.function_name.clone(),
+            dll_name: data.dll_name.clone(),
+            address: data.address,
+            disassembly: data.disassembly.clone(),
+            decompiler_output: data.decompiler_output.clone(),
+            windows_apis: data.windows_apis.clone(),
+            no_windows_apis: data.no_windows_apis,
+            call_graph_neighbors: data.call_graph_neighbors.clone(),
+            test_results: data.test_results.clone(),
+            neighboring_functions: data.neighboring_functions.clone(),
+            data_structures: data.data_structures.clone(),
         }
     }
 }
