@@ -30,8 +30,8 @@
 //! use calxgloss_llm::hallucination::HallucinationDetector;
 //!
 //! let detector = HallucinationDetector::new(
-//!     vec!["CreateFileA", "WriteFile", "DrawSprite"],
-//!     vec!["CreateFileA", "WriteFile", "ReadFile"],
+//!     vec!["CreateFileA".to_string(), "WriteFile".to_string(), "DrawSprite".to_string()],
+//!     vec!["CreateFileA".to_string(), "WriteFile".to_string(), "ReadFile".to_string()],
 //! );
 //!
 //! // The LLM hallucinated `CreateDXTexture` — it does not exist.
