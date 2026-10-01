@@ -11,12 +11,14 @@ use crate::retry::{
 use calxgloss_analysis::FaultLogger;
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_llm::{
+    LlmClient, LlmError, LlmMessage,
     behavior_divergence::{BehaviorDivergenceDetector, EdgeCaseTest as DetEdgeCaseTest},
     infinite_loop::InfiniteLoopDetector,
     resource_exhaustion::ResourceExhaustionDetector,
-    LlmClient, LlmError, LlmMessage,
 };
-use calxgloss_types::{FailureHint, FaultEvent, ProgressEvent, ResourceExhaustionFault, TranslationEvents};
+use calxgloss_types::{
+    FailureHint, FaultEvent, ProgressEvent, ResourceExhaustionFault, TranslationEvents,
+};
 use calxgloss_verify::{CompileResult, Verifier};
 use std::collections::HashSet;
 use tracing::{info, warn};
@@ -80,10 +82,16 @@ pub async fn try_translate_with_retry(
 
     // Helper: record an attempt in the loop detector so streaks are tracked,
     // and persist a fault event when a loop is detected.
-    let record_in_detector = |detector: &mut InfiniteLoopDetector, prompt: &str, code: &str,
-                               success: bool, strategy: &str, attempt: u32, dll: &str,
-                               function: &str, events: Option<&TranslationEvents>,
-                               fault_logger: Option<&FaultLogger>| {
+    let record_in_detector = |detector: &mut InfiniteLoopDetector,
+                              prompt: &str,
+                              code: &str,
+                              success: bool,
+                              strategy: &str,
+                              attempt: u32,
+                              dll: &str,
+                              function: &str,
+                              events: Option<&TranslationEvents>,
+                              fault_logger: Option<&FaultLogger>| {
         detector.record_attempt(prompt, code, success, strategy, attempt);
 
         // Check for infinite loop
@@ -654,46 +662,48 @@ pub async fn try_translate_with_retry(
         // baseline tests.  If all baseline tests pass but edge-case
         // tests fail, the implementation likely diverges on inputs
         // not covered by the baseline suite.
-        let (divergence_signal, divergence_detector) = if compile_result.success && !initial_translation.baseline_tests.is_empty() {
-            // Generate edge-case tests from disassembly hints.
-            let num_params = initial_translation.baseline_tests.len().min(5); // Heuristic: param count approximated by baseline test arity.
-            let hints: HashSet<String> = initial_translation
-                .disassembly_hints
-                .iter()
-                .cloned()
-                .collect();
-            let detector = BehaviorDivergenceDetector::new();
-            let edge_tests: Vec<DetEdgeCaseTest> = detector
-                .generate_edge_cases(num_params, &hints)
-                .into_iter()
-                .map(|t| DetEdgeCaseTest::new(t.label, t.inputs, t.expected))
-                .collect();
+        let (divergence_signal, divergence_detector) =
+            if compile_result.success && !initial_translation.baseline_tests.is_empty() {
+                // Generate edge-case tests from disassembly hints.
+                let num_params = initial_translation.baseline_tests.len().min(5); // Heuristic: param count approximated by baseline test arity.
+                let hints: HashSet<String> = initial_translation
+                    .disassembly_hints
+                    .iter()
+                    .cloned()
+                    .collect();
+                let detector = BehaviorDivergenceDetector::new();
+                let edge_tests: Vec<DetEdgeCaseTest> = detector
+                    .generate_edge_cases(num_params, &hints)
+                    .into_iter()
+                    .map(|t| DetEdgeCaseTest::new(t.label, t.inputs, t.expected))
+                    .collect();
 
-            if !edge_tests.is_empty() {
-                // Run edge-case tests against the compiled code.
-                let baseline_passed: Vec<bool> = (0..tests_total).map(|_| tests_passed > 0).collect();
-                let edge_results: Vec<bool> = edge_tests.iter().map(|_t| true).collect();
+                if !edge_tests.is_empty() {
+                    // Run edge-case tests against the compiled code.
+                    let baseline_passed: Vec<bool> =
+                        (0..tests_total).map(|_| tests_passed > 0).collect();
+                    let edge_results: Vec<bool> = edge_tests.iter().map(|_t| true).collect();
 
-                if edge_tests.len() >= 2 && tests_total >= 1 {
-                    let signal = detector.detect_divergence(
-                        &initial_translation.dll,
-                        &initial_translation.function,
-                        attempt_num,
-                        &strategy_name,
-                        &baseline_passed,
-                        &edge_tests,
-                        &edge_results,
-                    );
-                    (signal, detector)
+                    if edge_tests.len() >= 2 && tests_total >= 1 {
+                        let signal = detector.detect_divergence(
+                            &initial_translation.dll,
+                            &initial_translation.function,
+                            attempt_num,
+                            &strategy_name,
+                            &baseline_passed,
+                            &edge_tests,
+                            &edge_results,
+                        );
+                        (signal, detector)
+                    } else {
+                        (None, detector)
+                    }
                 } else {
                     (None, detector)
                 }
             } else {
-                (None, detector)
-            }
-        } else {
-            (None, BehaviorDivergenceDetector::new())
-        };
+                (None, BehaviorDivergenceDetector::new())
+            };
 
         // Emit divergence signal if detected.
         if let Some(ref signal) = divergence_signal {
