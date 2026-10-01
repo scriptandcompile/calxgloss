@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`SuccessRate` struct** — tracks past success/failure counts for tier selection optimization.
 - **`ProgressEvent::ContextTierSelected`** — emitted after complexity analysis with the selected tier label, complexity classification, and API call count.
 - **`Translation.context_tier`** — new field recording which tier was used for each translation, enabling token usage tracking and future tier optimization.
+- **Tier 0 stub prompt** — minimal context prompt that sends only the function name, inferred C signature, and call graph neighbors (no disassembly, no decompiler output). Reduces token usage for trivially simple functions.
+  - `StubPromptData` struct with `from_function_info()` constructor
+  - `StubTemplate` Askama template struct
+  - `build_stub_prompt()` convenience function
+  - `extract_signature_from_decompiler()` helper that parses the first non-blank line of Ghidra decompiler output as the C signature
+  - Template `stub_translate.j2` renders the minimal prompt format
+  - `TranslationPipeline::translate()` routes to stub prompt when `ContextTier::Stub` is selected
 
 #### Fault detection
 
