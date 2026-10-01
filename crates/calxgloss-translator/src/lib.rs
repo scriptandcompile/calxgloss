@@ -586,6 +586,11 @@ impl TranslationPipeline {
                 let data = calxgloss_prompts::DisassemblyPromptData::from_function_info(&function_info);
                 calxgloss_prompts::build_disassembly_prompt(&data)?
             }
+            ContextTier::WithTests => {
+                let data =
+                    calxgloss_prompts::WithTestsPromptData::from_request(&request);
+                calxgloss_prompts::build_with_tests_prompt(&data)?
+            }
             _ => {
                 let data = calxgloss_prompts::ComplexityPromptData::from_request(&request);
                 calxgloss_prompts::build_complexity_prompt(&complexity, &data)?
