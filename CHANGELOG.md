@@ -66,11 +66,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Refactored
 
+#### `calxgloss-ghidra`
+- **Client extraction** — extracted `GhidraError`, `GhidraConfig`, `GhidraClient`, `ProgramInfo`, `rva_from_va`, and tests into `client.rs` (711 lines). `lib.rs` is now 28 lines of module declarations and re-exports.
+
+#### `calxgloss-llm`
+- **Client extraction** — extracted `LlmError`, `LlmConfig`, `MessageRole`, `LlmMessage`, `LlmResponse`, `LlmClient`, `strip_code_fences`, and tests into `client.rs` (734 lines). `lib.rs` is now 31 lines.
+
+#### `calxgloss-testgen`
+- **Generator extraction** — extracted `TestGenerator` with its impl and tests into `generator.rs` (592 lines). `lib.rs` is now 62 lines.
+
+#### `calxgloss-prompts`
+- **Template extraction** — extracted Askama template structs into `templates.rs` (733 lines), prompt builders into `build.rs` (336 lines), and prompt data structs into `context.rs` (208 lines). `lib.rs` remains a thin re-export layer.
+
+#### `calxgloss-reports`
+- **Dashboard subdirectory** — extracted print functions and ANSI formatting into `dashboard/view.rs` (360 lines), `dashboard/builder.rs` (590 lines), and `dashboard/render.rs` (540 lines). Old `dashboard.rs` removed.
+
+#### `calxgloss-translator`
+- **Translator and pipeline split** — extracted core translator logic into `translator.rs` (231 lines) and pipeline into `pipeline.rs` (1180 lines).
+
+#### `calxgloss-verify`
+- **Engine extraction** — extracted `Verifier` + `CompileResult` + impl into `engine.rs` (1036 lines). Moved `cargo.rs`, `helpers.rs`, `parse.rs`, and `stubs.rs` into src/ directly.
+
+#### `calxgloss-git`
+- **GitManager extraction** — extracted `GitManager` into `git_manager.rs` (918 lines), dependency tracking into `dependency.rs` (290 lines), helpers into `helpers.rs` (49 lines). Tests extracted into `tests.rs` (514 lines). `lib.rs` is now 60 lines.
+
+#### `calxgloss-analysis`
+- **Analyzer extraction** — extracted `Analyzer` with `Strategy` enum, `DllClassification`, `FunctionAnalysis`, full impl, `suggest_shim`/`estimate_complexity`, and tests into `analyzer.rs` (1117 lines). `lib.rs` is now 64 lines.
+
+#### `calxgloss-config`
+- **Multi-file split** — extracted `ConfigError` into `error.rs` (32 lines), `FileConfig`/`GhidraSection`/`LlmSection` into `schema.rs` (91 lines), `LoadedConfig`/`load()`/`discovery` into `loader.rs` (128 lines), and `Source`/`Resolved<T>`/`Layers` + tests into `layers.rs` (453 lines). `lib.rs` is now 32 lines.
+
+#### `calxgloss-types`
+- **Dashboard subdirectory** — extracted dashboard data model into `dashboard/` subdirectory (`types.rs`, `work_unit.rs`, `graph.rs`, `status.rs`, `review.rs`, `action.rs`, `mod.rs`, `tests.rs`). Old `dashboard.rs` removed.
+
 #### `calxgloss-pal`
 - **Module split** — extracted `ApiMapping` and `ApiMappings` types with their implementations into `types.rs` (209 lines), moved all 20 unit tests into a separate `tests.rs` file. `lib.rs` is now 23 lines of module declarations and re-exports only.
 
 #### `calxgloss-cli`
 - **Unused import cleanup** — removed 27 unused imports across 11 files to eliminate all clippy warnings.
+- **Command extraction** — split `main.rs` (3270 lines) into 16 files: `main.rs` (332), `cli_types.rs` (445), `utils.rs` (290), `settings.rs` (490), and `commands/` subdirectory with init, classify, auto_shim, auto, translate, batch_translate, dashboard, verify, serve, and live handlers.
 
 ### Changed
 
