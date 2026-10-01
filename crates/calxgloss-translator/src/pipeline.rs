@@ -396,9 +396,43 @@ impl TranslationPipeline {
                 );
                 calxgloss_prompts::build_module_context_prompt(&data)?
             }
-            _ => {
-                let data = calxgloss_prompts::ComplexityPromptData::from_request(&request);
-                calxgloss_prompts::build_complexity_prompt(&complexity, &data)?
+            ContextTier::FullModule => {
+                // Tier 4: Full module context + shim layer code + PAL trait definitions
+                let call_graph_neighbors = crate::retry::helpers::extract_call_graph_neighbors(
+                    &self.ghidra,
+                    &function_info.call_graph,
+                    function_info.address,
+                )
+                .await;
+                let neighboring_functions = crate::retry::helpers::extract_neighboring_context(
+                    &self.ghidra,
+                    &function_info.call_graph,
+                )
+                .await;
+                let data_structures = crate::retry::helpers::extract_data_structures(
+                    &self.ghidra,
+                    function_info.address,
+                )
+                .await;
+
+                // Extract shim layer code from the workspace
+                let shim_layers = crate::retry::helpers::extract_shim_layers(
+                    self.workspace.as_deref(),
+                    &function_info.dll,
+                );
+
+                // Extract PAL trait definitions from the function's Windows API categories
+                let pal_traits = crate::retry::helpers::extract_pal_traits(&function_info.windows_apis);
+
+                let data = calxgloss_prompts::FullModulePromptData::from_request_with_full_context(
+                    &request,
+                    call_graph_neighbors,
+                    neighboring_functions,
+                    data_structures,
+                    shim_layers,
+                    pal_traits,
+                );
+                calxgloss_prompts::build_full_module_prompt(&data)?
             }
         };
 
