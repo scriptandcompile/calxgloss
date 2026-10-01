@@ -606,6 +606,14 @@ pub mod hallucination;
 pub use hallucination::{HallucinationDetector, HallucinatedCall};
 
 // ============================================================
+// Infinite-loop detection for retry attempts
+// ============================================================
+
+pub mod infinite_loop;
+
+pub use infinite_loop::InfiniteLoopDetector;
+
+// ============================================================
 // Tests
 // ============================================================
 
