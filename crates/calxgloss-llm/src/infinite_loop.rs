@@ -233,9 +233,7 @@ impl InfiniteLoopDetector {
                 .find(|r| r.output_hash == target_hash)
                 .map(|r| {
                     // Return a truncated version for the signal.
-                    let code = r
-                        .strategy
-                        .clone(); // We don't store code in history, use strategy as placeholder
+                    let code = r.strategy.clone(); // We don't store code in history, use strategy as placeholder
                     code
                 })
                 .unwrap_or_default();
@@ -500,8 +498,9 @@ mod tests {
 
     #[test]
     fn test_history_trimming() {
-        let mut detector =
-            InfiniteLoopDetector::new().with_max_history(5).with_threshold(3);
+        let mut detector = InfiniteLoopDetector::new()
+            .with_max_history(5)
+            .with_threshold(3);
 
         // Record 8 attempts — only last 5 should be kept.
         for i in 1..=8 {

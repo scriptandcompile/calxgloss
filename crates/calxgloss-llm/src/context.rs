@@ -165,10 +165,7 @@ impl ContextWindowDetector {
     /// Used to determine whether the **input** prompt itself exceeds the
     /// model's context window before sending it.
     pub fn estimate_prompt_size(messages: &[crate::LlmMessage]) -> usize {
-        messages
-            .iter()
-            .map(|m| m.content().len())
-            .sum()
+        messages.iter().map(|m| m.content().len()).sum()
     }
 
     /// Inspect a prompt and return a fault if the estimated input size
@@ -528,21 +525,14 @@ mod tests {
 
     #[test]
     fn test_function_splitter_minimum_chunks() {
-        let chunks =
-            FunctionSplitter::split("d.dll", "f", "line1\nline2", "", 1);
+        let chunks = FunctionSplitter::split("d.dll", "f", "line1\nline2", "", 1);
         // chunk_count is clamped to at least 2
         assert!(chunks.len() >= 2);
     }
 
     #[test]
     fn test_function_splitter_empty_disassembly() {
-        let chunks = FunctionSplitter::split(
-            "d.dll",
-            "f",
-            "",
-            "int f() { return 0; }",
-            3,
-        );
+        let chunks = FunctionSplitter::split("d.dll", "f", "", "int f() { return 0; }", 3);
         assert_eq!(chunks.len(), 1);
         assert!(chunks[0].disassembly.is_empty());
     }

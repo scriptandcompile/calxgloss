@@ -120,11 +120,7 @@ impl HallucinationDetector {
     /// The detector builds a combined set of valid symbols and also uses the
     /// import set to provide close-match suggestions.
     pub fn new(functions: Vec<String>, imports: Vec<String>) -> Self {
-        let all_valid: HashSet<String> = functions
-            .iter()
-            .chain(imports.iter())
-            .cloned()
-            .collect();
+        let all_valid: HashSet<String> = functions.iter().chain(imports.iter()).cloned().collect();
 
         Self {
             functions: functions.into_iter().collect(),
@@ -169,10 +165,7 @@ impl HallucinationDetector {
         for line in generated_code.lines() {
             // Skip comment lines (both `//` and `/* */` style).
             let trimmed = line.trim();
-            if trimmed.starts_with("//")
-                || trimmed.starts_with("/*")
-                || trimmed.starts_with("*")
-            {
+            if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with("*") {
                 continue;
             }
 
@@ -252,7 +245,9 @@ impl HallucinationDetector {
                 .take_while(|(a, b)| a == b)
                 .count();
             if shared >= 4
-                && best_match.as_ref().is_none_or(|(best_len, _)| shared > *best_len)
+                && best_match
+                    .as_ref()
+                    .is_none_or(|(best_len, _)| shared > *best_len)
             {
                 best_match = Some((shared, sym.clone()));
             }
@@ -296,9 +291,7 @@ fn extract_call_candidates(line: &str) -> Vec<(String, String)> {
         }
 
         let start = i;
-        while i < len
-            && (chars[i].is_ascii_alphanumeric() || chars[i] == '_')
-        {
+        while i < len && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') {
             i += 1;
         }
         let ident_start = start;
@@ -312,7 +305,8 @@ fn extract_call_candidates(line: &str) -> Vec<(String, String)> {
 
         // Handle type parameters: `foo::<u32>(` or `foo::<T, E>(`.
         // Skip from `::` to `(`.
-        if after_name < len && after_name + 2 < len
+        if after_name < len
+            && after_name + 2 < len
             && chars[after_name] == ':'
             && chars[after_name + 1] == ':'
             && after_name + 3 < len
@@ -337,7 +331,8 @@ fn extract_call_candidates(line: &str) -> Vec<(String, String)> {
         }
 
         // Handle method calls: `Type::method(` — also emit `Type` as a candidate.
-        if after_name < len && after_name + 2 < len
+        if after_name < len
+            && after_name + 2 < len
             && (chars[after_name] == ':'
                 && chars[after_name + 1] == ':'
                 && chars[after_name + 2].is_ascii_alphabetic()
@@ -368,8 +363,7 @@ fn extract_call_candidates(line: &str) -> Vec<(String, String)> {
             // Read the method name.
             let m_start = method_start;
             while method_start < len
-                && (chars[method_start].is_ascii_alphanumeric()
-                    || chars[method_start] == '_')
+                && (chars[method_start].is_ascii_alphanumeric() || chars[method_start] == '_')
             {
                 method_start += 1;
             }
@@ -381,8 +375,7 @@ fn extract_call_candidates(line: &str) -> Vec<(String, String)> {
                 }
                 if m_after < len && chars[m_after] == '(' {
                     // Emit the type name as a candidate too.
-                    let type_name =
-                        chars[ident_start..ident_end].iter().collect::<String>();
+                    let type_name = chars[ident_start..ident_end].iter().collect::<String>();
                     let mut paren_depth = 1;
                     let mut j = m_after + 1;
                     while j < len && paren_depth > 0 {
@@ -393,8 +386,7 @@ fn extract_call_candidates(line: &str) -> Vec<(String, String)> {
                         }
                         j += 1;
                     }
-                    let code_context: String =
-                        chars[ident_start..j.min(len)].iter().collect();
+                    let code_context: String = chars[ident_start..j.min(len)].iter().collect();
                     candidates.push((type_name, code_context));
                     // Advance past `::method(...)` so `method` isn't
                     // extracted as a separate identifier later.
@@ -435,22 +427,14 @@ fn extract_call_candidates(line: &str) -> Vec<(String, String)> {
 /// actual function calls.
 const RUST_KEYWORDS: &[&str] = &[
     // Flow control.
-    "if", "else", "while", "loop", "for", "match",
-    // Blocks and closures.
-    "move", "async", "await",
-    // Type-related.
-    "type", "impl", "trait", "mod", "use", "pub",
-    // Declarations.
-    "fn", "struct", "enum", "union", "const", "static",
-    // Lifetime and generics.
-    "where", "dyn", " Self ", "super", "crate",
-    // Literals and expressions.
-    "true", "false", "self", "Self",
-    // Pattern matching.
-    "ref", "mut", "let",
-    // Operators and macros.
-    "return", "break", "continue",
-    // Module system.
+    "if", "else", "while", "loop", "for", "match", // Blocks and closures.
+    "move", "async", "await", // Type-related.
+    "type", "impl", "trait", "mod", "use", "pub", // Declarations.
+    "fn", "struct", "enum", "union", "const", "static", // Lifetime and generics.
+    "where", "dyn", " Self ", "super", "crate", // Literals and expressions.
+    "true", "false", "self", "Self", // Pattern matching.
+    "ref", "mut", "let", // Operators and macros.
+    "return", "break", "continue", // Module system.
     "unsafe", "extern", "crate",
 ];
 
@@ -459,19 +443,66 @@ const RUST_KEYWORDS: &[&str] = &[
 /// These are standard Rust types whose constructors (`Some()`, `Ok()`, etc.)
 /// look like function calls but are not hallucinated references.
 const TYPE_CONSTRUCTORS: &[&str] = &[
-    "some", "none", "ok", "err",
-    "result", "option", "vec", "string", "str",
-    "boxed", "box", "rc", "arc", "cell", "refcell",
-    "hashmap", "hashset", "btreemap", "btree",
-    "io", "mem", "ptr", "sync", "thread",
-    "println", "print", "format", "panic",
+    "some",
+    "none",
+    "ok",
+    "err",
+    "result",
+    "option",
+    "vec",
+    "string",
+    "str",
+    "boxed",
+    "box",
+    "rc",
+    "arc",
+    "cell",
+    "refcell",
+    "hashmap",
+    "hashset",
+    "btreemap",
+    "btree",
+    "io",
+    "mem",
+    "ptr",
+    "sync",
+    "thread",
+    "println",
+    "print",
+    "format",
+    "panic",
     // Common static-method / constructor patterns.
-    "new", "default", "from", "into", "try_from", "try_into",
-    "unwrap", "expect", "clone", "copy", "as_ref", "as_mut",
-    "len", "is_empty", "iter", "into_iter",
+    "new",
+    "default",
+    "from",
+    "into",
+    "try_from",
+    "try_into",
+    "unwrap",
+    "expect",
+    "clone",
+    "copy",
+    "as_ref",
+    "as_mut",
+    "len",
+    "is_empty",
+    "iter",
+    "into_iter",
     // Primitive type names that can appear in casts / type ascriptions.
-    "i32", "i64", "i16", "i8", "u32", "u64", "u16", "u8",
-    "f32", "f64", "bool", "char", "usize", "isize",
+    "i32",
+    "i64",
+    "i16",
+    "i8",
+    "u32",
+    "u64",
+    "u16",
+    "u8",
+    "f32",
+    "f64",
+    "bool",
+    "char",
+    "usize",
+    "isize",
 ];
 
 /// Check whether an identifier is a known false positive.
@@ -498,11 +529,7 @@ fn is_false_positive(name: &str) -> bool {
 
     // Three uppercase letters that could be type abbreviations, unless they
     // look like a real identifier (contain digits or a common suffix like "er", "or").
-    if name.len() == 3
-        && upper
-        && is_single_alpha
-        && !name.ends_with("er")
-        && !name.ends_with("or")
+    if name.len() == 3 && upper && is_single_alpha && !name.ends_with("er") && !name.ends_with("or")
     {
         return true;
     }
