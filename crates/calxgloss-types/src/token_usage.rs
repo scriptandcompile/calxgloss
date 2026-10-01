@@ -24,15 +24,14 @@
 //! ```
 //! use calxgloss_types::TokenUsageEntry;
 //!
-//! let entry = TokenUsageEntry {
-//!     dll: "game_logic.dll".to_string(),
-//!     function: "DrawSprite".to_string(),
-//!     attempt: 1,
-//!     strategy: "initial".to_string(),
-//!     tokens_used: 4096,
-//!     success: true,
-//!     timestamp: 0, // set by logger
-//! };
+//! let entry = TokenUsageEntry::new(
+//!     "game_logic.dll",
+//!     "DrawSprite",
+//!     1,
+//!     "initial",
+//!     4096,
+//!     true,
+//! );
 //! ```
 
 use serde::{Deserialize, Serialize};
@@ -64,6 +63,12 @@ pub struct TokenUsageEntry {
 
     /// Unix timestamp in seconds when this entry was recorded.
     pub timestamp: u64,
+
+    /// The context tier label for this attempt (e.g., `"stub"`, `"disassembly"`,
+    /// `"with_tests"`, `"module_context"`, `"full_module"`).  Empty when tier
+    /// tracking is not enabled.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub context_tier: String,
 }
 
 impl TokenUsageEntry {
@@ -84,6 +89,29 @@ impl TokenUsageEntry {
             tokens_used,
             success,
             timestamp: current_timestamp(),
+            context_tier: String::new(),
+        }
+    }
+
+    /// Create a new token usage entry with the current timestamp and a context tier label.
+    pub fn new_with_tier(
+        dll: impl Into<String>,
+        function: impl Into<String>,
+        attempt: u32,
+        strategy: impl Into<String>,
+        tokens_used: usize,
+        success: bool,
+        context_tier: impl Into<String>,
+    ) -> Self {
+        Self {
+            dll: dll.into(),
+            function: function.into(),
+            attempt,
+            strategy: strategy.into(),
+            tokens_used,
+            success,
+            timestamp: current_timestamp(),
+            context_tier: context_tier.into(),
         }
     }
 }
@@ -212,6 +240,28 @@ mod tests {
         assert_eq!(entry.tokens_used, 4096);
         assert!(entry.success);
         assert!(entry.timestamp > 0);
+        assert!(entry.context_tier.is_empty());
+    }
+
+    #[test]
+    fn test_entry_creation_with_tier() {
+        let entry = TokenUsageEntry::new_with_tier(
+            "game_logic.dll",
+            "DrawSprite",
+            1,
+            "initial",
+            4096,
+            true,
+            "with_tests",
+        );
+        assert_eq!(entry.dll, "game_logic.dll");
+        assert_eq!(entry.function, "DrawSprite");
+        assert_eq!(entry.attempt, 1);
+        assert_eq!(entry.strategy, "initial");
+        assert_eq!(entry.tokens_used, 4096);
+        assert!(entry.success);
+        assert!(entry.timestamp > 0);
+        assert_eq!(entry.context_tier, "with_tests");
     }
 
     #[test]
@@ -329,5 +379,30 @@ mod tests {
         assert_eq!(deserialized.total_entries, 1);
         assert_eq!(deserialized.total_tokens, 1024);
         assert_eq!(deserialized.by_dll.len(), 1);
+    }
+
+    #[test]
+    fn test_entry_with_tier_serialization() {
+        let entry = TokenUsageEntry::new_with_tier(
+            "game_logic.dll",
+            "DrawSprite",
+            2,
+            "escalate",
+            8192,
+            false,
+            "module_context",
+        );
+
+        // Serialize — context_tier should be included
+        let json = serde_json::to_string(&entry).expect("should serialize");
+        let deserialized: TokenUsageEntry =
+            serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(deserialized.context_tier, "module_context");
+
+        // Entry without tier — context_tier should be omitted from JSON
+        let entry_no_tier =
+            TokenUsageEntry::new("game_logic.dll", "Entry", 1, "initial", 2048, true);
+        let json = serde_json::to_string(&entry_no_tier).expect("should serialize");
+        assert!(!json.contains("\"context_tier\""));
     }
 }
