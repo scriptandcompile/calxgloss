@@ -422,7 +422,8 @@ impl TranslationPipeline {
                 );
 
                 // Extract PAL trait definitions from the function's Windows API categories
-                let pal_traits = crate::retry::helpers::extract_pal_traits(&function_info.windows_apis);
+                let pal_traits =
+                    crate::retry::helpers::extract_pal_traits(&function_info.windows_apis);
 
                 let data = calxgloss_prompts::FullModulePromptData::from_request_with_full_context(
                     &request,

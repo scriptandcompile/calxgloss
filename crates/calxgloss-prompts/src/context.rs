@@ -12,8 +12,7 @@
 //! - [`FullModulePromptData`] — Tier 4: full module with shim layer + PAL traits
 
 use super::templates::{
-    CallGraphNeighbor, FormattedTestResult, NeighborFunction, PalTraitDef,
-    ShimCode, StructuredData,
+    CallGraphNeighbor, FormattedTestResult, NeighborFunction, PalTraitDef, ShimCode, StructuredData,
 };
 use calxgloss_types::{ApiCategory, TestCase, TranslationRequest};
 use serde::Serialize;

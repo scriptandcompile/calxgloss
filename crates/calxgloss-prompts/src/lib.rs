@@ -44,7 +44,7 @@ pub use error::PromptError;
 pub use templates::{
     BoundaryValue, CallGraphNeighbor, EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate,
     FixTemplate, FormattedTestResult, FullModuleTemplate, MinimalTemplate, ModuleContextTemplate,
-    NeighborFunction, PalTraitDef, PalTraitMethod, StructField, StructuredData, ShimCode,
+    NeighborFunction, PalTraitDef, PalTraitMethod, ShimCode, StructField, StructuredData,
     StubTemplate, TestCaseFormatted, TranslateTemplate, TypeInfo, WithTestsTemplate,
 };
 
