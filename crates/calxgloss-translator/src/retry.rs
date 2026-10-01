@@ -71,6 +71,7 @@ pub(crate) fn log_token_usage(
     tokens_used: Option<usize>,
     success: bool,
     workspace: Option<&std::path::Path>,
+    context_tier: &str,
 ) {
     let Some(ws) = workspace else {
         return;
@@ -80,13 +81,14 @@ pub(crate) fn log_token_usage(
         return;
     };
 
-    let entry = calxgloss_types::TokenUsageEntry::new(
+    let entry = calxgloss_types::TokenUsageEntry::new_with_tier(
         dll_name,
         function,
         attempt_num,
         strategy,
         tokens,
         success,
+        context_tier,
     );
 
     let logger = calxgloss_analysis::TokenUsageLogger::new(ws);

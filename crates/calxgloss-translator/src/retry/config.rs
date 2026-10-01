@@ -90,6 +90,9 @@ pub struct TranslationAttempt {
 
     /// Number of tokens the LLM used for this attempt, if reported.
     pub tokens_used: Option<usize>,
+
+    /// The context tier used for this attempt's prompt (Tier 0–4).
+    pub context_tier: Option<String>,
 }
 
 impl TranslationAttempt {

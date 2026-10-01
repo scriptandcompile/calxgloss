@@ -1,8 +1,11 @@
 //! Ghidra context extraction helpers used by prompt builders.
 
+use crate::Translation;
 use calxgloss_ghidra::GhidraClient;
-use calxgloss_prompts::{CallGraphNeighbor, NeighborFunction, PalTraitDef, PalTraitMethod, ShimCode};
-use calxgloss_types::{ApiCategory, WindowsApiCall};
+use calxgloss_prompts::{
+    CallGraphNeighbor, NeighborFunction, PalTraitDef, PalTraitMethod, ShimCode,
+};
+use calxgloss_types::{ApiCategory, ContextTier, TranslationRequest, WindowsApiCall};
 
 /// Extract call graph neighbor details from Ghidra.
 pub async fn extract_call_graph_neighbors(
@@ -94,10 +97,7 @@ pub async fn extract_type_info(
 /// Reads the generated shim source from `re/shims/<dll_name>/shim.rs` in
 /// the workspace directory. Returns an empty vector when no shim exists
 /// or the workspace path is not configured.
-pub fn extract_shim_layers(
-    workspace: Option<&std::path::Path>,
-    dll_name: &str,
-) -> Vec<ShimCode> {
+pub fn extract_shim_layers(workspace: Option<&std::path::Path>, dll_name: &str) -> Vec<ShimCode> {
     let Some(workspace) = workspace else {
         return Vec::new();
     };
@@ -113,7 +113,7 @@ pub fn extract_shim_layers(
         Ok(source) => vec![ShimCode {
             source_dll: dll_name.to_string(),
             target_crate: String::new(), // filled by caller from mappings.json
-            mapping_count: 0,             // filled by caller from mappings.json
+            mapping_count: 0,            // filled by caller from mappings.json
             source,
         }],
         Err(_) => Vec::new(),
@@ -126,39 +126,42 @@ pub fn extract_shim_layers(
 /// Returns a set of PAL traits that cover the API categories the
 /// function touches. This gives the LLM the exact trait method
 /// signatures it needs to use for each API category.
-pub fn extract_pal_traits(
-    windows_apis: &[WindowsApiCall],
-) -> Vec<PalTraitDef> {
+pub fn extract_pal_traits(windows_apis: &[WindowsApiCall]) -> Vec<PalTraitDef> {
     if windows_apis.is_empty() {
         return Vec::new();
     }
 
     // Collect unique API categories from the function's Windows API calls
-    let categories: std::collections::HashSet<&ApiCategory> = windows_apis
-        .iter()
-        .map(|api| &api.category)
-        .collect();
+    let categories: std::collections::HashSet<&ApiCategory> =
+        windows_apis.iter().map(|api| &api.category).collect();
 
     let mut traits = Vec::new();
 
     for category in &categories {
         match category {
-            ApiCategory::DirectX | ApiCategory::DirectX10 | ApiCategory::DirectX11 |
-            ApiCategory::DirectX12 => {
+            ApiCategory::DirectX
+            | ApiCategory::DirectX10
+            | ApiCategory::DirectX11
+            | ApiCategory::DirectX12 => {
                 traits.push(PalTraitDef {
                     trait_name: "GraphicsDevice".to_string(),
                     module: "pal".to_string(),
-                    description: "Abstracts DirectX graphics device operations (create, render, present)".to_string(),
+                    description:
+                        "Abstracts DirectX graphics device operations (create, render, present)"
+                            .to_string(),
                     methods: vec![
                         PalTraitMethod {
                             name: "create_device".to_string(),
-                            signature: "fn create_device(width: u32, height: u32) -> Self".to_string(),
+                            signature: "fn create_device(width: u32, height: u32) -> Self"
+                                .to_string(),
                             description: "Create a new graphics device / swap chain".to_string(),
                         },
                         PalTraitMethod {
                             name: "render".to_string(),
-                            signature: "fn render(&mut self, encoder: &mut wgpu::CommandEncoder)".to_string(),
-                            description: "Execute rendering commands via a wgpu encoder".to_string(),
+                            signature: "fn render(&mut self, encoder: &mut wgpu::CommandEncoder)"
+                                .to_string(),
+                            description: "Execute rendering commands via a wgpu encoder"
+                                .to_string(),
                         },
                         PalTraitMethod {
                             name: "present".to_string(),
@@ -167,8 +170,12 @@ pub fn extract_pal_traits(
                         },
                         PalTraitMethod {
                             name: "set_texture".to_string(),
-                            signature: "fn set_texture(&mut self, stage: u32, texture: &TextureView)".to_string(),
-                            description: "Bind a texture to a pipeline stage (maps DirectX SetTexture)".to_string(),
+                            signature:
+                                "fn set_texture(&mut self, stage: u32, texture: &TextureView)"
+                                    .to_string(),
+                            description:
+                                "Bind a texture to a pipeline stage (maps DirectX SetTexture)"
+                                    .to_string(),
                         },
                     ],
                 });
@@ -240,17 +247,22 @@ pub fn extract_pal_traits(
                 traits.push(PalTraitDef {
                     trait_name: "WindowManager".to_string(),
                     module: "pal".to_string(),
-                    description: "Abstracts windowing and GUI operations (Win32 → winit + egui)".to_string(),
+                    description: "Abstracts windowing and GUI operations (Win32 → winit + egui)"
+                        .to_string(),
                     methods: vec![
                         PalTraitMethod {
                             name: "create_window".to_string(),
-                            signature: "fn create_window(title: &str, width: u32, height: u32) -> Self".to_string(),
+                            signature:
+                                "fn create_window(title: &str, width: u32, height: u32) -> Self"
+                                    .to_string(),
                             description: "Create a new application window".to_string(),
                         },
                         PalTraitMethod {
                             name: "process_events".to_string(),
-                            signature: "fn process_events(&mut self, handler: impl FnMut(Event))".to_string(),
-                            description: "Process pending window events and dispatch to handler".to_string(),
+                            signature: "fn process_events(&mut self, handler: impl FnMut(Event))"
+                                .to_string(),
+                            description: "Process pending window events and dispatch to handler"
+                                .to_string(),
                         },
                         PalTraitMethod {
                             name: "get_size".to_string(),
@@ -269,17 +281,21 @@ pub fn extract_pal_traits(
                 traits.push(PalTraitDef {
                     trait_name: "PlatformCore".to_string(),
                     module: "pal".to_string(),
-                    description: "Abstracts core Win32 operations (VirtualAlloc, CreateThread, Sleep, etc.)".to_string(),
+                    description:
+                        "Abstracts core Win32 operations (VirtualAlloc, CreateThread, Sleep, etc.)"
+                            .to_string(),
                     methods: vec![
                         PalTraitMethod {
                             name: "allocate_memory".to_string(),
-                            signature: "fn allocate_memory(size: usize, writable: bool) -> *mut u8".to_string(),
+                            signature: "fn allocate_memory(size: usize, writable: bool) -> *mut u8"
+                                .to_string(),
                             description: "Allocate memory (maps VirtualAlloc)".to_string(),
                         },
                         PalTraitMethod {
                             name: "free_memory".to_string(),
                             signature: "fn free_memory(ptr: *mut u8, size: usize)".to_string(),
-                            description: "Free previously allocated memory (maps VirtualFree)".to_string(),
+                            description: "Free previously allocated memory (maps VirtualFree)"
+                                .to_string(),
                         },
                         PalTraitMethod {
                             name: "sleep".to_string(),
@@ -289,7 +305,8 @@ pub fn extract_pal_traits(
                         PalTraitMethod {
                             name: "get_tick_count".to_string(),
                             signature: "fn get_tick_count() -> u64".to_string(),
-                            description: "Get system uptime in milliseconds (maps GetTickCount)".to_string(),
+                            description: "Get system uptime in milliseconds (maps GetTickCount)"
+                                .to_string(),
                         },
                     ],
                 });
@@ -323,4 +340,192 @@ pub fn extract_pal_traits(
     }
 
     traits
+}
+
+// ============================================================
+// Tier escalation prompt builder
+// ============================================================
+
+/// Build an escalated prompt for a given context tier using the initial
+/// translation's data.
+///
+/// This function is called during the retry loop when a tier escalation
+/// is needed. It reconstructs the appropriate prompt data from the initial
+/// translation and, for higher tiers (≥3), fetches additional context from
+/// Ghidra or the workspace.
+///
+/// # Arguments
+///
+/// * `translation` — The initial [`Translation`] produced by the pipeline.
+/// * `tier` — The target context tier to build for.
+/// * `ghidra` — Ghidra client for fetching additional context.
+/// * `workspace` — Optional workspace path for shim layer extraction.
+///
+/// # Returns
+///
+/// A prompt string suitable for sending to the LLM, or an error string
+/// if prompt construction fails.
+pub async fn build_escalated_prompt(
+    translation: &Translation,
+    tier: ContextTier,
+    ghidra: &GhidraClient,
+    workspace: Option<&std::path::Path>,
+) -> Result<String, String> {
+    let dll = &translation.dll;
+    let function = &translation.function;
+
+    match tier {
+        ContextTier::Stub => {
+            // Tier 0: stub prompt — only function name, signature, call graph
+            let neighbors = translation
+                .call_graph
+                .iter()
+                .map(|name| CallGraphNeighbor {
+                    name: name.clone(),
+                    address: 0,
+                    signature: String::new(),
+                    role: String::new(),
+                })
+                .collect();
+            let data = calxgloss_prompts::StubPromptData {
+                function_name: function.clone(),
+                dll_name: dll.clone(),
+                address_hex: format!("{:#x}", translation.function_address.unwrap_or(0)),
+                signature: String::new(),
+                call_graph_neighbors: neighbors,
+            };
+            calxgloss_prompts::build_stub_prompt(&data).map_err(|e| e.to_string())
+        }
+        ContextTier::Disassembly => {
+            // Tier 1: disassembly + decompiler + type info
+            let call_graph: Vec<calxgloss_types::translation::WindowsApiCall> = translation
+                .call_graph
+                .iter()
+                .map(|name| calxgloss_types::translation::WindowsApiCall {
+                    name: name.clone(),
+                    category: ApiCategory::Win32Core,
+                    pal_mapping: String::new(),
+                })
+                .collect();
+            let data = calxgloss_prompts::DisassemblyPromptData {
+                function_name: function.clone(),
+                dll_name: dll.clone(),
+                address: translation.function_address.unwrap_or(0),
+                disassembly: translation.prompt_used.clone(),
+                decompiler_output: String::new(),
+                windows_apis: call_graph,
+                no_windows_apis: translation.call_graph.is_empty(),
+                test_cases: Vec::new(),
+            };
+            calxgloss_prompts::build_disassembly_prompt(&data).map_err(|e| e.to_string())
+        }
+        ContextTier::WithTests => {
+            // Tier 2: disassembly + decompiler + baseline tests
+            let call_graph: Vec<calxgloss_types::translation::WindowsApiCall> = translation
+                .call_graph
+                .iter()
+                .map(|name| calxgloss_types::translation::WindowsApiCall {
+                    name: name.clone(),
+                    category: ApiCategory::Win32Core,
+                    pal_mapping: String::new(),
+                })
+                .collect();
+
+            let request = TranslationRequest {
+                dll: dll.clone(),
+                function: function.clone(),
+                disassembly: translation.prompt_used.clone(),
+                decompiler_output: String::new(),
+                windows_apis: call_graph,
+                baseline_tests: translation.baseline_tests.clone(),
+            };
+            let data = calxgloss_prompts::WithTestsPromptData::from_request(&request);
+            calxgloss_prompts::build_with_tests_prompt(&data).map_err(|e| e.to_string())
+        }
+        ContextTier::ModuleContext => {
+            // Tier 3: module context + neighboring functions + data structures
+            let call_graph: Vec<calxgloss_types::translation::WindowsApiCall> = translation
+                .call_graph
+                .iter()
+                .map(|name| calxgloss_types::translation::WindowsApiCall {
+                    name: name.clone(),
+                    category: ApiCategory::Win32Core,
+                    pal_mapping: String::new(),
+                })
+                .collect();
+
+            let request = TranslationRequest {
+                dll: dll.clone(),
+                function: function.clone(),
+                disassembly: translation.prompt_used.clone(),
+                decompiler_output: String::new(),
+                windows_apis: call_graph,
+                baseline_tests: translation.baseline_tests.clone(),
+            };
+
+            let call_graph_neighbors = extract_call_graph_neighbors(
+                ghidra,
+                &translation.call_graph,
+                translation.function_address.unwrap_or(0),
+            )
+            .await;
+            let neighboring_functions =
+                extract_neighboring_context(ghidra, &translation.call_graph).await;
+            let data_structures =
+                extract_data_structures(ghidra, translation.function_address.unwrap_or(0)).await;
+
+            let data = calxgloss_prompts::ModuleContextPromptData::from_request_with_context(
+                &request,
+                call_graph_neighbors,
+                neighboring_functions,
+                data_structures,
+            );
+            calxgloss_prompts::build_module_context_prompt(&data).map_err(|e| e.to_string())
+        }
+        ContextTier::FullModule => {
+            // Tier 4: full module + shim layer code + PAL trait definitions
+            let call_graph: Vec<calxgloss_types::translation::WindowsApiCall> = translation
+                .call_graph
+                .iter()
+                .map(|name| calxgloss_types::translation::WindowsApiCall {
+                    name: name.clone(),
+                    category: ApiCategory::Win32Core,
+                    pal_mapping: String::new(),
+                })
+                .collect();
+
+            let request = TranslationRequest {
+                dll: dll.clone(),
+                function: function.clone(),
+                disassembly: translation.prompt_used.clone(),
+                decompiler_output: String::new(),
+                windows_apis: call_graph,
+                baseline_tests: translation.baseline_tests.clone(),
+            };
+
+            let call_graph_neighbors = extract_call_graph_neighbors(
+                ghidra,
+                &translation.call_graph,
+                translation.function_address.unwrap_or(0),
+            )
+            .await;
+            let neighboring_functions =
+                extract_neighboring_context(ghidra, &translation.call_graph).await;
+            let data_structures =
+                extract_data_structures(ghidra, translation.function_address.unwrap_or(0)).await;
+
+            let shim_layers = extract_shim_layers(workspace, dll);
+            let pal_traits = Vec::<PalTraitDef>::new();
+
+            let data = calxgloss_prompts::FullModulePromptData::from_request_with_full_context(
+                &request,
+                call_graph_neighbors,
+                neighboring_functions,
+                data_structures,
+                shim_layers,
+                pal_traits,
+            );
+            calxgloss_prompts::build_full_module_prompt(&data).map_err(|e| e.to_string())
+        }
+    }
 }

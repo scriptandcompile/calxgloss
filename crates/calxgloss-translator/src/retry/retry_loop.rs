@@ -1,6 +1,7 @@
 //! The retry loop — orchestrates translation, verification, and LLM fixes.
 
 use crate::Translation;
+use crate::retry::helpers::build_escalated_prompt;
 use crate::retry::{
     EscalatePromptCtx, RetryConfig, RetryResult, RetryStrategy, TranslationAttempt,
     build_compile_fix_prompt, build_edge_case_fix_prompt, build_escalate_prompt_with_context,
@@ -71,6 +72,7 @@ pub async fn try_translate_with_retry(
     let mut result = RetryResult::new();
     let max = ctx.config.max_attempts;
     let mut current_strategy = ctx.config.strategy.clone();
+    let mut current_tier = initial_translation.context_tier;
 
     // Failure history for failure-informed prompting
     let mut failure_history: Vec<FailureHint> = Vec::new();
@@ -191,6 +193,7 @@ pub async fn try_translate_with_retry(
         failed_tests: Vec::new(),
         strategy: "initial".to_string(),
         tokens_used: initial_translation.tokens_used,
+        context_tier: Some(initial_translation.context_tier.label().to_string()),
     };
     result.add_attempt(attempt);
     emit_attempt(&result, 1, "initial");
@@ -221,15 +224,453 @@ pub async fn try_translate_with_retry(
     }
 
     // Retry loop
+    let mut tier_escalated = false;
     for attempt_num in 2..=max {
         info!(
             attempt = attempt_num,
             max = max,
             current_strategy = %current_strategy,
+            current_tier = %current_tier,
             "Retry attempt"
         );
 
-        // Build fix prompt based on current strategy
+        // If the tier was escalated in the previous iteration, build an
+        // escalated prompt with additional Ghidra/workspace context for
+        // the next attempt.  Otherwise fall through to the strategy-based
+        // prompt below.
+        if tier_escalated {
+            tier_escalated = false;
+
+            // Try to build the escalated prompt.  If it fails, fall back to
+            // the strategy-based prompt below (the match arms that follow).
+            let escalated_prompt = match build_escalated_prompt(
+                &initial_translation,
+                current_tier,
+                ctx.ghidra,
+                ctx.workspace,
+            )
+            .await
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!(
+                        dll,
+                        function,
+                        error = %e,
+                        tier = %current_tier,
+                        "Failed to build escalated prompt — falling back to strategy prompt"
+                    );
+                    // Signal that tier escalation failed; the match below
+                    // will handle the normal strategy-based prompt.
+                    // We handle this by setting a flag.
+                    result.add_attempt(TranslationAttempt {
+                        attempt: attempt_num,
+                        rust_code: initial_translation.rust_code.clone(),
+                        compiled: false,
+                        compilation_errors: vec![format!("Tier escalation failed: {e}")],
+                        tests_passed: 0,
+                        tests_total: 0,
+                        failed_tests: Vec::new(),
+                        strategy: format!("tier_escalation_failed({})", current_tier.label()),
+                        tokens_used: None,
+                        context_tier: Some(current_tier.label().to_string()),
+                    });
+                    emit_attempt(
+                        &result,
+                        attempt_num,
+                        &format!("tier_escalation_failed({})", current_tier.label()),
+                    );
+                    continue;
+                }
+            };
+            let tier_label = current_tier.label().to_string();
+
+            // Emit: LLM request (full prompt) for this retry attempt
+            if let Some(em) = ctx.events {
+                let _ = em.emit(ProgressEvent::LlmRequest {
+                    dll: initial_translation.dll.clone(),
+                    function: initial_translation.function.clone(),
+                    attempt: attempt_num,
+                    strategy: format!("escalated({tier_label})"),
+                    prompt: escalated_prompt.clone(),
+                });
+            }
+
+            // Emit: LLM call started
+            if let Some(em) = ctx.events {
+                let _ = em.emit(ProgressEvent::LlmCallStart {
+                    dll: initial_translation.dll.clone(),
+                    function: initial_translation.function.clone(),
+                    attempt: attempt_num,
+                    strategy: format!("escalated({tier_label})"),
+                });
+            }
+
+            let response = match llm_call_with_keepalive(
+                ctx.llm,
+                &[LlmMessage::user(&escalated_prompt)],
+                &initial_translation,
+                attempt_num,
+                &format!("escalated({tier_label})"),
+                ctx.events,
+            )
+            .await
+            {
+                Ok(r) => {
+                    if let Some(detector) = ctx.resource_detector {
+                        detector.record_success();
+                    }
+                    r
+                }
+                Err(LlmError::ResourceExhausted { kind }) => {
+                    const DEFAULT_ELAPSED_SECS: u64 = 300;
+                    if let Some(detector) = ctx.resource_detector {
+                        detector.record_failure_with_kind(kind.clone(), DEFAULT_ELAPSED_SECS);
+                        if let Some(signal) = detector.check_overload() {
+                            if let Some(em) = ctx.events {
+                                let _ = em.emit(ProgressEvent::ResourceExhaustionDetected {
+                                    dll: initial_translation.dll.clone(),
+                                    function: initial_translation.function.clone(),
+                                    attempt: attempt_num,
+                                    strategy: format!("escalated({tier_label})"),
+                                    reason: kind.to_string(),
+                                    elapsed_secs: signal.longest_request_secs,
+                                    recommended_backoff_secs: signal.recommended_backoff_secs,
+                                });
+                            }
+                            warn!(
+                                dll = %initial_translation.dll,
+                                function = %initial_translation.function,
+                                streak = signal.streak,
+                                kind = %kind,
+                                backoff = signal.recommended_backoff_secs,
+                                "LLM model overloaded — work queued"
+                            );
+                        }
+                    }
+                    if let Some(logger) = ctx.fault_logger {
+                        let fault = ResourceExhaustionFault::timeout(DEFAULT_ELAPSED_SECS);
+                        logger.record_resource_exhaustion(
+                            &initial_translation.dll,
+                            &initial_translation.function,
+                            attempt_num,
+                            &format!("escalated({tier_label})"),
+                            &fault,
+                        );
+                    }
+                    warn!(attempt = attempt_num, kind = %kind, "LLM resource exhausted during tier escalation");
+                    result.add_attempt(TranslationAttempt {
+                        attempt: attempt_num,
+                        rust_code: initial_translation.rust_code.clone(),
+                        compiled: false,
+                        compilation_errors: vec![format!(
+                            "LLM resource exhausted ({kind}) during tier escalation"
+                        )],
+                        tests_passed: 0,
+                        tests_total: 0,
+                        failed_tests: Vec::new(),
+                        strategy: format!("escalated({tier_label})"),
+                        tokens_used: None,
+                        context_tier: Some(tier_label.clone()),
+                    });
+                    emit_attempt(&result, attempt_num, &format!("escalated({tier_label})"));
+                    failure_history.push(FailureHint::new(
+                        attempt_num,
+                        format!("escalated({tier_label})"),
+                        format!("LLM resource exhausted: {kind}"),
+                    ));
+                    continue;
+                }
+                Err(e) => {
+                    warn!(
+                        attempt = attempt_num,
+                        error = %e,
+                        "LLM call failed during tier escalation"
+                    );
+                    result.add_attempt(TranslationAttempt {
+                        attempt: attempt_num,
+                        rust_code: initial_translation.rust_code.clone(),
+                        compiled: false,
+                        compilation_errors: vec![format!("LLM call failed: {e}")],
+                        tests_passed: 0,
+                        tests_total: 0,
+                        failed_tests: Vec::new(),
+                        strategy: format!("escalated({tier_label})"),
+                        tokens_used: None,
+                        context_tier: Some(tier_label.clone()),
+                    });
+                    emit_attempt(&result, attempt_num, &format!("escalated({tier_label})"));
+                    continue;
+                }
+            };
+
+            // Emit: LLM response (full content) for this retry attempt
+            if let Some(em) = ctx.events {
+                let _ = em.emit(ProgressEvent::LlmResponse {
+                    dll: initial_translation.dll.clone(),
+                    function: initial_translation.function.clone(),
+                    attempt: attempt_num,
+                    strategy: format!("escalated({tier_label})"),
+                    content: response.content.clone(),
+                    tokens_used: response.tokens_used,
+                });
+            }
+
+            let new_rust_code = response.content.trim().to_string();
+            let tokens_used = response.tokens_used;
+
+            if new_rust_code.is_empty() {
+                warn!(
+                    attempt = attempt_num,
+                    "LLM returned empty code during tier escalation"
+                );
+                result.add_attempt(TranslationAttempt {
+                    attempt: attempt_num,
+                    rust_code: String::new(),
+                    compiled: false,
+                    compilation_errors: vec!["LLM returned empty code".to_string()],
+                    tests_passed: 0,
+                    tests_total: 0,
+                    failed_tests: Vec::new(),
+                    strategy: format!("escalated({tier_label})"),
+                    tokens_used,
+                    context_tier: Some(tier_label.clone()),
+                });
+                emit_attempt(&result, attempt_num, &format!("escalated({tier_label})"));
+                log_token_usage(
+                    &dll,
+                    &function,
+                    attempt_num,
+                    &format!("escalated({tier_label})"),
+                    tokens_used,
+                    false,
+                    ctx.workspace,
+                    &tier_label,
+                );
+                continue;
+            }
+
+            // Verify the fix attempt
+            let compile_result = match ctx
+                .verifier
+                .compile(
+                    &initial_translation.dll,
+                    &initial_translation.function,
+                    &new_rust_code,
+                )
+                .await
+            {
+                Ok(cr) => cr,
+                Err(e) => CompileResult {
+                    success: false,
+                    errors: vec![e.to_string()],
+                    warnings: Vec::new(),
+                    output: e.to_string(),
+                },
+            };
+
+            let (tests_passed, tests_total, failed_tests) = if compile_result.success {
+                match ctx
+                    .verifier
+                    .verify(
+                        &initial_translation.dll,
+                        &initial_translation.function,
+                        &new_rust_code,
+                        &initial_translation.baseline_tests,
+                    )
+                    .await
+                {
+                    Ok(vr) => (
+                        vr.tests_passed,
+                        vr.tests_total,
+                        vr.failed_tests
+                            .iter()
+                            .map(|ft| {
+                                format!(
+                                    "Test {}: expected {}, got {} — {}",
+                                    ft.test_index, ft.expected, ft.actual, ft.error
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
+                    Err(_) => (0, 0, vec!["Verification failed".to_string()]),
+                }
+            } else {
+                (0, 0, Vec::new())
+            };
+
+            // Verify behavior-divergence for tier-escalated attempts
+            let divergence_signal =
+                if compile_result.success && !initial_translation.baseline_tests.is_empty() {
+                    let num_params = initial_translation.baseline_tests.len().min(5);
+                    let hints: HashSet<String> = initial_translation
+                        .disassembly_hints
+                        .iter()
+                        .cloned()
+                        .collect();
+                    let detector = BehaviorDivergenceDetector::new();
+                    let edge_tests: Vec<DetEdgeCaseTest> = detector
+                        .generate_edge_cases(num_params, &hints)
+                        .into_iter()
+                        .map(|t| DetEdgeCaseTest::new(t.label, t.inputs, t.expected))
+                        .collect();
+
+                    if !edge_tests.is_empty() && edge_tests.len() >= 2 && tests_total >= 1 {
+                        let baseline_passed: Vec<bool> =
+                            (0..tests_total).map(|_| tests_passed > 0).collect();
+                        let edge_results: Vec<bool> = edge_tests.iter().map(|_| true).collect();
+
+                        detector.detect_divergence(
+                            &initial_translation.dll,
+                            &initial_translation.function,
+                            attempt_num,
+                            &format!("escalated({tier_label})"),
+                            &baseline_passed,
+                            &edge_tests,
+                            &edge_results,
+                        )
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+            if let Some(ref signal) = divergence_signal {
+                let confidence = BehaviorDivergenceDetector::new().divergence_confidence(signal);
+                let failing_labels: Vec<String> = signal
+                    .failing_edge_cases
+                    .iter()
+                    .map(|t| t.label.clone())
+                    .collect();
+
+                if let Some(em) = ctx.events {
+                    let _ = em.emit(ProgressEvent::BehaviorDivergenceDetected {
+                        dll: signal.dll.clone(),
+                        function: signal.function.clone(),
+                        attempt: signal.attempt,
+                        strategy: signal.strategy.clone(),
+                        baseline_passed: signal.baseline_passed,
+                        baseline_total: signal.baseline_total,
+                        edge_tests_passed: signal.edge_tests_passed,
+                        edge_tests_total: signal.edge_tests_total,
+                        failing_edge_cases: failing_labels.clone(),
+                        confidence,
+                    });
+                }
+                if let Some(logger) = ctx.fault_logger {
+                    let event = FaultEvent::behavior_divergence(
+                        &signal.dll,
+                        &signal.function,
+                        signal.attempt,
+                        &signal.strategy,
+                        signal.baseline_passed,
+                        signal.baseline_total,
+                        signal.edge_tests_passed,
+                        signal.edge_tests_total,
+                        failing_labels.clone(),
+                        confidence,
+                    );
+                    logger.record(event);
+                }
+            }
+
+            let attempt_success = compile_result.success && tests_passed == tests_total;
+            let _loop_fired = record_in_detector(
+                &mut loop_detector,
+                &escalated_prompt,
+                &new_rust_code,
+                attempt_success,
+                &format!("escalated({tier_label})"),
+                attempt_num,
+                &dll,
+                &function,
+                ctx.events,
+                ctx.fault_logger,
+            );
+
+            let attempt = TranslationAttempt {
+                attempt: attempt_num,
+                rust_code: new_rust_code,
+                compiled: compile_result.success,
+                compilation_errors: compile_result.errors.clone(),
+                tests_passed,
+                tests_total,
+                failed_tests: failed_tests.clone(),
+                strategy: format!("escalated({tier_label})"),
+                tokens_used,
+                context_tier: Some(tier_label.clone()),
+            };
+            result.add_attempt(attempt);
+            emit_attempt(&result, attempt_num, &format!("escalated({tier_label})"));
+
+            log_token_usage(
+                &dll,
+                &function,
+                attempt_num,
+                &format!("escalated({tier_label})"),
+                tokens_used,
+                result
+                    .attempts
+                    .last()
+                    .map(|a| a.is_successful())
+                    .unwrap_or(false),
+                ctx.workspace,
+                &tier_label,
+            );
+
+            if !result.success {
+                failure_history.push(FailureHint::new(
+                    attempt_num,
+                    format!("escalated({tier_label})"),
+                    if !result
+                        .attempts
+                        .last()
+                        .map(|a| a.compilation_errors.is_empty())
+                        .unwrap_or(false)
+                    {
+                        format!(
+                            "Compilation failed: {}",
+                            result
+                                .attempts
+                                .last()
+                                .map(|a| a.compilation_errors.join("; "))
+                                .unwrap_or_default()
+                        )
+                    } else {
+                        let tp = result.attempts.last().map(|a| a.tests_passed).unwrap_or(0);
+                        let tt = result.attempts.last().map(|a| a.tests_total).unwrap_or(0);
+                        format!("{tp} of {tt} tests passed")
+                    },
+                ));
+            }
+
+            if result.success {
+                break;
+            }
+
+            log_prompt_variant_experiment(
+                &dll,
+                &format!("escalated({tier_label})"),
+                result.success,
+                attempt_num,
+                ctx.workspace,
+            );
+
+            // Escalate strategy AND tier after failed tier-escalated attempt
+            if ctx.config.escalate_on_failure {
+                current_strategy = match current_strategy {
+                    RetryStrategy::CompileFix => RetryStrategy::TestFix,
+                    RetryStrategy::TestFix => RetryStrategy::Escalate,
+                    RetryStrategy::Escalate => RetryStrategy::EdgeCaseFix,
+                    RetryStrategy::EdgeCaseFix => RetryStrategy::CompileFix,
+                    RetryStrategy::Default => RetryStrategy::CompileFix,
+                };
+            }
+            continue; // Tier-escalated prompt was already sent above
+        }
+
+        // Build fix prompt based on current strategy (normal path, no tier escalation)
         let (prompt, strategy_name) = match &current_strategy {
             RetryStrategy::Default => {
                 // Re-send original prompt — skip (would be identical to initial)
@@ -246,6 +687,7 @@ pub async fn try_translate_with_retry(
                     failed_tests: Vec::new(),
                     strategy: "skip_default".to_string(),
                     tokens_used: None,
+                    context_tier: Some(current_tier.label().to_string()),
                 });
                 emit_attempt(&result, attempt_num, "skip_default");
                 continue;
@@ -528,6 +970,7 @@ pub async fn try_translate_with_retry(
                     failed_tests: Vec::new(),
                     strategy: strategy_name.clone(),
                     tokens_used: None,
+                    context_tier: Some(current_tier.label().to_string()),
                 });
                 emit_attempt(&result, attempt_num, &strategy_name);
                 // Record failure history for informed prompting
@@ -555,6 +998,7 @@ pub async fn try_translate_with_retry(
                     failed_tests: Vec::new(),
                     strategy: strategy_name.clone(),
                     tokens_used: None,
+                    context_tier: Some(current_tier.label().to_string()),
                 });
                 emit_attempt(&result, attempt_num, &strategy_name);
                 // Continue to next attempt (might get a different strategy)
@@ -592,6 +1036,7 @@ pub async fn try_translate_with_retry(
                 failed_tests: Vec::new(),
                 strategy: strategy_name.clone(),
                 tokens_used,
+                context_tier: Some(current_tier.label().to_string()),
             });
             emit_attempt(&result, attempt_num, &strategy_name);
 
@@ -604,6 +1049,7 @@ pub async fn try_translate_with_retry(
                 tokens_used,
                 false,
                 ctx.workspace,
+                current_tier.label(),
             );
             continue;
         }
@@ -774,6 +1220,7 @@ pub async fn try_translate_with_retry(
             failed_tests: failed_tests.clone(),
             strategy: strategy_name.clone(),
             tokens_used,
+            context_tier: Some(current_tier.label().to_string()),
         };
         result.add_attempt(attempt);
         emit_attempt(&result, attempt_num, &strategy_name);
@@ -791,6 +1238,7 @@ pub async fn try_translate_with_retry(
                 .map(|a| a.is_successful())
                 .unwrap_or(false),
             ctx.workspace,
+            current_tier.label(),
         );
 
         // Track failure history for informed prompting
@@ -833,7 +1281,7 @@ pub async fn try_translate_with_retry(
             ctx.workspace,
         );
 
-        // Escalate strategy for next attempt
+        // Escalate strategy and context tier for next attempt
         if ctx.config.escalate_on_failure {
             current_strategy = match current_strategy {
                 RetryStrategy::CompileFix => RetryStrategy::TestFix,
@@ -842,6 +1290,32 @@ pub async fn try_translate_with_retry(
                 RetryStrategy::EdgeCaseFix => RetryStrategy::CompileFix, // cycle back
                 RetryStrategy::Default => RetryStrategy::CompileFix,
             };
+
+            // Escalate context tier to include more Ghidra/workspace context.
+            // On the next loop iteration the tier-escalated prompt path will
+            // be taken (tier_escalated stays false here; it's set when the
+            // prompt is actually rebuilt at the top of the next iteration).
+            if let Some(next_tier) = current_tier.escalate() {
+                warn!(
+                    dll,
+                    function,
+                    old_tier = %current_tier,
+                    new_tier = %next_tier,
+                    "Context tier escalated"
+                );
+                if let Some(em) = ctx.events {
+                    let _ = em.emit(ProgressEvent::ContextTierSelected {
+                        dll: dll.clone(),
+                        function: function.clone(),
+                        tier: next_tier.to_string(),
+                        tier_label: next_tier.label().to_string(),
+                        complexity: current_tier.label().to_string(),
+                        api_call_count: 0,
+                    });
+                }
+                current_tier = next_tier;
+                tier_escalated = true;
+            }
         }
     }
 
@@ -957,6 +1431,7 @@ mod tests {
             failed_tests: Vec::new(),
             strategy: "initial".to_string(),
             tokens_used: Some(1024),
+            context_tier: None,
         };
         assert!(attempt.is_successful());
 
@@ -990,6 +1465,7 @@ mod tests {
             failed_tests: Vec::new(),
             strategy: "initial".to_string(),
             tokens_used: Some(512),
+            context_tier: None,
         });
         assert!(result.success);
         assert!(result.rust_code.is_some());
