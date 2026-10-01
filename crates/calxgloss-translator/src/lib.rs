@@ -577,12 +577,19 @@ impl TranslationPipeline {
             strategy: "initial".to_string(),
         });
 
-        let prompt = if tier == ContextTier::Stub {
-            let stub_data = calxgloss_prompts::StubPromptData::from_function_info(&function_info);
-            calxgloss_prompts::build_stub_prompt(&stub_data)?
-        } else {
-            let data = calxgloss_prompts::ComplexityPromptData::from_request(&request);
-            calxgloss_prompts::build_complexity_prompt(&complexity, &data)?
+        let prompt = match tier {
+            ContextTier::Stub => {
+                let stub_data = calxgloss_prompts::StubPromptData::from_function_info(&function_info);
+                calxgloss_prompts::build_stub_prompt(&stub_data)?
+            }
+            ContextTier::Disassembly => {
+                let data = calxgloss_prompts::DisassemblyPromptData::from_function_info(&function_info);
+                calxgloss_prompts::build_disassembly_prompt(&data)?
+            }
+            _ => {
+                let data = calxgloss_prompts::ComplexityPromptData::from_request(&request);
+                calxgloss_prompts::build_complexity_prompt(&complexity, &data)?
+            }
         };
 
         // Emit: LLM request (full prompt)

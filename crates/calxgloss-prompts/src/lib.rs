@@ -7,12 +7,15 @@
 //!
 //! # Architecture
 //!
-//! - [`TranslateTemplate`] — renders `translate.j2` (standard prompt)
+//! - [`DisassemblyTemplate`] — renders `disassembly_translate.j2` (Tier 1: disassembly + decompiler)
 //! - [`MinimalTemplate`] — renders `minimal_translate.j2` (simple functions)
 //! - [`RichTemplate`] — renders `rich_translate.j2` (complex functions)
 //! - [`DetailedTemplate`] — renders `detailed_translate.j2` (very complex functions)
+//! - [`StubTemplate`] — renders `stub_translate.j2` (Tier 0: function stub only)
 //! - [`build_translate_prompt`] — builds a standard translation prompt
 //! - [`build_complexity_prompt`] — selects template by complexity
+//! - [`build_stub_prompt`] — builds a Tier 0 (stub-only) prompt
+//! - [`build_disassembly_prompt`] — builds a Tier 1 (disassembly + decompiler) prompt
 //! - [`ComplexityPromptData::api_categories`] — extracts API categories
 //!
 //! # API-Aware Prompt Augmentation
@@ -862,6 +865,152 @@ impl StubTemplate {
 /// The rendered prompt string, or an error if rendering fails.
 pub fn build_stub_prompt(data: &StubPromptData) -> Result<String, PromptError> {
     let template = StubTemplate::from_data(data);
+    let rendered = template
+        .render()
+        .map_err(|e| PromptError::Render(e.to_string()))?;
+    if rendered.trim().is_empty() {
+        return Err(PromptError::EmptyPrompt);
+    }
+    Ok(rendered)
+}
+
+// ============================================================
+// Disassembly template — Tier 1: disassembly + decompiler + type info
+// ============================================================
+
+/// Context data needed to build a Tier 1 (disassembly) prompt.
+///
+/// Tier 1 sends the LLM the full disassembly, Ghidra's decompiler
+/// output (pseudo-C), tagged Windows API calls, and call graph
+/// neighbors — but no baseline tests. This gives the LLM enough
+/// ground truth to translate correctly while keeping token count
+/// lower than Tier 2's test-heavy prompts.
+#[derive(Debug)]
+pub struct DisassemblyPromptData {
+    /// The function name to translate.
+    pub function_name: String,
+    /// The DLL containing the function.
+    pub dll_name: String,
+    /// Virtual address of the function entry point.
+    pub address: u64,
+    /// Raw disassembly listing from Ghidra.
+    pub disassembly: String,
+    /// Pseudo-C decompiler output from Ghidra.
+    pub decompiler_output: String,
+    /// Windows API calls identified in the disassembly.
+    pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
+    /// Whether there are no Windows API calls (for conditional rendering).
+    pub no_windows_apis: bool,
+    /// Functions directly called by or calling this function.
+    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
+}
+
+impl DisassemblyPromptData {
+    /// Build [`DisassemblyPromptData`] from a [`TranslationRequest`]-compatible source.
+    ///
+    /// Extracts all the data needed for Tier 1 context (disassembly, decompiler,
+    /// tagged APIs) from a pre-built request. Call graph neighbors are set to
+    /// empty — callers should populate them from Ghidra's call graph data before
+    /// rendering the prompt.
+    pub fn from_request(req: &TranslationRequest) -> Self {
+        // Convert from translation::WindowsApiCall to the function-level type.
+        let windows_apis: Vec<calxgloss_types::WindowsApiCall> = req
+            .windows_apis
+            .iter()
+            .map(|api| calxgloss_types::WindowsApiCall {
+                name: api.name.clone(),
+                category: api.category.clone(),
+                pal_mapping: api.pal_mapping.clone(),
+            })
+            .collect();
+
+        Self {
+            function_name: req.function.clone(),
+            dll_name: req.dll.clone(),
+            address: 0,
+            disassembly: req.disassembly.trim().to_string(),
+            decompiler_output: req.decompiler_output.trim().to_string(),
+            windows_apis,
+            no_windows_apis: req.windows_apis.is_empty(),
+            call_graph_neighbors: Vec::new(),
+        }
+    }
+
+    /// Build [`DisassemblyPromptData`] from a [`FunctionInfo`].
+    ///
+    /// This is the primary constructor used by the translation pipeline.
+    /// It extracts disassembly, decompiler output, and tagged APIs from
+    /// the function metadata collected by GhidraMCP.
+    pub fn from_function_info(function_info: &calxgloss_types::FunctionInfo) -> Self {
+        Self {
+            function_name: function_info.name.clone(),
+            dll_name: function_info.dll.clone(),
+            address: function_info.address,
+            disassembly: function_info.disassembly.trim().to_string(),
+            decompiler_output: function_info.decompiler_output.trim().to_string(),
+            windows_apis: function_info.windows_apis.clone(),
+            no_windows_apis: function_info.windows_apis.is_empty(),
+            call_graph_neighbors: Vec::new(),
+        }
+    }
+}
+
+/// Template for Tier 1 translation prompts (disassembly + decompiler + type info).
+///
+/// Contains full disassembly, Ghidra pseudo-C, tagged Windows API calls,
+/// and call graph neighbors. No baseline tests — those are added at Tier 2.
+#[derive(Template)]
+#[template(path = "disassembly_translate.j2")]
+pub struct DisassemblyTemplate {
+    /// The function name to translate.
+    pub function_name: String,
+    /// The DLL containing the function.
+    pub dll_name: String,
+    /// Virtual address of the function entry point.
+    pub address: u64,
+    /// Raw disassembly listing from Ghidra.
+    pub disassembly: String,
+    /// Pseudo-C decompiler output from Ghidra.
+    pub decompiler_output: String,
+    /// Windows API calls identified in the disassembly.
+    pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
+    /// Whether there are no Windows API calls (for conditional rendering).
+    pub no_windows_apis: bool,
+    /// Functions directly called by or calling this function.
+    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
+}
+
+impl DisassemblyTemplate {
+    /// Create a new disassembly template from tier-1 data.
+    pub fn from_data(data: &DisassemblyPromptData) -> Self {
+        DisassemblyTemplate {
+            function_name: data.function_name.clone(),
+            dll_name: data.dll_name.clone(),
+            address: data.address,
+            disassembly: data.disassembly.clone(),
+            decompiler_output: data.decompiler_output.clone(),
+            windows_apis: data.windows_apis.clone(),
+            no_windows_apis: data.no_windows_apis,
+            call_graph_neighbors: data.call_graph_neighbors.clone(),
+        }
+    }
+}
+
+/// Build and render a Tier 1 (disassembly) prompt.
+///
+/// This sends the LLM the full disassembly, Ghidra's decompiler output
+/// (pseudo-C), tagged Windows API calls, and call graph neighbors.
+/// No baseline tests are included — those are reserved for Tier 2.
+///
+/// # Arguments
+///
+/// * `data` — The disassembly context data (disassembly, decompiler, APIs, neighbors).
+///
+/// # Returns
+///
+/// The rendered prompt string, or an error if rendering fails.
+pub fn build_disassembly_prompt(data: &DisassemblyPromptData) -> Result<String, PromptError> {
+    let template = DisassemblyTemplate::from_data(data);
     let rendered = template
         .render()
         .map_err(|e| PromptError::Render(e.to_string()))?;

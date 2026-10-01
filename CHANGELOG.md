@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `extract_signature_from_decompiler()` helper that parses the first non-blank line of Ghidra decompiler output as the C signature
   - Template `stub_translate.j2` renders the minimal prompt format
   - `TranslationPipeline::translate()` routes to stub prompt when `ContextTier::Stub` is selected
+- **Tier 1 disassembly prompt** — sends full disassembly, Ghidra pseudo-C decompiler output, tagged Windows API calls, and call graph neighbors (no baseline tests, which are reserved for Tier 2). Reduces token usage over the full complexity prompt while preserving ground truth for accurate translation.
+  - `DisassemblyPromptData` struct with `from_function_info()` and `from_request()` constructors
+  - `DisassemblyTemplate` Askama template struct
+  - `build_disassembly_prompt()` convenience function
+  - Template `disassembly_translate.j2` renders disassembly, decompiler output, API mappings, call graph neighbors, external function handling rules, and translation requirements
+  - `TranslationPipeline::translate()` routes to disassembly prompt when `ContextTier::Disassembly` is selected
+  - Module docs updated to document all tier-specific prompt builders
 
 #### Fault detection
 
