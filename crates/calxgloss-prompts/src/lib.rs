@@ -759,6 +759,119 @@ impl DetailedTemplate {
 }
 
 // ============================================================
+// Stub template — Tier 0: function name, signature, call graph
+// ============================================================
+
+/// Context data needed to build a Tier 0 (stub) prompt.
+///
+/// Tier 0 sends the LLM only the function's name, inferred signature,
+/// and call graph neighbors — no disassembly, no decompiler output.
+/// This minimizes token usage for trivially simple functions.
+#[derive(Debug)]
+pub struct StubPromptData {
+    /// The function name to translate.
+    pub function_name: String,
+    /// The DLL containing the function.
+    pub dll_name: String,
+    /// Virtual address as a hex string (e.g. "0x1a2b3c").
+    pub address_hex: String,
+    /// The inferred C signature, e.g. `int __stdcall DoWork(int x, int y)`.
+    pub signature: String,
+    /// Functions directly called by or calling this function.
+    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
+}
+
+impl StubPromptData {
+    /// Build [`StubPromptData`] from a [`FunctionInfo`]-compatible source.
+    ///
+    /// Extracts the signature from the first non-blank line of the
+    /// decompiler output (which is Ghidra's inferred function signature).
+    pub fn from_function_info(function_info: &calxgloss_types::FunctionInfo) -> Self {
+        let signature = extract_signature_from_decompiler(&function_info.decompiler_output);
+        Self {
+            function_name: function_info.name.clone(),
+            dll_name: function_info.dll.clone(),
+            address_hex: format!("{:#x}", function_info.address),
+            signature,
+            call_graph_neighbors: Vec::new(),
+        }
+    }
+}
+
+/// Extract the C function signature from Ghidra's decompiler output.
+///
+/// The decompiler's first non-blank line is always the function's
+/// signature (e.g. `int __stdcall DrawSprite(int x, int y) {`).
+fn extract_signature_from_decompiler(decompiler_output: &str) -> String {
+    let first_line = decompiler_output
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("");
+
+    // Strip the opening brace if it's on the same line as the signature.
+    match first_line.find('{') {
+        Some(idx) => first_line[..idx].trim().to_string(),
+        None => first_line.trim().to_string(),
+    }
+}
+
+/// Template for Tier 0 translation prompts (function stub only).
+///
+/// Contains only the function name, signature, and call graph neighbors.
+/// No disassembly, no decompiler output — the absolute minimum context.
+#[derive(Template)]
+#[template(path = "stub_translate.j2")]
+pub struct StubTemplate {
+    /// The function name to translate.
+    pub function_name: String,
+    /// The DLL containing the function.
+    pub dll_name: String,
+    /// Virtual address as a hex string (e.g. "0x1a2b3c").
+    pub address_hex: String,
+    /// The inferred C signature from Ghidra's decompiler.
+    pub signature: String,
+    /// Functions directly called by or calling this function.
+    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
+}
+
+impl StubTemplate {
+    /// Create a new stub template from tier-0 data.
+    pub fn from_data(data: &StubPromptData) -> Self {
+        StubTemplate {
+            function_name: data.function_name.clone(),
+            dll_name: data.dll_name.clone(),
+            address_hex: data.address_hex.clone(),
+            signature: data.signature.clone(),
+            call_graph_neighbors: data.call_graph_neighbors.clone(),
+        }
+    }
+}
+
+/// Build and render a Tier 0 (stub) prompt.
+///
+/// This sends the LLM the minimum possible context: function name,
+/// inferred signature, and call graph neighbors. No disassembly or
+/// decompiler output is included.
+///
+/// # Arguments
+///
+/// * `data` — The stub context data (name, signature, neighbors).
+///
+/// # Returns
+///
+/// The rendered prompt string, or an error if rendering fails.
+pub fn build_stub_prompt(data: &StubPromptData) -> Result<String, PromptError> {
+    let template = StubTemplate::from_data(data);
+    let rendered = template
+        .render()
+        .map_err(|e| PromptError::Render(e.to_string()))?;
+    if rendered.trim().is_empty() {
+        return Err(PromptError::EmptyPrompt);
+    }
+    Ok(rendered)
+}
+
+// ============================================================
 // Complexity-aware prompt builder
 // ============================================================
 
