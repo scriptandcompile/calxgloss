@@ -27,6 +27,7 @@ pub mod git;
 pub mod progress;
 pub mod shim;
 pub mod test;
+pub mod token_usage;
 pub mod translation;
 pub mod verification;
 
@@ -45,6 +46,9 @@ pub use shim::{
 pub use error::TypesError;
 pub use experiment_log::{
     CategoryStats, PromptStrategyEntry, PromptStrategyLog, PromptStrategyStats, StrategyStats,
+};
+pub use token_usage::{
+    DllTokenStats, TokenUsageEntry, TokenUsageLog, TokenUsageStats,
 };
 pub use function::{ApiCategory, FunctionInfo, WindowsApiCall};
 pub use git::{GitBranch, GitCommit};
