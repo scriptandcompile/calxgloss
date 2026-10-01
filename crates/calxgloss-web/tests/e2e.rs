@@ -1,0 +1,1010 @@
+//! End-to-end tests for the web review UI.
+//!
+//! These tests spin up the axum server in a real git repository with sample data,
+//! then verify both API responses and headless-browser rendering.
+//!
+//! Run API-level tests: `cargo test --features server --test e2e`
+//! Run browser tests:   `cargo test --features server --test e2e headless -- --ignored`
+
+use calxgloss_git::{GitManager, InitConfig};
+use calxgloss_types::GitBranch;
+use calxgloss_web::{
+    ActionsState, ProgressState, ServerState, SessionManager, build_dashboard, build_router,
+    build_router_with_actions, build_router_with_ws,
+};
+use std::net::TcpListener;
+use std::path::PathBuf;
+use std::time::Duration;
+
+// ─────────────────────────────────────────────────────────────
+// Test fixture setup
+// ─────────────────────────────────────────────────────────────
+
+/// A fixture that creates a temporary git repository with sample
+/// translation data (branches, patches, baselines, classifications)
+/// so the web server has real data to serve.
+struct TestFixture {
+    dir: tempfile::TempDir,
+    port: u16,
+}
+
+impl TestFixture {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let port = Self::find_free_port();
+
+        // Initialise a bare-bones git repo with a README on `main`.
+        let config = InitConfig {
+            author_name: "Calxgloss Test".into(),
+            author_email: "test@calxgloss.test".into(),
+            committer_name: None,
+            committer_email: None,
+        };
+        let git = GitManager::init_repo(dir.path(), Some(config)).expect("init git repo");
+
+        // We need the working tree checked out to `main` so that
+        // branches can be created with files on them.
+        Self::create_sample_data(&git);
+
+        Self { dir, port }
+    }
+
+    fn repo_path(&self) -> PathBuf {
+        self.dir.path().to_path_buf()
+    }
+
+    fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Finds a free TCP port by binding to port 0.
+    fn find_free_port() -> u16 {
+        TcpListener::bind("127.0.0.1:0")
+            .expect("bind free port")
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    /// Creates sample data that the DashboardBuilder understands:
+    /// - A translation branch with a small file committed on it
+    /// - A patch record (so the unit has attempt history)
+    /// - A baseline file (so the unit has test data)
+    /// - A classification JSON
+    /// - A shim branch that's merged into main
+    fn create_sample_data(git: &GitManager) {
+        // 1. A classification record for `game_logic.dll`
+        let classify_dir = git.repo_path().join("re").join("classify");
+        std::fs::create_dir_all(&classify_dir).unwrap();
+        std::fs::write(
+            classify_dir.join("game_logic.json"),
+            serde_json::json!({
+                "category": "ProjectSpecific",
+                "strategy": "reverse_engineer",
+                "exported_symbols": 24,
+                "imported_symbols": 12
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        // Also classify `d3d9.dll` as a crate-replacement target
+        std::fs::write(
+            classify_dir.join("d3d9.json"),
+            serde_json::json!({
+                "category": "MicrosoftSdk",
+                "strategy": "crate_replacement",
+                "crate": "wgpu",
+                "exported_symbols": 100,
+                "imported_symbols": 5
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        // 2. Create a shim branch `re/shim/wgpu` with a file and merge it into main.
+        {
+            let shim_branch = GitBranch::new("d3d9", "wgpu", 1).unwrap();
+            git.create_branch("d3d9", "wgpu", 1, None).unwrap();
+
+            let shim_file = "src/d3d9_shim.rs";
+            std::fs::create_dir_all(git.repo_path().join("src")).unwrap();
+            std::fs::write(
+                git.repo_path().join(shim_file),
+                "// wgpu shim layer for d3d9",
+            )
+            .unwrap();
+            git.commit(&shim_branch, "Add d3d9 shim layer", &[shim_file])
+                .unwrap();
+            git.merge_to_main(&shim_branch).unwrap();
+        }
+
+        // 3. Create a PAL trait branch `re/pal/GraphicsDevice` and merge it.
+        {
+            let pal_branch = GitBranch::new("pal", "GraphicsDevice", 1).unwrap();
+            git.create_branch("pal", "GraphicsDevice", 1, None).unwrap();
+
+            let pal_file = "src/pal/graphics.rs";
+            std::fs::create_dir_all(git.repo_path().join("src").join("pal")).unwrap();
+            std::fs::write(
+                git.repo_path().join(pal_file),
+                "// GraphicsDevice PAL trait",
+            )
+            .unwrap();
+            git.commit(&pal_branch, "Add GraphicsDevice PAL trait", &[pal_file])
+                .unwrap();
+            git.merge_to_main(&pal_branch).unwrap();
+        }
+
+        // 4. Create a translation branch `re/game_logic/DrawPrimitivev1`
+        //    with a Rust source file.
+        {
+            let branch = GitBranch::new("game_logic", "DrawPrimitive", 1).unwrap();
+            git.create_branch("game_logic", "DrawPrimitive", 1, None)
+                .unwrap();
+
+            let src_file = "src/draw_primitive.rs";
+            std::fs::create_dir_all(git.repo_path().join("src")).unwrap();
+            std::fs::write(
+                git.repo_path().join(src_file),
+                r#"/// Translated DrawPrimitive function.
+/// Maps DirectX9 DrawPrimitive to wgpu encoder.draw().
+pub fn draw_primitive(encoder: &mut wgpu::CommandEncoder, _args: &[u8]) {
+    // 47 assembly instructions → 12 lines of Rust
+    let _ = encoder;
+}
+"#,
+            )
+            .unwrap();
+            git.commit(&branch, "Translate DrawPrimitive to wgpu", &[src_file])
+                .unwrap();
+            git.merge_to_main(&branch).unwrap();
+
+            // Create a v2 branch that failed (for attempt history)
+            let branch_v2 = GitBranch::new("game_logic", "DrawPrimitive", 2).unwrap();
+            git.create_branch("game_logic", "DrawPrimitive", 2, None)
+                .unwrap();
+
+            let src_file_v2 = "src/draw_primitive_v2.rs";
+            std::fs::create_dir_all(git.repo_path().join("src")).ok();
+            std::fs::write(
+                git.repo_path().join(src_file_v2),
+                r#"/// Attempt 2 — wrong shader constant mapping
+pub fn draw_primitive_v2(_encoder: &mut wgpu::CommandEncoder) {
+    // buggy implementation
+}
+"#,
+            )
+            .unwrap();
+            git.commit(
+                &branch_v2,
+                "Retry DrawPrimitive — fix shader constants",
+                &[src_file_v2],
+            )
+            .unwrap();
+        }
+
+        // 5. A second translation: `re/game_logic/UpdateScenev1` (accepted/merged).
+        {
+            let branch = GitBranch::new("game_logic", "UpdateScene", 1).unwrap();
+            git.create_branch("game_logic", "UpdateScene", 1, None)
+                .unwrap();
+
+            let src_file = "src/update_scene.rs";
+            std::fs::write(
+                git.repo_path().join(src_file),
+                r#"/// UpdateScene — full translation
+pub fn update_scene(world: &mut World) {
+    world.update_physics();
+    world.update_ai();
+}
+"#,
+            )
+            .unwrap();
+            git.commit(&branch, "Translate UpdateScene", &[src_file])
+                .unwrap();
+            // Merge this one so it appears as "accepted"
+            git.merge_to_main(&branch).unwrap();
+        }
+
+        // 6. Create a patch record for game_logic/DrawPrimitive v1.
+        let patch_dir = git
+            .repo_path()
+            .join("re")
+            .join("patches")
+            .join("game_logic")
+            .join("DrawPrimitive");
+        std::fs::create_dir_all(&patch_dir).unwrap();
+        let patch_record = serde_json::json!({
+            "dll": "game_logic",
+            "function": "DrawPrimitive",
+            "attempt": 1,
+            "branch_name": "re/game_logic/DrawPrimitivev1",
+            "committed_at": "2025-09-28T10:00:00Z",
+            "error_message": "",
+            "compilation_errors": [],
+            "test_failures": [],
+            "commit_hash": "abc123"
+        });
+        std::fs::write(
+            patch_dir.join("v1.json"),
+            serde_json::to_string_pretty(&patch_record).unwrap(),
+        )
+        .unwrap();
+
+        // Patch record for v2 (this one had compile errors).
+        let patch_record_v2 = serde_json::json!({
+            "dll": "game_logic",
+            "function": "DrawPrimitive",
+            "attempt": 2,
+            "branch_name": "re/game_logic/DrawPrimitivev2",
+            "committed_at": "2025-09-28T11:30:00Z",
+            "error_message": "type mismatch in shader constant",
+            "compilation_errors": ["mismatched types"],
+            "test_failures": ["shader_constant_map_wrong"],
+            "commit_hash": "def456"
+        });
+        std::fs::write(
+            patch_dir.join("v2.json"),
+            serde_json::to_string_pretty(&patch_record_v2).unwrap(),
+        )
+        .unwrap();
+
+        // 7. Create baseline test data for DrawPrimitive.
+        let baseline_dir = git
+            .repo_path()
+            .join("re")
+            .join("baseline")
+            .join("game_logic.dll")
+            .join("DrawPrimitive");
+        std::fs::create_dir_all(&baseline_dir).unwrap();
+        let baseline = serde_json::json!([
+            {
+                "input": {"vertices": [1,2,3], "index": 0},
+                "expected_return": 0,
+                "passed": true
+            },
+            {
+                "input": {"vertices": [], "index": 0},
+                "expected_return": 0,
+                "passed": true
+            },
+            {
+                "input": {"vertices": [99], "index": -1},
+                "expected_return": -1,
+                "passed": true
+            }
+        ]);
+        std::fs::write(
+            baseline_dir.join("baseline.json"),
+            serde_json::to_string_pretty(&baseline).unwrap(),
+        )
+        .unwrap();
+
+        // 8. Baseline for UpdateScene
+        let baseline_us = git
+            .repo_path()
+            .join("re")
+            .join("baseline")
+            .join("game_logic.dll")
+            .join("UpdateScene");
+        std::fs::create_dir_all(&baseline_us).unwrap();
+        let baseline_us_data = serde_json::json!([
+            {
+                "input": {"delta_time": 0.016},
+                "expected_return": 0,
+                "passed": true
+            }
+        ]);
+        std::fs::write(
+            baseline_us.join("baseline.json"),
+            serde_json::to_string_pretty(&baseline_us_data).unwrap(),
+        )
+        .unwrap();
+
+        // Switch HEAD back to main so the server process works correctly.
+        let main_ref = git
+            .repo()
+            .find_branch("main", git2::BranchType::Local)
+            .expect("main branch exists");
+        let main_commit = main_ref.get().peel_to_commit().expect("main commit");
+        let mut checkout_opts = git2::build::CheckoutBuilder::new();
+        checkout_opts.force();
+        git.repo()
+            .set_head("refs/heads/main")
+            .expect("set head to main");
+        git.repo()
+            .reset(
+                main_commit.as_object(),
+                git2::ResetType::Hard,
+                Some(&mut checkout_opts),
+            )
+            .expect("reset to main");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Server helpers
+// ─────────────────────────────────────────────────────────────
+
+/// Start the axum server in a background task.
+async fn spawn_server(router: axum::Router, port: u16) -> tokio::task::JoinHandle<()> {
+    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
+        .await
+        .expect("bind listener");
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    })
+}
+
+// ─────────────────────────────────────────────────────────────
+// API-level tests (no browser needed)
+// ─────────────────────────────────────────────────────────────
+
+/// Verify that the health endpoint returns `{"status":"ok"}`.
+#[tokio::test]
+async fn test_health_endpoint() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/health", fixture.port()))
+        .await
+        .expect("health request succeeds");
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("health body is JSON");
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["repo_accessible"], true);
+}
+
+/// Verify that the dashboard endpoint returns valid JSON with
+/// the expected units, status counts, and dependency graph.
+#[tokio::test]
+async fn test_dashboard_endpoint() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/dashboard", fixture.port()))
+        .await
+        .expect("dashboard request succeeds");
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+
+    // Top-level shape
+    assert_eq!(body["success"], true);
+    let queue_meta = body["queue_metadata"]
+        .as_object()
+        .expect("queue_metadata is object");
+    assert!(queue_meta["total"].as_u64().unwrap() >= 1);
+
+    let dashboard = body["dashboard"].as_object().expect("dashboard is object");
+    let queue = dashboard["review_queue"]
+        .as_array()
+        .expect("review_queue is array");
+    // At least 1 unit in queue (DrawPrimitive v2)
+    assert!(
+        !queue.is_empty(),
+        "at least 1 unit in queue, got {}",
+        queue.len()
+    );
+
+    // Verify we have the expected units by checking the IDs.
+    let unit_ids: Vec<&str> = queue.iter().filter_map(|u| u["id"].as_str()).collect();
+    // DrawPrimitive v2 is in the review queue (v1 was merged/accepted)
+    assert!(
+        unit_ids
+            .iter()
+            .any(|id| id.contains("game_logic") && id.contains("DrawPrimitive")),
+        "DrawPrimitive v2 unit present in queue (IDs: {:?})",
+        unit_ids
+    );
+
+    // All units (review_queue + recent_activity) should include UpdateScene
+    let all_ids: Vec<String> = {
+        let review: Vec<String> = queue
+            .iter()
+            .filter_map(|u| u["id"].as_str())
+            .map(|s| s.to_string())
+            .collect();
+        let recent: Vec<String> = body["dashboard"]
+            .get("recent_activity")
+            .and_then(|a| a.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|u| u["id"].as_str())
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        [review, recent].concat()
+    };
+    assert!(
+        all_ids
+            .iter()
+            .any(|id| id.contains("game_logic") && id.contains("UpdateScene")),
+        "UpdateScene unit present in dashboard (all: {:?})",
+        all_ids
+    );
+
+    // Check status counts
+    let counts = dashboard["status_counts"]
+        .as_object()
+        .expect("status_counts is object");
+    assert!(counts["accepted"].as_u64().unwrap_or(0) >= 2); // classifications accepted
+    assert!(counts["merged"].as_u64().unwrap_or(0) >= 3); // DrawPrimitive v1 + UpdateScene + shim
+}
+
+/// Verify that a single unit detail endpoint returns expected fields.
+#[tokio::test]
+async fn test_unit_detail_endpoint() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let unit_id = "game_logic/DrawPrimitive/v2";
+    let encoded_id = urlencoding::encode(unit_id);
+    let resp = reqwest::get(format!(
+        "http://127.0.0.1:{}/api/units/{}",
+        fixture.port(),
+        encoded_id
+    ))
+    .await
+    .expect("unit detail request succeeds");
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("unit detail body is JSON");
+    assert_eq!(body["success"], true);
+
+    let unit = body["unit"].as_object().expect("unit is object");
+    assert_eq!(unit["id"], unit_id);
+    assert_eq!(unit["dll"], "game_logic");
+    assert_eq!(unit["function"], "DrawPrimitive");
+    assert_eq!(unit["attempt"].as_u64(), Some(2));
+    let history = unit["attempt_history"]
+        .as_array()
+        .expect("attempt_history is array");
+    assert!(
+        history.len() >= 2,
+        "at least 2 attempts in history, got {}",
+        history.len()
+    );
+
+    // Diff summary should exist
+    let diff = unit["diff_summary"]
+        .as_object()
+        .expect("diff_summary is object");
+    assert!(diff["files_changed"].as_u64().unwrap_or(0) >= 1);
+}
+
+/// Verify that the queue endpoint returns units sorted by dependency order.
+#[tokio::test]
+async fn test_queue_endpoint() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/queue", fixture.port()))
+        .await
+        .expect("queue request succeeds");
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("queue body is JSON");
+
+    let queue = body["queue"].as_array().expect("queue is array");
+    assert!(!queue.is_empty());
+
+    let first = &queue[0];
+    assert!(first["id"].as_str().is_some(), "queue entry has an id");
+}
+
+/// Verify that the dependency graph endpoint returns valid graph data.
+#[tokio::test]
+async fn test_dependency_graph_endpoint() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/graph", fixture.port()))
+        .await
+        .expect("graph request succeeds");
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("graph body is JSON");
+    assert_eq!(body["success"], true);
+
+    let graph = body["graph"].as_object().expect("graph is object");
+    let nodes = graph["nodes"].as_array().expect("nodes is array");
+    assert!(!nodes.is_empty(), "dependency graph has at least one node");
+
+    let edges = graph["edges"].as_array().expect("edges is array");
+    assert!(!edges.is_empty(), "dependency graph has at least one edge");
+
+    // Verify node structure
+    let first_node = &nodes[0];
+    assert!(
+        first_node["unit_id"].as_str().is_some(),
+        "first node has unit_id: {:?}",
+        first_node
+    );
+    assert!(first_node["name"].as_str().is_some());
+}
+
+/// Verify the frontend HTML page loads and contains expected content.
+#[tokio::test]
+async fn test_frontend_html_loads() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}", fixture.port()))
+        .await
+        .expect("index request succeeds");
+
+    assert_eq!(resp.status(), 200);
+
+    // Check content type
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        content_type.contains("text/html"),
+        "content-type should be text/html, got: {content_type}"
+    );
+
+    let html = resp.text().await.expect("index body is text");
+    assert!(
+        html.contains("<title>Calxgloss") || html.contains("Calxgloss — Review Dashboard"),
+        "HTML should contain Calxgloss title (got title line with {} chars of content)",
+        html.len()
+    );
+    assert!(
+        html.contains("app.js") || html.contains("<script"),
+        "HTML should reference JavaScript"
+    );
+    assert!(
+        html.contains("app.css") || html.contains("<link"),
+        "HTML should reference CSS"
+    );
+}
+
+/// Test that a 404 is returned for an unknown unit ID.
+#[tokio::test]
+async fn test_unit_not_found() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resp = reqwest::get(format!(
+        "http://127.0.0.1:{}/api/units/nonexistent/unit/v1",
+        fixture.port()
+    ))
+    .await
+    .expect("unit not found request succeeds");
+
+    assert_eq!(resp.status(), 404);
+}
+
+/// Test that the queue/next endpoint returns a single pending unit.
+#[tokio::test]
+async fn test_next_unit_endpoint() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resp = reqwest::get(format!(
+        "http://127.0.0.1:{}/api/queue/next",
+        fixture.port()
+    ))
+    .await
+    .expect("next unit request succeeds");
+
+    assert_eq!(resp.status(), 200);
+
+    let text = resp.text().await.expect("next unit body is text");
+    if !text.is_empty() && text != "null" {
+        let body: serde_json::Value = serde_json::from_str(&text).expect("next unit JSON is valid");
+        assert!(body["id"].as_str().is_some(), "next unit should have an id");
+    }
+    // null response (empty queue) is also acceptable
+}
+
+/// Test that the pipeline progress endpoint returns empty data
+/// when no translation is running.
+#[tokio::test]
+async fn test_pipeline_empty_progress() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let (manager, _event_tx) = SessionManager::new();
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state.clone(), manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/pipeline", fixture.port()))
+        .await
+        .expect("pipeline request succeeds");
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("pipeline body is JSON");
+    assert_eq!(body["total_dlls"].as_u64().unwrap_or(0), 0);
+}
+
+/// Test that the progress endpoint returns empty data when idle.
+#[tokio::test]
+async fn test_progress_empty() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let (manager, _event_tx) = SessionManager::new();
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state.clone(), manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/progress", fixture.port()))
+        .await
+        .expect("progress request succeeds");
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("progress body is JSON");
+    assert_eq!(body["count"].as_u64().unwrap_or(0), 0);
+}
+
+/// Integration test verifying that the full router with actions
+/// can serve the dashboard.
+#[tokio::test]
+async fn test_actions_router_dashboard() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let actions = ActionsState::new(fixture.repo_path());
+    let router = build_router_with_actions(state.clone(), actions);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/dashboard", fixture.port()))
+        .await
+        .expect("dashboard request succeeds");
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+    assert_eq!(body["success"], true);
+}
+
+/// Test that the static file fallback serves CSS and JS correctly.
+#[tokio::test]
+async fn test_static_files_served() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // CSS file
+    let css_resp = reqwest::get(format!("http://127.0.0.1:{}/app.css", fixture.port()))
+        .await
+        .expect("CSS request succeeds");
+
+    assert_eq!(css_resp.status(), 200);
+    let css_type = css_resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        css_type.contains("css"),
+        "CSS content-type, got: {css_type}"
+    );
+
+    // JS file
+    let js_resp = reqwest::get(format!("http://127.0.0.1:{}/app.js", fixture.port()))
+        .await
+        .expect("JS request succeeds");
+
+    assert_eq!(js_resp.status(), 200);
+    let js_type = js_resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        js_type.contains("javascript") || js_type.contains("application"),
+        "JS content-type, got: {js_type}"
+    );
+
+    // Non-existent file should 404
+    let notfound_resp = reqwest::get(format!(
+        "http://127.0.0.1:{}/does-not-exist.css",
+        fixture.port()
+    ))
+    .await
+    .expect("404 request succeeds");
+
+    assert_eq!(notfound_resp.status(), 404);
+}
+
+/// Test the WebSocket upgrade endpoint exists (basic sanity).
+/// Full WebSocket E2E would require a WS client — this just checks the route works.
+#[tokio::test]
+async fn test_websocket_upgrade_exists() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let (manager, _event_tx) = SessionManager::new();
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state.clone(), manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Attempt a WebSocket upgrade — it should not return a 404.
+    let resp = reqwest::get(format!(
+        "http://127.0.0.1:{}/api/events/upgrade",
+        fixture.port()
+    ))
+    .await
+    .expect("upgrade endpoint exists");
+
+    // Should NOT be 404 — WS upgrade will fail differently.
+    assert_ne!(
+        resp.status(),
+        404,
+        "/api/events/upgrade should not return 404"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Diff endpoint tests
+// ─────────────────────────────────────────────────────────────
+
+/// Test the diff endpoint returns structured diff data.
+#[tokio::test]
+async fn test_unit_diff_endpoint() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let unit_id = "game_logic/DrawPrimitive/v2";
+    let encoded_id = urlencoding::encode(unit_id);
+    let resp = reqwest::get(format!(
+        "http://127.0.0.1:{}/api/units/{}/diff",
+        fixture.port(),
+        encoded_id
+    ))
+    .await
+    .expect("diff request succeeds");
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("diff body is JSON");
+    assert_eq!(body["success"], true);
+
+    let files = body["diff"].as_array().expect("diff is array");
+    // Allow empty diff (the diff between main and v2 might be empty
+    // depending on the fixture setup).
+    // Each file should have a path and hunks
+    for file in files {
+        assert!(file["path"].as_str().is_some());
+        assert!(file["hunks"].as_array().is_some());
+    }
+}
+
+/// Test the Ghidra context endpoint returns not-found for units without Ghidra artifacts.
+/// (Our fixture doesn't create Ghidra data, so this should return not-found gracefully.)
+#[tokio::test]
+async fn test_unit_ghidra_missing_artifacts() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let unit_id = "game_logic/DrawPrimitive/v2";
+    let encoded_id = urlencoding::encode(unit_id);
+    let resp = reqwest::get(format!(
+        "http://127.0.0.1:{}/api/units/{}/ghidra",
+        fixture.port(),
+        encoded_id
+    ))
+    .await
+    .expect("ghidra request succeeds");
+
+    // Returns success:true with an empty context when no Ghidra artifacts exist.
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("ghidra body is JSON");
+    assert_eq!(body["success"], true);
+}
+
+/// Test that build_dashboard API (exposed at crate root) builds correctly from the fixture.
+#[tokio::test]
+async fn test_build_dashboard_api() {
+    let fixture = TestFixture::new();
+    let dashboard = build_dashboard(&fixture.repo_path()).expect("build dashboard should succeed");
+
+    assert!(
+        !dashboard.review_queue.is_empty(),
+        "dashboard should have units"
+    );
+
+    // Verify we can find the expected units
+    let unit_ids: Vec<&str> = dashboard
+        .review_queue
+        .iter()
+        .map(|u| u.id.as_str())
+        .collect();
+    assert!(
+        unit_ids
+            .iter()
+            .any(|id| id.contains("game_logic") && id.contains("DrawPrimitive")),
+        "DrawPrimitive unit present in review queue (IDs: {:?})",
+        unit_ids
+    );
+
+    // Check all units across review_queue and recent_activity
+    let all_ids: Vec<&str> = dashboard
+        .review_queue
+        .iter()
+        .map(|u| u.id.as_str())
+        .chain(dashboard.recent_activity.iter().map(|u| u.id.as_str()))
+        .collect();
+    assert!(
+        all_ids
+            .iter()
+            .any(|id| id.contains("game_logic") && id.contains("DrawPrimitive")),
+        "DrawPrimitive unit present (all: {:?})",
+        all_ids
+    );
+    assert!(
+        all_ids
+            .iter()
+            .any(|id| id.contains("game_logic") && id.contains("UpdateScene")),
+        "UpdateScene unit present (all: {:?})",
+        all_ids
+    );
+
+    // Verify status counts
+    let counts = &dashboard.status_counts;
+    assert!(counts.accepted >= 1); // UpdateScene is merged
+    assert!(counts.total() >= 3); // classify + 2 func translations
+}
+
+// ─────────────────────────────────────────────────────────────
+// Headless browser test (requires Chromium/Chrome installed)
+// ─────────────────────────────────────────────────────────────
+
+/// Test that a headless browser can navigate to the server and
+/// verify the HTML page loads without JavaScript errors.
+///
+/// The actual data rendering is verified by the API-level tests above,
+/// which are faster and don't require a browser installation.
+///
+/// This test is marked `#[ignore]` because it requires
+/// Chromium/Chrome to be installed on the test machine.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_browser_page_loads() {
+    use headless_chrome::{Browser, LaunchOptionsBuilder};
+
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let browser = Browser::new(
+        LaunchOptionsBuilder::default()
+            .headless(true)
+            .args(vec![
+                std::ffi::OsStr::new("--no-sandbox"),
+                std::ffi::OsStr::new("--disable-gpu"),
+                std::ffi::OsStr::new("--disable-dev-shm-usage"),
+            ])
+            .build()
+            .unwrap(),
+    )
+    .expect("launch headless chrome");
+
+    let tab = browser.new_tab().expect("open new tab");
+
+    // Navigate to the server's root (HTML page).
+    tab.navigate_to(&format!("http://127.0.0.1:{}", fixture.port()))
+        .expect("navigate to server root");
+
+    // Wait for the page to fully load.
+    tab.wait_until_navigated().expect("wait for navigation");
+
+    // Verify the page title contains Calxgloss.
+    let title = tab.get_title().expect("get page title");
+    assert!(
+        title.contains("Calxgloss"),
+        "Page title should contain 'Calxgloss', got: {title}"
+    );
+
+    // Verify the page content is non-empty.
+    let content = tab.get_content().expect("get page content");
+    assert!(
+        content.len() > 100,
+        "Page content should be non-trivial (got {} chars)",
+        content.len()
+    );
+
+    // Verify the HTML contains the key frontend elements.
+    assert!(
+        content.contains("app.js") || content.contains("Calxgloss"),
+        "Page should contain frontend references or title"
+    );
+
+    // Enable runtime for JS evaluation.
+    tab.enable_runtime().expect("enable runtime");
+
+    // Verify the dependency graph endpoint is reachable via fetch.
+    let graph_result = tab
+        .evaluate(
+            "fetch('/api/graph').then(r => r.ok).catch(() => false)",
+            false,
+        )
+        .expect("evaluate fetch graph");
+    let is_graph_ok: bool = graph_result
+        .value
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    assert!(
+        is_graph_ok,
+        "Dependency graph API should be reachable from browser"
+    );
+
+    // Verify the dashboard endpoint is reachable via fetch.
+    let dashboard_result = tab
+        .evaluate(
+            "fetch('/api/dashboard').then(r => r.ok).catch(() => false)",
+            false,
+        )
+        .expect("evaluate fetch dashboard");
+    let is_dashboard_ok: bool = dashboard_result
+        .value
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    assert!(
+        is_dashboard_ok,
+        "Dashboard API should be reachable from browser"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}

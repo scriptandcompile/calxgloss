@@ -53,5 +53,15 @@ server = [
     "dep:anyhow",
 ]
 
+[dev-dependencies]
+tempfile = "3"
+reqwest = { workspace = true, features = ["json", "stream"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+urlencoding = "2"
+# Headless Chrome — only needed for the E2E browser test.
+# The test is gated behind #[ignore] because Chrome must be
+# installed on the machine.  It is kept here so CI can run it.
+headless_chrome = "1.0.18"
+
 [lints.cargo]
 unused_dependencies = "allow"
