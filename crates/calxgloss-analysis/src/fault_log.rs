@@ -59,7 +59,7 @@
 //! logger.record(event);
 //! ```
 
-use calxgloss_types::FaultEvent;
+use calxgloss_types::{FaultEvent, ResourceExhaustionFault};
 use tracing::{debug, warn};
 
 /// Logger for fault events.
@@ -161,6 +161,30 @@ impl FaultLogger {
     pub fn compute_stats(&self) -> Option<calxgloss_types::FaultStats> {
         let log = self.load()?;
         Some(log.compute_stats())
+    }
+
+    /// Record a resource-exhaustion fault event.
+    ///
+    /// This is a convenience method that creates a [`FaultEvent`] with the
+    /// appropriate [`ResourceExhaustionFault`] metadata and persists it.
+    ///
+    /// # Arguments
+    ///
+    /// * `dll` — The DLL containing the affected function.
+    /// * `function` — The function name.
+    /// * `attempt` — Which attempt the fault was detected in.
+    /// * `strategy` — The retry strategy active when the fault occurred.
+    /// * `fault` — The resource exhaustion details (reason, elapsed time, etc.).
+    pub fn record_resource_exhaustion(
+        &self,
+        dll: &str,
+        function: &str,
+        attempt: u32,
+        strategy: &str,
+        fault: &ResourceExhaustionFault,
+    ) {
+        let event = FaultEvent::resource_exhaustion(dll, function, attempt, strategy, fault);
+        self.record(event);
     }
 
     /// Get the path to the fault log JSON file.

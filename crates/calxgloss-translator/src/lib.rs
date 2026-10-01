@@ -742,6 +742,8 @@ impl TranslationPipeline {
             config,
             workspace: self.workspace.as_deref(),
             events: self.events.as_ref(),
+            resource_detector: None,
+            fault_logger: None,
         };
         let result = retry::try_translate_with_retry(initial, &ctx).await;
 

@@ -8,13 +8,15 @@ use crate::retry::{
     build_failure_informed_escalate_prompt, build_failure_informed_test_fix_prompt,
     build_test_fix_prompt, log_prompt_variant_experiment, log_token_usage,
 };
+use calxgloss_analysis::FaultLogger;
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_llm::{
     behavior_divergence::{BehaviorDivergenceDetector, EdgeCaseTest as DetEdgeCaseTest},
     infinite_loop::InfiniteLoopDetector,
+    resource_exhaustion::ResourceExhaustionDetector,
     LlmClient, LlmError, LlmMessage,
 };
-use calxgloss_types::{FailureHint, ProgressEvent, TranslationEvents};
+use calxgloss_types::{FailureHint, ProgressEvent, ResourceExhaustionFault, TranslationEvents};
 use calxgloss_verify::{CompileResult, Verifier};
 use std::collections::HashSet;
 use tracing::{info, warn};
@@ -37,6 +39,10 @@ pub struct RetryLoopCtx<'a> {
     pub workspace: Option<&'a std::path::Path>,
     /// Optional progress event emitter for live WebSocket streaming.
     pub events: Option<&'a calxgloss_types::TranslationEvents>,
+    /// Optional resource-exhaustion detector for tracking LLM server health.
+    pub resource_detector: Option<&'a ResourceExhaustionDetector>,
+    /// Optional fault logger for persisting detected faults to disk.
+    pub fault_logger: Option<&'a FaultLogger>,
 }
 
 /// Execute a translation with retry logic.
@@ -434,7 +440,81 @@ pub async fn try_translate_with_retry(
         )
         .await
         {
-            Ok(r) => r,
+            Ok(r) => {
+                // Record success in the resource exhaustion detector
+                if let Some(detector) = ctx.resource_detector {
+                    detector.record_success();
+                }
+                r
+            }
+            Err(LlmError::ResourceExhausted { kind }) => {
+                // Approximate elapsed time for resource exhaustion events
+                const DEFAULT_ELAPSED_SECS: u64 = 300;
+                // Record in the resource exhaustion detector
+                if let Some(detector) = ctx.resource_detector {
+                    detector.record_failure_with_kind(kind.clone(), DEFAULT_ELAPSED_SECS);
+                    if let Some(signal) = detector.check_overload() {
+                        // Emit progress event
+                        if let Some(em) = ctx.events {
+                            let _ = em.emit(ProgressEvent::ResourceExhaustionDetected {
+                                dll: initial_translation.dll.clone(),
+                                function: initial_translation.function.clone(),
+                                attempt: attempt_num,
+                                strategy: strategy_name.clone(),
+                                reason: kind.to_string(),
+                                elapsed_secs: signal.longest_request_secs,
+                                recommended_backoff_secs: signal.recommended_backoff_secs,
+                            });
+                        }
+                        warn!(
+                            dll = %initial_translation.dll,
+                            function = %initial_translation.function,
+                            streak = signal.streak,
+                            kind = %kind,
+                            backoff = signal.recommended_backoff_secs,
+                            "LLM model overloaded — work queued"
+                        );
+                    }
+                }
+                // Persist fault event to disk
+                if let Some(logger) = ctx.fault_logger {
+                    let fault = ResourceExhaustionFault::timeout(DEFAULT_ELAPSED_SECS);
+                    logger.record_resource_exhaustion(
+                        &initial_translation.dll,
+                        &initial_translation.function,
+                        attempt_num,
+                        &strategy_name,
+                        &fault,
+                    );
+                }
+                warn!(
+                    attempt = attempt_num,
+                    kind = %kind,
+                    "LLM resource exhausted during retry"
+                );
+                result.add_attempt(TranslationAttempt {
+                    attempt: attempt_num,
+                    rust_code: initial_translation.rust_code.clone(),
+                    compiled: false,
+                    compilation_errors: vec![format!(
+                        "LLM resource exhausted ({kind}) — model is overloaded or timed out"
+                    )],
+                    tests_passed: 0,
+                    tests_total: 0,
+                    failed_tests: Vec::new(),
+                    strategy: strategy_name.clone(),
+                    tokens_used: None,
+                });
+                emit_attempt(&result, attempt_num, &strategy_name);
+                // Record failure history for informed prompting
+                failure_history.push(FailureHint::new(
+                    attempt_num,
+                    strategy_name.clone(),
+                    format!("LLM resource exhausted: {kind}"),
+                ));
+                // Continue to next attempt (might get a different strategy)
+                continue;
+            }
             Err(e) => {
                 warn!(
                     attempt = attempt_num,
