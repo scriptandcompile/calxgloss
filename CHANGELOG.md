@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Per-attempt token logging** — `try_translate_with_retry()` now logs token usage to disk for every LLM call: the initial translation attempt, each retry attempt (compile_fix, test_fix, escalate, edge_case_fix), and empty-code failure cases. The log includes DLL name, function name, attempt number, strategy label, token count, and success/failure status.
 
 #### Fault detection integration
+- **Fault event persistence** — all detected faults (context-window exceeded, hallucination, infinite loop, behavior divergence, resource exhaustion) are now recorded to `re/analysis/fault_log.json` via `FaultLogger`. The translation pipeline wires the logger at the emission sites in both the main `translate()` path and the retry loop.
 - **Hallucination detection in the translation pipeline** — `TranslationPipeline::try_translate_with_retry()` scans each LLM response for non-existent API references using the hallucination detector. Detected hallucinations are logged as warnings and emitted as `ProgressEvent::HallucinationDetected` for real-time dashboard visibility.
 
 #### `calxgloss-web`

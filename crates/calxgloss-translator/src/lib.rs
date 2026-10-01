@@ -41,6 +41,7 @@ pub mod batch;
 
 pub use batch::{BatchTranslationResult, FunctionResult};
 
+use calxgloss_analysis::FaultLogger;
 use calxgloss_analysis::Analyzer;
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_llm::{context::ContextWindowDetector, hallucination::HallucinationDetector, LlmClient, LlmMessage};
@@ -334,6 +335,13 @@ pub struct TranslationPipeline {
     /// Created from Ghidra symbols and PAL API catalogue; `None` when
     /// no Ghidra session is available.
     hallucination_detector: Option<HallucinationDetector>,
+
+    /// Persistent fault event logger.  When present, every detected fault
+    /// (context-window exceeded, hallucination, infinite loop, behavior
+    /// divergence, resource exhaustion) is persisted to
+    /// `<workspace>/re/analysis/fault_log.json` for post-hoc analysis.
+    #[allow(dead_code)]
+    fault_logger: Option<FaultLogger>,
 }
 
 impl TranslationPipeline {
@@ -357,6 +365,7 @@ impl TranslationPipeline {
             events: None,
             context_detector,
             hallucination_detector: None,
+            fault_logger: None,
         }
     }
 
@@ -409,6 +418,16 @@ impl TranslationPipeline {
     /// available; skip it in unit tests that don't need detection.
     pub fn with_hallucination_detector(mut self, detector: HallucinationDetector) -> Self {
         self.hallucination_detector = Some(detector);
+        self
+    }
+
+    /// Attach a fault event logger for persisting detected faults to disk.
+    ///
+    /// When set, every detected fault (context-window exceeded, hallucination,
+    /// infinite loop, behavior divergence, resource exhaustion) is recorded to
+    /// `<workspace>/re/analysis/fault_log.json`.
+    pub fn with_fault_logger(mut self, logger: FaultLogger) -> Self {
+        self.fault_logger = Some(logger);
         self
     }
 
@@ -1042,11 +1061,22 @@ impl TranslationPipeline {
                 "Context window exceeded — function should be split into {} chunks",
                 fault.suggested_chunk_count(),
             );
+            if let Some(logger) = &self.fault_logger {
+                let event = calxgloss_types::FaultEvent::context_window_exceeded(
+                    dll,
+                    function,
+                    attempt,
+                    strategy,
+                    &fault,
+                );
+                logger.record(event);
+            }
         }
 
         // Hallucination detection: scan the generated code for non-existent
         // API/function references.  When hallucinations are found, log a
-        // warning and emit a progress event so the caller can react.
+        // warning and emit a progress event so the caller can react.  Also
+        // persist a fault event for post-hoc analysis.
         let hallucinations = self
             .hallucination_detector
             .as_ref()
@@ -1069,8 +1099,14 @@ impl TranslationPipeline {
                     function: function.to_string(),
                     attempt,
                     strategy: strategy.to_string(),
-                    hallucinated_apis: names,
+                    hallucinated_apis: names.clone(),
                 });
+            }
+            if let Some(logger) = &self.fault_logger {
+                let names_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+                let event =
+                    calxgloss_types::FaultEvent::hallucination(dll, function, attempt, strategy, &names_refs);
+                logger.record(event);
             }
         }
 

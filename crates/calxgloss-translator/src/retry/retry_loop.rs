@@ -16,7 +16,7 @@ use calxgloss_llm::{
     resource_exhaustion::ResourceExhaustionDetector,
     LlmClient, LlmError, LlmMessage,
 };
-use calxgloss_types::{FailureHint, ProgressEvent, ResourceExhaustionFault, TranslationEvents};
+use calxgloss_types::{FailureHint, FaultEvent, ProgressEvent, ResourceExhaustionFault, TranslationEvents};
 use calxgloss_verify::{CompileResult, Verifier};
 use std::collections::HashSet;
 use tracing::{info, warn};
@@ -78,10 +78,12 @@ pub async fn try_translate_with_retry(
     // loop breaks to avoid wasting tokens on a dead-end path.
     let mut loop_detector = InfiniteLoopDetector::new();
 
-    // Helper: record an attempt in the loop detector so streaks are tracked.
+    // Helper: record an attempt in the loop detector so streaks are tracked,
+    // and persist a fault event when a loop is detected.
     let record_in_detector = |detector: &mut InfiniteLoopDetector, prompt: &str, code: &str,
                                success: bool, strategy: &str, attempt: u32, dll: &str,
-                               function: &str, events: Option<&TranslationEvents>| {
+                               function: &str, events: Option<&TranslationEvents>,
+                               fault_logger: Option<&FaultLogger>| {
         detector.record_attempt(prompt, code, success, strategy, attempt);
 
         // Check for infinite loop
@@ -96,6 +98,19 @@ pub async fn try_translate_with_retry(
                     streak_end_attempt: signal.streak_end_attempt,
                     strategy: signal.strategy.clone(),
                 });
+            }
+            // Persist fault event for post-hoc analysis
+            if let Some(logger) = fault_logger {
+                let event = FaultEvent::infinite_loop(
+                    dll,
+                    function,
+                    attempt,
+                    strategy,
+                    signal.streak,
+                    signal.streak_start_attempt,
+                    signal.streak_end_attempt,
+                );
+                logger.record(event);
             }
             warn!(
                 dll,
@@ -184,6 +199,7 @@ pub async fn try_translate_with_retry(
         &dll,
         &function,
         ctx.events,
+        ctx.fault_logger,
     );
 
     // If the first attempt succeeded, we're done
@@ -702,6 +718,22 @@ pub async fn try_translate_with_retry(
                     confidence,
                 });
             }
+            // Persist the fault event for post-hoc analysis.
+            if let Some(logger) = ctx.fault_logger {
+                let event = FaultEvent::behavior_divergence(
+                    &signal.dll,
+                    &signal.function,
+                    signal.attempt,
+                    &signal.strategy,
+                    signal.baseline_passed,
+                    signal.baseline_total,
+                    signal.edge_tests_passed,
+                    signal.edge_tests_total,
+                    failing_labels.clone(),
+                    confidence,
+                );
+                logger.record(event);
+            }
         }
 
         // Record this attempt in the infinite-loop detector so we catch
@@ -719,6 +751,7 @@ pub async fn try_translate_with_retry(
             &dll,
             &function,
             ctx.events,
+            ctx.fault_logger,
         );
 
         let attempt = TranslationAttempt {
