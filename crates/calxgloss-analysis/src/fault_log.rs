@@ -223,16 +223,9 @@ mod tests {
         let ws = temp_workspace("record_and_load");
         let logger = FaultLogger::new(&ws);
 
-        let fault = calxgloss_types::ContextWindowFault::response_exceeds_limit(
-            150_000, 131_072, 200,
-        );
-        let event = FaultEvent::context_window_exceeded(
-            "test.dll",
-            "entry",
-            1,
-            "initial",
-            &fault,
-        );
+        let fault =
+            calxgloss_types::ContextWindowFault::response_exceeds_limit(150_000, 131_072, 200);
+        let event = FaultEvent::context_window_exceeded("test.dll", "entry", 1, "initial", &fault);
         logger.record(event);
 
         let log = logger.load().expect("log should exist");
@@ -307,9 +300,7 @@ mod tests {
             "entry",
             1,
             "initial",
-            &calxgloss_types::ContextWindowFault::response_exceeds_limit(
-                150_000, 131_072, 100,
-            ),
+            &calxgloss_types::ContextWindowFault::response_exceeds_limit(150_000, 131_072, 100),
         ));
 
         let logger2 = FaultLogger::new(&ws);
