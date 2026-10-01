@@ -391,6 +391,71 @@ impl FaultEvent {
             ),
         }
     }
+
+    /// Create a new fault event from a behavior-divergence detection.
+    ///
+    /// # Arguments
+    ///
+    /// * `dll` — The DLL containing the function.
+    /// * `function` — The function name.
+    /// * `attempt` — The attempt where divergence was detected.
+    /// * `strategy` — The strategy active when divergence was found.
+    /// * `baseline_passed` — Number of baseline tests that passed.
+    /// * `baseline_total` — Total number of baseline tests.
+    /// * `edge_passed` — Number of edge-case tests that passed.
+    /// * `edge_total` — Total number of edge-case tests.
+    /// * `failing_labels` — Labels of the edge-case tests that failed.
+    /// * `confidence` — Confidence score for the diagnosis (0–10).
+    pub fn behavior_divergence(
+        dll: &str,
+        function: &str,
+        attempt: u32,
+        strategy: &str,
+        baseline_passed: usize,
+        baseline_total: usize,
+        edge_passed: usize,
+        edge_total: usize,
+        failing_labels: Vec<String>,
+        confidence: u8,
+    ) -> Self {
+        let severity = if confidence >= 7 {
+            FaultSeverity::Warning
+        } else {
+            FaultSeverity::Error
+        };
+
+        Self {
+            dll: dll.to_string(),
+            function: function.to_string(),
+            attempt,
+            strategy: strategy.to_string(),
+            category: FaultCategory::BehaviorDivergence,
+            severity,
+            description: format!(
+                "Baseline tests pass ({}/{}), but {} edge-case test(s) fail — behavior diverges on unseen inputs. Confidence: {}/10.",
+                baseline_passed, baseline_total, failing_labels.len(), confidence
+            ),
+            recovery: format!(
+                "Enrich the test suite with {} new baseline test(s). \
+                 Retry translation with expanded test coverage.",
+                failing_labels.len()
+            ),
+            timestamp: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+            metadata: Some(
+                serde_json::json!({
+                    "baseline_passed": baseline_passed,
+                    "baseline_total": baseline_total,
+                    "edge_passed": edge_passed,
+                    "edge_total": edge_total,
+                    "failing_edge_cases": failing_labels,
+                    "confidence": confidence,
+                })
+            ),
+        }
+    }
 }
 
 impl std::fmt::Display for FaultEvent {
@@ -598,5 +663,78 @@ mod tests {
         assert!(fault.has_truncation_signal);
         assert!(fault.is_over_limit());
         assert_eq!(fault.overflow_chars, 28_928);
+    }
+
+    #[test]
+    fn test_behavior_divergence_fault_event() {
+        let event = FaultEvent::behavior_divergence(
+            "game_logic.dll",
+            "ComputeValue",
+            2,
+            "edge_case_fix",
+            5,
+            5,
+            1,
+            4,
+            vec!["zero_input".to_string(), "negative_input".to_string()],
+            8,
+        );
+
+        assert!(matches!(
+            event.category,
+            FaultCategory::BehaviorDivergence
+        ));
+        assert_eq!(event.severity, FaultSeverity::Warning);
+        assert!(event.description.contains("5/5"));
+        assert!(event.description.contains("2 edge-case"));
+        assert!(event.description.contains("8/10"));
+        assert!(event.recovery.contains("2 new baseline"));
+    }
+
+    #[test]
+    fn test_behavior_divergence_fault_low_confidence() {
+        let event = FaultEvent::behavior_divergence(
+            "a.dll",
+            "f",
+            1,
+            "initial",
+            0,
+            0,
+            0,
+            2,
+            vec!["unknown".to_string()],
+            3,
+        );
+
+        // Low confidence (3) → Error severity.
+        assert_eq!(event.severity, FaultSeverity::Error);
+    }
+
+    #[test]
+    fn test_behavior_divergence_fault_serialization() {
+        let event = FaultEvent::behavior_divergence(
+            "test.dll",
+            "Func",
+            3,
+            "test_fix",
+            2,
+            2,
+            0,
+            3,
+            vec!["zero".to_string(), "neg".to_string(), "max".to_string()],
+            9,
+        );
+
+        let json = serde_json::to_string(&event).unwrap();
+        let deserialized: FaultEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            deserialized.category,
+            FaultCategory::BehaviorDivergence
+        ));
+        assert_eq!(deserialized.dll, "test.dll");
+        assert_eq!(deserialized.attempt, 3);
+        let meta = deserialized.metadata.unwrap();
+        assert_eq!(meta["confidence"], 9);
+        assert_eq!(meta["failing_edge_cases"].as_array().unwrap().len(), 3);
     }
 }

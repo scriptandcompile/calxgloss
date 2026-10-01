@@ -229,6 +229,28 @@ pub enum ProgressEvent {
         streak_end_attempt: u32,
         strategy: String,
     },
+    /// Behavior divergence detected — baseline tests pass but edge-case
+    /// tests fail.
+    ///
+    /// Emitted by the behavior-divergence detector when the Rust
+    /// implementation passes all baseline tests but one or more
+    /// edge-case tests fail. This indicates insufficient test coverage.
+    BehaviorDivergenceDetected {
+        dll: String,
+        function: String,
+        attempt: u32,
+        strategy: String,
+        /// Baseline tests that passed.
+        baseline_passed: usize,
+        baseline_total: usize,
+        /// Edge-case tests that passed / total.
+        edge_tests_passed: usize,
+        edge_tests_total: usize,
+        /// Labels of the failing edge-case tests.
+        failing_edge_cases: Vec<String>,
+        /// Confidence score for the divergence diagnosis (0–10).
+        confidence: u8,
+    },
 }
 
 impl std::fmt::Display for ProgressEvent {
@@ -425,6 +447,24 @@ impl std::fmt::Display for ProgressEvent {
                     f,
                     "Infinite loop detected for {function} ({dll}): same bad output repeated {} times (attempts #{streak_start_attempt}–#{streak_end_attempt}) [{strategy}]"
                     , streak
+                )
+            }
+            ProgressEvent::BehaviorDivergenceDetected {
+                dll,
+                function,
+                attempt,
+                strategy,
+                baseline_passed,
+                baseline_total,
+                edge_tests_passed,
+                edge_tests_total,
+                failing_edge_cases,
+                confidence,
+            } => {
+                write!(
+                    f,
+                    "Behavior divergence detected for {function} ({dll}) attempt #{attempt} [{strategy}]: {baseline_passed}/{baseline_total} baseline tests pass, {edge_tests_passed}/{edge_tests_total} edge-case tests pass ({} failing, confidence {}/10)",
+                    failing_edge_cases.len(), confidence
                 )
             }
         }

@@ -132,4 +132,10 @@ pub struct FunctionInfo {
 
     /// Names of functions called by (or calling) this function.
     pub call_graph: Vec<String>,
+
+    /// Patterns discovered in the disassembly (e.g., `"zero_check"`,
+    /// `"null_check"`, `"overflow"`). Used for edge-case test generation
+    /// and behavior-divergence detection.
+    #[serde(default)]
+    pub disassembly_hints: Vec<String>,
 }
