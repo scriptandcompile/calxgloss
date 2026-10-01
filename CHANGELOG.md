@@ -8,7 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### `calxgloss-types`
+- **Token usage types** (`calxgloss-types::token_usage`) — `TokenUsageEntry` (per-attempt token count with DLL, function, attempt number, strategy, and success status), `TokenUsageLog` (collectible entries with serde), `TokenUsageStats` (aggregate totals with per-DLL breakdown into `DllTokenStats`), and `current_timestamp()` helper. Full test suite with serialization round-trips.
+
+#### `calxgloss-analysis`
+- **Token usage logger** (`TokenUsageLogger`) — persists per-attempt token entries to `<workspace>/re/analysis/token_usage.json`. Provides `record()`, `load()`, `compute_stats()`, and `log_path()` methods. Auto-creates the `re/analysis/` directory; handles corrupted-file recovery by starting fresh.
+
+### Changed
+
+#### `calxgloss-translator`
+- **Per-attempt token logging** — `try_translate_with_retry()` now logs token usage to disk for every LLM call: the initial translation attempt, each retry attempt (compile_fix, test_fix, escalate, edge_case_fix), and empty-code failure cases. The log includes DLL name, function name, attempt number, strategy label, token count, and success/failure status.
+
+#### `calxgloss-reports`
+- **Token summary in batch output** — `print_batch_summary()` now displays a total tokens line (e.g., `Tokens: 29,440 tokens consumed across 12 attempts`) when token data is available.
+
 ### Documentation
+
 - **`call_graph_assisted_translation.md`** — detailed plan for implementing root & leaf call graph analysis to skip known runtime functions, prioritize translation order, and enrich translation prompts with semantic context from API usage patterns.
 
 ### `calxgloss-translator`
