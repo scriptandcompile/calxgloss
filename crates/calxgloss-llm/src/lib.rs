@@ -598,6 +598,14 @@ pub mod context;
 pub use context::{ContextWindowDetector, FunctionChunk, FunctionSplitter};
 
 // ============================================================
+// Hallucination detection for LLM-generated code
+// ============================================================
+
+pub mod hallucination;
+
+pub use hallucination::{HallucinationDetector, HallucinatedCall};
+
+// ============================================================
 // Tests
 // ============================================================
 

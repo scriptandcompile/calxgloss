@@ -204,6 +204,19 @@ pub enum ProgressEvent {
         /// Total tokens consumed.
         total_tokens: usize,
     },
+    /// Hallucination detector found non-existent API/function references.
+    ///
+    /// Emitted after the LLM response is scanned and one or more hallucinated
+    /// calls are detected.  The `hallucinated_apis` field lists the names of
+    /// the non-existent references found.
+    HallucinationDetected {
+        dll: String,
+        function: String,
+        attempt: u32,
+        strategy: String,
+        /// The names of the hallucinated API/function references.
+        hallucinated_apis: Vec<String>,
+    },
 }
 
 impl std::fmt::Display for ProgressEvent {
@@ -373,6 +386,19 @@ impl std::fmt::Display for ProgressEvent {
                 write!(
                     f,
                     "Batch summary for {dll}: {success_count}/{total_functions} succeeded, {failure_count} failed after {total_attempts} attempts ({total_tokens} tokens)"
+                )
+            }
+            ProgressEvent::HallucinationDetected {
+                dll,
+                function,
+                attempt,
+                strategy,
+                hallucinated_apis,
+            } => {
+                write!(
+                    f,
+                    "Hallucination detected for {function} ({dll}) attempt #{attempt} [{strategy}]: {} non-existent API(s) found",
+                    hallucinated_apis.len()
                 )
             }
         }

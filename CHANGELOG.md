@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Fault types** (`calxgloss-types::fault`) — `FaultCategory` (7 categories: `ContextWindowExceeded`, `Hallucination`, `InfiniteLoop`, `BehaviorDivergence`, `ResourceExhaustion`, `SlowResponse`, `PromptCorruption`), `FaultSeverity` (Warning/Error/Critical), `ContextWindowFault` (with truncation signal detection and suggested chunk count), `FaultEvent` (with factory constructors for context-window and hallucination faults), `FaultLog`, and `FaultStats` (aggregate statistics with serde serialization). Full test suite with serialization round-trips.
 - **Context-window detector** (`calxgloss-llm::context`) — `ContextWindowDetector` checks LLM response size vs. model limit, scans for common truncation markers (Ollama, vLLM, llama.cpp, GPT), and pre-checks prompt size. `FunctionSplitter` divides disassembly into equal-sized chunks with metadata for the LLM. 13 unit tests.
+- **Hallucination detector** (`calxgloss-llm::hallucination`) — `HallucinationDetector` cross-references LLM-generated code against Ghidra symbols (functions + imports) and the PAL API catalogue. Extracts function-call patterns from generated Rust, filters Rust keywords and standard-library type constructors as false positives, and reports non-existent API references with close-match suggestions. 21 unit tests.
 - **Fault logger** (`calxgloss-analysis::fault_log`) — `FaultLogger` persists `FaultEvent` instances to `re/analysis/fault_log.json` with automatic directory creation, corrupted-file recovery, and `compute_stats()` aggregation. 7 unit tests.
 
 #### `calxgloss-types`
@@ -26,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### `calxgloss-translator`
 - **Per-attempt token logging** — `try_translate_with_retry()` now logs token usage to disk for every LLM call: the initial translation attempt, each retry attempt (compile_fix, test_fix, escalate, edge_case_fix), and empty-code failure cases. The log includes DLL name, function name, attempt number, strategy label, token count, and success/failure status.
+
+#### Fault detection integration
+- **Hallucination detection in the translation pipeline** — `TranslationPipeline::try_translate_with_retry()` scans each LLM response for non-existent API references using the hallucination detector. Detected hallucinations are logged as warnings and emitted as `ProgressEvent::HallucinationDetected` for real-time dashboard visibility.
 
 #### `calxgloss-web`
 - **End-to-end integration tests** — 16 API-level tests that spin up the axum server with a realistic test fixture (git repo with branches, patches, baselines, classifications) and verify all endpoints: health, dashboard, unit detail, queue, graph, diff, ghidra, pipeline, progress, static files, websocket upgrade, and build_dashboard API. 1 headless browser test is marked `#[ignore]` and runs with `--ignored` (requires Chrome installed). Run with: `cargo test --features server --test e2e`.
@@ -51,9 +55,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ShimSuggestion`** — per-DLL shim layer estimate with `source_dll`, `target_crate`, `estimated_mappings`, `estimated_complexity` (Low/Medium/High), and `estimated_confidence` in `[0.0, 1.0]`. Produced automatically from classification data without an LLM call.
 - **`ShimSuggestionReport`** — aggregation of all `ShimSuggestion` instances for crate-replacement DLLs. Provides `total_dlls()`, `low_complexity_count()`, `medium_complexity_count()`, `high_complexity_count()`, `is_empty()`, and `average_confidence()`.
 - **`ProgressEvent::FunctionCompleted`** — new event emitted immediately after each function completes during batch translation, carrying `dll`, `function`, `success`, `attempts`, and `branch` fields.
+- **`ProgressEvent::HallucinationDetected`** — emitted after the LLM response is scanned and one or more hallucinated calls are detected. Carries `dll`, `function`, `attempt`, `strategy`, and `hallucinated_apis` fields.
 
 ### `calxgloss-web`
 - **Progress state handles `FunctionCompleted`** — the `ProgressState` now processes the new `FunctionCompleted` event, marking the corresponding unit as `Complete` in the live progress dashboard.
+- **Progress state handles `HallucinationDetected`** — hallucination events are forwarded through the progress state to keep the live dashboard aware of detected hallucinations.
 - **Review Queue tab now populates on tab switch** — switching to the tab immediately renders the full queue list, no longer requires clicking a dashboard item first.
 - **Queue item names include the function** — queue items now display `DLL function Status vN` (e.g. `LaunchPad.exe FUN_004011d0 InProgress v1`) instead of showing only the DLL name.
 - **Review Queue view has a two-column layout** — the tab now shows an inline detail view (left) alongside the queue item list (right), replacing the previous floating sidebar panel.
