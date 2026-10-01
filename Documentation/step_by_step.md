@@ -12,12 +12,13 @@
 - Dependency-aware work queue — `DependencyTracker` builds DAG from Ghidra call graphs + shim declarations; `DependencyGraphPersistor` saves to `re/analysis/dependency_graph.json`; `auto_block_units()` marks blocked work
 - Web review UI — axum server with API endpoints (`/api/dashboard`, `/api/queue`, `/api/graph`), WebSocket live progress, HTML/JS/CSS frontend with diff viewer, dependency graph visualization, review actions wired to git operations
 - Prompt refinement — failure-informed prompts for all retry strategies, `PromptStrategyLogger` persists experiment log to JSON file, complexity- and API-aware prompt selection
+- Fault detection — context-window detector with `ContextWindowFault`, function splitter (`FunctionSplitter`), truncation signal detection, and `FaultLogger` persistence (Phase 7, Step 7.1)
 - Shim layer generation — `ShimLayer` types, `generate_shim_mappings()` (LLM-driven), `generate_shim_source()`, `generate_shim_tests()`, `Verifier::verify_shim`, shim suggestion generation after classification
 - PAL mapping table — 100+ mappings across 10 categories
 - All workspace tests pass 0 failures
 
 **What's NOT done:**
-- **Fault detection** — nothing implemented (Phase 7)
+- **Fault detection** — context-window detector + fault logging implemented (Phase 7, Step 7.1); hallucination, infinite-loop, and divergence detectors remaining (Phase 7)
 - **Context tiers** — `escalate_on_failure` flag exists but tiered context logic is not implemented (Phase 8)
 - **CI / cross-platform verification** — no CI workflow files (Phase 9)
 - **Branch cleanup & archive** — no gc or cleanup subcommand (Phase 10)
@@ -129,10 +130,10 @@
 
 > **Goal:** Automatically detect and recover from the failure modes documented in `Calxgloss.md` (context window exceeded, hallucination, infinite loops, wrong behavior).
 
-| Step | What | Details |
-|------|------|---------|
-| 7.1 | Implement context-window detector | After each LLM call, check response size vs. model's context limit. Auto-split the function and retry with a focused basic block. |
-| 7.2 | Implement hallucination detector | Cross-reference LLM-generated function calls against Ghidra's actual symbols. Flag non-existent API references. |
+| Step | What | Details | Status |
+|------|------|---------|--------|
+| 7.1 | Implement context-window detector | After each LLM call, check response size vs. model's context limit. Auto-split the function and retry with a focused basic block. | ✅ Complete |
+| 7.2 | Implement hallucination detector | Cross-reference LLM-generated function calls against Ghidra's actual symbols. Flag non-existent API references. | ⬜ Not started |
 | 7.3 | Implement infinite-loop detector | Track prompt → output hashes. If same bad output repeats 3+ times, escalate to manual intervention. |
 | 7.4 | Implement behavior-divergence detector | If tests pass but output differs on unseen inputs, flag as "insufficient test coverage" and expand test suite. |
 | 7.5 | Resource exhaustion monitoring | Monitor LLM client for OOM / timeout. Queue work when the local model is overloaded. |
@@ -196,7 +197,7 @@
 | 4 | Dependency-aware work queue | 4–6d | 0, 3 | ✅ Complete |
 | 5 | Web review UI | 8–12d | 3, 4 | ✅ Complete |
 | 6 | Shim layer generation (types, generation, verification, suggestions, auto-pipeline) | 5–8d | 1 | ✅ Complete |
-| 7 | Fault detection & recovery | 4–6d | 1, 2 | ⬜ Not started |
+| 7 | Fault detection & recovery | 4–6d | 1, 2 | 🔄 In progress (7.1 done) |
 | 8 | Context tiers | 3–5d | 1, 2 | ⬜ Not started |
 | 9 | CI / cross-platform verification | 3–5d | 0 | ⬜ Not started |
 | 10 | Branch cleanup & archive | 2–3d | 4, 5 | ⬜ Not started |
