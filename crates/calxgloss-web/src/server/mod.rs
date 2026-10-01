@@ -166,7 +166,8 @@ impl ProgressState {
             | ProgressEvent::TranslationAttemptCompleted { .. }
             | ProgressEvent::TranslationCompleted { .. }
             | ProgressEvent::TranslationFailed { .. }
-            | ProgressEvent::FunctionCompleted { .. } => {
+            | ProgressEvent::FunctionCompleted { .. }
+            | ProgressEvent::HallucinationDetected { .. } => {
                 self.on_translation_event(event).await;
             }
             ProgressEvent::ClassificationComplete {

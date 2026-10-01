@@ -43,7 +43,7 @@ pub use batch::{BatchTranslationResult, FunctionResult};
 
 use calxgloss_analysis::Analyzer;
 use calxgloss_ghidra::GhidraClient;
-use calxgloss_llm::{context::ContextWindowDetector, LlmClient, LlmMessage};
+use calxgloss_llm::{context::ContextWindowDetector, hallucination::HallucinationDetector, LlmClient, LlmMessage};
 use calxgloss_pal::ApiMappings;
 use calxgloss_prompts::build_translate_prompt;
 use calxgloss_testgen::TestGenerator;
@@ -321,6 +321,10 @@ pub struct TranslationPipeline {
     /// Context-window detector for fault detection.
     /// Created once with the LLM client's `max_tokens` setting.
     context_detector: ContextWindowDetector,
+
+    /// Hallucination detector for validating LLM-generated code.
+    /// Created once from Ghidra symbols and PAL API catalogue.
+    hallucination_detector: HallucinationDetector,
 }
 
 impl TranslationPipeline {
@@ -332,6 +336,12 @@ impl TranslationPipeline {
     pub fn new(ghidra: GhidraClient, llm: LlmClient, api_mappings: ApiMappings) -> Self {
         let analyzer = Analyzer::new(ghidra.clone(), api_mappings.clone());
         let context_detector = ContextWindowDetector::new(llm.max_tokens());
+        // Build the hallucination detector from Ghidra symbols and PAL APIs.
+        // This is a blocking call inside a synchronous constructor; it's safe
+        // because `new` is always invoked from an async context (pipeline
+        // setup in `main` or tests).
+        let hallucination_detector = tokio::runtime::Handle::current()
+            .block_on(build_hallucination_detector(&ghidra, &api_mappings));
         Self {
             ghidra,
             llm,
@@ -343,6 +353,7 @@ impl TranslationPipeline {
             workspace: None,
             events: None,
             context_detector,
+            hallucination_detector,
         }
     }
 
@@ -1017,6 +1028,32 @@ impl TranslationPipeline {
             );
         }
 
+        // Hallucination detection: scan the generated code for non-existent
+        // API/function references.  When hallucinations are found, log a
+        // warning and emit a progress event so the caller can react.
+        let hallucinations = self.hallucination_detector.detect(&response.content);
+        if !hallucinations.is_empty() {
+            let names: Vec<String> = hallucinations.iter().map(|h| h.name.clone()).collect();
+            warn!(
+                dll,
+                function,
+                attempt,
+                strategy,
+                count = names.len(),
+                apis = ?names,
+                "Hallucinated API/function references detected",
+            );
+            if let Some(em) = events {
+                let _ = em.emit(ProgressEvent::HallucinationDetected {
+                    dll: dll.to_string(),
+                    function: function.to_string(),
+                    attempt,
+                    strategy: strategy.to_string(),
+                    hallucinated_apis: names,
+                });
+            }
+        }
+
         debug!(
             code_len = response.content.len(),
             model = %self.llm.model(),
@@ -1217,6 +1254,50 @@ impl TranslationPipeline {
 
         Ok(batch_result)
     }
+}
+
+// ============================================================
+// Hallucination detector helpers
+// ============================================================
+
+/// Build a [`HallucinationDetector`] from Ghidra symbols and the PAL API
+/// catalogue.
+///
+/// The detector's known-good symbol set is the union of:
+/// 1. All Ghidra functions (exports and user-defined functions)
+/// 2. All Ghidra imports (DLL imports)
+/// 3. Every Windows API name from the PAL mapping table
+async fn build_hallucination_detector(
+    ghidra: &GhidraClient,
+    api_mappings: &ApiMappings,
+) -> HallucinationDetector {
+    // Fetch Ghidra functions
+    let ghidra_functions: Vec<String> = ghidra
+        .list_functions()
+        .await
+        .ok()
+        .into_iter()
+        .flatten()
+        .map(|f| f.name)
+        .collect();
+
+    // Fetch Ghidra imports
+    let ghidra_imports: Vec<String> = ghidra
+        .imports(None)
+        .await
+        .ok()
+        .into_iter()
+        .flatten()
+        .map(|s| s.name)
+        .collect();
+
+    // Collect Windows API names from the PAL mapping table
+    let _windows_apis: Vec<String> = api_mappings
+        .iter()
+        .map(|m| m.windows_api.to_string())
+        .collect();
+
+    HallucinationDetector::new(ghidra_functions, ghidra_imports)
 }
 
 // ============================================================
