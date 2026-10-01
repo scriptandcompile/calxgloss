@@ -6,7 +6,7 @@ use crate::retry::{
     build_compile_fix_prompt, build_edge_case_fix_prompt, build_escalate_prompt_with_context,
     build_failure_informed_compile_fix_prompt, build_failure_informed_edge_case_fix_prompt,
     build_failure_informed_escalate_prompt, build_failure_informed_test_fix_prompt,
-    build_test_fix_prompt, log_prompt_variant_experiment,
+    build_test_fix_prompt, log_prompt_variant_experiment, log_token_usage,
 };
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_llm::{LlmClient, LlmError, LlmMessage};
@@ -123,6 +123,17 @@ pub async fn try_translate_with_retry(
     };
     result.add_attempt(attempt);
     emit_attempt(&result, 1, "initial");
+
+    // Log token usage to file
+    log_token_usage(
+        &dll,
+        &function,
+        1,
+        "initial",
+        initial_translation.tokens_used,
+        result.attempts.last().map(|a| a.is_successful()).unwrap_or(false),
+        ctx.workspace,
+    );
 
     // If the first attempt succeeded, we're done
     if result.success {
@@ -429,6 +440,17 @@ pub async fn try_translate_with_retry(
                 tokens_used,
             });
             emit_attempt(&result, attempt_num, &strategy_name);
+
+            // Log token usage (even with empty code, the LLM consumed tokens)
+            log_token_usage(
+                &dll,
+                &function,
+                attempt_num,
+                &strategy_name,
+                tokens_used,
+                false,
+                ctx.workspace,
+            );
             continue;
         }
 
@@ -495,6 +517,17 @@ pub async fn try_translate_with_retry(
         };
         result.add_attempt(attempt);
         emit_attempt(&result, attempt_num, &strategy_name);
+
+        // Log token usage to file
+        log_token_usage(
+            &dll,
+            &function,
+            attempt_num,
+            &strategy_name,
+            tokens_used,
+            result.attempts.last().map(|a| a.is_successful()).unwrap_or(false),
+            ctx.workspace,
+        );
 
         // Track failure history for informed prompting
         // Only record history for failed attempts (not the initial one, not successful retries)

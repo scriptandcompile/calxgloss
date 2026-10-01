@@ -47,11 +47,13 @@ pub mod experiment_log;
 pub mod shim;
 pub mod shim_gen;
 pub mod shim_test_gen;
+pub mod token_usage;
 
 pub use classify::*;
 pub use dependency::*;
 pub use error::{AnalysisError, Result};
 pub use experiment_log::*;
+pub use token_usage::TokenUsageLogger;
 
 // Re-export shim suggestion types from calxgloss-types.
 pub use calxgloss_types::ShimSuggestionReport;

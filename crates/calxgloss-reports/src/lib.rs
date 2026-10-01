@@ -578,6 +578,28 @@ pub fn print_batch_summary(result: &BatchTranslationResult) {
         pass_rate
     );
 
+    // Token usage summary
+    let total_tokens: usize = result
+        .results
+        .iter()
+        .flat_map(|r| &r.retry_result.attempts)
+        .filter_map(|a| a.tokens_used)
+        .sum();
+
+    if total_tokens > 0 {
+        let tokens_str = format!(
+            "  {}{} tokens consumed across {} attempts",
+            white_bold("  Tokens: "),
+            white_bold(&total_tokens.to_string()),
+            result
+                .results
+                .iter()
+                .map(|r| r.retry_result.attempts.len())
+                .sum::<usize>()
+        );
+        println!("{}", tokens_str);
+    }
+
     if !result.results.is_empty() {
         let all = result.all_success();
         let label = if all { "ALL PASS" } else { "INCOMPLETE" };

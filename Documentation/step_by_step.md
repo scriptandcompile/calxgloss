@@ -17,7 +17,6 @@
 - All workspace tests pass 0 failures
 
 **What's NOT done:**
-- **Token usage file logging** — per-attempt token counts are shown in terminal output but not persisted to a JSON file (step 1.4)
 - **End-to-end web UI test** — no headless browser test verifying web server data rendering (step 5.8)
 - **Shim auto-pipeline** — individual shim generation steps (mappings → source → tests → verify) exist but are never orchestrated into an end-to-end auto-shim flow after classification
 - **Fault detection** — nothing implemented (Phase 7)
@@ -49,7 +48,7 @@
 | 1.1 | Implement `Escalate` strategy | Currently `warn!("Escalate strategy not yet implemented — falling back to compile_fix")`. Implement a prompt that injects additional Ghidra context: neighboring functions, call graph neighbors, shared data structures, and type information. | ✅ Complete |
 | 1.2 | Add prompt variant for out-of-bounds / edge cases | When tests fail on boundary values (zero, max, negative), add a strategy that specifically instructs the LLM to handle edge cases. | ✅ Complete |
 | 1.3 | Add `--strategy` CLI flag | Let the user pick: `compile_fix`, `test_fix`, `escalate`, or `auto` (cycles through them). | ✅ Complete |
-| 1.4 | Track token usage per attempt | Log context size per attempt in terminal output and to a JSON file. | ⬜ Pending |
+| 1.4 | Track token usage per attempt | Log context size per attempt in terminal output and to a JSON file at `re/analysis/token_usage.json`. | ✅ Complete |
 
 ---
 
@@ -193,7 +192,7 @@
 | Phase | Description | Effort | Depends On | Status |
 |-------|-------------|--------|------------|--------|
 | 0 | Stabilize base (fix failing tests) | 1–2d | None | ✅ Complete |
-| 1 | Complete retry strategy (Escalate, EdgeCaseFix, strategy flag) | 2–3d | 0 | ✅ Complete (1.4 pending) |
+| 1 | Complete retry strategy (Escalate, EdgeCaseFix, strategy flag, token logging) | 2–3d | 0 | ✅ Complete |
 | 2 | Prompt refinement (failure-informed, experiment log) | 2–3d | 1 | ✅ Complete |
 | 3 | Terminal review dashboard | 3–5d | 1 | ✅ Complete |
 | 4 | Dependency-aware work queue | 4–6d | 0, 3 | ✅ Complete |

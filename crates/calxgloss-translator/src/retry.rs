@@ -53,3 +53,42 @@ mod experiment_log;
 mod helpers;
 mod prompts;
 mod retry_loop;
+
+// ============================================================================
+// Internal helper — per-attempt token usage logging
+// ============================================================================
+
+/// Log token usage for a single attempt to the per-attempt token log file.
+///
+/// Persists the entry to `re/analysis/token_usage.json` via the
+/// [`TokenUsageLogger`](calxgloss_analysis::TokenUsageLogger).
+/// If the workspace path is `None`, the entry is silently discarded.
+pub(crate) fn log_token_usage(
+    dll_name: &str,
+    function: &str,
+    attempt_num: u32,
+    strategy: &str,
+    tokens_used: Option<usize>,
+    success: bool,
+    workspace: Option<&std::path::Path>,
+) {
+    let Some(ws) = workspace else {
+        return;
+    };
+
+    let Some(tokens) = tokens_used else {
+        return;
+    };
+
+    let entry = calxgloss_types::TokenUsageEntry::new(
+        dll_name,
+        function,
+        attempt_num,
+        strategy,
+        tokens,
+        success,
+    );
+
+    let logger = calxgloss_analysis::TokenUsageLogger::new(ws);
+    logger.record(entry);
+}
