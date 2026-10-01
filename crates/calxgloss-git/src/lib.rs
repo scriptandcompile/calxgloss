@@ -816,8 +816,14 @@ impl GitManager {
 
             let mut checkout_opts = CheckoutBuilder::new();
             checkout_opts.force();
-            let main_commit = main_ref
-                .get()
+            // Get the updated main reference directly from the repo (main_ref is stale
+            // after reference() updates the ref on disk)
+            let main_commit = self
+                .repo
+                .find_reference("refs/heads/main")
+                .map_err(|e| {
+                    TypesError::InvalidBranchName(format!("Failed to find main after FF: {}", e))
+                })?
                 .peel_to_commit()
                 .map_err(|e| TypesError::InvalidBranchName(format!("Peel main failed: {}", e)))?;
             let main_obj = main_commit.as_object();
@@ -864,8 +870,13 @@ impl GitManager {
 
         let mut checkout_opts = CheckoutBuilder::new();
         checkout_opts.force();
-        let main_commit = main_ref
-            .get()
+        // Use the merge commit we just created (main_ref is stale after commit())
+        let main_commit = self
+            .repo
+            .find_reference("refs/heads/main")
+            .map_err(|e| {
+                TypesError::InvalidBranchName(format!("Failed to find main after merge: {}", e))
+            })?
             .peel_to_commit()
             .map_err(|e| TypesError::InvalidBranchName(format!("Peel main failed: {}", e)))?;
         let main_obj = main_commit.as_object();
