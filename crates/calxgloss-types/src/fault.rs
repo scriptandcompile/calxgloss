@@ -342,6 +342,55 @@ impl FaultEvent {
             metadata: Some(serde_json::to_value(non_existent_apis).unwrap_or(serde_json::Value::Null)),
         }
     }
+
+    /// Create a new fault event from an infinite-loop detection.
+    ///
+    /// # Arguments
+    ///
+    /// * `dll` — The DLL containing the stuck function.
+    /// * `function` — The function name.
+    /// * `attempt` — The attempt where the loop was detected.
+    /// * `strategy` — The strategy that produced the repeated output.
+    /// * `streak` — Number of consecutive identical bad outputs.
+    /// * `streak_start` — First attempt number in the streak.
+    /// * `streak_end` — Last attempt number in the streak.
+    pub fn infinite_loop(
+        dll: &str,
+        function: &str,
+        attempt: u32,
+        strategy: &str,
+        streak: usize,
+        streak_start: u32,
+        streak_end: u32,
+    ) -> Self {
+        Self {
+            dll: dll.to_string(),
+            function: function.to_string(),
+            attempt,
+            strategy: strategy.to_string(),
+            category: FaultCategory::InfiniteLoop,
+            severity: FaultSeverity::Critical,
+            description: format!(
+                "Infinite loop detected: same bad output repeated {} times (attempts #{}–#{})",
+                streak, streak_start, streak_end
+            ),
+            recovery: "Escalate to manual intervention. The LLM is producing identical output despite \
+                 changing prompts. Consider: splitting the function into smaller chunks, \
+                 injecting Ghidra data-flow hints, or using a different model."
+                .to_string(),
+            timestamp: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+            metadata: Some(
+                serde_json::json!({
+                    "streak": streak,
+                    "streak_start_attempt": streak_start,
+                    "streak_end_attempt": streak_end,
+                })
+            ),
+        }
+    }
 }
 
 impl std::fmt::Display for FaultEvent {

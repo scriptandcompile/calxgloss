@@ -217,6 +217,18 @@ pub enum ProgressEvent {
         /// The names of the hallucinated API/function references.
         hallucinated_apis: Vec<String>,
     },
+    /// The retry loop is stuck — the same bad output repeated ≥3 times.
+    ///
+    /// Emitted when the infinite-loop detector fires.  The `streak` field
+    /// indicates how many consecutive attempts produced the same output.
+    InfiniteLoopDetected {
+        dll: String,
+        function: String,
+        streak: usize,
+        streak_start_attempt: u32,
+        streak_end_attempt: u32,
+        strategy: String,
+    },
 }
 
 impl std::fmt::Display for ProgressEvent {
@@ -399,6 +411,20 @@ impl std::fmt::Display for ProgressEvent {
                     f,
                     "Hallucination detected for {function} ({dll}) attempt #{attempt} [{strategy}]: {} non-existent API(s) found",
                     hallucinated_apis.len()
+                )
+            }
+            ProgressEvent::InfiniteLoopDetected {
+                dll,
+                function,
+                streak,
+                streak_start_attempt,
+                streak_end_attempt,
+                strategy,
+            } => {
+                write!(
+                    f,
+                    "Infinite loop detected for {function} ({dll}): same bad output repeated {} times (attempts #{streak_start_attempt}–#{streak_end_attempt}) [{strategy}]"
+                    , streak
                 )
             }
         }
