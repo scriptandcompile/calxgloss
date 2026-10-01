@@ -331,8 +331,9 @@ pub struct TranslationPipeline {
     context_detector: ContextWindowDetector,
 
     /// Hallucination detector for validating LLM-generated code.
-    /// Created once from Ghidra symbols and PAL API catalogue.
-    hallucination_detector: HallucinationDetector,
+    /// Created from Ghidra symbols and PAL API catalogue; `None` when
+    /// no Ghidra session is available.
+    hallucination_detector: Option<HallucinationDetector>,
 }
 
 impl TranslationPipeline {
@@ -344,12 +345,6 @@ impl TranslationPipeline {
     pub fn new(ghidra: GhidraClient, llm: LlmClient, api_mappings: ApiMappings) -> Self {
         let analyzer = Analyzer::new(ghidra.clone(), api_mappings.clone());
         let context_detector = ContextWindowDetector::new(llm.max_tokens());
-        // Build the hallucination detector from Ghidra symbols and PAL APIs.
-        // This is a blocking call inside a synchronous constructor; it's safe
-        // because `new` is always invoked from an async context (pipeline
-        // setup in `main` or tests).
-        let hallucination_detector = tokio::runtime::Handle::current()
-            .block_on(build_hallucination_detector(&ghidra, &api_mappings));
         Self {
             ghidra,
             llm,
@@ -361,7 +356,7 @@ impl TranslationPipeline {
             workspace: None,
             events: None,
             context_detector,
-            hallucination_detector,
+            hallucination_detector: None,
         }
     }
 
@@ -406,6 +401,14 @@ impl TranslationPipeline {
     /// Set the target DLL name for test generation context.
     pub fn with_target_dll(mut self, dll: String) -> Self {
         self.target_dll = Some(dll);
+        self
+    }
+
+    /// Attach a pre-built hallucination detector for validating LLM
+    /// responses.  Call this after `new()` when a runtime context is
+    /// available; skip it in unit tests that don't need detection.
+    pub fn with_hallucination_detector(mut self, detector: HallucinationDetector) -> Self {
+        self.hallucination_detector = Some(detector);
         self
     }
 
@@ -1042,7 +1045,11 @@ impl TranslationPipeline {
         // Hallucination detection: scan the generated code for non-existent
         // API/function references.  When hallucinations are found, log a
         // warning and emit a progress event so the caller can react.
-        let hallucinations = self.hallucination_detector.detect(&response.content);
+        let hallucinations = self
+            .hallucination_detector
+            .as_ref()
+            .map(|d| d.detect(&response.content))
+            .unwrap_or_default();
         if !hallucinations.is_empty() {
             let names: Vec<String> = hallucinations.iter().map(|h| h.name.clone()).collect();
             warn!(
@@ -1278,7 +1285,7 @@ impl TranslationPipeline {
 /// 1. All Ghidra functions (exports and user-defined functions)
 /// 2. All Ghidra imports (DLL imports)
 /// 3. Every Windows API name from the PAL mapping table
-async fn build_hallucination_detector(
+pub async fn build_hallucination_detector(
     ghidra: &GhidraClient,
     api_mappings: &ApiMappings,
 ) -> HallucinationDetector {
@@ -1327,8 +1334,8 @@ mod tests {
         let _ = &translator;
     }
 
-    #[test]
-    fn test_pipeline_creation() {
+    #[tokio::test]
+    async fn test_pipeline_creation() {
         let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
         let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
@@ -1336,8 +1343,8 @@ mod tests {
         assert!(!pipeline.api_mappings().is_empty());
     }
 
-    #[test]
-    fn test_pipeline_with_exports() {
+    #[tokio::test]
+    async fn test_pipeline_with_exports() {
         let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
         let exports = vec![Export {
@@ -1378,8 +1385,8 @@ mod tests {
         assert_eq!(cloned.call_graph, translation.call_graph);
     }
 
-    #[test]
-    fn test_signature_comes_from_the_decompiler() {
+    #[tokio::test]
+    async fn test_signature_comes_from_the_decompiler() {
         let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
         let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
@@ -1402,8 +1409,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_signature_takes_the_declarator_not_the_whole_body() {
+    #[tokio::test]
+    async fn test_signature_takes_the_declarator_not_the_whole_body() {
         let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
         let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
@@ -1437,8 +1444,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_signature_falls_back_when_there_is_no_decompilation() {
+    #[tokio::test]
+    async fn test_signature_falls_back_when_there_is_no_decompilation() {
         let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
         let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
@@ -1484,8 +1491,8 @@ mod tests {
         assert!(!prompt.is_empty());
     }
 
-    #[test]
-    fn test_build_translation_request() {
+    #[tokio::test]
+    async fn test_build_translation_request() {
         let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
         let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
