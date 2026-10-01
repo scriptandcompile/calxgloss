@@ -31,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Template `disassembly_translate.j2` renders disassembly, decompiler output, API mappings, call graph neighbors, external function handling rules, and translation requirements
   - `TranslationPipeline::translate()` routes to disassembly prompt when `ContextTier::Disassembly` is selected
   - Module docs updated to document all tier-specific prompt builders
+- **Tier 2 with-tests prompt** — sends full disassembly, Ghidra pseudo-C decompiler output, tagged Windows API calls, call graph neighbors, and baseline test results with pass/fail status and error details. Enables the LLM to match concrete behavioral output on initial translation or fix specific failures on retry.
+  - `FormattedTestResult` struct with `from_baseline()`, `from_baseline_with_failure()`, and `from_baseline_passing()` constructors
+  - `WithTestsPromptData` struct with `from_request()` and `from_request_with_results()` constructors
+  - `WithTestsTemplate` Askama template struct
+  - `build_with_tests_prompt()` convenience function
+  - Template `with_tests_translate.j2` renders function metadata, test summary, disassembly, decompiler output, tagged APIs, call graph neighbors, baseline test results with PASSED/FAILED markers and error details, external function handling rules, translation requirements, and example output format
+  - Template handles empty test results gracefully with fallback text when no tests are available yet
+  - `TranslationPipeline::translate()` routes to with-tests prompt when `ContextTier::WithTests` is selected
 
 #### Fault detection
 
