@@ -295,8 +295,14 @@ async fn run_patch_retry(
     let llm = calxgloss_llm::LlmClient::from_url(&llm_url, &llm_model)
         .map_err(|e| anyhow::anyhow!("LLM client: {e}"))?;
 
-    let pipeline = TranslationPipeline::new(ghidra, llm, calxgloss_pal::ApiMappings::default())
-        .with_workspace(repo_path.to_path_buf());
+    // Build the hallucination detector from Ghidra symbols and PAL APIs
+    // before creating the pipeline (which consumes the Ghidra client).
+    let api_mappings = calxgloss_pal::ApiMappings::default();
+    let detector = calxgloss_translator::build_hallucination_detector(&ghidra, &api_mappings)
+        .await;
+    let pipeline = TranslationPipeline::new(ghidra, llm, api_mappings)
+        .with_workspace(repo_path.to_path_buf())
+        .with_hallucination_detector(detector);
 
     let verifier =
         calxgloss_verify::Verifier::new(repo_path).map_err(|e| anyhow::anyhow!("Verifier: {e}"))?;

@@ -1240,12 +1240,15 @@ async fn run_translation_for_dll(
     let llm = calxgloss_llm::LlmClient::new(llm_config).context("Failed to create LLM client")?;
 
     // Initialize analyzer, test generator
-    let api_mappings = calxgloss_pal::ApiMappings::default();
     let testgen = calxgloss_testgen::TestGenerator::new(output_dir);
 
     // Build translation pipeline
+    let api_mappings = calxgloss_pal::ApiMappings::default();
+    let detector = calxgloss_translator::build_hallucination_detector(&ghidra, &api_mappings)
+        .await;
     let mut pipeline = calxgloss_translator::TranslationPipeline::new(ghidra, llm, api_mappings)
-        .with_testgen(testgen);
+        .with_testgen(testgen)
+        .with_hallucination_detector(detector);
     if let Some(events) = events {
         pipeline = pipeline.with_events(events.clone());
     }
@@ -1700,13 +1703,17 @@ async fn handle_translate(
     let llm = LlmClient::new(llm_config).context("Failed to create LLM client")?;
 
     // Initialize analyzer and test generator
-    let api_mappings = ApiMappings::default();
     let testgen = TestGenerator::new(&output_dir);
 
     let llm_model_name = llm.model().to_string();
 
     // Build translation pipeline
-    let pipeline = TranslationPipeline::new(ghidra, llm, api_mappings).with_testgen(testgen);
+    let api_mappings = calxgloss_pal::ApiMappings::default();
+    let detector = calxgloss_translator::build_hallucination_detector(&ghidra, &api_mappings)
+        .await;
+    let pipeline = TranslationPipeline::new(ghidra, llm, api_mappings)
+        .with_testgen(testgen)
+        .with_hallucination_detector(detector);
 
     // Git setup
     let mut git = if !skip_git {
@@ -2058,12 +2065,15 @@ async fn handle_batch_translate(
     let llm = calxgloss_llm::LlmClient::new(llm_config).context("Failed to create LLM client")?;
 
     // Initialize analyzer and test generator
-    let api_mappings = calxgloss_pal::ApiMappings::default();
     let testgen = calxgloss_testgen::TestGenerator::new(&output_dir);
 
     // Build translation pipeline
+    let api_mappings = calxgloss_pal::ApiMappings::default();
+    let detector = calxgloss_translator::build_hallucination_detector(&ghidra, &api_mappings)
+        .await;
     let pipeline = calxgloss_translator::TranslationPipeline::new(ghidra, llm, api_mappings)
-        .with_testgen(testgen);
+        .with_testgen(testgen)
+        .with_hallucination_detector(detector);
 
     // Git setup
     let mut git = if !skip_git {
