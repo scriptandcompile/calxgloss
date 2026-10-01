@@ -169,9 +169,7 @@ pub(crate) fn crate_context(crate_name: &str) -> CrateContext {
                 "FSOUND_PlaySound → Channel::play",
                 "FSOUND_SetVolume → Channel::set_volume",
             ],
-            pitfalls: vec![
-                "FMOD uses handle-based API; fmod-rs wraps it with idiomatic Rust",
-            ],
+            pitfalls: vec!["FMOD uses handle-based API; fmod-rs wraps it with idiomatic Rust"],
         },
         "vb6runtime" => CrateContext {
             description: "vb6runtime is a Rust crate that replicates the Microsoft Visual \
@@ -346,16 +344,19 @@ fn parse_shim_mappings(
         let stripped = stripped.trim_start();
         // Strip language tag if present (e.g., "json")
         let stripped = stripped.strip_prefix("json").unwrap_or(stripped);
-        stripped.trim().strip_suffix("```").unwrap_or(stripped).trim()
+        stripped
+            .trim()
+            .strip_suffix("```")
+            .unwrap_or(stripped)
+            .trim()
     } else {
         trimmed
     };
 
     // Try parsing as a full JSON array of mapping objects.
-    let mappings: Vec<ShimApiMappingEntry> =
-        serde_json::from_str(json_str).map_err(|_e| {
-            calxgloss_llm::LlmError::EmptyResponse // Reuse EmptyResponse for parse failures
-        })?;
+    let mappings: Vec<ShimApiMappingEntry> = serde_json::from_str(json_str).map_err(|_e| {
+        calxgloss_llm::LlmError::EmptyResponse // Reuse EmptyResponse for parse failures
+    })?;
 
     if mappings.is_empty() {
         warn!(dll = dll_name, "LLM returned empty mapping array");
@@ -374,12 +375,12 @@ fn parse_shim_mappings(
         let return_mapping = match entry.return_mapping.as_str() {
             "Void" => calxgloss_types::ReturnMapping::Void,
             "Discarded" => calxgloss_types::ReturnMapping::Discarded,
-            "Converted" => {
-                calxgloss_types::ReturnMapping::Converted(entry.return_mapping_details.unwrap_or_default())
-            }
-            "Custom" => {
-                calxgloss_types::ReturnMapping::Custom(entry.return_mapping_details.unwrap_or_default())
-            }
+            "Converted" => calxgloss_types::ReturnMapping::Converted(
+                entry.return_mapping_details.unwrap_or_default(),
+            ),
+            "Custom" => calxgloss_types::ReturnMapping::Custom(
+                entry.return_mapping_details.unwrap_or_default(),
+            ),
             _ => calxgloss_types::ReturnMapping::Identity,
         };
 
@@ -463,15 +464,15 @@ mod tests {
         assert_eq!(shim.target_crate, "wgpu");
         assert_eq!(shim.mapping_count(), 1);
         assert_eq!(shim.mappings[0].original_api, "Direct3DCreate9");
-        assert_eq!(
-            shim.mappings[0].crate_api,
-            "wgpu::Instance::new"
-        );
+        assert_eq!(shim.mappings[0].crate_api, "wgpu::Instance::new");
         assert!(matches!(
             shim.mappings[0].return_mapping,
             calxgloss_types::ReturnMapping::Converted(_)
         ));
-        assert_eq!(shim.mappings[0].complexity, calxgloss_types::ComplexityScore::High);
+        assert_eq!(
+            shim.mappings[0].complexity,
+            calxgloss_types::ComplexityScore::High
+        );
     }
 
     #[test]
@@ -506,10 +507,7 @@ mod tests {
         assert_eq!(shim.mapping_count(), 2);
         assert_eq!(shim.mappings[0].original_api, "Present");
         assert_eq!(shim.mappings[1].original_api, "ClearRenderTargetView");
-        assert_eq!(
-            shim.mappings[1].original_params.len(),
-            2
-        );
+        assert_eq!(shim.mappings[1].original_params.len(), 2);
     }
 
     #[test]
@@ -561,7 +559,10 @@ mod tests {
         assert_eq!(shim.mappings[0].original_params.len(), 0);
         assert_eq!(shim.mappings[0].crate_params.len(), 0);
         assert_eq!(shim.mappings[0].parameter_transforms.len(), 0);
-        assert_eq!(shim.mappings[0].complexity, calxgloss_types::ComplexityScore::Low);
+        assert_eq!(
+            shim.mappings[0].complexity,
+            calxgloss_types::ComplexityScore::Low
+        );
         assert_eq!(shim.mappings[0].notes, "");
     }
 
@@ -575,11 +576,23 @@ mod tests {
         ]"#;
 
         let shim = parse_shim_mappings("test.dll", "crate", json).unwrap();
-        assert_eq!(shim.mappings[0].complexity, calxgloss_types::ComplexityScore::Low);
-        assert_eq!(shim.mappings[1].complexity, calxgloss_types::ComplexityScore::Medium);
-        assert_eq!(shim.mappings[2].complexity, calxgloss_types::ComplexityScore::High);
+        assert_eq!(
+            shim.mappings[0].complexity,
+            calxgloss_types::ComplexityScore::Low
+        );
+        assert_eq!(
+            shim.mappings[1].complexity,
+            calxgloss_types::ComplexityScore::Medium
+        );
+        assert_eq!(
+            shim.mappings[2].complexity,
+            calxgloss_types::ComplexityScore::High
+        );
         // Unknown complexity defaults to Low
-        assert_eq!(shim.mappings[3].complexity, calxgloss_types::ComplexityScore::Low);
+        assert_eq!(
+            shim.mappings[3].complexity,
+            calxgloss_types::ComplexityScore::Low
+        );
     }
 
     #[test]
@@ -593,11 +606,24 @@ mod tests {
         ]"#;
 
         let shim = parse_shim_mappings("test.dll", "crate", json).unwrap();
-        assert!(matches!(shim.mappings[0].return_mapping, calxgloss_types::ReturnMapping::Identity));
-        assert!(matches!(shim.mappings[1].return_mapping, calxgloss_types::ReturnMapping::Void));
-        assert!(matches!(shim.mappings[2].return_mapping, calxgloss_types::ReturnMapping::Discarded));
-        assert!(matches!(shim.mappings[3].return_mapping, calxgloss_types::ReturnMapping::Converted(ref s) if s.is_empty()));
-        assert!(matches!(shim.mappings[4].return_mapping, calxgloss_types::ReturnMapping::Converted(ref s) if s == "HRESULT to Result"));
+        assert!(matches!(
+            shim.mappings[0].return_mapping,
+            calxgloss_types::ReturnMapping::Identity
+        ));
+        assert!(matches!(
+            shim.mappings[1].return_mapping,
+            calxgloss_types::ReturnMapping::Void
+        ));
+        assert!(matches!(
+            shim.mappings[2].return_mapping,
+            calxgloss_types::ReturnMapping::Discarded
+        ));
+        assert!(
+            matches!(shim.mappings[3].return_mapping, calxgloss_types::ReturnMapping::Converted(ref s) if s.is_empty())
+        );
+        assert!(
+            matches!(shim.mappings[4].return_mapping, calxgloss_types::ReturnMapping::Converted(ref s) if s == "HRESULT to Result")
+        );
     }
 
     #[test]
@@ -613,7 +639,8 @@ mod tests {
                     "notes": "DX9 present → wgpu queue submit"
                 }
             ]"#,
-        ).unwrap();
+        )
+        .unwrap();
 
         // Verify the ShimLayer can be serialized (it already is via serde).
         let json = serde_json::to_string_pretty(&shim).unwrap();

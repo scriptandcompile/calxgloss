@@ -131,7 +131,11 @@ pub async fn try_translate_with_retry(
         1,
         "initial",
         initial_translation.tokens_used,
-        result.attempts.last().map(|a| a.is_successful()).unwrap_or(false),
+        result
+            .attempts
+            .last()
+            .map(|a| a.is_successful())
+            .unwrap_or(false),
         ctx.workspace,
     );
 
@@ -525,7 +529,11 @@ pub async fn try_translate_with_retry(
             attempt_num,
             &strategy_name,
             tokens_used,
-            result.attempts.last().map(|a| a.is_successful()).unwrap_or(false),
+            result
+                .attempts
+                .last()
+                .map(|a| a.is_successful())
+                .unwrap_or(false),
             ctx.workspace,
         );
 

@@ -23,8 +23,7 @@ use calxgloss_types::{ComplexityScore, ReturnMapping, ShimApiMapping, ShimLayer}
 
 /// Configuration controlling how aggressively the generator fills in
 /// stubs versus leaving `TODO` markers for manual review.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ShimGenerationMode {
     /// Generate complete, compilable code where possible. Leave `TODO` only
     /// for mappings that require significant manual work (e.g. complex type
@@ -181,7 +180,11 @@ fn needs_state(shim: &ShimLayer) -> bool {
         // "lookup", "register", or "allocate", state is likely needed.
         let needs_tracking = ["heap", "track", "lookup", "register", "allocate", "context"]
             .iter()
-            .any(|keyword| m.parameter_transforms.iter().any(|t| t.to_lowercase().contains(keyword)));
+            .any(|keyword| {
+                m.parameter_transforms
+                    .iter()
+                    .any(|t| t.to_lowercase().contains(keyword))
+            });
 
         // High complexity mappings that involve resource management need state.
         let high_complexity = matches!(m.complexity, ComplexityScore::High);
@@ -227,7 +230,10 @@ fn extract_state_fields(shim: &ShimLayer) -> Vec<StateField> {
                 });
             }
 
-            if lower.contains("device") && lower.contains("context") && seen.insert("device_context") {
+            if lower.contains("device")
+                && lower.contains("context")
+                && seen.insert("device_context")
+            {
                 fields.push(StateField {
                     name: "device_context".to_string(),
                     typ: "Option<wgpu::Device>".to_string(),
@@ -256,10 +262,12 @@ fn append_state_struct(output: &mut String, shim: &ShimLayer) {
     }
 
     // Write the ShimState struct.
-    output.push_str("/// Shared state managed by this shim layer.\n\
+    output.push_str(
+        "/// Shared state managed by this shim layer.\n\
                      ///\n\
                      /// Tracks cross-cutting resources that outlive individual\n\
-                     /// function calls.\n");
+                     /// function calls.\n",
+    );
     output.push_str("pub struct ShimState {\n");
     for field in &fields {
         output.push_str(&format!("    /// {}\n", field.comment));
@@ -303,11 +311,7 @@ fn append_state_struct(output: &mut String, shim: &ShimLayer) {
 // Shim function bodies
 // ============================================================
 
-fn append_shim_functions(
-    output: &mut String,
-    shim: &ShimLayer,
-    mode: &ShimGenerationMode,
-) {
+fn append_shim_functions(output: &mut String, shim: &ShimLayer, mode: &ShimGenerationMode) {
     let has_state = needs_state(shim);
     for mapping in &shim.mappings {
         append_shim_function(output, mapping, has_state, mode);
@@ -468,9 +472,10 @@ fn convert_param_to_rust(param: &str) -> String {
         "INT" | "LONG" | "LPARAM" | "HRESULT" | "LRESULT" => "i32",
         "LONGLONG" | "LONG64" => "i64",
         // Pointers and handles.
-        "LPVOID" | "PVOID" | "HANDLE" | "HMODULE" | "HINSTANCE" | "HDC" | "HWND"
-        | "HDWP" | "HRGN" | "HBITMAP" | "HPALETTE" | "HGLRC" | "HCURSOR"
-        | "HMENU" | "HFONT" | "HBRUSH" => "*mut core::ffi::c_void",
+        "LPVOID" | "PVOID" | "HANDLE" | "HMODULE" | "HINSTANCE" | "HDC" | "HWND" | "HDWP"
+        | "HRGN" | "HBITMAP" | "HPALETTE" | "HGLRC" | "HCURSOR" | "HMENU" | "HFONT" | "HBRUSH" => {
+            "*mut core::ffi::c_void"
+        }
         // Const pointers / strings.
         "LPCVOID" | "LPCSTR" | "LPCWSTR" | "LPCTSTR" | "LPCOLESTR" => "*const core::ffi::c_char",
         "LPTSTR" | "LPTCH" | "LPSTR" | "LPOLESTR" => "*mut core::ffi::c_char",
@@ -479,8 +484,13 @@ fn convert_param_to_rust(param: &str) -> String {
         _ if type_part.ends_with("**") => "*mut *mut core::ffi::c_void",
         _ if type_part.ends_with("*") => "*mut core::ffi::c_void",
         // fmod types.
-        "FMOD_SOUND" | "FMOD_CHANNEL" | "FMOD_CHANNELGROUP" | "FMOD_DSP" | "FMOD_STUDIO_SYSTEM"
-        | "FMOD_MODE" | "FMOD_CHANNELCONTROL_TYPE" => "*mut core::ffi::c_void",
+        "FMOD_SOUND"
+        | "FMOD_CHANNEL"
+        | "FMOD_CHANNELGROUP"
+        | "FMOD_DSP"
+        | "FMOD_STUDIO_SYSTEM"
+        | "FMOD_MODE"
+        | "FMOD_CHANNELCONTROL_TYPE" => "*mut core::ffi::c_void",
         "FMOD_RESULT" => "i32",
         "FMOD_VECTOR" => "*const FMOD_VECTOR",
         // cpal types.
@@ -553,10 +563,7 @@ fn append_skeletal_body(output: &mut String, mapping: &ShimApiMapping) {
     let note = if mapping.parameter_transforms.is_empty() {
         "no parameter transforms needed".to_string()
     } else {
-        format!(
-            "{} transform(s) needed",
-            mapping.parameter_transforms.len()
-        )
+        format!("{} transform(s) needed", mapping.parameter_transforms.len())
     };
 
     let return_note = match &mapping.return_mapping {
@@ -623,9 +630,20 @@ fn is_type_only(name: &str) -> bool {
         || name.contains('<')
         || matches!(
             name,
-            "u32" | "u64" | "i32" | "i64" | "f32" | "f64"
-                | "usize" | "isize" | "bool" | "char"
-                | "str" | "String" | "&str" | "&String"
+            "u32"
+                | "u64"
+                | "i32"
+                | "i64"
+                | "f32"
+                | "f64"
+                | "usize"
+                | "isize"
+                | "bool"
+                | "char"
+                | "str"
+                | "String"
+                | "&str"
+                | "&String"
         )
 }
 
@@ -741,13 +759,28 @@ mod tests {
     #[test]
     fn test_convert_param_to_rust_windows_types() {
         assert_eq!(convert_param_to_rust("UINT x"), "x: u32");
-        assert_eq!(convert_param_to_rust("LPVOID ptr"), "ptr: *mut core::ffi::c_void");
-        assert_eq!(convert_param_to_rust("LPCSTR name"), "name: *const core::ffi::c_char");
-        assert_eq!(convert_param_to_rust("HWND hwnd"), "hwnd: *mut core::ffi::c_void");
+        assert_eq!(
+            convert_param_to_rust("LPVOID ptr"),
+            "ptr: *mut core::ffi::c_void"
+        );
+        assert_eq!(
+            convert_param_to_rust("LPCSTR name"),
+            "name: *const core::ffi::c_char"
+        );
+        assert_eq!(
+            convert_param_to_rust("HWND hwnd"),
+            "hwnd: *mut core::ffi::c_void"
+        );
         assert_eq!(convert_param_to_rust("HRESULT hr"), "hr: i32");
         assert_eq!(convert_param_to_rust("BOOL f"), "f: u32");
-        assert_eq!(convert_param_to_rust("IDirect3D9*** pp"), "pp: *mut *mut core::ffi::c_void");
-        assert_eq!(convert_param_to_rust("void"), "param: *mut core::ffi::c_void");
+        assert_eq!(
+            convert_param_to_rust("IDirect3D9*** pp"),
+            "pp: *mut *mut core::ffi::c_void"
+        );
+        assert_eq!(
+            convert_param_to_rust("void"),
+            "param: *mut core::ffi::c_void"
+        );
     }
 
     #[test]

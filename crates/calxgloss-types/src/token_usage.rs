@@ -204,14 +204,7 @@ mod tests {
 
     #[test]
     fn test_entry_creation() {
-        let entry = TokenUsageEntry::new(
-            "game_logic.dll",
-            "DrawSprite",
-            1,
-            "initial",
-            4096,
-            true,
-        );
+        let entry = TokenUsageEntry::new("game_logic.dll", "DrawSprite", 1, "initial", 4096, true);
         assert_eq!(entry.dll, "game_logic.dll");
         assert_eq!(entry.function, "DrawSprite");
         assert_eq!(entry.attempt, 1);
@@ -236,12 +229,7 @@ mod tests {
     fn test_log_single_entry() {
         let mut log = TokenUsageLog::new();
         log.add_entry(TokenUsageEntry::new(
-            "test.dll",
-            "entry",
-            1,
-            "initial",
-            2048,
-            true,
+            "test.dll", "entry", 1, "initial", 2048, true,
         ));
 
         let stats = log.compute_stats();
@@ -312,8 +300,7 @@ mod tests {
         ));
 
         let json = serde_json::to_string(&log).expect("should serialize");
-        let deserialized: TokenUsageLog =
-            serde_json::from_str(&json).expect("should deserialize");
+        let deserialized: TokenUsageLog = serde_json::from_str(&json).expect("should deserialize");
 
         assert_eq!(deserialized.entries.len(), 1);
         assert_eq!(deserialized.entries[0].dll, "game_logic.dll");

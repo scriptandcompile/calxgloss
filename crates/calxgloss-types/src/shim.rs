@@ -101,11 +101,7 @@ impl ShimApiMapping {
     /// Use this constructor when all fields need to be set at once.
     /// For mostly-identity mappings with few transforms, consider
     /// the more ergonomic builder-style pattern instead.
-    pub fn new(
-        original_api: String,
-        crate_api: String,
-        complexity: ComplexityScore,
-    ) -> Self {
+    pub fn new(original_api: String, crate_api: String, complexity: ComplexityScore) -> Self {
         Self {
             original_api,
             original_params: Vec::new(),
@@ -372,9 +368,7 @@ impl ShimVerificationResult {
 
     /// Returns `true` if the shim passed all tests on all mappings.
     pub fn all_passed(&self) -> bool {
-        self.compiled
-            && self.total_passed() == self.total_tests()
-            && self.total_tests() > 0
+        self.compiled && self.total_passed() == self.total_tests() && self.total_tests() > 0
     }
 
     /// Returns the overall pass rate as a floating-point ratio in `[0.0, 1.0]`.
@@ -551,7 +545,11 @@ impl ShimSuggestionReport {
         if self.suggestions.is_empty() {
             return 0.0;
         }
-        let total: f64 = self.suggestions.iter().map(|s| s.estimated_confidence).sum();
+        let total: f64 = self
+            .suggestions
+            .iter()
+            .map(|s| s.estimated_confidence)
+            .sum();
         total / self.suggestions.len() as f64
     }
 }
@@ -679,14 +677,8 @@ mod tests {
         assert_eq!(deserialized.source_dll, "d3d9.dll");
         assert_eq!(deserialized.target_crate, "wgpu");
         assert_eq!(deserialized.mapping_count(), 1);
-        assert_eq!(
-            deserialized.mappings[0].original_api,
-            "Present"
-        );
-        assert_eq!(
-            deserialized.mappings[0].crate_api,
-            "queue.submit"
-        );
+        assert_eq!(deserialized.mappings[0].original_api, "Present");
+        assert_eq!(deserialized.mappings[0].crate_api, "queue.submit");
     }
 
     #[test]

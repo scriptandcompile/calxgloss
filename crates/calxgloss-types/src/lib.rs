@@ -39,21 +39,19 @@ pub use dashboard::{
     ReviewDashboard, ReviewStatus, StatusCounts, UnitOfWork, WorkUnitKind,
 };
 pub use dll::{DllCategory, DllInfo, Export, Import};
-pub use shim::{
-    ComplexityScore, ReturnMapping, ShimApiMapping, ShimLayer, ShimMappingTestResult,
-    ShimSuggestion, ShimSuggestionReport, ShimVerificationResult, dll_to_module_name,
-};
 pub use error::TypesError;
 pub use experiment_log::{
     CategoryStats, PromptStrategyEntry, PromptStrategyLog, PromptStrategyStats, StrategyStats,
 };
-pub use token_usage::{
-    DllTokenStats, TokenUsageEntry, TokenUsageLog, TokenUsageStats,
-};
 pub use function::{ApiCategory, FunctionInfo, WindowsApiCall};
 pub use git::{GitBranch, GitCommit};
 pub use progress::{ProgressEvent, TranslationEvents};
+pub use shim::{
+    ComplexityScore, ReturnMapping, ShimApiMapping, ShimLayer, ShimMappingTestResult,
+    ShimSuggestion, ShimSuggestionReport, ShimVerificationResult, dll_to_module_name,
+};
 pub use test::{SideEffect, SideEffectKind, TestCase, TestResult};
+pub use token_usage::{DllTokenStats, TokenUsageEntry, TokenUsageLog, TokenUsageStats};
 pub use translation::{ApiCategoryMapping, ApiMappingItem, TranslationRequest, TranslationResult};
 pub use verification::{FailedTest, VerificationResult};
 

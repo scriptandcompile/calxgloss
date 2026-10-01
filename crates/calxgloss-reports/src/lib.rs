@@ -21,8 +21,8 @@ pub mod dashboard;
 use std::io::{self, Write};
 
 use calxgloss_analysis::DllClassification;
-use calxgloss_analysis::Strategy;
 use calxgloss_analysis::ShimSuggestionReport;
+use calxgloss_analysis::Strategy;
 use calxgloss_translator::{BatchTranslationResult, Translation};
 use calxgloss_types::FailedTest;
 use calxgloss_types::GitBranch;

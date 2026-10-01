@@ -190,14 +190,7 @@ mod tests {
         let ws = temp_workspace("record_and_load");
         let logger = TokenUsageLogger::new(&ws);
 
-        let entry = TokenUsageEntry::new(
-            "test.dll",
-            "entry",
-            1,
-            "initial",
-            2048,
-            true,
-        );
+        let entry = TokenUsageEntry::new("test.dll", "entry", 1, "initial", 2048, true);
         logger.record(entry);
 
         let log = logger.load().expect("log should exist");
@@ -239,12 +232,7 @@ mod tests {
 
         // Mixed tokens and success/failure
         logger.record(TokenUsageEntry::new(
-            "a.dll",
-            "func_a",
-            1,
-            "initial",
-            4096,
-            false,
+            "a.dll", "func_a", 1, "initial", 4096, false,
         ));
         logger.record(TokenUsageEntry::new(
             "a.dll",
@@ -255,12 +243,7 @@ mod tests {
             true,
         ));
         logger.record(TokenUsageEntry::new(
-            "b.dll",
-            "func_b",
-            1,
-            "initial",
-            2048,
-            true,
+            "b.dll", "func_b", 1, "initial", 2048, true,
         ));
 
         let stats = logger.compute_stats().expect("stats should exist");

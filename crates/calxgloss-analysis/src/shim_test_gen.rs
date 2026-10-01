@@ -371,7 +371,15 @@ fn append_mapping_test(output: &mut String, mapping: &ShimApiMapping, shim: &Shi
     );
 
     if !mapping.notes.is_empty() {
-        doc.push_str(&format!("**Note:** {}{}\n", mapping.notes, if mapping.notes.ends_with('.') { "" } else { "." }));
+        doc.push_str(&format!(
+            "**Note:** {}{}\n",
+            mapping.notes,
+            if mapping.notes.ends_with('.') {
+                ""
+            } else {
+                "."
+            }
+        ));
     }
 
     output.push_str(&doc);
@@ -442,27 +450,23 @@ fn return_kind_name(return_mapping: &ReturnMapping) -> &'static str {
 fn append_return_assertion(output: &mut String, mapping: &ShimApiMapping) {
     match &mapping.return_mapping {
         ReturnMapping::Void | ReturnMapping::Discarded => {
-            output.push_str(
-                "            // Void/discarded return — no assertion needed.\n"
-            );
+            output.push_str("            // Void/discarded return — no assertion needed.\n");
         }
         ReturnMapping::Identity => {
-            output.push_str(
-                "            // Identity return — verify the result is a valid value.\n"
-            );
+            output
+                .push_str("            // Identity return — verify the result is a valid value.\n");
             output.push_str("            assert_eq!(result, 1);\n\n");
         }
         ReturnMapping::Converted(_) => {
             output.push_str(
-                "            // Converted return — the shim should produce a non-zero value.\n"
+                "            // Converted return — the shim should produce a non-zero value.\n",
             );
             output.push_str("            assert_ne!(result, 0);\n\n");
         }
         ReturnMapping::Custom(_) => {
-            output.push_str(
-                "            // Custom return — verify a pointer/value is produced.\n"
-            );
-            output.push_str("            // TODO: add custom return assertion for this mapping.\n\n");
+            output.push_str("            // Custom return — verify a pointer/value is produced.\n");
+            output
+                .push_str("            // TODO: add custom return assertion for this mapping.\n\n");
         }
     }
 }
@@ -470,15 +474,11 @@ fn append_return_assertion(output: &mut String, mapping: &ShimApiMapping) {
 /// Appends assertions that parameter transforms are represented in the call.
 fn append_transform_assertions(output: &mut String, mapping: &ShimApiMapping) {
     if mapping.parameter_transforms.is_empty() {
-        output.push_str(
-            "            // No parameter transforms — simple pass-through.\n"
-        );
+        output.push_str("            // No parameter transforms — simple pass-through.\n");
         return;
     }
 
-    output.push_str(
-        "            // Verify parameter transforms are reflected in the call.\n"
-    );
+    output.push_str("            // Verify parameter transforms are reflected in the call.\n");
 
     for (i, transform) in mapping.parameter_transforms.iter().enumerate() {
         let lower = transform.to_lowercase();
@@ -491,16 +491,15 @@ fn append_transform_assertions(output: &mut String, mapping: &ShimApiMapping) {
                 idx = i + 1,
                 transform = transform,
             ));
-            output.push_str(
-                "            // This transform involves resource management;\n"
-            );
+            output.push_str("            // This transform involves resource management;\n");
             output.push_str(
                 "            // the shim should access shared state before calling the crate API.\n"
             );
-            output.push_str(
-                "            // TODO: verify state access in generated shim code.\n\n"
-            );
-        } else if lower.contains("cast") || lower.contains("direct") || lower.contains("pass-through") {
+            output.push_str("            // TODO: verify state access in generated shim code.\n\n");
+        } else if lower.contains("cast")
+            || lower.contains("direct")
+            || lower.contains("pass-through")
+        {
             output.push_str(&format!(
                 "            // Transform {idx}: {transform} — simple cast.\n",
                 idx = i + 1,
@@ -547,8 +546,8 @@ fn generate_test_args(params: &[String]) -> String {
                     format!("{name_part}: 42i64")
                 }
                 "LPVOID" | "PVOID" | "HANDLE" | "HMODULE" | "HINSTANCE" | "HDC" | "HWND"
-                | "HDWP" | "HRGN" | "HBITMAP" | "HPALETTE" | "HGLRC" | "HCURSOR"
-                | "HMENU" | "HFONT" | "HBRUSH" => {
+                | "HDWP" | "HRGN" | "HBITMAP" | "HPALETTE" | "HGLRC" | "HCURSOR" | "HMENU"
+                | "HFONT" | "HBRUSH" => {
                     format!("{name_part}: std::ptr::null_mut()")
                 }
                 "LPCVOID" | "LPCSTR" | "LPCWSTR" | "LPCTSTR" | "LPOLESTR" => {
@@ -615,7 +614,15 @@ fn append_edge_case_tests(output: &mut String, mapping: &ShimApiMapping, _shim: 
                 );
 
                 if !mapping.notes.is_empty() {
-                    doc.push_str(&format!("**Note:** {}{}\n", mapping.notes, if mapping.notes.ends_with('.') { "" } else { "." }));
+                    doc.push_str(&format!(
+                        "**Note:** {}{}\n",
+                        mapping.notes,
+                        if mapping.notes.ends_with('.') {
+                            ""
+                        } else {
+                            "."
+                        }
+                    ));
                 }
 
                 output.push_str(&doc);
@@ -651,7 +658,9 @@ fn append_edge_case_tests(output: &mut String, mapping: &ShimApiMapping, _shim: 
 
                 output.push_str("            MOCK_CALLS.with(|calls| {\n");
                 output.push_str("                let calls = calls.borrow();\n");
-                output.push_str("                let last = calls.last().expect(\"expected one call\");\n");
+                output.push_str(
+                    "                let last = calls.last().expect(\"expected one call\");\n",
+                );
                 output.push_str(&format!(
                     "                assert_eq!(last.api_name, \"{crate_root}::{crate_api}\");\n",
                     crate_root = mapping.crate_api.split("::").next().unwrap_or(""),
@@ -661,13 +670,15 @@ fn append_edge_case_tests(output: &mut String, mapping: &ShimApiMapping, _shim: 
                 // Depending on mapping type, add different assertions.
                 match &mapping.return_mapping {
                     ReturnMapping::Void | ReturnMapping::Discarded => {
-                        output.push_str("                // Void/discarded — no return to check.\n");
+                        output
+                            .push_str("                // Void/discarded — no return to check.\n");
                     }
                     ReturnMapping::Identity | ReturnMapping::Converted(_) => {
                         output.push_str("                assert_ne!(result, 0);\n");
                     }
                     ReturnMapping::Custom(_) => {
-                        output.push_str("                // Custom — TODO: verify custom return.\n");
+                        output
+                            .push_str("                // Custom — TODO: verify custom return.\n");
                     }
                 }
 
@@ -738,9 +749,7 @@ fn append_summary_test(output: &mut String, shim: &ShimLayer) {
     output.push_str("            // This assertion verifies the count matches.\n");
     output.push_str("            assert_eq!(\n");
     output.push_str("                expected_mapping_count,\n");
-    output.push_str(&format!(
-        "                {count},\n",
-    ));
+    output.push_str(&format!("                {count},\n",));
     output.push_str(&format!(
         "                \"Expected {count} mapping(s) in shim, got {count}\"\n",
     ));
@@ -809,16 +818,22 @@ fn convert_param_to_rust(param: &str) -> String {
         "ULONGLONG" | "DWORDLONG" => "u64",
         "INT" | "LONG" | "LPARAM" | "HRESULT" | "LRESULT" => "i32",
         "LONGLONG" | "LONG64" => "i64",
-        "LPVOID" | "PVOID" | "HANDLE" | "HMODULE" | "HINSTANCE" | "HDC" | "HWND"
-        | "HDWP" | "HRGN" | "HBITMAP" | "HPALETTE" | "HGLRC" | "HCURSOR"
-        | "HMENU" | "HFONT" | "HBRUSH" => "*mut core::ffi::c_void",
+        "LPVOID" | "PVOID" | "HANDLE" | "HMODULE" | "HINSTANCE" | "HDC" | "HWND" | "HDWP"
+        | "HRGN" | "HBITMAP" | "HPALETTE" | "HGLRC" | "HCURSOR" | "HMENU" | "HFONT" | "HBRUSH" => {
+            "*mut core::ffi::c_void"
+        }
         "LPCVOID" | "LPCSTR" | "LPCWSTR" | "LPCTSTR" | "LPOLESTR" => "*const core::ffi::c_char",
         "LPTSTR" | "LPTCH" | "LPSTR" => "*mut core::ffi::c_char",
         _ if type_part.ends_with("***") => "*mut *mut core::ffi::c_void",
         _ if type_part.ends_with("**") => "*mut *mut core::ffi::c_void",
         _ if type_part.ends_with('*') => "*mut core::ffi::c_void",
-        "FMOD_SOUND" | "FMOD_CHANNEL" | "FMOD_CHANNELGROUP" | "FMOD_DSP" | "FMOD_STUDIO_SYSTEM"
-        | "FMOD_MODE" | "FMOD_CHANNELCONTROL_TYPE" => "*mut core::ffi::c_void",
+        "FMOD_SOUND"
+        | "FMOD_CHANNEL"
+        | "FMOD_CHANNELGROUP"
+        | "FMOD_DSP"
+        | "FMOD_STUDIO_SYSTEM"
+        | "FMOD_MODE"
+        | "FMOD_CHANNELCONTROL_TYPE" => "*mut core::ffi::c_void",
         "FMOD_RESULT" => "i32",
         "SAMPLE_RATE" | "FORMAT" => "u32",
         _ => "*mut core::ffi::c_void",
@@ -858,9 +873,20 @@ fn is_type_only(name: &str) -> bool {
         || name.contains('<')
         || matches!(
             name,
-            "u32" | "u64" | "i32" | "i64" | "f32" | "f64"
-                | "usize" | "isize" | "bool" | "char"
-                | "str" | "String" | "&str" | "&String"
+            "u32"
+                | "u64"
+                | "i32"
+                | "i64"
+                | "f32"
+                | "f64"
+                | "usize"
+                | "isize"
+                | "bool"
+                | "char"
+                | "str"
+                | "String"
+                | "&str"
+                | "&String"
         )
 }
 
@@ -1087,7 +1113,10 @@ mod tests {
         assert!(tests.contains("test_multi_func_edge_null"));
         // Should not have duplicates.
         let zero_count = tests.matches("test_multi_func_edge_zero").count();
-        assert_eq!(zero_count, 1, "Expected exactly one zero edge case, found {zero_count}");
+        assert_eq!(
+            zero_count, 1,
+            "Expected exactly one zero edge case, found {zero_count}"
+        );
     }
 
     #[test]
@@ -1119,7 +1148,9 @@ mod tests {
             crate_api: "custom_crate::custom_return".to_string(),
             crate_params: vec!["bool".to_string()],
             parameter_transforms: vec!["hr → HRESULT to Result<bool> conversion".to_string()],
-            return_mapping: ReturnMapping::Custom("complex HRESULT to Result conversion".to_string()),
+            return_mapping: ReturnMapping::Custom(
+                "complex HRESULT to Result conversion".to_string(),
+            ),
             complexity: ComplexityScore::High,
             notes: String::new(),
         });
@@ -1240,10 +1271,19 @@ mod tests {
     #[test]
     fn test_convert_param_to_rust_various_types() {
         assert_eq!(convert_param_to_rust("UINT x"), "x: u32");
-        assert_eq!(convert_param_to_rust("LPVOID ptr"), "ptr: *mut core::ffi::c_void");
-        assert_eq!(convert_param_to_rust("LPCSTR name"), "name: *const core::ffi::c_char");
+        assert_eq!(
+            convert_param_to_rust("LPVOID ptr"),
+            "ptr: *mut core::ffi::c_void"
+        );
+        assert_eq!(
+            convert_param_to_rust("LPCSTR name"),
+            "name: *const core::ffi::c_char"
+        );
         assert_eq!(convert_param_to_rust("HRESULT hr"), "hr: i32");
-        assert_eq!(convert_param_to_rust("HWND hwnd"), "hwnd: *mut core::ffi::c_void");
+        assert_eq!(
+            convert_param_to_rust("HWND hwnd"),
+            "hwnd: *mut core::ffi::c_void"
+        );
     }
 
     #[test]
