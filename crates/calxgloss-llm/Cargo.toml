@@ -16,3 +16,4 @@ tracing = { workspace = true }
 futures = "0.3"
 thiserror = { workspace = true }
 calxgloss-types = { path = "../calxgloss-types" }
+parking_lot = { workspace = true }

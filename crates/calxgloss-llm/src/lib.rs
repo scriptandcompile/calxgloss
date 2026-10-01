@@ -9,6 +9,7 @@
 //! - [`context`] — Context-window detection and function splitting for
 //!   fault recovery.
 
+use calxgloss_types::ResourceExhaustionKind;
 use futures::{Stream, StreamExt};
 use reqwest::Client;
 use tracing::{debug, error, instrument, trace};
@@ -43,6 +44,13 @@ pub enum LlmError {
     /// The endpoint URL was invalid.
     #[error("invalid endpoint URL: {0}")]
     InvalidUrl(String),
+
+    /// The local LLM model is overloaded or has run out of memory.
+    ///
+    /// Recovery: wait for the model to become available again, or queue
+    /// this work for later processing.
+    #[error("LLM resource exhausted: {kind}")]
+    ResourceExhausted { kind: ResourceExhaustionKind },
 }
 
 pub type Result<T> = std::result::Result<T, LlmError>;
@@ -370,6 +378,15 @@ impl LlmClient {
         if status != 200 {
             let body = response.text().await?;
             error!(status, body = %body, "LLM request failed");
+
+            // Detect resource-exhaustion HTTP codes (503 Service Unavailable,
+            // 429 Too Many Requests, 507 Out of Memory)
+            if matches!(status, 429 | 503 | 507) {
+                return Err(LlmError::ResourceExhausted {
+                    kind: ResourceExhaustionKind::Overloaded,
+                });
+            }
+
             return Err(LlmError::ServerError {
                 status,
                 message: body,
@@ -620,6 +637,14 @@ pub use infinite_loop::InfiniteLoopDetector;
 pub mod behavior_divergence;
 
 pub use behavior_divergence::{BehaviorDivergenceDetector, EdgeCaseTest};
+
+// ============================================================
+// Resource-exhaustion detection
+// ============================================================
+
+pub mod resource_exhaustion;
+
+pub use resource_exhaustion::{ExhaustionSignal, ResourceExhaustionDetector};
 
 // ============================================================
 // Tests
