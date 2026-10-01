@@ -223,6 +223,7 @@ impl BehaviorDivergenceDetector {
     ///
     /// The signal includes suggestions for new baseline test cases to
     /// close the coverage gap.
+    #[allow(clippy::too_many_arguments)]
     pub fn detect_divergence(
         &self,
         dll: &str,

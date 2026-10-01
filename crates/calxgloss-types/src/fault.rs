@@ -547,6 +547,7 @@ impl FaultEvent {
     /// * `edge_total` — Total number of edge-case tests.
     /// * `failing_labels` — Labels of the edge-case tests that failed.
     /// * `confidence` — Confidence score for the diagnosis (0–10).
+    #[allow(clippy::too_many_arguments)]
     pub fn behavior_divergence(
         dll: &str,
         function: &str,
