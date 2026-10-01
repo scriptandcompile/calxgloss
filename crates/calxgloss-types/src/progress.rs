@@ -66,6 +66,22 @@ pub enum ProgressEvent {
         function: String,
         test_count: usize,
     },
+    /// The context tier for this function was selected.
+    ///
+    /// Emitted after complexity analysis and before the first LLM call.
+    /// The tier determines how much context the LLM receives. On retry
+    /// failures the tier is escalated and this event is re-emitted with
+    /// the new tier.
+    ContextTierSelected {
+        dll: String,
+        function: String,
+        tier: String,
+        tier_label: String,
+        /// Complexity classification that influenced the selection.
+        complexity: String,
+        /// Number of distinct Windows API calls.
+        api_call_count: usize,
+    },
     /// LLM call was sent to generate / fix code.
     LlmCallStart {
         dll: String,
@@ -298,6 +314,19 @@ impl std::fmt::Display for ProgressEvent {
                 write!(
                     f,
                     "Generated {test_count} baseline tests for {function} ({dll})"
+                )
+            }
+            ProgressEvent::ContextTierSelected {
+                dll,
+                function,
+                tier,
+                tier_label,
+                complexity,
+                ..
+            } => {
+                write!(
+                    f,
+                    "Context tier selected for {function} ({dll}): {tier} ({tier_label}) — complexity={complexity}"
                 )
             }
             ProgressEvent::LlmCallStart {

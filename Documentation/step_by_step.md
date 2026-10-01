@@ -18,7 +18,7 @@
 - All workspace tests pass 0 failures
 
 **What's NOT done:**
-- **Context tiers** — `escalate_on_failure` flag exists but tiered context logic is not implemented (Phase 8)
+- **Context tiers** — Tier selection logic is implemented (8.1), but tier-specific prompt assembly, escalation, and token tracking remain (8.2–8.8)
 - **CI / cross-platform verification** — no CI workflow files (Phase 9)
 - **Branch cleanup & archive** — no gc or cleanup subcommand (Phase 10)
 
@@ -144,16 +144,16 @@
 
 > **Goal:** Optimize token usage by sending the LLM only the context it needs. `escalate_on_failure` flag exists but tiered context logic is not implemented.
 
-| Step | What | Details |
-|------|------|---------|
-| 8.1 | Implement tier selection logic | In `calxgloss-translator`, add `select_context_tier(function)` based on function complexity, API call count, and previous success rates. |
-| 8.2 | Implement Tier 0 (function stub) | Only function name, signature, call graph neighbors. |
-| 8.3 | Implement Tier 1 (disassembly + decompiler) | Full disassembly + Ghidra pseudo-C + type info. |
-| 8.4 | Implement Tier 2 (disassembly + decompiler + tests) | Tier 1 + baseline test results + failing test cases. |
-| 8.5 | Implement Tier 3 (module context) | Tier 2 + neighboring functions + shared data structures. |
-| 8.6 | Implement Tier 4 (full module + crate shims) | Tier 3 + shim layer code + PAL trait definitions. |
-| 8.7 | Implement tier escalation | Start at minimum tier. On failure, escalate automatically. |
-| 8.8 | Track token usage | Log context size per function in `workspace_config.json` and `re/analysis/token_usage.json`. |
+| Step | What | Details | Status |
+|------|------|---------|--------|
+| 8.1 | Implement tier selection logic | In `calxgloss-types`, added `ContextTier` enum (Stub/Disassembly/WithTests/ModuleContext/FullModule) and `select_context_tier()` function that selects the starting tier from function complexity and API call count. In `calxgloss-translator`, `Translation` struct includes `context_tier: ContextTier` field. `TranslationPipeline::translate()` computes the tier after complexity detection and emits `ContextTierSelected` progress event. Tier escalation on failure will be implemented in step 8.7. | ✅ Complete |
+| 8.2 | Implement Tier 0 (function stub) | Only function name, signature, call graph neighbors. | ⬜ Not started |
+| 8.3 | Implement Tier 1 (disassembly + decompiler) | Full disassembly + Ghidra pseudo-C + type info. | ⬜ Not started |
+| 8.4 | Implement Tier 2 (disassembly + decompiler + tests) | Tier 1 + baseline test results + failing test cases. | ⬜ Not started |
+| 8.5 | Implement Tier 3 (module context) | Tier 2 + neighboring functions + shared data structures. | ⬜ Not started |
+| 8.6 | Implement Tier 4 (full module + crate shims) | Tier 3 + shim layer code + PAL trait definitions. | ⬜ Not started |
+| 8.7 | Implement tier escalation | Start at minimum tier. On failure, escalate automatically. | ⬜ Not started |
+| 8.8 | Track token usage | Log context size per function in `workspace_config.json` and `re/analysis/token_usage.json`. | ⬜ Not started |
 
 ---
 
@@ -197,7 +197,7 @@
 | 5 | Web review UI | 8–12d | 3, 4 | ✅ Complete |
 | 6 | Shim layer generation (types, generation, verification, suggestions, auto-pipeline) | 5–8d | 1 | ✅ Complete |
 | 7 | Fault detection & recovery | 4–6d | 1, 2 | ✅ Complete |
-| 8 | Context tiers | 3–5d | 1, 2 | ⬜ Not started |
+| 8 | Context tiers | 3–5d | 1, 2 | 🟡 8.1 Complete (tier selection logic, ContextTier enum, progress event, Translation.context_tier field) |
 | 9 | CI / cross-platform verification | 3–5d | 0 | ⬜ Not started |
 | 10 | Branch cleanup & archive | 2–3d | 4, 5 | ⬜ Not started |
 

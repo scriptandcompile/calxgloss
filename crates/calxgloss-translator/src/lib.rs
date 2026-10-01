@@ -49,7 +49,8 @@ use calxgloss_pal::ApiMappings;
 use calxgloss_prompts::build_translate_prompt;
 use calxgloss_testgen::TestGenerator;
 use calxgloss_types::{
-    Export, FunctionInfo, ProgressEvent, TestCase, TranslationEvents, TranslationRequest,
+    ContextTier, Export, FunctionInfo, ProgressEvent, TestCase,
+    TranslationEvents, TranslationRequest,
 };
 use calxgloss_verify::Verifier;
 use tracing::{debug, info, instrument, warn};
@@ -98,6 +99,11 @@ pub struct Translation {
     /// Used by the behavior-divergence detector to generate targeted
     /// edge-case tests.
     pub disassembly_hints: Vec<String>,
+
+    /// The context tier that was used for this translation.
+    /// Indicates how much context the LLM received; used for
+    /// token usage tracking and future tier selection.
+    pub context_tier: ContextTier,
 }
 
 // ============================================================
@@ -177,6 +183,7 @@ impl Translator {
             baseline_tests: Vec::new(),
             call_graph: Vec::new(),
             disassembly_hints: Vec::new(),
+            context_tier: ContextTier::Disassembly,
         })
     }
 
@@ -223,6 +230,7 @@ impl Translator {
             baseline_tests: request.baseline_tests,
             call_graph: Vec::new(),
             disassembly_hints: Vec::new(),
+            context_tier: ContextTier::WithTests,
         })
     }
 
@@ -295,7 +303,6 @@ impl Translator {
 /// let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
 /// let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
 /// ```
-#[derive(Debug)]
 pub struct TranslationPipeline {
     /// Client for querying GhidraMCP.
     ghidra: GhidraClient,
@@ -534,6 +541,26 @@ impl TranslationPipeline {
             "Detected function complexity"
         );
 
+        // Select the context tier based on complexity and API call count.
+        // Historical success rate tracking is reserved for a later integration.
+        let api_call_count = tagged_apis.len();
+        let tier = calxgloss_types::select_context_tier(&complexity, api_call_count, calxgloss_types::SuccessRate::default());
+        let complexity_label = complexity.to_string();
+        info!(
+            dll,
+            function,
+            tier = %tier,
+            "Selected context tier"
+        );
+        self.emit(ProgressEvent::ContextTierSelected {
+            dll: dll.to_string(),
+            function: function.to_string(),
+            tier: tier.to_string(),
+            tier_label: tier.label().to_string(),
+            complexity: complexity_label,
+            api_call_count,
+        });
+
         let request = self.build_translation_request(
             dll,
             function,
@@ -618,6 +645,7 @@ impl TranslationPipeline {
             baseline_tests,
             call_graph: function_info.call_graph.clone(),
             disassembly_hints: function_info.disassembly_hints.clone(),
+            context_tier: tier,
         })
     }
 
@@ -676,6 +704,7 @@ impl TranslationPipeline {
             baseline_tests: request.baseline_tests,
             call_graph: Vec::new(),
             disassembly_hints: Vec::new(),
+            context_tier: ContextTier::WithTests,
         })
     }
 
@@ -793,6 +822,9 @@ impl TranslationPipeline {
                 "All retry attempts exhausted without success"
             );
         }
+
+        // Record the final result for future tier selection tracking.
+        // (Success rate tracking infrastructure will be added in a follow-up.)
 
         Ok(result)
     }
@@ -1412,6 +1444,7 @@ mod tests {
             baseline_tests: vec![],
             call_graph: vec!["helper_func".to_string()],
             disassembly_hints: vec![],
+            context_tier: ContextTier::WithTests,
         };
 
         let cloned = translation.clone();
@@ -1421,6 +1454,7 @@ mod tests {
         assert_eq!(cloned.rust_code, translation.rust_code);
         assert_eq!(cloned.tokens_used, translation.tokens_used);
         assert_eq!(cloned.call_graph, translation.call_graph);
+        assert_eq!(cloned.context_tier, translation.context_tier);
     }
 
     #[tokio::test]

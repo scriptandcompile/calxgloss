@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Context tier selection
+
+- **`ContextTier` enum** (`calxgloss-types::context_tier`) — five tiers (`Stub`, `Disassembly`, `WithTests`, `ModuleContext`, `FullModule`) defining the context scope sent to the LLM per function. Each tier is a superset of the previous.
+- **`select_context_tier()`** — selects the starting tier from function complexity classification and API call count. Historical success rate tracking is reserved for a follow-up.
+- **`SuccessRate` struct** — tracks past success/failure counts for tier selection optimization.
+- **`ProgressEvent::ContextTierSelected`** — emitted after complexity analysis with the selected tier label, complexity classification, and API call count.
+- **`Translation.context_tier`** — new field recording which tier was used for each translation, enabling token usage tracking and future tier optimization.
+
 #### Fault detection
 
 - **Fault types** (`calxgloss-types::fault`) — `FaultCategory` (7 categories: `ContextWindowExceeded`, `Hallucination`, `InfiniteLoop`, `BehaviorDivergence`, `ResourceExhaustion`, `SlowResponse`, `PromptCorruption`), `FaultSeverity` (Warning/Error/Critical), `ContextWindowFault` (with truncation signal detection and suggested chunk count), `FaultEvent` (with factory constructors for context-window and hallucination faults), `FaultLog`, and `FaultStats` (aggregate statistics with serde serialization). Full test suite with serialization round-trips.

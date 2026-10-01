@@ -157,6 +157,7 @@ impl ProgressState {
             | ProgressEvent::GhidraFetchComplete { .. }
             | ProgressEvent::ApiTaggingComplete { .. }
             | ProgressEvent::TestsGenerated { .. }
+            | ProgressEvent::ContextTierSelected { .. }
             | ProgressEvent::LlmCallStart { .. }
             | ProgressEvent::LlmCallComplete { .. }
             | ProgressEvent::LlmCallFailed { .. }

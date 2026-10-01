@@ -18,6 +18,7 @@
 //! - [`error`] — Unified error type (`TypesError`)
 
 pub mod complexity;
+pub mod context_tier;
 pub mod dashboard;
 pub mod dll;
 pub mod error;
@@ -35,6 +36,7 @@ pub mod verification;
 // Re-export public types at the crate root for convenient access.
 
 pub use complexity::{FailureHint, FunctionComplexity, PromptVariant, detect_complexity};
+pub use context_tier::{ContextTier, SuccessRate, record_translation_result, select_context_tier};
 pub use dashboard::{
     DependencyEdge, DependencyGraph, DependencyNode, ReviewAction, ReviewActionKind,
     ReviewDashboard, ReviewStatus, StatusCounts, UnitOfWork, WorkUnitKind,

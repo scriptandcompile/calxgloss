@@ -1881,6 +1881,7 @@ async fn handle_translate(
                     baseline_tests: Vec::new(),
                     call_graph: Vec::new(),
                     disassembly_hints: Vec::new(),
+                    context_tier: calxgloss::ContextTier::WithTests,
                 });
                 break;
             } else if attempt.attempt >= retry_config.max_attempts {

@@ -27,6 +27,9 @@ pub use calxgloss_types::dashboard::{
     ReviewDashboard, ReviewStatus, StatusCounts, UnitOfWork, WorkUnitKind,
 };
 
+// Context tier types
+pub use calxgloss_types::context_tier::ContextTier;
+
 // Progress event types
 pub use calxgloss_types::progress::{ProgressEvent, TranslationEvents};
 
