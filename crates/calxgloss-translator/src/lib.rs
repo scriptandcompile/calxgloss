@@ -91,6 +91,12 @@ pub struct Translation {
     /// Call graph neighbors (callers and callees) from Ghidra analysis.
     /// Used for context extraction during escalate retries.
     pub call_graph: Vec<String>,
+
+    /// Patterns discovered in the disassembly (e.g., `"zero_check"`,
+    /// `"null_check"`, `"overflow"`).
+    /// Used by the behavior-divergence detector to generate targeted
+    /// edge-case tests.
+    pub disassembly_hints: Vec<String>,
 }
 
 // ============================================================
@@ -169,6 +175,7 @@ impl Translator {
             tokens_used: response.tokens_used,
             baseline_tests: Vec::new(),
             call_graph: Vec::new(),
+            disassembly_hints: Vec::new(),
         })
     }
 
@@ -214,6 +221,7 @@ impl Translator {
             tokens_used: response.tokens_used,
             baseline_tests: request.baseline_tests,
             call_graph: Vec::new(),
+            disassembly_hints: Vec::new(),
         })
     }
 
@@ -587,6 +595,7 @@ impl TranslationPipeline {
             tokens_used: response.tokens_used,
             baseline_tests,
             call_graph: function_info.call_graph.clone(),
+            disassembly_hints: function_info.disassembly_hints.clone(),
         })
     }
 
@@ -644,6 +653,7 @@ impl TranslationPipeline {
             tokens_used: response.tokens_used,
             baseline_tests: request.baseline_tests,
             call_graph: Vec::new(),
+            disassembly_hints: Vec::new(),
         })
     }
 
@@ -819,6 +829,7 @@ impl TranslationPipeline {
             decompiler_output: report.decompiled.body,
             windows_apis: Vec::new(),
             call_graph,
+            disassembly_hints: Vec::new(),
         })
     }
 
@@ -1355,6 +1366,7 @@ mod tests {
             tokens_used: Some(1024),
             baseline_tests: vec![],
             call_graph: vec!["helper_func".to_string()],
+            disassembly_hints: vec![],
         };
 
         let cloned = translation.clone();
@@ -1380,6 +1392,7 @@ mod tests {
             decompiler_output: "int __stdcall DrawSprite(int x, int y, unsigned int texture_index) {\n    return x + y;\n}".to_string(),
             windows_apis: Vec::new(),
             call_graph: Vec::new(),
+            disassembly_hints: Vec::new(),
         };
 
         // The inferred signature is used as-is, parameter types included.
@@ -1407,6 +1420,7 @@ mod tests {
             decompiler_output: "\nlonglong FUN_18008ed50(longlong param_1,int param_2)\n\n{\n  return param_1 + ((longlong)param_2 + 4) * 8;\n}\n".to_string(),
             windows_apis: Vec::new(),
             call_graph: Vec::new(),
+            disassembly_hints: Vec::new(),
         };
 
         let signature = pipeline.signature_for(&func_info);
@@ -1437,6 +1451,7 @@ mod tests {
             decompiler_output: String::new(),
             windows_apis: Vec::new(),
             call_graph: Vec::new(),
+            disassembly_hints: Vec::new(),
         };
 
         // With nothing to read, the fallback declares no parameters. It
@@ -1483,6 +1498,7 @@ mod tests {
             decompiler_output: "int DrawSprite(int x) { return x; }".to_string(),
             windows_apis: Vec::new(),
             call_graph: Vec::new(),
+            disassembly_hints: Vec::new(),
         };
 
         let request = pipeline.build_translation_request(

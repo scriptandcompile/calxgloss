@@ -1873,6 +1873,7 @@ async fn handle_translate(
                     tokens_used: None,
                     baseline_tests: Vec::new(),
                     call_graph: Vec::new(),
+                    disassembly_hints: Vec::new(),
                 });
                 break;
             } else if attempt.attempt >= retry_config.max_attempts {

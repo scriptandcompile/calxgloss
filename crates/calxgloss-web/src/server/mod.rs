@@ -168,7 +168,8 @@ impl ProgressState {
             | ProgressEvent::TranslationFailed { .. }
             | ProgressEvent::FunctionCompleted { .. }
             | ProgressEvent::HallucinationDetected { .. }
-            | ProgressEvent::InfiniteLoopDetected { .. } => {
+            | ProgressEvent::InfiniteLoopDetected { .. }
+            | ProgressEvent::BehaviorDivergenceDetected { .. } => {
                 self.on_translation_event(event).await;
             }
             ProgressEvent::ClassificationComplete {

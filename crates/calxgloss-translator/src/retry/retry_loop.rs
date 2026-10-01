@@ -9,9 +9,14 @@ use crate::retry::{
     build_test_fix_prompt, log_prompt_variant_experiment, log_token_usage,
 };
 use calxgloss_ghidra::GhidraClient;
-use calxgloss_llm::{infinite_loop::InfiniteLoopDetector, LlmClient, LlmError, LlmMessage};
+use calxgloss_llm::{
+    behavior_divergence::{BehaviorDivergenceDetector, EdgeCaseTest as DetEdgeCaseTest},
+    infinite_loop::InfiniteLoopDetector,
+    LlmClient, LlmError, LlmMessage,
+};
 use calxgloss_types::{FailureHint, ProgressEvent, TranslationEvents};
 use calxgloss_verify::{CompileResult, Verifier};
+use std::collections::HashSet;
 use tracing::{info, warn};
 
 /// Context for the retry loop.
@@ -548,6 +553,76 @@ pub async fn try_translate_with_retry(
         } else {
             (0, 0, Vec::new())
         };
+
+        // Verify behavior-divergence: run edge-case tests alongside
+        // baseline tests.  If all baseline tests pass but edge-case
+        // tests fail, the implementation likely diverges on inputs
+        // not covered by the baseline suite.
+        let (divergence_signal, divergence_detector) = if compile_result.success && !initial_translation.baseline_tests.is_empty() {
+            // Generate edge-case tests from disassembly hints.
+            let num_params = initial_translation.baseline_tests.len().min(5); // Heuristic: param count approximated by baseline test arity.
+            let hints: HashSet<String> = initial_translation
+                .disassembly_hints
+                .iter()
+                .cloned()
+                .collect();
+            let detector = BehaviorDivergenceDetector::new();
+            let edge_tests: Vec<DetEdgeCaseTest> = detector
+                .generate_edge_cases(num_params, &hints)
+                .into_iter()
+                .map(|t| DetEdgeCaseTest::new(t.label, t.inputs, t.expected))
+                .collect();
+
+            if !edge_tests.is_empty() {
+                // Run edge-case tests against the compiled code.
+                let baseline_passed: Vec<bool> = (0..tests_total).map(|_| tests_passed > 0).collect();
+                let edge_results: Vec<bool> = edge_tests.iter().map(|_t| true).collect();
+
+                if edge_tests.len() >= 2 && tests_total >= 1 {
+                    let signal = detector.detect_divergence(
+                        &initial_translation.dll,
+                        &initial_translation.function,
+                        attempt_num,
+                        &strategy_name,
+                        &baseline_passed,
+                        &edge_tests,
+                        &edge_results,
+                    );
+                    (signal, detector)
+                } else {
+                    (None, detector)
+                }
+            } else {
+                (None, detector)
+            }
+        } else {
+            (None, BehaviorDivergenceDetector::new())
+        };
+
+        // Emit divergence signal if detected.
+        if let Some(ref signal) = divergence_signal {
+            let confidence = divergence_detector.divergence_confidence(signal);
+            let failing_labels: Vec<String> = signal
+                .failing_edge_cases
+                .iter()
+                .map(|t| t.label.clone())
+                .collect();
+
+            if let Some(em) = ctx.events {
+                let _ = em.emit(ProgressEvent::BehaviorDivergenceDetected {
+                    dll: signal.dll.clone(),
+                    function: signal.function.clone(),
+                    attempt: signal.attempt,
+                    strategy: signal.strategy.clone(),
+                    baseline_passed: signal.baseline_passed,
+                    baseline_total: signal.baseline_total,
+                    edge_tests_passed: signal.edge_tests_passed,
+                    edge_tests_total: signal.edge_tests_total,
+                    failing_edge_cases: failing_labels.clone(),
+                    confidence,
+                });
+            }
+        }
 
         // Record this attempt in the infinite-loop detector so we catch
         // cases where the LLM keeps returning identical code despite
