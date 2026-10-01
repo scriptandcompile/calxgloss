@@ -18,7 +18,7 @@
 - All workspace tests pass 0 failures
 
 **What's NOT done:**
-- **Fault detection** — context-window detector + fault logging implemented (Phase 7, Step 7.1); hallucination detector implemented (Phase 7, Step 7.2); infinite-loop detector implemented (Phase 7, Step 7.3); behavior-divergence detector, resource exhaustion monitoring, and fault event log remaining (Phase 7)
+- **Fault detection** — context-window detector + fault logging implemented (Phase 7, Step 7.1); hallucination detector implemented (Phase 7, Step 7.2); infinite-loop detector implemented (Phase 7, Step 7.3); behavior-divergence detector implemented (Phase 7, Step 7.4); resource exhaustion monitoring and fault event log remaining (Phase 7)
 - **Context tiers** — `escalate_on_failure` flag exists but tiered context logic is not implemented (Phase 8)
 - **CI / cross-platform verification** — no CI workflow files (Phase 9)
 - **Branch cleanup & archive** — no gc or cleanup subcommand (Phase 10)
@@ -135,7 +135,7 @@
 | 7.1 | Implement context-window detector | After each LLM call, check response size vs. model's context limit. Auto-split the function and retry with a focused basic block. | ✅ Complete |
 | 7.2 | Implement hallucination detector | Cross-reference LLM-generated function calls against Ghidra's actual symbols. Flag non-existent API references with close-match suggestions. Integrated into `TranslationPipeline::send_to_llm()` with progress events. | ✅ Complete |
 | 7.3 | Implement infinite-loop detector | Track prompt → output hashes. If same bad output repeats 3+ times, escalate to manual intervention. | ✅ Complete |
-| 7.4 | Implement behavior-divergence detector | If tests pass but output differs on unseen inputs, flag as "insufficient test coverage" and expand test suite. |
+| 7.4 | Implement behavior-divergence detector | If tests pass but output differs on unseen inputs, flag as "insufficient test coverage" and expand test suite. `BehaviorDivergenceDetector` generates edge-case tests from disassembly hints, compares baseline vs. edge-case results, emits `BehaviorDivergenceDetected` progress events, and logs `FaultEvent::behavior_divergence()` with confidence scoring and actionable recommendations. Integrated into `retry_loop.rs` with `FunctionInfo.disassembly_hints` propagated through the pipeline. | ✅ Complete |
 | 7.5 | Resource exhaustion monitoring | Monitor LLM client for OOM / timeout. Queue work when the local model is overloaded. |
 | 7.6 | Fault event log | All detected faults logged to `re/analysis/fault_log.json` with detection method, severity, and recovery action. |
 
@@ -197,7 +197,7 @@
 | 4 | Dependency-aware work queue | 4–6d | 0, 3 | ✅ Complete |
 | 5 | Web review UI | 8–12d | 3, 4 | ✅ Complete |
 | 6 | Shim layer generation (types, generation, verification, suggestions, auto-pipeline) | 5–8d | 1 | ✅ Complete |
-| 7 | Fault detection & recovery | 4–6d | 1, 2 | 🔄 In progress (7.1 + 7.2 + 7.3 done) |
+| 7 | Fault detection & recovery | 4–6d | 1, 2 | 🔄 In progress (7.1 + 7.2 + 7.3 + 7.4 done) |
 | 8 | Context tiers | 3–5d | 1, 2 | ⬜ Not started |
 | 9 | CI / cross-platform verification | 3–5d | 0 | ⬜ Not started |
 | 10 | Branch cleanup & archive | 2–3d | 4, 5 | ⬜ Not started |
