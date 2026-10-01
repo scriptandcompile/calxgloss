@@ -22,6 +22,7 @@ pub mod dashboard;
 pub mod dll;
 pub mod error;
 pub mod experiment_log;
+pub mod fault;
 pub mod function;
 pub mod git;
 pub mod progress;
@@ -42,6 +43,9 @@ pub use dll::{DllCategory, DllInfo, Export, Import};
 pub use error::TypesError;
 pub use experiment_log::{
     CategoryStats, PromptStrategyEntry, PromptStrategyLog, PromptStrategyStats, StrategyStats,
+};
+pub use fault::{
+    ContextWindowFault, FaultCategory, FaultEvent, FaultLog, FaultSeverity, FaultStats,
 };
 pub use function::{ApiCategory, FunctionInfo, WindowsApiCall};
 pub use git::{GitBranch, GitCommit};
