@@ -351,6 +351,7 @@ impl ShimPipeline {
 /// - `shim.rs` — the generated Rust source code
 /// - `shim_tests.rs` — the generated Rust test module
 /// - `verification.json` — the verification results as JSON
+#[allow(clippy::too_many_arguments)]
 fn persist_shim_artifacts(
     shim: &ShimLayer,
     source: &str,

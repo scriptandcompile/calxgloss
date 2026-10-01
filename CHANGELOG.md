@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Fault detection
+
+- **Fault types** (`calxgloss-types::fault`) — `FaultCategory` (7 categories: `ContextWindowExceeded`, `Hallucination`, `InfiniteLoop`, `BehaviorDivergence`, `ResourceExhaustion`, `SlowResponse`, `PromptCorruption`), `FaultSeverity` (Warning/Error/Critical), `ContextWindowFault` (with truncation signal detection and suggested chunk count), `FaultEvent` (with factory constructors for context-window and hallucination faults), `FaultLog`, and `FaultStats` (aggregate statistics with serde serialization). Full test suite with serialization round-trips.
+- **Context-window detector** (`calxgloss-llm::context`) — `ContextWindowDetector` checks LLM response size vs. model limit, scans for common truncation markers (Ollama, vLLM, llama.cpp, GPT), and pre-checks prompt size. `FunctionSplitter` divides disassembly into equal-sized chunks with metadata for the LLM. 13 unit tests.
+- **Fault logger** (`calxgloss-analysis::fault_log`) — `FaultLogger` persists `FaultEvent` instances to `re/analysis/fault_log.json` with automatic directory creation, corrupted-file recovery, and `compute_stats()` aggregation. 7 unit tests.
+
 #### `calxgloss-types`
 - **Token usage types** (`calxgloss-types::token_usage`) — `TokenUsageEntry` (per-attempt token count with DLL, function, attempt number, strategy, and success status), `TokenUsageLog` (collectible entries with serde), `TokenUsageStats` (aggregate totals with per-DLL breakdown into `DllTokenStats`), and `current_timestamp()` helper. Full test suite with serialization round-trips.
 
