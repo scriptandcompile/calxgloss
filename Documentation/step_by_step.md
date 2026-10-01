@@ -17,7 +17,6 @@
 - All workspace tests pass 0 failures
 
 **What's NOT done:**
-- **End-to-end web UI test** — no headless browser test verifying web server data rendering (step 5.8)
 - **Shim auto-pipeline** — individual shim generation steps (mappings → source → tests → verify) exist but are never orchestrated into an end-to-end auto-shim flow after classification
 - **Fault detection** — nothing implemented (Phase 7)
 - **Context tiers** — `escalate_on_failure` flag exists but tiered context logic is not implemented (Phase 8)
@@ -107,7 +106,7 @@
 | 5.5 | Add diff viewer | Render `git diff` output with line-by-line highlighting, showing Ghidra notes alongside Rust code. | ✅ Complete |
 | 5.6 | Add dependency graph visualization | Render the DAG with SVG or Canvas, interactive zoom/pan. | ✅ Complete |
 | 5.7 | Human review actions → git operations | Accept/reject/send-back actions call into `calxgloss-git` and `calxgloss-translator`. | ✅ Complete |
-| 5.8 | End-to-end test | Run web server in CI, headless browser, verify data renders correctly. | ⬜ Pending |
+| 5.8 | End-to-end test | Spin up the axum server with sample data, verify API responses (health, dashboard, units, queue, graph, diff, ghidra, pipeline, progress, websocket), and headless browser page rendering. | ✅ Complete |
 
 ---
 
@@ -196,14 +195,14 @@
 | 2 | Prompt refinement (failure-informed, experiment log) | 2–3d | 1 | ✅ Complete |
 | 3 | Terminal review dashboard | 3–5d | 1 | ✅ Complete |
 | 4 | Dependency-aware work queue | 4–6d | 0, 3 | ✅ Complete |
-| 5 | Web review UI | 8–12d | 3, 4 | ✅ Complete (5.8 pending) |
+| 5 | Web review UI | 8–12d | 3, 4 | ✅ Complete |
 | 6 | Shim layer generation (types, generation, verification, suggestions, auto-pipeline) | 5–8d | 1 | ⬜ 6.1–6.6 done, 6.7 pending |
 | 7 | Fault detection & recovery | 4–6d | 1, 2 | ⬜ Not started |
 | 8 | Context tiers | 3–5d | 1, 2 | ⬜ Not started |
 | 9 | CI / cross-platform verification | 3–5d | 0 | ⬜ Not started |
 | 10 | Branch cleanup & archive | 2–3d | 4, 5 | ⬜ Not started |
 
-**Remaining effort: 25–40 working days** (shim auto-pipeline + fault detection + context tiers + CI + cleanup + e2e test).
+**Remaining effort: 25–38 working days** (shim auto-pipeline + fault detection + context tiers + CI + cleanup).
 
 ---
 
