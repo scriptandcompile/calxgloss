@@ -614,6 +614,14 @@ pub mod infinite_loop;
 pub use infinite_loop::InfiniteLoopDetector;
 
 // ============================================================
+// Behavior-divergence detection
+// ============================================================
+
+pub mod behavior_divergence;
+
+pub use behavior_divergence::{BehaviorDivergenceDetector, EdgeCaseTest};
+
+// ============================================================
 // Tests
 // ============================================================
 
