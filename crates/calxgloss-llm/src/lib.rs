@@ -3,6 +3,11 @@
 //! This crate provides `LlmClient`, which communicates with a local LLM server
 //! (Ollama, vLLM, llama.cpp, or any OpenAI-compatible API) over HTTP. It sends
 //! prompt messages and receives translated Rust code as the response.
+//!
+//! # Modules
+//!
+//! - [`context`] — Context-window detection and function splitting for
+//!   fault recovery.
 
 use futures::{Stream, StreamExt};
 use reqwest::Client;
@@ -583,6 +588,14 @@ pub fn strip_code_fences(content: &str) -> String {
 
     trimmed.to_string()
 }
+
+// ============================================================
+// Context-window detection and function splitting
+// ============================================================
+
+pub mod context;
+
+pub use context::{ContextWindowDetector, FunctionChunk, FunctionSplitter};
 
 // ============================================================
 // Tests
