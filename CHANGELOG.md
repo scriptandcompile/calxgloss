@@ -21,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### `calxgloss-translator`
 - **Per-attempt token logging** — `try_translate_with_retry()` now logs token usage to disk for every LLM call: the initial translation attempt, each retry attempt (compile_fix, test_fix, escalate, edge_case_fix), and empty-code failure cases. The log includes DLL name, function name, attempt number, strategy label, token count, and success/failure status.
 
+#### `calxgloss-web`
+- **End-to-end integration tests** — 16 API-level tests that spin up the axum server with a realistic test fixture (git repo with branches, patches, baselines, classifications) and verify all endpoints: health, dashboard, unit detail, queue, graph, diff, ghidra, pipeline, progress, static files, websocket upgrade, and build_dashboard API. 1 headless browser test is marked `#[ignore]` and runs with `--ignored` (requires Chrome installed). Run with: `cargo test --features server --test e2e`.
+
 #### `calxgloss-reports`
 - **Token summary in batch output** — `print_batch_summary()` now displays a total tokens line (e.g., `Tokens: 29,440 tokens consumed across 12 attempts`) when token data is available.
 
@@ -235,6 +238,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rustfmt reformatting across the workspace: import ordering, struct field layouts, match arms, function signatures, doc comment examples.
 
 ### Fixed
+
+#### `calxgloss-git`
+- **`merge_to_main` stale main reference** — the method used a cached `main_ref` handle after `repository.reference()` updates main's ref on disk, causing merged branch file changes to be lost on hard reset. Fixed by using `find_reference("refs/heads/main")` directly in both the fast-forward and 3-way merge paths.
 
 #### `calxgloss-config`
 - `test_a_missing_optional_file_is_not_an_error` and `test_a_found_file_is_reported` — both tests now temporarily neutralize `HOME`, `XDG_CONFIG_HOME`, and `CALXGLOSS_LLM_MODEL` so a user-global config or shell-profile env var cannot be picked up during test execution, breaking `loaded.is_empty()` and config-precedence assertions.
