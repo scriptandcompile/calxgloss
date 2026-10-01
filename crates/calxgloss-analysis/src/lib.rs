@@ -44,6 +44,7 @@ mod classify;
 pub mod dependency;
 pub mod error;
 pub mod experiment_log;
+pub mod fault_log;
 pub mod shim;
 pub mod shim_gen;
 pub mod shim_pipeline;
@@ -54,6 +55,7 @@ pub use classify::*;
 pub use dependency::*;
 pub use error::{AnalysisError, Result};
 pub use experiment_log::*;
+pub use fault_log::FaultLogger;
 pub use token_usage::TokenUsageLogger;
 
 // Re-export shim suggestion types from calxgloss-types.
