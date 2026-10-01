@@ -577,8 +577,13 @@ impl TranslationPipeline {
             strategy: "initial".to_string(),
         });
 
-        let data = calxgloss_prompts::ComplexityPromptData::from_request(&request);
-        let prompt = calxgloss_prompts::build_complexity_prompt(&complexity, &data)?;
+        let prompt = if tier == ContextTier::Stub {
+            let stub_data = calxgloss_prompts::StubPromptData::from_function_info(&function_info);
+            calxgloss_prompts::build_stub_prompt(&stub_data)?
+        } else {
+            let data = calxgloss_prompts::ComplexityPromptData::from_request(&request);
+            calxgloss_prompts::build_complexity_prompt(&complexity, &data)?
+        };
 
         // Emit: LLM request (full prompt)
         self.emit(ProgressEvent::LlmRequest {
