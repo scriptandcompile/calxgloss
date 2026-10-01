@@ -7,6 +7,7 @@
 //!
 //! # Architecture
 //!
+//! - [`WithTestsTemplate`] — renders `with_tests_translate.j2` (Tier 2: disassembly + decompiler + tests)
 //! - [`DisassemblyTemplate`] — renders `disassembly_translate.j2` (Tier 1: disassembly + decompiler)
 //! - [`MinimalTemplate`] — renders `minimal_translate.j2` (simple functions)
 //! - [`RichTemplate`] — renders `rich_translate.j2` (complex functions)
@@ -16,6 +17,7 @@
 //! - [`build_complexity_prompt`] — selects template by complexity
 //! - [`build_stub_prompt`] — builds a Tier 0 (stub-only) prompt
 //! - [`build_disassembly_prompt`] — builds a Tier 1 (disassembly + decompiler) prompt
+//! - [`build_with_tests_prompt`] — builds a Tier 2 (disassembly + decompiler + tests) prompt
 //! - [`ComplexityPromptData::api_categories`] — extracts API categories
 //!
 //! # API-Aware Prompt Augmentation
@@ -1011,6 +1013,260 @@ impl DisassemblyTemplate {
 /// The rendered prompt string, or an error if rendering fails.
 pub fn build_disassembly_prompt(data: &DisassemblyPromptData) -> Result<String, PromptError> {
     let template = DisassemblyTemplate::from_data(data);
+    let rendered = template
+        .render()
+        .map_err(|e| PromptError::Render(e.to_string()))?;
+    if rendered.trim().is_empty() {
+        return Err(PromptError::EmptyPrompt);
+    }
+    Ok(rendered)
+}
+
+// ============================================================
+// With-tests template — Tier 2: disassembly + decompiler + tests
+// ============================================================
+
+/// A formatted test result for template rendering.
+///
+/// Carries the test case data alongside the pass/fail outcome observed
+/// during verification, plus the error message for any failed test.
+/// When `passed` is true and `error` is empty the test represents
+/// the initial baseline without prior verification results.
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct FormattedTestResult {
+    /// Test index (1-based).
+    pub index: usize,
+    /// The test inputs as JSON.
+    pub inputs: serde_json::Value,
+    /// Expected return value as JSON.
+    pub expected: serde_json::Value,
+    /// Actual return value observed during verification.
+    pub actual: serde_json::Value,
+    /// Whether this test passed verification.
+    pub passed: bool,
+    /// Error message from the test harness, if the test failed.
+    pub error: String,
+    /// Expected side effects as JSON.
+    pub side_effects: serde_json::Value,
+}
+
+impl FormattedTestResult {
+    /// Build a `FormattedTestResult` from a baseline [`calxgloss_types::TestCase`].
+    ///
+    /// Used when no verification has been performed yet — the test is
+    /// marked as having no pass/fail result.
+    pub fn from_baseline(test: &calxgloss_types::TestCase, index: usize) -> Self {
+        Self {
+            index,
+            inputs: test.inputs.clone(),
+            expected: test.expected_return.clone(),
+            actual: test.expected_return.clone(), // not yet verified
+            passed: false,
+            error: String::new(),
+            side_effects: serde_json::to_value(&test.expected_side_effects)
+                .unwrap_or_else(|_| serde_json::json!([])),
+        }
+    }
+
+    /// Build a `FormattedTestResult` from a baseline + [`calxgloss_types::FailedTest`].
+    ///
+    /// Used when the verifier has already run and this test failed.
+    pub fn from_baseline_with_failure(
+        baseline: &calxgloss_types::TestCase,
+        failed: &calxgloss_types::FailedTest,
+        index: usize,
+    ) -> Self {
+        Self {
+            index,
+            inputs: failed.inputs.clone(),
+            expected: failed.expected.clone(),
+            actual: failed.actual.clone(),
+            passed: false,
+            error: failed.error.clone(),
+            side_effects: serde_json::to_value(&baseline.expected_side_effects)
+                .unwrap_or_else(|_| serde_json::json!([])),
+        }
+    }
+
+    /// Build a `FormattedTestResult` for a passing test from baseline.
+    pub fn from_baseline_passing(baseline: &calxgloss_types::TestCase, index: usize) -> Self {
+        Self {
+            index,
+            inputs: baseline.inputs.clone(),
+            expected: baseline.expected_return.clone(),
+            actual: baseline.expected_return.clone(), // verifier confirmed match
+            passed: true,
+            error: String::new(),
+            side_effects: serde_json::to_value(&baseline.expected_side_effects)
+                .unwrap_or_else(|_| serde_json::json!([])),
+        }
+    }
+}
+
+/// Context data needed to build a Tier 2 (with-tests) prompt.
+///
+/// Tier 2 sends the LLM the full disassembly, Ghidra's decompiler
+/// output (pseudo-C), tagged Windows API calls, call graph neighbors,
+/// and **all baseline tests with their pass/fail results**.  This
+/// gives the LLM concrete behavioral input to match on initial
+/// translation, and concrete failure details to fix on retry.
+#[derive(Debug)]
+pub struct WithTestsPromptData {
+    /// The function name to translate.
+    pub function_name: String,
+    /// The DLL containing the function.
+    pub dll_name: String,
+    /// Virtual address of the function entry point.
+    pub address: u64,
+    /// Raw disassembly listing from Ghidra.
+    pub disassembly: String,
+    /// Pseudo-C decompiler output from Ghidra.
+    pub decompiler_output: String,
+    /// Windows API calls identified in the disassembly.
+    pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
+    /// Whether there are no Windows API calls (for conditional rendering).
+    pub no_windows_apis: bool,
+    /// Functions directly called by or calling this function.
+    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
+    /// Baseline test results with pass/fail status and error details.
+    pub test_results: Vec<FormattedTestResult>,
+}
+
+impl WithTestsPromptData {
+    /// Build [`WithTestsPromptData`] from a [`TranslationRequest`]-compatible source.
+    ///
+    /// All baseline tests are included as "pending" (no pass/fail result)
+    /// since this is typically used for the initial Tier 2 translation
+    /// where verification hasn't been run yet.  Callers should populate
+    /// `test_results` with [`FormattedTestResult::from_baseline_with_failure`]
+    /// or [`FormattedTestResult::from_baseline_passing`] when retrying
+    /// after the verifier has run.
+    pub fn from_request(req: &calxgloss_types::TranslationRequest) -> Self {
+        // Convert from translation::WindowsApiCall to the function-level type.
+        let windows_apis: Vec<calxgloss_types::WindowsApiCall> = req
+            .windows_apis
+            .iter()
+            .map(|api| calxgloss_types::WindowsApiCall {
+                name: api.name.clone(),
+                category: api.category.clone(),
+                pal_mapping: api.pal_mapping.clone(),
+            })
+            .collect();
+
+        // Create pending test results — the verifier hasn't run yet so
+        // there are no pass/fail results to report.
+        let test_results: Vec<FormattedTestResult> = req
+            .baseline_tests
+            .iter()
+            .enumerate()
+            .map(|(i, test)| FormattedTestResult::from_baseline(test, i + 1))
+            .collect();
+
+        Self {
+            function_name: req.function.clone(),
+            dll_name: req.dll.clone(),
+            address: 0,
+            disassembly: req.disassembly.trim().to_string(),
+            decompiler_output: req.decompiler_output.trim().to_string(),
+            windows_apis,
+            no_windows_apis: req.windows_apis.is_empty(),
+            call_graph_neighbors: Vec::new(),
+            test_results,
+        }
+    }
+
+    /// Build [`WithTestsPromptData`] with pre-computed test results.
+    ///
+    /// Use this constructor when you already know the pass/fail status
+    /// of each baseline test (e.g., from the verifier).
+    pub fn from_request_with_results(
+        req: &calxgloss_types::TranslationRequest,
+        test_results: Vec<FormattedTestResult>,
+    ) -> Self {
+        // Convert from translation::WindowsApiCall to the function-level type.
+        let windows_apis: Vec<calxgloss_types::WindowsApiCall> = req
+            .windows_apis
+            .iter()
+            .map(|api| calxgloss_types::WindowsApiCall {
+                name: api.name.clone(),
+                category: api.category.clone(),
+                pal_mapping: api.pal_mapping.clone(),
+            })
+            .collect();
+
+        Self {
+            function_name: req.function.clone(),
+            dll_name: req.dll.clone(),
+            address: 0,
+            disassembly: req.disassembly.trim().to_string(),
+            decompiler_output: req.decompiler_output.trim().to_string(),
+            windows_apis,
+            no_windows_apis: req.windows_apis.is_empty(),
+            call_graph_neighbors: Vec::new(),
+            test_results,
+        }
+    }
+}
+
+/// Template for Tier 2 translation prompts (disassembly + decompiler + baseline tests).
+///
+/// Contains full disassembly, Ghidra pseudo-C, tagged Windows API calls,
+/// call graph neighbors, and baseline test results with pass/fail status.
+#[derive(Template)]
+#[template(path = "with_tests_translate.j2")]
+pub struct WithTestsTemplate {
+    /// The function name to translate.
+    pub function_name: String,
+    /// The DLL containing the function.
+    pub dll_name: String,
+    /// Virtual address of the function entry point.
+    pub address: u64,
+    /// Raw disassembly listing from Ghidra.
+    pub disassembly: String,
+    /// Pseudo-C decompiler output from Ghidra.
+    pub decompiler_output: String,
+    /// Windows API calls identified in the disassembly.
+    pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
+    /// Whether there are no Windows API calls (for conditional rendering).
+    pub no_windows_apis: bool,
+    /// Functions directly called by or calling this function.
+    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
+    /// Baseline test results with pass/fail status and error details.
+    pub test_results: Vec<FormattedTestResult>,
+}
+
+impl WithTestsTemplate {
+    /// Create a new with-tests template from tier-2 data.
+    pub fn from_data(data: &WithTestsPromptData) -> Self {
+        WithTestsTemplate {
+            function_name: data.function_name.clone(),
+            dll_name: data.dll_name.clone(),
+            address: data.address,
+            disassembly: data.disassembly.clone(),
+            decompiler_output: data.decompiler_output.clone(),
+            windows_apis: data.windows_apis.clone(),
+            no_windows_apis: data.no_windows_apis,
+            call_graph_neighbors: data.call_graph_neighbors.clone(),
+            test_results: data.test_results.clone(),
+        }
+    }
+}
+
+/// Build and render a Tier 2 (with-tests) prompt.
+///
+/// This sends the LLM the full disassembly, Ghidra's decompiler output
+/// (pseudo-C), tagged Windows API calls, call graph neighbors, and
+/// baseline test results with pass/fail status and error details.
+///
+/// # Arguments
+///
+/// * `data` — The tier-2 context data (disassembly, decompiler, APIs, tests).
+///
+/// # Returns
+///
+/// The rendered prompt string, or an error if rendering fails.
+pub fn build_with_tests_prompt(data: &WithTestsPromptData) -> Result<String, PromptError> {
+    let template = WithTestsTemplate::from_data(data);
     let rendered = template
         .render()
         .map_err(|e| PromptError::Render(e.to_string()))?;
