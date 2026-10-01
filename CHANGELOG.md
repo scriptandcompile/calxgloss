@@ -54,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Template `full_module_translate.j2` renders function metadata, test summary, disassembly, decompiler output, tagged APIs, call graph neighbors, baseline test results, full neighboring function context, shared data structures, shim layer source code blocks, PAL trait definitions with method signatures, external function handling rules, and translation requirements
     - Pipeline fetches shim layers from `re/shims/<dll>/shim.rs` in the workspace and PAL traits from the function's Windows API categories when `ContextTier::FullModule` is selected
     - Exhaustive match on all `ContextTier` variants (unreachable `_` catch-all removed)
+- **Automatic context tier escalation** — when `escalate_on_failure` is enabled and a retry attempt fails, the tier is automatically bumped to the next level and a new prompt is built with escalated context. Escalation happens independently of strategy escalation. `ContextTierSelected` progress events are emitted when the tier changes. A `build_escalated_prompt()` helper reconstructs the appropriate prompt for any tier using the initial translation's data, fetching additional Ghidra/workspace context (neighboring functions, data structures, shim layers, PAL traits) for Tiers 3–4. Tier-escalated attempts are labeled `escalated(<tier_label>)` in progress events and attempt records. Failed tier escalation gracefully falls back to the strategy-based prompt.
 
 #### Fault detection
 
@@ -75,6 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### `calxgloss-types`
 - **Token usage types** (`calxgloss-types::token_usage`) — `TokenUsageEntry` (per-attempt token count with DLL, function, attempt number, strategy, and success status), `TokenUsageLog` (collectible entries with serde), `TokenUsageStats` (aggregate totals with per-DLL breakdown into `DllTokenStats`), and `current_timestamp()` helper. Full test suite with serialization round-trips.
+- **Token usage with context tier tracking** — `TokenUsageEntry` now carries a `context_tier` field (serialized only when non-empty) and a `new_with_tier()` constructor. `log_token_usage()` accepts and persists a tier label alongside token counts. All retry loop code paths (initial, strategy-based, tier-escalated, resource exhaustion, empty code) log their tier with token counts to `re/analysis/token_usage.json`.
 
 #### `calxgloss-analysis`
 - **Token usage logger** (`TokenUsageLogger`) — persists per-attempt token entries to `<workspace>/re/analysis/token_usage.json`. Provides `record()`, `load()`, `compute_stats()`, and `log_path()` methods. Auto-creates the `re/analysis/` directory; handles corrupted-file recovery by starting fresh.
@@ -124,7 +126,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 #### `calxgloss-translator`
-- **Per-attempt token logging** — `try_translate_with_retry()` now logs token usage to disk for every LLM call: the initial translation attempt, each retry attempt (compile_fix, test_fix, escalate, edge_case_fix), and empty-code failure cases. The log includes DLL name, function name, attempt number, strategy label, token count, and success/failure status.
+- **Translation attempt context tier** — `TranslationAttempt` now carries a `context_tier` field recording which tier was used for each attempt. Enables post-hoc analysis of which context scope yields the best pass rates.
+- **Per-attempt token logging** — `try_translate_with_retry()` now logs token usage to disk for every LLM call: the initial translation attempt, each retry attempt (compile_fix, test_fix, escalate, edge_case_fix), and empty-code failure cases. The log includes DLL name, function name, attempt number, strategy label, token count, and success/failure status. Tier-escalated attempts are also logged with their tier label.
 
 #### Fault detection integration
 - **Fault event persistence** — all detected faults (context-window exceeded, hallucination, infinite loop, behavior divergence, resource exhaustion) are now recorded to `re/analysis/fault_log.json` via `FaultLogger`. The translation pipeline wires the logger at the emission sites in both the main `translate()` path and the retry loop.
