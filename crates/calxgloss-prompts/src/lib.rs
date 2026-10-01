@@ -32,19 +32,20 @@ pub mod templates;
 
 pub use build::{
     build_complexity_prompt, build_disassembly_prompt, build_edge_case_prompt,
-    build_escalate_prompt, build_module_context_prompt, build_stub_prompt, build_translate_prompt,
-    build_with_tests_prompt, extract_signature_from_decompiler,
+    build_escalate_prompt, build_full_module_prompt, build_module_context_prompt,
+    build_stub_prompt, build_translate_prompt, build_with_tests_prompt,
+    extract_signature_from_decompiler,
 };
 pub use context::{
-    ComplexityPromptData, DisassemblyPromptData, ModuleContextPromptData, StubPromptData,
-    WithTestsPromptData,
+    ComplexityPromptData, DisassemblyPromptData, FullModulePromptData, ModuleContextPromptData,
+    StubPromptData, WithTestsPromptData,
 };
 pub use error::PromptError;
 pub use templates::{
     BoundaryValue, CallGraphNeighbor, EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate,
-    FixTemplate, FormattedTestResult, MinimalTemplate, ModuleContextTemplate, NeighborFunction,
-    RichTemplate, StructField, StructuredData, StubTemplate, TestCaseFormatted, TranslateTemplate,
-    TypeInfo, WithTestsTemplate,
+    FixTemplate, FormattedTestResult, FullModuleTemplate, MinimalTemplate, ModuleContextTemplate,
+    NeighborFunction, PalTraitDef, PalTraitMethod, StructField, StructuredData, ShimCode,
+    StubTemplate, TestCaseFormatted, TranslateTemplate, TypeInfo, WithTestsTemplate,
 };
 
 // Re-export types used by template constructors

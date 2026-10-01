@@ -17,14 +17,14 @@ use askama::Template;
 use calxgloss_types::{FunctionComplexity, TranslationRequest};
 
 use super::context::{
-    ComplexityPromptData, DisassemblyPromptData, ModuleContextPromptData, StubPromptData,
-    WithTestsPromptData,
+    ComplexityPromptData, DisassemblyPromptData, FullModulePromptData, ModuleContextPromptData,
+    StubPromptData, WithTestsPromptData,
 };
 use super::error::PromptError;
 use super::templates::{
     BoundaryValue, CallGraphNeighbor, EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate,
-    MinimalTemplate, ModuleContextTemplate, RichTemplate, StubTemplate, TranslateTemplate,
-    WithTestsTemplate,
+    FullModuleTemplate, MinimalTemplate, ModuleContextTemplate, RichTemplate, StubTemplate,
+    TranslateTemplate, WithTestsTemplate,
 };
 
 // ============================================================
@@ -207,6 +207,30 @@ pub fn build_with_tests_prompt(data: &WithTestsPromptData) -> Result<String, Pro
 /// patterns from adjacent functions in the same module.
 pub fn build_module_context_prompt(data: &ModuleContextPromptData) -> Result<String, PromptError> {
     let template = ModuleContextTemplate::from_data(data);
+
+    template
+        .render()
+        .map_err(|e| PromptError::Render(e.to_string()))
+}
+
+// ============================================================
+// Full module prompt builder (Tier 4)
+// ============================================================
+
+/// Builds a Tier 4 full module prompt with shim layer code and PAL trait
+/// definitions on top of module context.
+///
+/// Contains full disassembly, decompiler output, tagged Windows API calls,
+/// call graph neighbors, baseline test results with pass/fail status, full
+/// context from neighboring functions, shared data structures, generated
+/// shim layer code for crate-replacement DLLs, and PAL trait definitions.
+///
+/// This tier is used when translating functions that call through shim
+/// layers (e.g., DirectX → wgpu) and need the full translation-layer
+/// context — including the shim source code and PAL trait interfaces —
+/// to map correctly to the cross-platform Rust equivalents.
+pub fn build_full_module_prompt(data: &FullModulePromptData) -> Result<String, PromptError> {
+    let template = FullModuleTemplate::from_data(data);
 
     template
         .render()

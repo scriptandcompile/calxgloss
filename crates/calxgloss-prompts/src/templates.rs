@@ -13,6 +13,7 @@
 //! - [`StubTemplate`] — Tier 0: function stub only
 //! - [`WithTestsTemplate`] — Tier 2: disassembly + decompiler + tests
 //! - [`ModuleContextTemplate`] — Tier 3: module context with neighbors + data structures
+//! - [`FullModuleTemplate`] — Tier 4: full module with shim layer + PAL traits
 
 use askama::Template;
 use calxgloss_types::{ApiCategoryMapping, FailureHint, TranslationRequest};
@@ -785,6 +786,118 @@ impl ModuleContextTemplate {
             test_results: data.test_results.clone(),
             neighboring_functions: data.neighboring_functions.clone(),
             data_structures: data.data_structures.clone(),
+        }
+    }
+}
+
+// ============================================================
+// Helper structs for Tier 4 — shim layer code + PAL traits
+// ============================================================
+
+/// A shim layer code block for a crate-replacement DLL.
+///
+/// Contains the generated Rust shim source code that bridges
+/// the original Windows DLL's API surface to a target Rust crate.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ShimCode {
+    /// The original DLL filename (e.g., `"d3d9.dll"`).
+    pub source_dll: String,
+    /// The target Rust crate name (e.g., `"wgpu"`).
+    pub target_crate: String,
+    /// Number of API mappings in this shim layer.
+    pub mapping_count: usize,
+    /// The full generated Rust source code of the shim layer.
+    pub source: String,
+}
+
+/// A Platform Abstraction Layer (PAL) trait definition.
+///
+/// Represents a PAL trait with its methods, used to abstract
+/// platform-specific APIs (DirectX → wgpu, GDI → tiny-skia, etc.)
+/// so the LLM knows the exact trait interface to call.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PalTraitDef {
+    /// The trait name (e.g., `"GraphicsDevice"`).
+    pub trait_name: String,
+    /// The crate or module this trait belongs to (e.g., `"pal"`).
+    pub module: String,
+    /// A one-line description of what this trait abstracts.
+    pub description: String,
+    /// The list of methods in this trait.
+    pub methods: Vec<PalTraitMethod>,
+}
+
+/// A single method within a PAL trait definition.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PalTraitMethod {
+    /// The method name.
+    pub name: String,
+    /// The full method signature (e.g., `"fn create_texture(&mut self, width: u32, height: u32) -> Self::Texture"`).
+    pub signature: String,
+    /// A one-line description of what the method does.
+    pub description: String,
+}
+
+// ============================================================
+// Full module template — Tier 4: module context + shims + PAL
+// ============================================================
+
+/// Template for Tier 4 translation prompts (full module context).
+///
+/// Contains everything from Tier 3 (disassembly, decompiler, tests,
+/// neighboring functions, data structures) plus shim layer code for
+/// crate-replacement DLLs and PAL trait definitions for platform
+/// abstraction. This tier is used when translating functions that
+/// call through shim layers and need the full translation-layer
+/// context to map correctly.
+#[derive(Template)]
+#[template(path = "full_module_translate.j2")]
+pub struct FullModuleTemplate {
+    /// The function name to translate.
+    pub function_name: String,
+    /// The DLL containing the function.
+    pub dll_name: String,
+    /// Virtual address of the function entry point.
+    pub address: u64,
+    /// Raw disassembly listing from Ghidra.
+    pub disassembly: String,
+    /// Pseudo-C decompiler output from Ghidra.
+    pub decompiler_output: String,
+    /// Windows API calls identified in the disassembly.
+    pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
+    /// Whether there are no Windows API calls.
+    pub no_windows_apis: bool,
+    /// Functions directly called by or calling this function.
+    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
+    /// Baseline test results with pass/fail status and error details.
+    pub test_results: Vec<FormattedTestResult>,
+    /// Neighboring functions with full disassembly and decompiler output.
+    pub neighboring_functions: Vec<NeighborFunction>,
+    /// Data structures referenced near the target function.
+    pub data_structures: Vec<StructuredData>,
+    /// Shim layer code for crate-replacement DLLs (e.g., d3d9 → wgpu).
+    pub shim_layers: Vec<ShimCode>,
+    /// PAL trait definitions for platform abstraction.
+    pub pal_traits: Vec<PalTraitDef>,
+}
+
+impl FullModuleTemplate {
+    /// Create a new full module template from tier-4 data.
+    pub fn from_data(data: &super::context::FullModulePromptData) -> Self {
+        FullModuleTemplate {
+            function_name: data.function_name.clone(),
+            dll_name: data.dll_name.clone(),
+            address: data.address,
+            disassembly: data.disassembly.clone(),
+            decompiler_output: data.decompiler_output.clone(),
+            windows_apis: data.windows_apis.clone(),
+            no_windows_apis: data.no_windows_apis,
+            call_graph_neighbors: data.call_graph_neighbors.clone(),
+            test_results: data.test_results.clone(),
+            neighboring_functions: data.neighboring_functions.clone(),
+            data_structures: data.data_structures.clone(),
+            shim_layers: data.shim_layers.clone(),
+            pal_traits: data.pal_traits.clone(),
         }
     }
 }

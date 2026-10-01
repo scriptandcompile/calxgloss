@@ -45,6 +45,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
    - `build_module_context_prompt()` convenience function
    - Template `module_context_translate.j2` renders function metadata, test summary, disassembly, decompiler output, tagged APIs, call graph neighbors, baseline test results with PASSED/FAILED markers and error details, full neighboring function context (disassembly + pseudo-C for each neighbor), shared data structure definitions (name, size, fields with types and offsets), external function handling rules, and translation requirements
    - Pipeline fetches neighboring function code and data structures from Ghidra via `extract_call_graph_neighbors()`, `extract_neighboring_context()`, and `extract_data_structures()` helpers when `ContextTier::ModuleContext` is selected
+ - **Tier 4 full module prompt** — sends everything from Tier 3 plus shim layer source code for crate-replacement DLLs and PAL trait definitions for platform abstraction. This tier is used when translating functions that call through shim layers (e.g., DirectX → wgpu) and need the full translation-layer context including shim source and PAL trait interfaces to map correctly.
+    - `FullModulePromptData` struct with `from_request()` and `from_request_with_full_context()` constructors
+    - `ShimCode` struct — represents a generated shim layer (source DLL, target crate, mapping count, full Rust source)
+    - `PalTraitDef` / `PalTraitMethod` structs — represent PAL trait definitions with method signatures, used to abstract platform-specific APIs
+    - `FullModuleTemplate` Askama template struct
+    - `build_full_module_prompt()` convenience function
+    - Template `full_module_translate.j2` renders function metadata, test summary, disassembly, decompiler output, tagged APIs, call graph neighbors, baseline test results, full neighboring function context, shared data structures, shim layer source code blocks, PAL trait definitions with method signatures, external function handling rules, and translation requirements
+    - Pipeline fetches shim layers from `re/shims/<dll>/shim.rs` in the workspace and PAL traits from the function's Windows API categories when `ContextTier::FullModule` is selected
+    - Exhaustive match on all `ContextTier` variants (unreachable `_` catch-all removed)
 
 #### Fault detection
 

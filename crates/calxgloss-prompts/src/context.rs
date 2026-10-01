@@ -9,8 +9,12 @@
 //! - [`WithTestsPromptData`] — Tier 2: full context with baseline test results
 //! - [`ModuleContextPromptData`] — Tier 3: module context with neighbors + data structures
 //! - [`ComplexityPromptData`] — Tier 3+: complexity-aware rich context
+//! - [`FullModulePromptData`] — Tier 4: full module with shim layer + PAL traits
 
-use super::templates::{CallGraphNeighbor, FormattedTestResult, NeighborFunction, StructuredData};
+use super::templates::{
+    CallGraphNeighbor, FormattedTestResult, NeighborFunction, PalTraitDef,
+    ShimCode, StructuredData,
+};
 use calxgloss_types::{ApiCategory, TestCase, TranslationRequest};
 use serde::Serialize;
 
@@ -315,5 +319,124 @@ impl ComplexityPromptData {
         // ApiCategory doesn't implement Ord, so sort by display name
         categories.sort_by_key(|c| format!("{:?}", c));
         categories
+    }
+}
+
+// ============================================================
+// Tier 4 — Full module prompt data (module context + shims + PAL)
+// ============================================================
+
+/// Prompt data for a Tier 4 (full module) translation request.
+///
+/// Extends Tier 3 with shim layer code and PAL trait definitions.
+/// This tier is used when translating functions that call through
+/// shim layers (e.g., DirectX → wgpu) and need the full translation-
+/// layer context to map correctly.
+#[derive(Debug, Clone, Serialize)]
+pub struct FullModulePromptData {
+    pub function_name: String,
+    pub dll_name: String,
+    pub address: u64,
+    pub disassembly: String,
+    pub decompiler_output: String,
+    pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
+    pub no_windows_apis: bool,
+    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
+    pub test_results: Vec<FormattedTestResult>,
+    pub neighboring_functions: Vec<NeighborFunction>,
+    pub data_structures: Vec<StructuredData>,
+    pub shim_layers: Vec<ShimCode>,
+    pub pal_traits: Vec<PalTraitDef>,
+}
+
+impl FullModulePromptData {
+    /// Build full module prompt data from a [`TranslationRequest`].
+    ///
+    /// Only the request's core fields are populated. Shim layers, PAL
+    /// traits, and other Tier 3+ fields are left empty — call
+    /// [`from_request_with_full_context`] instead when that extra context
+    /// is available from Ghidra and the workspace.
+    pub fn from_request(req: &TranslationRequest) -> Self {
+        let test_results: Vec<FormattedTestResult> = req
+            .baseline_tests
+            .iter()
+            .enumerate()
+            .map(|(i, test)| FormattedTestResult::from_baseline(test, i + 1))
+            .collect();
+
+        let windows_apis: Vec<calxgloss_types::WindowsApiCall> = req
+            .windows_apis
+            .iter()
+            .map(|api| calxgloss_types::WindowsApiCall {
+                name: api.name.clone(),
+                category: api.category.clone(),
+                pal_mapping: api.pal_mapping.clone(),
+            })
+            .collect();
+
+        Self {
+            function_name: req.function.clone(),
+            dll_name: req.dll.clone(),
+            address: 0,
+            disassembly: req.disassembly.clone(),
+            decompiler_output: req.decompiler_output.clone(),
+            windows_apis,
+            no_windows_apis: req.windows_apis.is_empty(),
+            call_graph_neighbors: Vec::new(),
+            test_results,
+            neighboring_functions: Vec::new(),
+            data_structures: Vec::new(),
+            shim_layers: Vec::new(),
+            pal_traits: Vec::new(),
+        }
+    }
+
+    /// Build full module prompt data from a [`TranslationRequest`] with
+    /// complete Ghidra-derived context and workspace shim/PAL data.
+    ///
+    /// Use this constructor when all context — call graph neighbors,
+    /// neighboring function code, data structures, shim layer code,
+    /// and PAL trait definitions — is available.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_request_with_full_context(
+        req: &TranslationRequest,
+        call_graph_neighbors: Vec<CallGraphNeighbor>,
+        neighboring_functions: Vec<NeighborFunction>,
+        data_structures: Vec<StructuredData>,
+        shim_layers: Vec<ShimCode>,
+        pal_traits: Vec<PalTraitDef>,
+    ) -> Self {
+        let test_results: Vec<FormattedTestResult> = req
+            .baseline_tests
+            .iter()
+            .enumerate()
+            .map(|(i, test)| FormattedTestResult::from_baseline(test, i + 1))
+            .collect();
+
+        let windows_apis: Vec<calxgloss_types::WindowsApiCall> = req
+            .windows_apis
+            .iter()
+            .map(|api| calxgloss_types::WindowsApiCall {
+                name: api.name.clone(),
+                category: api.category.clone(),
+                pal_mapping: api.pal_mapping.clone(),
+            })
+            .collect();
+
+        Self {
+            function_name: req.function.clone(),
+            dll_name: req.dll.clone(),
+            address: 0,
+            disassembly: req.disassembly.clone(),
+            decompiler_output: req.decompiler_output.clone(),
+            windows_apis,
+            no_windows_apis: req.windows_apis.is_empty(),
+            call_graph_neighbors,
+            test_results,
+            neighboring_functions,
+            data_structures,
+            shim_layers,
+            pal_traits,
+        }
     }
 }
