@@ -1,0 +1,35 @@
+You are a reverse engineering specialist. Translate this function from assembly to Rust.
+
+## FUNCTION: {{ function_name }}
+## SOURCE DLL: {{ dll_name }}
+## ADDRESS: {{ address_hex }}
+
+## SIGNATURE
+
+{{ signature }}
+
+{% if !call_graph_neighbors.is_empty() %}
+## CALL GRAPH NEIGHBORS
+
+Functions directly called by or calling this function.
+
+{% for neighbor in call_graph_neighbors %}
+- **{{ neighbor.name }}** ({{ neighbor.role }})
+  {% if neighbor.signature != "" %}Signature: {{ neighbor.signature }}{% else %}Signature: (not available){% endif %}
+{% endfor %}
+{% endif %}
+
+---
+
+## REQUIREMENTS
+
+1. **Output ONLY the Rust function** -- no explanations, no markdown fences, no code blocks.
+2. **Use `std::` for Win32 Core mappings.**
+3. **For DirectX/GDI/Audio calls**, use PAL trait placeholders.
+4. **Preserve the function signature** with FFI-compatible types.
+5. **Unknown/internal functions -> extern stubs** at the top of the output.
+6. **Reason from the signature and call graph alone.** The decompiler and disassembly
+   are intentionally omitted to minimize context. Infer the function's purpose
+   from its name, parameters, return type, and neighbors.
+
+## RUST CODE:

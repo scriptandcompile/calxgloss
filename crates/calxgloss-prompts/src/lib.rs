@@ -1568,4 +1568,109 @@ mod tests {
         assert!(rendered.contains("Fix attempted:"));
         assert!(rendered.contains("Added explicit casting to u32"));
     }
+
+    // ============================================================
+    // Tier 0 (stub) prompt tests
+    // ============================================================
+
+    #[test]
+    fn test_build_stub_prompt_basic() {
+        let data = StubPromptData {
+            function_name: "SimpleFunc".to_string(),
+            dll_name: "test.dll".to_string(),
+            address_hex: "0x1000".to_string(),
+            signature: "int __stdcall SimpleFunc(int x, int y)".to_string(),
+            call_graph_neighbors: Vec::new(),
+        };
+
+        let prompt = build_stub_prompt(&data).unwrap();
+
+        assert!(prompt.contains("SimpleFunc"));
+        assert!(prompt.contains("test.dll"));
+        assert!(prompt.contains("0x1000"));
+        assert!(prompt.contains("int __stdcall SimpleFunc(int x, int y)"));
+        assert!(prompt.contains("FUNCTION:"));
+        assert!(prompt.contains("SIGNATURE"));
+        // Tier 0 must NOT include disassembly or decompiler output
+        assert!(!prompt.contains("DISASSEMBLY"));
+        assert!(!prompt.contains("DECOMPILER OUTPUT"));
+    }
+
+    #[test]
+    fn test_build_stub_prompt_with_neighbors() {
+        let data = StubPromptData {
+            function_name: "DrawSprite".to_string(),
+            dll_name: "game_logic.dll".to_string(),
+            address_hex: "0x5000".to_string(),
+            signature: "int __stdcall DrawSprite(int x, int y, unsigned int texture_index)".to_string(),
+            call_graph_neighbors: vec![
+                CallGraphNeighbor {
+                    name: "helper_compute".to_string(),
+                    address: 0x4000,
+                    signature: "int __stdcall helper_compute(int a, int b)".to_string(),
+                    role: "callee".to_string(),
+                },
+                CallGraphNeighbor {
+                    name: "sprite_manager".to_string(),
+                    address: 0x3000,
+                    signature: "void __stdcall sprite_manager(void)".to_string(),
+                    role: "caller".to_string(),
+                },
+            ],
+        };
+
+        let prompt = build_stub_prompt(&data).unwrap();
+
+        assert!(prompt.contains("DrawSprite"));
+        assert!(prompt.contains("CALL GRAPH NEIGHBORS"));
+        assert!(prompt.contains("helper_compute"));
+        assert!(prompt.contains("callee"));
+        assert!(prompt.contains("int __stdcall helper_compute(int a, int b)"));
+        assert!(prompt.contains("sprite_manager"));
+        assert!(prompt.contains("caller"));
+        assert!(prompt.contains("void __stdcall sprite_manager(void)"));
+    }
+
+    #[test]
+    fn test_build_stub_prompt_no_neighbors_section() {
+        let data = StubPromptData {
+            function_name: "Standalone".to_string(),
+            dll_name: "utils.dll".to_string(),
+            address_hex: "0x0".to_string(),
+            signature: "void __stdcall Standalone()".to_string(),
+            call_graph_neighbors: Vec::new(),
+        };
+
+        let prompt = build_stub_prompt(&data).unwrap();
+
+        assert!(prompt.contains("Standalone"));
+        assert!(prompt.contains("void __stdcall Standalone()"));
+        // With no neighbors, the CALL GRAPH NEIGHBORS section should not appear
+        assert!(!prompt.contains("CALL GRAPH NEIGHBORS"));
+    }
+
+    #[test]
+    fn test_extract_signature_from_decompiler() {
+        use super::extract_signature_from_decompiler;
+
+        // Normal decompiler output with signature on first line
+        let output = "int __stdcall DrawSprite(int x, int y) {\n    return x + y;\n}";
+        assert_eq!(
+            extract_signature_from_decompiler(output),
+            "int __stdcall DrawSprite(int x, int y)"
+        );
+
+        // Decompiler output with signature + brace on same line
+        let output2 = "longlong FUN_18008ed50(longlong param_1,int param_2)\n\n{\n  return param_1;\n}";
+        assert_eq!(
+            extract_signature_from_decompiler(output2),
+            "longlong FUN_18008ed50(longlong param_1,int param_2)"
+        );
+
+        // Empty output
+        assert_eq!(extract_signature_from_decompiler(""), "");
+
+        // Whitespace-only output
+        assert_eq!(extract_signature_from_decompiler("  \n  "), "");
+    }
 }
