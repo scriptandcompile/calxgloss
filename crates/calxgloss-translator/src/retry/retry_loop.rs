@@ -9,7 +9,7 @@ use crate::retry::{
     build_test_fix_prompt, log_prompt_variant_experiment, log_token_usage,
 };
 use calxgloss_ghidra::GhidraClient;
-use calxgloss_llm::{LlmClient, LlmError, LlmMessage};
+use calxgloss_llm::{infinite_loop::InfiniteLoopDetector, LlmClient, LlmError, LlmMessage};
 use calxgloss_types::{FailureHint, ProgressEvent, TranslationEvents};
 use calxgloss_verify::{CompileResult, Verifier};
 use tracing::{info, warn};
@@ -61,6 +61,43 @@ pub async fn try_translate_with_retry(
 
     // Failure history for failure-informed prompting
     let mut failure_history: Vec<FailureHint> = Vec::new();
+
+    // Infinite-loop detector — tracks (prompt_hash, output_hash) pairs.
+    // If the same bad output repeats 3+ times, the detector fires and the
+    // loop breaks to avoid wasting tokens on a dead-end path.
+    let mut loop_detector = InfiniteLoopDetector::new();
+
+    // Helper: record an attempt in the loop detector so streaks are tracked.
+    let record_in_detector = |detector: &mut InfiniteLoopDetector, prompt: &str, code: &str,
+                               success: bool, strategy: &str, attempt: u32, dll: &str,
+                               function: &str, events: Option<&TranslationEvents>| {
+        detector.record_attempt(prompt, code, success, strategy, attempt);
+
+        // Check for infinite loop
+        if let Some(signal) = detector.detect() {
+            // Emit progress event
+            if let Some(em) = events {
+                let _ = em.emit(ProgressEvent::InfiniteLoopDetected {
+                    dll: dll.to_string(),
+                    function: function.to_string(),
+                    streak: signal.streak,
+                    streak_start_attempt: signal.streak_start_attempt,
+                    streak_end_attempt: signal.streak_end_attempt,
+                    strategy: signal.strategy.clone(),
+                });
+            }
+            warn!(
+                dll,
+                function,
+                streak = signal.streak,
+                strategy = signal.strategy,
+                streak_range = ?format!("{}–{}", signal.streak_start_attempt, signal.streak_end_attempt),
+                "Infinite loop detected — stopping retry"
+            );
+            return true; // loop detected
+        }
+        false
+    };
 
     let dll = initial_translation.dll.clone();
     let function = initial_translation.function.clone();
@@ -124,23 +161,27 @@ pub async fn try_translate_with_retry(
     result.add_attempt(attempt);
     emit_attempt(&result, 1, "initial");
 
-    // Log token usage to file
-    log_token_usage(
+    // Record in infinite-loop detector (initial translation).
+    let initial_prompt = format!("{function} ({dll}) initial translation");
+    let loop_detected = record_in_detector(
+        &mut loop_detector,
+        &initial_prompt,
+        &initial_translation.rust_code,
+        result.success,
+        "initial",
+        1,
         &dll,
         &function,
-        1,
-        "initial",
-        initial_translation.tokens_used,
-        result
-            .attempts
-            .last()
-            .map(|a| a.is_successful())
-            .unwrap_or(false),
-        ctx.workspace,
+        ctx.events,
     );
 
     // If the first attempt succeeded, we're done
     if result.success {
+        return result;
+    }
+
+    // Loop detector fired — do not retry
+    if loop_detected {
         return result;
     }
 
@@ -507,6 +548,23 @@ pub async fn try_translate_with_retry(
         } else {
             (0, 0, Vec::new())
         };
+
+        // Record this attempt in the infinite-loop detector so we catch
+        // cases where the LLM keeps returning identical code despite
+        // changing prompts/strategies.  Do this before moving `new_rust_code`
+        // into the TranslationAttempt below.
+        let attempt_success = compile_result.success && tests_passed == tests_total;
+        let _loop_fired = record_in_detector(
+            &mut loop_detector,
+            &prompt,
+            &new_rust_code,
+            attempt_success,
+            &strategy_name,
+            attempt_num,
+            &dll,
+            &function,
+            ctx.events,
+        );
 
         let attempt = TranslationAttempt {
             attempt: attempt_num,
