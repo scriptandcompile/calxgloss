@@ -202,8 +202,7 @@ impl ContextWindowFault {
 
     /// Whether the response is dangerously close to the limit (>80%).
     pub fn is_nearing_limit(&self) -> bool {
-        self.response_size > (self.limit as f64 * 0.8) as usize
-            && !self.is_over_limit()
+        self.response_size > (self.limit as f64 * 0.8) as usize && !self.is_over_limit()
     }
 
     /// Estimate how many chunks the function should be split into.
@@ -415,7 +414,9 @@ impl FaultEvent {
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0),
-            metadata: Some(serde_json::to_value(non_existent_apis).unwrap_or(serde_json::Value::Null)),
+            metadata: Some(
+                serde_json::to_value(non_existent_apis).unwrap_or(serde_json::Value::Null),
+            ),
         }
     }
 
@@ -450,21 +451,20 @@ impl FaultEvent {
                 "Infinite loop detected: same bad output repeated {} times (attempts #{}–#{})",
                 streak, streak_start, streak_end
             ),
-            recovery: "Escalate to manual intervention. The LLM is producing identical output despite \
+            recovery:
+                "Escalate to manual intervention. The LLM is producing identical output despite \
                  changing prompts. Consider: splitting the function into smaller chunks, \
                  injecting Ghidra data-flow hints, or using a different model."
-                .to_string(),
+                    .to_string(),
             timestamp: SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0),
-            metadata: Some(
-                serde_json::json!({
-                    "streak": streak,
-                    "streak_start_attempt": streak_start,
-                    "streak_end_attempt": streak_end,
-                })
-            ),
+            metadata: Some(serde_json::json!({
+                "streak": streak,
+                "streak_start_attempt": streak_start,
+                "streak_end_attempt": streak_end,
+            })),
         }
     }
 
@@ -527,9 +527,7 @@ impl FaultEvent {
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0),
-            metadata: Some(
-                serde_json::to_value(kind).unwrap_or(serde_json::Value::Null),
-            ),
+            metadata: Some(serde_json::to_value(kind).unwrap_or(serde_json::Value::Null)),
         }
     }
 
@@ -575,7 +573,10 @@ impl FaultEvent {
             severity,
             description: format!(
                 "Baseline tests pass ({}/{}), but {} edge-case test(s) fail — behavior diverges on unseen inputs. Confidence: {}/10.",
-                baseline_passed, baseline_total, failing_labels.len(), confidence
+                baseline_passed,
+                baseline_total,
+                failing_labels.len(),
+                confidence
             ),
             recovery: format!(
                 "Enrich the test suite with {} new baseline test(s). \
@@ -586,16 +587,14 @@ impl FaultEvent {
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0),
-            metadata: Some(
-                serde_json::json!({
-                    "baseline_passed": baseline_passed,
-                    "baseline_total": baseline_total,
-                    "edge_passed": edge_passed,
-                    "edge_total": edge_total,
-                    "failing_edge_cases": failing_labels,
-                    "confidence": confidence,
-                })
-            ),
+            metadata: Some(serde_json::json!({
+                "baseline_passed": baseline_passed,
+                "baseline_total": baseline_total,
+                "edge_passed": edge_passed,
+                "edge_total": edge_total,
+                "failing_edge_cases": failing_labels,
+                "confidence": confidence,
+            })),
         }
     }
 }
@@ -605,7 +604,12 @@ impl std::fmt::Display for FaultEvent {
         write!(
             f,
             "[{}] {} on {} '{}' (attempt #{} [{})]: {}",
-            self.severity, self.category, self.dll, self.function, self.attempt, self.strategy,
+            self.severity,
+            self.category,
+            self.dll,
+            self.function,
+            self.attempt,
+            self.strategy,
             self.description
         )
     }
@@ -642,8 +646,7 @@ impl FaultLog {
     pub fn compute_stats(&self) -> FaultStats {
         let mut by_category: std::collections::HashMap<FaultCategory, usize> =
             std::collections::HashMap::new();
-        let mut by_dll: std::collections::HashMap<String, usize> =
-            std::collections::HashMap::new();
+        let mut by_dll: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         let mut total_warnings: usize = 0;
         let mut total_errors: usize = 0;
         let mut total_critical: usize = 0;
@@ -788,7 +791,10 @@ mod tests {
 
     #[test]
     fn test_fault_category_display() {
-        assert_eq!(format!("{}", FaultCategory::ContextWindowExceeded), "context_window_exceeded");
+        assert_eq!(
+            format!("{}", FaultCategory::ContextWindowExceeded),
+            "context_window_exceeded"
+        );
         assert_eq!(format!("{}", FaultCategory::Hallucination), "hallucination");
     }
 
@@ -822,10 +828,7 @@ mod tests {
             8,
         );
 
-        assert!(matches!(
-            event.category,
-            FaultCategory::BehaviorDivergence
-        ));
+        assert!(matches!(event.category, FaultCategory::BehaviorDivergence));
         assert_eq!(event.severity, FaultSeverity::Warning);
         assert!(event.description.contains("5/5"));
         assert!(event.description.contains("2 edge-case"));

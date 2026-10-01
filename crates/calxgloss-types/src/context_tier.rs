@@ -153,8 +153,6 @@ impl SuccessRate {
     }
 }
 
-
-
 /// Select the starting context tier for a function translation.
 ///
 /// This is the core tier-selection logic. It uses three signals to pick
@@ -188,7 +186,7 @@ pub fn select_context_tier(
 ) -> ContextTier {
     // Map complexity to a base tier index
     let base_tier = match complexity {
-        crate::FunctionComplexity::Minimal => 0, // Stub
+        crate::FunctionComplexity::Minimal => 0,  // Stub
         crate::FunctionComplexity::Standard => 1, // Disassembly
         crate::FunctionComplexity::Rich => 2,     // WithTests
         crate::FunctionComplexity::Detailed => 3, // ModuleContext
@@ -242,10 +240,7 @@ pub fn select_context_tier(
 /// # Returns
 ///
 /// The updated success rate.
-pub fn record_translation_result(
-    previous: SuccessRate,
-    succeeded: bool,
-) -> SuccessRate {
+pub fn record_translation_result(previous: SuccessRate, succeeded: bool) -> SuccessRate {
     let mut rate = previous;
     rate.total += 1;
     if succeeded {

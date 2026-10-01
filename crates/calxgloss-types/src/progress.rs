@@ -492,8 +492,8 @@ impl std::fmt::Display for ProgressEvent {
             } => {
                 write!(
                     f,
-                    "Infinite loop detected for {function} ({dll}): same bad output repeated {} times (attempts #{streak_start_attempt}–#{streak_end_attempt}) [{strategy}]"
-                    , streak
+                    "Infinite loop detected for {function} ({dll}): same bad output repeated {} times (attempts #{streak_start_attempt}–#{streak_end_attempt}) [{strategy}]",
+                    streak
                 )
             }
             ProgressEvent::BehaviorDivergenceDetected {
@@ -511,7 +511,8 @@ impl std::fmt::Display for ProgressEvent {
                 write!(
                     f,
                     "Behavior divergence detected for {function} ({dll}) attempt #{attempt} [{strategy}]: {baseline_passed}/{baseline_total} baseline tests pass, {edge_tests_passed}/{edge_tests_total} edge-case tests pass ({} failing, confidence {}/10)",
-                    failing_edge_cases.len(), confidence
+                    failing_edge_cases.len(),
+                    confidence
                 )
             }
             ProgressEvent::ResourceExhaustionDetected {
