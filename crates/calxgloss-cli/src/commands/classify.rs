@@ -3,8 +3,8 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use calxgloss::TranslationEvents;
 use calxgloss::ProgressEvent;
+use calxgloss::TranslationEvents;
 use calxgloss_analysis::Analyzer;
 use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use calxgloss_git::GitManager;
@@ -106,15 +106,20 @@ pub async fn handle_classify(
     if !report.is_empty() {
         let shim_dir = repo_dir.join("re").join("shims");
         std::fs::create_dir_all(&shim_dir).with_context(|| {
-            format!("Failed to create shim suggestions directory: {}", shim_dir.display())
+            format!(
+                "Failed to create shim suggestions directory: {}",
+                shim_dir.display()
+            )
         })?;
 
         let suggestion_path = shim_dir.join("suggestions.json");
-        let json = serde_json::to_string_pretty(&report).with_context(|| {
-            "Failed to serialize shim suggestions report"
-        })?;
+        let json = serde_json::to_string_pretty(&report)
+            .with_context(|| "Failed to serialize shim suggestions report")?;
         std::fs::write(&suggestion_path, &json).with_context(|| {
-            format!("Failed to write shim suggestions to {}", suggestion_path.display())
+            format!(
+                "Failed to write shim suggestions to {}",
+                suggestion_path.display()
+            )
         })?;
         info!(
             count = report.total_dlls(),
@@ -123,9 +128,7 @@ pub async fn handle_classify(
         );
 
         // Commit shim suggestions to git (unless skip_git).
-        if !skip_git
-            && let Ok(git) = GitManager::open(repo_dir)
-        {
+        if !skip_git && let Ok(git) = GitManager::open(repo_dir) {
             let _commit = git
                 .commit_to_main(
                     &format!(

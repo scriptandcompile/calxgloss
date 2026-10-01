@@ -54,5 +54,8 @@ pub use calxgloss_types::{
 };
 pub use engine::{CompileResult, Verifier};
 pub use helpers::{sanitize_crate_name, sanitize_identifier};
-pub use parse::{parse_cargo_output, parse_test_results, parse_shim_test_results, parse_test_line, extract_mapping_function};
+pub use parse::{
+    extract_mapping_function, parse_cargo_output, parse_shim_test_results, parse_test_line,
+    parse_test_results,
+};
 pub use stubs::Stubs;

@@ -1,7 +1,7 @@
 use super::*;
+use git2::ResetType;
 use std::env;
 use std::path::PathBuf;
-use git2::ResetType;
 
 fn temp_git_repo() -> (PathBuf, GitManager) {
     let thread = std::thread::current();

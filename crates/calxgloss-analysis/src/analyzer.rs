@@ -1,13 +1,13 @@
 //! The [`Analyzer`] struct, [`Strategy`] enum, [`DllClassification`],
 //! and [`FunctionAnalysis`] — the core analysis types.
 
+use crate::classify::{classify_dll_name, crate_replacement_for};
+use crate::error::AnalysisError as Error;
+use crate::error::Result;
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_pal::ApiMappings;
 use calxgloss_types::{DllCategory, DllInfo, FunctionInfo, WindowsApiCall};
 use calxgloss_types::{FunctionComplexity, PromptVariant};
-use crate::error::AnalysisError as Error;
-use crate::error::Result;
-use crate::classify::{classify_dll_name, crate_replacement_for};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, warn};
 

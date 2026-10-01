@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 use tracing::debug;
 
-use crate::schema::FileConfig;
 use crate::ConfigError;
+use crate::schema::FileConfig;
 
 /// A loaded configuration file, and where it was found.
 #[derive(Debug, Clone, Default)]

@@ -65,5 +65,5 @@ mod schema;
 
 pub use error::ConfigError;
 pub use layers::{Layers, Resolved, Source};
-pub use loader::{load, LoadedConfig, PROJECT_FILE};
-pub use schema::{FileConfig, GhidraSection, LlmSection, EXAMPLE};
+pub use loader::{LoadedConfig, PROJECT_FILE, load};
+pub use schema::{EXAMPLE, FileConfig, GhidraSection, LlmSection};

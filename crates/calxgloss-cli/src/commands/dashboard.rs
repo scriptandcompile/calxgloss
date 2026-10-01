@@ -1,8 +1,8 @@
 //! Dashboard-related handlers: dashboard, view, accept, reject, accept-all.
 
 use anyhow::{Context, Result};
-use calxgloss::UnitOfWork;
 use calxgloss::ReviewStatus;
+use calxgloss::UnitOfWork;
 use calxgloss_git::GitBranch;
 use calxgloss_git::GitManager;
 use calxgloss_reports::dashboard::{

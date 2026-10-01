@@ -3,8 +3,8 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use calxgloss_analysis::shim_pipeline;
 use calxgloss_analysis::Analyzer;
+use calxgloss_analysis::shim_pipeline;
 use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use calxgloss_git::GitManager;
 use calxgloss_llm::LlmClient;

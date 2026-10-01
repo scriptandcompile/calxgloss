@@ -1,7 +1,7 @@
 //! The [`GhidraConfig`] and [`GhidraClient`] — connection settings and HTTP API client.
 
-use crate::error::Classification;
 use crate::error;
+use crate::error::Classification;
 use crate::model::{
     DecompiledFunction, FunctionBody, FunctionReport, FunctionSummary, Segment, StringLiteral,
     Symbol, Xref,

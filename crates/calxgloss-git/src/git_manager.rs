@@ -13,7 +13,7 @@ use git2::build::CheckoutBuilder;
 use git2::{DiffOptions, Oid, Repository, ResetType};
 use tracing::{debug, info, warn};
 
-use super::helpers::{make_signature, format_flags};
+use super::helpers::{format_flags, make_signature};
 use crate::BranchCreationPolicy;
 
 /// Result of a branch creation attempt.
@@ -59,7 +59,10 @@ pub struct GitManager {
 
 impl GitManager {
     /// Initializes a new Git repository in the given directory.
-    pub fn init_repo(repo_path: &Path, config: Option<crate::InitConfig>) -> Result<Self, TypesError> {
+    pub fn init_repo(
+        repo_path: &Path,
+        config: Option<crate::InitConfig>,
+    ) -> Result<Self, TypesError> {
         let config = config.unwrap_or_default();
 
         info!("Initializing Git repository at {}", repo_path.display());

@@ -663,7 +663,7 @@ fn call_function(inputs: &Value) -> Value {
 mod tests {
     use super::*;
     use crate::Stubs;
-    use crate::{parse_cargo_output, parse_test_results, parse_test_line};
+    use crate::{parse_cargo_output, parse_test_line, parse_test_results};
     use std::fs;
 
     #[test]

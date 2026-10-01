@@ -13,18 +13,17 @@
 //! - [`behavior_divergence`] — Detection of behavior divergence from expected output.
 //! - [`resource_exhaustion`] — Detection of resource-exhaustion signals.
 
-mod client;
 pub mod behavior_divergence;
+mod client;
 pub mod context;
 pub mod hallucination;
 pub mod infinite_loop;
 pub mod resource_exhaustion;
 
-pub use client::{
-    LlmClient, LlmConfig, LlmError, LlmMessage, LlmResponse, MessageRole, Result,
-    strip_code_fences,
-};
 pub use behavior_divergence::{BehaviorDivergenceDetector, EdgeCaseTest};
+pub use client::{
+    LlmClient, LlmConfig, LlmError, LlmMessage, LlmResponse, MessageRole, Result, strip_code_fences,
+};
 pub use context::{ContextWindowDetector, FunctionChunk, FunctionSplitter};
 pub use hallucination::{HallucinatedCall, HallucinationDetector};
 pub use infinite_loop::InfiniteLoopDetector;

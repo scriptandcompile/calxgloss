@@ -1,6 +1,5 @@
 //! Utility functions for the CLI.
 
-use std::path::PathBuf;
 use anyhow::Result;
 pub use calxgloss_reports::{
     print_batch_summary, print_classification_report, print_failure, print_git_status,
@@ -8,6 +7,7 @@ pub use calxgloss_reports::{
 };
 pub use calxgloss_translator::RetryStrategy;
 pub use calxgloss_verify::Verifier;
+use std::path::PathBuf;
 pub use tracing::{debug, warn};
 
 /// Resolve the repo directory: `--repo` flag > settings > CWD.

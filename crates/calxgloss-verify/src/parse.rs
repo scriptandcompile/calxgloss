@@ -55,8 +55,7 @@ pub fn parse_test_results(
     let test_output_lines: Vec<&str> = output.lines().filter(|l| l.starts_with('[')).collect();
 
     if let Some(json_line) = test_output_lines.last()
-        && let Ok(results) =
-            serde_json::from_str::<Vec<Value>>(json_line)
+        && let Ok(results) = serde_json::from_str::<Vec<Value>>(json_line)
     {
         let mut failed = Vec::new();
         let mut passed = 0;

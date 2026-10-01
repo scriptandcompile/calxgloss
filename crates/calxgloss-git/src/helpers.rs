@@ -1,8 +1,8 @@
 //! Helper functions for Git operations.
 
 use calxgloss_types::TypesError;
-use git2::Signature;
 use git2::Repository;
+use git2::Signature;
 
 /// Create a Git signature from repo config or the provided InitConfig.
 pub(super) fn make_signature(

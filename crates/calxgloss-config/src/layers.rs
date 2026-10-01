@@ -148,7 +148,7 @@ fn f32_var(name: &str) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ConfigError, FileConfig, Layers, LlmSection, PROJECT_FILE, load, EXAMPLE};
+    use crate::{ConfigError, EXAMPLE, FileConfig, Layers, LlmSection, PROJECT_FILE, load};
     use std::path::{Path, PathBuf};
 
     /// Saves and restores environment variables on drop.
@@ -337,10 +337,7 @@ max_retries = 5
         assert_eq!(loaded.path, None);
         // The search still records what it looked at, for diagnostics.
         assert!(
-            loaded
-                .searched
-                .iter()
-                .any(|p| p.ends_with(PROJECT_FILE)),
+            loaded.searched.iter().any(|p| p.ends_with(PROJECT_FILE)),
             "searched: {:?}",
             loaded.searched
         );

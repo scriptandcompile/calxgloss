@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use calxgloss::TranslationEvents;
 use calxgloss_web::{ServerState, SessionManager, build_router_with_ws, serve_with_listener};
-use tracing::{info, error, debug};
+use tracing::{debug, error, info};
 
 use crate::Settings;
 use crate::utils::*;
@@ -92,13 +92,10 @@ pub async fn handle_live(
         // progress events over the upgrade endpoint.
         let event_rx = events_clone.subscribe();
         let manager = SessionManager::new_with_broadcast(event_rx);
-        let router =
-            build_router_with_ws(server_state.clone(), manager, serve_progress);
-        let _ = serve_with_listener(listener, router)
-            .await
-            .map_err(|e| {
-                error!("Review UI server error: {e}");
-            });
+        let router = build_router_with_ws(server_state.clone(), manager, serve_progress);
+        let _ = serve_with_listener(listener, router).await.map_err(|e| {
+            error!("Review UI server error: {e}");
+        });
     });
 
     // Wait briefly for the server to signal readiness — fail fast if it

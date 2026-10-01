@@ -41,8 +41,8 @@ use calxgloss_config::{FileConfig, GhidraSection, Layers, LlmSection, load};
 use clap::Parser;
 use tracing::{debug, error, info};
 
-use settings::Settings;
 use cli_types::{Cli, Command, DashboardSubcommand};
+use settings::Settings;
 use utils::*;
 
 // Re-export handler functions for match arm access

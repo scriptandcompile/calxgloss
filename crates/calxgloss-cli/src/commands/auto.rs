@@ -9,10 +9,10 @@ use anyhow::{Context, Result};
 use calxgloss::DllCategory;
 use calxgloss::ProgressEvent;
 use calxgloss::TranslationEvents;
+use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use calxgloss_git::BranchCreationPolicy;
 use calxgloss_git::DependencyPolicy;
 use calxgloss_git::GitManager;
-use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use calxgloss_llm::LlmClient;
 use calxgloss_llm::LlmConfig;
 use calxgloss_translator::RetryConfig;
@@ -22,7 +22,7 @@ use tracing::{info, warn};
 
 use crate::Settings;
 use crate::commands::classify::handle_classify;
-use crate::commands::{scan_targets, classification_record_exists};
+use crate::commands::{classification_record_exists, scan_targets};
 use crate::utils::*;
 
 /// Run batch translation for a single DLL.

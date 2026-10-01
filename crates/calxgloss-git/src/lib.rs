@@ -26,12 +26,15 @@
 //! Context size: <N> tokens
 //! ```
 
-pub mod helpers;
-pub mod git_manager;
 mod dependency;
+pub mod git_manager;
+pub mod helpers;
 
 // Re-export public types from submodules
-pub use dependency::{BranchCreationPolicy, DependencyChecker, DependencyCheckResult, DependencyPolicy, ShimDependencyMap};
+pub use dependency::{
+    BranchCreationPolicy, DependencyCheckResult, DependencyChecker, DependencyPolicy,
+    ShimDependencyMap,
+};
 pub use git_manager::{BranchResult, GitManager, MergeResult, PatchRecord};
 
 // Re-export types used by the public API

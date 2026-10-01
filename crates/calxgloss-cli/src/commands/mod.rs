@@ -1,15 +1,15 @@
 //! Command handlers for the CLI.
 
-pub mod init;
-pub mod classify;
-pub mod auto_shim;
-pub mod translate;
-pub mod batch_translate;
-pub mod dashboard;
 pub mod auto;
-pub mod verify;
-pub mod serve;
+pub mod auto_shim;
+pub mod batch_translate;
+pub mod classify;
+pub mod dashboard;
+pub mod init;
 pub mod live;
+pub mod serve;
+pub mod translate;
+pub mod verify;
 
 // Re-export helper functions used across command files.
-pub use init::{scan_targets, classification_record_exists};
+pub use init::{classification_record_exists, scan_targets};

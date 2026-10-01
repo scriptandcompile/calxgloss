@@ -3,19 +3,19 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use calxgloss::DllCategory;
 use calxgloss::ContextTier;
+use calxgloss::DllCategory;
 use calxgloss::GitBranch;
+use calxgloss_config::Resolved;
 use calxgloss_git::BranchCreationPolicy;
 use calxgloss_git::DependencyPolicy;
 use calxgloss_git::GitManager;
-use calxgloss_translator::build_hallucination_detector;
 use calxgloss_translator::RetryConfig;
 use calxgloss_translator::Translation;
 use calxgloss_translator::TranslationPipeline;
+use calxgloss_translator::build_hallucination_detector;
 use calxgloss_verify::VerificationResult;
-use calxgloss_config::Resolved;
-use tracing::{info, error, warn};
+use tracing::{error, info, warn};
 
 use crate::Settings;
 use crate::cli_types::TranslateArgs;
