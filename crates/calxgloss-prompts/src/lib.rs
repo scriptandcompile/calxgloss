@@ -7,18 +7,14 @@
 //!
 //! # Architecture
 //!
-//! - [`WithTestsTemplate`] — renders `with_tests_translate.j2` (Tier 2: disassembly + decompiler + tests)
-//! - [`DisassemblyTemplate`] — renders `disassembly_translate.j2` (Tier 1: disassembly + decompiler)
-//! - [`MinimalTemplate`] — renders `minimal_translate.j2` (simple functions)
-//! - [`RichTemplate`] — renders `rich_translate.j2` (complex functions)
-//! - [`DetailedTemplate`] — renders `detailed_translate.j2` (very complex functions)
-//! - [`StubTemplate`] — renders `stub_translate.j2` (Tier 0: function stub only)
-//! - [`build_translate_prompt`] — builds a standard translation prompt
-//! - [`build_complexity_prompt`] — selects template by complexity
-//! - [`build_stub_prompt`] — builds a Tier 0 (stub-only) prompt
-//! - [`build_disassembly_prompt`] — builds a Tier 1 (disassembly + decompiler) prompt
-//! - [`build_with_tests_prompt`] — builds a Tier 2 (disassembly + decompiler + tests) prompt
-//! - [`ComplexityPromptData::api_categories`] — extracts API categories
+//! - [`context`] — Data structs (`StubPromptData`, `ComplexityPromptData`, etc.)
+//! - [`templates`] — Askama template structs (`MinimalTemplate`, `TranslateTemplate`, etc.)
+//! - [`build_translate_prompt`] — Builds a standard translation prompt
+//! - [`build_complexity_prompt`] — Selects template by complexity
+//! - [`build_stub_prompt`] — Builds a Tier 0 (stub-only) prompt
+//! - [`build_disassembly_prompt`] — Builds a Tier 1 (disassembly + decompiler) prompt
+//! - [`build_with_tests_prompt`] — Builds a Tier 2 (disassembly + decompiler + tests) prompt
+//! - [`ComplexityPromptData::api_categories`] — Extracts API categories
 //!
 //! # API-Aware Prompt Augmentation
 //!
@@ -27,1471 +23,31 @@
 //! This gives the LLM detailed context about how to translate specific APIs
 //! (e.g., every Win32 Core mapping, every DirectX mapping, every GDI mapping)
 //! rather than just the one-liner `api.name → api.pal_mapping` shown in the
-//! "WINDOWS API CALLS IDENTIFIED" section.
-//!
-//! The augmentation is applied to all complexity tiers:
-//! - **Minimal** functions (≤30 instructions) get the reference tables
-//! - **Standard** functions (31–100) get the reference tables
-//! - **Rich** functions (101–300) get the reference tables + advanced guidelines
-//! - **Detailed** functions (>300) get the reference tables + full Ghidra context
-//!
-//! # Template Syntax
-//!
-//! Uses [Askama](https://docs.rs/askama) templating syntax (Jinja2-inspired):
-//!
-//! | Syntax | Meaning |
-//! |---|---|
-//! | `{{var}}` | Substitute variable as string |
-//! | `{% if var %}...{% endif %}` | Conditional (truthy) |
-//! | `{% for item in list %}...{% endfor %}` | Loop |
+//! "WINDOWS APIS IDENTIFIED" section.
 
+mod build;
+pub mod context;
 pub mod error;
+pub mod templates;
 
+pub use build::{
+    build_complexity_prompt, build_disassembly_prompt, build_edge_case_prompt,
+    build_escalate_prompt, build_stub_prompt, build_translate_prompt, build_with_tests_prompt,
+    extract_signature_from_decompiler,
+};
+pub use context::{
+    ComplexityPromptData, DisassemblyPromptData, StubPromptData, WithTestsPromptData,
+};
 pub use error::PromptError;
-
-use askama::Template;
-use calxgloss_types::{ApiCategoryMapping, FailureHint, FunctionComplexity, TranslationRequest};
-use serde_json::json;
-
-// ============================================================
-// Prompt templates (Askama structs)
-// ============================================================
-
-/// Template for minimal translation prompts.
-///
-/// Used for simple functions (≤30 instructions). Contains disassembly,
-/// decompiler output, baseline tests, and optionally API-category-specific
-/// mapping table rows when API-aware augmentation is enabled.
-#[derive(Template)]
-#[template(path = "minimal_translate.j2")]
-pub struct MinimalTemplate {
-    /// The function name to translate.
-    pub function_name: String,
-
-    /// The DLL containing the function.
-    pub dll_name: String,
-
-    /// The virtual address of the function entry point.
-    pub address: u64,
-
-    /// Raw disassembly listing from Ghidra.
-    pub disassembly: String,
-
-    /// Pseudo-C decompiler output from Ghidra.
-    pub decompiler_output: String,
-
-    /// Windows API calls identified in the disassembly.
-    pub windows_apis: Vec<calxgloss_types::translation::WindowsApiCall>,
-
-    /// Baseline test cases the translated Rust code must pass.
-    pub test_cases: Vec<TestCaseFormatted>,
-
-    /// Whether there are no Windows API calls (for conditional rendering).
-    pub no_windows_apis: bool,
-
-    /// API-category-specific mapping rows providing detailed context
-    /// for the APIs used in this function.
-    pub api_category_mappings: Vec<calxgloss_types::ApiCategoryMapping>,
-}
-
-impl MinimalTemplate {
-    /// Create a new minimal template from a translation request.
-    pub fn from_request(req: &TranslationRequest) -> Self {
-        let test_cases: Vec<TestCaseFormatted> = req
-            .baseline_tests
-            .iter()
-            .enumerate()
-            .map(|(i, test)| TestCaseFormatted {
-                index: i + 1,
-                inputs: test.inputs.clone(),
-                expected_return: test.expected_return.clone(),
-                side_effects: serde_json::to_value(&test.expected_side_effects)
-                    .unwrap_or_else(|_| json!([])),
-            })
-            .collect();
-
-        MinimalTemplate {
-            function_name: req.function.clone(),
-            dll_name: req.dll.clone(),
-            address: 0,
-            disassembly: req.disassembly.clone(),
-            decompiler_output: req.decompiler_output.clone(),
-            windows_apis: req.windows_apis.clone(),
-            test_cases,
-            no_windows_apis: req.windows_apis.is_empty(),
-            api_category_mappings: Vec::new(),
-        }
-    }
-}
-
-/// Template for function translation prompts.
-///
-/// Rendered via Askama from the embedded `templates/translate.j2` file.
-/// When API-aware augmentation is enabled, this includes the full mapping
-/// table rows for the API categories the function touches.
-#[derive(Template)]
-#[template(path = "translate.j2")]
-pub struct TranslateTemplate {
-    /// The function name to translate.
-    pub function_name: String,
-
-    /// The DLL containing the function.
-    pub dll_name: String,
-
-    /// The virtual address of the function entry point.
-    pub address: u64,
-
-    /// Raw disassembly listing from Ghidra.
-    pub disassembly: String,
-
-    /// Pseudo-C decompiler output from Ghidra.
-    pub decompiler_output: String,
-
-    /// Windows API calls identified in the disassembly.
-    pub windows_apis: Vec<calxgloss_types::translation::WindowsApiCall>,
-
-    /// Baseline test cases the translated Rust code must pass.
-    pub test_cases: Vec<TestCaseFormatted>,
-
-    /// Whether there are no Windows API calls (for conditional rendering).
-    pub no_windows_apis: bool,
-
-    /// API-category-specific mapping rows providing detailed context
-    /// for the APIs used in this function.
-    pub api_category_mappings: Vec<calxgloss_types::ApiCategoryMapping>,
-}
-
-/// A formatted test case for template rendering.
-#[derive(serde::Serialize, Clone, Debug)]
-pub struct TestCaseFormatted {
-    /// Test case index (1-based).
-    pub index: usize,
-
-    /// The test inputs as JSON.
-    pub inputs: serde_json::Value,
-
-    /// Expected return value as JSON.
-    pub expected_return: serde_json::Value,
-
-    /// Expected side effects as JSON.
-    pub side_effects: serde_json::Value,
-}
-
-impl TranslateTemplate {
-    /// Create a new translate template from a translation request.
-    pub fn from_request(req: &TranslationRequest) -> Self {
-        let test_cases: Vec<TestCaseFormatted> = req
-            .baseline_tests
-            .iter()
-            .enumerate()
-            .map(|(i, test)| TestCaseFormatted {
-                index: i + 1,
-                inputs: test.inputs.clone(),
-                expected_return: test.expected_return.clone(),
-                side_effects: serde_json::to_value(&test.expected_side_effects)
-                    .unwrap_or_else(|_| json!([])),
-            })
-            .collect();
-
-        TranslateTemplate {
-            function_name: req.function.clone(),
-            dll_name: req.dll.clone(),
-            address: 0, // Not provided in TranslationRequest
-            disassembly: req.disassembly.clone(),
-            decompiler_output: req.decompiler_output.clone(),
-            windows_apis: req.windows_apis.clone(),
-            test_cases,
-            no_windows_apis: req.windows_apis.is_empty(),
-            api_category_mappings: Vec::new(),
-        }
-    }
-}
-
-// ============================================================
-// Convenience functions
-// ============================================================
-
-/// Build and render a translation prompt from a [`TranslationRequest`].
-///
-/// This is the main convenience function for the translation pipeline.
-/// It extracts all relevant fields from the request and renders the
-/// `"translate"` template.
-pub fn build_translate_prompt(req: &TranslationRequest) -> Result<String, PromptError> {
-    let template = TranslateTemplate::from_request(req);
-    let rendered = template
-        .render()
-        .map_err(|e| PromptError::Render(e.to_string()))?;
-    if rendered.trim().is_empty() {
-        return Err(PromptError::EmptyPrompt);
-    }
-    Ok(rendered)
-}
-
-// ============================================================
-// Fix template — for retrying after verification failure
-// ============================================================
-
-/// Template for "fix the compilation errors" or "fix the failing tests" prompts.
-///
-/// Rendered via Askama from the embedded `templates/failure_fix.j2` file.
-/// When `failure_history` is non-empty, the prompt includes a "PREVIOUS
-/// ATTEMPT HISTORY" section so the LLM can learn from specific past mistakes.
-#[derive(Template)]
-#[template(path = "failure_fix.j2")]
-pub struct FixTemplate {
-    /// The function name being fixed.
-    pub function_name: String,
-
-    /// The DLL containing the function.
-    pub dll_name: String,
-
-    /// The previously generated (failing) Rust code.
-    pub original_rust_code: String,
-
-    /// A description of what went wrong during verification.
-    pub failure_description: String,
-
-    /// Previous attempt failures to reference in the prompt.
-    /// When non-empty, an "PREVIOUS ATTEMPT HISTORY" section is rendered.
-    pub failure_history: Vec<FailureHint>,
-}
-
-impl FixTemplate {
-    /// Create a new fix template without failure history.
-    pub fn new(
-        function_name: String,
-        dll_name: String,
-        original_rust_code: String,
-        failure_description: String,
-    ) -> Self {
-        Self {
-            function_name,
-            dll_name,
-            original_rust_code,
-            failure_description,
-            failure_history: Vec::new(),
-        }
-    }
-
-    /// Create a new fix template with failure history for informed prompting.
-    pub fn with_history(
-        function_name: String,
-        dll_name: String,
-        original_rust_code: String,
-        failure_description: String,
-        failure_history: Vec<FailureHint>,
-    ) -> Self {
-        Self {
-            function_name,
-            dll_name,
-            original_rust_code,
-            failure_description,
-            failure_history,
-        }
-    }
-}
-
-// ============================================================
-// Escalate template — for retrying with additional Ghidra context
-// ============================================================
-
-/// Template for "add more context and retry" prompts.
-///
-/// Used when previous attempts failed with compile_fix or test_fix strategies.
-/// Injects call graph neighbors, neighboring functions, data structures, and
-/// type information. When `failure_history` is non-empty, includes a
-/// "PREVIOUS ATTEMPT HISTORY" section so the LLM can learn from past mistakes.
-#[derive(Template)]
-#[template(path = "escalate.j2")]
-pub struct EscalateTemplate {
-    /// The function name being fixed.
-    pub function_name: String,
-
-    /// The DLL containing the function.
-    pub dll_name: String,
-
-    /// The previously generated (failing) Rust code.
-    pub original_rust_code: String,
-
-    /// A description of what went wrong during verification.
-    pub failure_description: String,
-
-    /// Functions directly called by or calling this function.
-    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
-
-    /// Other functions sharing context with this function.
-    pub neighboring_functions: Vec<NeighborFunction>,
-
-    /// Data structures referenced near this function.
-    pub data_structures: Vec<StructuredData>,
-
-    /// Type information inferred by Ghidra.
-    pub type_info: Vec<TypeInfo>,
-
-    /// Previous attempt failures to reference in the prompt.
-    pub failure_history: Vec<FailureHint>,
-}
-
-impl EscalateTemplate {
-    /// Create a new escalate template without failure history.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        function_name: String,
-        dll_name: String,
-        original_rust_code: String,
-        failure_description: String,
-        call_graph_neighbors: Vec<CallGraphNeighbor>,
-        neighboring_functions: Vec<NeighborFunction>,
-        data_structures: Vec<StructuredData>,
-        type_info: Vec<TypeInfo>,
-    ) -> Self {
-        Self {
-            function_name,
-            dll_name,
-            original_rust_code,
-            failure_description,
-            call_graph_neighbors,
-            neighboring_functions,
-            data_structures,
-            type_info,
-            failure_history: Vec::new(),
-        }
-    }
-
-    /// Create a new escalate template with failure history for informed prompting.
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_history(
-        function_name: String,
-        dll_name: String,
-        original_rust_code: String,
-        failure_description: String,
-        call_graph_neighbors: Vec<CallGraphNeighbor>,
-        neighboring_functions: Vec<NeighborFunction>,
-        data_structures: Vec<StructuredData>,
-        type_info: Vec<TypeInfo>,
-        failure_history: Vec<FailureHint>,
-    ) -> Self {
-        Self {
-            function_name,
-            dll_name,
-            original_rust_code,
-            failure_description,
-            call_graph_neighbors,
-            neighboring_functions,
-            data_structures,
-            type_info,
-            failure_history,
-        }
-    }
-}
-
-/// A function that is a direct caller or callee of the target function.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct CallGraphNeighbor {
-    /// The neighbor function's name.
-    pub name: String,
-    /// Virtual address of the neighbor.
-    pub address: u64,
-    /// Signature as seen by Ghidra.
-    pub signature: String,
-    /// Whether this neighbor calls or is called by the target.
-    pub role: String,
-}
-
-/// A neighboring function with shared context.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct NeighborFunction {
-    /// The function name.
-    pub name: String,
-    /// The DLL containing the function.
-    pub dll: String,
-    /// Virtual address.
-    pub address: u64,
-    /// Disassembly listing.
-    pub disassembly: String,
-    /// Pseudo-C decompiler output.
-    pub decompiler_output: String,
-}
-
-/// A data structure referenced near the target function.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct StructuredData {
-    /// Name or type tag.
-    pub name: String,
-    /// Size in bytes, or 0 if unknown.
-    pub size: usize,
-    /// Struct fields.
-    pub fields: Vec<StructField>,
-}
-
-/// A single field within a data structure.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct StructField {
-    /// Field name.
-    pub name: String,
-    /// Field type as inferred by Ghidra.
-    pub type_: String,
-    /// Byte offset from struct start, or -1 if unknown.
-    pub offset: i64,
-}
-
-/// Type information inferred by Ghidra's type database.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct TypeInfo {
-    /// Type name or signature.
-    pub name: String,
-    /// Human-readable description, or empty string when none available.
-    pub description: String,
-}
-
-// ============================================================
-// Edge case template — for boundary-value test failures
-// ============================================================
-
-/// Template for "fix edge cases" prompts.
-///
-/// Used when tests fail specifically on boundary values (zero, max, negative).
-/// When `failure_history` is non-empty, includes a "PREVIOUS ATTEMPT HISTORY" section.
-#[derive(Template)]
-#[template(path = "edge_case.j2")]
-pub struct EdgeCaseTemplate {
-    /// The function name being fixed.
-    pub function_name: String,
-
-    /// The DLL containing the function.
-    pub dll_name: String,
-
-    /// The previously generated (failing) Rust code.
-    pub original_rust_code: String,
-
-    /// Failing edge case test details.
-    pub failed_tests: Vec<EdgeCaseTest>,
-
-    /// Boundary checks identified from the disassembly.
-    pub boundary_values: Vec<BoundaryValue>,
-
-    /// Previous attempt failures to reference in the prompt.
-    pub failure_history: Vec<FailureHint>,
-}
-
-impl EdgeCaseTemplate {
-    /// Create a new edge case template without failure history.
-    pub fn new(
-        function_name: String,
-        dll_name: String,
-        original_rust_code: String,
-        failed_tests: Vec<EdgeCaseTest>,
-        boundary_values: Vec<BoundaryValue>,
-    ) -> Self {
-        Self {
-            function_name,
-            dll_name,
-            original_rust_code,
-            failed_tests,
-            boundary_values,
-            failure_history: Vec::new(),
-        }
-    }
-
-    /// Create a new edge case template with failure history for informed prompting.
-    pub fn with_history(
-        function_name: String,
-        dll_name: String,
-        original_rust_code: String,
-        failed_tests: Vec<EdgeCaseTest>,
-        boundary_values: Vec<BoundaryValue>,
-        failure_history: Vec<FailureHint>,
-    ) -> Self {
-        Self {
-            function_name,
-            dll_name,
-            original_rust_code,
-            failed_tests,
-            boundary_values,
-            failure_history,
-        }
-    }
-}
-
-/// A failing edge case test with context.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct EdgeCaseTest {
-    /// Test index (1-based).
-    pub index: usize,
-    /// Test inputs as JSON.
-    pub inputs: serde_json::Value,
-    /// Expected output.
-    pub expected: serde_json::Value,
-    /// Actual output.
-    pub actual: serde_json::Value,
-    /// Error message from the test harness.
-    pub error: String,
-    /// Disassembly hints from Ghidra that explain this branch.
-    pub disassembly_hints: String,
-}
-
-/// A boundary value check identified in the disassembly.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct BoundaryValue {
-    /// Human-readable description.
-    pub description: String,
-    /// The condition being checked (e.g., "x <= 0").
-    pub condition: String,
-    /// Address of the branch instruction.
-    pub branch_address: u64,
-}
-
-/// Build an escalated prompt that injects additional Ghidra context.
-///
-/// When `failure_history` is non-empty, the prompt includes a
-/// "PREVIOUS ATTEMPT HISTORY" section so the LLM can learn from past mistakes.
-#[allow(clippy::too_many_arguments)]
-pub fn build_escalate_prompt(
-    function_name: String,
-    dll_name: String,
-    original_rust_code: String,
-    failure_description: String,
-    call_graph_neighbors: Vec<CallGraphNeighbor>,
-    neighboring_functions: Vec<NeighborFunction>,
-    data_structures: Vec<StructuredData>,
-    type_info: Vec<TypeInfo>,
-    failure_history: Vec<FailureHint>,
-) -> Result<String, PromptError> {
-    let template = EscalateTemplate {
-        function_name,
-        dll_name,
-        original_rust_code,
-        failure_description,
-        call_graph_neighbors,
-        neighboring_functions,
-        data_structures,
-        type_info,
-        failure_history,
-    };
-    let rendered = template
-        .render()
-        .map_err(|e| PromptError::Render(e.to_string()))?;
-    if rendered.trim().is_empty() {
-        return Err(PromptError::EmptyPrompt);
-    }
-    Ok(rendered)
-}
-
-/// Build an edge-case prompt focused on boundary value handling.
-///
-/// When `failure_history` is non-empty, the prompt includes a
-/// "PREVIOUS ATTEMPT HISTORY" section so the LLM can learn from past mistakes.
-pub fn build_edge_case_prompt(
-    function_name: String,
-    dll_name: String,
-    original_rust_code: String,
-    failed_tests: Vec<EdgeCaseTest>,
-    boundary_values: Vec<BoundaryValue>,
-    failure_history: Vec<FailureHint>,
-) -> Result<String, PromptError> {
-    let template = EdgeCaseTemplate::with_history(
-        function_name,
-        dll_name,
-        original_rust_code,
-        failed_tests,
-        boundary_values,
-        failure_history,
-    );
-    let rendered = template
-        .render()
-        .map_err(|e| PromptError::Render(e.to_string()))?;
-    if rendered.trim().is_empty() {
-        return Err(PromptError::EmptyPrompt);
-    }
-    Ok(rendered)
-}
-
-// ============================================================
-// Rich template — for functions with complex control flow (101-300 instructions)
-// ============================================================
-
-/// Template for "rich context" translation prompts.
-///
-/// Used when a function has 101–300 instructions, multiple API categories,
-/// or high branch density. Adds detailed API category mapping rows and
-/// advanced translation guidelines to the standard prompt.
-#[derive(Template)]
-#[template(path = "rich_translate.j2")]
-pub struct RichTemplate {
-    /// The function name to translate.
-    pub function_name: String,
-
-    /// The DLL containing the function.
-    pub dll_name: String,
-
-    /// The virtual address of the function entry point.
-    pub address: u64,
-
-    /// Raw disassembly listing from Ghidra.
-    pub disassembly: String,
-
-    /// Pseudo-C decompiler output from Ghidra.
-    pub decompiler_output: String,
-
-    /// Windows API calls identified in the disassembly.
-    pub windows_apis: Vec<calxgloss_types::translation::WindowsApiCall>,
-
-    /// Whether there are no Windows API calls (for conditional rendering).
-    pub no_windows_apis: bool,
-
-    /// Baseline test cases the translated Rust code must pass.
-    pub test_cases: Vec<TestCaseFormatted>,
-
-    /// API-category-specific mapping rows providing detailed context
-    /// for the APIs used in this function.
-    pub api_category_mappings: Vec<ApiCategoryMapping>,
-}
-
-impl RichTemplate {
-    /// Create a new rich template from a translation request.
-    pub fn from_request(req: &TranslationRequest) -> Self {
-        let test_cases: Vec<TestCaseFormatted> = req
-            .baseline_tests
-            .iter()
-            .enumerate()
-            .map(|(i, test)| TestCaseFormatted {
-                index: i + 1,
-                inputs: test.inputs.clone(),
-                expected_return: test.expected_return.clone(),
-                side_effects: serde_json::to_value(&test.expected_side_effects)
-                    .unwrap_or_else(|_| json!([])),
-            })
-            .collect();
-
-        RichTemplate {
-            function_name: req.function.clone(),
-            dll_name: req.dll.clone(),
-            address: 0,
-            disassembly: req.disassembly.clone(),
-            decompiler_output: req.decompiler_output.clone(),
-            windows_apis: req.windows_apis.clone(),
-            no_windows_apis: req.windows_apis.is_empty(),
-            test_cases,
-            api_category_mappings: Vec::new(),
-        }
-    }
-}
-
-// ============================================================
-// Detailed template — for very complex functions (>300 instructions)
-// ============================================================
-
-/// Template for "detailed context" translation prompts.
-///
-/// Used when a function exceeds 300 instructions or has extreme complexity.
-/// Adds all the context from `RichTemplate` plus call graph neighbors,
-/// neighboring function disassembly, data structures, and type information.
-#[derive(Template)]
-#[template(path = "detailed_translate.j2")]
-pub struct DetailedTemplate {
-    /// The function name to translate.
-    pub function_name: String,
-
-    /// The DLL containing the function.
-    pub dll_name: String,
-
-    /// The virtual address of the function entry point.
-    pub address: u64,
-
-    /// Raw disassembly listing from Ghidra.
-    pub disassembly: String,
-
-    /// Pseudo-C decompiler output from Ghidra.
-    pub decompiler_output: String,
-
-    /// Windows API calls identified in the disassembly.
-    pub windows_apis: Vec<calxgloss_types::translation::WindowsApiCall>,
-
-    /// Whether there are no Windows API calls (for conditional rendering).
-    pub no_windows_apis: bool,
-
-    /// Baseline test cases the translated Rust code must pass.
-    pub test_cases: Vec<TestCaseFormatted>,
-
-    /// API-category-specific mapping rows.
-    pub api_category_mappings: Vec<ApiCategoryMapping>,
-
-    /// Functions directly called by or calling this function.
-    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
-
-    /// Other functions sharing context with this function.
-    pub neighboring_functions: Vec<NeighborFunction>,
-
-    /// Data structures referenced near this function.
-    pub data_structures: Vec<StructuredData>,
-
-    /// Type information inferred by Ghidra.
-    pub type_info: Vec<TypeInfo>,
-}
-
-impl DetailedTemplate {
-    /// Create a new detailed template from a translation request.
-    pub fn from_request(req: &TranslationRequest) -> Self {
-        let test_cases: Vec<TestCaseFormatted> = req
-            .baseline_tests
-            .iter()
-            .enumerate()
-            .map(|(i, test)| TestCaseFormatted {
-                index: i + 1,
-                inputs: test.inputs.clone(),
-                expected_return: test.expected_return.clone(),
-                side_effects: serde_json::to_value(&test.expected_side_effects)
-                    .unwrap_or_else(|_| json!([])),
-            })
-            .collect();
-
-        DetailedTemplate {
-            function_name: req.function.clone(),
-            dll_name: req.dll.clone(),
-            address: 0,
-            disassembly: req.disassembly.clone(),
-            decompiler_output: req.decompiler_output.clone(),
-            windows_apis: req.windows_apis.clone(),
-            no_windows_apis: req.windows_apis.is_empty(),
-            test_cases,
-            api_category_mappings: Vec::new(),
-            call_graph_neighbors: Vec::new(),
-            neighboring_functions: Vec::new(),
-            data_structures: Vec::new(),
-            type_info: Vec::new(),
-        }
-    }
-}
-
-// ============================================================
-// Stub template — Tier 0: function name, signature, call graph
-// ============================================================
-
-/// Context data needed to build a Tier 0 (stub) prompt.
-///
-/// Tier 0 sends the LLM only the function's name, inferred signature,
-/// and call graph neighbors — no disassembly, no decompiler output.
-/// This minimizes token usage for trivially simple functions.
-#[derive(Debug)]
-pub struct StubPromptData {
-    /// The function name to translate.
-    pub function_name: String,
-    /// The DLL containing the function.
-    pub dll_name: String,
-    /// Virtual address as a hex string (e.g. "0x1a2b3c").
-    pub address_hex: String,
-    /// The inferred C signature, e.g. `int __stdcall DoWork(int x, int y)`.
-    pub signature: String,
-    /// Functions directly called by or calling this function.
-    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
-}
-
-impl StubPromptData {
-    /// Build [`StubPromptData`] from a [`FunctionInfo`]-compatible source.
-    ///
-    /// Extracts the signature from the first non-blank line of the
-    /// decompiler output (which is Ghidra's inferred function signature).
-    pub fn from_function_info(function_info: &calxgloss_types::FunctionInfo) -> Self {
-        let signature = extract_signature_from_decompiler(&function_info.decompiler_output);
-        Self {
-            function_name: function_info.name.clone(),
-            dll_name: function_info.dll.clone(),
-            address_hex: format!("{:#x}", function_info.address),
-            signature,
-            call_graph_neighbors: Vec::new(),
-        }
-    }
-}
-
-/// Extract the C function signature from Ghidra's decompiler output.
-///
-/// The decompiler's first non-blank line is always the function's
-/// signature (e.g. `int __stdcall DrawSprite(int x, int y) {`).
-fn extract_signature_from_decompiler(decompiler_output: &str) -> String {
-    let first_line = decompiler_output
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("");
-
-    // Strip the opening brace if it's on the same line as the signature.
-    match first_line.find('{') {
-        Some(idx) => first_line[..idx].trim().to_string(),
-        None => first_line.trim().to_string(),
-    }
-}
-
-/// Template for Tier 0 translation prompts (function stub only).
-///
-/// Contains only the function name, signature, and call graph neighbors.
-/// No disassembly, no decompiler output — the absolute minimum context.
-#[derive(Template)]
-#[template(path = "stub_translate.j2")]
-pub struct StubTemplate {
-    /// The function name to translate.
-    pub function_name: String,
-    /// The DLL containing the function.
-    pub dll_name: String,
-    /// Virtual address as a hex string (e.g. "0x1a2b3c").
-    pub address_hex: String,
-    /// The inferred C signature from Ghidra's decompiler.
-    pub signature: String,
-    /// Functions directly called by or calling this function.
-    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
-}
-
-impl StubTemplate {
-    /// Create a new stub template from tier-0 data.
-    pub fn from_data(data: &StubPromptData) -> Self {
-        StubTemplate {
-            function_name: data.function_name.clone(),
-            dll_name: data.dll_name.clone(),
-            address_hex: data.address_hex.clone(),
-            signature: data.signature.clone(),
-            call_graph_neighbors: data.call_graph_neighbors.clone(),
-        }
-    }
-}
-
-/// Build and render a Tier 0 (stub) prompt.
-///
-/// This sends the LLM the minimum possible context: function name,
-/// inferred signature, and call graph neighbors. No disassembly or
-/// decompiler output is included.
-///
-/// # Arguments
-///
-/// * `data` — The stub context data (name, signature, neighbors).
-///
-/// # Returns
-///
-/// The rendered prompt string, or an error if rendering fails.
-pub fn build_stub_prompt(data: &StubPromptData) -> Result<String, PromptError> {
-    let template = StubTemplate::from_data(data);
-    let rendered = template
-        .render()
-        .map_err(|e| PromptError::Render(e.to_string()))?;
-    if rendered.trim().is_empty() {
-        return Err(PromptError::EmptyPrompt);
-    }
-    Ok(rendered)
-}
-
-// ============================================================
-// Disassembly template — Tier 1: disassembly + decompiler + type info
-// ============================================================
-
-/// Context data needed to build a Tier 1 (disassembly) prompt.
-///
-/// Tier 1 sends the LLM the full disassembly, Ghidra's decompiler
-/// output (pseudo-C), tagged Windows API calls, and call graph
-/// neighbors — but no baseline tests. This gives the LLM enough
-/// ground truth to translate correctly while keeping token count
-/// lower than Tier 2's test-heavy prompts.
-#[derive(Debug)]
-pub struct DisassemblyPromptData {
-    /// The function name to translate.
-    pub function_name: String,
-    /// The DLL containing the function.
-    pub dll_name: String,
-    /// Virtual address of the function entry point.
-    pub address: u64,
-    /// Raw disassembly listing from Ghidra.
-    pub disassembly: String,
-    /// Pseudo-C decompiler output from Ghidra.
-    pub decompiler_output: String,
-    /// Windows API calls identified in the disassembly.
-    pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
-    /// Whether there are no Windows API calls (for conditional rendering).
-    pub no_windows_apis: bool,
-    /// Functions directly called by or calling this function.
-    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
-}
-
-impl DisassemblyPromptData {
-    /// Build [`DisassemblyPromptData`] from a [`TranslationRequest`]-compatible source.
-    ///
-    /// Extracts all the data needed for Tier 1 context (disassembly, decompiler,
-    /// tagged APIs) from a pre-built request. Call graph neighbors are set to
-    /// empty — callers should populate them from Ghidra's call graph data before
-    /// rendering the prompt.
-    pub fn from_request(req: &TranslationRequest) -> Self {
-        // Convert from translation::WindowsApiCall to the function-level type.
-        let windows_apis: Vec<calxgloss_types::WindowsApiCall> = req
-            .windows_apis
-            .iter()
-            .map(|api| calxgloss_types::WindowsApiCall {
-                name: api.name.clone(),
-                category: api.category.clone(),
-                pal_mapping: api.pal_mapping.clone(),
-            })
-            .collect();
-
-        Self {
-            function_name: req.function.clone(),
-            dll_name: req.dll.clone(),
-            address: 0,
-            disassembly: req.disassembly.trim().to_string(),
-            decompiler_output: req.decompiler_output.trim().to_string(),
-            windows_apis,
-            no_windows_apis: req.windows_apis.is_empty(),
-            call_graph_neighbors: Vec::new(),
-        }
-    }
-
-    /// Build [`DisassemblyPromptData`] from a [`FunctionInfo`].
-    ///
-    /// This is the primary constructor used by the translation pipeline.
-    /// It extracts disassembly, decompiler output, and tagged APIs from
-    /// the function metadata collected by GhidraMCP.
-    pub fn from_function_info(function_info: &calxgloss_types::FunctionInfo) -> Self {
-        Self {
-            function_name: function_info.name.clone(),
-            dll_name: function_info.dll.clone(),
-            address: function_info.address,
-            disassembly: function_info.disassembly.trim().to_string(),
-            decompiler_output: function_info.decompiler_output.trim().to_string(),
-            windows_apis: function_info.windows_apis.clone(),
-            no_windows_apis: function_info.windows_apis.is_empty(),
-            call_graph_neighbors: Vec::new(),
-        }
-    }
-}
-
-/// Template for Tier 1 translation prompts (disassembly + decompiler + type info).
-///
-/// Contains full disassembly, Ghidra pseudo-C, tagged Windows API calls,
-/// and call graph neighbors. No baseline tests — those are added at Tier 2.
-#[derive(Template)]
-#[template(path = "disassembly_translate.j2")]
-pub struct DisassemblyTemplate {
-    /// The function name to translate.
-    pub function_name: String,
-    /// The DLL containing the function.
-    pub dll_name: String,
-    /// Virtual address of the function entry point.
-    pub address: u64,
-    /// Raw disassembly listing from Ghidra.
-    pub disassembly: String,
-    /// Pseudo-C decompiler output from Ghidra.
-    pub decompiler_output: String,
-    /// Windows API calls identified in the disassembly.
-    pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
-    /// Whether there are no Windows API calls (for conditional rendering).
-    pub no_windows_apis: bool,
-    /// Functions directly called by or calling this function.
-    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
-}
-
-impl DisassemblyTemplate {
-    /// Create a new disassembly template from tier-1 data.
-    pub fn from_data(data: &DisassemblyPromptData) -> Self {
-        DisassemblyTemplate {
-            function_name: data.function_name.clone(),
-            dll_name: data.dll_name.clone(),
-            address: data.address,
-            disassembly: data.disassembly.clone(),
-            decompiler_output: data.decompiler_output.clone(),
-            windows_apis: data.windows_apis.clone(),
-            no_windows_apis: data.no_windows_apis,
-            call_graph_neighbors: data.call_graph_neighbors.clone(),
-        }
-    }
-}
-
-/// Build and render a Tier 1 (disassembly) prompt.
-///
-/// This sends the LLM the full disassembly, Ghidra's decompiler output
-/// (pseudo-C), tagged Windows API calls, and call graph neighbors.
-/// No baseline tests are included — those are reserved for Tier 2.
-///
-/// # Arguments
-///
-/// * `data` — The disassembly context data (disassembly, decompiler, APIs, neighbors).
-///
-/// # Returns
-///
-/// The rendered prompt string, or an error if rendering fails.
-pub fn build_disassembly_prompt(data: &DisassemblyPromptData) -> Result<String, PromptError> {
-    let template = DisassemblyTemplate::from_data(data);
-    let rendered = template
-        .render()
-        .map_err(|e| PromptError::Render(e.to_string()))?;
-    if rendered.trim().is_empty() {
-        return Err(PromptError::EmptyPrompt);
-    }
-    Ok(rendered)
-}
-
-// ============================================================
-// With-tests template — Tier 2: disassembly + decompiler + tests
-// ============================================================
-
-/// A formatted test result for template rendering.
-///
-/// Carries the test case data alongside the pass/fail outcome observed
-/// during verification, plus the error message for any failed test.
-/// When `passed` is true and `error` is empty the test represents
-/// the initial baseline without prior verification results.
-#[derive(serde::Serialize, Clone, Debug)]
-pub struct FormattedTestResult {
-    /// Test index (1-based).
-    pub index: usize,
-    /// The test inputs as JSON.
-    pub inputs: serde_json::Value,
-    /// Expected return value as JSON.
-    pub expected: serde_json::Value,
-    /// Actual return value observed during verification.
-    pub actual: serde_json::Value,
-    /// Whether this test passed verification.
-    pub passed: bool,
-    /// Error message from the test harness, if the test failed.
-    pub error: String,
-    /// Expected side effects as JSON.
-    pub side_effects: serde_json::Value,
-}
-
-impl FormattedTestResult {
-    /// Build a `FormattedTestResult` from a baseline [`calxgloss_types::TestCase`].
-    ///
-    /// Used when no verification has been performed yet — the test is
-    /// marked as having no pass/fail result.
-    pub fn from_baseline(test: &calxgloss_types::TestCase, index: usize) -> Self {
-        Self {
-            index,
-            inputs: test.inputs.clone(),
-            expected: test.expected_return.clone(),
-            actual: test.expected_return.clone(), // not yet verified
-            passed: false,
-            error: String::new(),
-            side_effects: serde_json::to_value(&test.expected_side_effects)
-                .unwrap_or_else(|_| serde_json::json!([])),
-        }
-    }
-
-    /// Build a `FormattedTestResult` from a baseline + [`calxgloss_types::FailedTest`].
-    ///
-    /// Used when the verifier has already run and this test failed.
-    pub fn from_baseline_with_failure(
-        baseline: &calxgloss_types::TestCase,
-        failed: &calxgloss_types::FailedTest,
-        index: usize,
-    ) -> Self {
-        Self {
-            index,
-            inputs: failed.inputs.clone(),
-            expected: failed.expected.clone(),
-            actual: failed.actual.clone(),
-            passed: false,
-            error: failed.error.clone(),
-            side_effects: serde_json::to_value(&baseline.expected_side_effects)
-                .unwrap_or_else(|_| serde_json::json!([])),
-        }
-    }
-
-    /// Build a `FormattedTestResult` for a passing test from baseline.
-    pub fn from_baseline_passing(baseline: &calxgloss_types::TestCase, index: usize) -> Self {
-        Self {
-            index,
-            inputs: baseline.inputs.clone(),
-            expected: baseline.expected_return.clone(),
-            actual: baseline.expected_return.clone(), // verifier confirmed match
-            passed: true,
-            error: String::new(),
-            side_effects: serde_json::to_value(&baseline.expected_side_effects)
-                .unwrap_or_else(|_| serde_json::json!([])),
-        }
-    }
-}
-
-/// Context data needed to build a Tier 2 (with-tests) prompt.
-///
-/// Tier 2 sends the LLM the full disassembly, Ghidra's decompiler
-/// output (pseudo-C), tagged Windows API calls, call graph neighbors,
-/// and **all baseline tests with their pass/fail results**.  This
-/// gives the LLM concrete behavioral input to match on initial
-/// translation, and concrete failure details to fix on retry.
-#[derive(Debug)]
-pub struct WithTestsPromptData {
-    /// The function name to translate.
-    pub function_name: String,
-    /// The DLL containing the function.
-    pub dll_name: String,
-    /// Virtual address of the function entry point.
-    pub address: u64,
-    /// Raw disassembly listing from Ghidra.
-    pub disassembly: String,
-    /// Pseudo-C decompiler output from Ghidra.
-    pub decompiler_output: String,
-    /// Windows API calls identified in the disassembly.
-    pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
-    /// Whether there are no Windows API calls (for conditional rendering).
-    pub no_windows_apis: bool,
-    /// Functions directly called by or calling this function.
-    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
-    /// Baseline test results with pass/fail status and error details.
-    pub test_results: Vec<FormattedTestResult>,
-}
-
-impl WithTestsPromptData {
-    /// Build [`WithTestsPromptData`] from a [`TranslationRequest`]-compatible source.
-    ///
-    /// All baseline tests are included as "pending" (no pass/fail result)
-    /// since this is typically used for the initial Tier 2 translation
-    /// where verification hasn't been run yet.  Callers should populate
-    /// `test_results` with [`FormattedTestResult::from_baseline_with_failure`]
-    /// or [`FormattedTestResult::from_baseline_passing`] when retrying
-    /// after the verifier has run.
-    pub fn from_request(req: &calxgloss_types::TranslationRequest) -> Self {
-        // Convert from translation::WindowsApiCall to the function-level type.
-        let windows_apis: Vec<calxgloss_types::WindowsApiCall> = req
-            .windows_apis
-            .iter()
-            .map(|api| calxgloss_types::WindowsApiCall {
-                name: api.name.clone(),
-                category: api.category.clone(),
-                pal_mapping: api.pal_mapping.clone(),
-            })
-            .collect();
-
-        // Create pending test results — the verifier hasn't run yet so
-        // there are no pass/fail results to report.
-        let test_results: Vec<FormattedTestResult> = req
-            .baseline_tests
-            .iter()
-            .enumerate()
-            .map(|(i, test)| FormattedTestResult::from_baseline(test, i + 1))
-            .collect();
-
-        Self {
-            function_name: req.function.clone(),
-            dll_name: req.dll.clone(),
-            address: 0,
-            disassembly: req.disassembly.trim().to_string(),
-            decompiler_output: req.decompiler_output.trim().to_string(),
-            windows_apis,
-            no_windows_apis: req.windows_apis.is_empty(),
-            call_graph_neighbors: Vec::new(),
-            test_results,
-        }
-    }
-
-    /// Build [`WithTestsPromptData`] with pre-computed test results.
-    ///
-    /// Use this constructor when you already know the pass/fail status
-    /// of each baseline test (e.g., from the verifier).
-    pub fn from_request_with_results(
-        req: &calxgloss_types::TranslationRequest,
-        test_results: Vec<FormattedTestResult>,
-    ) -> Self {
-        // Convert from translation::WindowsApiCall to the function-level type.
-        let windows_apis: Vec<calxgloss_types::WindowsApiCall> = req
-            .windows_apis
-            .iter()
-            .map(|api| calxgloss_types::WindowsApiCall {
-                name: api.name.clone(),
-                category: api.category.clone(),
-                pal_mapping: api.pal_mapping.clone(),
-            })
-            .collect();
-
-        Self {
-            function_name: req.function.clone(),
-            dll_name: req.dll.clone(),
-            address: 0,
-            disassembly: req.disassembly.trim().to_string(),
-            decompiler_output: req.decompiler_output.trim().to_string(),
-            windows_apis,
-            no_windows_apis: req.windows_apis.is_empty(),
-            call_graph_neighbors: Vec::new(),
-            test_results,
-        }
-    }
-}
-
-/// Template for Tier 2 translation prompts (disassembly + decompiler + baseline tests).
-///
-/// Contains full disassembly, Ghidra pseudo-C, tagged Windows API calls,
-/// call graph neighbors, and baseline test results with pass/fail status.
-#[derive(Template)]
-#[template(path = "with_tests_translate.j2")]
-pub struct WithTestsTemplate {
-    /// The function name to translate.
-    pub function_name: String,
-    /// The DLL containing the function.
-    pub dll_name: String,
-    /// Virtual address of the function entry point.
-    pub address: u64,
-    /// Raw disassembly listing from Ghidra.
-    pub disassembly: String,
-    /// Pseudo-C decompiler output from Ghidra.
-    pub decompiler_output: String,
-    /// Windows API calls identified in the disassembly.
-    pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
-    /// Whether there are no Windows API calls (for conditional rendering).
-    pub no_windows_apis: bool,
-    /// Functions directly called by or calling this function.
-    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
-    /// Baseline test results with pass/fail status and error details.
-    pub test_results: Vec<FormattedTestResult>,
-}
-
-impl WithTestsTemplate {
-    /// Create a new with-tests template from tier-2 data.
-    pub fn from_data(data: &WithTestsPromptData) -> Self {
-        WithTestsTemplate {
-            function_name: data.function_name.clone(),
-            dll_name: data.dll_name.clone(),
-            address: data.address,
-            disassembly: data.disassembly.clone(),
-            decompiler_output: data.decompiler_output.clone(),
-            windows_apis: data.windows_apis.clone(),
-            no_windows_apis: data.no_windows_apis,
-            call_graph_neighbors: data.call_graph_neighbors.clone(),
-            test_results: data.test_results.clone(),
-        }
-    }
-}
-
-/// Build and render a Tier 2 (with-tests) prompt.
-///
-/// This sends the LLM the full disassembly, Ghidra's decompiler output
-/// (pseudo-C), tagged Windows API calls, call graph neighbors, and
-/// baseline test results with pass/fail status and error details.
-///
-/// # Arguments
-///
-/// * `data` — The tier-2 context data (disassembly, decompiler, APIs, tests).
-///
-/// # Returns
-///
-/// The rendered prompt string, or an error if rendering fails.
-pub fn build_with_tests_prompt(data: &WithTestsPromptData) -> Result<String, PromptError> {
-    let template = WithTestsTemplate::from_data(data);
-    let rendered = template
-        .render()
-        .map_err(|e| PromptError::Render(e.to_string()))?;
-    if rendered.trim().is_empty() {
-        return Err(PromptError::EmptyPrompt);
-    }
-    Ok(rendered)
-}
-
-// ============================================================
-// Complexity-aware prompt builder
-// ============================================================
-
-/// Context data needed to build a complexity-aware prompt.
-///
-/// This aggregates all the pieces the translation pipeline collects
-/// during function analysis, ready to be rendered into whichever
-/// template matches the function's complexity level.
-#[derive(Debug)]
-pub struct ComplexityPromptData {
-    /// The function name to translate.
-    pub function_name: String,
-    /// The DLL containing the function.
-    pub dll_name: String,
-    /// Virtual address of the function entry point.
-    pub address: u64,
-    /// Raw disassembly listing from Ghidra.
-    pub disassembly: String,
-    /// Pseudo-C decompiler output from Ghidra.
-    pub decompiler_output: String,
-    /// Windows API calls identified in the disassembly.
-    pub windows_apis: Vec<calxgloss_types::translation::WindowsApiCall>,
-    /// Baseline test cases.
-    pub test_cases: Vec<TestCaseFormatted>,
-    /// API-category-specific mapping rows.
-    pub api_category_mappings: Vec<ApiCategoryMapping>,
-    /// Call graph neighbors (for detailed template).
-    pub call_graph_neighbors: Vec<CallGraphNeighbor>,
-    /// Neighboring function context (for detailed template).
-    pub neighboring_functions: Vec<NeighborFunction>,
-    /// Data structures (for detailed template).
-    pub data_structures: Vec<StructuredData>,
-    /// Type information (for detailed template).
-    pub type_info: Vec<TypeInfo>,
-}
-
-impl ComplexityPromptData {
-    /// Build [`ComplexityPromptData`] from a [`TranslationRequest`].
-    ///
-    /// This is a convenience constructor that extracts all data from
-    /// a request without the extra analysis fields (call graph, data
-    /// structures, type info). For full analysis data, construct the
-    /// struct directly.
-    pub fn from_request(req: &TranslationRequest) -> Self {
-        let test_cases: Vec<TestCaseFormatted> = req
-            .baseline_tests
-            .iter()
-            .enumerate()
-            .map(|(i, test)| TestCaseFormatted {
-                index: i + 1,
-                inputs: test.inputs.clone(),
-                expected_return: test.expected_return.clone(),
-                side_effects: serde_json::to_value(&test.expected_side_effects)
-                    .unwrap_or_else(|_| json!([])),
-            })
-            .collect();
-
-        Self {
-            function_name: req.function.clone(),
-            dll_name: req.dll.clone(),
-            address: 0,
-            disassembly: req.disassembly.clone(),
-            decompiler_output: req.decompiler_output.clone(),
-            windows_apis: req.windows_apis.clone(),
-            test_cases,
-            api_category_mappings: Vec::new(),
-            call_graph_neighbors: Vec::new(),
-            neighboring_functions: Vec::new(),
-            data_structures: Vec::new(),
-            type_info: Vec::new(),
-        }
-    }
-
-    /// Returns true if this data has no Windows API calls.
-    pub fn has_no_windows_apis(&self) -> bool {
-        self.windows_apis.is_empty()
-    }
-
-    /// Returns the set of unique API categories used by this function's
-    /// tagged Windows API calls.
-    pub fn api_categories(&self) -> Vec<calxgloss_types::ApiCategory> {
-        let mut seen = std::collections::HashSet::new();
-        self.windows_apis
-            .iter()
-            .filter_map(|api| {
-                if seen.insert(api.category.clone()) {
-                    Some(api.category.clone())
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-}
-
-/// Build and render a translation prompt, selecting the template
-/// based on the function's complexity level.
-///
-/// This is the main entry point for complexity-based prompt selection.
-/// It creates the appropriate template struct, renders it, and returns
-/// the rendered prompt string.
-///
-/// # Arguments
-///
-/// * `complexity` — The detected complexity level of the function.
-/// * `data` — All context data needed to render the selected template.
-///
-/// # Returns
-///
-/// The rendered prompt string, or an error if rendering fails.
-///
-/// # Complexity-based selection
-///
-/// | Complexity | Template | Context |
-/// |------------|----------|---------|
-/// | `Minimal` (≤30 instructions) | `minimal_translate.j2` | Disassembly + decompiler only |
-/// | `Standard` (31–100 instructions) | `translate.j2` | Disassembly + decompiler + API mappings + tests |
-/// | `Rich` (101–300 instructions) | `rich_translate.j2` | Standard + API category context + advanced guidelines |
-/// | `Detailed` (>300 instructions) | `detailed_translate.j2` | Rich + call graph + neighbors + data structures + type info |
-pub fn build_complexity_prompt(
-    complexity: &FunctionComplexity,
-    data: &ComplexityPromptData,
-) -> Result<String, PromptError> {
-    // API-aware prompt augmentation — populate
-    // api_category_mappings from the function's tagged Windows APIs.
-    let categories = data.api_categories();
-    let api_mappings = calxgloss_pal::ApiMappings::default();
-    let api_category_mappings = api_mappings.for_categories(&categories);
-
-    let rendered = match complexity {
-        FunctionComplexity::Minimal => {
-            let mut template = MinimalTemplate {
-                function_name: data.function_name.clone(),
-                dll_name: data.dll_name.clone(),
-                address: data.address,
-                disassembly: data.disassembly.clone(),
-                decompiler_output: data.decompiler_output.clone(),
-                windows_apis: data.windows_apis.clone(),
-                test_cases: data.test_cases.clone(),
-                no_windows_apis: data.windows_apis.is_empty(),
-                api_category_mappings: Vec::new(),
-            };
-            // API-aware augmentation: inject full mapping table rows
-            if !api_category_mappings.is_empty() {
-                template.api_category_mappings = api_category_mappings;
-            }
-            template
-                .render()
-                .map_err(|e| PromptError::Render(e.to_string()))?
-        }
-        FunctionComplexity::Standard => {
-            let req = build_std_request(data);
-            let mut template = TranslateTemplate::from_request(&req);
-            // API-aware augmentation: inject full mapping table rows
-            if !api_category_mappings.is_empty() {
-                template.api_category_mappings = api_category_mappings;
-            }
-            template
-                .render()
-                .map_err(|e| PromptError::Render(e.to_string()))?
-        }
-        FunctionComplexity::Rich => {
-            let req = build_std_request(data);
-            let mut template = RichTemplate::from_request(&req);
-            // API-aware augmentation: inject full mapping table rows
-            if !api_category_mappings.is_empty() {
-                template.api_category_mappings = api_category_mappings;
-            }
-            template
-                .render()
-                .map_err(|e| PromptError::Render(e.to_string()))?
-        }
-        FunctionComplexity::Detailed => {
-            let req = build_std_request(data);
-            let mut template = DetailedTemplate::from_request(&req);
-            // API-aware augmentation: inject full mapping table rows
-            if !api_category_mappings.is_empty() {
-                template.api_category_mappings = api_category_mappings;
-            }
-            template
-                .render()
-                .map_err(|e| PromptError::Render(e.to_string()))?
-        }
-    };
-
-    if rendered.trim().is_empty() {
-        return Err(PromptError::EmptyPrompt);
-    }
-    Ok(rendered)
-}
-
-/// Helper to build a minimal TranslationRequest from ComplexityPromptData
-/// so we can reuse the existing template constructors.
-fn build_std_request(data: &ComplexityPromptData) -> TranslationRequest {
-    use calxgloss_types::TestCase;
-    let baseline_tests: Vec<TestCase> = data
-        .test_cases
-        .iter()
-        .map(|tc| TestCase {
-            inputs: tc.inputs.clone(),
-            expected_return: tc.expected_return.clone(),
-            expected_side_effects: serde_json::from_value(tc.side_effects.clone())
-                .unwrap_or_default(),
-        })
-        .collect();
-
-    TranslationRequest {
-        dll: data.dll_name.clone(),
-        function: data.function_name.clone(),
-        disassembly: data.disassembly.clone(),
-        decompiler_output: data.decompiler_output.clone(),
-        windows_apis: data.windows_apis.clone(),
-        baseline_tests,
-    }
-}
+pub use templates::{
+    BoundaryValue, CallGraphNeighbor, EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate,
+    FixTemplate, FormattedTestResult, MinimalTemplate, NeighborFunction, RichTemplate, StructField,
+    StructuredData, StubTemplate, TestCaseFormatted, TranslateTemplate, TypeInfo,
+    WithTestsTemplate,
+};
+
+// Re-export types used by template constructors
+pub use calxgloss_types::{ApiCategory, FunctionComplexity, TranslationRequest};
 
 // ============================================================
 // Tests
@@ -1500,7 +56,8 @@ fn build_std_request(data: &ComplexityPromptData) -> TranslationRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calxgloss_types::{ApiCategory, TestCase};
+    use askama::Template;
+    use calxgloss_types::TestCase;
     use serde_json::json;
 
     fn sample_request() -> TranslationRequest {
@@ -1553,7 +110,6 @@ mod tests {
         let req = sample_request();
         let prompt = build_translate_prompt(&req).unwrap();
 
-        // Check that key sections are present
         assert!(prompt.contains("DrawSprite"));
         assert!(prompt.contains("game_logic.dll"));
         assert!(prompt.contains("GetTickCount"));
@@ -1590,11 +146,11 @@ mod tests {
             "game_logic.dll".to_string(),
             "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
             "Tests failed: boundary case x=0 produced wrong result".to_string(),
-            Vec::new(), // empty neighbors — should render "No call graph neighbors"
             Vec::new(),
             Vec::new(),
             Vec::new(),
-            Vec::new(), // empty failure history
+            Vec::new(),
+            Vec::new(),
         )
         .unwrap();
 
@@ -1624,7 +180,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
-            Vec::new(), // empty failure history
+            Vec::new(),
         )
         .unwrap();
 
@@ -1648,8 +204,8 @@ mod tests {
             "game_logic.dll".to_string(),
             "fn draw_sprite(x: i32) -> i32 { x + 1 }".to_string(),
             failed_tests,
-            Vec::new(), // empty boundary values
-            Vec::new(), // empty failure history
+            Vec::new(),
+            Vec::new(),
         )
         .unwrap();
 
@@ -1673,7 +229,7 @@ mod tests {
             "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
             Vec::new(),
             bvs,
-            Vec::new(), // empty failure history
+            Vec::new(),
         )
         .unwrap();
 
@@ -1731,10 +287,6 @@ mod tests {
         assert!(prompt.contains("game.dll"));
         assert!(prompt.contains("WINDOWS API CALLS IDENTIFIED"));
     }
-
-    // ============================================================
-    // API-aware prompt augmentation tests
-    // ============================================================
 
     #[test]
     fn test_api_categories_extracted_from_windows_apis() {
@@ -1799,7 +351,6 @@ mod tests {
         };
 
         let categories = data.api_categories();
-        // Both APIs are Win32Core, so only one unique category
         assert_eq!(categories.len(), 1);
         assert_eq!(categories[0], ApiCategory::Win32Core);
     }
@@ -1848,11 +399,8 @@ mod tests {
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Standard, &data).unwrap();
 
-        // The API mapping reference section should be present
         assert!(prompt.contains("API MAPPING REFERENCE"));
-        // Win32Core category table should be present
         assert!(prompt.contains("Win32Core Category"));
-        // Should contain a mapping row
         assert!(prompt.contains("CreateFileA"));
         assert!(prompt.contains("std::fs::File::open"));
     }
@@ -1880,7 +428,6 @@ mod tests {
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Minimal, &data).unwrap();
 
-        // The API mapping reference section should be present even for minimal prompts
         assert!(prompt.contains("API MAPPING REFERENCE"));
         assert!(prompt.contains("GDI Category"));
         assert!(prompt.contains("BitBlt"));
@@ -1948,31 +495,26 @@ mod tests {
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Standard, &data).unwrap();
 
-        // When there are no Windows APIs, the section should be absent
         assert!(!prompt.contains("Win32Core Category"));
         assert!(!prompt.contains("DirectX Category"));
     }
 
-    // ============================================================
-    // Failure-informed prompting tests
-    // ============================================================
-
     #[test]
     fn test_fix_template_with_failure_history() {
         let hints = vec![
-            FailureHint::new(
+            calxgloss_types::FailureHint::new(
                 1,
                 "compile_fix",
                 "Compilation failed: E0425 — `__security_init_cookie` not found",
             ),
-            FailureHint::new(
+            calxgloss_types::FailureHint::new(
                 2,
                 "test_fix",
                 "2 of 5 tests passed — wrong return on boundary",
             ),
         ];
 
-        let template = super::FixTemplate::with_history(
+        let template = FixTemplate::with_history(
             "entry".to_string(),
             "eqmain.dll".to_string(),
             "fn entry() { __security_init_cookie(); }".to_string(),
@@ -1994,7 +536,7 @@ mod tests {
 
     #[test]
     fn test_fix_template_without_history_has_no_history_section() {
-        let template = super::FixTemplate::new(
+        let template = FixTemplate::new(
             "entry".to_string(),
             "eqmain.dll".to_string(),
             "fn entry() { __security_init_cookie(); }".to_string(),
@@ -2008,7 +550,7 @@ mod tests {
 
     #[test]
     fn test_escalate_template_with_failure_history() {
-        let hints = vec![FailureHint::new(
+        let hints = vec![calxgloss_types::FailureHint::new(
             1,
             "compile_fix",
             "Wrong shader constant mapping",
@@ -2019,7 +561,7 @@ mod tests {
             "game_logic.dll".to_string(),
             "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
             "Wrong result".to_string(),
-            Vec::new(), // empty neighbors
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -2037,8 +579,12 @@ mod tests {
     #[test]
     fn test_edge_case_template_with_failure_history() {
         let hints = vec![
-            FailureHint::new(1, "test_fix", "Wrong result on zero input"),
-            FailureHint::new(2, "escalate", "Still wrong on zero after adding context"),
+            calxgloss_types::FailureHint::new(1, "test_fix", "Wrong result on zero input"),
+            calxgloss_types::FailureHint::new(
+                2,
+                "escalate",
+                "Still wrong on zero after adding context",
+            ),
         ];
 
         let failed_tests = vec![EdgeCaseTest {
@@ -2069,10 +615,10 @@ mod tests {
 
     #[test]
     fn test_fix_template_with_fix_attempted() {
-        let hint = FailureHint::new(1, "compile_fix", "Wrong parameter type")
+        let hint = calxgloss_types::FailureHint::new(1, "compile_fix", "Wrong parameter type")
             .with_fix("Added explicit casting to u32");
 
-        let template = super::FixTemplate::with_history(
+        let template = FixTemplate::with_history(
             "entry".to_string(),
             "eqmain.dll".to_string(),
             "fn entry() { }".to_string(),
@@ -2086,10 +632,6 @@ mod tests {
         assert!(rendered.contains("Fix attempted:"));
         assert!(rendered.contains("Added explicit casting to u32"));
     }
-
-    // ============================================================
-    // Tier 0 (stub) prompt tests
-    // ============================================================
 
     #[test]
     fn test_build_stub_prompt_basic() {
@@ -2109,7 +651,6 @@ mod tests {
         assert!(prompt.contains("int __stdcall SimpleFunc(int x, int y)"));
         assert!(prompt.contains("FUNCTION:"));
         assert!(prompt.contains("SIGNATURE"));
-        // Tier 0 must NOT include disassembly or decompiler output
         assert!(!prompt.contains("DISASSEMBLY"));
         assert!(!prompt.contains("DECOMPILER OUTPUT"));
     }
@@ -2120,7 +661,8 @@ mod tests {
             function_name: "DrawSprite".to_string(),
             dll_name: "game_logic.dll".to_string(),
             address_hex: "0x5000".to_string(),
-            signature: "int __stdcall DrawSprite(int x, int y, unsigned int texture_index)".to_string(),
+            signature: "int __stdcall DrawSprite(int x, int y, unsigned int texture_index)"
+                .to_string(),
             call_graph_neighbors: vec![
                 CallGraphNeighbor {
                     name: "helper_compute".to_string(),
@@ -2163,32 +705,25 @@ mod tests {
 
         assert!(prompt.contains("Standalone"));
         assert!(prompt.contains("void __stdcall Standalone()"));
-        // With no neighbors, the CALL GRAPH NEIGHBORS section should not appear
         assert!(!prompt.contains("CALL GRAPH NEIGHBORS"));
     }
 
     #[test]
     fn test_extract_signature_from_decompiler() {
-        use super::extract_signature_from_decompiler;
-
-        // Normal decompiler output with signature on first line
         let output = "int __stdcall DrawSprite(int x, int y) {\n    return x + y;\n}";
         assert_eq!(
             extract_signature_from_decompiler(output),
             "int __stdcall DrawSprite(int x, int y)"
         );
 
-        // Decompiler output with signature + brace on same line
-        let output2 = "longlong FUN_18008ed50(longlong param_1,int param_2)\n\n{\n  return param_1;\n}";
+        let output2 =
+            "longlong FUN_18008ed50(longlong param_1,int param_2)\n\n{\n  return param_1;\n}";
         assert_eq!(
             extract_signature_from_decompiler(output2),
             "longlong FUN_18008ed50(longlong param_1,int param_2)"
         );
 
-        // Empty output
         assert_eq!(extract_signature_from_decompiler(""), "");
-
-        // Whitespace-only output
         assert_eq!(extract_signature_from_decompiler("  \n  "), "");
     }
 }
