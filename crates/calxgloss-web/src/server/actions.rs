@@ -298,8 +298,7 @@ async fn run_patch_retry(
     // Build the hallucination detector from Ghidra symbols and PAL APIs
     // before creating the pipeline (which consumes the Ghidra client).
     let api_mappings = calxgloss_pal::ApiMappings::default();
-    let detector = calxgloss_translator::build_hallucination_detector(&ghidra, &api_mappings)
-        .await;
+    let detector = calxgloss_translator::build_hallucination_detector(&ghidra, &api_mappings).await;
     let pipeline = TranslationPipeline::new(ghidra, llm, api_mappings)
         .with_workspace(repo_path.to_path_buf())
         .with_hallucination_detector(detector);

@@ -1,7 +1,5 @@
-
-// ============================================================
-// Common type definitions
-// ============================================================
+//! Common type definitions and PAL (Platform Abstraction Layer) traits.
+//! Provides common type definitions and traits for platform abstraction.
 
 /// A color in RGBA format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -41,7 +39,11 @@ pub struct Sample {
 
 impl Sample {
     pub fn new(data: Vec<f32>, sample_rate: u32, channels: u16) -> Self {
-        Self { data, sample_rate, channels }
+        Self {
+            data,
+            sample_rate,
+            channels,
+        }
     }
 }
 
@@ -71,7 +73,9 @@ pub enum FileMode {
 }
 
 impl Default for FileMode {
-    fn default() -> Self { Self::Read }
+    fn default() -> Self {
+        Self::Read
+    }
 }
 
 /// A file handle.
@@ -148,7 +152,12 @@ pub trait FileSystem {
 /// Maps CreateWindowEx/GetMessage/DispatchMessage to winit.
 pub trait WindowManager {
     type Window;
-    fn create_window(&mut self, title: &str, width: u32, height: u32) -> Result<Self::Window, String>;
+    fn create_window(
+        &mut self,
+        title: &str,
+        width: u32,
+        height: u32,
+    ) -> Result<Self::Window, String>;
     fn show(&self, window: &Self::Window);
     fn hide(&self, window: &Self::Window);
     fn process_events(&mut self) -> Vec<WindowEvent>;
@@ -181,13 +190,17 @@ impl GraphicsDevice for GraphicsDeviceStub {
     type Texture = Texture;
     type RenderTarget = RenderTarget;
 
-    fn create_texture(&mut self, _width: u32, _height: u32) -> Self::Texture { Texture::default() }
+    fn create_texture(&mut self, _width: u32, _height: u32) -> Self::Texture {
+        Texture::default()
+    }
     fn blit(&mut self, _src: &Self::Texture, _dest: &mut Self::RenderTarget) {}
     fn present(&mut self) {}
     fn draw_line(&mut self, _x1: f32, _y1: f32, _x2: f32, _y2: f32, _color: Color) {}
     fn draw_rect(&mut self, _x: f32, _y: f32, _w: f32, _h: f32, _color: Color) {}
     fn draw_text(&mut self, _x: f32, _y: f32, _text: &str, _font: &Font, _color: Color) {}
-    fn create_render_target(&mut self, _width: u32, _height: u32) -> Self::RenderTarget { RenderTarget }
+    fn create_render_target(&mut self, _width: u32, _height: u32) -> Self::RenderTarget {
+        RenderTarget
+    }
     fn destroy_texture(&mut self, _texture: Self::Texture) {}
 }
 
@@ -202,12 +215,24 @@ pub struct AudioDeviceStub {
 }
 
 impl AudioDevice for AudioDeviceStub {
-    fn play_sample(&mut self, _sample: &Sample) { self.playing = true; }
-    fn stop(&mut self) { self.playing = false; }
-    fn set_volume(&mut self, volume: f32) { self.volume = volume.max(0.0).min(1.0); }
-    fn pause(&mut self) { self.playing = false; }
-    fn resume(&mut self) { self.playing = true; }
-    fn is_playing(&self) -> bool { self.playing }
+    fn play_sample(&mut self, _sample: &Sample) {
+        self.playing = true;
+    }
+    fn stop(&mut self) {
+        self.playing = false;
+    }
+    fn set_volume(&mut self, volume: f32) {
+        self.volume = volume.max(0.0).min(1.0);
+    }
+    fn pause(&mut self) {
+        self.playing = false;
+    }
+    fn resume(&mut self) {
+        self.playing = true;
+    }
+    fn is_playing(&self) -> bool {
+        self.playing
+    }
 }
 
 // ============================================================
@@ -221,25 +246,44 @@ impl FileSystem for FileSystemStub {
     type Handle = FileHandle;
 
     fn open(&self, path: &str, mode: FileMode) -> Result<Self::Handle, String> {
-        Ok(FileHandle { path: path.to_string(), mode })
+        Ok(FileHandle {
+            path: path.to_string(),
+            mode,
+        })
     }
 
     fn read(&self, handle: &Self::Handle, buf: &mut [u8]) -> Result<usize, String> {
-        if !std::path::Path::new(&handle.path).exists() { return Ok(0); }
+        if !std::path::Path::new(&handle.path).exists() {
+            return Ok(0);
+        }
         match std::fs::read(&handle.path) {
-            Ok(data) => { let len = std::cmp::min(data.len(), buf.len()); buf[..len].copy_from_slice(&data[..len]); Ok(len) }
+            Ok(data) => {
+                let len = std::cmp::min(data.len(), buf.len());
+                buf[..len].copy_from_slice(&data[..len]);
+                Ok(len)
+            }
             Err(_) => Ok(0),
         }
     }
 
     fn write(&self, handle: &Self::Handle, data: &[u8]) -> Result<usize, String> {
-        std::fs::write(&handle.path, data).map(|_| data.len()).map_err(|e| e.to_string())
+        std::fs::write(&handle.path, data)
+            .map(|_| data.len())
+            .map_err(|e| e.to_string())
     }
 
-    fn close(&self, _handle: Self::Handle) -> Result<(), String> { Ok(()) }
-    fn create_dir(&self, path: &str) -> Result<(), String> { std::fs::create_dir_all(path).map_err(|e| e.to_string()) }
-    fn exists(&self, path: &str) -> bool { std::path::Path::new(path).exists() }
-    fn delete(&self, path: &str) -> Result<(), String> { std::fs::remove_file(path).map_err(|e| e.to_string()) }
+    fn close(&self, _handle: Self::Handle) -> Result<(), String> {
+        Ok(())
+    }
+    fn create_dir(&self, path: &str) -> Result<(), String> {
+        std::fs::create_dir_all(path).map_err(|e| e.to_string())
+    }
+    fn exists(&self, path: &str) -> bool {
+        std::path::Path::new(path).exists()
+    }
+    fn delete(&self, path: &str) -> Result<(), String> {
+        std::fs::remove_file(path).map_err(|e| e.to_string())
+    }
 }
 
 // ============================================================
@@ -254,15 +298,26 @@ pub struct WindowManagerStub {
 impl WindowManager for WindowManagerStub {
     type Window = WindowHandle;
 
-    fn create_window(&mut self, _title: &str, _width: u32, _height: u32) -> Result<Self::Window, String> {
+    fn create_window(
+        &mut self,
+        _title: &str,
+        _width: u32,
+        _height: u32,
+    ) -> Result<Self::Window, String> {
         self.windows.push(WindowHandle);
         Ok(WindowHandle)
     }
     fn show(&self, _window: &Self::Window) {}
     fn hide(&self, _window: &Self::Window) {}
-    fn process_events(&mut self) -> Vec<WindowEvent> { Vec::new() }
-    fn get_client_size(&self, _window: &Self::Window) -> Result<(u32, u32), String> { Ok((800, 600)) }
-    fn destroy_window(&mut self, _window: Self::Window) { self.windows.clear(); }
+    fn process_events(&mut self) -> Vec<WindowEvent> {
+        Vec::new()
+    }
+    fn get_client_size(&self, _window: &Self::Window) -> Result<(u32, u32), String> {
+        Ok((800, 600))
+    }
+    fn destroy_window(&mut self, _window: Self::Window) {
+        self.windows.clear();
+    }
     fn set_title(&self, _window: &Self::Window, _title: &str) {}
 }
 
@@ -295,7 +350,10 @@ impl Thread for ThreadStub {
     }
 
     fn join(handle: Self::Handle) -> Result<(), String> {
-        handle.0.join().map_err(|e| format!("Thread panic: {:?}", e))
+        handle
+            .0
+            .join()
+            .map_err(|e| format!("Thread panic: {:?}", e))
     }
 
     fn sleep(duration_ms: u64) {
@@ -375,7 +433,10 @@ extern "system" fn _free_dbg(_ptr: *mut core::ffi::c_void, _block_type: i32) {
     // Stub: falls back to std::alloc for unmanaged deallocations
     if !_ptr.is_null() {
         unsafe {
-            std::alloc::dealloc(_ptr.cast(), std::alloc::Layout::from_size_align(8, 8).unwrap());
+            std::alloc::dealloc(
+                _ptr.cast(),
+                std::alloc::Layout::from_size_align(8, 8).unwrap(),
+            );
         }
     }
 }
