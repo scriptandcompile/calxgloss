@@ -343,9 +343,11 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "calxgloss-ghidra",
+ "calxgloss-git",
  "calxgloss-llm",
  "calxgloss-pal",
  "calxgloss-types",
+ "calxgloss-verify",
  "chrono",
  "goblin",
  "serde",

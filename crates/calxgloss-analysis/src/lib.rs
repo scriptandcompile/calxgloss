@@ -46,6 +46,7 @@ pub mod error;
 pub mod experiment_log;
 pub mod shim;
 pub mod shim_gen;
+pub mod shim_pipeline;
 pub mod shim_test_gen;
 pub mod token_usage;
 
@@ -696,10 +697,7 @@ fn estimate_complexity(
 
     // Known crates get higher base confidence because their API patterns
     // are well-documented and the translation is more predictable.
-    let crate_name = classification
-        .crate_replacement
-        .as_deref()
-        .unwrap_or("");
+    let crate_name = classification.crate_replacement.as_deref().unwrap_or("");
     let crate_familiarity: f64 = match crate_name {
         "wgpu" | "cpal" | "fmod-rs" => 0.9,
         "vb6runtime" => 0.85,

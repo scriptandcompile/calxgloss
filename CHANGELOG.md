@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`batch_translate()` accepts a per-function callback** — the batch method now takes an optional `&mut dyn FnMut(&str, &str, &mut FunctionResult) -> bool` closure that is invoked immediately after each function's translation pipeline (including retries) completes, before the next function is processed. The callback can perform post-processing (e.g. writing files, git operations) incrementally. Returns `true` to continue the batch or `false` to stop early.
 
 ### `calxgloss-cli`
+- **`auto-shim` subcommand** — generates shim layers for all crate-replacement DLLs automatically. After `classify` marks DLLs as `CrateReplacement`, this command runs the full pipeline: generate API mappings (LLM) → generate source code → generate tests → verify → persist. Artifacts are written to `re/shims/<dll_name>/` and committed to git. Supports `--dll <name>` to process a single DLL.
 - **Incremental git commits during batch translation** — `run_translation_for_dll()` and `handle_batch_translate()` now commit and merge each function immediately after its translation succeeds, rather than deferring all git work until the entire batch finishes. Each function's Rust code is written, a `re/{dll}/{function}v1` branch is created, the file is committed, and the branch is merged to `main` before the next function is processed.
 
 ### `calxgloss-types`

@@ -17,7 +17,6 @@
 - All workspace tests pass 0 failures
 
 **What's NOT done:**
-- **Shim auto-pipeline** — individual shim generation steps (mappings → source → tests → verify) exist but are never orchestrated into an end-to-end auto-shim flow after classification
 - **Fault detection** — nothing implemented (Phase 7)
 - **Context tiers** — `escalate_on_failure` flag exists but tiered context logic is not implemented (Phase 8)
 - **CI / cross-platform verification** — no CI workflow files (Phase 9)
@@ -122,7 +121,7 @@
 | 6.4 | Generate shim tests | For each mapping, generate a test that verifies the crate API is invoked with correct parameters. | ✅ Complete |
 | 6.5 | Verify shim behavior | Run the original binary's test suite through the shim layer. | ✅ Complete |
 | 6.6 | Add to classification workflow | After `classify`, automatically suggest shim layers for all `CrateReplacement` DLLs with an estimated mapping complexity score. | ✅ Complete |
-| 6.7 | Auto-shim pipeline | Wire 6.2 → 6.3 → 6.4 → 6.5 into an end-to-end pipeline triggered by classification. When classify marks a DLL as `CrateReplacement`, run the full shim generation flow (generate mappings → generate source → generate tests → verify → persist) automatically. Persist results to `re/shims/<dll>/` and commit to git. Expose as `auto-shim` CLI command or auto-continue path from `classify`. | ⬜ Pending |
+| 6.7 | Auto-shim pipeline | Wire 6.2 → 6.3 → 6.4 → 6.5 into an end-to-end pipeline triggered by classification. When classify marks a DLL as `CrateReplacement`, run the full shim generation flow (generate mappings → generate source → generate tests → verify → persist) automatically. Persist results to `re/shims/<dll>/` and commit to git. Exposed as `auto-shim` CLI command. | ✅ Complete |
 
 ---
 
@@ -196,13 +195,13 @@
 | 3 | Terminal review dashboard | 3–5d | 1 | ✅ Complete |
 | 4 | Dependency-aware work queue | 4–6d | 0, 3 | ✅ Complete |
 | 5 | Web review UI | 8–12d | 3, 4 | ✅ Complete |
-| 6 | Shim layer generation (types, generation, verification, suggestions, auto-pipeline) | 5–8d | 1 | ⬜ 6.1–6.6 done, 6.7 pending |
+| 6 | Shim layer generation (types, generation, verification, suggestions, auto-pipeline) | 5–8d | 1 | ✅ Complete |
 | 7 | Fault detection & recovery | 4–6d | 1, 2 | ⬜ Not started |
 | 8 | Context tiers | 3–5d | 1, 2 | ⬜ Not started |
 | 9 | CI / cross-platform verification | 3–5d | 0 | ⬜ Not started |
 | 10 | Branch cleanup & archive | 2–3d | 4, 5 | ⬜ Not started |
 
-**Remaining effort: 25–38 working days** (shim auto-pipeline + fault detection + context tiers + CI + cleanup).
+**Remaining effort: 17–30 working days** (fault detection + context tiers + CI + cleanup).
 
 ---
 
@@ -210,11 +209,10 @@
 
 For maximum value delivery, execute phases in this sequence:
 
-1. **Phase 6.7** (shim auto-pipeline) — wire existing shim pieces (6.1–6.6) into end-to-end flow; highest immediate value
-2. **Phase 7** (fault detection) — improves reliability of translation pipeline
-3. **Phase 2.3** (failure-informed prompts) — already done, refine based on Phase 7 signals
-4. **Phase 8** (context tiers) — optimizes cost after scale grows
-5. **Phase 1.4** (token usage file logging) — observability for 7 + 8
-6. **Phase 9** (CI) — parallel after Phase 0 (already done)
-7. **Phase 5.8** (e2e web UI test) — validates the web review UI
-8. **Phase 10** (cleanup) — last, when branch count justifies it
+1. **Phase 7** (fault detection) — improves reliability of translation pipeline
+2. **Phase 2.3** (failure-informed prompts) — already done, refine based on Phase 7 signals
+3. **Phase 8** (context tiers) — optimizes cost after scale grows
+4. **Phase 1.4** (token usage file logging) — observability for 7 + 8
+5. **Phase 9** (CI) — parallel after Phase 0 (already done)
+6. **Phase 5.8** (e2e web UI test) — validates the web review UI
+7. **Phase 10** (cleanup) — last, when branch count justifies it
