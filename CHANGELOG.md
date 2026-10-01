@@ -64,6 +64,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### `calxgloss-analysis`
 - **Token usage logger** (`TokenUsageLogger`) — persists per-attempt token entries to `<workspace>/re/analysis/token_usage.json`. Provides `record()`, `load()`, `compute_stats()`, and `log_path()` methods. Auto-creates the `re/analysis/` directory; handles corrupted-file recovery by starting fresh.
 
+### Refactored
+
+#### `calxgloss-pal`
+- **Module split** — extracted `ApiMapping` and `ApiMappings` types with their implementations into `types.rs` (209 lines), moved all 20 unit tests into a separate `tests.rs` file. `lib.rs` is now 23 lines of module declarations and re-exports only.
+
+#### `calxgloss-cli`
+- **Unused import cleanup** — removed 27 unused imports across 11 files to eliminate all clippy warnings.
+
 ### Changed
 
 #### `calxgloss-translator`
