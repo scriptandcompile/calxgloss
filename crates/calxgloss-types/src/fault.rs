@@ -222,6 +222,82 @@ impl ContextWindowFault {
 }
 
 // ============================================================
+// Resource-exhaustion fault
+// ============================================================
+
+/// The reason an LLM call was considered resource-exhausted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceExhaustionKind {
+    /// The local LLM process is overloaded (too many concurrent requests or
+    /// insufficient GPU/CPU memory).
+    Overloaded,
+    /// The HTTP request timed out before the LLM returned a response.
+    Timeout,
+}
+
+impl std::fmt::Display for ResourceExhaustionKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResourceExhaustionKind::Overloaded => write!(f, "overloaded"),
+            ResourceExhaustionKind::Timeout => write!(f, "timeout"),
+        }
+    }
+}
+
+/// Metadata for a resource-exhaustion fault.
+///
+/// This fault fires when the local LLM model is overloaded (OOM, swap thrash,
+/// too many concurrent requests) or when a request exceeds the configured
+/// timeout. The translation pipeline should queue the work for later and
+/// optionally switch to a smaller model.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceExhaustionFault {
+    /// Why the model was considered exhausted.
+    pub reason: ResourceExhaustionKind,
+
+    /// How many seconds the call ran before giving up (timeout or wait in queue).
+    pub elapsed_secs: u64,
+
+    /// Whether a retry with a smaller context window is recommended.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reduce_context_recommended: Option<bool>,
+
+    /// The number of concurrent requests the LLM server was handling when the
+    /// fault was detected. `None` when unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub concurrent_requests: Option<usize>,
+}
+
+impl ResourceExhaustionFault {
+    /// Create a fault when the LLM process is detected as overloaded.
+    pub fn overloaded(elapsed_secs: u64, concurrent_requests: Option<usize>) -> Self {
+        Self {
+            reason: ResourceExhaustionKind::Overloaded,
+            elapsed_secs,
+            reduce_context_recommended: Some(true),
+            concurrent_requests,
+        }
+    }
+
+    /// Create a fault when the HTTP request timed out.
+    pub fn timeout(elapsed_secs: u64) -> Self {
+        Self {
+            reason: ResourceExhaustionKind::Timeout,
+            elapsed_secs,
+            reduce_context_recommended: Some(true),
+            concurrent_requests: None,
+        }
+    }
+
+    /// Whether this fault indicates the model is temporarily unavailable
+    /// and the caller should retry after a backoff.
+    pub fn is_transient(&self) -> bool {
+        matches!(self.reason, ResourceExhaustionKind::Overloaded)
+    }
+}
+
+// ============================================================
 // Fault event
 // ============================================================
 
@@ -388,6 +464,71 @@ impl FaultEvent {
                     "streak_start_attempt": streak_start,
                     "streak_end_attempt": streak_end,
                 })
+            ),
+        }
+    }
+
+    /// Create a new fault event from a resource-exhaustion detection.
+    ///
+    /// # Arguments
+    ///
+    /// * `dll` — The DLL containing the affected function.
+    /// * `function` — The function name.
+    /// * `attempt` — The attempt where exhaustion was detected.
+    /// * `strategy` — The strategy active when exhaustion occurred.
+    /// * `reason` — Why the model was considered exhausted.
+    /// * `elapsed_secs` — How many seconds the call ran before giving up.
+    pub fn resource_exhaustion(
+        dll: &str,
+        function: &str,
+        attempt: u32,
+        strategy: &str,
+        kind: &ResourceExhaustionFault,
+    ) -> Self {
+        let description = match kind.reason {
+            ResourceExhaustionKind::Overloaded => {
+                format!(
+                    "LLM process is overloaded — request queued but timed out after {} seconds",
+                    kind.elapsed_secs
+                )
+            }
+            ResourceExhaustionKind::Timeout => {
+                format!(
+                    "LLM request timed out after {} seconds — model may be swapping to disk",
+                    kind.elapsed_secs
+                )
+            }
+        };
+
+        let recovery = match kind.reason {
+            ResourceExhaustionKind::Overloaded => {
+                "Reduce concurrent requests. Wait for the model to become \
+                available and retry with a smaller context window."
+                    .to_string()
+            }
+            ResourceExhaustionKind::Timeout => {
+                "Switch to a smaller/faster model for this translation. \
+                If the problem persists, the host may be under memory pressure — \
+                consider freeing RAM or increasing swap space."
+                    .to_string()
+            }
+        };
+
+        Self {
+            dll: dll.to_string(),
+            function: function.to_string(),
+            attempt,
+            strategy: strategy.to_string(),
+            category: FaultCategory::ResourceExhaustion,
+            severity: FaultSeverity::Warning,
+            description,
+            recovery,
+            timestamp: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+            metadata: Some(
+                serde_json::to_value(kind).unwrap_or(serde_json::Value::Null),
             ),
         }
     }

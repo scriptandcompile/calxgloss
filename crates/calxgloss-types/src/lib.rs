@@ -46,6 +46,7 @@ pub use experiment_log::{
 };
 pub use fault::{
     ContextWindowFault, FaultCategory, FaultEvent, FaultLog, FaultSeverity, FaultStats,
+    ResourceExhaustionFault, ResourceExhaustionKind,
 };
 pub use function::{ApiCategory, FunctionInfo, WindowsApiCall};
 pub use git::{GitBranch, GitCommit};

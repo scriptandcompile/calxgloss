@@ -251,6 +251,24 @@ pub enum ProgressEvent {
         /// Confidence score for the divergence diagnosis (0–10).
         confidence: u8,
     },
+    /// The local LLM model is overloaded or has timed out.
+    ///
+    /// Emitted by the resource-exhaustion detector when the LLM client
+    /// detects that the model process is out of memory, swapping to disk,
+    /// or too many requests are queued.  The caller should queue the current
+    /// work for later and optionally switch to a smaller model.
+    ResourceExhaustionDetected {
+        dll: String,
+        function: String,
+        attempt: u32,
+        strategy: String,
+        /// Why the model was considered exhausted.
+        reason: String,
+        /// How many seconds the call ran before the detector gave up.
+        elapsed_secs: u64,
+        /// Recommended back-off time before retrying (in seconds).
+        recommended_backoff_secs: u64,
+    },
 }
 
 impl std::fmt::Display for ProgressEvent {
@@ -465,6 +483,20 @@ impl std::fmt::Display for ProgressEvent {
                     f,
                     "Behavior divergence detected for {function} ({dll}) attempt #{attempt} [{strategy}]: {baseline_passed}/{baseline_total} baseline tests pass, {edge_tests_passed}/{edge_tests_total} edge-case tests pass ({} failing, confidence {}/10)",
                     failing_edge_cases.len(), confidence
+                )
+            }
+            ProgressEvent::ResourceExhaustionDetected {
+                dll,
+                function,
+                attempt,
+                strategy,
+                reason,
+                elapsed_secs,
+                recommended_backoff_secs,
+            } => {
+                write!(
+                    f,
+                    "Resource exhaustion for {function} ({dll}) attempt #{attempt} [{strategy}]: {reason} ({elapsed_secs}s elapsed, backoff {recommended_backoff_secs}s)"
                 )
             }
         }
