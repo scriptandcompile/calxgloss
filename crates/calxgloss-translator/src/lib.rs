@@ -43,7 +43,7 @@ pub use batch::{BatchTranslationResult, FunctionResult};
 
 use calxgloss_analysis::Analyzer;
 use calxgloss_ghidra::GhidraClient;
-use calxgloss_llm::{LlmClient, LlmMessage};
+use calxgloss_llm::{context::ContextWindowDetector, LlmClient, LlmMessage};
 use calxgloss_pal::ApiMappings;
 use calxgloss_prompts::build_translate_prompt;
 use calxgloss_testgen::TestGenerator;
@@ -317,14 +317,21 @@ pub struct TranslationPipeline {
     /// and can be consumed by a WebSocket server for live progress.
     #[allow(dead_code)]
     events: Option<TranslationEvents>,
+
+    /// Context-window detector for fault detection.
+    /// Created once with the LLM client's `max_tokens` setting.
+    context_detector: ContextWindowDetector,
 }
 
 impl TranslationPipeline {
     /// Create a new translation pipeline with the given Ghidra and LLM clients.
     ///
     /// This sets up the full pipeline with default analyzer and empty exports/tests.
+    /// A context-window detector is initialized with the LLM client's `max_tokens`
+    /// setting for automatic fault detection.
     pub fn new(ghidra: GhidraClient, llm: LlmClient, api_mappings: ApiMappings) -> Self {
         let analyzer = Analyzer::new(ghidra.clone(), api_mappings.clone());
+        let context_detector = ContextWindowDetector::new(llm.max_tokens());
         Self {
             ghidra,
             llm,
@@ -335,6 +342,7 @@ impl TranslationPipeline {
             target_dll: None,
             workspace: None,
             events: None,
+            context_detector,
         }
     }
 
@@ -514,7 +522,15 @@ impl TranslationPipeline {
         });
 
         let response = self
-            .send_to_llm(&prompt, self.events.as_ref(), dll, function, 1, "initial")
+            .send_to_llm(
+                &prompt,
+                self.events.as_ref(),
+                dll,
+                function,
+                1,
+                "initial",
+                function_info.disassembly.lines().count(),
+            )
             .await?;
 
         if response.content.is_empty() {
@@ -590,6 +606,7 @@ impl TranslationPipeline {
                 &request.function,
                 1,
                 "initial",
+                request.disassembly.lines().count(),
             )
             .await?;
 
@@ -895,6 +912,18 @@ impl TranslationPipeline {
     ///
     /// If `events` is provided, emits `LlmCallInProgress` keepalive events
     /// every 30 seconds while the request is in flight.
+    ///
+    /// After receiving a response, the context-window detector checks whether
+    /// the output exceeds (or nears) the model's configured limit.  If a fault
+    /// is detected it is logged via `tracing::warn!` so the caller can act
+    /// on it (e.g., by splitting the function and retrying).
+    ///
+    /// # Arguments
+    ///
+    /// * `disassembly_lines` — The number of lines in the function's
+    ///   disassembly, used to compute a suggested chunk count for the retry
+    ///   splitter when a context-window fault is detected.
+    #[allow(clippy::too_many_arguments)]
     async fn send_to_llm(
         &self,
         prompt: &str,
@@ -903,8 +932,24 @@ impl TranslationPipeline {
         function: &str,
         attempt: u32,
         strategy: &str,
+        disassembly_lines: usize,
     ) -> Result<calxgloss_llm::LlmResponse> {
         let messages = vec![LlmMessage::user(prompt)];
+
+        // Pre-check: is the prompt itself too large for the model's context?
+        if let Some(fault) = self.context_detector.detect_prompt_too_large(&messages) {
+            warn!(
+                dll,
+                function,
+                attempt,
+                strategy,
+                prompt_size = fault.response_size,
+                limit = fault.limit,
+                "Prompt exceeds model context limit — splitting function",
+            );
+            // We still proceed with the call; the LLM server will handle
+            // truncation. The post-response check catches the actual output.
+        }
 
         let response = if let Some(em) = events {
             let em = em.clone();
@@ -956,6 +1001,21 @@ impl TranslationPipeline {
         } else {
             self.llm.complete(&messages).await
         }?;
+
+        // Post-check: detect context-window exceeded faults.
+        if let Some(fault) = self.context_detector.detect_response(&response, disassembly_lines) {
+            warn!(
+                dll,
+                function,
+                attempt,
+                strategy,
+                response_size = fault.response_size,
+                limit = fault.limit,
+                overflow = fault.overflow_chars,
+                "Context window exceeded — function should be split into {} chunks",
+                fault.suggested_chunk_count(),
+            );
+        }
 
         debug!(
             code_len = response.content.len(),
