@@ -851,6 +851,75 @@ impl GitManager {
         Ok(())
     }
 
+    /// Archives a branch by renaming it to an `refs/archive/` reference.
+    ///
+    /// The branch is not deleted; instead it is renamed to
+    /// `refs/archive/re/{dll}/{function}/v{N}` so it remains reachable for
+    /// reference.  This is the archival half of the garbage-collection
+    /// workflow — branches are archived rather than discarded.
+    ///
+    /// # Arguments
+    ///
+    /// * `branch_name` — The existing local branch name (e.g.
+    ///   `re/game_logic/DrawSpritev3`).
+    /// * `archive_ref` — The full reference to rename to (e.g.
+    ///   `refs/archive/re/game_logic/DrawSpritev3`).
+    pub fn archive_branch(
+        &self,
+        branch_name: &str,
+        archive_ref: &str,
+    ) -> Result<(), TypesError> {
+        debug!(
+            "Archiving branch '{}' → '{}'",
+            branch_name, archive_ref
+        );
+
+        if branch_name == "main" {
+            return Err(TypesError::InvalidBranchName(
+                "Cannot archive 'main'".to_string(),
+            ));
+        }
+
+        // Find the current branch reference and get its target OID
+        let branch = self
+            .repo
+            .find_branch(branch_name, git2::BranchType::Local)
+            .map_err(|_| {
+                TypesError::InvalidBranchName(format!("Branch '{}' not found", branch_name))
+            })?;
+
+        let target_oid = branch.get().target().ok_or_else(|| {
+            TypesError::InvalidBranchName(format!(
+                "Branch '{}' does not point to a commit",
+                branch_name
+            ))
+        })?;
+
+        // Delete the old local branch
+        let mut local_branch = self
+            .repo
+            .find_branch(branch_name, git2::BranchType::Local)
+            .map_err(|_| {
+                TypesError::InvalidBranchName(format!("Branch '{}' not found", branch_name))
+            })?;
+        local_branch
+            .delete()
+            .map_err(|e| TypesError::InvalidBranchName(format!("Delete failed: {}", e)))?;
+
+        // Create the archive reference pointing to the same commit
+        self.repo
+            .reference(archive_ref, target_oid, false, &format!("Archive of '{}'", branch_name))
+            .map_err(|e| {
+                TypesError::InvalidBranchName(format!("Archive reference creation failed: {}", e))
+            })?;
+
+        info!(
+            "Archived branch '{}' → '{}'",
+            branch_name, archive_ref
+        );
+        Ok(())
+    }
+
     /// Creates a revert commit for the given commit hash.
     pub fn revert_commit(&self, commit_hash: &str) -> Result<String, TypesError> {
         let oid = Oid::from_str(commit_hash).map_err(|_| {
