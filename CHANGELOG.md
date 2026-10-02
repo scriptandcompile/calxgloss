@@ -119,6 +119,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### `calxgloss-pal`
 - **Module split** — extracted `ApiMapping` and `ApiMappings` types with their implementations into `types.rs` (209 lines), moved all 20 unit tests into a separate `tests.rs` file. `lib.rs` is now 23 lines of module declarations and re-exports only.
 
+#### `calxgloss-web`
+- **`GET /api/gc/candidates` endpoint** — discovers unmerged stale translation branches, checks their last commit date, and returns structured candidate data sorted by age. Supports configurable `days` threshold via query parameter (default 7).
+- **`POST /api/gc/archive` endpoint** — archives one or more stale branches to `refs/archive/re/{dll}/{function}v{N}` (or `refs/archive/re/{dll}v{N}` for branches without a function component). Accepts an optional list of specific branches; when empty, archives all available candidates.
+- **"Stale Branches" status card** — clickable card on the dashboard showing the count of stale unmerged branches. Non-critical; loads in the background and navigates to the Branch Cleanup view when clicked.
+- **"Branch Cleanup" nav tab** — standalone view with configurable staleness threshold (days), summary stats (stale count, recent count, threshold), a sortable table with per-row checkboxes, select-all, and "Archive All Stale" button.
+- **GC types** — `GcCandidate`, `GcCandidatesResponse`, `GcArchiveRequest`, `GcArchiveResult`, `GcArchiveResponse` in `server/types.rs`.
+
+#### `calxgloss-web`
+- **Handlers module extraction** — split the monolithic `handlers.rs` (1300 lines) into a `handlers/` module directory with feature-based submodules: `api.rs` (core API endpoints), `diff.rs` (diff computation), `gc.rs` (GC/archive handlers), `ghidra.rs` (Ghidra helpers), `pipeline.rs` (progress/pipeline endpoints), `queue.rs` (queue management), and `static.rs` (static file serving).
+
 #### `calxgloss-cli`
 - **Unused import cleanup** — removed 27 unused imports across 11 files to eliminate all clippy warnings.
 - **Command extraction** — split `main.rs` (3270 lines) into 16 files: `main.rs` (332), `cli_types.rs` (445), `utils.rs` (290), `settings.rs` (490), and `commands/` subdirectory with init, classify, auto_shim, auto, translate, batch_translate, dashboard, verify, serve, and live handlers.

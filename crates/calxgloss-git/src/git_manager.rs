@@ -864,15 +864,8 @@ impl GitManager {
     ///   `re/game_logic/DrawSpritev3`).
     /// * `archive_ref` — The full reference to rename to (e.g.
     ///   `refs/archive/re/game_logic/DrawSpritev3`).
-    pub fn archive_branch(
-        &self,
-        branch_name: &str,
-        archive_ref: &str,
-    ) -> Result<(), TypesError> {
-        debug!(
-            "Archiving branch '{}' → '{}'",
-            branch_name, archive_ref
-        );
+    pub fn archive_branch(&self, branch_name: &str, archive_ref: &str) -> Result<(), TypesError> {
+        debug!("Archiving branch '{}' → '{}'", branch_name, archive_ref);
 
         if branch_name == "main" {
             return Err(TypesError::InvalidBranchName(
@@ -908,15 +901,17 @@ impl GitManager {
 
         // Create the archive reference pointing to the same commit
         self.repo
-            .reference(archive_ref, target_oid, false, &format!("Archive of '{}'", branch_name))
+            .reference(
+                archive_ref,
+                target_oid,
+                false,
+                &format!("Archive of '{}'", branch_name),
+            )
             .map_err(|e| {
                 TypesError::InvalidBranchName(format!("Archive reference creation failed: {}", e))
             })?;
 
-        info!(
-            "Archived branch '{}' → '{}'",
-            branch_name, archive_ref
-        );
+        info!("Archived branch '{}' → '{}'", branch_name, archive_ref);
         Ok(())
     }
 

@@ -285,9 +285,7 @@ fn main() -> Result<()> {
                     &settings,
                 ))
         }
-        Command::Gc { days, dry_run } => {
-            handle_gc(days, dry_run)
-        }
+        Command::Gc { days, dry_run } => handle_gc(days, dry_run),
         Command::Serve { port, .. } => {
             // serve always uses CWD as repo_dir — config / env overrides are
             // ignored because the workspace (where .git, src/, scratch/ live)

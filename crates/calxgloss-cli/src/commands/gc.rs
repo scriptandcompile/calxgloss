@@ -129,7 +129,10 @@ pub fn handle_gc(days: u64, dry_run: bool) -> Result<()> {
     }
 
     if candidates.is_empty() {
-        println!("  {} Nothing to archive — all branches are recent.", green_bold("✓"));
+        println!(
+            "  {} Nothing to archive — all branches are recent.",
+            green_bold("✓")
+        );
         println!();
         return Ok(());
     }
@@ -161,7 +164,10 @@ pub fn handle_gc(days: u64, dry_run: bool) -> Result<()> {
     println!();
 
     if dry_run {
-        println!("  {} Dry run complete — no branches were archived.", yellow_bold("◉"));
+        println!(
+            "  {} Dry run complete — no branches were archived.",
+            yellow_bold("◉")
+        );
         println!();
         println!("  Re-run without --dry-run to archive these branches.");
         println!();
@@ -222,10 +228,7 @@ pub fn handle_gc(days: u64, dry_run: bool) -> Result<()> {
     println!();
 
     if failed > 0 {
-        return Err(anyhow::anyhow!(
-            "GC completed with {} failure(s)",
-            failed
-        ));
+        return Err(anyhow::anyhow!("GC completed with {} failure(s)", failed));
     }
 
     Ok(())
