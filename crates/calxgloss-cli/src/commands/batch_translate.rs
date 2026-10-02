@@ -102,9 +102,9 @@ pub async fn handle_batch_translate(
 
     let _target_dir = target.parent().unwrap_or(target).to_path_buf();
 
-    // Create output directory structure
-    let modules_dir = output_dir.join("src").join("modules");
-    std::fs::create_dir_all(&modules_dir).context("Failed to create modules directory")?;
+    // Set up the output crate directory structure.
+    let (_, crate_src_dir) =
+        setup_translation_crate(&output_dir, dll).context("Failed to create output crate")?;
 
     // Initialize Ghidra client
     let mut ghidra_config = calxgloss_ghidra::GhidraConfig::new(ghidra_url)
@@ -175,24 +175,20 @@ pub async fn handle_batch_translate(
                 }
 
                 let rust_code = func_result.rust_code.as_ref().unwrap();
-                let output_path = modules_dir
-                    .join(&func_result.function)
-                    .join("translated.rs");
-                if let Err(e) = std::fs::create_dir_all(output_path.parent().unwrap())
-                    .context("Failed to create output directory")
-                {
-                    warn!(error = %e, "Failed to create output directory");
-                    return true;
-                }
-                if let Err(e) = std::fs::write(&output_path, rust_code).with_context(|| {
-                    format!(
-                        "Failed to write translated code to {}",
-                        output_path.display()
-                    )
-                }) {
-                    warn!(error = %e, "Failed to write translated code");
-                    return true;
-                }
+
+                // Register the function as a module and write the file. Returns the path
+                // so we can reference it in the git commit below.
+                let output_path = match write_translation_function(
+                    &crate_src_dir,
+                    &func_result.function,
+                    rust_code,
+                ) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        warn!(error = %e, "Failed to write translated function");
+                        return true;
+                    }
+                };
 
                 if let Some(ref mut git_manager) = git
                     && let Ok(branch_result) = git_manager.create_branch(

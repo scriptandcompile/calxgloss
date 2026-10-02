@@ -1,13 +1,13 @@
 //! Utility functions for the CLI.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 pub use calxgloss_reports::{
     print_batch_summary, print_classification_report, print_failure, print_git_status,
     print_verification_results,
 };
 pub use calxgloss_translator::RetryStrategy;
 pub use calxgloss_verify::Verifier;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 pub use tracing::{debug, warn};
 
 /// Resolve the repo directory: `--repo` flag > settings > CWD.
@@ -83,6 +83,74 @@ pub(super) fn init_logging(verbosity: u8, format: &str) {
     };
 
     debug!("Logging initialized: level={}, format={}", level, format);
+}
+
+// ============================================================
+// Translation output helpers
+// ============================================================
+
+/// Derive a crate name from a DLL or EXE filename by stripping the extension.
+pub fn derive_crate_name(dll: &str) -> String {
+    dll.rsplit('.').next().unwrap_or(dll).to_string()
+}
+
+/// Set up the output crate directory structure for a translated DLL/EXE.
+///
+/// Creates `crates/<crate_name>/src/` and writes a `Cargo.toml` (only if it
+/// doesn't already exist, so repeated calls are safe).
+///
+/// Returns `(crate_dir, src_dir)` for further file creation.
+pub fn setup_translation_crate(output_dir: &Path, dll: &str) -> Result<(PathBuf, PathBuf)> {
+    let crate_name = derive_crate_name(dll);
+    let crate_dir = output_dir.join("crates").join(&crate_name);
+    let crate_src_dir = crate_dir.join("src");
+
+    std::fs::create_dir_all(&crate_src_dir).context("Failed to create crate src directory")?;
+
+    let cargo_toml_path = crate_dir.join("Cargo.toml");
+    if !cargo_toml_path.exists() {
+        let cargo_toml = format!(
+            "[package]\nname = \"{crate_name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+            crate_name = crate_name,
+        );
+        std::fs::write(&cargo_toml_path, cargo_toml).context("Failed to write Cargo.toml")?;
+        debug!(path = %cargo_toml_path.display(), "Created Cargo.toml");
+    }
+
+    Ok((crate_dir, crate_src_dir))
+}
+
+/// Write a single translated function to the crate's `src/` directory and
+/// register it as a module in `mod.rs`.
+///
+/// The file is written as `src/<function>.rs`.  If `mod.rs` exists it is
+/// updated with `pub mod <function>;` (duplicates are avoided).
+pub fn write_translation_function(
+    crate_src_dir: &Path,
+    function: &str,
+    rust_code: &str,
+) -> Result<PathBuf> {
+    let output_path = crate_src_dir.join(format!("{function}.rs"));
+    std::fs::create_dir_all(output_path.parent().unwrap())
+        .context("Failed to create output directory")?;
+    std::fs::write(&output_path, rust_code).context("Failed to write translated function")?;
+    debug!(path = %output_path.display(), "Wrote translated function");
+
+    // Register the function as a module in mod.rs
+    let mod_rs_path = crate_src_dir.join("mod.rs");
+    let mod_contents = if mod_rs_path.exists() {
+        std::fs::read_to_string(&mod_rs_path).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let module_decl = format!("pub mod {function};\n");
+    if !mod_contents.contains(&module_decl) {
+        let mut updated = mod_contents;
+        updated.push_str(&module_decl);
+        std::fs::write(&mod_rs_path, updated).ok();
+    }
+
+    Ok(output_path)
 }
 
 // ============================================================

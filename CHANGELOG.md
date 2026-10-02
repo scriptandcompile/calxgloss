@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Output directory structure
+
+- **Crate-based output layout** — `translate` and `batch-translate` now produce `crates/<dll_stripped>/Cargo.toml` and `crates/<dll_stripped>/src/<function>.rs` (one file per function) instead of the previous `src/modules/<function>/translated.rs` layout. The DLL/EXE extension is stripped (e.g. `EqGame.exe` → crate `EqGame`). Each crate has a `Cargo.toml` and a `mod.rs` auto-generated in `src/` that registers every translated function as `pub mod <function>;`.
+
 #### Context tier selection
 
 - **`ContextTier` enum** (`calxgloss-types::context_tier`) — five tiers (`Stub`, `Disassembly`, `WithTests`, `ModuleContext`, `FullModule`) defining the context scope sent to the LLM per function. Each tier is a superset of the previous.
@@ -82,6 +86,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Token usage logger** (`TokenUsageLogger`) — persists per-attempt token entries to `<workspace>/re/analysis/token_usage.json`. Provides `record()`, `load()`, `compute_stats()`, and `log_path()` methods. Auto-creates the `re/analysis/` directory; handles corrupted-file recovery by starting fresh.
 
 ### Refactored
+
+#### `calxgloss-cli`
+- **Shared translation output helpers** — extracted crate-setup and function-writing logic into `derive_crate_name()`, `setup_translation_crate()`, and `write_translation_function()` in `utils.rs`, eliminating duplication between `translate.rs` and `batch_translate.rs`.
 
 #### `calxgloss-ghidra`
 - **Client extraction** — extracted `GhidraError`, `GhidraConfig`, `GhidraClient`, `ProgramInfo`, `rva_from_va`, and tests into `client.rs` (711 lines). `lib.rs` is now 28 lines of module declarations and re-exports.

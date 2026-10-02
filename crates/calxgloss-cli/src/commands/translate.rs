@@ -79,9 +79,9 @@ pub async fn handle_translate(
     // path is not sent to it.
     let _target_dir = target.parent().unwrap_or(target).to_path_buf();
 
-    // Create output directory structure
-    let modules_dir = output_dir.join("src").join("modules");
-    std::fs::create_dir_all(&modules_dir).context("Failed to create modules directory")?;
+    // Set up the output crate directory structure.
+    let (_, crate_src_dir) =
+        setup_translation_crate(&output_dir, dll).context("Failed to create output crate")?;
 
     // Initialize Ghidra client
     let mut ghidra_config = calxgloss_ghidra::GhidraConfig::new(ghidra_url)
@@ -200,17 +200,8 @@ pub async fn handle_translate(
             }
         }
 
-        // Write translated code for this attempt
-        let output_path = modules_dir.join(function).join("translated.rs");
-        std::fs::create_dir_all(output_path.parent().unwrap())
-            .context("Failed to create output directory")?;
-        std::fs::write(&output_path, &attempt.rust_code).with_context(|| {
-            format!(
-                "Failed to write translated code to {}",
-                output_path.display()
-            )
-        })?;
-        info!(path = %output_path.display(), "Wrote translated code");
+        // Write translated code for this attempt.
+        let output_path = write_translation_function(&crate_src_dir, function, &attempt.rust_code)?;
 
         // Git automation
         if let Some(ref mut git) = git {
