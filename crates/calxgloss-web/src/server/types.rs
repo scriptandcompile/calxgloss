@@ -291,6 +291,65 @@ pub struct ActionResponse {
     pub rejection_path: Option<String>,
 }
 
+// ─── GC / Branch archive types ─────────────────────────────────────────
+
+/// A branch candidate for archival (stale, unmerged translation branch).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GcCandidate {
+    /// Full branch name (e.g. "re/game_logic/DrawSpritev3").
+    pub branch: String,
+    /// DLL name extracted from the branch.
+    pub dll: String,
+    /// Function name, if present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function: Option<String>,
+    /// Attempt number.
+    pub attempt: u32,
+    /// Days since last commit.
+    pub days_old: f64,
+    /// RFC 3339 timestamp of the branch's last commit.
+    pub last_commit: String,
+}
+
+/// Response for the GC candidates endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GcCandidatesResponse {
+    pub success: bool,
+    /// Stale branch candidates eligible for archival.
+    pub candidates: Vec<GcCandidate>,
+    /// Number of recent (non-stale) branches kept.
+    pub recent_count: usize,
+    /// Configured staleness threshold in days.
+    pub threshold_days: u64,
+}
+
+/// Request body for the GC archive endpoint.
+#[derive(Debug, Default, Deserialize)]
+pub struct GcArchiveRequest {
+    /// Branches to archive (empty = archive all candidates).
+    #[serde(default)]
+    pub branches: Vec<String>,
+}
+
+/// Result of a single archive operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GcArchiveResult {
+    pub branch: String,
+    pub success: bool,
+    pub archive_ref: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Response for the GC archive endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GcArchiveResponse {
+    pub success: bool,
+    pub results: Vec<GcArchiveResult>,
+    pub archived: usize,
+    pub failed: usize,
+}
+
 // ─── Request types ─────────────────────────────────────────────────────
 
 /// Request body for the send-back endpoint.

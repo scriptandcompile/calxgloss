@@ -16,6 +16,7 @@
             <button class="nav-tab active" data-view="dashboard">Dashboard</button>
             <button class="nav-tab" data-view="queue">Review Queue</button>
             <button class="nav-tab" data-view="graph">Dependency Graph</button>
+            <button class="nav-tab" data-view="gc">Branch Cleanup</button>
             <button class="nav-tab" data-view="llm-log">LLM I/O</button>
         </nav>
         <div class="topbar-right">
@@ -133,6 +134,54 @@
                     <p>No LLM events yet. Start a live translation to see prompts and responses.</p>
                 </div>
                 <div id="llm-log-entries" class="llm-log-entries"></div>
+            </div>
+        </section>
+
+        <!-- Branch Cleanup (GC) view -->
+        <section id="view-gc" class="view">
+            <div class="view-header">
+                <h2>Branch Cleanup</h2>
+                <div class="view-controls">
+                    <label for="gc-days-input" class="gc-days-label">Stale after (days):</label>
+                    <input id="gc-days-input" type="number" min="1" max="365" value="7" class="gc-days-input" aria-label="Staleness threshold in days">
+                    <button id="btn-scan-gc" class="btn btn-sm btn-secondary">Scan</button>
+                    <button id="btn-archive-all-gc" class="btn btn-sm btn-danger" style="display:none">Archive All Stale</button>
+                </div>
+            </div>
+            <div id="gc-summary" class="gc-summary" style="display:none">
+                <div class="gc-summary-stats">
+                    <div class="gc-stat-card">
+                        <div class="gc-stat-label">Stale branches</div>
+                        <div class="gc-stat-value" id="gc-stale-count">0</div>
+                    </div>
+                    <div class="gc-stat-card gc-stat-recent">
+                        <div class="gc-stat-label">Recent (kept)</div>
+                        <div class="gc-stat-value" id="gc-recent-count">0</div>
+                    </div>
+                    <div class="gc-stat-card">
+                        <div class="gc-stat-label">Threshold</div>
+                        <div class="gc-stat-value" id="gc-threshold">7 days</div>
+                    </div>
+                </div>
+            </div>
+            <div id="gc-table-wrap">
+                <table id="gc-table" class="gc-table" style="display:none">
+                    <thead>
+                        <tr>
+                            <th class="gc-col-select"><input type="checkbox" id="gc-select-all" aria-label="Select all"></th>
+                            <th class="gc-col-name">Branch</th>
+                            <th class="gc-col-dll">DLL</th>
+                            <th class="gc-col-attempt">Attempt</th>
+                            <th class="gc-col-age">Age</th>
+                            <th class="gc-col-last">Last Commit</th>
+                            <th class="gc-col-status">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="gc-table-body"></tbody>
+                </table>
+                <div id="gc-empty" class="empty-state" style="display:none">
+                    <p>No stale branches found — all branches are recent.</p>
+                </div>
             </div>
         </section>
     </main>

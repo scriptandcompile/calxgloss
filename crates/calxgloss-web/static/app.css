@@ -1635,3 +1635,223 @@ svg {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.7; }
 }
+
+/* ─── Branch Cleanup (GC) View ──────────────────────────────────────── */
+
+.gc-summary {
+    margin-bottom: 20px;
+}
+
+.gc-summary-stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+}
+
+.gc-stat-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 14px 16px;
+}
+
+.gc-stat-card.gc-stat-recent {
+    border-color: var(--accent-green-dim);
+}
+
+.gc-stat-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+}
+
+.gc-stat-value {
+    font-size: 28px;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--accent-red);
+}
+
+.gc-stat-card.gc-stat-recent .gc-stat-value {
+    color: var(--accent-green);
+}
+
+.gc-days-label {
+    font-size: 12px;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.gc-days-input {
+    width: 60px;
+    padding: 4px 8px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    text-align: center;
+}
+
+.gc-days-input:focus {
+    outline: 2px solid var(--accent-blue);
+    outline-offset: -1px;
+}
+
+.gc-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.gc-table thead th {
+    padding: 10px 14px;
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-subtle);
+    position: sticky;
+    top: 0;
+}
+
+.gc-table tbody tr {
+    border-bottom: 1px solid var(--border-subtle);
+    transition: background var(--transition-fast);
+}
+
+.gc-table tbody tr:hover {
+    background: var(--bg-hover);
+}
+
+.gc-table tbody td {
+    padding: 10px 14px;
+    vertical-align: middle;
+}
+
+.gc-col-select {
+    width: 40px;
+    text-align: center;
+}
+
+.gc-col-select input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent-blue);
+    cursor: pointer;
+}
+
+.gc-col-name {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 500;
+    min-width: 200px;
+}
+
+.gc-col-dll {
+    color: var(--text-secondary);
+    font-size: 12px;
+    min-width: 120px;
+}
+
+.gc-col-attempt {
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    font-size: 12px;
+    text-align: center;
+    min-width: 60px;
+}
+
+.gc-col-age {
+    font-family: var(--font-mono);
+    color: var(--accent-orange);
+    font-size: 12px;
+    min-width: 80px;
+}
+
+.gc-col-last {
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    font-size: 11px;
+    min-width: 140px;
+}
+
+.gc-col-status {
+    min-width: 80px;
+    text-align: center;
+}
+
+.gc-status-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.gc-status-badge.stale {
+    background: var(--accent-red-dim);
+    color: var(--accent-red);
+}
+
+.gc-status-badge.archived {
+    background: var(--accent-green-dim);
+    color: var(--accent-green);
+}
+
+.gc-status-badge.failed {
+    background: var(--accent-orange);
+    color: var(--text-inverse);
+}
+
+#gc-table-wrap {
+    max-height: calc(100vh - var(--topbar-h) - 200px);
+    overflow-y: auto;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-card);
+}
+
+#gc-table-wrap::-webkit-scrollbar {
+    width: 6px;
+}
+
+#gc-table-wrap::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+#gc-table-wrap::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 3px;
+}
+
+/* ─── Stale Branches Status Card (dashboard) ────────────────────────── */
+
+.status-card.stale_branches {
+    border-color: var(--accent-red-dim);
+}
+
+.status-card.stale_branches:hover {
+    border-color: var(--accent-red);
+}
+
+.status-card.stale_branches .status-card-value {
+    color: var(--accent-red);
+    cursor: pointer;
+}
+
+.status-card.stale_branches .status-card-value:hover {
+    text-decoration: underline;
+}
+
+.status-card.stale_branches .status-card-label {
+    color: var(--accent-red);
+}
