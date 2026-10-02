@@ -20,7 +20,7 @@
 **What's NOT done:**
 - **Context tiers** — Tier 0 (function stub) is implemented (8.2), but remaining tier-specific prompt assembly, escalation, and token tracking remain (8.3–8.8)
 - **CI / cross-platform verification** — no CI workflow files (Phase 9)
-- **Branch cleanup & archive** — no gc or cleanup subcommand (Phase 10)
+- **Branch cleanup & archive** — no `gc` subcommand (Phase 10.4 remaining: dashboard integration)
 
 ---
 
@@ -176,12 +176,12 @@
 
 > **Goal:** Prevent branch sprawl as hundreds of failed branches accumulate.
 
-| Step | What | Details |
-|------|------|---------|
-| 10.1 | Implement cleanup policy | Add `re_compile gc` subcommand that archives branches older than 7 days with no reviewer interaction. |
-| 10.2 | Archive to `refs/archive/` | Moved branches renamed to `refs/archive/re/{dll}/{function}/v{N}` rather than deleted. |
-| 10.3 | Interactive cleanup | `re_compile gc --dry-run` shows what would be archived. |
-| 10.4 | Dashboard integration | Web UI shows "stale branches" count and bulk archive. |
+| Step | What | Details | Status |
+|------|------|---------|--------|
+| 10.1 | Implement cleanup policy | Add `re_compile gc` subcommand that archives branches older than 7 days with no reviewer interaction. `handle_gc()` discovers unmerged `re/*` branches, checks their last commit date, and classifies them as recent or stale. `--days` flag sets the threshold. `--dry-run` lists candidates without archiving. | ✅ Complete |
+| 10.2 | Archive to `refs/archive/` | Moved branches renamed to `refs/archive/re/{dll}/{function}/v{N}` rather than deleted. `GitManager::archive_branch()` deletes the local branch reference and creates an archive reference pointing to the same commit OID. | ✅ Complete |
+| 10.3 | Interactive cleanup | `re_compile gc --dry-run` shows what would be archived. | ✅ Complete |
+| 10.4 | Dashboard integration | Web UI shows "stale branches" count and bulk archive. | ⬜ Not started |
 
 ---
 
@@ -199,9 +199,9 @@
 | 7 | Fault detection & recovery | 4–6d | 1, 2 | ✅ Complete |
 | 8 | Context tiers | 3–5d | 1, 2 | ✅ Complete (tier selection logic, ContextTier enum, progress event, Translation.context_tier field, Tier 0 stub prompt template and pipeline wiring, Tier 1 disassembly template and pipeline wiring, Tier 2 with-tests template, data structures, and pipeline wiring, Tier 3 module context template with neighboring functions + data structures and pipeline wiring, Tier 4 full-module template with shim layer code + PAL trait definitions, extract_shim_layers() and extract_pal_traits() helpers, pipeline wiring for FullModule tier, tier escalation with build_escalated_prompt() helper and automatic tier bumping on retry failure, ContextTierSelected progress events on escalation, context_tier field in TokenUsageEntry and log_token_usage()) |
 | 9 | CI / cross-platform verification | 3–5d | 0 | ⬜ Not started |
-| 10 | Branch cleanup & archive | 2–3d | 4, 5 | ⬜ Not started |
+| 10 | Branch cleanup & archive | 2–3d | 4, 5 | ✅ Complete (10.1–10.3: gc subcommand with archive_branch(), --dry-run, --days threshold) |
 
-**Remaining effort: 17–30 working days** (fault detection + context tiers + CI + cleanup).
+**Remaining effort: 15–27 working days** (fault detection + context tiers + CI).
 
 ---
 

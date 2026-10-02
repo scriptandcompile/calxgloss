@@ -234,6 +234,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`accept_branch()`** — merges a branch into `main` and writes an acceptance record to `re/accepts/{dll}/{function}/vN.json` for dashboard visibility.
 - **`reject_branch()`** — writes a rejection record to `re/rejections/{dll}/{function}/vN.json` with the reviewer's reason, enabling send-back history in the dashboard.
 - **`is_branch_merged_into_main()`** — checks if a branch is an ancestor of `main` via `graph_ahead_behind()`.
+- **`archive_branch()`** — archives a branch by renaming it from `re/{dll}/{function}vN` to `refs/archive/re/{dll}/{function}/vN` so it remains reachable for reference instead of being deleted. Used by the `gc` subcommand to prevent branch sprawl.
 - **`GitManager::next_attempt_branch()`** — increments the attempt number and creates a new `GitBranch` for the next retry version.
 - **Shim-layer dependency enforcement on branch creation** — `create_branch` accepts an optional `BranchCreationPolicy` parameter (`Skip`, `Warn`, or `Enforce`). The checker resolves the required shim layer branches for `MicrosoftSdk` and `KnownThirdParty` DLLs (e.g. `d3d9.dll` → `re/shim/wgpu`) by consulting a hardcoded mapping in `ShimDependencyMap`, then queries Git to verify each required branch is an ancestor of `main`. Enforce mode blocks creation when unmet; Warn mode logs a warning and proceeds.
 - **`commit_to_main()`** — commits files directly to the `main` branch without creating a separate branch first. Used for metadata records like DLL classification.
@@ -342,6 +343,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **LLM I/O log view** — new "LLM I/O" tab in the web UI that displays a real-time log of LLM requests and responses, with full prompt/response content, DLL/function identifiers, attempt numbers, strategy labels, timestamps, and per-entry truncation (500-char preview with full length). Clear button available.
 
 ### `calxgloss-cli`
+- **`gc` subcommand** — garbage-collects old translation branches by archiving them. Walks all unmerged `re/*` branches, checks their last commit date, and renames branches older than the staleness threshold (default 7 days) to `refs/archive/re/{dll}/{function}/vN` instead of deleting them. Branches remain reachable for reference. Supports `--days <N>` to set the threshold and `--dry-run` to preview without archiving. Only operates on `re/*` translation branches (skips classify, shim, pal, test, fix, and integration branches).
 - **`live` event emission** — creates a shared `TranslationEvents` instance and passes it through `run_translation_for_dll()` so the translation pipeline can stream LLM I/O events to the WebSocket server. `auto` mode passes `None` (no streaming).
 
 ### `calxgloss-ghidra`
