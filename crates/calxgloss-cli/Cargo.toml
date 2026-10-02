@@ -25,6 +25,8 @@ tracing = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
 url = { workspace = true }
+chrono = { workspace = true }
+git2 = { workspace = true }
 
 calxgloss-web = { path = "../calxgloss-web", features = ["server"] }
 

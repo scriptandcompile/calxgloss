@@ -14,6 +14,7 @@
 //! - `verify` — Verify a previously translated function
 //! - `config` — Show the configuration in force and where each value came from
 //! - `dashboard` — Show a structured terminal review dashboard
+//! - `gc` — Garbage-collect old translation branches (archive to refs/archive/)
 //! - `serve` — Start the web review UI HTTP server
 //! - `auto` — Detect project state and run the next step automatically
 //! - `live` — Start both `auto` and `serve` concurrently
@@ -54,6 +55,7 @@ use commands::dashboard::{
     handle_dashboard, handle_dashboard_accept, handle_dashboard_accept_all,
     handle_dashboard_reject, handle_dashboard_view,
 };
+use commands::gc::handle_gc;
 use commands::init::handle_init;
 use commands::live::handle_live;
 use commands::serve::handle_serve;
@@ -114,7 +116,7 @@ fn main() -> Result<()> {
     // here and fail fast with a helpful message.
     if let Some(ref target) = cli.command {
         match target {
-            Command::Config => {}
+            Command::Config | Command::Gc { .. } => {}
             _ if settings.target_dir.is_none() => {
                 anyhow::bail!(
                     "target_dir is required.\n\nSet it via:\n  --target-dir <path>\n  [target_dir] in calxgloss.toml\n  CALXGLOSS_TARGET_DIR env var"
@@ -282,6 +284,9 @@ fn main() -> Result<()> {
                     &repo_dir,
                     &settings,
                 ))
+        }
+        Command::Gc { days, dry_run } => {
+            handle_gc(days, dry_run)
         }
         Command::Serve { port, .. } => {
             // serve always uses CWD as repo_dir — config / env overrides are

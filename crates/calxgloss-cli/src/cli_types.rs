@@ -348,6 +348,31 @@ pub(super) enum Command {
         #[arg(long)]
         skip_git: bool,
     },
+
+    /// Garbage-collect old translation branches by archiving them.
+    ///
+    /// Walks all unmerged `re/*` branches, checks their last commit date,
+    /// and renames branches older than the staleness threshold (default 7
+    /// days) to `refs/archive/re/{dll}/{function}/v{N}` instead of
+    /// deleting them. Archived branches remain reachable for reference.
+    ///
+    /// Use `--dry-run` to preview what would be archived without making
+    /// any changes.
+    ///
+    /// # Arguments
+    ///
+    /// * `--days` — Staleness threshold in days (default: 7). Branches with
+    ///   a last commit older than this many days are archived.
+    /// * `--dry-run` — List candidates without archiving any branches.
+    Gc {
+        /// Staleness threshold in days (default: 7)
+        #[arg(long, default_value = "7")]
+        days: u64,
+
+        /// List candidates without archiving
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// Subcommands for the dashboard.

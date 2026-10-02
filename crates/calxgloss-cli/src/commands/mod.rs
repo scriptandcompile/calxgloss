@@ -5,6 +5,7 @@ pub mod auto_shim;
 pub mod batch_translate;
 pub mod classify;
 pub mod dashboard;
+pub mod gc;
 pub mod init;
 pub mod live;
 pub mod serve;
