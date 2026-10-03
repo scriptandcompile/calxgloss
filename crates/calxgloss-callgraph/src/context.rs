@@ -40,7 +40,7 @@ use tracing::debug;
 /// A minimal reference to a call graph node (by name and address).
 ///
 /// Used to represent callers and callees without duplicating full function data.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct CallGraphNode {
     /// The function's human-readable name.
     pub name: String,
@@ -49,7 +49,7 @@ pub struct CallGraphNode {
 }
 
 /// Metadata about a call edge from the perspective of a neighbor function.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct CallEdgeInfo {
     /// The neighbor function reference.
     pub node: CallGraphNode,
@@ -62,7 +62,7 @@ pub struct CallEdgeInfo {
 /// When a function calls multiple known APIs of the same category
 /// (e.g., both `MessageBox` and `CreateWindowEx` are UI APIs),
 /// they are bundled together for compact context presentation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct CalleeGroup {
     /// The API category this group belongs to.
     pub category: LeafCategory,
@@ -71,7 +71,7 @@ pub struct CalleeGroup {
 }
 
 /// Context about a matched leaf API.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct LeafApiContext {
     /// The API function name.
     pub api_name: String,
@@ -85,7 +85,7 @@ pub struct LeafApiContext {
 ///
 /// This is the primary output of the context enrichment pipeline.
 /// Each field is populated from the call graph and leaf detector analysis.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct FunctionContext {
     /// The function's human-readable name.
     pub name: String,
@@ -183,7 +183,7 @@ impl ContextEnricher {
         let callers: Vec<CallEdgeInfo> = func
             .callers
             .iter()
-            .filter_map(|&caller_addr| {
+            .map(|&caller_addr| {
                 let node = match addr_to_func.get(&caller_addr) {
                     Some(f) => CallGraphNode {
                         name: f.name.clone(),
@@ -194,10 +194,10 @@ impl ContextEnricher {
                         address: caller_addr,
                     },
                 };
-                Some(CallEdgeInfo {
+                CallEdgeInfo {
                     node,
                     call_type: "direct".to_string(),
-                })
+                }
             })
             .collect();
 

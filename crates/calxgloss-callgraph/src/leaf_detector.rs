@@ -16,7 +16,7 @@ use std::collections::HashSet;
 use crate::FunctionCallGraph;
 
 /// Category of a third-party or system API.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum LeafCategory {
     /// Direct3D, DXGI, and related graphics APIs.
     Graphics,
@@ -34,6 +34,21 @@ pub enum LeafCategory {
     Network,
     /// Cryptography APIs (e.g. CryptoAPI).
     Crypto,
+}
+
+impl std::fmt::Display for LeafCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LeafCategory::Graphics => write!(f, "Graphics"),
+            LeafCategory::Gdi => write!(f, "GDI"),
+            LeafCategory::Ui => write!(f, "UI"),
+            LeafCategory::Filesystem => write!(f, "Filesystem"),
+            LeafCategory::Com => write!(f, "COM"),
+            LeafCategory::Audio => write!(f, "Audio"),
+            LeafCategory::Network => write!(f, "Network"),
+            LeafCategory::Crypto => write!(f, "Crypto"),
+        }
+    }
 }
 
 /// A known third-party or system API signature for leaf detection.
