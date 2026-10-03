@@ -38,7 +38,7 @@ pub async fn handle_batch_translate(
     let (target, dll) = (target.as_path(), dll.as_str());
     let skip_git = *skip_git;
     let no_callgraph = *no_callgraph;
-    let callgraph_verbose = callgraph_verbose;
+
     // Use the output_dir arg if provided, otherwise use the resolved repo_dir.
     let output_dir = output_dir.clone().unwrap_or(repo_dir);
 
