@@ -103,6 +103,13 @@ pub struct FunctionTranslationPlan {
     pub address: u64,
     /// Priority tier for translation ordering.
     pub priority: TranslationPriority,
+    /// Call-graph classification of the function.
+    ///
+    /// This carries the full [`NodeCategory`] so that the translation
+    /// pipeline can distinguish between entry points (Root) and runtime
+    /// library functions (Skip) — both map to the same
+    /// [`TranslationPriority::Root`] but require different handling.
+    pub category: NodeCategory,
     /// Number of functions that call this one.
     pub caller_count: usize,
     /// Number of functions this one calls.
@@ -231,6 +238,7 @@ impl TranslationOrderer {
                     name: func.name.clone(),
                     address: func.address,
                     priority,
+                    category: func.node_category.clone(),
                     caller_count: func.callers.len(),
                     callee_count: func.callees.len(),
                     caller_names,
@@ -707,6 +715,64 @@ mod tests {
         assert_eq!(plan[0].priority, TranslationPriority::Root);
         assert_eq!(plan[0].name, "runtime_helper");
         assert_eq!(plan[1].priority, TranslationPriority::Middle);
+    }
+
+    #[test]
+    fn test_plan_includes_node_category() {
+        let graph = CallGraph {
+            dll: "categories.dll".to_string(),
+            functions: vec![
+                make_func(
+                    "WinMain",
+                    0x401000,
+                    vec![],
+                    vec![],
+                    NodeCategory::Root,
+                ),
+                make_func(
+                    "runtime_helper",
+                    0x402000,
+                    vec![],
+                    vec![],
+                    NodeCategory::Skip,
+                ),
+                make_func(
+                    "app_logic",
+                    0x403000,
+                    vec![],
+                    vec![],
+                    NodeCategory::Middle,
+                ),
+                make_func(
+                    "render_frame",
+                    0x404000,
+                    vec![],
+                    vec![],
+                    NodeCategory::Leaf,
+                ),
+            ],
+        };
+
+        let orderer = TranslationOrderer::new();
+        let plan = orderer.order(&graph).unwrap();
+
+        assert_eq!(plan.len(), 4);
+
+        let winmain = plan.iter().find(|f| f.name == "WinMain").unwrap();
+        assert_eq!(winmain.category, NodeCategory::Root);
+        assert_eq!(winmain.priority, TranslationPriority::Root);
+
+        let runtime = plan.iter().find(|f| f.name == "runtime_helper").unwrap();
+        assert_eq!(runtime.category, NodeCategory::Skip);
+        assert_eq!(runtime.priority, TranslationPriority::Root);
+
+        let app = plan.iter().find(|f| f.name == "app_logic").unwrap();
+        assert_eq!(app.category, NodeCategory::Middle);
+        assert_eq!(app.priority, TranslationPriority::Middle);
+
+        let render = plan.iter().find(|f| f.name == "render_frame").unwrap();
+        assert_eq!(render.category, NodeCategory::Leaf);
+        assert_eq!(render.priority, TranslationPriority::Leaf);
     }
 
     #[test]
