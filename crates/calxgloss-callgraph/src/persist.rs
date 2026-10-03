@@ -14,15 +14,16 @@ use crate::CallGraph;
 ///
 /// # File Layout
 ///
-/// Call graphs are persisted under the `re/analysis/` directory within the
-/// workspace root:
+/// Call graphs are persisted under a configurable cache directory:
 ///
 /// ```text
-/// workspace_root/
-/// └── re/
-///     └── analysis/
-///         └── call_graph.json
+/// cache_dir/
+///     └── {dll_name}_call_graph.json
 /// ```
+///
+/// The default cache directory is `{workspace_root}/re/analysis/`, but can be
+/// customized via the [`CallGraphPersistor::new`] constructor or by using
+/// [`CallGraphPersistor::with_cache_dir`] for an explicit path.
 ///
 /// # Example
 ///
@@ -41,7 +42,7 @@ use crate::CallGraph;
 ///     }],
 /// };
 ///
-/// let persistor = CallGraphPersistor::new("/path/to/workspace");
+/// let persistor = CallGraphPersistor::new("/path/to/cache_dir");
 /// persistor.save(&graph)?;
 ///
 /// let loaded = persistor.load("eqmain.dll")?;
@@ -49,28 +50,36 @@ use crate::CallGraph;
 /// # }
 /// ```
 pub struct CallGraphPersistor {
-    workspace_root: PathBuf,
+    cache_dir: PathBuf,
 }
 
 impl CallGraphPersistor {
     /// Creates a new persistor rooted at the given workspace directory.
+    ///
+    /// Call graphs are stored in `<workspace_root>/re/analysis/`.
     pub fn new(workspace_root: impl AsRef<Path>) -> Self {
         Self {
-            workspace_root: workspace_root.as_ref().to_path_buf(),
+            cache_dir: workspace_root.as_ref().join("re").join("analysis"),
+        }
+    }
+
+    /// Creates a new persistor with an explicit cache directory.
+    ///
+    /// Call graphs are stored directly under the provided `cache_dir` path.
+    pub fn with_cache_dir(cache_dir: impl AsRef<Path>) -> Self {
+        Self {
+            cache_dir: cache_dir.as_ref().to_path_buf(),
         }
     }
 
     /// Returns the path where the call graph JSON file is stored.
     fn graph_path(&self, dll_name: &str) -> PathBuf {
-        self.workspace_root
-            .join("re")
-            .join("analysis")
-            .join(format!("{}_call_graph.json", dll_name))
+        self.cache_dir.join(format!("{}_call_graph.json", dll_name))
     }
 
     /// Saves a call graph to JSON.
     ///
-    /// Creates the `re/analysis/` directory hierarchy if it does not exist,
+    /// Creates the cache directory hierarchy if it does not exist,
     /// serializes the graph, and writes it to disk.
     ///
     /// # Errors
@@ -191,6 +200,40 @@ mod tests {
     }
 
     #[test]
+    fn test_with_cache_dir_uses_explicit_path() {
+        let temp_dir = std::env::temp_dir().join("calxgloss_callgraph_test_cache_dir");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let custom_cache = temp_dir.join("custom").join("cache");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let persistor = CallGraphPersistor::with_cache_dir(&custom_cache);
+        let graph = CallGraph {
+            dll: "test.dll".to_string(),
+            functions: vec![FunctionCallGraph {
+                name: "main".to_string(),
+                address: 0x401000,
+                callers: vec![],
+                callees: vec![],
+                node_category: NodeCategory::Middle,
+            }],
+        };
+
+        persistor.save(&graph).unwrap();
+
+        let json_path = custom_cache.join("test.dll_call_graph.json");
+        assert!(
+            json_path.exists(),
+            "JSON file should exist in custom cache directory"
+        );
+
+        let loaded = persistor.load("test.dll").unwrap();
+        assert_eq!(loaded.dll, "test.dll");
+        assert_eq!(loaded.functions[0].name, "main");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
     fn test_load_roundtrip_preserves_addresses() {
         let temp_dir = std::env::temp_dir().join("calxgloss_callgraph_test_addr");
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -250,6 +293,24 @@ mod tests {
                 .join("re")
                 .join("analysis")
                 .join("foo.dll_call_graph.json")
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_graph_path_with_custom_cache_dir() {
+        let temp_dir = std::env::temp_dir().join("calxgloss_callgraph_test_custom_path");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let custom_cache = temp_dir.join("my").join("cache");
+        let persistor = CallGraphPersistor::with_cache_dir(&custom_cache);
+
+        let path = persistor.graph_path("foo.dll");
+        assert_eq!(
+            path,
+            custom_cache.join("foo.dll_call_graph.json")
         );
 
         let _ = std::fs::remove_dir_all(&temp_dir);

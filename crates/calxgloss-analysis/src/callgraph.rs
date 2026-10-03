@@ -22,7 +22,7 @@
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let ghidra = GhidraClient::new("http://localhost:8080")?;
 //!
-//! let graph = build_enriched_call_graph(&ghidra, "eqmain.dll", Path::new("/workspace")).await?;
+//! let graph = build_enriched_call_graph(&ghidra, "eqmain.dll", Path::new("/workspace"), None).await?;
 //!
 //! for func in &graph.functions {
 //!     println!("{}: {:?}", func.name, func.node_category);
@@ -51,13 +51,15 @@ use tracing::info;
 /// 1. Fetches all function metadata from Ghidra via [`CallGraphBuilder`].
 /// 2. Classifies each function using [`RootDetector`] and [`LeafDetector`].
 /// 3. Updates each function's [`NodeCategory`].
-/// 4. Persists the enriched graph to `re/analysis/{dll}_call_graph.json`.
+/// 4. Persists the enriched graph to the cache directory.
 ///
 /// # Arguments
 ///
 /// * `ghidra` — The Ghidra client used to fetch function data.
 /// * `dll_name` — The DLL filename (e.g., `"eqmain.dll"`).
-/// * `workspace_root` — The workspace root directory for persistence.
+/// * `workspace_root` — The workspace root directory (used as base for cache path).
+/// * `cache_dir` — Explicit directory for call graph JSON files. If `None`,
+///   defaults to `{workspace_root}/re/analysis/`.
 ///
 /// # Returns
 ///
@@ -83,6 +85,7 @@ pub async fn build_enriched_call_graph(
     ghidra: &GhidraClient,
     dll_name: &str,
     workspace_root: &std::path::Path,
+    cache_dir: Option<&std::path::Path>,
 ) -> anyhow::Result<calxgloss_callgraph::CallGraph> {
     info!(%dll_name, "Building enriched call graph");
 
@@ -126,7 +129,10 @@ pub async fn build_enriched_call_graph(
     );
 
     // 3. Persist to disk.
-    let persistor = CallGraphPersistor::new(workspace_root);
+    let persistor = match cache_dir {
+        Some(dir) => CallGraphPersistor::with_cache_dir(dir),
+        None => CallGraphPersistor::new(workspace_root),
+    };
     persistor.save(&graph)?;
 
     info!(%dll_name, "Saved enriched call graph");
@@ -138,11 +144,22 @@ pub async fn build_enriched_call_graph(
 ///
 /// Returns `None` if the graph file does not exist or fails to parse.
 /// This allows callers to decide whether a missing graph is acceptable.
+///
+/// # Arguments
+///
+/// * `workspace_root` — The workspace root directory (used as base for cache path).
+/// * `cache_dir` — Explicit directory for call graph JSON files. If `None`,
+///   defaults to `{workspace_root}/re/analysis/`.
+/// * `dll_name` — The DLL filename.
 pub fn load_call_graph(
     workspace_root: &std::path::Path,
+    cache_dir: Option<&std::path::Path>,
     dll_name: &str,
 ) -> Option<calxgloss_callgraph::CallGraph> {
-    let persistor = CallGraphPersistor::new(workspace_root);
+    let persistor = match cache_dir {
+        Some(dir) => CallGraphPersistor::with_cache_dir(dir),
+        None => CallGraphPersistor::new(workspace_root),
+    };
     persistor.load(dll_name).ok()
 }
 
