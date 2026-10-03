@@ -8,18 +8,20 @@
 //!
 //! The crate is organized into seven modules:
 //!
-//! - [`models`] — Core data types: [`CallGraph`], [`FunctionCallGraph`], [`CallGraphEdge`],
+//! - [`models`] - Core data types: [`CallGraph`], [`FunctionCallGraph`], [`CallGraphEdge`],
 //!   [`NodeCategory`], and [`CallType`].
-//! - [`builder`] — [`CallGraphBuilder`] fetches function metadata from Ghidra and
+//! - [`builder`] - [`CallGraphBuilder`] fetches function metadata from Ghidra and
 //!   constructs the call graph.
-//! - [`root_detector`] — [`RootDetector`] identifies entry-point and runtime functions
-//!   that should be skipped or stubbed during translation.
-//! - [`leaf_detector`] — [`LeafDetector`] identifies functions that call known
-//!   third-party APIs, enabling context enrichment.
-//! - [`context`] — [`ContextEnricher`] produces structured context data for
+//! - [`root_detector`] - [`RootDetector`] and [`ConfigurableRootDetector`] identify
+//!   entry-point and runtime functions that should be skipped or stubbed during
+//!   translation. Supports VB6, .NET, MinGW, and MSVC runtime patterns.
+//! - [`leaf_detector`] - [`LeafDetector`] identifies functions that call known
+//!   third-party APIs, with fuzzy matching for name variations (A/W suffixes,
+//!   stdcall decoration), DLL-qualified names, and transitive leaf analysis.
+//! - [`context`] - [`ContextEnricher`] produces structured context data for
 //!   LLM prompt injection (caller/callee lists, API categorization, crate suggestions).
-//! - [`persist`] — [`CallGraphPersistor`] saves and loads call graphs to/from JSON.
-//! - [`ordering`] — [`TranslationOrderer`] produces a priority-ordered translation plan.
+//! - [`persist`] - [`CallGraphPersistor`] saves and loads call graphs to/from JSON.
+//! - [`ordering`] - [`TranslationOrderer`] produces a priority-ordered translation plan.
 //!
 //! # Example
 //!
@@ -59,8 +61,13 @@ pub mod root_detector;
 
 pub use models::*;
 pub use builder::CallGraphBuilder;
-pub use root_detector::RootDetector;
-pub use leaf_detector::{ApiSignature, LeafCategory, LeafDetector};
+pub use root_detector::{
+    ConfigurableRootDetector, RootAction, RootDetector, RootDetectorConfig,
+    RootPattern, RootPatternConfig,
+};
+pub use leaf_detector::{
+    ApiSignature, LeafCategory, LeafDetector, TransitiveLeafContext,
+};
 pub use context::{
     CallEdgeInfo, CalleeGroup, CallGraphNode, ContextEnricher, FunctionContext,
     LeafApiContext,
