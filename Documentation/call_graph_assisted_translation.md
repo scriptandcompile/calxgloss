@@ -19,7 +19,7 @@ The MVP is self-contained in one crate. Integration touches are minimal: a `Node
 
 ---
 
-### Task 0: Add Crate to Workspace
+### Task 0: Add Crate to Workspace ✅ COMPLETED
 
 **Files:** `Cargo.toml`
 
@@ -29,9 +29,9 @@ The MVP is self-contained in one crate. Integration touches are minimal: a `Node
 
 ---
 
-### Task 1: Crate Skeleton & Module Structure
+### Task 1: Crate Skeleton & Module Structure ✅ COMPLETED
 
-**Files to create:**
+**Files created:**
 ```
 crates/calxgloss-callgraph/
 ├── Cargo.toml
@@ -80,13 +80,13 @@ pub use persist::CallGraphPersistor;
 ```
 
 **Acceptance:**
-- `cargo build -p calxgloss-callgraph` compiles cleanly
-- All public types re-exported from `lib.rs`
-- Documentation comments on every public type and function
+- ✅ `cargo build -p calxgloss-callgraph` compiles cleanly
+- ✅ All public types re-exported from `lib.rs`
+- ✅ Documentation comments on every public type and function
 
 ---
 
-### Task 2: Model Types (`models.rs`)
+### Task 2: Model Types (`models.rs`) ✅ COMPLETED
 
 **File:** `crates/calxgloss-callgraph/src/models.rs`
 
@@ -163,13 +163,13 @@ pub struct FunctionCallGraph {
 ```
 
 **Acceptance:**
-- All types serialize/deserialize via serde
-- `CallType` and `NodeCategory` derive `PartialEq` for testing
-- `#[deprecated]` attribute on `CallType::Unknown`
+- ✅ All types serialize/deserialize via serde
+- ✅ `CallType` and `NodeCategory` derive `PartialEq` for testing
+- ✅ `#[deprecated]` attribute on `CallType::Unknown`
 
 ---
 
-### Task 3: Call Graph Builder (`builder.rs`)
+### Task 3: Call Graph Builder (`builder.rs`) ✅ COMPLETED
 
 **File:** `crates/calxgloss-callgraph/src/builder.rs`
 
@@ -210,21 +210,21 @@ impl CallGraphBuilder {
 ```
 
 **Acceptance:**
-- `build()` returns a valid `CallGraph` with all functions from Ghidra
-- `callers` populated for functions with incoming references
-- `callees` populated from decompiled output
-- `FunctionCallGraph` fields populated correctly
-- If decompile fails for one function, graph still completes (graceful degradation)
+- ✅ `build()` returns a valid `CallGraph` with all functions from Ghidra
+- ✅ `callers` populated for functions with incoming references
+- ✅ `callees` populated from decompiled output
+- ✅ `FunctionCallGraph` fields populated correctly
+- ✅ If decompile fails for one function, graph still completes (graceful degradation)
 
 ---
 
-### Task 4: Root Detection (`root_detector.rs`) — Narrow MVP
+### Task 4: Root Detection (`root_detector.rs`) — Narrow MVP ✅ COMPLETED
 
 **File:** `crates/calxgloss-callgraph/src/root_detector.rs`
 
 **Goal:** Identify functions to skip during translation.
 
-**MVP patterns (5 entries):**
+**MVP patterns (3 entries):**
 
 | Pattern | Regex | Description | Action |
 |---------|-------|-------------|--------|
@@ -270,21 +270,21 @@ impl RootDetector {
 ```
 
 **Acceptance:**
-- All 3 MVP patterns correctly identified
-- `is_root()` returns `true` for matching functions
-- `classify()` returns the correct `RootAction`
-- Unit tests with synthetic `FunctionCallGraph` data
-- Function names with stdcall decoration (`WinMain@16`) correctly matched
+- ✅ All 3 MVP patterns correctly identified
+- ✅ `is_root()` returns `true` for matching functions
+- ✅ `classify()` returns the correct `RootAction`
+- ✅ Unit tests with synthetic `FunctionCallGraph` data
+- ✅ Function names with stdcall decoration (`WinMain@16`) correctly matched
 
 ---
 
-### Task 5: Leaf Detection (`leaf_detector.rs`) — Narrow MVP
+### Task 5: Leaf Detection (`leaf_detector.rs`) — Narrow MVP ✅ COMPLETED
 
 **File:** `crates/calxgloss-callgraph/src/leaf_detector.rs`
 
 **Goal:** Identify functions that call known 3rd-party APIs, for context enrichment.
 
-**MVP API signatures (8 categories, ~20 APIs):**
+**MVP API signatures (8 categories, 22 APIs):**
 
 | Category | Example APIs | Rust Equivalent |
 |----------|-------------|-----------------|
@@ -343,16 +343,16 @@ impl LeafDetector {
 ```
 
 **Acceptance:**
-- `Direct3DCreate9` in callees → leaf with `LeafCategory::Graphics`
-- `MessageBox` in callees → leaf with `LeafCategory::Ui`
-- Function with no known API callees → returns `None`
-- Unit tests with synthetic `FunctionCallGraph` data
+- ✅ `Direct3DCreate9` in callees → leaf with `LeafCategory::Graphics`
+- ✅ `MessageBox` in callees → leaf with `LeafCategory::Ui`
+- ✅ Function with no known API callees → returns `None`
+- ✅ Unit tests with synthetic `FunctionCallGraph` data
 
 ---
 
-### Task 6: Integration with `calxgloss-analysis`
+### Task 6: Integration with `calxgloss-analysis` ✅ COMPLETED
 
-**Files to modify:**
+**Files modified:**
 - `crates/calxgloss-analysis/src/lib.rs` — add `pub mod callgraph;`
 - `crates/calxgloss-analysis/src/analyzer.rs` — use `CallGraphBuilder` after function analysis
 
@@ -396,14 +396,14 @@ persistor.save(&call_graph)?;
 ```
 
 **Acceptance:**
-- `Analyzer::analyze_function` enriches functions with root/leaf classification
-- `CallGraph` is persisted to `re/analysis/call_graph.json`
-- `FunctionAnalysis` includes call graph metadata
-- Dependency tracker can read from persisted graph
+- ✅ `Analyzer::analyze_function` enriches functions with root/leaf classification
+- ✅ `CallGraph` is persisted to `re/analysis/call_graph.json`
+- ✅ `FunctionAnalysis` includes call graph metadata
+- ✅ Dependency tracker can read from persisted graph
 
 ---
 
-### Task 7: Testing
+### Task 7: Testing ✅ COMPLETED
 
 **Unit tests per module:**
 
@@ -423,19 +423,25 @@ persistor.save(&call_graph)?;
 | Persistence: build → save → load → classify | Graph survives disk round-trip |
 
 **Acceptance:**
-- All modules have `#[cfg(test)]` modules with ≥3 tests each
-- `cargo test -p calxgloss-callgraph` passes
+- ✅ All modules have `#[cfg(test)]` modules with ≥3 tests each
+- ✅ `cargo test -p calxgloss-callgraph` passes (43 unit tests + 4 integration tests pass, 1 ignored)
 
 ---
 
-### Task 8: Documentation
+### Task 8: Documentation ✅ COMPLETED
 
-**Files to update:**
-- `crates/calxgloss-callgraph/src/lib.rs` — module-level docs
-- `Documentation/call_graph_assisted_translation.md` — mark completed tasks
+**Files updated:**
+- `crates/calxgloss-callgraph/src/lib.rs` — module-level docs (architecture overview + example)
+- `crates/calxgloss-callgraph/src/models.rs` — module-level docs with type descriptions
+- `crates/calxgloss-callgraph/src/builder.rs` — module-level docs with algorithm and example
+- `crates/calxgloss-callgraph/src/root_detector.rs` — module-level docs with example
+- `crates/calxgloss-callgraph/src/leaf_detector.rs` — module-level docs with algorithm and example
+- `crates/calxgloss-callgraph/src/persist.rs` — module-level docs with file layout and example
+- `Documentation/call_graph_assisted_translation.md` — this file
 
 **Acceptance:**
-- `cargo doc -p calxgloss-callgraph --no-deps` builds without warnings
+- ✅ `cargo doc -p calxgloss-callgraph --no-deps` builds without warnings
+- ✅ `cargo test --doc -p calxgloss-callgraph` — all 5 doc tests pass
 
 ---
 
