@@ -1,13 +1,68 @@
 //! Ghidra context extraction helpers used by prompt builders.
 
 use crate::Translation;
+use calxgloss_callgraph::FunctionContext;
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_prompts::{
     CallGraphNeighbor, NeighborFunction, PalTraitDef, PalTraitMethod, ShimCode,
 };
 use calxgloss_types::{ApiCategory, ContextTier, TranslationRequest, WindowsApiCall};
 
-/// Extract call graph neighbor details from Ghidra.
+/// Extract call graph neighbor details from an enriched context list.
+///
+/// This is a lightweight alternative to
+/// [`extract_call_graph_neighbors`](extract_call_graph_neighbors) that
+/// operates on already-enriched [`FunctionContext`] data instead of
+/// querying Ghidra for every neighbor.  When the enriched context
+/// contains a matching entry for `target_address`, the function returns
+/// its caller/callee edges converted into [`CallGraphNeighbor`]
+/// instances.  When no matching entry exists (or the context list is
+/// empty), an empty vector is returned.
+pub fn extract_call_graph_neighbors_from_enriched(
+    enriched: &[FunctionContext],
+    target_address: u64,
+) -> Vec<CallGraphNeighbor> {
+    let target = enriched.iter().find(|c| c.address == target_address);
+    let Some(target_ctx) = target else {
+        return Vec::new();
+    };
+    let mut neighbors = Vec::new();
+
+    // Build a set of all function addresses in the enriched context for
+    // determining whether a neighbor is a caller or callee.
+    let all_addresses: std::collections::HashSet<u64> =
+        enriched.iter().map(|c| c.address).collect();
+
+    for caller_edge in &target_ctx.callers {
+        let is_internal = all_addresses.contains(&caller_edge.node.address);
+        neighbors.push(CallGraphNeighbor {
+            name: caller_edge.node.name.clone(),
+            address: caller_edge.node.address,
+            signature: String::new(),
+            role: if is_internal {
+                "caller".to_string()
+            } else {
+                "external_caller".to_string()
+            },
+        });
+    }
+
+    for callee_edge in &target_ctx.callees {
+        let is_internal = all_addresses.contains(&callee_edge.node.address);
+        neighbors.push(CallGraphNeighbor {
+            name: callee_edge.node.name.clone(),
+            address: callee_edge.node.address,
+            signature: String::new(),
+            role: if is_internal {
+                "callee".to_string()
+            } else {
+                "external_callee".to_string()
+            },
+        });
+    }
+
+    neighbors
+}
 pub async fn extract_call_graph_neighbors(
     ghidra: &GhidraClient,
     call_graph: &[String],

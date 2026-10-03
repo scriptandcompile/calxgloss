@@ -93,6 +93,18 @@ impl FunctionResult {
             branch,
         }
     }
+
+    /// Create a new skipped result for a function that requires no translation.
+    pub(crate) fn skipped(dll: String, function: String) -> Self {
+        Self {
+            dll,
+            function,
+            success: true,
+            rust_code: None,
+            retry_result: RetryResult::new(),
+            branch: None,
+        }
+    }
 }
 
 /// The aggregated result of translating an entire batch of functions.
@@ -127,6 +139,13 @@ impl BatchTranslationResult {
     /// Number of functions that failed.
     pub fn failure_count(&self) -> usize {
         self.results.iter().filter(|r| !r.success).count()
+    }
+
+    /// Number of functions that were skipped (e.g., root functions).
+    ///
+    /// Skipped functions count as successful in terms of `success_count`.
+    pub fn skipped_count(&self) -> usize {
+        self.results.iter().filter(|r| r.success && r.rust_code.is_none()).count()
     }
 
     /// Total number of functions in the batch.

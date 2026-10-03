@@ -33,7 +33,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use calxgloss_analysis::Analyzer;
 use calxgloss_analysis::FaultLogger;
-use calxgloss_callgraph::ContextEnricher;
+use calxgloss_callgraph::{ContextEnricher, FunctionContext};
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_llm::{
     LlmClient, LlmMessage, context::ContextWindowDetector, hallucination::HallucinationDetector,
@@ -135,6 +135,13 @@ pub struct TranslationPipeline {
     /// prompts.  Setting this flag means those tiers fall back to less
     /// context rather than call-graph-derived context.
     no_callgraph: AtomicBool,
+
+    /// Optional pre-built call graph.
+    ///
+    /// When set, [`translate`](Self::translate) reuses this graph for
+    /// all enrichment and neighbor extraction instead of rebuilding it
+    /// from Ghidra for every function.
+    call_graph: Option<calxgloss_callgraph::CallGraph>,
 }
 
 impl TranslationPipeline {
@@ -160,6 +167,7 @@ impl TranslationPipeline {
             hallucination_detector: None,
             fault_logger: None,
             no_callgraph: AtomicBool::new(false),
+            call_graph: None,
         }
     }
 
@@ -232,6 +240,24 @@ impl TranslationPipeline {
     /// `<workspace>/re/analysis/fault_log.json`.
     pub fn with_fault_logger(mut self, logger: FaultLogger) -> Self {
         self.fault_logger = Some(logger);
+        self
+    }
+
+    /// Attach a pre-built call graph for reuse across multiple translations.
+    ///
+    /// When set, [`translate`](Self::translate) reuses this graph instead of
+    /// building one from Ghidra for every function call. This avoids
+    /// redundant analysis and guarantees that all prompt enrichment data
+    /// comes from the same graph snapshot.
+    ///
+    /// The graph is also used by
+    /// [`batch_translate_from_callgraph`](Self::batch_translate_from_callgraph)
+    /// to derive priority ordering and per-function context.
+    pub fn with_call_graph(
+        mut self,
+        graph: calxgloss_callgraph::CallGraph,
+    ) -> Self {
+        self.call_graph = Some(graph);
         self
     }
 
@@ -371,8 +397,14 @@ impl TranslationPipeline {
         );
 
         // Enrich the prompt data with call graph context when available.
-        let enriched_context = if self.no_callgraph.load(Ordering::Relaxed) {
+        //
+        // If a pre-built graph was attached via `with_call_graph`, reuse it.
+        // Otherwise, build and enrich from Ghidra.
+        let enriched_context: Vec<FunctionContext> = if self.no_callgraph.load(Ordering::Relaxed) {
             Vec::new()
+        } else if let Some(ref graph) = self.call_graph {
+            let enricher = ContextEnricher::new();
+            enricher.enrich(graph)
         } else {
             let workspace_root = self.workspace.as_deref().unwrap_or_else(|| std::path::Path::new("."));
             match self.analyzer.build_call_graph(&function_info.dll, workspace_root).await {
@@ -391,9 +423,6 @@ impl TranslationPipeline {
                 }
             }
         };
-
-        // Clone for use across match arms and the Translation result.
-        let enriched_for_translation = enriched_context.clone();
 
         // Step 5: Build a complexity-aware prompt and send to LLM
         self.emit(ProgressEvent::LlmCallStart {
@@ -416,16 +445,15 @@ impl TranslationPipeline {
             }
             ContextTier::WithTests => {
                 let mut data = calxgloss_prompts::WithTestsPromptData::from_request(&request);
-                data.call_graph_context = enriched_for_translation.clone();
+                data.call_graph_context = enriched_context.clone();
                 calxgloss_prompts::build_with_tests_prompt(&data)?
             }
             ContextTier::ModuleContext => {
-                let call_graph_neighbors = crate::retry::helpers::extract_call_graph_neighbors(
-                    &self.ghidra,
-                    &function_info.call_graph,
-                    function_info.address,
-                )
-                .await;
+                let call_graph_neighbors =
+                    crate::retry::helpers::extract_call_graph_neighbors_from_enriched(
+                        &enriched_context,
+                        function_info.address,
+                    );
                 let neighboring_functions = crate::retry::helpers::extract_neighboring_context(
                     &self.ghidra,
                     &function_info.call_graph,
@@ -441,18 +469,17 @@ impl TranslationPipeline {
                     call_graph_neighbors,
                     neighboring_functions,
                     data_structures,
-                    enriched_for_translation.clone(),
+                    enriched_context.clone(),
                 );
                 calxgloss_prompts::build_module_context_prompt(&data)?
             }
             ContextTier::FullModule => {
                 // Tier 4: Full module context + shim layer code + PAL trait definitions
-                let call_graph_neighbors = crate::retry::helpers::extract_call_graph_neighbors(
-                    &self.ghidra,
-                    &function_info.call_graph,
-                    function_info.address,
-                )
-                .await;
+                let call_graph_neighbors =
+                    crate::retry::helpers::extract_call_graph_neighbors_from_enriched(
+                        &enriched_context,
+                        function_info.address,
+                    );
                 let neighboring_functions = crate::retry::helpers::extract_neighboring_context(
                     &self.ghidra,
                     &function_info.call_graph,
@@ -481,7 +508,7 @@ impl TranslationPipeline {
                     data_structures,
                     shim_layers,
                     pal_traits,
-                    enriched_for_translation.clone(),
+                    enriched_context.clone(),
                 );
                 calxgloss_prompts::build_full_module_prompt(&data)?
             }
@@ -551,7 +578,7 @@ impl TranslationPipeline {
             tokens_used: response.tokens_used,
             baseline_tests,
             call_graph: function_info.call_graph.clone(),
-            call_graph_context: enriched_for_translation,
+            call_graph_context: enriched_context,
             disassembly_hints: function_info.disassembly_hints.clone(),
             context_tier: tier,
         })
@@ -1310,6 +1337,237 @@ impl TranslationPipeline {
             success = batch_result.success_count(),
             failure = batch_result.failure_count(),
             "Batch translation complete"
+        );
+
+        Ok(batch_result)
+    }
+
+    /// Translate multiple functions from a single DLL, prioritized by
+    /// call-graph topology.
+    ///
+    /// This method uses a [call graph] to determine translation order:
+    ///
+    /// 1. [Leaf] functions (call external APIs) — translated first
+    /// 2. [Middle] functions — translated second
+    /// 3. [Root] functions — translated last
+    ///
+    /// Within each tier, functions are sorted topologically so that a
+    /// function is only translated after all of its callees have been
+    /// processed. This ordering lets the LLM reference already-translated
+    /// callee code when generating shim layers or caller wrappers.
+    ///
+    /// The caller can provide a callback (`on_function_completed`) that is
+    /// invoked **immediately after each function completes** (before moving on
+    /// to the next). This enables incremental git commits and per-function
+    /// post-processing without blocking subsequent translations.
+    ///
+    /// # Arguments
+    ///
+    /// * `graph` — The call graph containing all functions to translate.
+    ///   Root functions are automatically skipped (they have no translation
+    ///   work).
+    /// * `config` — Retry configuration applied to every function.
+    /// * `verifier` — Verification engine used for checking translations.
+    /// * `on_function_completed` — Optional closure called after each function
+    ///   completes. Receives the DLL name, function name, a mutable reference to
+    ///   the [`batch::FunctionResult`], and a boolean indicating whether the
+    ///   caller should continue processing the remaining functions.
+    ///
+    /// # Returns
+    ///
+    /// A [`BatchTranslationResult`] with per-function outcomes.  A function
+    /// counts as a failure when all retry attempts are exhausted without
+    /// producing passing tests.
+    ///
+    /// Root functions from the call graph are skipped automatically and
+    /// appear in the result with [`batch::FunctionResult::skipped`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use calxgloss_translator::TranslationPipeline;
+    /// use calxgloss_verify::Verifier;
+    /// use calxgloss_analysis::build_enriched_call_graph;
+    /// use std::path::Path;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let ghidra = calxgloss_ghidra::GhidraClient::new("http://localhost:8080")?;
+    /// let llm = calxgloss_llm::LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;
+    /// let config = calxgloss_translator::RetryConfig::default();
+    /// let verifier = Verifier::new(Path::new("/tmp/calxgloss-work"))?;
+    ///
+    /// // Build or load the enriched call graph first (needs its own Ghidra reference)
+    /// let call_graph = build_enriched_call_graph(
+    ///     &ghidra,
+    ///     "game_logic.dll",
+    ///     Path::new("/tmp/calxgloss-work"),
+    /// ).await?;
+    ///
+    /// let pipeline = TranslationPipeline::new(ghidra, llm, calxgloss_pal::ApiMappings::default());
+    ///
+    /// let results = pipeline.batch_translate_from_callgraph(
+    ///     &call_graph,
+    ///     &config,
+    ///     &verifier,
+    ///     Some(&mut |_dll, _function, _result| true), // keep going
+    /// ).await?;
+    ///
+    /// println!("{} succeeded, {} failed, {} skipped",
+    ///     results.success_count(), results.failure_count(), results.skipped_count());
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// [call graph]: calxgloss_callgraph::CallGraph
+    /// [Leaf]: calxgloss_types::NodeCategory::Leaf
+    /// [Middle]: calxgloss_types::NodeCategory::Middle
+    /// [Root]: calxgloss_types::NodeCategory::Root
+    #[allow(clippy::type_complexity)]
+    pub async fn batch_translate_from_callgraph(
+        &self,
+        graph: &calxgloss_callgraph::CallGraph,
+        config: &retry::RetryConfig,
+        verifier: &Verifier,
+        mut on_function_completed: Option<
+            &mut dyn FnMut(&str, &str, &mut batch::FunctionResult) -> bool,
+        >,
+    ) -> Result<batch::BatchTranslationResult> {
+        debug!(dll = %graph.dll, count = graph.functions.len(), "Starting call-graph batch translation");
+
+        // Build a priority-ordered plan
+        let orderer = calxgloss_callgraph::TranslationOrderer::new();
+        let plan = orderer
+            .order(graph)
+            .map_err(|e| TranslatorError::CallGraph(e.to_string()))?;
+
+        let plan: Vec<_> = plan.into_iter().collect();
+        let dll = &graph.dll;
+        let mut batch_result = batch::BatchTranslationResult::new(dll.clone());
+
+        for (idx, plan_func) in plan.iter().enumerate() {
+            use calxgloss_callgraph::TranslationPriority;
+
+            // Skip root functions (entry points) — no translation work needed
+            if matches!(plan_func.priority, TranslationPriority::Root) {
+                info!(
+                    dll,
+                    name = %plan_func.name,
+                    address = plan_func.address,
+                    "Skipping root function"
+                );
+                let skipped = batch::FunctionResult::skipped(
+                    dll.clone(),
+                    plan_func.name.clone(),
+                );
+                batch_result.add(skipped.clone());
+
+                self.emit(ProgressEvent::FunctionCompleted {
+                    dll: dll.clone(),
+                    function: plan_func.name.clone(),
+                    success: true,
+                    attempts: 0,
+                    branch: None,
+                });
+
+                // Invoke the caller's callback even for skipped functions
+                if let Some(ref mut cb) = on_function_completed
+                    && !cb(dll, &plan_func.name, &mut skipped.clone())
+                {
+                    info!(dll, function = %plan_func.name, "Batch stopped early by callback");
+                    break;
+                }
+
+                continue;
+            }
+
+            info!(
+                dll,
+                name = %plan_func.name,
+                address = plan_func.address,
+                priority = ?plan_func.priority,
+                index = idx + 1,
+                total = plan.len(),
+                "Translating function in batch"
+            );
+
+            let mut result = match self
+                .try_translate_with_retry(dll, &plan_func.name, config, verifier)
+                .await
+            {
+                Ok(retry_result) => {
+                    if retry_result.success {
+                        info!(
+                            dll,
+                            name = %plan_func.name,
+                            attempts = retry_result.attempts.len(),
+                            "Batch function succeeded"
+                        );
+                        let rust_code = retry_result.rust_code.clone().unwrap_or_default();
+                        batch::FunctionResult::success(
+                            dll.clone(),
+                            plan_func.name.clone(),
+                            rust_code,
+                            retry_result,
+                            None,
+                        )
+                    } else {
+                        warn!(
+                            dll,
+                            name = %plan_func.name,
+                            attempts = retry_result.attempts.len(),
+                            "Batch function exhausted all retries"
+                        );
+                        let empty_result = retry::RetryResult::new();
+                        batch::FunctionResult::failure(
+                            dll.clone(),
+                            plan_func.name.clone(),
+                            empty_result,
+                        )
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        dll,
+                        name = %plan_func.name,
+                        error = %e,
+                        "Batch function translation failed (pipeline error)"
+                    );
+                    let empty_result = retry::RetryResult::new();
+                    batch::FunctionResult::failure(dll.clone(), plan_func.name.clone(), empty_result)
+                }
+            };
+
+            let success = result.success;
+            batch_result.add(result.clone());
+
+            // Emit progress event for real-time tracking
+            self.emit(ProgressEvent::FunctionCompleted {
+                dll: dll.clone(),
+                function: plan_func.name.clone(),
+                success,
+                attempts: 0,  // filled by caller after git branch creation
+                branch: None, // filled by caller after git branch creation
+            });
+
+            // Invoke the caller's callback
+            let continue_batch = if let Some(ref mut cb) = on_function_completed {
+                cb(dll, &plan_func.name, &mut result)
+            } else {
+                true
+            };
+
+            if !continue_batch {
+                info!(dll, function = %plan_func.name, "Batch stopped early by callback");
+                break;
+            }
+        }
+
+        info!(
+            dll,
+            total = batch_result.total_count(),
+            success = batch_result.success_count(),
+            failure = batch_result.failure_count(),
+            "Call-graph batch translation complete"
         );
 
         Ok(batch_result)

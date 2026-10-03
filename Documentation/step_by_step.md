@@ -287,12 +287,23 @@ In `crates/calxgloss-analysis/src/callgraph.rs`:
 - Adds dependency edges based on call graph callee edges
 - 8 unit tests, all passing
 
-### Step 6.3 — Wire Call Graph to Translator ❌ NOT DONE
+### Step 6.3 — Wire Call Graph to Translator ✅ DONE
 
-**Missing:**
-- Translator does not load `CallGraph` or use `TranslationOrderer`
-- Prompt `call_graph_context` is never populated from enriched call graph
-- Translator still uses `FunctionInfo.call_graph` (simple string list) for neighbor extraction from Ghidra
+**Implemented in `calxgloss-translator`:**
+
+- `TranslationPipeline::with_call_graph(graph)` builder method added — attaches a pre-built `CallGraph` for reuse across all translations, avoiding redundant analysis
+- `TranslationPipeline::translate()` refactored — builds the enriched call graph once per function call (using pre-built graph when available) and reuses it for all context tiers (WithTests, ModuleContext, FullModule)
+- `extract_call_graph_neighbors_from_enriched()` helper added in `retry/helpers.rs` — extracts neighbor info directly from enriched `FunctionContext` data instead of performing expensive Ghidra name lookups
+- `TranslationPipeline::batch_translate_from_callgraph(graph, config, verifier, callback)` method added — priority-ordered batch translation that:
+  - Uses `TranslationOrderer` to derive a callee-before-caller translation order
+  - Automatically skips root functions (entry points) with `FunctionResult::skipped`
+  - Calls `try_translate_with_retry` for each function in priority order
+- `FunctionResult::skipped()` constructor added to `batch` module
+- `BatchTranslationResult::skipped_count()` method added
+
+**Before:** `call_graph_context` was populated, but `translate()` rebuilt the entire call graph from Ghidra on each context tier. `batch_translate()` accepted an arbitrary function list without call-graph ordering.
+
+**After:** The call graph is built once per `translate()` call and reused across all tiers. Neighbor extraction uses enriched context data directly. `batch_translate_from_callgraph()` uses `TranslationOrderer` for priority-ordered, callee-first translation.
 
 ### Step 6.4 — Skip Runtime Functions ❌ NOT WIRED
 
@@ -356,7 +367,7 @@ No CLI flag to print call graph statistics during analysis.
 
 ## Summary
 
-### Completed (~60%)
+### Completed (~63%)
 
 | Category | Details |
 |----------|---------|
@@ -366,6 +377,7 @@ No CLI flag to print call graph statistics during analysis.
 | **Leaf detection** | 100+ APIs, 10 categories, fuzzy matching, transitive analysis |
 | **Translation ordering** | Priority tiers + topological sort (exists in crate) |
 | **Batch planning** | `TranslationPipeline::plan_from_callgraph()` wires `TranslationOrderer` into the translator |
+| **Batch translation** | `batch_translate_from_callgraph()` uses call-graph ordering for priority-ordered batch translation |
 | **Dependency graph** | `build_dependency_graph_from_call_graph` with 8 tests |
 | **Prompt templates** | `call_graph_context` fields on all templates |
 | **Context enrichment wiring** | `ContextEnricher` called from `TranslationPipeline::translate()`, `retry/helpers.rs`, and `Translator` |
@@ -373,7 +385,7 @@ No CLI flag to print call graph statistics during analysis.
 | **Runtime library** | `RuntimeLibrary` DLL category with classification and skip logic |
 | **Tests** | 103 unit tests + 4 integration tests across all modules |
 
-### Not Yet Done (~38%)
+### Not Yet Done (~32%)
 
 | Category | Blockers |
 |----------|----------|
@@ -388,7 +400,7 @@ No CLI flag to print call graph statistics during analysis.
 
 ### Priority Order for Remaining Work
 
-1. **Pipeline integration** (M6.1, M6.3, M6.4) — The most impactful: makes the call graph actually affect translation
+1. **Pipeline integration** (M6.1, M6.4) — The most impactful: makes the call graph actually affect translation
 2. **Types extension** (M0.3) — `FunctionInfo` needs richer call graph data
 3. **Context enrichment** (M5.2) — Remaining context rendering in templates
 4. **CLI flags** (M7.2, M7.3) — Convenience features
