@@ -41,6 +41,7 @@
 //! ```
 
 mod analyzer;
+mod callgraph;
 mod classify;
 pub mod dependency;
 pub mod error;
@@ -53,6 +54,9 @@ pub mod shim_test_gen;
 pub mod token_usage;
 
 pub use analyzer::*;
+pub use callgraph::{
+    build_dependency_graph_from_call_graph, build_enriched_call_graph, load_call_graph,
+};
 pub use classify::*;
 pub use dependency::*;
 pub use error::{AnalysisError, Result};

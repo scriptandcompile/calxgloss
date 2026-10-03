@@ -521,6 +521,62 @@ impl Analyzer {
         &self.ghidra
     }
 
+    /// Builds, classifies, and persists a call graph for a single DLL.
+    ///
+    /// This is the primary integration point between the call graph analysis
+    /// pipeline and the rest of the system. It:
+    ///
+    /// 1. Fetches all function metadata from Ghidra.
+    /// 2. Classifies each function as [`Root`](calxgloss_types::NodeCategory::Root),
+    ///    [`Leaf`](calxgloss_types::NodeCategory::Leaf), or
+    ///    [`Middle`](calxgloss_types::NodeCategory::Middle).
+    /// 3. Persists the enriched graph to `re/analysis/{dll}_call_graph.json`.
+    ///
+    /// # Arguments
+    ///
+    /// * `dll_name` — The DLL filename (e.g., `"eqmain.dll"`).
+    /// * `workspace_root` — The workspace root directory for persistence.
+    ///
+    /// # Returns
+    ///
+    /// A fully classified call graph, or an error if Ghidra data cannot
+    /// be fetched or the graph cannot be persisted.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use calxgloss_analysis::Analyzer;
+    /// use calxgloss_pal::ApiMappings;
+    /// use std::path::Path;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let ghidra = calxgloss_ghidra::GhidraClient::new("http://localhost:8080")?;
+    /// let analyzer = Analyzer::new(ghidra, ApiMappings::default());
+    ///
+    /// let graph = analyzer.build_call_graph("eqmain.dll", Path::new("/workspace")).await?;
+    /// for func in &graph.functions {
+    ///     println!("{}: {:?}", func.name, func.node_category);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # TODOs
+    ///
+    /// ```text
+    /// TODO: Cache CallGraphBuilder results to avoid rebuilding on every analysis run
+    /// TODO: Add call graph analysis as a separate pipeline phase (Phase 1.5)
+    /// TODO: Make call graph analysis optional via config flag
+    /// TODO: Integrate with dependency tracker: use NodeCategory for translation ordering
+    /// ```
+    pub async fn build_call_graph(
+        &self,
+        dll_name: &str,
+        workspace_root: &std::path::Path,
+    ) -> anyhow::Result<calxgloss_callgraph::CallGraph> {
+        crate::callgraph::build_enriched_call_graph(&self.ghidra, dll_name, workspace_root).await
+    }
+
     /// Generate shim layer suggestions for all crate-replacement DLLs.
     ///
     /// After classification, this function estimates the expected shim complexity

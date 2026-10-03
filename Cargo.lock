@@ -342,6 +342,7 @@ name = "calxgloss-analysis"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "calxgloss-callgraph",
  "calxgloss-ghidra",
  "calxgloss-git",
  "calxgloss-llm",
@@ -362,6 +363,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "calxgloss-ghidra",
+ "calxgloss-types",
  "regex",
  "serde",
  "serde_json",
