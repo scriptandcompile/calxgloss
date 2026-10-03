@@ -389,4 +389,98 @@ mod tests {
         let plan = pipeline.plan_from_callgraph(&graph, Some(3)).unwrap();
         assert_eq!(plan.len(), 3);
     }
+
+    #[test]
+    fn test_generate_stub_main() {
+        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
+        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+
+        let stub = pipeline.generate_stub("mainCRTStartup", "int main()");
+        assert!(stub.contains("mainCRTStartup"));
+        assert!(stub.contains("std::process::exit"));
+    }
+
+    #[test]
+    fn test_generate_stub_dllmain() {
+        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
+        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+
+        let stub = pipeline.generate_stub("DllMain", "int DllMain()");
+        assert!(stub.contains("DllMain"));
+        assert!(stub.contains("DLL initialization"));
+    }
+
+    #[test]
+    fn test_generate_stub_vb6() {
+        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
+        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+
+        let stub = pipeline.generate_stub("__vbaInitialize", "int __vbaInitialize()");
+        assert!(stub.contains("__vbaInitialize"));
+        assert!(stub.contains("VB6"));
+    }
+
+    #[test]
+    fn test_generate_stub_generic() {
+        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
+        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+
+        let stub = pipeline.generate_stub("FUN_18001000", "int FUN_18001000()");
+        assert!(stub.contains("FUN_18001000"));
+        assert!(stub.contains("TODO: Translate"));
+    }
+
+    #[test]
+    fn test_plan_from_callgraph_includes_category() {
+        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
+        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+
+        let graph = CallGraph {
+            dll: "categories.dll".to_string(),
+            functions: vec![
+                calxgloss_callgraph::FunctionCallGraph {
+                    name: "WinMain".to_string(),
+                    address: 0x401000,
+                    callers: vec![],
+                    callees: vec![],
+                    node_category: calxgloss_types::NodeCategory::Root,
+                },
+                calxgloss_callgraph::FunctionCallGraph {
+                    name: "runtime_helper".to_string(),
+                    address: 0x402000,
+                    callers: vec![],
+                    callees: vec![],
+                    node_category: calxgloss_types::NodeCategory::Skip,
+                },
+                calxgloss_callgraph::FunctionCallGraph {
+                    name: "app_logic".to_string(),
+                    address: 0x403000,
+                    callers: vec![],
+                    callees: vec![],
+                    node_category: calxgloss_types::NodeCategory::Middle,
+                },
+            ],
+        };
+
+        let plan = pipeline.plan_from_callgraph(&graph, None).unwrap();
+        assert_eq!(plan.len(), 3);
+
+        // Root and Skip both map to Root priority
+        let winmain = plan.iter().find(|f| f.name == "WinMain").unwrap();
+        assert_eq!(winmain.priority, calxgloss_callgraph::TranslationPriority::Root);
+        assert_eq!(winmain.category, calxgloss_types::NodeCategory::Root);
+
+        let runtime = plan.iter().find(|f| f.name == "runtime_helper").unwrap();
+        assert_eq!(runtime.priority, calxgloss_callgraph::TranslationPriority::Root);
+        assert_eq!(runtime.category, calxgloss_types::NodeCategory::Skip);
+
+        let app = plan.iter().find(|f| f.name == "app_logic").unwrap();
+        assert_eq!(app.priority, calxgloss_callgraph::TranslationPriority::Middle);
+        assert_eq!(app.category, calxgloss_types::NodeCategory::Middle);
+    }
 }

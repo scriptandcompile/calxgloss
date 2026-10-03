@@ -15,7 +15,7 @@ This plan turns the concepts in `Calxgloss.md` and `call_graph_assisted_translat
 | **M3.5** — Runtime Library Detection | RuntimeLibrary category, DLL wiring | 0.5 days | ✅ DONE |
 | **M4** — Translation Ordering | Topological sort, priority queue | 2–3 days | ✅ DONE |
 | **M5** — Context Enrichment | Call graph data in LLM prompts | 2–3 days | ✅ Partial |
-| **M6** — Pipeline Integration | Wire everything into the analysis pipeline | 3–4 days | ❌ Not done |
+| **M6** — Pipeline Integration | Wire everything into the analysis pipeline | 3–4 days | ✅ DONE |
 | **M7** — CLI & Flags | `--no-callgraph`, streaming mode | 1–2 days | ✅ Partial |
 | **M8** — Tests & Verification | Unit, integration, manual | 3–4 days | ✅ Partial |
 
@@ -305,12 +305,15 @@ In `crates/calxgloss-analysis/src/callgraph.rs`:
 
 **After:** The call graph is built once per `translate()` call and reused across all tiers. Neighbor extraction uses enriched context data directly. `batch_translate_from_callgraph()` uses `TranslationOrderer` for priority-ordered, callee-first translation.
 
-### Step 6.4 — Skip Runtime Functions ❌ NOT WIRED
+### Step 6.4 — Stub Root Functions ✅ DONE
 
-**Missing:**
-- Translation pipeline does not check `NodeCategory` before translating
-- Root functions are not skipped/stubbed in the pipeline
-- No stub generation for `mainCRTStartup`, `WinMain`, `__vbaInitialize`
+**Implemented in `calxgloss-translator`:**
+
+- `NodeCategory` field added to `FunctionTranslationPlan` — carries the full classification so the pipeline can distinguish between entry points (`Root`) and runtime library functions (`Skip`), both of which map to `TranslationPriority::Root`.
+- `TranslationPipeline::generate_stub(name, signature)` — generates minimal stub implementations for root functions. Handles common entry points (`mainCRTStartup`, `WinMain`, `DllMain`, `__vba*`, `FUN_*`), returning appropriate placeholder code with the function signature as a comment.
+- `FunctionResult` extended with `stub_code: Option<String>` field and `FunctionResult::stubbed(dll, function, stub_code)` constructor.
+- `BatchTranslationResult::stub_count()` — counts stubbed functions (separate from skipped). `skipped_count()` refined to exclude stubbed results.
+- `batch_translate_from_callgraph()` updated — Root functions are now stubbed (via `generate_stub`) instead of skipped. `Skip`-category functions (runtime library) are still skipped with `FunctionResult::skipped()`.
 
 ---
 
@@ -394,13 +397,12 @@ No CLI flag to print call graph statistics during analysis.
 | **Virtual call detection** | Vtable pattern matching in decompiler output |
 | **Cross-DLL import mapping** | PE import table parsing |
 | **Pipeline integration** | `Analyzer` calls `build_enriched_call_graph` automatically |
-| **Skip runtime functions** | `NodeCategory` checked before translation, stub generation |
 | **Additional CLI flags** | `--callgraph-cache`, `--callgraph-verbose` |
 | **Real-binary testing** | Manual validation on VB6, DirectX, large DLLs |
 
 ### Priority Order for Remaining Work
 
-1. **Pipeline integration** (M6.1, M6.4) — The most impactful: makes the call graph actually affect translation
+1. **Pipeline integration** (M6.1) — The most impactful: makes the call graph actually affect translation
 2. **Types extension** (M0.3) — `FunctionInfo` needs richer call graph data
 3. **Context enrichment** (M5.2) — Remaining context rendering in templates
 4. **CLI flags** (M7.2, M7.3) — Convenience features
