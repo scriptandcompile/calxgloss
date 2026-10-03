@@ -439,7 +439,8 @@ pub async fn build_escalated_prompt(
                 windows_apis: call_graph,
                 baseline_tests: translation.baseline_tests.clone(),
             };
-            let data = calxgloss_prompts::WithTestsPromptData::from_request(&request);
+            let mut data = calxgloss_prompts::WithTestsPromptData::from_request(&request);
+            data.call_graph_context = translation.call_graph_context.clone();
             calxgloss_prompts::build_with_tests_prompt(&data).map_err(|e| e.to_string())
         }
         ContextTier::ModuleContext => {
@@ -479,7 +480,7 @@ pub async fn build_escalated_prompt(
                 call_graph_neighbors,
                 neighboring_functions,
                 data_structures,
-                Vec::new(),
+                translation.call_graph_context.clone(),
             );
             calxgloss_prompts::build_module_context_prompt(&data).map_err(|e| e.to_string())
         }
@@ -525,7 +526,7 @@ pub async fn build_escalated_prompt(
                 data_structures,
                 shim_layers,
                 pal_traits,
-                Vec::new(),
+                translation.call_graph_context.clone(),
             );
             calxgloss_prompts::build_full_module_prompt(&data).map_err(|e| e.to_string())
         }

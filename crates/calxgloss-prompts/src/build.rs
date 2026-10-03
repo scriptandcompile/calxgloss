@@ -87,7 +87,7 @@ pub fn build_escalate_prompt(
     type_info: Vec<super::templates::TypeInfo>,
     failure_history: Vec<calxgloss_types::FailureHint>,
 ) -> Result<String, PromptError> {
-    let template = EscalateTemplate::with_history(
+    build_escalate_prompt_with_context(
         function_name,
         dll_name,
         original_rust_code,
@@ -97,6 +97,41 @@ pub fn build_escalate_prompt(
         data_structures,
         type_info,
         failure_history,
+        Vec::new(),
+    )
+}
+
+/// Builds an escalation prompt with additional Ghidra context and enriched
+/// call graph data.
+///
+/// Used when previous attempts failed with compile_fix or test_fix strategies.
+/// Adds call graph neighbors, neighboring functions, data structures,
+/// type information, and enriched call graph context (caller/callee details
+/// and leaf API suggestions) to help the LLM understand the broader context.
+#[allow(clippy::too_many_arguments)]
+pub fn build_escalate_prompt_with_context(
+    function_name: String,
+    dll_name: String,
+    original_rust_code: String,
+    failure_description: String,
+    call_graph_neighbors: Vec<CallGraphNeighbor>,
+    neighboring_functions: Vec<super::templates::NeighborFunction>,
+    data_structures: Vec<super::templates::StructuredData>,
+    type_info: Vec<super::templates::TypeInfo>,
+    failure_history: Vec<calxgloss_types::FailureHint>,
+    call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
+) -> Result<String, PromptError> {
+    let template = EscalateTemplate::with_context(
+        function_name,
+        dll_name,
+        original_rust_code,
+        failure_description,
+        call_graph_neighbors,
+        neighboring_functions,
+        data_structures,
+        type_info,
+        failure_history,
+        call_graph_context,
     );
 
     template

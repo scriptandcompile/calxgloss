@@ -33,6 +33,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use calxgloss_analysis::Analyzer;
 use calxgloss_analysis::FaultLogger;
+use calxgloss_callgraph::ContextEnricher;
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_llm::{
     LlmClient, LlmMessage, context::ContextWindowDetector, hallucination::HallucinationDetector,
@@ -369,6 +370,31 @@ impl TranslationPipeline {
             baseline_tests.clone(),
         );
 
+        // Enrich the prompt data with call graph context when available.
+        let enriched_context = if self.no_callgraph.load(Ordering::Relaxed) {
+            Vec::new()
+        } else {
+            let workspace_root = self.workspace.as_deref().unwrap_or_else(|| std::path::Path::new("."));
+            match self.analyzer.build_call_graph(&function_info.dll, workspace_root).await {
+                Ok(call_graph) => {
+                    let enricher = ContextEnricher::new();
+                    enricher.enrich(&call_graph)
+                }
+                Err(e) => {
+                    warn!(
+                        dll,
+                        function,
+                        error = %e,
+                        "Failed to build call graph for context enrichment; continuing without it"
+                    );
+                    Vec::new()
+                }
+            }
+        };
+
+        // Clone for use across match arms and the Translation result.
+        let enriched_for_translation = enriched_context.clone();
+
         // Step 5: Build a complexity-aware prompt and send to LLM
         self.emit(ProgressEvent::LlmCallStart {
             dll: dll.to_string(),
@@ -389,7 +415,8 @@ impl TranslationPipeline {
                 calxgloss_prompts::build_disassembly_prompt(&data)?
             }
             ContextTier::WithTests => {
-                let data = calxgloss_prompts::WithTestsPromptData::from_request(&request);
+                let mut data = calxgloss_prompts::WithTestsPromptData::from_request(&request);
+                data.call_graph_context = enriched_for_translation.clone();
                 calxgloss_prompts::build_with_tests_prompt(&data)?
             }
             ContextTier::ModuleContext => {
@@ -414,7 +441,7 @@ impl TranslationPipeline {
                     call_graph_neighbors,
                     neighboring_functions,
                     data_structures,
-                    Vec::new(),
+                    enriched_for_translation.clone(),
                 );
                 calxgloss_prompts::build_module_context_prompt(&data)?
             }
@@ -454,7 +481,7 @@ impl TranslationPipeline {
                     data_structures,
                     shim_layers,
                     pal_traits,
-                    Vec::new(),
+                    enriched_for_translation.clone(),
                 );
                 calxgloss_prompts::build_full_module_prompt(&data)?
             }
@@ -524,6 +551,7 @@ impl TranslationPipeline {
             tokens_used: response.tokens_used,
             baseline_tests,
             call_graph: function_info.call_graph.clone(),
+            call_graph_context: enriched_for_translation,
             disassembly_hints: function_info.disassembly_hints.clone(),
             context_tier: tier,
         })
@@ -583,6 +611,7 @@ impl TranslationPipeline {
             tokens_used: response.tokens_used,
             baseline_tests: request.baseline_tests,
             call_graph: Vec::new(),
+            call_graph_context: Vec::new(),
             disassembly_hints: Vec::new(),
             context_tier: ContextTier::WithTests,
         })

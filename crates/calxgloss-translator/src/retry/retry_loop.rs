@@ -806,6 +806,7 @@ pub async fn try_translate_with_retry(
                     address: addr,
                     call_graph,
                     history: failure_history.clone(),
+                    call_graph_context: initial_translation.call_graph_context.clone(),
                 };
 
                 // Use failure-informed escalated prompt

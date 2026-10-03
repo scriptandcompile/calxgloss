@@ -44,9 +44,9 @@ pub mod templates;
 
 pub use build::{
     build_complexity_prompt, build_disassembly_prompt, build_edge_case_prompt,
-    build_escalate_prompt, build_full_module_prompt, build_module_context_prompt,
-    build_stub_prompt, build_translate_prompt, build_with_tests_prompt,
-    extract_signature_from_decompiler,
+    build_escalate_prompt, build_escalate_prompt_with_context, build_full_module_prompt,
+    build_module_context_prompt, build_stub_prompt, build_translate_prompt,
+    build_with_tests_prompt, extract_signature_from_decompiler,
 };
 pub use context::{
     ComplexityPromptData, DisassemblyPromptData, FullModulePromptData, ModuleContextPromptData,

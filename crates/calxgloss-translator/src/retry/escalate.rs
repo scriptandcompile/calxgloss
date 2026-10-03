@@ -21,6 +21,8 @@ pub struct EscalatePromptCtx {
     pub call_graph: Vec<String>,
     /// Failure history for informed prompting (empty for non-informed variant).
     pub history: Vec<calxgloss_types::FailureHint>,
+    /// Enriched call graph context from the initial translation.
+    pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
 }
 
 /// Build an escalated fix prompt that injects additional Ghidra context.
@@ -47,7 +49,7 @@ async fn build_escalate_prompt_inner(
     // Clone for the error fallback (original is moved into build_escalate_prompt)
     let rust_code_for_error = ctx.original_rust_code.clone();
 
-    calxgloss_prompts::build_escalate_prompt(
+    calxgloss_prompts::build_escalate_prompt_with_context(
         ctx.function_name,
         ctx.dll_name,
         ctx.original_rust_code,
@@ -57,6 +59,7 @@ async fn build_escalate_prompt_inner(
         data_structures,
         type_info,
         history,
+        ctx.call_graph_context,
     )
     .unwrap_or_else(|e| {
         format!(
