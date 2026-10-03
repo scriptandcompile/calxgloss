@@ -1,15 +1,17 @@
-//! Domain types parsed out of GhidraMCP's plain-text responses.
+//! Domain types parsed out of GhidraMCP's responses.
 //!
-//! The server answers in `text/plain` with one record per line, so these types
-//! exist to give that text a shape. Each parser lives next to the type it
-//! produces and is written against the exact formats the server emits.
+//! The server answers most endpoints in `text/plain` with one record per line,
+//! and the 6.x bridge answers a few (`get_current_address`, `list_imports`,
+//! `list_open_programs`) in JSON, so these types exist to give both shapes a
+//! common shape. Each parser lives next to the type it produces and is written
+//! against the exact formats the server emits.
 
 use std::fmt;
 
 /// A function found by a listing or search.
 ///
 /// Two endpoints render the same pair in different separators, so both are
-/// accepted: `/list_functions` writes `name at addr` while `/searchFunctions`
+/// accepted: `/list_functions` writes `name at addr` while `/search_functions`
 /// writes `name @ addr`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionSummary {
@@ -124,6 +126,22 @@ pub struct StringLiteral {
     pub address: u64,
     /// The string's contents, with the server's surrounding quotes removed.
     pub value: String,
+}
+
+/// A program currently open in the Ghidra instance the server is attached to.
+///
+/// The 6.x bridge can hold several programs at once and answer queries against
+/// whichever is current, so this records what is available and which one that is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenProgram {
+    /// The program's name inside the Ghidra project, e.g. `eqmain.dll`.
+    pub name: String,
+    /// Its path inside the project, e.g. `/eqmain.dll`.
+    pub path: String,
+    /// Whether queries currently run against this program.
+    pub is_current: bool,
+    /// Number of functions Ghidra has identified, when the server reported one.
+    pub function_count: Option<u64>,
 }
 
 /// A decompiled function: the pseudo-C body plus the signature Ghidra inferred.

@@ -44,6 +44,7 @@ pub use calxgloss_ghidra::FunctionSummary;
 pub use calxgloss_ghidra::GhidraClient;
 pub use calxgloss_ghidra::GhidraConfig;
 pub use calxgloss_ghidra::GhidraError;
+pub use calxgloss_ghidra::OpenProgram;
 pub use calxgloss_ghidra::ProgramInfo;
 pub use calxgloss_ghidra::Segment;
 pub use calxgloss_ghidra::StringLiteral;

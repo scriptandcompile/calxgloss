@@ -1,14 +1,20 @@
-//! Parsers for GhidraMCP's plain-text responses.
+//! Parsers for GhidraMCP's response bodies.
 //!
-//! Every endpoint answers `text/plain`. The formats are positional rather than
-//! structured, so parsing is done by splitting on the separators the server
-//! actually emits. Anything unparseable is skipped rather than guessed at: a
-//! half-understood address is worse than a missing record, because it would
-//! silently produce a wrong call target.
+//! Most endpoints answer `text/plain`, and the formats are positional rather
+//! than structured, so parsing is done by splitting on the separators the
+//! server actually emits. The 6.x bridge answers a handful of endpoints
+//! (`get_current_address`, `get_current_function`, `list_imports`,
+//! `list_open_programs`) in JSON; those parsers accept JSON first and fall
+//! back to the plain-text shape, so one client build works against either.
+//! Anything unparseable is skipped rather than guessed at: a half-understood
+//! address is worse than a missing record, because it would silently produce a
+//! wrong call target.
 
 use crate::model::{
-    DecompiledFunction, FunctionBody, FunctionSummary, Segment, StringLiteral, Symbol, Xref,
+    DecompiledFunction, FunctionBody, FunctionSummary, OpenProgram, Segment, StringLiteral, Symbol,
+    Xref,
 };
+use serde_json::Value;
 
 /// Split a response into records, discarding blank lines.
 ///
@@ -36,6 +42,46 @@ pub fn parse_address(text: &str) -> Option<u64> {
         return None;
     }
     u64::from_str_radix(t, 16).ok()
+}
+
+/// Read a top-level string field out of a JSON object body.
+///
+/// Used by the JSON-shaped endpoints, whose fields the parsers pick out one at
+/// a time rather than through a full serde model.
+pub fn json_string(body: &str, field: &str) -> Option<String> {
+    serde_json::from_str::<Value>(body)
+        .ok()?
+        .get(field)?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// Parse a `get_current_address` response.
+///
+/// The 6.x bridge answers JSON (`{"address":"1800e2110",...}`); older builds
+/// answered a bare hex line, which the plain address parser still accepts.
+pub fn parse_current_address(body: &str) -> Option<u64> {
+    json_string(body, "address")
+        .and_then(|a| parse_address(&a))
+        .or_else(|| parse_address(body))
+}
+
+/// Parse a `get_current_function` response.
+///
+/// The 6.x bridge answers JSON (`{"function_name":..., "address":...}`), which
+/// carries no body range, so the function is reported as spanning no bytes —
+/// the same shape the text parser gives a function with no `Body:` line.
+pub fn parse_current_function(body: &str) -> Option<FunctionBody> {
+    if let Ok(value) = serde_json::from_str::<Value>(body) {
+        let name = value.get("function_name")?.as_str()?;
+        let entry = parse_address(value.get("address")?.as_str()?)?;
+        return Some(FunctionBody {
+            name: name.to_string(),
+            entry,
+            end: entry,
+        });
+    }
+    parse_function_body(body)
 }
 
 /// Parse a function listing entry: `name at 18008ed50` or `name @ 18008ed50`.
@@ -129,11 +175,11 @@ pub fn parse_function_body(text: &str) -> Option<FunctionBody> {
 
 /// Parse a cross-reference record.
 ///
-/// `/xrefs_to` and `/function_xrefs` write
-/// `From 18000a3be in FUN_18000a0d0 [UNCONDITIONAL_CALL]`; `/xrefs_from` writes
-/// `To 18008ed50 to function FUN_18008ed50 [UNCONDITIONAL_CALL]`. Both are
-/// accepted, and the direction word is ignored because the caller already knows
-/// which endpoint it asked.
+/// `/get_xrefs_to` and `/get_function_xrefs` write
+/// `From 18000a3be in FUN_18000a0d0 [UNCONDITIONAL_CALL]`; `/get_xrefs_from`
+/// writes `To 18008ed50 to function FUN_18008ed50 [UNCONDITIONAL_CALL]`. Both
+/// are accepted, and the direction word is ignored because the caller already
+/// knows which endpoint it asked.
 pub fn parse_xref(line: &str) -> Option<Xref> {
     let rest = line
         .strip_prefix("From ")
@@ -209,6 +255,65 @@ pub fn parse_symbols(body: &str, imported: bool) -> Vec<Symbol> {
         .map(|mut s| {
             s.imported = s.imported || imported;
             s
+        })
+        .collect()
+}
+
+/// Parse a JSON symbol array, as `list_imports` answers on the 6.x bridge:
+/// `[{"name":"...","address":"EXTERNAL:00000001"}]`.
+///
+/// Returns `None` when the body is not a JSON array, so the caller can fall
+/// back to the plain-text listing parser.
+pub fn parse_symbols_json(body: &str, imported: bool) -> Option<Vec<Symbol>> {
+    let items = serde_json::from_str::<Value>(body).ok()?;
+    let items = items.as_array()?;
+    Some(
+        items
+            .iter()
+            .filter_map(|item| {
+                let name = item.get("name")?.as_str()?;
+                if name.is_empty() {
+                    return None;
+                }
+                // Same external-slot convention as the text form.
+                let addr = item.get("address").and_then(Value::as_str).unwrap_or("");
+                let (address, external) = match addr.strip_prefix("EXTERNAL:") {
+                    Some(slot) => (parse_address(slot).unwrap_or_default(), true),
+                    None => (parse_address(addr)?, false),
+                };
+                Some(Symbol {
+                    name: name.to_string(),
+                    address,
+                    imported: imported || external,
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Parse a `list_open_programs` response:
+/// `{"programs":[{"name":..., "path":..., "is_current":..., ...}], ...}`.
+pub fn parse_open_programs(body: &str) -> Vec<OpenProgram> {
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return Vec::new();
+    };
+    let Some(items) = value.get("programs").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let name = item.get("name")?.as_str()?;
+            let path = item.get("path").and_then(Value::as_str).unwrap_or("");
+            Some(OpenProgram {
+                name: name.to_string(),
+                path: path.to_string(),
+                is_current: item
+                    .get("is_current")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                function_count: item.get("function_count").and_then(Value::as_u64),
+            })
         })
         .collect()
 }
@@ -421,7 +526,7 @@ mod tests {
 
     #[test]
     fn test_parses_a_search_result() {
-        // `GET /searchFunctions?query=...` uses `@` where the listing uses `at`.
+        // `GET /search_functions?name_pattern=...` uses `@` where the listing uses `at`.
         let body = "FUN_18008ed50 @ 18008ed50\n";
         let found = parse_function_listing(body);
         assert_eq!(
@@ -485,7 +590,7 @@ mod tests {
 
     #[test]
     fn test_parses_a_cross_reference() {
-        // `GET /xrefs_to?address=0x18008ed50`
+        // `GET /get_xrefs_to?address=0x18008ed50`
         let body = "From 18000a3be in FUN_18000a0d0 [UNCONDITIONAL_CALL]";
         let xrefs = parse_xrefs(body);
         assert_eq!(
@@ -500,8 +605,8 @@ mod tests {
 
     #[test]
     fn test_parses_an_outgoing_cross_reference() {
-        // `GET /xrefs_from?address=0x18000a3be` uses a different wording for the
-        // same shape, and does not terminate its last line.
+        // `GET /get_xrefs_from?address=0x18000a3be` uses a different wording for
+        // the same shape, and does not terminate its last line.
         let body = "To 18008ed50 to function FUN_18008ed50 [UNCONDITIONAL_CALL]";
         let xrefs = parse_xrefs(body);
         assert_eq!(xrefs.len(), 1);
@@ -519,7 +624,7 @@ mod tests {
 
     #[test]
     fn test_parses_an_export() {
-        // `GET /exports`
+        // `GET /list_exports`
         let body = "Ordinal_2 -> 18000c690\ndll_main -> 18000c690\nentry -> 1800e2110\n";
         let exports = parse_symbols(body, false);
         assert_eq!(exports.len(), 3);
@@ -530,8 +635,8 @@ mod tests {
 
     #[test]
     fn test_parses_an_import() {
-        // `GET /imports` — an import's address is an external slot, not hex in
-        // the image, and its name is an ordinal when imported that way.
+        // `GET /list_imports` — an import's address is an external slot, not hex
+        // in the image, and its name is an ordinal when imported that way.
         let body = "Ordinal_7 -> EXTERNAL:00000001\nOrdinal_6 -> EXTERNAL:00000002\n";
         let imports = parse_symbols(body, true);
         assert_eq!(imports.len(), 2);
@@ -542,7 +647,7 @@ mod tests {
 
     #[test]
     fn test_parses_segments() {
-        // `GET /segments`
+        // `GET /list_segments`
         let body = "Headers: 180000000 - 1800003ff\n.text: 180001000 - 1801261ff\n.rdata: 180127000 - 180172fff\n";
         let segments = parse_segments(body);
         assert_eq!(segments.len(), 3);
@@ -554,7 +659,7 @@ mod tests {
 
     #[test]
     fn test_parses_a_string_literal() {
-        // `GET /strings`
+        // `GET /list_strings`
         let body = "180127cd8: \"Everquest\"\n180128cd0: \"LoggingOn\"\n";
         let strings: Vec<StringLiteral> = records(body)
             .into_iter()
@@ -653,5 +758,67 @@ mod tests {
         let body = "FUN_180001090 at 180001090\ngarbage\nFUN_x at zzz\n";
         let functions = parse_function_listing(body);
         assert_eq!(functions.len(), 1);
+    }
+
+    // The fixtures below are verbatim bodies captured from the GhidraMCP 6.x
+    // bridge with `eqmain.dll` open.
+
+    #[test]
+    fn test_parses_current_address_from_json_and_text() {
+        // `GET /get_current_address` on the 6.x bridge.
+        let body = "{\"address\":\"1800e2110\",\"program\":\"/eqmain.dll\"}";
+        assert_eq!(parse_current_address(body), Some(0x1800e2110));
+        // Older builds answered a bare hex line.
+        assert_eq!(parse_current_address("1800e2110"), Some(0x1800e2110));
+        assert_eq!(parse_current_address("{\"address\":\"not-hex\"}"), None);
+    }
+
+    #[test]
+    fn test_parses_current_function_from_json_and_text() {
+        // `GET /get_current_function` on the 6.x bridge.
+        let body =
+            "{\"function_name\":\"entry\",\"address\":\"1800e2110\",\"program\":\"/eqmain.dll\",\"signature\":\"undefined entry(void)\"}";
+        let f = parse_current_function(body).expect("should parse");
+        assert_eq!(f.name, "entry");
+        assert_eq!(f.entry, 0x1800e2110);
+        // The JSON shape carries no body range, so the function spans no bytes.
+        assert!(f.is_empty());
+        // Older builds answered the labelled text shape.
+        let text = "Function: entry at 1800e2110\nSignature: undefined entry(void)\n";
+        let f = parse_current_function(text).expect("should parse");
+        assert_eq!(f.name, "entry");
+        assert_eq!(f.entry, 0x1800e2110);
+    }
+
+    #[test]
+    fn test_parses_imports_from_json_array() {
+        // `GET /list_imports` on the 6.x bridge answers JSON.
+        let body =
+            "[{\"name\":\"Ordinal_7\",\"address\":\"EXTERNAL:00000001\"},{\"name\":\"dll_main\",\"address\":\"18000c690\"}]";
+        let imports = parse_symbols_json(body, true).expect("should parse as JSON");
+        assert_eq!(imports.len(), 2);
+        assert_eq!(imports[0].name, "Ordinal_7");
+        assert_eq!(imports[0].address, 1);
+        assert!(imports[0].imported);
+        // A hex address is in the image, but the caller asked for imports, so
+        // the flag still holds.
+        assert_eq!(imports[1].address, 0x18000c690);
+        assert!(imports[1].imported);
+        // A text body is not JSON, so the caller falls back to the text parser.
+        assert!(parse_symbols_json("Ordinal_7 -> EXTERNAL:00000001", true).is_none());
+    }
+
+    #[test]
+    fn test_parses_open_programs() {
+        // `GET /list_open_programs` on the 6.x bridge.
+        let body = "{\"programs\":[{\"name\":\"eqmain.dll\",\"path\":\"/eqmain.dll\",\"is_current\":true,\"function_count\":4587}],\"count\":1,\"current_program\":\"eqmain.dll\"}";
+        let programs = parse_open_programs(body);
+        assert_eq!(programs.len(), 1);
+        assert_eq!(programs[0].name, "eqmain.dll");
+        assert_eq!(programs[0].path, "/eqmain.dll");
+        assert!(programs[0].is_current);
+        assert_eq!(programs[0].function_count, Some(4587));
+        // A malformed body yields no records rather than a failure.
+        assert!(parse_open_programs("not json").is_empty());
     }
 }

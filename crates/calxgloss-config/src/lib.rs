@@ -39,12 +39,16 @@
 
 /// Built-in default values.
 pub mod defaults {
-    /// GhidraMCP's own default port, and a fixed loopback address rather than
-    /// `localhost`.
+    /// The default GhidraMCP URL: a fixed loopback address on port 8080
+    /// rather than `localhost`.
     ///
     /// The address is spelled out because `localhost` can resolve to `::1`
-    /// first, and GhidraMCP binds IPv4, which turns a correct URL into a
+    /// first, and the bridge binds IPv4, which turns a correct URL into a
     /// connection refusal.
+    ///
+    /// Note that the GhidraMCP 6.x bridge listens on **8080** by default, so
+    /// against a stock 6.x setup this default must be overridden with
+    /// `ghidra.url` in the config file or `CALXGLOSS_GHIDRA_URL`.
     pub const GHIDRA_URL: &str = "http://127.0.0.1:8080";
 
     /// Generation length for translations.

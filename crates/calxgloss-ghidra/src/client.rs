@@ -3,8 +3,8 @@
 use crate::error;
 use crate::error::Classification;
 use crate::model::{
-    DecompiledFunction, FunctionBody, FunctionReport, FunctionSummary, Segment, StringLiteral,
-    Symbol, Xref,
+    DecompiledFunction, FunctionBody, FunctionReport, FunctionSummary, OpenProgram, Segment,
+    StringLiteral, Symbol, Xref,
 };
 use crate::parse;
 use reqwest::Client;
@@ -24,8 +24,8 @@ pub type Result<T> = std::result::Result<T, GhidraError>;
 pub enum GhidraError {
     /// The request could not be delivered, or its body could not be read.
     ///
-    /// The hint matters because GhidraMCP only serves requests while a
-    /// CodeBrowser is open, so a refused connection usually means a closed
+    /// The hint matters because the GhidraMCP bridge only serves requests while
+    /// a CodeBrowser is open, so a refused connection usually means a closed
     /// window rather than a broken server.
     #[error(
         "Could not reach GhidraMCP at {url}: {source}\nGhidra must be running with the \
@@ -65,7 +65,7 @@ pub enum GhidraError {
 /// Connection settings for a GhidraMCP server.
 #[derive(Debug, Clone)]
 pub struct GhidraConfig {
-    /// Base URL of the GhidraMCP server, e.g. `http://127.0.0.1:8080`.
+    /// Base URL of the GhidraMCP bridge, e.g. `http://127.0.0.1:8080`.
     pub base_url: Url,
 
     /// How long to wait for a response.
@@ -112,8 +112,10 @@ impl GhidraConfig {
 /// A client for the GhidraMCP API.
 ///
 /// Every query runs against the program currently open in Ghidra, so a client
-/// is valid for as long as that program is. Opening a different program in
-/// Ghidra changes what these methods return without the client noticing.
+/// is valid for as long as that program is. The 6.x bridge can hold several
+/// programs at once; [`switch_program`](Self::switch_program) moves which one
+/// queries run against, and opening a different program by hand changes what
+/// these methods return without the client noticing.
 #[derive(Debug, Clone)]
 pub struct GhidraClient {
     config: GhidraConfig,
@@ -183,6 +185,15 @@ impl GhidraClient {
         let body = response.text().await.map_err(send)?;
         trace!(%status, bytes = body.len(), "GOT");
 
+        // The 6.x bridge answers an unknown endpoint with a real 404 and an
+        // HTML body, which no content parser would recognise.
+        if !status.is_success() {
+            return Err(GhidraError::Reported {
+                status: Some(status.as_u16()),
+                message: Self::describe_error_body(&body),
+            });
+        }
+
         match error::classify(&body) {
             Classification::Content => Ok(body),
             Classification::Failure(message) => Err(GhidraError::Reported {
@@ -204,47 +215,24 @@ impl GhidraClient {
         }
     }
 
-    /// Issue a POST whose body is a bare string, as the decompile-by-name and
-    /// annotation endpoints expect.
-    async fn post_text(&self, endpoint: &str, body: &str) -> Result<String> {
-        trace!(endpoint, "POST");
-        let url = self.config.base_url.join(endpoint)?;
-        let mut request = self.http.post(url.clone()).body(body.to_string());
-        if let Some(ref key) = self.config.api_key {
-            request = request.bearer_auth(key);
-        }
-
-        let send = |source: reqwest::Error| GhidraError::Transport {
-            url: url.to_string(),
-            source,
-        };
-        let response = request.send().await.map_err(send)?;
-        let status = response.status();
-        let text = response.text().await.map_err(send)?;
-        trace!(%status, bytes = text.len(), "GOT");
-
-        match error::classify(&text) {
-            Classification::Content => Ok(text),
-            Classification::Failure(message) | Classification::Unrecognised(message) => {
-                Err(GhidraError::Reported {
-                    status: Some(status.as_u16()),
-                    message: if message.is_empty() {
-                        "the server returned an empty response".to_string()
-                    } else {
-                        message.to_string()
-                    },
-                })
-            }
-            Classification::FailureWithStatus(code, message) => Err(GhidraError::Reported {
-                status: Some(code),
-                message: message.to_string(),
-            }),
-        }
-    }
-
     /// Render an address the way the server's endpoints expect: bare hex.
     fn addr(address: u64) -> String {
         format!("{address:x}")
+    }
+
+    /// Make an error-status body readable, stripping the HTML the PicoServer
+    /// wraps its 404 pages in.
+    fn describe_error_body(body: &str) -> String {
+        let stripped = body
+            .replace("<h1>", "")
+            .replace("</h1>", " ")
+            .trim()
+            .to_string();
+        if stripped.is_empty() {
+            "the server returned an empty response".to_string()
+        } else {
+            stripped
+        }
     }
 
     // =========================================================
@@ -275,11 +263,11 @@ impl GhidraClient {
         query: &str,
         limit: Option<usize>,
     ) -> Result<Vec<FunctionSummary>> {
-        let mut params: Vec<(&str, String)> = vec![("query", query.to_string())];
+        let mut params: Vec<(&str, String)> = vec![("name_pattern", query.to_string())];
         if let Some(n) = limit {
             params.push(("limit", n.to_string()));
         }
-        let body = self.get_text("searchFunctions", &params).await?;
+        let body = self.get_text("search_functions", &params).await?;
         let found = parse::parse_function_listing(&body);
         if found.is_empty() {
             return Err(GhidraError::NotFound {
@@ -295,7 +283,7 @@ impl GhidraClient {
     #[instrument(skip(self))]
     pub async fn current_address(&self) -> Result<u64> {
         let body = self.get_text("get_current_address", &[]).await?;
-        parse::parse_address(&body).ok_or_else(|| GhidraError::Malformed {
+        parse::parse_current_address(&body).ok_or_else(|| GhidraError::Malformed {
             kind: "the current address",
             detail: body.trim().to_string(),
         })
@@ -305,7 +293,7 @@ impl GhidraClient {
     #[instrument(skip(self))]
     pub async fn current_function(&self) -> Result<FunctionBody> {
         let body = self.get_text("get_current_function", &[]).await?;
-        parse::parse_function_body(&body).ok_or_else(|| GhidraError::Malformed {
+        parse::parse_current_function(&body).ok_or_else(|| GhidraError::Malformed {
             kind: "the current function",
             detail: body.trim().to_string(),
         })
@@ -317,7 +305,7 @@ impl GhidraClient {
     /// virtual address into a file-relative one.
     #[instrument(skip(self))]
     pub async fn segments(&self) -> Result<Vec<Segment>> {
-        let body = self.get_text("segments", &[]).await?;
+        let body = self.get_text("list_segments", &[]).await?;
         Ok(parse::parse_segments(&body))
     }
 
@@ -354,13 +342,23 @@ impl GhidraClient {
     }
 
     /// The pseudo-C for a function named by Ghidra.
+    ///
+    /// The 6.x bridge dropped the old POST-by-name endpoint, so the name is
+    /// resolved through [`search_functions`](Self::search_functions) and the
+    /// body is pulled by address. An exact name match wins over the substring
+    /// matches the search also returns.
     #[instrument(skip(self), fields(function))]
     pub async fn decompile_function_by_name(&self, function: &str) -> Result<DecompiledFunction> {
-        let body = self.post_text("decompile", function).await?;
-        parse::parse_decompiled(&body).ok_or_else(|| GhidraError::Malformed {
-            kind: "decompiled output",
-            detail: body.trim().to_string(),
-        })
+        let matches = self.search_functions(function, Some(10)).await?;
+        let found = matches
+            .iter()
+            .find(|f| f.name == function)
+            .or(matches.first())
+            .ok_or_else(|| GhidraError::NotFound {
+                kind: "function",
+                query: function.to_string(),
+            })?;
+        self.decompile_function(found.address).await
     }
 
     /// The disassembly listing for the function at `address`.
@@ -448,7 +446,7 @@ impl GhidraClient {
         if let Some(n) = limit {
             params.push(("limit", n.to_string()));
         }
-        let body = self.get_text("xrefs_to", &params).await;
+        let body = self.get_text("get_xrefs_to", &params).await;
         match body {
             Ok(body) => Ok(parse::parse_xrefs(&body)),
             Err(GhidraError::Reported { message: ref m, .. })
@@ -475,7 +473,7 @@ impl GhidraClient {
         if let Some(n) = limit {
             params.push(("limit", n.to_string()));
         }
-        let body = self.get_text("xrefs_from", &params).await;
+        let body = self.get_text("get_xrefs_from", &params).await;
         match body {
             Ok(body) => Ok(parse::parse_xrefs(&body)),
             Err(GhidraError::Reported { message: ref m, .. })
@@ -498,7 +496,7 @@ impl GhidraClient {
         if let Some(n) = limit {
             params.push(("limit", n.to_string()));
         }
-        let body = self.get_text("function_xrefs", &params).await;
+        let body = self.get_text("get_function_xrefs", &params).await;
         match body {
             Ok(body) => Ok(parse::parse_xrefs(&body)),
             Err(GhidraError::Reported { message: ref m, .. })
@@ -538,7 +536,7 @@ impl GhidraClient {
         let params = limit
             .map(|n| vec![("limit", n.to_string())])
             .unwrap_or_default();
-        let body = self.get_text("exports", &params).await?;
+        let body = self.get_text("list_exports", &params).await?;
         Ok(parse::parse_symbols(&body, false))
     }
 
@@ -546,14 +544,16 @@ impl GhidraClient {
     ///
     /// Imports that resolve to an external module arrive with an `EXTERNAL:`
     /// address, which is a slot the loader fills rather than a location in the
-    /// program.
+    /// program. The 6.x bridge answers JSON; older builds answered the same
+    /// `name -> address` text as exports, and both shapes are accepted.
     #[instrument(skip(self))]
     pub async fn imports(&self, limit: Option<usize>) -> Result<Vec<Symbol>> {
         let params = limit
             .map(|n| vec![("limit", n.to_string())])
             .unwrap_or_default();
-        let body = self.get_text("imports", &params).await?;
-        Ok(parse::parse_symbols(&body, true))
+        let body = self.get_text("list_imports", &params).await?;
+        Ok(parse::parse_symbols_json(&body, true)
+            .unwrap_or_else(|| parse::parse_symbols(&body, true)))
     }
 
     /// String literals defined in the program.
@@ -570,7 +570,7 @@ impl GhidraClient {
         if let Some(f) = filter {
             params.push(("filter", f.to_string()));
         }
-        let body = self.get_text("strings", &params).await?;
+        let body = self.get_text("list_strings", &params).await?;
         Ok(parse::records(&body)
             .into_iter()
             .filter_map(parse::parse_string_literal)
@@ -583,7 +583,7 @@ impl GhidraClient {
         let params = limit
             .map(|n| vec![("limit", n.to_string())])
             .unwrap_or_default();
-        let body = self.get_text("namespaces", &params).await?;
+        let body = self.get_text("list_namespaces", &params).await?;
         Ok(parse::records(&body)
             .into_iter()
             .map(str::to_string)
@@ -596,7 +596,7 @@ impl GhidraClient {
         let params = limit
             .map(|n| vec![("limit", n.to_string())])
             .unwrap_or_default();
-        let body = self.get_text("classes", &params).await?;
+        let body = self.get_text("list_classes", &params).await?;
         Ok(parse::records(&body)
             .into_iter()
             .map(str::to_string)
@@ -609,7 +609,7 @@ impl GhidraClient {
         let params = limit
             .map(|n| vec![("limit", n.to_string())])
             .unwrap_or_default();
-        let body = self.get_text("methods", &params).await?;
+        let body = self.get_text("list_methods", &params).await?;
         Ok(parse::records(&body)
             .into_iter()
             .map(str::to_string)
@@ -617,32 +617,69 @@ impl GhidraClient {
     }
 
     // =========================================================
-    // Availability
+    // Availability and program selection
     // =========================================================
 
     /// Whether the server is up and a program is open.
     ///
-    /// GhidraMCP only serves requests while a CodeBrowser is open, so this is
+    /// The bridge only serves requests while a CodeBrowser is open, so this is
     /// the check to run before a long pipeline to fail early with a clear
     /// reason.
     pub async fn probe(&self) -> Result<ProgramInfo> {
-        let address = self.current_address().await?;
+        let body = self.get_text("get_current_address", &[]).await?;
+        let address = parse::parse_current_address(&body).ok_or_else(|| GhidraError::Malformed {
+            kind: "the current address",
+            detail: body.trim().to_string(),
+        })?;
+        let program = parse::json_string(&body, "program").unwrap_or_default();
         let function = self.current_function().await?;
         info!(
+            program = %program,
             function = %function.name,
             address = format_args!("{address:#x}"),
             "GhidraMCP is serving"
         );
         Ok(ProgramInfo {
+            program,
             function: function.name,
             address,
         })
+    }
+
+    /// The programs currently open in the Ghidra instance.
+    ///
+    /// The 6.x bridge can hold several at once; queries answer against the
+    /// current one, which [`switch_program`](Self::switch_program) changes.
+    #[instrument(skip(self))]
+    pub async fn open_programs(&self) -> Result<Vec<OpenProgram>> {
+        let body = self.get_text("list_open_programs", &[]).await?;
+        let programs = parse::parse_open_programs(&body);
+        debug!(count = programs.len(), "Listed open programs");
+        Ok(programs)
+    }
+
+    /// Make `program` the one queries run against.
+    ///
+    /// `program` is the name or project path shown by
+    /// [`open_programs`](Self::open_programs). Every other method on this
+    /// client follows the switch, so a pipeline that assumed the previous
+    /// program's addresses must re-resolve them.
+    #[instrument(skip(self), fields(program))]
+    pub async fn switch_program(&self, program: &str) -> Result<()> {
+        let body = self
+            .get_text("switch_program", &[("program", program.to_string())])
+            .await?;
+        let switched_to = parse::json_string(&body, "switched_to").unwrap_or_default();
+        info!(program = %switched_to, "Switched GhidraMCP's current program");
+        Ok(())
     }
 }
 
 /// A summary of what the server is currently serving.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProgramInfo {
+    /// Name of the open program, as the server reports it.
+    pub program: String,
     /// Name of the function under Ghidra's cursor.
     pub function: String,
     /// Address of Ghidra's cursor.

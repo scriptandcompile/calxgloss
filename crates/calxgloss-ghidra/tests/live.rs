@@ -81,8 +81,8 @@ async fn decompiling_by_name_matches_decompiling_by_address() {
         return;
     };
 
-    // The by-name endpoint is a POST with a bare body, which is the one request
-    // shape in this crate that differs from the rest.
+    // The 6.x bridge dropped the POST-by-name endpoint, so by-name resolution
+    // goes through a name search and then decompiles by address.
     let by_name = ghidra
         .decompile_function_by_name(KNOWN_NAME)
         .await
@@ -290,6 +290,28 @@ async fn strings_decode_to_their_contents() {
     for s in &strings {
         assert!(s.value.contains("UIFiles"), "filter leaked: {:?}", s.value);
     }
+}
+
+#[tokio::test]
+#[ignore = "needs a running GhidraMCP server with a program open"]
+async fn open_programs_names_the_current_program() {
+    let Some(ghidra) = client() else {
+        eprintln!("CALXGLOSS_GHIDRA_URL not set; skipping");
+        return;
+    };
+
+    // The 6.x bridge can hold several programs; exactly one is current, and
+    // switching to it by name must succeed.
+    let programs = ghidra.open_programs().await.expect("open programs");
+    assert!(!programs.is_empty(), "at least one program should be open");
+    let current = programs
+        .iter()
+        .find(|p| p.is_current)
+        .expect("one program is current");
+    ghidra
+        .switch_program(&current.name)
+        .await
+        .expect("switching to the current program is a no-op that succeeds");
 }
 
 #[tokio::test]

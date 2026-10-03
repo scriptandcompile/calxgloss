@@ -85,6 +85,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### `calxgloss-analysis`
 - **Token usage logger** (`TokenUsageLogger`) — persists per-attempt token entries to `<workspace>/re/analysis/token_usage.json`. Provides `record()`, `load()`, `compute_stats()`, and `log_path()` methods. Auto-creates the `re/analysis/` directory; handles corrupted-file recovery by starting fresh.
 
+### Changed
+
+#### GhidraMCP 6.x migration
+
+- **Migrated `calxgloss-ghidra` to the new GhidraMCP bridge** (ghidra-mcp v6.0.0, replacing the deprecated LaurieWired extension). The client keeps talking raw HTTP to the Ghidra plugin but follows the 6.x endpoint surface:
+  - Endpoint renames: `searchFunctions` → `search_functions` (param `query` → `name_pattern`), `segments` → `list_segments`, `xrefs_to`/`xrefs_from`/`function_xrefs` → `get_xrefs_to`/`get_xrefs_from`/`get_function_xrefs`, `exports`/`imports`/`strings`/`namespaces`/`classes`/`methods` → `list_*` variants.
+  - JSON response support: `get_current_address`, `get_current_function`, and `list_imports` now answer JSON; parsers accept both the JSON and legacy plain-text shapes.
+  - JSON error support: `error::classify` recognises `{"error": "..."}` bodies (sent as `200 OK`), and non-2xx HTTP statuses (the 6.x bridge 404s unknown endpoints) now surface as `GhidraError::Reported`.
+  - `decompile_function_by_name()` no longer POSTs to the dropped `/decompile` endpoint; it resolves the name via `search_functions` and decompiles by address, preferring an exact name match.
+  - **Multi-program support** — new `open_programs()` and `switch_program()` methods (and the `OpenProgram` model type) expose the 6.x bridge's ability to hold several programs open and move which one queries run against. `ProgramInfo` gained a `program` field.
+
 ### Refactored
 
 #### `calxgloss-cli`

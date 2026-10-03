@@ -1,9 +1,10 @@
 //! Recognising failure in GhidraMCP's responses.
 //!
-//! The server reports most failures as `200 OK` with an explanatory line in the
-//! body, so a client that trusts the status code silently accepts error text as
-//! data. Every response therefore goes through [`classify`] before its content
-//! is parsed.
+//! The server reports most failures as `200 OK` with an explanation in the
+//! body — either a plain-text line or, on the 6.x bridge, a JSON object like
+//! `{"error":"No function found for 1"}` — so a client that trusts the status
+//! code silently accepts error text as data. Every response therefore goes
+//! through [`classify`] before its content is parsed.
 //!
 //! The recognised messages are the ones the server actually emits, taken from
 //! the Ghidra plugin's string constants. A body that is not recognised is
@@ -20,12 +21,16 @@ const SERVER_ERROR_PREFIXES: &[&str] = &[
     "Function name is required",
     "Function address is required",
     "Function prototype is required",
+    "Search term is required",
+    "Program name is required",
     "Error decoding URL parameter",
     // Nothing at the requested location.
     "Function not found",
     "No function found at address",
     "No function found at or containing address",
+    "No function found for",
     "No function at current location",
+    "No program found",
     "No functions matching",
     "No context found for request",
     // The operation itself failed.
@@ -63,6 +68,12 @@ pub enum Classification<'a> {
 pub fn classify(body: &str) -> Classification<'_> {
     let trimmed = body.trim();
 
+    // A 6.x-bridge failure: `{"error":"No function found for 1"}`, sent with
+    // status 200 like everything else.
+    if let Some(message) = json_error_message(trimmed) {
+        return Classification::Failure(message);
+    }
+
     // A bridge-shaped failure: `Error 404: No context found for request`.
     if let Some(rest) = trimmed.strip_prefix("Error ")
         && let Some((code, message)) = rest.split_once(':')
@@ -94,6 +105,31 @@ pub fn classify(body: &str) -> Classification<'_> {
 /// Whether `text` starts with `prefix`, ignoring ASCII case.
 fn starts_with_ignore_ascii_case(text: &str, prefix: &str) -> bool {
     text.len() >= prefix.len() && text[..prefix.len()].eq_ignore_ascii_case(prefix)
+}
+
+/// Extract the message from a JSON error body, if the body is one.
+///
+/// The 6.x bridge answers failures with `{"error":"..."}`. The scan is textual
+/// rather than a full parse because the result borrows from the body, and an
+/// object that merely *contains* an `error` key deeper inside is content, not a
+/// failure — only a top-level `error` string counts.
+fn json_error_message(body: &str) -> Option<&str> {
+    let rest = body.strip_prefix('{')?.trim_start();
+    let rest = rest.strip_prefix("\"error\"")?.trim_start();
+    let rest = rest.strip_prefix(':')?.trim_start();
+    let rest = rest.strip_prefix('"')?;
+    // Read to the closing quote, stepping over `\"` escapes so an escaped
+    // quote inside the message cannot end it early.
+    let bytes = rest.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'"' => return Some(&rest[..i]),
+            _ => i += 1,
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -130,6 +166,42 @@ mod tests {
             classify("Request failed: Connection refused"),
             Classification::Failure(_)
         ));
+    }
+
+    #[test]
+    fn test_recognises_json_shaped_failures() {
+        // The 6.x bridge answers failures as `200 OK` with `{"error": "..."}`.
+        assert_eq!(
+            classify("{\"error\":\"No function found for 1\"}"),
+            Classification::Failure("No function found for 1")
+        );
+        assert_eq!(
+            classify(" {\"error\" : \"Search term is required\"} "),
+            Classification::Failure("Search term is required")
+        );
+        // An escaped quote must not end the message early.
+        assert_eq!(
+            classify("{\"error\":\"bad \\\"name\\\"\"}"),
+            Classification::Failure("bad \\\"name\\\"")
+        );
+    }
+
+    #[test]
+    fn test_json_results_are_not_mistaken_for_failures() {
+        // These are real 6.x-bridge result bodies; the `error` scan must only
+        // fire on a top-level `error` key.
+        for body in [
+            "{\"function_count\":4587,\"program\":\"eqmain.dll\"}",
+            "{\"address\":\"1800e2110\",\"program\":\"/eqmain.dll\"}",
+            "{\"success\":true,\"switched_to\":\"eqmain.dll\"}",
+            "[{\"name\":\"Ordinal_7\",\"address\":\"EXTERNAL:00000001\"}]",
+        ] {
+            assert_eq!(
+                classify(body),
+                Classification::Content,
+                "should be content: {body:?}"
+            );
+        }
     }
 
     #[test]
