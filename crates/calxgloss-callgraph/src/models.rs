@@ -1,9 +1,15 @@
 //! Core data types for call graph analysis.
 //!
 //! This module defines the [`CallGraph`], [`FunctionCallGraph`], [`CallGraphEdge`],
-//! [`NodeCategory`], and [`CallType`] types that form the backbone of the
+//! [`CallType`], and the [`NodeCategory`] type that forms the backbone of the
 //! call graph analysis system.
+//!
+//! # NodeCategory
+//!
+//! [`NodeCategory`] is defined in `calxgloss-types` and re-exported here for
+//! convenience. See that crate's documentation for the full description.
 
+pub use calxgloss_types::NodeCategory;
 use serde::{Deserialize, Serialize};
 
 /// How a call between functions was detected.
@@ -34,19 +40,6 @@ pub struct CallGraphEdge {
     /// Original callee name as parsed from decompiled output.
     /// Empty when the edge was created without a name context.
     pub callee_name: String,
-}
-
-/// Category of a function in the call graph.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum NodeCategory {
-    /// Entry point or runtime init — skip or stub.
-    Root,
-    /// Calls known 3rd-party APIs — enriched context.
-    Leaf,
-    /// Application logic — normal translation.
-    Middle,
-    /// Known runtime library function — don't translate.
-    Skip,
 }
 
 /// All call graph data for one binary.

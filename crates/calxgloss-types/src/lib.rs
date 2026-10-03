@@ -50,7 +50,7 @@ pub use fault::{
     ContextWindowFault, FaultCategory, FaultEvent, FaultLog, FaultSeverity, FaultStats,
     ResourceExhaustionFault, ResourceExhaustionKind,
 };
-pub use function::{ApiCategory, FunctionInfo, WindowsApiCall};
+pub use function::{ApiCategory, FunctionInfo, NodeCategory, WindowsApiCall};
 pub use git::{GitBranch, GitCommit};
 pub use progress::{ProgressEvent, TranslationEvents};
 pub use shim::{

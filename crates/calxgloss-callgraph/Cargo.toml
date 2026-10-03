@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 calxgloss-ghidra = { path = "../calxgloss-ghidra" }
+calxgloss-types = { path = "../calxgloss-types" }
 
 serde = { workspace = true }
 serde_json = { workspace = true }
