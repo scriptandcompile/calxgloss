@@ -362,6 +362,7 @@ name = "calxgloss-callgraph"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "calxgloss-analysis",
  "calxgloss-ghidra",
  "calxgloss-types",
  "regex",

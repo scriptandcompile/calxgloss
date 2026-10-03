@@ -369,10 +369,14 @@ Implementation:
 
 12 tests covering priority ordering, topological sort, cycle handling, max functions truncation.
 
-### Step 8.5 — Integration Test: End-to-End on Test DLL ❌ NOT DONE
+### Step 8.5 — Integration Test: End-to-End on Test DLL ✅ DONE
 
-- Integration tests exist (4 tests in `tests/integration_tests.rs`) but test with synthetic data only
-- No actual test DLL with known structure used for end-to-end validation
+**Implemented in `crates/calxgloss-callgraph/tests/integration_tests.rs`:**
+
+- `test_end_to_end_realistic_plugin_pipeline()` — comprehensive end-to-end test on a synthetic `game_plugin.dll` call graph that mimics a real DirectX rendering plugin.
+- Exercises the full pipeline: graph construction → root/leaf classification → persistence round-trip → context enrichment → translation ordering → dependency graph construction.
+- The synthetic graph contains 9 functions across a realistic hierarchy: `DllMain` → `Initialize`/`Cleanup` → `Setup` → `Render` → `Draw`/`UpdateParticles`/`PollInput`.
+- Validates all invariants: category classification, caller/callee preservation after serialization, context enrichment correctness, priority-ordered translation plans, and dependency graph topological ordering.
 
 ### Step 8.6 — Integration Test: Context Quality ❌ NOT DONE
 
@@ -404,7 +408,7 @@ Implementation:
 | **Context enrichment wiring** | `ContextEnricher` called from `TranslationPipeline::translate()`, `retry/helpers.rs`, and `Translator` |
 | **CLI flag** | `--no-callgraph`, `--callgraph-cache`, `--callgraph-verbose` on all subcommands |
 | **Runtime library** | `RuntimeLibrary` DLL category with classification and skip logic |
-| **Tests** | 103 unit tests + 4 integration tests across all modules |
+| **Tests** | 104 unit tests + 5 integration tests across all modules |
 
 ### Not Yet Done (~32%)
 

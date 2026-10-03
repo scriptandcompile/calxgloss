@@ -16,3 +16,6 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 regex = { workspace = true }
+
+[dev-dependencies]
+calxgloss-analysis = { path = "../calxgloss-analysis" }
