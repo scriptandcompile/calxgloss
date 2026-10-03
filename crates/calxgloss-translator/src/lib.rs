@@ -38,6 +38,7 @@ mod tests {
     use calxgloss_types::ContextTier;
     use calxgloss_types::Export;
     use calxgloss_types::FunctionInfo;
+    use calxgloss_callgraph::CallGraph;
 
     #[test]
     fn test_translator_creation() {
@@ -252,5 +253,138 @@ mod tests {
             .translate_raw("test.dll", "TestFunc", "code", "")
             .await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_plan_from_callgraph_empty_graph() {
+        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
+        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+
+        let graph = calxgloss_callgraph::CallGraph {
+            dll: "empty.dll".to_string(),
+            functions: vec![],
+        };
+
+        let plan = pipeline.plan_from_callgraph(&graph, None).unwrap();
+        assert!(plan.is_empty());
+    }
+
+    #[test]
+    fn test_plan_from_callgraph_uses_translation_orderer() {
+        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
+        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+
+        use calxgloss_callgraph::{CallGraphEdge, CallType, FunctionCallGraph};
+
+        // Build a graph with three tiers
+        let graph = CallGraph {
+            dll: "tiers.dll".to_string(),
+            functions: vec![
+                // Leaf: render_frame — calls Direct3DCreate9
+                FunctionCallGraph {
+                    name: "render_frame".to_string(),
+                    address: 0x404000,
+                    callers: vec![0x403000],
+                    callees: vec![CallGraphEdge {
+                        source: 0x404000,
+                        target: 0x500000,
+                        call_site: 0,
+                        call_type: CallType::Direct,
+                        callee_name: "Direct3DCreate9".to_string(),
+                    }],
+                    node_category: calxgloss_types::NodeCategory::Leaf,
+                },
+                // Middle: game_loop — calls render_frame
+                FunctionCallGraph {
+                    name: "game_loop".to_string(),
+                    address: 0x403000,
+                    callers: vec![0x402000],
+                    callees: vec![CallGraphEdge {
+                        source: 0x403000,
+                        target: 0x404000,
+                        call_site: 0,
+                        call_type: CallType::Direct,
+                        callee_name: "render_frame".to_string(),
+                    }],
+                    node_category: calxgloss_types::NodeCategory::Middle,
+                },
+                // Root: WinMain — entry point
+                FunctionCallGraph {
+                    name: "WinMain".to_string(),
+                    address: 0x401000,
+                    callers: vec![],
+                    callees: vec![CallGraphEdge {
+                        source: 0x401000,
+                        target: 0x402000,
+                        call_site: 0,
+                        call_type: CallType::Direct,
+                        callee_name: "app_init".to_string(),
+                    }],
+                    node_category: calxgloss_types::NodeCategory::Root,
+                },
+                // Middle: app_init — calls game_loop
+                FunctionCallGraph {
+                    name: "app_init".to_string(),
+                    address: 0x402000,
+                    callers: vec![0x401000],
+                    callees: vec![CallGraphEdge {
+                        source: 0x402000,
+                        target: 0x403000,
+                        call_site: 0,
+                        call_type: CallType::Direct,
+                        callee_name: "game_loop".to_string(),
+                    }],
+                    node_category: calxgloss_types::NodeCategory::Middle,
+                },
+            ],
+        };
+
+        let plan = pipeline.plan_from_callgraph(&graph, None).unwrap();
+
+        assert_eq!(plan.len(), 4);
+
+        // Root functions first
+        assert_eq!(plan[0].name, "WinMain");
+        assert_eq!(plan[0].priority, calxgloss_callgraph::TranslationPriority::Root);
+
+        // Middle functions (topologically sorted: game_loop before app_init)
+        assert_eq!(plan[1].name, "game_loop");
+        assert_eq!(plan[1].priority, calxgloss_callgraph::TranslationPriority::Middle);
+
+        assert_eq!(plan[2].name, "app_init");
+        assert_eq!(plan[2].priority, calxgloss_callgraph::TranslationPriority::Middle);
+
+        // Leaf functions last
+        assert_eq!(plan[3].name, "render_frame");
+        assert_eq!(plan[3].priority, calxgloss_callgraph::TranslationPriority::Leaf);
+    }
+
+    #[test]
+    fn test_plan_from_callgraph_max_functions_limit() {
+        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
+        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+
+        use calxgloss_callgraph::FunctionCallGraph;
+
+        let graph = CallGraph {
+            dll: "trunc.dll".to_string(),
+            functions: (0..10)
+                .map(|i| {
+                    FunctionCallGraph {
+                        name: format!("func_{i}"),
+                        address: 0x1000 + i * 0x100,
+                        callers: vec![],
+                        callees: vec![],
+                        node_category: calxgloss_types::NodeCategory::Middle,
+                    }
+                })
+                .collect(),
+        };
+
+        let plan = pipeline.plan_from_callgraph(&graph, Some(3)).unwrap();
+        assert_eq!(plan.len(), 3);
     }
 }

@@ -1125,6 +1125,60 @@ impl TranslationPipeline {
     /// # Ok(())
     /// # }
     /// ```
+    ///
+    /// Produces a priority-ordered translation plan from a call graph.
+    ///
+    /// This method is the bridge between call-graph analysis and the
+    /// batch translation pipeline.  It uses [`TranslationOrderer`] to
+    /// transform a [`CallGraph`] into an ordered list of
+    /// [`FunctionTranslationPlan`] instances, each annotated with its
+    /// priority tier (root / middle / leaf) and topological position.
+    ///
+    /// # Arguments
+    ///
+    /// * `graph` — The call graph to plan from.
+    /// * `max_functions` — Optional limit on the number of functions in the plan.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use calxgloss_translator::TranslationPipeline;
+    /// use calxgloss_callgraph::CallGraph;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let ghidra = calxgloss_ghidra::GhidraClient::new("http://localhost:8080")?;
+    /// let llm = calxgloss_llm::LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;
+    /// let pipeline = TranslationPipeline::new(ghidra, llm, calxgloss_pal::ApiMappings::default());
+    ///
+    /// // Build or load the call graph first (e.g. via Analyzer::build_call_graph)
+    /// let call_graph = /* CallGraph */ todo!();
+    ///
+    /// // Get a priority-ordered plan (max 100 functions)
+    /// let plan = pipeline.plan_from_callgraph(&call_graph, Some(100))?;
+    ///
+    /// for function in plan {
+    ///     println!("{:?} {} ({} callers, {} callees)",
+    ///         function.priority, function.name,
+    ///         function.caller_count, function.callee_count);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn plan_from_callgraph(
+        &self,
+        graph: &calxgloss_callgraph::CallGraph,
+        max_functions: Option<usize>,
+    ) -> crate::error::Result<Vec<calxgloss_callgraph::FunctionTranslationPlan>> {
+        let mut orderer = calxgloss_callgraph::TranslationOrderer::new();
+        if let Some(max) = max_functions {
+            orderer = orderer.with_max_functions(max);
+        }
+        let plan = orderer
+            .order(graph)
+            .map_err(|e| TranslatorError::CallGraph(e.to_string()))?;
+        Ok(plan.into_iter().collect())
+    }
+
     #[allow(clippy::type_complexity)]
     pub async fn batch_translate(
         &self,

@@ -512,6 +512,7 @@ dependencies = [
  "anyhow",
  "askama",
  "calxgloss-analysis",
+ "calxgloss-callgraph",
  "calxgloss-ghidra",
  "calxgloss-llm",
  "calxgloss-pal",
