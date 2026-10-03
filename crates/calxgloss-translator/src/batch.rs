@@ -56,6 +56,10 @@ pub struct FunctionResult {
     /// The generated Rust code, if the translation succeeded.
     pub rust_code: Option<String>,
 
+    /// Stub code for functions that were stubbed instead of translated
+    /// (e.g., entry points and runtime library functions).
+    pub stub_code: Option<String>,
+
     /// The full retry result for this function, including all attempts.
     pub retry_result: RetryResult,
 
@@ -71,6 +75,7 @@ impl FunctionResult {
             function,
             success: false,
             rust_code: None,
+            stub_code: None,
             retry_result,
             branch: None,
         }
@@ -89,6 +94,7 @@ impl FunctionResult {
             function,
             success: true,
             rust_code: Some(rust_code),
+            stub_code: None,
             retry_result,
             branch,
         }
@@ -101,6 +107,20 @@ impl FunctionResult {
             function,
             success: true,
             rust_code: None,
+            stub_code: None,
+            retry_result: RetryResult::new(),
+            branch: None,
+        }
+    }
+
+    /// Create a stub result for a function that was stubbed (e.g., entry point).
+    pub(crate) fn stubbed(dll: String, function: String, stub_code: String) -> Self {
+        Self {
+            dll,
+            function,
+            success: true,
+            rust_code: None,
+            stub_code: Some(stub_code),
             retry_result: RetryResult::new(),
             branch: None,
         }
@@ -145,7 +165,15 @@ impl BatchTranslationResult {
     ///
     /// Skipped functions count as successful in terms of `success_count`.
     pub fn skipped_count(&self) -> usize {
-        self.results.iter().filter(|r| r.success && r.rust_code.is_none()).count()
+        self.results.iter().filter(|r| r.success && r.rust_code.is_none() && r.stub_code.is_none())
+            .count()
+    }
+
+    /// Number of functions that were stubbed (e.g., entry points).
+    ///
+    /// Stubbed functions count as successful in terms of `success_count`.
+    pub fn stub_count(&self) -> usize {
+        self.results.iter().filter(|r| r.success && r.stub_code.is_some()).count()
     }
 
     /// Total number of functions in the batch.

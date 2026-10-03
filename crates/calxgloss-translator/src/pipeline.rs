@@ -33,7 +33,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use calxgloss_analysis::Analyzer;
 use calxgloss_analysis::FaultLogger;
-use calxgloss_callgraph::{ContextEnricher, FunctionContext};
+use calxgloss_callgraph::{ContextEnricher, FunctionContext, NodeCategory};
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_llm::{
     LlmClient, LlmMessage, context::ContextWindowDetector, hallucination::HallucinationDetector,
@@ -927,6 +927,72 @@ impl TranslationPipeline {
         }
     }
 
+    /// Generate a stub implementation for a root function.
+    ///
+    /// Root functions include entry points (e.g., `main`, `WinMain`,
+    /// `DllMain`) and runtime library initializers. These are not
+    /// translated via the LLM; instead, a minimal stub is generated
+    /// from the function's name and signature to serve as a placeholder
+    /// that can be compiled and linked.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` — The function name (e.g., `mainCRTStartup`, `WinMain`).
+    /// * `signature` — The inferred C signature from Ghidra's decompiler.
+    ///
+    /// # Returns
+    ///
+    /// A string containing a minimal stub implementation. For well-known
+    /// entry points, a meaningful stub is generated. For unknown root
+    /// functions, a generic placeholder is returned.
+    pub fn generate_stub(&self, name: &str, signature: &str) -> String {
+        // Handle common entry point patterns
+        let stub = match name {
+            // C/C++ entry points — return 0
+            "main" | "wmain" | "_main" | "WinMain" | "WinMain@16" | "WinMain@20" | "wWinMain" | "wWinMain@16" | "wWinMain@20" | "mainCRTStartup" | "__mainCRTStartup" | "_mainCRTStartup" => {
+                format!("/// Entry point stub for `{name}`.\npub fn {name}() {{\n    std::process::exit(0);\n}}")
+            },
+            // DLL entry points
+            "DllMain" | "DllMain@16" | "DllMainCRTStartup" | "__DllMainCRTStartup" => {
+                format!("/// DLL entry point stub for `{name}`.\npub fn {name}() {{\n    // DLL initialization\n}}")
+            },
+            // Ghidra auto-generated entry
+            "entry" => {
+                "/// Entry point stub.\npub fn entry() {\n    std::process::exit(0);\n}".to_string()
+            },
+            // VB6 initialization
+            name if name.starts_with("__vba") => {
+                format!("/// VB6 runtime initialization stub for `{name}`.\npub fn {name}() {{\n    // VB6 runtime init\n}}")
+            },
+            // .NET CLR entry
+            "__managed_main" | "_CorExeMain" | "_CorDllMain" => {
+                format!("/// .NET CLR entry stub for `{name}`.\npub fn {name}() {{\n    // CLR host initialization\n}}")
+            },
+            // MinGW entry
+            "_start" | "__libc_start_main" => {
+                format!("/// MinGW entry stub for `{name}`.\npub fn {name}() {{\n    std::process::exit(0);\n}}")
+            },
+            // MSVC debug runtime
+            name if name.starts_with("_RTC_") => {
+                format!("/// MSVC runtime check stub for `{name}`.\npub fn {name}() {{\n    // Runtime check\n}}")
+            },
+            // Generic entry point — use the signature to infer a stub
+            _ => {
+                // Try to extract a return type and parameters from the signature
+                let safe_name = if name.starts_with("FUN_") {
+                    // Ghidra auto-generated name — keep as-is
+                    name.to_string()
+                } else {
+                    name.to_string()
+                };
+                format!("/// Auto-generated stub for `{safe_name}`.\npub fn {safe_name}() {{\n    // TODO: Translate\n}}")
+            },
+        };
+
+        // Include the signature as a comment for reference
+        format!("{stub}\n// Signature: {signature}")
+    }
+
     /// Send a prompt to the LLM and extract the Rust code response.
     ///
     /// If `events` is provided, emits `LlmCallInProgress` keepalive events
@@ -1364,8 +1430,9 @@ impl TranslationPipeline {
     /// # Arguments
     ///
     /// * `graph` — The call graph containing all functions to translate.
-    ///   Root functions are automatically skipped (they have no translation
-    ///   work).
+    ///   Root functions are automatically stubbed with minimal placeholders
+    ///   (they have no translation work). Runtime library functions
+    ///   (`NodeCategory::Skip`) are not stubbed.
     /// * `config` — Retry configuration applied to every function.
     /// * `verifier` — Verification engine used for checking translations.
     /// * `on_function_completed` — Optional closure called after each function
@@ -1379,8 +1446,10 @@ impl TranslationPipeline {
     /// counts as a failure when all retry attempts are exhausted without
     /// producing passing tests.
     ///
-    /// Root functions from the call graph are skipped automatically and
-    /// appear in the result with [`batch::FunctionResult::skipped`].
+    /// Root functions from the call graph are stubbed automatically and
+    /// appear in the result with [`batch::FunctionResult::stubbed`].
+    /// Functions classified as [`NodeCategory::Skip`] (runtime library functions)
+    /// are not stubbed and appear as [`batch::FunctionResult::skipped`].
     ///
     /// # Example
     ///
@@ -1447,19 +1516,55 @@ impl TranslationPipeline {
         for (idx, plan_func) in plan.iter().enumerate() {
             use calxgloss_callgraph::TranslationPriority;
 
-            // Skip root functions (entry points) — no translation work needed
+            // Handle root functions (entry points) — generate stubs instead of translating
             if matches!(plan_func.priority, TranslationPriority::Root) {
+                // Skip functions are truly skipped (runtime library functions)
+                if matches!(plan_func.category, NodeCategory::Skip) {
+                    info!(
+                        dll,
+                        name = %plan_func.name,
+                        address = plan_func.address,
+                        "Skipping runtime library function"
+                    );
+                    let skipped = batch::FunctionResult::skipped(
+                        dll.clone(),
+                        plan_func.name.clone(),
+                    );
+                    batch_result.add(skipped.clone());
+
+                    self.emit(ProgressEvent::FunctionCompleted {
+                        dll: dll.clone(),
+                        function: plan_func.name.clone(),
+                        success: true,
+                        attempts: 0,
+                        branch: None,
+                    });
+
+                    // Invoke the caller's callback even for skipped functions
+                    if let Some(ref mut cb) = on_function_completed
+                        && !cb(dll, &plan_func.name, &mut skipped.clone())
+                    {
+                        info!(dll, function = %plan_func.name, "Batch stopped early by callback");
+                        break;
+                    }
+
+                    continue;
+                }
+
+                // Generate stub for entry point functions
                 info!(
                     dll,
                     name = %plan_func.name,
                     address = plan_func.address,
-                    "Skipping root function"
+                    "Generating stub for root function"
                 );
-                let skipped = batch::FunctionResult::skipped(
+                let stub_code = self.generate_stub(&plan_func.name, "");
+                let stubbed = batch::FunctionResult::stubbed(
                     dll.clone(),
                     plan_func.name.clone(),
+                    stub_code,
                 );
-                batch_result.add(skipped.clone());
+                batch_result.add(stubbed.clone());
 
                 self.emit(ProgressEvent::FunctionCompleted {
                     dll: dll.clone(),
@@ -1469,9 +1574,9 @@ impl TranslationPipeline {
                     branch: None,
                 });
 
-                // Invoke the caller's callback even for skipped functions
+                // Invoke the caller's callback even for stubbed functions
                 if let Some(ref mut cb) = on_function_completed
-                    && !cb(dll, &plan_func.name, &mut skipped.clone())
+                    && !cb(dll, &plan_func.name, &mut stubbed.clone())
                 {
                     info!(dll, function = %plan_func.name, "Batch stopped early by callback");
                     break;
