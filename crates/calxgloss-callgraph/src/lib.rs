@@ -6,7 +6,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into six modules:
+//! The crate is organized into seven modules:
 //!
 //! - [`models`] — Core data types: [`CallGraph`], [`FunctionCallGraph`], [`CallGraphEdge`],
 //!   [`NodeCategory`], and [`CallType`].
@@ -16,6 +16,8 @@
 //!   that should be skipped or stubbed during translation.
 //! - [`leaf_detector`] — [`LeafDetector`] identifies functions that call known
 //!   third-party APIs, enabling context enrichment.
+//! - [`context`] — [`ContextEnricher`] produces structured context data for
+//!   LLM prompt injection (caller/callee lists, API categorization, crate suggestions).
 //! - [`persist`] — [`CallGraphPersistor`] saves and loads call graphs to/from JSON.
 //! - [`ordering`] — [`TranslationOrderer`] produces a priority-ordered translation plan.
 //!
@@ -48,6 +50,7 @@
 //! ```
 
 pub mod builder;
+pub mod context;
 pub mod leaf_detector;
 pub mod models;
 pub mod ordering;
@@ -58,5 +61,9 @@ pub use models::*;
 pub use builder::CallGraphBuilder;
 pub use root_detector::RootDetector;
 pub use leaf_detector::{ApiSignature, LeafCategory, LeafDetector};
+pub use context::{
+    CallEdgeInfo, CalleeGroup, CallGraphNode, ContextEnricher, FunctionContext,
+    LeafApiContext,
+};
 pub use persist::CallGraphPersistor;
 pub use ordering::{FunctionTranslationPlan, TranslationOrderer, TranslationPriority};
