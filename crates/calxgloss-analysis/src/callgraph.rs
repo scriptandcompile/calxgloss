@@ -2,13 +2,17 @@
 //!
 //! This module bridges [`calxgloss_callgraph`] and the analysis pipeline:
 //!
-//! 1. **Enrichment** — builds a call graph from Ghidra data, classifies each
+//! 1. **Statistics** — [`print_call_graph_stats`] prints a human-readable
+//!    summary of call graph data (function count, root/middle/leaf distribution,
+//!    call-type breakdown, external API count).
+//!
+//! 2. **Enrichment** — builds a call graph from Ghidra data, classifies each
 //!    function as [`Root`](calxgloss_types::NodeCategory::Root),
 //!    [`Leaf`](calxgloss_types::NodeCategory::Leaf), or
 //!    [`Middle`](calxgloss_types::NodeCategory::Middle), and persists it to
 //!    JSON.
 //!
-//! 2. **Dependency graph construction** — converts the persisted call graph
+//! 3. **Dependency graph construction** — converts the persisted call graph
 //!    into a [`DependencyGraph`](calxgloss_types::DependencyGraph) for the
 //!    translation work queue.
 //!
@@ -24,6 +28,8 @@
 //!
 //! let graph = build_enriched_call_graph(&ghidra, "eqmain.dll", Path::new("/workspace"), None).await?;
 //!
+//! calxgloss_analysis::print_call_graph_stats(&graph);
+//!
 //! for func in &graph.functions {
 //!     println!("{}: {:?}", func.name, func.node_category);
 //! }
@@ -31,13 +37,122 @@
 //! # }
 //! ```
 
-use calxgloss_callgraph::{CallGraphBuilder, CallGraphPersistor, LeafDetector, RootDetector};
+use calxgloss_callgraph::{CallGraphBuilder, CallGraphPersistor, CallType, LeafDetector, RootDetector};
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_types::{
     DependencyEdge, DependencyGraph, DependencyNode, NodeCategory, ReviewStatus,
     dashboard::WorkUnitLevel,
 };
 use tracing::info;
+
+// ============================================================
+// Call graph statistics
+// ============================================================
+
+/// Format text in bold ANSI.
+fn bold(s: &str) -> String {
+    format!("\x1b[1m{s}\x1b[0m")
+}
+
+/// Print a human-readable summary of call graph statistics.
+///
+/// Reports function count, root/middle/leaf/skip distribution, call-type
+/// breakdown (direct / indirect / virtual), the number of unique external
+/// callee names (i.e. external API references), and the average number of
+/// callees per function.
+///
+/// Output is sent to `println!` so it appears in the terminal regardless of
+/// the logging configuration.
+pub fn print_call_graph_stats(graph: &calxgloss_callgraph::CallGraph) {
+    let total = graph.functions.len();
+    let roots = graph.functions.iter().filter(|f| matches!(f.node_category, NodeCategory::Root)).count();
+    let middles = graph.functions.iter().filter(|f| matches!(f.node_category, NodeCategory::Middle)).count();
+    let leaves = graph.functions.iter().filter(|f| matches!(f.node_category, NodeCategory::Leaf)).count();
+    let skips = graph.functions.iter().filter(|f| matches!(f.node_category, NodeCategory::Skip)).count();
+
+    let mut direct = 0u64;
+    let mut indirect = 0u64;
+    let mut virtual_ = 0u64;
+    let mut total_edges = 0usize;
+    let mut callee_names = std::collections::HashSet::new();
+
+    for func in &graph.functions {
+        total_edges += func.callees.len();
+        for edge in &func.callees {
+            match edge.call_type {
+                CallType::Direct => direct += 1,
+                CallType::Indirect => indirect += 1,
+                CallType::Virtual => virtual_ += 1,
+                #[allow(deprecated)]
+                CallType::Unknown => {}
+            }
+            if !edge.callee_name.is_empty() {
+                callee_names.insert(&edge.callee_name);
+            }
+        }
+    }
+
+    let avg_callees = if total > 0 {
+        total_edges as f64 / total as f64
+    } else {
+        0.0
+    };
+
+    let w = 33; // total width minus padding
+    let sep = "─".repeat(w);
+    let hsep = "├".to_string() + &sep + "┤";
+    let top = "┌".to_string() + &sep + "┐";
+    let bot = "└".to_string() + &sep + "┘";
+
+    fn pad(s: &str, w: usize) -> String {
+        format!("{:<w$}", s, w = w)
+    }
+
+    println!();
+    println!("  → Call Graph Statistics for {} ({})", bold(&graph.dll), bold(&total.to_string()));
+    println!("  {top}");
+    println!("  │ Functions: {}                  │", pad(&bold(&total.to_string()), 21));
+    println!("  {hsep}");
+    println!(
+        "  │ Roots:    {:>4}  Middle: {:>4}  │",
+        pad(&bold(&roots.to_string()), 5),
+        pad(&bold(&middles.to_string()), 8)
+    );
+    println!(
+        "  │ Leaves:   {:>4}  Skip:   {:>4}  │",
+        pad(&bold(&leaves.to_string()), 5),
+        pad(&bold(&skips.to_string()), 8)
+    );
+    println!("  {hsep}");
+    println!(
+        "  │ Total edges: {}                │",
+        pad(&bold(&total_edges.to_string()), 19)
+    );
+    println!("  {hsep}");
+    println!(
+        "  │ Direct:    {:>4}               │",
+        pad(&bold(&direct.to_string()), 19)
+    );
+    println!(
+        "  │ Indirect:  {:>4}               │",
+        pad(&bold(&indirect.to_string()), 19)
+    );
+    println!(
+        "  │ Virtual:   {:>4}               │",
+        pad(&bold(&virtual_.to_string()), 19)
+    );
+    println!("  {hsep}");
+    println!(
+        "  │ External APIs: {:>3}           │",
+        pad(&bold(&callee_names.len().to_string()), 16)
+    );
+    println!(
+        "  │ Avg callees/fn: {:>6.1}          │",
+        pad(&format!("{avg_callees:.1}"), 19)
+    );
+    println!("  {bot}");
+    println!();
+}
 
 // ============================================================
 // Call graph enrichment

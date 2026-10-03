@@ -56,6 +56,7 @@ pub mod token_usage;
 pub use analyzer::*;
 pub use callgraph::{
     build_dependency_graph_from_call_graph, build_enriched_call_graph, load_call_graph,
+    print_call_graph_stats,
 };
 pub use classify::*;
 pub use dependency::*;
