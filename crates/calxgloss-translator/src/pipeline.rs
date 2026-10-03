@@ -29,6 +29,8 @@
 //! # }
 //! ```
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use calxgloss_analysis::Analyzer;
 use calxgloss_analysis::FaultLogger;
 use calxgloss_ghidra::GhidraClient;
@@ -124,6 +126,14 @@ pub struct TranslationPipeline {
     /// `<workspace>/re/analysis/fault_log.json` for post-hoc analysis.
     #[allow(dead_code)]
     fault_logger: Option<FaultLogger>,
+
+    /// When `true`, skip call-graph extraction in `fetch_function`.
+    ///
+    /// The call graph (caller/callee names) is used by higher context tiers
+    /// (ModuleContext, FullModule) to inject neighbor information into
+    /// prompts.  Setting this flag means those tiers fall back to less
+    /// context rather than call-graph-derived context.
+    no_callgraph: AtomicBool,
 }
 
 impl TranslationPipeline {
@@ -148,7 +158,18 @@ impl TranslationPipeline {
             context_detector,
             hallucination_detector: None,
             fault_logger: None,
+            no_callgraph: AtomicBool::new(false),
         }
+    }
+
+    /// Disable call-graph extraction.
+    ///
+    /// When set, `fetch_function` returns an empty call graph (no caller or
+    /// callee names).  This speeds up translation when call-graph-derived
+    /// context is not needed.
+    pub fn with_no_callgraph(self) -> Self {
+        self.no_callgraph.store(true, Ordering::Relaxed);
+        self
     }
 
     /// Set the workspace root path for experiment logging.
@@ -726,15 +747,19 @@ impl TranslationPipeline {
             .await
             .map_err(context)?;
 
-        // Ghidra has no call-graph endpoint. Callers come from the
-        // cross-references to the entry; callees are read out of the
-        // decompiled body and so cannot include calls through a function pointer.
-        let call_graph: Vec<String> = report
-            .callers
-            .iter()
-            .chain(report.callees.iter())
-            .cloned()
-            .collect();
+        let call_graph = if self.no_callgraph.load(Ordering::Relaxed) {
+            Vec::new()
+        } else {
+            // Ghidra has no call-graph endpoint. Callers come from the
+            // cross-references to the entry; callees are read out of the
+            // decompiled body and so cannot include calls through a function pointer.
+            report
+                .callers
+                .iter()
+                .chain(report.callees.iter())
+                .cloned()
+                .collect()
+        };
 
         Ok(FunctionInfo {
             name: report.name,
