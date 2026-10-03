@@ -136,6 +136,13 @@ pub struct TranslationPipeline {
     /// context rather than call-graph-derived context.
     no_callgraph: AtomicBool,
 
+    /// When `true`, print call graph statistics after the graph is built.
+    ///
+    /// Useful for debugging and understanding the call graph structure before
+    /// translation begins.  The summary includes function count, root/middle/leaf
+    /// distribution, call-type breakdown, and external API count.
+    callgraph_verbose: bool,
+
     /// Optional pre-built call graph.
     ///
     /// When set, [`translate`](Self::translate) reuses this graph for
@@ -174,6 +181,7 @@ impl TranslationPipeline {
             hallucination_detector: None,
             fault_logger: None,
             no_callgraph: AtomicBool::new(false),
+            callgraph_verbose: false,
             call_graph: None,
             callgraph_cache_dir: None,
         }
@@ -186,6 +194,16 @@ impl TranslationPipeline {
     /// context is not needed.
     pub fn with_no_callgraph(self) -> Self {
         self.no_callgraph.store(true, Ordering::Relaxed);
+        self
+    }
+
+    /// Enable call-graph statistics output.
+    ///
+    /// When set, [`translate`](Self::translate) prints a summary of call graph
+    /// statistics (function count, root/middle/leaf breakdown, call-type
+    /// distribution, external API count) after the graph is built.
+    pub fn with_callgraph_verbose(mut self) -> Self {
+        self.callgraph_verbose = true;
         self
     }
 
@@ -420,6 +438,9 @@ impl TranslationPipeline {
         let enriched_context: Vec<FunctionContext> = if self.no_callgraph.load(Ordering::Relaxed) {
             Vec::new()
         } else if let Some(ref graph) = self.call_graph {
+            if self.callgraph_verbose {
+                calxgloss_analysis::print_call_graph_stats(graph);
+            }
             let enricher = ContextEnricher::new();
             enricher.enrich(graph)
         } else {
@@ -427,6 +448,9 @@ impl TranslationPipeline {
             let cache_dir = self.callgraph_cache_dir.as_deref();
             match self.analyzer.build_call_graph(&function_info.dll, workspace_root, cache_dir).await {
                 Ok(call_graph) => {
+                    if self.callgraph_verbose {
+                        calxgloss_analysis::print_call_graph_stats(&call_graph);
+                    }
                     let enricher = ContextEnricher::new();
                     enricher.enrich(&call_graph)
                 }
