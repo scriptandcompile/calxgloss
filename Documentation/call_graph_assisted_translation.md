@@ -523,7 +523,7 @@ resolved by appending cyclic nodes in address order.
 
 ---
 
-### Task 10: Context Enrichment
+### Task 10: Context Enrichment ✅ COMPLETED
 
 **File:** `crates/calxgloss-callgraph/src/context.rs` (new)
 
@@ -534,7 +534,53 @@ resolved by appending cyclic nodes in address order.
 2. **Callees** — function names this function calls, grouped by category
 3. **Leaf API context** — for leaf functions, the matched API signatures with Rust crate suggestions
 
-**TODO:**
+**Types implemented:**
+```rust
+pub struct CallGraphNode {
+    pub name: String,
+    pub address: u64,
+}
+
+pub struct CallEdgeInfo {
+    pub node: CallGraphNode,
+    pub call_type: String,
+}
+
+pub struct CalleeGroup {
+    pub category: LeafCategory,
+    pub apis: Vec<String>,
+}
+
+pub struct LeafApiContext {
+    pub api_name: String,
+    pub category: LeafCategory,
+    pub rust_crate: String,
+}
+
+pub struct FunctionContext {
+    pub name: String,
+    pub address: u64,
+    pub callers: Vec<CallEdgeInfo>,
+    pub callees: Vec<CallEdgeInfo>,
+    pub categorized_callees: Vec<CalleeGroup>,
+    pub leaf_api_context: Vec<LeafApiContext>,
+}
+
+pub struct ContextEnricher { /* ... */ }
+impl ContextEnricher {
+    pub fn new() -> Self;
+    pub fn enrich(&self, graph: &CallGraph) -> Vec<FunctionContext>;
+}
+```
+
+**How it works:**
+1. Build an address-to-function lookup from the call graph.
+2. For each function, resolve caller addresses to names.
+3. Classify each callee using the `LeafDetector` for API categorization.
+4. Collect leaf API context (matched APIs with Rust crate suggestions).
+5. Unknown caller addresses fall back to `0x<hex>` display names.
+
+**Remaining TODOs:**
 ```rust
 // TODO: Add signature lookup from Ghidra decompiler for neighbors
 // TODO: Add call frequency analysis (how many call sites)
@@ -542,6 +588,19 @@ resolved by appending cyclic nodes in address order.
 // TODO: Limit neighbor output to top-N by importance to avoid context window bloat
 // TODO: Add "dependency chain" context: transitive callers/callees up to depth N
 ```
+
+**Acceptance:**
+- ✅ Empty graph returns empty context vector
+- ✅ Functions with no neighbors have empty callers/callees
+- ✅ Caller addresses resolved to function names (with hex fallback for unknowns)
+- ✅ Callees included with call type metadata (direct/indirect/virtual)
+- ✅ Leaf APIs grouped by category (`CalleeGroup`)
+- ✅ Leaf API context includes API name, category, and Rust crate suggestion
+- ✅ Non-leaf functions have empty categorized_callees and leaf_api_context
+- ✅ Multiple leaf API categories correctly grouped
+- ✅ `ContextEnricher` supports `Default` and `Clone`
+- ✅ 15 unit tests covering all core behavior
+- ✅ 2 doc tests pass
 
 ---
 
@@ -614,7 +673,7 @@ resolved by appending cyclic nodes in address order.
 | Task | Est. Days | Blockers |
 |------|-----------|----------|
 | 9: Translation ordering | 3 | None ✅ |
-| 10: Context enrichment | 2 | None |
+| 10: Context enrichment | 2 | None ✅ |
 | 11: Prompt integration | 3 | Depends on Task 10 |
 | 12: CLI flag | 0.5 | None |
 | 13: Extended patterns | 5 | Depends on Tasks 4-5 |
@@ -643,7 +702,7 @@ Task 1  (skeleton)
   │                                 Task 9  (translation ordering) ✅
   │                                     │
   │                                     ▼
-  │                                 Task 10  (context enrichment)
+  │                                 Task 10  (context enrichment) ✅
   │                                     │
   │                                     ▼
   │                                 Task 11  (prompt integration)
