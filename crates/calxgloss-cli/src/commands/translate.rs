@@ -278,6 +278,7 @@ pub async fn handle_translate(
                     tokens_used: None,
                     baseline_tests: Vec::new(),
                     call_graph: Vec::new(),
+                    call_graph_context: Vec::new(),
                     disassembly_hints: Vec::new(),
                     context_tier: ContextTier::WithTests,
                 });

@@ -87,6 +87,7 @@ mod tests {
             tokens_used: Some(1024),
             baseline_tests: vec![],
             call_graph: vec!["helper_func".to_string()],
+            call_graph_context: vec![],
             disassembly_hints: vec![],
             context_tier: ContextTier::WithTests,
         };
@@ -98,6 +99,7 @@ mod tests {
         assert_eq!(cloned.rust_code, translation.rust_code);
         assert_eq!(cloned.tokens_used, translation.tokens_used);
         assert_eq!(cloned.call_graph, translation.call_graph);
+        assert_eq!(cloned.call_graph_context.len(), translation.call_graph_context.len());
         assert_eq!(cloned.context_tier, translation.context_tier);
     }
 

@@ -59,6 +59,15 @@ pub struct Translation {
     /// Indicates how much context the LLM received; used for
     /// token usage tracking and future tier selection.
     pub context_tier: ContextTier,
+
+    /// Enriched call graph context with caller/callee details and
+    /// leaf API suggestions, used during escalation retries.
+    ///
+    /// Populated during the initial translation by the
+    /// [`ContextEnricher`](calxgloss_callgraph::ContextEnricher). When present,
+    /// escalation prompts include structured context about callers, callees,
+    /// and matched third-party API signatures alongside the simpler neighbor list.
+    pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
 }
 
 // ============================================================
@@ -137,6 +146,7 @@ impl Translator {
             tokens_used: response.tokens_used,
             baseline_tests: Vec::new(),
             call_graph: Vec::new(),
+            call_graph_context: Vec::new(),
             disassembly_hints: Vec::new(),
             context_tier: ContextTier::Disassembly,
         })
@@ -184,6 +194,7 @@ impl Translator {
             tokens_used: response.tokens_used,
             baseline_tests: request.baseline_tests,
             call_graph: Vec::new(),
+            call_graph_context: Vec::new(),
             disassembly_hints: Vec::new(),
             context_tier: ContextTier::WithTests,
         })
