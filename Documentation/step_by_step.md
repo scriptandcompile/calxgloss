@@ -12,6 +12,7 @@ This plan turns the concepts in `Calxgloss.md` and `call_graph_assisted_translat
 | **M1** — Call Graph Extraction | Enhanced caller/callee discovery | 3–4 days | ✅ Partial |
 | **M2** — Graph Builder & Persistence | Build adjacency map, persist to JSON | 2–3 days | ✅ Partial |
 | **M3** — Root & Leaf Classification | Detect roots, leaves, middle nodes | 3–4 days | ✅ Partial |
+| **M3.5** — Runtime Library Detection | RuntimeLibrary category, DLL wiring | 0.5 days | ✅ DONE |
 | **M4** — Translation Ordering | Topological sort, priority queue | 2–3 days | ✅ Partial |
 | **M5** — Context Enrichment | Call graph data in LLM prompts | 2–3 days | ❌ Not done |
 | **M6** — Pipeline Integration | Wire everything into the analysis pipeline | 3–4 days | ❌ Not done |
@@ -52,14 +53,16 @@ In `crates/calxgloss-types/src/function.rs`:
 
 The `NodeCategory` and `CallGraph` types live in the callgraph crate but are not woven into `FunctionInfo` in the analysis pipeline.
 
-### Step 0.4 — Add `RuntimeLibrary` to DLL Classification ❌ NOT DONE
+### Step 0.4 — Add `RuntimeLibrary` to DLL Classification ✅ DONE
 
 In `crates/calxgloss-types/src/dll.rs`:
-- `DllCategory` has: `WindowsOs`, `MicrosoftSdk`, `KnownThirdParty`, `ProjectSpecific`, `UnknownThirdParty`
-- **Missing:** `RuntimeLibrary` variant
-- **Missing:** `DllInfo.known_runtime: bool` field
+- `DllCategory` now has: `WindowsOs`, `MicrosoftSdk`, `KnownThirdParty`, `ProjectSpecific`, `UnknownThirdParty`, **`RuntimeLibrary`**
+- `DllInfo.known_runtime: bool` field added
 
-The `RootDetector::is_runtime_dll()` method exists but is not wired into the DLL classification pipeline.
+Wired into classification pipeline in `calxgloss-analysis/src/classify.rs`:
+- `is_runtime_library_dll()` function matches `RootDetector::is_runtime_dll()` patterns
+- `classify_dll_name()` checks runtime libraries **first** (highest priority)
+- `crate_replacement_for()` returns `None` for runtime libraries
 
 ---
 
@@ -155,11 +158,22 @@ In `crates/calxgloss-callgraph/src/leaf_detector.rs`:
 
 `leaf_detector.classify(func)` → `Option<Vec<ApiSignature>>` with fuzzy matching.
 
-### Step 3.5 — Runtime Library Detection ❌ PARTIALLY DONE
+### Step 3.5 — Runtime Library Detection ✅ DONE
 
-**Done:** `RootDetector::is_runtime_dll()` detects `msvcr*`, `msvbvm60`, `Qt5*`, `SDL2` DLL names.
+**Wired into `DllCategory` classification (Step 0.4):**
+- `RuntimeLibrary` variant added to `DllCategory` enum
+- `DllInfo.known_runtime: bool` field tracks whether a DLL is a runtime library
+- `is_runtime_library_dll()` in `calxgloss-analysis/src/classify.rs` uses the same patterns as `RootDetector::is_runtime_dll()`:
+  - MSVC runtimes: `msvcr*.dll`
+  - VB6 runtime: `msvbvm*.dll`
+  - Qt runtimes: `Qt5*.dll`, `Qt6*.dll`
+  - SDL2: `SDL2.dll`
+- `classify_dll_name()` prioritizes runtime library detection before other categories
+- Strategy matching in `analyzer.rs` treats `RuntimeLibrary` as `ReverseEngineer` (skipped during translation)
+- Dependency checker excludes runtime libraries from shim layer requirements
+- Reports display `"Runtime Library"` for the category
 
-**Not done:** Not wired into `DllCategory` classification. No `DllCategory::RuntimeLibrary`. No `DllInfo.known_runtime` field.
+**Tests:** 9 new tests covering MSVC, VB6, Qt, SDL2 detection and classification.
 
 ### Step 3.6 — Run Classification on Call Graph ✅ DONE
 
@@ -275,7 +289,7 @@ No CLI flag to print call graph statistics during analysis.
 
 ### Step 8.2 — Unit Tests for Root Detection ✅ DONE
 
-17 tests covering all 7 pattern categories, configurable patterns, runtime DLL detection.
+17 tests covering all 7 pattern categories, configurable patterns, runtime DLL detection, plus 9 additional tests for runtime library classification in `calxgloss-analysis`.
 
 ### Step 8.3 — Unit Tests for Leaf Detection ✅ DONE
 
@@ -304,7 +318,7 @@ No CLI flag to print call graph statistics during analysis.
 
 ## Summary
 
-### Completed (~55%)
+### Completed (~60%)
 
 | Category | Details |
 |----------|---------|
@@ -316,14 +330,14 @@ No CLI flag to print call graph statistics during analysis.
 | **Dependency graph** | `build_dependency_graph_from_call_graph` with 8 tests |
 | **Prompt templates** | `call_graph_context` fields on all templates |
 | **CLI flag** | `--no-callgraph` on all subcommands |
+| **Runtime library** | `RuntimeLibrary` DLL category with classification and skip logic |
 | **Tests** | 103 unit tests + 4 integration tests across all modules |
 
-### Not Yet Done (~45%)
+### Not Yet Done (~40%)
 
 | Category | Blockers |
 |----------|----------|
 | **`calxgloss-types` extension** | `FunctionInfo` needs callers/callees/known_runtime/third_party_calls fields |
-| **`RuntimeLibrary` category** | `DllCategory` needs new variant + `DllInfo` needs new field |
 | **Indirect call detection** | Disassembly scan for `call [reg]` patterns |
 | **Virtual call detection** | Vtable pattern matching in decompiler output |
 | **Cross-DLL import mapping** | PE import table parsing |
@@ -343,5 +357,4 @@ No CLI flag to print call graph statistics during analysis.
 4. **Batch planning** (M4.4) — Replaces discovery-order with priority-ordered translation
 5. **CLI flags** (M7.2, M7.3) — Convenience features
 6. **Advanced extraction** (M1.3, M1.4, M1.5) — Nice-to-have accuracy improvements
-7. **Runtime library category** (M3.5) — Completes the DLL classification gap
-8. **Real-binary testing** (M8.5–8.7) — Validation before production
+7. **Real-binary testing** (M8.5–8.7) — Validation before production
