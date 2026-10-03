@@ -24,6 +24,7 @@ pub async fn handle_live(
     settings: &Settings,
     no_callgraph: bool,
     callgraph_cache: Option<PathBuf>,
+    callgraph_verbose: bool,
 ) -> Result<()> {
     info!(
         port,
@@ -135,6 +136,7 @@ pub async fn handle_live(
         repo_dir,      // resolved repo_dir (same value used by serve task)
         no_callgraph,
         callgraph_cache,
+        callgraph_verbose,
     )
     .await;
 

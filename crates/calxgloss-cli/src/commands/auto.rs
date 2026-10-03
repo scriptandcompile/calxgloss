@@ -38,6 +38,7 @@ pub async fn run_translation_for_dll(
     events: Option<&TranslationEvents>,
     no_callgraph: bool,
     callgraph_cache: Option<PathBuf>,
+    callgraph_verbose: bool,
 ) -> Result<()> {
     // output_dir is the workspace directory — git, src/, scratch all live here.
 
@@ -116,6 +117,9 @@ pub async fn run_translation_for_dll(
     }
     if let Some(ref cache_dir) = callgraph_cache {
         pipeline = pipeline.with_callgraph_cache_dir(cache_dir);
+    }
+    if callgraph_verbose {
+        pipeline = pipeline.with_callgraph_verbose();
     }
     if let Some(events) = events {
         pipeline = pipeline.with_events(events.clone());
@@ -306,6 +310,7 @@ pub async fn handle_auto(
     repo_dir: PathBuf,
     no_callgraph: bool,
     callgraph_cache: Option<PathBuf>,
+    callgraph_verbose: bool,
 ) -> Result<()> {
     info!("Auto mode: detecting project state");
 
@@ -446,7 +451,7 @@ pub async fn handle_auto(
                 bold(dll)
             );
             println!();
-            run_translation_for_dll(dll, &output_dir, skip_git, settings, events, no_callgraph, callgraph_cache.clone())
+            run_translation_for_dll(dll, &output_dir, skip_git, settings, events, no_callgraph, callgraph_cache.clone(), callgraph_verbose)
                 .await?;
         }
     } else {
@@ -482,7 +487,7 @@ pub async fn handle_auto(
         );
         println!();
 
-        run_translation_for_dll(dll, &output_dir, skip_git, settings, events, no_callgraph, callgraph_cache).await?;
+        run_translation_for_dll(dll, &output_dir, skip_git, settings, events, no_callgraph, callgraph_cache, callgraph_verbose).await?;
     }
 
     Ok(())

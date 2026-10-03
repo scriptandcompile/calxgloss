@@ -122,6 +122,13 @@ pub(super) struct TranslateArgs {
     /// flag overrides the default location.
     #[arg(long, value_name = "DIR")]
     pub(super) callgraph_cache: Option<PathBuf>,
+
+    /// Print call-graph statistics after building the graph
+    ///
+    /// Displays function count, root/middle/leaf breakdown, call-type
+    /// distribution, and external API count.
+    #[arg(long)]
+    pub(super) callgraph_verbose: bool,
 }
 
 /// Arguments for the `batch-translate` subcommand.
@@ -161,6 +168,13 @@ pub(super) struct BatchTranslateArgs {
     /// flag overrides the default location.
     #[arg(long, value_name = "DIR")]
     pub(super) callgraph_cache: Option<PathBuf>,
+
+    /// Print call-graph statistics after building the graph
+    ///
+    /// Displays function count, root/middle/leaf breakdown, call-type
+    /// distribution, and external API count.
+    #[arg(long)]
+    pub(super) callgraph_verbose: bool,
 }
 
 /// Subcommands for the CLI.
@@ -272,6 +286,13 @@ pub(super) enum Command {
         /// flag overrides the default location.
         #[arg(long, value_name = "DIR")]
         callgraph_cache: Option<PathBuf>,
+
+        /// Print call-graph statistics after building the graph
+        ///
+        /// Displays function count, root/middle/leaf breakdown, call-type
+        /// distribution, and external API count.
+        #[arg(long)]
+        callgraph_verbose: bool,
     },
 
     /// Start the web review UI server
@@ -322,6 +343,7 @@ pub(super) enum Command {
     /// * `--classify-only` — Only classify, do not translate (passed to auto).
     /// * `--skip-git` — Skip git operations (passed to auto).
     /// * `--no-callgraph` — Skip call-graph extraction (passed to auto).
+    /// * `--callgraph-verbose` — Print call-graph statistics (passed to auto).
     ///
     /// # Examples
     ///
@@ -369,6 +391,13 @@ pub(super) enum Command {
         /// flag overrides the default location.
         #[arg(long, value_name = "DIR")]
         callgraph_cache: Option<PathBuf>,
+
+        /// Print call-graph statistics after building the graph
+        ///
+        /// Displays function count, root/middle/leaf breakdown, call-type
+        /// distribution, and external API count.
+        #[arg(long)]
+        callgraph_verbose: bool,
     },
 
     /// Generate shim layers for all crate-replacement DLLs automatically.

@@ -27,6 +27,7 @@ pub async fn handle_translate(
     settings: &Settings,
     repo_dir: PathBuf,
     callgraph_cache: Option<PathBuf>,
+    callgraph_verbose: bool,
 ) -> Result<()> {
     let TranslateArgs {
         target,
@@ -124,6 +125,9 @@ pub async fn handle_translate(
     }
     if let Some(cache_dir) = callgraph_cache {
         pipeline = pipeline.with_callgraph_cache_dir(cache_dir);
+    }
+    if callgraph_verbose {
+        pipeline = pipeline.with_callgraph_verbose();
     }
     pipeline = pipeline.with_workspace(&output_dir);
 

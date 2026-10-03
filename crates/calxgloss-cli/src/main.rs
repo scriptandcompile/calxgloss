@@ -136,6 +136,7 @@ fn main() -> Result<()> {
         skip_git: false,
         no_callgraph: false,
         callgraph_cache: None,
+        callgraph_verbose: false,
     });
     let result = match command {
         Command::Config => {
@@ -164,20 +165,22 @@ fn main() -> Result<()> {
         Command::Translate(args) => {
             let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
             let callgraph_cache = args.callgraph_cache.clone();
+            let callgraph_verbose = args.callgraph_verbose;
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_translate(&args, &settings, repo_dir, callgraph_cache))
+                .block_on(handle_translate(&args, &settings, repo_dir, callgraph_cache, callgraph_verbose))
         }
         Command::BatchTranslate(args) => {
             let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
             let callgraph_cache = args.callgraph_cache.clone();
+            let callgraph_verbose = args.callgraph_verbose;
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_batch_translate(&args, &settings, repo_dir, callgraph_cache))
+                .block_on(handle_batch_translate(&args, &settings, repo_dir, callgraph_cache, callgraph_verbose))
         }
         Command::Verify {
             dll,
@@ -252,6 +255,7 @@ fn main() -> Result<()> {
             skip_git,
             no_callgraph,
             callgraph_cache,
+            callgraph_verbose,
         } => {
             let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
@@ -270,6 +274,7 @@ fn main() -> Result<()> {
                     repo_dir,
                     no_callgraph,
                     callgraph_cache,
+                    callgraph_verbose,
                 ))
         }
         Command::AutoShim { dll, skip_git } => {
@@ -314,6 +319,7 @@ fn main() -> Result<()> {
             port,
             no_callgraph,
             callgraph_cache,
+            callgraph_verbose,
             ..
         } => {
             // live always uses CWD as repo_dir — config / env overrides are
@@ -335,6 +341,7 @@ fn main() -> Result<()> {
                     &settings,
                     no_callgraph,
                     callgraph_cache,
+                    callgraph_verbose,
                 ))
         }
     };
