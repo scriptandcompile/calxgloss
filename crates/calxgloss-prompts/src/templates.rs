@@ -400,6 +400,8 @@ pub struct EscalateTemplate {
     pub type_info: Vec<TypeInfo>,
     /// Previous attempt failures to reference in the prompt.
     pub failure_history: Vec<FailureHint>,
+    /// Enriched call graph context with caller/callee/leaf-API details.
+    pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
 }
 
 impl EscalateTemplate {
@@ -425,6 +427,7 @@ impl EscalateTemplate {
             data_structures,
             type_info,
             failure_history: Vec::new(),
+            call_graph_context: Vec::new(),
         }
     }
 
@@ -451,6 +454,35 @@ impl EscalateTemplate {
             data_structures,
             type_info,
             failure_history,
+            call_graph_context: Vec::new(),
+        }
+    }
+
+    /// Create a new escalate template with enriched call graph context.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_context(
+        function_name: String,
+        dll_name: String,
+        original_rust_code: String,
+        failure_description: String,
+        call_graph_neighbors: Vec<CallGraphNeighbor>,
+        neighboring_functions: Vec<NeighborFunction>,
+        data_structures: Vec<StructuredData>,
+        type_info: Vec<TypeInfo>,
+        failure_history: Vec<FailureHint>,
+        call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
+    ) -> Self {
+        Self {
+            function_name,
+            dll_name,
+            original_rust_code,
+            failure_description,
+            call_graph_neighbors,
+            neighboring_functions,
+            data_structures,
+            type_info,
+            failure_history,
+            call_graph_context,
         }
     }
 }
@@ -715,6 +747,8 @@ pub struct WithTestsTemplate {
     pub call_graph_neighbors: Vec<CallGraphNeighbor>,
     /// Baseline test results with pass/fail status and error details.
     pub test_results: Vec<FormattedTestResult>,
+    /// Enriched call graph context with caller/callee/leaf-API details.
+    pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
 }
 
 impl WithTestsTemplate {
@@ -730,6 +764,7 @@ impl WithTestsTemplate {
             no_windows_apis: data.no_windows_apis,
             call_graph_neighbors: data.call_graph_neighbors.clone(),
             test_results: data.test_results.clone(),
+            call_graph_context: data.call_graph_context.clone(),
         }
     }
 }
@@ -769,6 +804,8 @@ pub struct ModuleContextTemplate {
     pub neighboring_functions: Vec<NeighborFunction>,
     /// Data structures referenced near the target function.
     pub data_structures: Vec<StructuredData>,
+    /// Enriched call graph context with caller/callee/leaf-API details.
+    pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
 }
 
 impl ModuleContextTemplate {
@@ -786,6 +823,7 @@ impl ModuleContextTemplate {
             test_results: data.test_results.clone(),
             neighboring_functions: data.neighboring_functions.clone(),
             data_structures: data.data_structures.clone(),
+            call_graph_context: data.call_graph_context.clone(),
         }
     }
 }
@@ -879,6 +917,8 @@ pub struct FullModuleTemplate {
     pub shim_layers: Vec<ShimCode>,
     /// PAL trait definitions for platform abstraction.
     pub pal_traits: Vec<PalTraitDef>,
+    /// Enriched call graph context with caller/callee/leaf-API details.
+    pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
 }
 
 impl FullModuleTemplate {
@@ -898,6 +938,7 @@ impl FullModuleTemplate {
             data_structures: data.data_structures.clone(),
             shim_layers: data.shim_layers.clone(),
             pal_traits: data.pal_traits.clone(),
+            call_graph_context: data.call_graph_context.clone(),
         }
     }
 }

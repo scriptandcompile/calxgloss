@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 calxgloss-types = { path = "../calxgloss-types" }
 calxgloss-pal = { path = "../calxgloss-pal" }
+calxgloss-callgraph = { path = "../calxgloss-callgraph" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

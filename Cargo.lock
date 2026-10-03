@@ -466,6 +466,7 @@ name = "calxgloss-prompts"
 version = "0.2.0"
 dependencies = [
  "askama",
+ "calxgloss-callgraph",
  "calxgloss-pal",
  "calxgloss-types",
  "serde",

@@ -16,6 +16,18 @@
 //! - [`build_with_tests_prompt`] — Builds a Tier 2 (disassembly + decompiler + tests) prompt
 //! - [`ComplexityPromptData::api_categories`] — Extracts API categories
 //!
+//! # Call Graph Context (Task 11)
+//!
+//! Starting with Tier 2+, prompts can include enriched call graph context
+//! produced by [`calxgloss_callgraph::ContextEnricher`]. The context includes:
+//!
+//! - **Callers** — functions that call this function, with call type
+//! - **Categorized callees** — APIs grouped by category (UI, Graphics, etc.)
+//! - **Leaf API suggestions** — matched APIs with Rust crate recommendations
+//!
+//! Use the `from_request_with_call_graph` constructor on prompt data structs
+//! to automatically enrich the context from a call graph.
+//!
 //! # API-Aware Prompt Augmentation
 //!
 //! When a function calls Windows APIs, the prompt builder automatically

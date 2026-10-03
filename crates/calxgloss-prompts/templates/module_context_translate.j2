@@ -55,6 +55,40 @@ No call graph neighbors were available.
 
 ---
 
+## CALL GRAPH CONTEXT
+
+{% if !call_graph_context.is_empty() %}
+{% for ctx in call_graph_context %}
+### {{ ctx.name }} ({{ ctx.address }})
+
+{% if ctx.callers != [] %}
+**Callers:**
+{% for neigh in ctx.callers %}
+- `{{ neigh.node.name }}` ({{ neigh.call_type }})
+{% endfor %}
+{% endif %}
+
+{% if ctx.categorized_callees != [] %}
+**Categorized API Calls:**
+{% for group in ctx.categorized_callees %}
+- **{{ group.category }}**: {{ group.apis|join(", ") }}
+{% endfor %}
+{% endif %}
+
+{% if ctx.leaf_api_context != [] %}
+**Leaf API Suggestions:**
+{% for api in ctx.leaf_api_context %}
+- `{{ api.api_name }}` → [{{ api.rust_crate }}](https://crates.io/crates/{{ api.rust_crate }})
+{% endfor %}
+{% endif %}
+
+{% endfor %}
+{% else %}
+No enriched call graph context available.
+{% endif %}
+
+---
+
 ## BASELINE TESTS (translated Rust code must produce identical outputs)
 
 {% for test in test_results %}

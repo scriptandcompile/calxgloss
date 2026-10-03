@@ -14,6 +14,7 @@
 use super::templates::{
     CallGraphNeighbor, FormattedTestResult, NeighborFunction, PalTraitDef, ShimCode, StructuredData,
 };
+use calxgloss_callgraph::FunctionContext;
 use calxgloss_types::{ApiCategory, TestCase, TranslationRequest};
 use serde::Serialize;
 
@@ -108,6 +109,11 @@ pub struct WithTestsPromptData {
     pub no_windows_apis: bool,
     pub call_graph_neighbors: Vec<CallGraphNeighbor>,
     pub test_results: Vec<FormattedTestResult>,
+    /// Enriched call graph context from [`calxgloss_callgraph::ContextEnricher`].
+    ///
+    /// When present, the prompt includes caller/callee details and leaf API
+    /// suggestions alongside the simpler neighbor list.
+    pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
 }
 
 impl WithTestsPromptData {
@@ -140,7 +146,23 @@ impl WithTestsPromptData {
             no_windows_apis: req.windows_apis.is_empty(),
             call_graph_neighbors: Vec::new(),
             test_results,
+            call_graph_context: Vec::new(),
         }
+    }
+
+    /// Build with-tests prompt data with enriched call graph context.
+    ///
+    /// Use this constructor when a [`calxgloss_callgraph::CallGraph`] is available
+    /// and you want to produce enriched caller/callee context for the prompt.
+    pub fn from_request_with_call_graph(
+        req: &TranslationRequest,
+        graph: &calxgloss_callgraph::CallGraph,
+    ) -> Self {
+        let mut data = Self::from_request(req);
+        let enricher = calxgloss_callgraph::ContextEnricher::new();
+        let contexts = enricher.enrich(graph);
+        data.call_graph_context = contexts;
+        data
     }
 }
 
@@ -167,6 +189,11 @@ pub struct ModuleContextPromptData {
     pub test_results: Vec<FormattedTestResult>,
     pub neighboring_functions: Vec<NeighborFunction>,
     pub data_structures: Vec<StructuredData>,
+    /// Enriched call graph context from [`calxgloss_callgraph::ContextEnricher`].
+    ///
+    /// When present, the prompt includes caller/callee details and leaf API
+    /// suggestions alongside the simpler neighbor list.
+    pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
 }
 
 impl ModuleContextPromptData {
@@ -206,6 +233,7 @@ impl ModuleContextPromptData {
             test_results,
             neighboring_functions: Vec::new(),
             data_structures: Vec::new(),
+            call_graph_context: Vec::new(),
         }
     }
 
@@ -220,6 +248,7 @@ impl ModuleContextPromptData {
         call_graph_neighbors: Vec<CallGraphNeighbor>,
         neighboring_functions: Vec<NeighborFunction>,
         data_structures: Vec<StructuredData>,
+        call_graph_context: Vec<FunctionContext>,
     ) -> Self {
         let test_results: Vec<FormattedTestResult> = req
             .baseline_tests
@@ -250,6 +279,7 @@ impl ModuleContextPromptData {
             test_results,
             neighboring_functions,
             data_structures,
+            call_graph_context,
         }
     }
 }
@@ -346,6 +376,11 @@ pub struct FullModulePromptData {
     pub data_structures: Vec<StructuredData>,
     pub shim_layers: Vec<ShimCode>,
     pub pal_traits: Vec<PalTraitDef>,
+    /// Enriched call graph context from [`calxgloss_callgraph::ContextEnricher`].
+    ///
+    /// When present, the prompt includes caller/callee details and leaf API
+    /// suggestions alongside the simpler neighbor list.
+    pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
 }
 
 impl FullModulePromptData {
@@ -387,6 +422,7 @@ impl FullModulePromptData {
             data_structures: Vec::new(),
             shim_layers: Vec::new(),
             pal_traits: Vec::new(),
+            call_graph_context: Vec::new(),
         }
     }
 
@@ -404,6 +440,7 @@ impl FullModulePromptData {
         data_structures: Vec<StructuredData>,
         shim_layers: Vec<ShimCode>,
         pal_traits: Vec<PalTraitDef>,
+        call_graph_context: Vec<FunctionContext>,
     ) -> Self {
         let test_results: Vec<FormattedTestResult> = req
             .baseline_tests
@@ -436,6 +473,7 @@ impl FullModulePromptData {
             data_structures,
             shim_layers,
             pal_traits,
+            call_graph_context,
         }
     }
 }

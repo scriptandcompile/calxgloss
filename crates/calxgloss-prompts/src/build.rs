@@ -39,6 +39,10 @@ use super::templates::{
 ///
 /// When API-aware augmentation is enabled (default), the prompt includes
 /// full mapping table rows for each API category the function touches.
+///
+/// TODO: Add `call_graph_context` enrichment when a call graph is available.
+/// Use `WithTestsPromptData::from_request_with_call_graph` or construct
+/// `FunctionContext` directly via `ContextEnricher::enrich()`.
 pub fn build_translate_prompt(req: &TranslationRequest) -> Result<String, PromptError> {
     let mut template = TranslateTemplate::from_request(req);
 

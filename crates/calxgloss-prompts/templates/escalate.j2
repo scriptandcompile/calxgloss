@@ -46,6 +46,40 @@ No call graph neighbors identified.
 
 ---
 
+## ADDITIONAL CONTEXT — CALL GRAPH ANALYSIS
+
+{% if !call_graph_context.is_empty() %}
+{% for ctx in call_graph_context %}
+### {{ ctx.name }} ({{ ctx.address }})
+
+{% if ctx.callers != [] %}
+**Callers:**
+{% for neigh in ctx.callers %}
+- `{{ neigh.node.name }}` ({{ neigh.call_type }})
+{% endfor %}
+{% endif %}
+
+{% if ctx.categorized_callees != [] %}
+**Categorized API Calls:**
+{% for group in ctx.categorized_callees %}
+- **{{ group.category }}**: {{ group.apis|join(", ") }}
+{% endfor %}
+{% endif %}
+
+{% if ctx.leaf_api_context != [] %}
+**Leaf API Suggestions:**
+{% for api in ctx.leaf_api_context %}
+- `{{ api.api_name }}` → [{{ api.rust_crate }}](https://crates.io/crates/{{ api.rust_crate }})
+{% endfor %}
+{% endif %}
+
+{% endfor %}
+{% else %}
+No enriched call graph analysis available.
+{% endif %}
+
+---
+
 ## ADDITIONAL CONTEXT — NEIGHBORING FUNCTIONS
 
 {% if !neighboring_functions.is_empty() %}
