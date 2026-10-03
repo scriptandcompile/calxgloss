@@ -553,7 +553,7 @@ impl Analyzer {
     /// let ghidra = calxgloss_ghidra::GhidraClient::new("http://localhost:8080")?;
     /// let analyzer = Analyzer::new(ghidra, ApiMappings::default());
     ///
-    /// let graph = analyzer.build_call_graph("eqmain.dll", Path::new("/workspace")).await?;
+    /// let graph = analyzer.build_call_graph("eqmain.dll", Path::new("/workspace"), None).await?;
     /// for func in &graph.functions {
     ///     println!("{}: {:?}", func.name, func.node_category);
     /// }
@@ -573,8 +573,10 @@ impl Analyzer {
         &self,
         dll_name: &str,
         workspace_root: &std::path::Path,
+        cache_dir: Option<&std::path::Path>,
     ) -> anyhow::Result<calxgloss_callgraph::CallGraph> {
-        crate::callgraph::build_enriched_call_graph(&self.ghidra, dll_name, workspace_root).await
+        crate::callgraph::build_enriched_call_graph(&self.ghidra, dll_name, workspace_root, cache_dir)
+            .await
     }
 
     /// Generate shim layer suggestions for all crate-replacement DLLs.

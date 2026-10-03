@@ -142,6 +142,13 @@ pub struct TranslationPipeline {
     /// all enrichment and neighbor extraction instead of rebuilding it
     /// from Ghidra for every function.
     call_graph: Option<calxgloss_callgraph::CallGraph>,
+
+    /// Explicit cache directory for call graph JSON files.
+    ///
+    /// When set, call graphs are saved to and loaded from this directory
+    /// instead of the default `{workspace}/re/analysis/` path. This allows
+    /// users to customize the cache location via the `--callgraph-cache` CLI flag.
+    callgraph_cache_dir: Option<std::path::PathBuf>,
 }
 
 impl TranslationPipeline {
@@ -168,6 +175,7 @@ impl TranslationPipeline {
             fault_logger: None,
             no_callgraph: AtomicBool::new(false),
             call_graph: None,
+            callgraph_cache_dir: None,
         }
     }
 
@@ -258,6 +266,15 @@ impl TranslationPipeline {
         graph: calxgloss_callgraph::CallGraph,
     ) -> Self {
         self.call_graph = Some(graph);
+        self
+    }
+
+    /// Set an explicit cache directory for call graph JSON files.
+    ///
+    /// When set, call graphs are saved to and loaded from this directory
+    /// instead of the default `{workspace}/re/analysis/` path.
+    pub fn with_callgraph_cache_dir(mut self, cache_dir: impl Into<std::path::PathBuf>) -> Self {
+        self.callgraph_cache_dir = Some(cache_dir.into());
         self
     }
 
@@ -407,7 +424,8 @@ impl TranslationPipeline {
             enricher.enrich(graph)
         } else {
             let workspace_root = self.workspace.as_deref().unwrap_or_else(|| std::path::Path::new("."));
-            match self.analyzer.build_call_graph(&function_info.dll, workspace_root).await {
+            let cache_dir = self.callgraph_cache_dir.as_deref();
+            match self.analyzer.build_call_graph(&function_info.dll, workspace_root, cache_dir).await {
                 Ok(call_graph) => {
                     let enricher = ContextEnricher::new();
                     enricher.enrich(&call_graph)
@@ -1470,6 +1488,7 @@ impl TranslationPipeline {
     ///     &ghidra,
     ///     "game_logic.dll",
     ///     Path::new("/tmp/calxgloss-work"),
+    ///     None,
     /// ).await?;
     ///
     /// let pipeline = TranslationPipeline::new(ghidra, llm, calxgloss_pal::ApiMappings::default());
