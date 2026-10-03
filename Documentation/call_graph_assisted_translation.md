@@ -1,583 +1,627 @@
-# Call Graph Assisted Translation — Root & Leaf Methodology
+# Call Graph Assisted Translation — Implementation Plan
 
-## Motivation
+## Prerequisites
 
-Currently, calxgloss discovers all functions in a DLL/exe and translates them in isolation. This misses two important structural insights:
+- Spec doc: `Documentation/call_graph_assisted_translation.md`
+- Target crate: `crates/calxgloss-callgraph/` (new workspace member)
+- Workspace crate count: 15 → 16
+- Pattern reference: existing crates (`calxgloss-analysis`, `calxgloss-git`) for structure
+- Decision: New crate `calxgloss-callgraph`, JSON persistence, narrow MVP
+- Decision: New crate is the source of truth; dependency tracker consumes from it
 
-1. **Root functions** (entry points, CRT/VB6 runtime initialization) are well-known patterns that don't need translation — they can be recognized and skipped or replaced with a single stub.
-2. **Leaf functions** (calls to known third-party libraries like Direct3D, GDI, Win32 API) provide semantic context — knowing that a function calls `Direct3DCreate9` tells the LLM that this is a graphics-related function, which improves translation quality.
+---
 
-By building and analyzing the call graph, we can:
-- **Skip** known runtime initialization functions (CRT `mainCRTStartup`, VB6 `__vbaInitialize`, etc.)
-- **Prioritize** translation order — roots first (to understand initialization), leaves last (to understand dependencies)
-- **Enrich** the translation context with call graph neighbors and their 3rd-party API usage
-- **Detect** which functions belong to the application logic vs. which are just runtime glue code
+## Part A: MVP (Tasks 0–6)
 
-## Current State
+The MVP delivers: **call graph extraction from Ghidra → root detection → persistence**. That's it. No translation ordering, no prompt integration, no CLI flag. These come later.
 
-### Existing Call Graph Infrastructure
+The MVP is self-contained in one crate. Integration touches are minimal: a `NodeCategory` field on `FunctionAnalysis`, and the dependency tracker reads from the persisted graph instead of building its own name-based graph.
 
-- **Ghidra client** (`calxgloss-ghidra`) exposes `callers()` (xrefs to function) and `callees()` (regex-scrapped from decompiled pseudo-C)
-- **Function analysis** stores call graph neighbors in `FunctionAnalysis.call_graph: Vec<String>`
-- **Dependency tracker** (`calxgloss-analysis/src/dependency.rs`) builds a DAG of work units based on call graph neighbors
-- **Ghidra client gap**: callees are read from decompiled text via regex (`IDENT(` pattern), missing indirect calls and function pointer calls
+---
 
-### Known Gaps
+### Task 0: Add Crate to Workspace
 
-| Gap | Impact |
-|-----|--------|
-| Callees are regex-scraped, not from Ghidra's call graph | Misses indirect calls, vtable calls, function pointers |
-| Call graph is string-based (function names only) | No address-level correlation, no module-level dependency tracking |
-| No call graph is persisted separately | Lives only in memory during analysis, lost between runs |
-| Import data has no module names | Cannot map imports to specific DLLs for leaf detection |
+**Files:** `Cargo.toml`
 
-## Proposed Architecture
+**Action:** Add `"crates/calxgloss-callgraph"` to the `[workspace].members` array.
 
+**Acceptance:** `cargo check` still passes with 16 members.
+
+---
+
+### Task 1: Crate Skeleton & Module Structure
+
+**Files to create:**
 ```
-┌─────────────────────────────────────────────────────┐
-│                   Call Graph Builder                 │
-│  (new crate: calxgloss-callgraph or submodule)       │
-│                                                      │
-│  1. Build adjacency map from callers + callees       │
-│  2. Classify nodes as ROOT / LEAF / MIDDLE           │
-│  3. Detect known runtime libraries                   │
-│  4. Persist graph to JSON                            │
-└──────────────────────┬──────────────────────────────┘
-                       │
-          ┌────────────┴────────────┐
-          ▼                         ▼
-┌─────────────────┐    ┌──────────────────────────┐
-│   Root Detector   │    │   Leaf Detector          │
-│                   │    │                          │
-│ • Entry points    │    │ • Known third-party DLLs │
-│ • CRT startup     │    │ • Direct3D/COM imports   │
-│ • VB6 init        │    │ • GDI/User32 API usage   │
-│ • Framework init  │    │ • Audio/video runtimes   │
-└────────┬──────────┘    └────────┬─────────────────┘
-         │                        │
-         ▼                        ▼
-┌──────────────────────────────────────────────────┐
-│          Translation Order & Context Enrichment    │
-│                                                   │
-│ • Roots translated first (or skipped)            │
-│ • Leaves translated last (with full context)     │
-│ • Middle functions translated with neighbor info │
-└──────────────────────────────────────────────────┘
+crates/calxgloss-callgraph/
+├── Cargo.toml
+└── src/
+    ├── lib.rs           — re-exports, docs
+    ├── models.rs        — CallGraphEdge, FunctionCallGraph, NodeCategory, CallGraph
+    ├── builder.rs       — CallGraphBuilder (fetches from Ghidra, constructs graph)
+    ├── root_detector.rs — RootDetector (skip patterns)
+    ├── leaf_detector.rs — LeafDetector (API signature patterns)
+    └── persist.rs       — CallGraphPersistor (JSON save/load)
 ```
 
-## Implementation Plan
+**`Cargo.toml`:**
+```toml
+[package]
+name = "calxgloss-callgraph"
+version.workspace = true
+edition.workspace = true
+description = "Call graph analysis: root/leaf detection, translation ordering, context enrichment"
 
-### Phase 1: Data Collection & Graph Building
+[dependencies]
+calxgloss-ghidra = { path = "../calxgloss-ghidra" }
+calxgloss-types = { path = "../calxgloss-types" }
+calxgloss-pal = { path = "../calxgloss-pal" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+regex = { workspace = true }
+```
 
-**Goal**: Build a reliable call graph from Ghidra data.
+**`lib.rs` exports:**
+```rust
+pub mod models;
+pub mod builder;
+pub mod root_detector;
+pub mod leaf_detector;
+pub mod persist;
 
-#### 1.1 Enhanced Call Graph Extraction
+pub use models::*;
+pub use builder::CallGraphBuilder;
+pub use root_detector::RootDetector;
+pub use leaf_detector::LeafDetector;
+pub use persist::CallGraphPersistor;
+```
 
-**Location**: `calxgloss-ghidra` / `calxgloss-callgraph`
+**Acceptance:**
+- `cargo build -p calxgloss-callgraph` compiles cleanly
+- All public types re-exported from `lib.rs`
+- Documentation comments on every public type and function
 
-**Changes**:
+---
+
+### Task 2: Model Types (`models.rs`)
+
+**File:** `crates/calxgloss-callgraph/src/models.rs`
+
+**Types:**
 
 ```rust
-// New model types
-pub struct CallGraphEdge {
-    pub source: Address,  // function entry address
-    pub target: Address,  // function called
-    pub call_site: Address,  // instruction address of call
-    pub call_type: CallType,  // direct / indirect / virtual / unknown
-}
-
+/// How a call between functions was detected.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum CallType {
-    Direct,          // function(name)
-    Indirect,        // *func_ptr(args)
-    Virtual,         // vtable->method()
-    Unknown,         // scraped from text, uncertain
+    /// Function(name) — from decompiled text
+    Direct,
+    /// *func_ptr() — from disassembly scan
+    Indirect,
+    /// vtable->method() — from decompiler
+    Virtual,
+    /// Scraper hit, uncertain
+    #[deprecated(note = "Falls back to text scraping; low confidence")]
+    Unknown,
 }
 
+/// A single call edge between two functions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallGraphEdge {
+    /// Entry address of the calling function.
+    pub source: u64,
+    /// Entry address of the called function.
+    pub target: u64,
+    /// Instruction address of the call site (0 if unknown).
+    pub call_site: u64,
+    /// How this edge was discovered.
+    pub call_type: CallType,
+}
+
+/// Category of a function in the call graph.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum NodeCategory {
+    /// Entry point or runtime init — skip or stub.
+    Root,
+    /// Calls known 3rd-party APIs — enriched context.
+    Leaf,
+    /// Application logic — normal translation.
+    Middle,
+    /// Known runtime library function — don't translate.
+    Skip,
+}
+
+/// All call graph data for one binary.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallGraph {
+    pub dll: String,
+    pub functions: Vec<FunctionCallGraph>,
+}
+
+/// Call graph data for a single function.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionCallGraph {
     pub name: String,
-    pub address: Address,
-    pub callers: Vec<Address>,      // who calls this function
-    pub callees: Vec<CallGraphEdge>,  // what this function calls
+    pub address: u64,
+    /// Caller entry addresses.
+    pub callers: Vec<u64>,
+    /// Callee edges with metadata.
+    pub callees: Vec<CallGraphEdge>,
+    pub node_category: NodeCategory,
 }
 ```
 
-**Implementation details**:
+**TODO comments:**
+```rust
+// TODO: Add CallType::Thunk for IAT indirection detection
+// TODO: Add CallType::JumpTable for switch/vtable dispatch detection
+// TODO: Persist call_type_confidence: f32 on each edge
+// TODO: Add NodeCategory::EntryPoint (binary entry, not function entry)
+// TODO: Add NodeCategory::Callback (registered callback functions that need special handling)
+```
 
-1. **Direct callers** — already available via `xrefs_to(address)` from Ghidra
-2. **Direct callees** — improve regex-based scraping:
-   - Better pattern matching for decompiled output
-   - Filter out local function calls (functions within the same DLL)
-   - Tag calls as `CallType::Direct` when confident
-3. **Indirect calls** — scan disassembly for `call [reg]` or `call [rip + offset]` patterns
-4. **Virtual calls** — scan for `vtable->method()` patterns in decompiled output
+**Acceptance:**
+- All types serialize/deserialize via serde
+- `CallType` and `NodeCategory` derive `PartialEq` for testing
+- `#[deprecated]` attribute on `CallType::Unknown`
 
-**Key decision**: Should we use Ghidra's call graph API (if available in GhidraMCP) or continue with our regex scraping + disassembly analysis?
+---
 
-**Recommendation**: Check if GhidraMCP exposes a call graph endpoint. If not, use our hybrid approach (regex for direct calls, disassembly for indirect).
+### Task 3: Call Graph Builder (`builder.rs`)
 
-#### 1.2 Call Graph Builder
+**File:** `crates/calxgloss-callgraph/src/builder.rs`
 
-**Location**: `calxgloss-callgraph/src/lib.rs` (new module)
+**Responsibilities:**
+1. Fetch all function summaries from Ghidra
+2. For each function: callers (via `xrefs_to`), callees (via `callees_from_decompiled`)
+3. Build `CallGraph` from the collected data
+4. Tag each function `NodeCategory` (initially all `Middle` — root/leaf classification happens in Tasks 5-6)
 
-**Responsibilities**:
+**API:**
+```rust
+pub struct CallGraphBuilder {
+    ghidra: GhidraClient,
+    dll_name: String,
+}
 
-1. Fetch all functions from Ghidra
-2. For each function, collect callers + callees
-3. Build adjacency map: `Address -> Vec<Address>`
-4. Classify nodes based on name/address patterns:
-   - **Root candidates**: `main`, `WinMain`, `DllMain`, `mainCRTStartup`, `__vbaInitialize`, etc.
-   - **Leaf candidates**: functions that call known third-party APIs
-   - **Middle**: everything else
-
-**Persisted format** (`re/analysis/call_graph.json`):
-
-```json
-{
-  "dll": "LaunchPad.exe",
-  "functions": [
-    {
-      "name": "main",
-      "address": "0x401000",
-      "callers": [],
-      "callees": ["0x402000", "0x403000"],
-      "call_type": "root",
-      "known_runtime": true
-    },
-    {
-      "name": "some_app_function",
-      "address": "0x402000",
-      "callers": ["0x401000"],
-      "callees": ["Direct3DCreate9"],
-      "call_type": "middle",
-      "known_runtime": false
-    }
-  ]
+impl CallGraphBuilder {
+    pub fn new(ghidra: GhidraClient, dll_name: impl Into<String>) -> Self;
+    pub async fn build(&self) -> anyhow::Result<CallGraph>;
+    fn process_function(&self, summary: &FunctionSummary) -> anyhow::Result<FunctionCallGraph>;
 }
 ```
 
-### Phase 2: Root & Leaf Classification
+**Implementation details:**
+- Call `ghidra.list_functions()` to get all functions, build a name→address lookup
+- For each function, call `ghidra.callers(address)` for callers
+- For callees, reuse existing `parse::callees_from_decompiled()` on `ghidra.decompile_function(address)`
+- Map callee names back to addresses using the lookup map
+- All functions start as `NodeCategory::Middle` — classification comes later
 
-**Goal**: Identify which functions are roots, leaves, or middle.
+**TODO comments:**
+```rust
+// TODO: For indirect calls, scan disassembly for `call [reg]` and `call [rip + offset]`
+// TODO: For virtual calls, detect `vtable->method()` patterns in decompiled output
+// TODO: Optimize: batch ghidra calls with tokio::join_all to reduce wall time
+// TODO: Add progress reporting (callback or async channel for large DLLs)
+// TODO: Fallback: if decompile fails, use xrefs_from as callee source
+```
 
-#### 2.1 Root Detection
+**Acceptance:**
+- `build()` returns a valid `CallGraph` with all functions from Ghidra
+- `callers` populated for functions with incoming references
+- `callees` populated from decompiled output
+- `FunctionCallGraph` fields populated correctly
+- If decompile fails for one function, graph still completes (graceful degradation)
 
-**Known root patterns**:
+---
 
-| Pattern | Description | Action |
-|---------|-------------|--------|
-| `mainCRTStartup`, `_main`, `WinMain` | C/C++ entry points | Skip or generate stub |
-| `DllMain` | DLL entry point | Skip or generate stub |
-| `__vbaInitialize`, `__vbaInit` | VB6 runtime init | Skip, call Rust stub |
-| `__wine_start` | Wine loader | Skip |
-| `main` + no callers | Console app entry | Skip |
-| `DllMain` + no callers | DLL entry | Skip |
+### Task 4: Root Detection (`root_detector.rs`) — Narrow MVP
 
-**Implementation**:
+**File:** `crates/calxgloss-callgraph/src/root_detector.rs`
 
+**Goal:** Identify functions to skip during translation.
+
+**MVP patterns (5 entries):**
+
+| Pattern | Regex | Description | Action |
+|---------|-------|-------------|--------|
+| C/C++ entry | `^(mainCRTStartup|_main|WinMain|WinMain@16|WinMain@20)$` | MSVC/MinGW entry points | Skip |
+| DLL entry | `^DllMain$` | DLL entry point | Skip |
+| Generic entry | `^entry$` | Ghidra's generic entry | Skip |
+
+**API:**
 ```rust
 pub struct RootDetector {
     patterns: Vec<RootPattern>,
 }
 
 pub struct RootPattern {
-    pub name_regex: regex::Regex,
+    pub name_regex: Regex,
     pub description: &'static str,
     pub action: RootAction,
 }
 
 pub enum RootAction {
-    Skip,                    // Don't translate, just note it
-    GenerateStub,            // Generate a minimal Rust stub
-    Translate,               // Translate normally (some roots have app logic)
+    Skip,
+    GenerateStub,
+    Translate,
+}
+
+impl RootDetector {
+    pub fn new() -> Self;           // initializes with 3 MVP patterns
+    pub fn classify(&self, name: &str) -> RootAction;
+    pub fn is_root(&self, func: &FunctionCallGraph) -> bool;
 }
 ```
 
-**Detection process**:
+**TODO comments:**
+```rust
+// TODO: Add VB6 runtime patterns: `__vbaInitialize`, `__vbaInit`, `SUBMAIN`
+// TODO: Add .NET CLR patterns: `__managed_main`, `_CorExeMain`
+// TODO: Add MinGW patterns: `_start`, `__libc_start_main`
+// TODO: Add MSVC debug entry: `_RTC_Initialize`
+// TODO: Add detection via zero callers + entry point address in PE header
+// TODO: Add known runtime DLL detection (msvcr*.dll, msvbvm60.dll, Qt5*.dll, SDL2.dll)
+// TODO: Add RuntimeLibrary NodeCategory variant
+// TODO: Allow user to configure patterns via config file
+```
 
-1. Check function name against known patterns
-2. Check if function has zero callers (entry point)
-3. Check if function is in the PE import table (e.g., `mainCRTStartup`)
-4. Check if function calls known runtime initialization functions
+**Acceptance:**
+- All 3 MVP patterns correctly identified
+- `is_root()` returns `true` for matching functions
+- `classify()` returns the correct `RootAction`
+- Unit tests with synthetic `FunctionCallGraph` data
+- Function names with stdcall decoration (`WinMain@16`) correctly matched
 
-#### 2.2 Leaf Detection
+---
 
-**Known leaf categories**:
+### Task 5: Leaf Detection (`leaf_detector.rs`) — Narrow MVP
 
-| Category | Examples | Rust Equivalent |
-|----------|----------|-----------------|
-| Direct3D | `Direct3DCreate9`, `CreateDXGIFactory` | `wgpu`, `vulkan` |
-| GDI/GDI+ | `BeginPaint`, `CreateCompatibleDC` | `tiny-skia`, `image` |
-| User32 | `MessageBox`, `CreateWindowEx` | `winit`, `egui` |
-| Kernel32 | `CreateFile`, `ReadFile` | `std::fs`, `std::io` |
+**File:** `crates/calxgloss-callgraph/src/leaf_detector.rs`
+
+**Goal:** Identify functions that call known 3rd-party APIs, for context enrichment.
+
+**MVP API signatures (8 categories, ~20 APIs):**
+
+| Category | Example APIs | Rust Equivalent |
+|----------|-------------|-----------------|
+| Direct3D | `Direct3DCreate9` | `wgpu` |
+| GDI | `CreateCompatibleDC`, `BitBlt` | `tiny-skia` |
+| User32 | `MessageBox`, `CreateWindowEx` | `winit` |
+| Kernel32 | `CreateFile`, `ReadFile` | `std::fs` |
 | COM | `CoInitialize`, `QueryInterface` | `windows` crate |
-| Audio | `FMOD_StudioSystem_Create`, `ALutInit` | `rodio`, `cpal` |
-| Network | `WSAStartup`, `socket` | `tokio`, `async-std` |
-| Crypto | `CryptAcquireContext`, `CryptEncrypt` | `ring`, `chacha` |
+| Audio | `FMOD_StudioSystem_Create` | `rodio` |
+| Network | `WSAStartup`, `socket` | `tokio` |
+| Crypto | `CryptAcquireContext` | `ring` |
 
-**Implementation**:
-
+**API:**
 ```rust
 pub struct LeafDetector {
     api_signatures: Vec<ApiSignature>,
 }
 
 pub struct ApiSignature {
-    pub dll: String,           // e.g., "d3d9.dll"
-    pub function_name: String, // e.g., "Direct3DCreate9"
-    pub rust_crate: String,    // e.g., "wgpu"
+    pub api_name: String,
     pub category: LeafCategory,
+    pub rust_crate: String,
+}
+
+pub enum LeafCategory {
+    Graphics,
+    Gdi,
+    Ui,
+    Filesystem,
+    Com,
+    Audio,
+    Network,
+    Crypto,
+}
+
+impl LeafDetector {
+    pub fn new() -> Self;       // initializes with ~20 MVP signatures
+    pub fn classify(&self, func: &FunctionCallGraph) -> Option<Vec<ApiSignature>>;
+    pub fn has_leaf_call(&self, func: &FunctionCallGraph) -> bool;
 }
 ```
 
-**Detection process**:
+**How it works:**
+1. For each function, check its `callees` (function names from decompiled output)
+2. If any callee matches an `ApiSignature.api_name`, tag the function as leaf
+3. Return the list of matched APIs for context enrichment
 
-1. For each function, check if any callees match known API signatures
-2. If yes, tag the function as a "leaf caller"
-3. Store which APIs are called (for context enrichment)
-
-#### 2.3 Runtime Library Detection
-
-**Goal**: Identify functions that belong to runtime libraries vs. application logic.
-
-**Known runtime DLLs**:
-
-| Runtime | DLLs | Languages |
-|---------|------|-----------|
-| CRT (MSVC) | `msvcr*.dll`, `ucrtbase.dll` | C/C++ |
-| VB6 Runtime | `msvbvm60.dll` | VB6 |
-| .NET CLR | `mscorwks.dll`, `clr.dll` | C#, VB.NET |
-| Qt | `Qt5Core.dll`, `Qt5Gui.dll` | C++ (Qt) |
-| Python | `python3*.dll` | Python |
-| Lua | `lua54.dll` | Lua |
-| SDL | `SDL2.dll` | C/C++ (SDL) |
-
-**Detection process**:
-
-1. Check if function's DLL is in the known runtime list
-2. If yes, tag all functions in that DLL as "runtime"
-3. Apply skip/replace strategy based on runtime type
-
-### Phase 3: Translation Order & Context Enrichment
-
-**Goal**: Use the call graph to improve translation quality.
-
-#### 3.1 Translation Order
-
-**Current behavior**: Functions are translated in discovery order (Ghidra list order).
-
-**New behavior**:
-
-1. **Root functions first** — either skipped or translated to understand initialization
-2. **Leaf functions last** — translated with full context of dependencies
-3. **Middle functions** — translated in topological order respecting call graph edges
-
-**Implementation**:
-
+**TODO comments:**
 ```rust
-pub enum TranslationPriority {
-    Root,        // Translate/skip first
-    Middle,      // Translate in topological order
-    Leaf,        // Translate last, with full context
-    Skip,        // Don't translate, just note
-}
-
-pub struct FunctionTranslationPlan {
-    pub function: FunctionInfo,
-    pub priority: TranslationPriority,
-    pub caller_count: usize,
-    pub callee_count: usize,
-    pub runtime_calls: Vec<String>,  // e.g., ["Direct3DCreate9"]
-}
+// TODO: Expand to 200+ Windows API signatures (auto-generate from Windows SDK headers)
+// TODO: Add 3rd-party library signatures: DirectX, Vulkan, OpenAL, SFML, etc.
+// TODO: Add fuzzy matching for name variations (A/W suffixes, etc.)
+// TODO: Add call graph reach analysis: if func calls funcA which calls D3D, funcA is also a leaf caller
+// TODO: Add import table analysis: cross-reference with PE imports for more reliable API detection
+// TODO: Support DLL-qualified names: `d3d9.Direct3DCreate9`
 ```
 
-**Ordering algorithm**:
+**Acceptance:**
+- `Direct3DCreate9` in callees → leaf with `LeafCategory::Graphics`
+- `MessageBox` in callees → leaf with `LeafCategory::Ui`
+- Function with no known API callees → returns `None`
+- Unit tests with synthetic `FunctionCallGraph` data
 
-```
-1. Sort by priority (Root > Middle > Leaf > Skip)
-2. Within each priority, use topological sort from call graph
-3. For functions with no call graph edges, use dependency graph order
-```
+---
 
-#### 3.2 Context Enrichment
+### Task 6: Integration with `calxgloss-analysis`
 
-**Goal**: Enhance the LLM prompt with call graph information.
+**Files to modify:**
+- `crates/calxgloss-analysis/src/lib.rs` — add `pub mod callgraph;`
+- `crates/calxgloss-analysis/src/analyzer.rs` — use `CallGraphBuilder` after function analysis
 
-**Current prompt includes**:
+**Changes:**
+1. After building `FunctionAnalysis`, call `CallGraphBuilder` to enrich with root/leaf classification
+2. Update `NodeCategory` on each function in the graph
+3. Persist the enriched graph to `re/analysis/call_graph.json`
+4. Add `node_category` to `FunctionAnalysis.call_graph` field (or create a new field alongside it)
+5. The dependency tracker reads from the persisted graph
 
-- Function signature
-- Decompiled pseudo-C code
-- Disassembly
-- Windows API tags
-- Known imports
-
-**New additions**:
-
-1. **Caller context**: List of functions that call this function (for understanding "who uses this")
-2. **Callee context**: List of functions this function calls, especially known third-party APIs
-3. **Runtime context**: If function calls CRT/VB6 runtime functions, note that
-4. **Dependency context**: If function calls Direct3D/GDI/etc., note the library for translation guidance
-
-**Prompt template addition**:
-
-```
-## Call Graph Context
-
-This function is called by:
-- `some_app_function`
-- `DllMain`
-
-This function calls:
-- `Direct3DCreate9` (from d3d9.dll → use wgpu)
-- `CreateWindowExA` (from user32.dll → use winit)
-- `MessageBoxA` (from user32.dll → use egui)
-
-## Translation Guidance
-
-- This is a graphics-related function using Direct3D 9
-- Use `wgpu` or `vulkan` for 3D rendering
-- Use `winit` or `egui` for window creation
-- Avoid manual COM initialization for D3D9
-```
-
-### Phase 4: Integration with Existing Pipeline
-
-**Goal**: Integrate the call graph analysis into the existing classification and translation pipeline.
-
-**Integration points**:
-
-1. **DLL Classification** — extend `DllCategory` to include `RuntimeLibrary` variant
-2. **Function Analysis** — add call graph data to `FunctionAnalysis`
-3. **Dependency Tracker** — enhance edges with call type (direct/indirect/virtual)
-4. **Translation Pipeline** — use call graph for ordering and context enrichment
-5. **Batch Translation** — respect call graph ordering
-
-**Changes to existing types**:
-
+**Integration point:**
 ```rust
-// In calxgloss-types/src/dll.rs
-pub enum DllCategory {
-    WindowsOs,
-    MicrosoftSdk,
-    KnownThirdParty,
-    ProjectSpecific,
-    RuntimeLibrary,  // NEW: CRT, VB6, .NET, etc.
+// In Analyzer::analyze_function, after FunctionInfo is built:
+let graph_builder = CallGraphBuilder::new(self.ghidra.clone(), dll.clone());
+let call_graph = graph_builder.build().await?;
+let root_detector = RootDetector::new();
+let leaf_detector = LeafDetector::new();
+
+for func in &mut call_graph.functions {
+    func.node_category = if root_detector.is_root(func) {
+        NodeCategory::Root
+    } else if leaf_detector.has_leaf_call(func) {
+        NodeCategory::Leaf
+    } else {
+        NodeCategory::Middle
+    };
 }
 
-// In calxgloss-types/src/function.rs
-pub struct FunctionAnalysis {
-    // ... existing fields ...
-    pub call_graph: Vec<String>,  // existing
-    pub callers: Vec<Address>,    // NEW
-    pub callees: Vec<CallGraphEdge>,  // NEW
-    pub call_type: FunctionCallType,  // NEW: root/middle/leaf/skip
-    pub known_runtime: bool,      // NEW
-    pub third_party_calls: Vec<String>,  // NEW: e.g., ["Direct3DCreate9"]
-}
+// Persist the enriched graph
+let persistor = CallGraphPersistor::new(&workspace);
+persistor.save(&call_graph)?;
 ```
 
-## Difficulties & Complexities
+**TODO comments:**
+```rust
+// TODO: Cache CallGraphBuilder results to avoid rebuilding on every analysis run
+// TODO: Add call graph analysis as a separate pipeline phase (Phase 1.5)
+// TODO: Make call graph analysis optional via config flag
+// TODO: Integrate with dependency tracker: use NodeCategory for translation ordering
+// TODO: Add call graph data to `FunctionAnalysis` struct (callers, callees with metadata)
+```
 
-### 1. Call Graph Completeness
+**Acceptance:**
+- `Analyzer::analyze_function` enriches functions with root/leaf classification
+- `CallGraph` is persisted to `re/analysis/call_graph.json`
+- `FunctionAnalysis` includes call graph metadata
+- Dependency tracker can read from persisted graph
 
-**Difficulty**: GhidraMCP doesn't expose a proper call graph endpoint.
+---
 
-**Impact**: We rely on regex-scraped callees, which miss:
-- Indirect calls through function pointers
-- Virtual function calls via vtables
-- Indirect calls via registers (`call [reg]`)
-- Thunk functions and import address table (IAT) indirection
+### Task 7: Testing
 
-**Mitigation**:
-- Combine decompiled text regex + disassembly scanning
-- Use Ghidra's `xrefs_from` for more reliable direct calls
-- Accept that some indirect calls will be missed
-- Tag uncertain calls with a confidence score
+**Unit tests per module:**
 
-### 2. Cross-DLL Call Detection
+| Module | Test | What it validates |
+|--------|------|-------------------|
+| `models.rs` | Serialize/deserialize round-trip | `CallGraph` → JSON → `CallGraph` |
+| `root_detector.rs` | Pattern matching | 3 MVP patterns match/don't match correctly |
+| `leaf_detector.rs` | API signature matching | 8 categories of APIs correctly classified |
+| `persist.rs` | Save/load round-trip | `CallGraphPersistor` mirrors `DependencyGraphPersistor` behavior |
+| `builder.rs` | Graph construction | All functions from Ghidra appear in graph with correct callers/callees |
 
-**Difficulty**: Functions in one DLL can call functions in another DLL, but Ghidra reports them as external references without module names.
+**Integration tests:**
 
-**Impact**: Cannot easily detect "eqmain.dll calls d3d9.dll" for dependency tracking.
+| Test | What it validates |
+|------|-------------------|
+| Full pipeline: Ghidra → builder → root/leaf → persist | End-to-end graph construction |
+| Persistence: build → save → load → classify | Graph survives disk round-trip |
 
-**Mitigation**:
-- Use import/export analysis to infer cross-DLL calls
-- Check if a callee name matches a known DLL's exported symbols
-- Use PE header analysis to map imports to DLLs
+**Acceptance:**
+- All modules have `#[cfg(test)]` modules with ≥3 tests each
+- `cargo test -p calxgloss-callgraph` passes
 
-### 3. Runtime Library Identification
+---
 
-**Difficulty**: Different compilers/languages produce different entry point names:
-- MSVC: `mainCRTStartup`, `_main`, `WinMain@16`
-- MinGW: `main`, `WinMain`
+### Task 8: Documentation
+
+**Files to update:**
+- `crates/calxgloss-callgraph/src/lib.rs` — module-level docs
+- `Documentation/call_graph_assisted_translation.md` — mark completed tasks
+
+**Acceptance:**
+- `cargo doc -p calxgloss-callgraph --no-deps` builds without warnings
+
+---
+
+### MVP Summary
+
+| Task | Est. Days |
+|------|-----------|
+| 0: Workspace registration | 0.25 |
+| 1: Skeleton & modules | 0.5 |
+| 2: Model types | 0.5 |
+| 3: Builder | 2 |
+| 4: Root detector | 0.5 |
+| 5: Leaf detector | 1 |
+| 6: Analysis integration | 1.5 |
+| 7: Testing | 1 |
+| 8: Documentation | 0.5 |
+| **Total** | **~7-8 days** |
+
+---
+
+## Part B: Post-MVP (Tasks 9–13)
+
+These are planned but not urgent. Each is a self-contained enhancement that can be done independently.
+
+### Task 9: Translation Ordering
+
+**File:** `crates/calxgloss-callgraph/src/ordering.rs` (new)
+
+**Goal:** Produce a priority-ordered list of functions for the translation pipeline.
+
+**MVP algorithm:**
+1. Classify each function as Root/Middle/Leaf using Tasks 4-5
+2. Sort by priority: Root (skip/stub first) → Middle (topological) → Leaf (context last)
+3. Within each priority tier, use topological sort from call graph edges
+
+**TODO:**
+```rust
+// TODO: Add priority weighting: functions with more callers get higher priority within tier
+// TODO: Add cycle detection and resolution (break cycles by picking lowest-address function)
+// TODO: Add streaming: emit plans as functions are classified, don't wait for full graph
+// TODO: Add batch ordering: group functions by DLL for batch translation
+// TODO: Add configurable priority inversion (user can override via config)
+```
+
+**Acceptance:**
+- Root functions listed before Middle and Leaf
+- Middle functions respect topological order
+- Leaf functions listed last
+- `FunctionTranslationPlan` includes caller/callee counts and leaf APIs
+
+---
+
+### Task 10: Context Enrichment
+
+**File:** `crates/calxgloss-callgraph/src/context.rs` (new)
+
+**Goal:** Produce call graph context data for LLM prompt injection.
+
+**MVP:** For each function, produce a list of:
+1. **Callers** — function names that call this function (with signatures if available)
+2. **Callees** — function names this function calls, grouped by category
+3. **Leaf API context** — for leaf functions, the matched API signatures with Rust crate suggestions
+
+**TODO:**
+```rust
+// TODO: Add signature lookup from Ghidra decompiler for neighbors
+// TODO: Add call frequency analysis (how many call sites)
+// TODO: Add data flow context (what data this function receives/produces via parameters)
+// TODO: Limit neighbor output to top-N by importance to avoid context window bloat
+// TODO: Add "dependency chain" context: transitive callers/callees up to depth N
+```
+
+---
+
+### Task 11: Prompt Integration
+
+**Files to modify:**
+- `crates/calxgloss-prompts/src/lib.rs`
+- `crates/calxgloss-prompts/src/context.rs`
+- `crates/calxgloss-prompts/src/templates.rs`
+
+**Changes:**
+1. Add `EnrichedContext` (from Task 10) as an optional field in prompt data structs
+2. Add "CALL GRAPH CONTEXT" section to template structs
+3. When `EnrichedContext` is present, render caller/callee/leaf-api information into the prompt
+
+**TODO:**
+```rust
+// TODO: Make call graph context optional and size-limited (configurable max neighbors)
+// TODO: Add context tier awareness: only include deep call graph context in T3/T4 tiers
+// TODO: Add "skip context" for leaf APIs that are already covered by Windows API mappings
+```
+
+**Acceptance:**
+- Existing tests still pass (call graph context is optional)
+- When `call_graph_context` is `Some`, the prompt includes the new section
+- Prompt is not bloat (only includes meaningful neighbors)
+
+---
+
+### Task 12: CLI `--no-callgraph` Flag
+
+**Files to modify:** `crates/calxgloss-cli/src/main.rs`
+
+**Changes:**
+1. Add `--no-callgraph` flag to disable call graph analysis
+2. When flag is present, skip `CallGraphBuilder` step
+3. When flag is absent (default), run call graph analysis
+
+**TODO:**
+```rust
+// TODO: Add `--callgraph-mode` with choices: full, root-only, leaf-only, none
+// TODO: Add `--callgraph-timeout` for large binaries
+// TODO: Log call graph analysis duration for performance tracking
+```
+
+---
+
+### Task 13: Extended Root/Leaf Patterns
+
+**Files to modify:** `crates/calxgloss-callgraph/src/root_detector.rs` and `leaf_detector.rs`
+
+**Root detector expansion (TODOs from Task 4):**
 - VB6: `__vbaInitialize`, `SUBMAIN`
-- .NET: `__managed_main`, `main`
+- .NET: `__managed_main`, `_CorExeMain`
+- MinGW: `_start`, `__libc_start_main`
+- Runtime DLL detection: `msvcr*.dll`, `msvbvm60.dll`, `Qt5*.dll`, `SDL2.dll`
+- Configurable patterns via user config file
 
-**Impact**: Need a comprehensive pattern database for runtime detection.
+**Leaf detector expansion (TODOs from Task 5):**
+- 200+ Windows API signatures (auto-generate from Windows SDK headers)
+- 3rd-party library signatures: DirectX, Vulkan, OpenAL, SFML
+- Fuzzy matching for name variations
+- Call graph reach analysis (transitive leaf callers)
+- Import table analysis
 
-**Mitigation**:
-- Build a comprehensive pattern database based on compiler/language
-- Use name mangling analysis to detect compiler type
-- Check for known runtime DLL imports to infer language
+---
 
-### 4. Scaling to Large DLLs
+### Post-MVP Summary
 
-**Difficulty**: A large DLL might have 10,000+ functions. Building the call graph requires:
-- 10,000+ Ghidra API calls (one per function)
-- Significant memory to store the graph
-- Long processing time before translation can start
+| Task | Est. Days | Blockers |
+|------|-----------|----------|
+| 9: Translation ordering | 3 | None |
+| 10: Context enrichment | 2 | None |
+| 11: Prompt integration | 3 | Depends on Task 10 |
+| 12: CLI flag | 0.5 | None |
+| 13: Extended patterns | 5 | Depends on Tasks 4-5 |
+| **Total** | **~14 days** | |
 
-**Impact**: Users may wait minutes/hours for call graph analysis before seeing any results.
+---
 
-**Mitigation**:
-- Make call graph analysis optional (flag `--no-callgraph`)
-- Stream the analysis: start translating as soon as enough data is available
-- Cache the call graph to disk (already planned)
-- Support incremental updates (rebuild graph when DLL changes)
+### Full Implementation Order & Dependencies
 
-### 5. Context Window Limits
+```
+Task 0  (workspace)
+  │
+  ▼
+Task 1  (skeleton)
+  │
+  ├── Task 2  (models) ───► Task 6  (analysis integration) ──► Task 13 (extended patterns)
+  │       │
+  │       ▼
+  │   Task 3  (builder) ───┘
+  │                              │
+  │                              ├── Task 4  (root detector) ──┘
+  │                              │
+  │                              └── Task 5  (leaf detector) ─┘
+  │                                     │
+  │                                     ▼
+  │                                 Task 9  (translation ordering)
+  │                                     │
+  │                                     ▼
+  │                                 Task 10  (context enrichment)
+  │                                     │
+  │                                     ▼
+  │                                 Task 11  (prompt integration)
+  │                                     │
+  │                                     ▼
+  │                                 Task 12  (CLI flag)
+  │                                     │
+  │                                     ▼
+  │                                 Task 8  (docs)
+  │                                     │
+  └─────────────────────────────────────►
+```
 
-**Difficulty**: Adding call graph context to prompts increases prompt size.
+**MVP path** (Tasks 0-8): ~7-8 days. Delivers call graph extraction, root detection, persistence, and basic integration with analysis pipeline.
 
-**Impact**: May exceed LLM context window limits or degrade translation quality due to too much noise.
-
-**Mitigation**:
-- Only include relevant context (e.g., only third-party API calls, not all callees)
-- Limit to top-N most significant callers/callees
-- Use separate context sections that LLM can choose to attend to
-
-### 6. Maintaining the API Signature Database
-
-**Difficulty**: Thousands of Windows API functions, hundreds of third-party library APIs.
-
-**Impact**: Need a comprehensive, up-to-date database of known APIs.
-
-**Mitigation**:
-- Start with a curated list of common APIs (DirectX, GDI, COM, etc.)
-- Allow users to extend the database via configuration
-- Automate database generation from Windows SDK headers
-- Use fuzzy matching to handle name variations
-
-### 7. Indirect Call Analysis
-
-**Difficulty**: Analyzing indirect calls requires disassembly-level analysis.
-
-**Impact**: Misses function pointer calls, vtable calls, and jump tables.
-
-**Mitigation**:
-- Use Ghidra's decompiler for vtable detection
-- Scan disassembly for common indirect call patterns
-- Accept that some calls will be missed (tag with uncertainty)
-- Prioritize direct calls for context enrichment
-
-## Implementation Order
-
-### Recommended Phase Order
-
-1. **Phase 1.1**: Enhanced call graph extraction (regex improvements)
-2. **Phase 1.2**: Call graph builder & persistence
-3. **Phase 2.1**: Root detection (simple pattern matching)
-4. **Phase 2.2**: Leaf detection (known API signatures)
-5. **Phase 3.1**: Translation order (topological sort)
-6. **Phase 3.2**: Context enrichment (prompt template additions)
-7. **Phase 4**: Integration with existing pipeline
-
-### Minimum Viable Product
-
-The MVP can be achieved with:
-- Basic call graph extraction (regex only)
-- Root detection for common entry points (main, WinMain, DllMain)
-- Skip roots during translation
-- Simple context: list of callees in prompt
-
-**Estimated effort**: 2-3 weeks
-
-### Full Feature Set
-
-The full feature set requires:
-- All phases above
-- Indirect call analysis
-- Cross-DLL call detection
-- Comprehensive API signature database
-- Runtime library detection
-- Streaming analysis
-
-**Estimated effort**: 2-3 months
-
-## Files to Create/Modify
-
-### New Files
-
-1. `crates/calxgloss-callgraph/src/lib.rs` — Call graph builder
-2. `crates/calxgloss-callgraph/src/builder.rs` — Graph construction
-3. `crates/calxgloss-callgraph/src/root_detector.rs` — Root detection
-4. `crates/calxgloss-callgraph/src/leaf_detector.rs` — Leaf detection
-5. `crates/calxgloss-callgraph/src/models.rs` — Data structures
-6. `Documentation/call_graph_assisted_translation.md` — This document
-
-### Modified Files
-
-1. `crates/calxgloss-ghidra/src/lib.rs` — Enhanced call graph extraction
-2. `crates/calxgloss-types/src/function.rs` — Add call graph fields
-3. `crates/calxgloss-types/src/dll.rs` — Add RuntimeLibrary variant
-4. `crates/calxgloss-analysis/src/lib.rs` — Integrate call graph analysis
-5. `crates/calxgloss-analysis/src/dependency.rs` — Enhance edges
-6. `crates/calxgloss-translator/src/lib.rs` — Use call graph for ordering/context
-7. `crates/calxgloss-translator/src/batch.rs` — Batch ordering
-8. `crates/calxgloss-prompts/src/lib.rs` — Add call graph context to prompts
-9. `crates/calxgloss-cli/src/main.rs` — Add `--no-callgraph` flag
-
-## Testing Strategy
-
-### Unit Tests
-
-1. **Call graph construction**: Test with synthetic function data
-2. **Root detection**: Test with known entry point names
-3. **Leaf detection**: Test with known API signatures
-4. **Translation ordering**: Test topological sort with known graph
-5. **Context enrichment**: Test prompt generation with call graph data
-
-### Integration Tests
-
-1. **End-to-end**: Run full pipeline on a test DLL
-2. **Performance**: Measure time/memory for large DLLs
-3. **Context quality**: Evaluate translation quality with/without call graph
-
-### Manual Testing
-
-1. **CRT application**: Test with a C/C++ app that uses MSVC runtime
-2. **VB6 application**: Test with a VB6 app that uses msvbvm60.dll
-3. **DirectX application**: Test with a game that uses Direct3D
-4. **Large application**: Test with a DLL having 1000+ functions
-
-## Open Questions
-
-1. **Should we require the call graph, or make it optional?**
-   - Recommended: Make it optional (`--no-callgraph`), use it by default
-
-2. **How do we handle functions that call both third-party APIs and application functions?**
-   - Classify as "middle" but include all callee context
-
-3. **What if a function has no call graph data (missing from analysis)?**
-   - Fall back to current behavior (translate in discovery order)
-
-4. **Should we use the call graph for dependency tracking (translation order) or just for context enrichment?**
-   - Both: use for ordering AND context enrichment
-
-5. **How do we handle DLLs that are not PE format (e.g., Mach-O, ELF)?**
-   - Currently calxgloss focuses on PE/DLL, so this is out of scope
-
-6. **Should we infer call graph from decompiler call statements, disassembly, or both?**
-   - Both: decompiler for direct calls, disassembly for indirect calls
-
-## Conclusion
-
-The Root & Leaf methodology represents a significant improvement over the current flat function discovery approach. By leveraging the call graph structure, we can:
-
-1. **Skip** known runtime functions (saving translation time)
-2. **Enrich** translation prompts with semantic context (improving quality)
-3. **Prioritize** translation order (improving efficiency)
-4. **Understand** function purpose through API usage patterns (improving accuracy)
-
-The main challenges are call graph completeness (due to Ghidra limitations) and scaling to large DLLs. Both can be mitigated with hybrid analysis approaches and streaming processing.
-
-The MVP is achievable in 2-3 weeks, with the full feature set requiring 2-3 months of development.
+**Full path** (Tasks 9-13): +14 days after MVP. Delivers translation ordering, prompt context injection, CLI control, and expanded pattern libraries.
