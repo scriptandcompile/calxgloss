@@ -173,7 +173,7 @@ impl CallGraphBuilder {
                 name_to_addr
                     .get(&caller_name)
                     .copied()
-                    .or_else(|| {
+                    .or({
                         // The caller name isn't in the listing — it might be
                         // an unnamed or anonymous caller reference.  Treat it
                         // as an xref whose target function has no listing

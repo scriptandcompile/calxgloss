@@ -17,9 +17,8 @@ use calxgloss_callgraph::{
 };
 
 /// ---------------------------------------------------------------------------
-//  Helpers
+/// Helpers
 /// ---------------------------------------------------------------------------
-
 /// Build a small synthetic call graph (no Ghidra required).
 ///
 /// ```text
@@ -207,9 +206,8 @@ fn test_root_detection_classifies_dllmain() {
 }
 
 /// ---------------------------------------------------------------------------
-//  Full pipeline (requires Ghidra)
+/// Full pipeline (requires Ghidra)
 /// ---------------------------------------------------------------------------
-
 /// End-to-end test: fetch functions from Ghidra, build graph, classify, persist.
 ///
 /// Ignored by default because it requires a live GhidraMCP server with a
@@ -231,7 +229,7 @@ async fn test_full_pipeline_ghidra_to_persist() {
         .await
         .expect("list_functions should succeed");
     assert!(
-        functions.len() > 0,
+        !functions.is_empty(),
         "expected at least one function in the open program"
     );
 
