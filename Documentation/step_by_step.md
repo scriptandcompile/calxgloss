@@ -332,9 +332,22 @@ Added `--callgraph-cache` flag to `translate`, `batch-translate`, `auto`, and `l
 - `TranslationPipeline::with_callgraph_cache_dir()` builder method threads cache dir through the pipeline
 - Default path remains `re/analysis/{dll}_call_graph.json` when flag is not specified
 
-### Step 7.3 — Add `--callgraph-verbose` Flag ❌ NOT DONE
+### Step 7.3 — Add `--callgraph-verbose` Flag ✅ DONE
 
-No CLI flag to print call graph statistics during analysis.
+Added `--callgraph-verbose` flag to `translate`, `batch-translate`, `auto`, and `live` subcommands.
+
+When set, prints a formatted call graph statistics box after building the graph:
+- Total function count
+- Root / Middle / Leaf / Skip distribution
+- Total edge count
+- Call-type breakdown (Direct / Indirect / Virtual)
+- Number of unique external APIs
+- Average callees per function
+
+Implementation:
+- `print_call_graph_stats()` in `calxgloss-analysis/src/callgraph.rs` computes and prints statistics
+- `with_callgraph_verbose()` builder method on `TranslationPipeline`
+- Stats are printed in `translate()` after the call graph is built or loaded for context enrichment
 
 ---
 
@@ -375,7 +388,7 @@ No CLI flag to print call graph statistics during analysis.
 
 ## Summary
 
-### Completed (~63%)
+### Completed (~65%)
 
 | Category | Details |
 |----------|---------|
@@ -389,7 +402,7 @@ No CLI flag to print call graph statistics during analysis.
 | **Dependency graph** | `build_dependency_graph_from_call_graph` with 8 tests |
 | **Prompt templates** | `call_graph_context` fields on all templates |
 | **Context enrichment wiring** | `ContextEnricher` called from `TranslationPipeline::translate()`, `retry/helpers.rs`, and `Translator` |
-| **CLI flag** | `--no-callgraph`, `--callgraph-cache` on all subcommands |
+| **CLI flag** | `--no-callgraph`, `--callgraph-cache`, `--callgraph-verbose` on all subcommands |
 | **Runtime library** | `RuntimeLibrary` DLL category with classification and skip logic |
 | **Tests** | 103 unit tests + 4 integration tests across all modules |
 
@@ -402,7 +415,6 @@ No CLI flag to print call graph statistics during analysis.
 | **Virtual call detection** | Vtable pattern matching in decompiler output |
 | **Cross-DLL import mapping** | PE import table parsing |
 | **Pipeline integration** | `Analyzer` calls `build_enriched_call_graph` automatically |
-| **CLI flags** | `--callgraph-verbose` |
 | **Real-binary testing** | Manual validation on VB6, DirectX, large DLLs |
 
 ### Priority Order for Remaining Work
@@ -410,6 +422,5 @@ No CLI flag to print call graph statistics during analysis.
 1. **Pipeline integration** (M6.1) — The most impactful: makes the call graph actually affect translation
 2. **Types extension** (M0.3) — `FunctionInfo` needs richer call graph data
 3. **Context enrichment** (M5.2) — Remaining context rendering in templates
-4. **CLI flags** (M7.2, M7.3) — Convenience features
-5. **Advanced extraction** (M1.3, M1.4, M1.5) — Nice-to-have accuracy improvements
-6. **Real-binary testing** (M8.5–8.7) — Validation before production
+4. **Advanced extraction** (M1.3, M1.4, M1.5) — Nice-to-have accuracy improvements
+5. **Real-binary testing** (M8.5–8.7) — Validation before production
