@@ -115,6 +115,13 @@ pub(super) struct TranslateArgs {
     /// Skip call-graph extraction (faster when call-graph context is not needed)
     #[arg(long)]
     pub(super) no_callgraph: bool,
+
+    /// Custom directory for call graph cache files
+    ///
+    /// By default, call graphs are stored in `{workspace}/re/analysis/`. This
+    /// flag overrides the default location.
+    #[arg(long, value_name = "DIR")]
+    pub(super) callgraph_cache: Option<PathBuf>,
 }
 
 /// Arguments for the `batch-translate` subcommand.
@@ -147,6 +154,13 @@ pub(super) struct BatchTranslateArgs {
     /// Skip call-graph extraction (faster when call-graph context is not needed)
     #[arg(long)]
     pub(super) no_callgraph: bool,
+
+    /// Custom directory for call graph cache files
+    ///
+    /// By default, call graphs are stored in `{workspace}/re/analysis/`. This
+    /// flag overrides the default location.
+    #[arg(long, value_name = "DIR")]
+    pub(super) callgraph_cache: Option<PathBuf>,
 }
 
 /// Subcommands for the CLI.
@@ -251,6 +265,13 @@ pub(super) enum Command {
         /// Skip call-graph extraction (faster when call-graph context is not needed)
         #[arg(long)]
         no_callgraph: bool,
+
+        /// Custom directory for call graph cache files
+        ///
+        /// By default, call graphs are stored in `{workspace}/re/analysis/`. This
+        /// flag overrides the default location.
+        #[arg(long, value_name = "DIR")]
+        callgraph_cache: Option<PathBuf>,
     },
 
     /// Start the web review UI server
@@ -341,6 +362,13 @@ pub(super) enum Command {
         /// Skip call-graph extraction (faster when call-graph context is not needed)
         #[arg(long)]
         no_callgraph: bool,
+
+        /// Custom directory for call graph cache files
+        ///
+        /// By default, call graphs are stored in `{workspace}/re/analysis/`. This
+        /// flag overrides the default location.
+        #[arg(long, value_name = "DIR")]
+        callgraph_cache: Option<PathBuf>,
     },
 
     /// Generate shim layers for all crate-replacement DLLs automatically.

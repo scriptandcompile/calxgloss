@@ -23,6 +23,7 @@ pub async fn handle_live(
     port: u16,
     settings: &Settings,
     no_callgraph: bool,
+    callgraph_cache: Option<PathBuf>,
 ) -> Result<()> {
     info!(
         port,
@@ -133,6 +134,7 @@ pub async fn handle_live(
         Some(&events), // pass event emitter for live progress streaming
         repo_dir,      // resolved repo_dir (same value used by serve task)
         no_callgraph,
+        callgraph_cache,
     )
     .await;
 

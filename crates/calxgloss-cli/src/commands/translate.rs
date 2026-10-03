@@ -26,6 +26,7 @@ pub async fn handle_translate(
     args: &TranslateArgs,
     settings: &Settings,
     repo_dir: PathBuf,
+    callgraph_cache: Option<PathBuf>,
 ) -> Result<()> {
     let TranslateArgs {
         target,
@@ -121,6 +122,10 @@ pub async fn handle_translate(
     if no_callgraph {
         pipeline = pipeline.with_no_callgraph();
     }
+    if let Some(cache_dir) = callgraph_cache {
+        pipeline = pipeline.with_callgraph_cache_dir(cache_dir);
+    }
+    pipeline = pipeline.with_workspace(&output_dir);
 
     // Git setup
     let mut git = if !skip_git {

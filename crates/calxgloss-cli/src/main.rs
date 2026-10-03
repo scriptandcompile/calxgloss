@@ -135,6 +135,7 @@ fn main() -> Result<()> {
         classify_only: false,
         skip_git: false,
         no_callgraph: false,
+        callgraph_cache: None,
     });
     let result = match command {
         Command::Config => {
@@ -162,19 +163,21 @@ fn main() -> Result<()> {
         }
         Command::Translate(args) => {
             let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
+            let callgraph_cache = args.callgraph_cache.clone();
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_translate(&args, &settings, repo_dir))
+                .block_on(handle_translate(&args, &settings, repo_dir, callgraph_cache))
         }
         Command::BatchTranslate(args) => {
             let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
+            let callgraph_cache = args.callgraph_cache.clone();
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_batch_translate(&args, &settings, repo_dir))
+                .block_on(handle_batch_translate(&args, &settings, repo_dir, callgraph_cache))
         }
         Command::Verify {
             dll,
@@ -248,6 +251,7 @@ fn main() -> Result<()> {
             classify_only,
             skip_git,
             no_callgraph,
+            callgraph_cache,
         } => {
             let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
@@ -265,6 +269,7 @@ fn main() -> Result<()> {
                     None,  // no event emitter in interactive mode
                     repo_dir,
                     no_callgraph,
+                    callgraph_cache,
                 ))
         }
         Command::AutoShim { dll, skip_git } => {
@@ -308,6 +313,7 @@ fn main() -> Result<()> {
             skip_git,
             port,
             no_callgraph,
+            callgraph_cache,
             ..
         } => {
             // live always uses CWD as repo_dir — config / env overrides are
@@ -328,6 +334,7 @@ fn main() -> Result<()> {
                     port,
                     &settings,
                     no_callgraph,
+                    callgraph_cache,
                 ))
         }
     };
