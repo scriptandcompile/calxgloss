@@ -13,7 +13,7 @@ This plan turns the concepts in `Calxgloss.md` and `call_graph_assisted_translat
 | **M2** — Graph Builder & Persistence | Build adjacency map, persist to JSON | 2–3 days | ✅ Partial |
 | **M3** — Root & Leaf Classification | Detect roots, leaves, middle nodes | 3–4 days | ✅ Partial |
 | **M3.5** — Runtime Library Detection | RuntimeLibrary category, DLL wiring | 0.5 days | ✅ DONE |
-| **M4** — Translation Ordering | Topological sort, priority queue | 2–3 days | ✅ Partial |
+| **M4** — Translation Ordering | Topological sort, priority queue | 2–3 days | ✅ DONE |
 | **M5** — Context Enrichment | Call graph data in LLM prompts | 2–3 days | ❌ Not done |
 | **M6** — Pipeline Integration | Wire everything into the analysis pipeline | 3–4 days | ❌ Not done |
 | **M7** — CLI & Flags | `--no-callgraph`, streaming mode | 1–2 days | ✅ Partial |
@@ -204,9 +204,19 @@ In `crates/calxgloss-callgraph/src/ordering.rs`:
 2. Topological sort within each tier
 3. Returns plans with caller/callee counts and names
 
-### Step 4.4 — Batch Planning ❌ NOT DONE
+### Step 4.4 — Batch Planning ✅ DONE
 
-**Missing:** `plan_from_callgraph()` method in `calxgloss-translator`. The `TranslationOrderer` exists but is not wired into the batch translation pipeline. The translator still uses discovery order from `FunctionInfo.call_graph`.
+**Implemented in `calxgloss-translator`:**
+- `TranslationPipeline::plan_from_callgraph()` method added (`pipeline.rs`)
+  - Takes a `CallGraph` and optional `max_functions` limit
+  - Uses `TranslationOrderer` internally to produce `Vec<FunctionTranslationPlan>`
+  - Returns `Result<Vec<FunctionTranslationPlan>>` with priority-ordered functions
+- Added `TranslatorError::CallGraph(String)` variant for planning errors
+- Added `calxgloss-callgraph` dependency to `calxgloss-translator/Cargo.toml`
+
+The `TranslationOrderer` is now wired into the batch translation pipeline via the `TranslationPipeline` struct. Consumers can call `plan_from_callgraph(&call_graph, max)` to get a priority-ordered list of functions (Root → Middle → Leaf) for batch translation.
+
+**Tests:** 3 new tests in `lib.rs` — empty graph, three-tier ordering with topological sort, and max-functions truncation.
 
 ---
 
@@ -327,6 +337,7 @@ No CLI flag to print call graph statistics during analysis.
 | **Root detection** | 7 pattern categories + configurable rules + runtime DLL detection |
 | **Leaf detection** | 100+ APIs, 10 categories, fuzzy matching, transitive analysis |
 | **Translation ordering** | Priority tiers + topological sort (exists in crate) |
+| **Batch planning** | `TranslationPipeline::plan_from_callgraph()` wires `TranslationOrderer` into the translator |
 | **Dependency graph** | `build_dependency_graph_from_call_graph` with 8 tests |
 | **Prompt templates** | `call_graph_context` fields on all templates |
 | **CLI flag** | `--no-callgraph` on all subcommands |
@@ -341,7 +352,6 @@ No CLI flag to print call graph statistics during analysis.
 | **Indirect call detection** | Disassembly scan for `call [reg]` patterns |
 | **Virtual call detection** | Vtable pattern matching in decompiler output |
 | **Cross-DLL import mapping** | PE import table parsing |
-| **Batch planning** | `plan_from_callgraph` wired into translator |
 | **Context enrichment pipeline** | `ContextEnricher` called from production code |
 | **Caller/callee limiting** | Top-N and size-based filtering |
 | **Pipeline integration** | `Analyzer` calls `build_enriched_call_graph` automatically |
@@ -354,7 +364,6 @@ No CLI flag to print call graph statistics during analysis.
 1. **Pipeline integration** (M6.1, M6.3, M6.4) — The most impactful: makes the call graph actually affect translation
 2. **Types extension** (M0.3) — `FunctionInfo` needs richer call graph data
 3. **Context enrichment** (M5.2, M5.3) — Fills in the empty `call_graph_context` on prompts
-4. **Batch planning** (M4.4) — Replaces discovery-order with priority-ordered translation
-5. **CLI flags** (M7.2, M7.3) — Convenience features
-6. **Advanced extraction** (M1.3, M1.4, M1.5) — Nice-to-have accuracy improvements
-7. **Real-binary testing** (M8.5–8.7) — Validation before production
+4. **CLI flags** (M7.2, M7.3) — Convenience features
+5. **Advanced extraction** (M1.3, M1.4, M1.5) — Nice-to-have accuracy improvements
+6. **Real-binary testing** (M8.5–8.7) — Validation before production
