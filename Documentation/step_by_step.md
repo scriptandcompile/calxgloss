@@ -240,12 +240,34 @@ In `crates/calxgloss-prompts/src/templates.rs`:
 
 All templates (`escalate.j2`, `with_tests_translate.j2`, `module_context_translate.j2`, `full_module_translate.j2`) already had rendering logic for the `call_graph_context` field.
 
-### Step 5.3 — Caller/Callee Limiting ❌ NOT DONE
+### Step 5.3 — Caller/Callee Limiting ✅ DONE
 
-**Missing:**
-- No top-N limiting on callers
-- No filtering of internal DLL function callees
-- No size-based enrichment skipping
+**Implemented in `crates/calxgloss-callgraph/src/context.rs`:**
+
+Added `ContextEnricherConfig` with configurable options for limiting enrichment data:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `max_callers` | 10 | Top-N limit on callers per function context (0 = no limit) |
+| `max_callees` | 50 | Top-N limit on callees per function context (0 = no limit) |
+| `filter_internal_callees` | true | When true, excludes callees that exist as nodes in the same call graph |
+| `max_neighbor_count` | 200 | If total callers + callees exceeds this, enrichment is skipped entirely |
+
+Added `ContextEnricher::with_config()` constructor for custom configuration.
+
+**New types and functions exported from `context` module:**
+- `ContextEnricherConfig` — configuration struct with public fields
+- `skipped_contexts()` — utility to collect contexts where `context_skipped` is `true`
+
+**`FunctionContext` extended with `context_skipped: bool` field** — indicates when a function's context was skipped due to exceeding the neighbor count threshold.
+
+**Behavior:**
+1. Size-based skip is checked on raw neighbor counts before limiting/filtering, ensuring functions with too many neighbors produce minimal context
+2. Internal callee filtering removes callees whose addresses exist in the same call graph, keeping only external API calls
+3. Top-N limiting truncates caller/callee lists to the configured maximum
+4. When a function is skipped, all context fields (callers, callees, categorized_callees, leaf_api_context) are empty, and `context_skipped` is `true`
+
+**Tests:** 12 new tests covering top-N caller/callee limiting, internal callee filtering, size-based skipping, skipped contexts helper, and default config values.
 
 ---
 
@@ -351,7 +373,7 @@ No CLI flag to print call graph statistics during analysis.
 | **Runtime library** | `RuntimeLibrary` DLL category with classification and skip logic |
 | **Tests** | 103 unit tests + 4 integration tests across all modules |
 
-### Not Yet Done (~40%)
+### Not Yet Done (~38%)
 
 | Category | Blockers |
 |----------|----------|
@@ -359,7 +381,6 @@ No CLI flag to print call graph statistics during analysis.
 | **Indirect call detection** | Disassembly scan for `call [reg]` patterns |
 | **Virtual call detection** | Vtable pattern matching in decompiler output |
 | **Cross-DLL import mapping** | PE import table parsing |
-| **Caller/callee limiting** | Top-N and size-based filtering |
 | **Pipeline integration** | `Analyzer` calls `build_enriched_call_graph` automatically |
 | **Skip runtime functions** | `NodeCategory` checked before translation, stub generation |
 | **Additional CLI flags** | `--callgraph-cache`, `--callgraph-verbose` |
@@ -369,7 +390,7 @@ No CLI flag to print call graph statistics during analysis.
 
 1. **Pipeline integration** (M6.1, M6.3, M6.4) — The most impactful: makes the call graph actually affect translation
 2. **Types extension** (M0.3) — `FunctionInfo` needs richer call graph data
-3. **Context enrichment** (M5.2, M5.3) — Fills in the empty `call_graph_context` on prompts
+3. **Context enrichment** (M5.2) — Remaining context rendering in templates
 4. **CLI flags** (M7.2, M7.3) — Convenience features
 5. **Advanced extraction** (M1.3, M1.4, M1.5) — Nice-to-have accuracy improvements
 6. **Real-binary testing** (M8.5–8.7) — Validation before production
