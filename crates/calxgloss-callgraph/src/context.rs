@@ -34,7 +34,7 @@
 //! ```
 
 use crate::{CallGraph, FunctionCallGraph, LeafCategory, LeafDetector};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tracing::debug;
 
 /// A minimal reference to a call graph node (by name and address).
@@ -85,7 +85,7 @@ pub struct LeafApiContext {
 ///
 /// This is the primary output of the context enrichment pipeline.
 /// Each field is populated from the call graph and leaf detector analysis.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct FunctionContext {
     /// The function's human-readable name.
     pub name: String,
@@ -99,12 +99,55 @@ pub struct FunctionContext {
     pub categorized_callees: Vec<CalleeGroup>,
     /// Leaf API context: matched API signatures with Rust crate suggestions.
     pub leaf_api_context: Vec<LeafApiContext>,
+    /// True when this function's context was skipped due to exceeding
+    /// [`ContextEnricherConfig::max_neighbor_count`].
+    pub context_skipped: bool,
+}
+
+/// Configuration for context enrichment behavior.
+///
+/// Controls how caller/callee data is limited and filtered when producing
+/// [`FunctionContext`] objects, preventing excessively large prompts
+/// for functions with many neighbors.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContextEnricherConfig {
+    /// Maximum number of callers to include per function context.
+    /// A value of 0 means no limit.
+    pub max_callers: usize,
+    /// Maximum number of callees to include per function context.
+    /// A value of 0 means no limit.
+    pub max_callees: usize,
+    /// When true, filters out callees that exist as nodes in the same
+    /// call graph (internal functions), keeping only external API calls.
+    pub filter_internal_callees: bool,
+    /// If the total neighbor count (callers + callees) for a function
+    /// exceeds this value, that function's context is skipped entirely.
+    /// A value of 0 means no skip threshold.
+    pub max_neighbor_count: usize,
+}
+
+impl Default for ContextEnricherConfig {
+    fn default() -> Self {
+        Self {
+            max_callers: 10,
+            max_callees: 50,
+            filter_internal_callees: true,
+            max_neighbor_count: 200,
+        }
+    }
 }
 
 /// Produces enriched context data for all functions in a call graph.
 ///
 /// The enricher uses the [`LeafDetector`] to classify callees into
 /// API categories and attach Rust crate suggestions for context enrichment.
+///
+/// The enricher also applies limiting, filtering, and size-based
+/// heuristics to keep context data manageable for LLM prompt injection:
+///
+/// - Top-N limiting on callers and callees
+/// - Internal callee filtering (excludes same-graph functions)
+/// - Size-based enrichment skipping for highly-connected functions
 ///
 /// # Example
 ///
@@ -124,13 +167,22 @@ pub struct FunctionContext {
 pub struct ContextEnricher {
     /// Detector used to classify callees as known third-party APIs.
     leaf_detector: LeafDetector,
+    /// Configuration controlling limiting and filtering behavior.
+    config: ContextEnricherConfig,
 }
 
 impl ContextEnricher {
-    /// Creates a new `ContextEnricher` with a default [`LeafDetector`].
+    /// Creates a new `ContextEnricher` with a default [`LeafDetector`]
+    /// and default configuration.
     pub fn new() -> Self {
+        Self::with_config(ContextEnricherConfig::default())
+    }
+
+    /// Creates a new `ContextEnricher` with the given [`ContextEnricherConfig`].
+    pub fn with_config(config: ContextEnricherConfig) -> Self {
         Self {
             leaf_detector: LeafDetector::new(),
+            config,
         }
     }
 
@@ -139,9 +191,11 @@ impl ContextEnricher {
     /// The enrichment process:
     ///
     /// 1. Builds address-to-function and address-to-name lookups from the graph.
-    /// 2. For each function, resolves caller addresses to names.
-    /// 3. Classifies each callee using the leaf detector for API categorization.
-    /// 4. Collects leaf API context (matched APIs with Rust crate suggestions).
+    /// 2. For each function, checks if neighbor count exceeds the skip threshold
+    ///    and marks the context as skipped if so.
+    /// 3. Applies top-N limiting and internal callee filtering per [`ContextEnricherConfig`].
+    /// 4. Classifies each callee using the leaf detector for API categorization.
+    /// 5. Collects leaf API context (matched APIs with Rust crate suggestions).
     ///
     /// Returns an empty vector if the graph contains no functions.
     pub fn enrich(&self, graph: &CallGraph) -> Vec<FunctionContext> {
@@ -150,14 +204,18 @@ impl ContextEnricher {
             return Vec::new();
         }
 
-        // Build an address-to-function lookup for quick caller name resolution.
+        // Build an address-to-function lookup for quick caller name resolution
+        // and internal callee filtering.
         let addr_to_func: HashMap<u64, &FunctionCallGraph> =
             graph.functions.iter().map(|f| (f.address, f)).collect();
+
+        let internal_addrs: HashSet<u64> =
+            graph.functions.iter().map(|f| f.address).collect();
 
         let mut contexts = Vec::with_capacity(graph.functions.len());
 
         for func in &graph.functions {
-            let ctx = self.enrich_function(func, &addr_to_func);
+            let ctx = self.enrich_function(func, &addr_to_func, &internal_addrs);
             contexts.push(ctx);
         }
 
@@ -171,13 +229,17 @@ impl ContextEnricher {
     }
 
     /// Enriches a single function with caller, callee, and leaf API context.
+    ///
+    /// Applies top-N limiting, internal callee filtering, and size-based
+    /// skipping according to the enricher's configuration.
     fn enrich_function(
         &self,
         func: &FunctionCallGraph,
         addr_to_func: &HashMap<u64, &FunctionCallGraph>,
+        internal_addrs: &HashSet<u64>,
     ) -> FunctionContext {
         // Resolve callers to named references.
-        let callers: Vec<CallEdgeInfo> = func
+        let raw_callers: Vec<CallEdgeInfo> = func
             .callers
             .iter()
             .map(|&caller_addr| {
@@ -199,7 +261,7 @@ impl ContextEnricher {
             .collect();
 
         // Resolve callees to named references.
-        let callees: Vec<CallEdgeInfo> = func
+        let raw_callees: Vec<CallEdgeInfo> = func
             .callees
             .iter()
             .map(|edge| {
@@ -218,11 +280,38 @@ impl ContextEnricher {
             })
             .collect();
 
-        // Classify callees into categorized groups via leaf detector.
-        let categorized_callees = self.build_categorized_callees(func);
+        // Check size-based enrichment skipping BEFORE limiting/filtering.
+        let context_skipped = self.config.max_neighbor_count > 0
+            && (func.callers.len() + func.callees.len()) > self.config.max_neighbor_count;
 
-        // Collect leaf API context for prompt injection.
-        let leaf_api_context = self.build_leaf_api_context(func);
+        // Apply limiting and filtering.
+        let (callers, callees) = if context_skipped {
+            (Vec::new(), Vec::new())
+        } else {
+            // Apply top-N limiting on callers.
+            let callers = self.limit_top_n(raw_callers, self.config.max_callers);
+
+            // Filter internal callees and apply top-N limiting.
+            let callees = if self.config.filter_internal_callees {
+                let filtered: Vec<CallEdgeInfo> = raw_callees
+                    .into_iter()
+                    .filter(|edge| !internal_addrs.contains(&edge.node.address))
+                    .collect();
+                self.limit_top_n(filtered, self.config.max_callees)
+            } else {
+                self.limit_top_n(raw_callees, self.config.max_callees)
+            };
+
+            (callers, callees)
+        };
+
+        let (categorized_callees, leaf_api_context) = if context_skipped {
+            (Vec::new(), Vec::new())
+        } else {
+            let categorized_callees = self.build_categorized_callees(func);
+            let leaf_api_context = self.build_leaf_api_context(func);
+            (categorized_callees, leaf_api_context)
+        };
 
         debug!(
             func_name = %func.name,
@@ -230,6 +319,7 @@ impl ContextEnricher {
             callees = callees.len(),
             categories = categorized_callees.len(),
             leaf_apis = leaf_api_context.len(),
+            skipped = context_skipped,
             "Enriched function context"
         );
 
@@ -240,6 +330,17 @@ impl ContextEnricher {
             callees,
             categorized_callees,
             leaf_api_context,
+            context_skipped,
+        }
+    }
+
+    /// Limits a vector to its first `max_items` elements, or returns it
+    /// unmodified if `max_items` is 0.
+    fn limit_top_n<T>(&self, items: Vec<T>, max_items: usize) -> Vec<T> {
+        if max_items == 0 {
+            items
+        } else {
+            items.into_iter().take(max_items).collect()
         }
     }
 
@@ -294,6 +395,16 @@ impl Default for ContextEnricher {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Returns the list of function contexts that were skipped during enrichment
+/// due to exceeding the neighbor count threshold.
+///
+/// Skipped contexts have [`FunctionContext::context_skipped`] set to `true`.
+/// They serve as placeholders so the output vector aligns with the input
+/// graph's function ordering.
+pub fn skipped_contexts(contexts: &[FunctionContext]) -> Vec<&FunctionContext> {
+    contexts.iter().filter(|c| c.context_skipped).collect()
 }
 
 #[cfg(test)]
@@ -610,13 +721,15 @@ mod tests {
                     "middle_fn",
                     0x2000,
                     vec![0x1000],
-                    vec![("leaf_fn", 0x3000, CallType::Direct)],
+                    // leaf_external is NOT in the graph, so it won't be filtered.
+                    vec![("leaf_external", 0x8000, CallType::Direct)],
                     NodeCategory::Middle,
                 ),
                 make_func(
                     "leaf_fn",
                     0x3000,
                     vec![0x2000],
+                    // MessageBox address not in the graph.
                     vec![("MessageBox", 0x500000, CallType::Direct)],
                     NodeCategory::Leaf,
                 ),
@@ -724,6 +837,8 @@ mod tests {
                     vec![
                         ("ui_init", 0x1000, CallType::Direct),
                         ("file_ops", 0x2000, CallType::Direct),
+                        // Add an external callee so internal filtering doesn't remove everything.
+                        ("GetTickCount", 0x500002, CallType::Direct),
                     ],
                     NodeCategory::Middle,
                 ),
@@ -750,13 +865,351 @@ mod tests {
         assert_eq!(file_ctx.leaf_api_context.len(), 1);
         assert_eq!(file_ctx.leaf_api_context[0].api_name, "CreateFile");
 
-        // Middle function should have no leaf API context but should have callees
+        // Middle function's internal callees (ui_init, file_ops) are filtered out,
+        // but external callee (GetTickCount) remains.
         let main_ctx = contexts
             .iter()
             .find(|c| c.name == "app_main")
             .expect("app_main not found");
         assert!(main_ctx.leaf_api_context.is_empty());
-        assert_eq!(main_ctx.callees.len(), 2);
+        assert_eq!(main_ctx.callees.len(), 1);
+        assert_eq!(main_ctx.callees[0].node.name, "GetTickCount");
         assert!(main_ctx.categorized_callees.is_empty());
+    }
+
+    // --- Top-N Caller Limiting ---
+
+    #[test]
+    fn test_top_n_caller_limiting() {
+        // Build caller functions in the graph.
+        let caller_data = [
+            ("caller_a", 0x1000),
+            ("caller_b", 0x1001),
+            ("caller_c", 0x1002),
+            ("caller_d", 0x1003),
+            ("caller_e", 0x1004),
+        ];
+        let callers: Vec<_> = caller_data
+            .iter()
+            .enumerate()
+            .map(|(_i, (name, addr))| {
+                make_func(name, *addr, vec![], vec![], NodeCategory::Middle)
+            })
+            .collect();
+
+        // Add the target function to the graph.
+        let target = FunctionCallGraph {
+            name: "target".to_string(),
+            address: 0x5000,
+            callers: caller_data.iter().map(|(_, addr)| *addr).collect(),
+            callees: Vec::new(),
+            node_category: NodeCategory::Middle,
+        };
+
+        let graph = CallGraph {
+            dll: "limit_callers.dll".to_string(),
+            functions: callers,
+        };
+        // Manually add target's context by including it in the graph.
+        let mut graph_funcs = graph.functions;
+        graph_funcs.push(target);
+        let graph = CallGraph {
+            dll: "limit_callers.dll".to_string(),
+            functions: graph_funcs,
+        };
+
+        let config = ContextEnricherConfig {
+            max_callers: 2,
+            max_callees: 0,
+            filter_internal_callees: false,
+            max_neighbor_count: 0,
+        };
+        let enricher = ContextEnricher::with_config(config);
+        let contexts = enricher.enrich(&graph);
+
+        let target_ctx = contexts
+            .iter()
+            .find(|c| c.name == "target")
+            .expect("target not found");
+        assert_eq!(target_ctx.callers.len(), 2, "should be limited to 2 callers");
+        assert_eq!(target_ctx.callers[0].node.name, "caller_a");
+        assert_eq!(target_ctx.callers[1].node.name, "caller_b");
+    }
+
+    #[test]
+    fn test_zero_max_callers_means_no_limit() {
+        let graph = CallGraph {
+            dll: "no_limit.dll".to_string(),
+            functions: vec![
+                make_func("target", 0x5000, vec![0x1000, 0x1001, 0x1002], vec![], NodeCategory::Middle),
+                make_func("caller_a", 0x1000, vec![], vec![], NodeCategory::Middle),
+                make_func("caller_b", 0x1001, vec![], vec![], NodeCategory::Middle),
+                make_func("caller_c", 0x1002, vec![], vec![], NodeCategory::Middle),
+            ],
+        };
+
+        let config = ContextEnricherConfig {
+            max_callers: 0,
+            max_callees: 0,
+            filter_internal_callees: false,
+            max_neighbor_count: 0,
+        };
+        let enricher = ContextEnricher::with_config(config);
+        let contexts = enricher.enrich(&graph);
+
+        let target_ctx = contexts
+            .iter()
+            .find(|c| c.name == "target")
+            .expect("target not found");
+        assert_eq!(target_ctx.callers.len(), 3, "zero max means no limit");
+    }
+
+    // --- Top-N Callee Limiting ---
+
+    #[test]
+    fn test_top_n_callee_limiting() {
+        let callees: Vec<_> = (0..10u64)
+            .map(|i| CallGraphEdge {
+                source: 0x1000,
+                target: 0x2000 + i,
+                call_site: 0,
+                call_type: CallType::Direct,
+                callee_name: format!("api_{}", i),
+            })
+            .collect();
+
+        let graph = CallGraph {
+            dll: "limit_callees.dll".to_string(),
+            functions: vec![FunctionCallGraph {
+                name: "big_caller".to_string(),
+                address: 0x1000,
+                callers: vec![],
+                callees,
+                node_category: NodeCategory::Middle,
+            }],
+        };
+
+        let config = ContextEnricherConfig {
+            max_callers: 0,
+            max_callees: 3,
+            filter_internal_callees: false,
+            max_neighbor_count: 0,
+        };
+        let enricher = ContextEnricher::with_config(config);
+        let contexts = enricher.enrich(&graph);
+
+        let ctx = &contexts[0];
+        assert_eq!(ctx.callees.len(), 3, "should be limited to 3 callees");
+        assert_eq!(ctx.callees[0].node.name, "api_0");
+        assert_eq!(ctx.callees[2].node.name, "api_2");
+    }
+
+    // --- Internal Callee Filtering ---
+
+    #[test]
+    fn test_internal_callees_filtered() {
+        let func_a = make_func("func_a", 0x1000, vec![], vec![("func_b", 0x2000, CallType::Direct)], NodeCategory::Middle);
+        // func_b calls func_c (internal at 0x3000) AND MessageBox (external at 0x500000).
+        let func_b = make_func("func_b", 0x2000, vec![0x1000], vec![
+            ("func_c", 0x3000, CallType::Direct),
+            ("MessageBox", 0x500000, CallType::Direct),
+        ], NodeCategory::Middle);
+        let func_c = make_func("func_c", 0x3000, vec![0x2000], vec![("MessageBox", 0x500000, CallType::Direct)], NodeCategory::Leaf);
+
+        let graph = CallGraph {
+            dll: "filter_internal.dll".to_string(),
+            functions: vec![func_a, func_b, func_c],
+        };
+
+        let config = ContextEnricherConfig {
+            max_callers: 0,
+            max_callees: 0,
+            filter_internal_callees: true,
+            max_neighbor_count: 0,
+        };
+        let enricher = ContextEnricher::with_config(config);
+        let contexts = enricher.enrich(&graph);
+
+        let ctx_b = contexts
+            .iter()
+            .find(|c| c.name == "func_b")
+            .expect("func_b not found");
+        // func_b calls func_c (internal at 0x3000) and MessageBox (external).
+        // Internal filtering should remove func_c, leaving only MessageBox.
+        assert_eq!(ctx_b.callees.len(), 1);
+        assert_eq!(ctx_b.callees[0].node.name, "MessageBox");
+    }
+
+    #[test]
+    fn test_internal_callees_not_filtered_when_disabled() {
+        let func_a = make_func("func_a", 0x1000, vec![], vec![("func_b", 0x2000, CallType::Direct)], NodeCategory::Middle);
+        let func_b = make_func("func_b", 0x2000, vec![0x1000], vec![("func_c", 0x3000, CallType::Direct)], NodeCategory::Middle);
+        let func_c = make_func("func_c", 0x3000, vec![0x2000], vec![("MessageBox", 0x500000, CallType::Direct)], NodeCategory::Leaf);
+
+        let graph = CallGraph {
+            dll: "no_filter.dll".to_string(),
+            functions: vec![func_a, func_b, func_c],
+        };
+
+        let config = ContextEnricherConfig {
+            max_callers: 0,
+            max_callees: 0,
+            filter_internal_callees: false,
+            max_neighbor_count: 0,
+        };
+        let enricher = ContextEnricher::with_config(config);
+        let contexts = enricher.enrich(&graph);
+
+        let ctx_b = contexts
+            .iter()
+            .find(|c| c.name == "func_b")
+            .expect("func_b not found");
+        // All callees should be present, including internal func_c.
+        assert_eq!(ctx_b.callees.len(), 1);
+        assert_eq!(ctx_b.callees[0].node.name, "func_c");
+    }
+
+    // --- Size-Based Skipping ---
+
+    #[test]
+    fn test_context_skipped_when_neighbor_count_exceeded() {
+        // Create a function with many callers that exceeds the neighbor threshold.
+        let many_callers: Vec<u64> = (0..50).map(|i| 0x1000 + i).collect();
+
+        let graph = CallGraph {
+            dll: "skipped.dll".to_string(),
+            functions: vec![
+                FunctionCallGraph {
+                    name: "overloaded".to_string(),
+                    address: 0x5000,
+                    callers: many_callers,
+                    callees: Vec::new(),
+                    node_category: NodeCategory::Middle,
+                },
+                // Also add a few callers so their addresses are known.
+                make_func("caller_0", 0x1000, vec![], vec![], NodeCategory::Middle),
+                make_func("caller_1", 0x1001, vec![], vec![], NodeCategory::Middle),
+            ],
+        };
+
+        let config = ContextEnricherConfig {
+            max_callers: 0,
+            max_callees: 0,
+            filter_internal_callees: false,
+            max_neighbor_count: 10,
+        };
+        let enricher = ContextEnricher::with_config(config);
+        let contexts = enricher.enrich(&graph);
+
+        let overloaded_ctx = contexts
+            .iter()
+            .find(|c| c.name == "overloaded")
+            .expect("overloaded not found");
+        assert!(overloaded_ctx.context_skipped);
+        assert!(overloaded_ctx.callers.is_empty());
+        assert!(overloaded_ctx.callees.is_empty());
+        assert!(overloaded_ctx.categorized_callees.is_empty());
+        assert!(overloaded_ctx.leaf_api_context.is_empty());
+    }
+
+    #[test]
+    fn test_context_not_skipped_within_threshold() {
+        let graph = CallGraph {
+            dll: "within_threshold.dll".to_string(),
+            functions: vec![
+                FunctionCallGraph {
+                    name: "moderate".to_string(),
+                    address: 0x5000,
+                    callers: vec![0x1000, 0x1001],
+                    callees: vec![CallGraphEdge {
+                        source: 0x5000,
+                        target: 0x6000,
+                        call_site: 0,
+                        call_type: CallType::Direct,
+                        callee_name: "MessageBox".to_string(),
+                    }],
+                    node_category: NodeCategory::Middle,
+                },
+                make_func("caller_0", 0x1000, vec![], vec![], NodeCategory::Middle),
+                make_func("caller_1", 0x1001, vec![], vec![], NodeCategory::Middle),
+            ],
+        };
+
+        let config = ContextEnricherConfig {
+            max_callers: 0,
+            max_callees: 0,
+            filter_internal_callees: false,
+            max_neighbor_count: 10,
+        };
+        let enricher = ContextEnricher::with_config(config);
+        let contexts = enricher.enrich(&graph);
+
+        let moderate_ctx = contexts
+            .iter()
+            .find(|c| c.name == "moderate")
+            .expect("moderate not found");
+        assert!(!moderate_ctx.context_skipped);
+        assert_eq!(moderate_ctx.callers.len(), 2);
+        assert_eq!(moderate_ctx.callees.len(), 1);
+    }
+
+    #[test]
+    fn test_skipped_contexts_helper() {
+        let graph = CallGraph {
+            dll: "skip_helper.dll".to_string(),
+            functions: vec![
+                FunctionCallGraph {
+                    name: "overloaded".to_string(),
+                    address: 0x5000,
+                    callers: (0..50).map(|i| 0x1000 + i).collect(),
+                    callees: Vec::new(),
+                    node_category: NodeCategory::Middle,
+                },
+                make_func("normal", 0x2000, vec![], vec![], NodeCategory::Middle),
+            ],
+        };
+
+        let config = ContextEnricherConfig {
+            max_callers: 0,
+            max_callees: 0,
+            filter_internal_callees: false,
+            max_neighbor_count: 10,
+        };
+        let enricher = ContextEnricher::with_config(config);
+        let contexts = enricher.enrich(&graph);
+
+        let skipped = skipped_contexts(&contexts);
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].name, "overloaded");
+        assert!(skipped[0].context_skipped);
+    }
+
+    #[test]
+    fn test_default_config_values() {
+        let config = ContextEnricherConfig::default();
+        assert_eq!(config.max_callers, 10);
+        assert_eq!(config.max_callees, 50);
+        assert!(config.filter_internal_callees);
+        assert_eq!(config.max_neighbor_count, 200);
+    }
+
+    #[test]
+    fn test_context_skipped_field_default() {
+        let graph = CallGraph {
+            dll: "skipped_field.dll".to_string(),
+            functions: vec![make_func(
+                "test_fn",
+                0x1000,
+                vec![],
+                vec![],
+                NodeCategory::Middle,
+            )],
+        };
+
+        let enricher = ContextEnricher::new();
+        let contexts = enricher.enrich(&graph);
+
+        let ctx = &contexts[0];
+        assert!(!ctx.context_skipped);
     }
 }
