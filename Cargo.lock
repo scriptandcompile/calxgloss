@@ -357,6 +357,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "calxgloss-callgraph"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "calxgloss-ghidra",
+ "regex",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "calxgloss-cli"
 version = "0.2.0"
 dependencies = [
