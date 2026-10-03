@@ -189,9 +189,9 @@ impl Analyzer {
                     crate_name: crate_replacement.clone().unwrap_or_default(),
                 }
             }
-            DllCategory::ProjectSpecific | DllCategory::UnknownThirdParty => {
-                Strategy::ReverseEngineer
-            }
+            DllCategory::ProjectSpecific
+            | DllCategory::UnknownThirdParty
+            | DllCategory::RuntimeLibrary => Strategy::ReverseEngineer,
         };
 
         let classification = DllClassification {
@@ -496,9 +496,9 @@ impl Analyzer {
                     crate_name: crate_replacement.clone().unwrap_or_default(),
                 }
             }
-            DllCategory::ProjectSpecific | DllCategory::UnknownThirdParty => {
-                Strategy::ReverseEngineer
-            }
+            DllCategory::ProjectSpecific
+            | DllCategory::UnknownThirdParty
+            | DllCategory::RuntimeLibrary => Strategy::ReverseEngineer,
         };
 
         DllClassification {
@@ -814,6 +814,7 @@ mod tests {
             name: "kernel32.dll".to_string(),
             version: None,
             category: DllCategory::WindowsOs,
+            known_runtime: false,
             exports: vec![],
             imports: vec![],
         };
@@ -831,6 +832,7 @@ mod tests {
             name: "d3d9.dll".to_string(),
             version: None,
             category: DllCategory::MicrosoftSdk,
+            known_runtime: false,
             exports: vec![],
             imports: vec![],
         };
@@ -851,6 +853,7 @@ mod tests {
             name: "fmod.dll".to_string(),
             version: None,
             category: DllCategory::KnownThirdParty,
+            known_runtime: false,
             exports: vec![],
             imports: vec![],
         };
@@ -874,6 +877,7 @@ mod tests {
             name: "game_logic.dll".to_string(),
             version: None,
             category: DllCategory::ProjectSpecific,
+            known_runtime: false,
             exports: vec![],
             imports: vec![],
         };
@@ -891,6 +895,7 @@ mod tests {
             name: "my_app.dll".to_string(),
             version: None,
             category: DllCategory::ProjectSpecific,
+            known_runtime: false,
             exports: vec![
                 Export {
                     name: "Func1".to_string(),

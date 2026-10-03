@@ -4,6 +4,7 @@
 //! the reverse-engineering strategy for a given DLL. Classification is based
 //! on the DLL filename matching against known categories:
 //!
+//! - **Runtime libraries** — skipped during translation (e.g., `msvcr*.dll`, `Qt5*.dll`)
 //! - **Windows OS DLLs** — mapped via PAL to std/winit/etc.
 //! - **Microsoft SDK DLLs** — replaced with Rust crates (e.g., d3d9 → wgpu)
 //! - **Known third-party DLLs** — replaced with Rust crates (e.g., fmod → fmod-rs)
@@ -208,6 +209,34 @@ pub fn is_windows_os_dll(dll_name: &str) -> bool {
     })
 }
 
+/// Returns `true` if the DLL is a known runtime library.
+///
+/// Runtime library DLLs (e.g. `msvcr80.dll`, `msvbvm60.dll`, `Qt5Core.dll`,
+/// `SDL2.dll`) should be skipped during translation entirely.
+///
+/// This uses the same pattern set as `RootDetector::is_runtime_dll()` so
+/// classification is consistent across the analysis and callgraph pipelines.
+pub fn is_runtime_library_dll(dll_name: &str) -> bool {
+    let lower = dll_name.to_lowercase();
+    // MSVC runtime DLLs: msvcr*.dll (e.g. msvcr70.dll, msvcr100.dll)
+    if lower.starts_with("msvcr") && lower.ends_with(".dll") {
+        return true;
+    }
+    // VB6 runtime
+    if lower.contains("msvbvm") {
+        return true;
+    }
+    // Qt runtime libraries
+    if lower.starts_with("qt5") || lower.starts_with("qt6") {
+        return true;
+    }
+    // SDL2
+    if lower.starts_with("sdl2") {
+        return true;
+    }
+    false
+}
+
 /// Returns the recommended Rust crate for a known Microsoft SDK DLL, or `None`.
 pub fn microsoft_sdk_crate(dll_name: &str) -> Option<&'static str> {
     let lower = dll_name.to_lowercase();
@@ -248,10 +277,11 @@ pub fn dll_base_name(dll_name: &str) -> Option<String> {
 /// Classifies a single DLL by filename, returning its category and strategy.
 ///
 /// The classification follows this priority:
-/// 1. Check against known third-party DLLs → `KnownThirdParty`
-/// 2. Check against Microsoft SDK DLLs → `MicrosoftSdk`
-/// 3. Check against Windows OS DLLs → `WindowsOs`
-/// 4. Default → `ProjectSpecific` (assumed to be application-specific code)
+/// 1. Check against known runtime libraries → `RuntimeLibrary`
+/// 2. Check against known third-party DLLs → `KnownThirdParty`
+/// 3. Check against Microsoft SDK DLLs → `MicrosoftSdk`
+/// 4. Check against Windows OS DLLs → `WindowsOs`
+/// 5. Default → `ProjectSpecific` (assumed to be application-specific code)
 ///
 /// # Example
 ///
@@ -262,9 +292,15 @@ pub fn dll_base_name(dll_name: &str) -> Option<String> {
 /// assert_eq!(classify_dll_name("kernel32.dll"), DllCategory::WindowsOs);
 /// assert_eq!(classify_dll_name("d3d9.dll"), DllCategory::MicrosoftSdk);
 /// assert_eq!(classify_dll_name("fmod.dll"), DllCategory::KnownThirdParty);
+/// assert_eq!(classify_dll_name("msvcr100.dll"), DllCategory::RuntimeLibrary);
 /// assert_eq!(classify_dll_name("my_game_logic.dll"), DllCategory::ProjectSpecific);
 /// ```
 pub fn classify_dll_name(dll_name: &str) -> DllCategory {
+    // Check runtime libraries first (must be skipped, not translated)
+    if is_runtime_library_dll(dll_name) {
+        return DllCategory::RuntimeLibrary;
+    }
+
     // Check known third-party first (more specific)
     if known_third_party_crate(dll_name).is_some() {
         return DllCategory::KnownThirdParty;
@@ -287,11 +323,12 @@ pub fn classify_dll_name(dll_name: &str) -> DllCategory {
 /// Returns the crate replacement name for a classified DLL.
 ///
 /// Returns `Some(crate_name)` if the DLL is known to have a Rust crate equivalent,
-/// or `None` if the DLL should be reverse-engineered.
+/// or `None` if the DLL should be reverse-engineered or is a runtime library.
 pub fn crate_replacement_for(dll_name: &str, category: &DllCategory) -> Option<String> {
     match category {
         DllCategory::KnownThirdParty => known_third_party_crate(dll_name).map(|s| s.to_string()),
         DllCategory::MicrosoftSdk => microsoft_sdk_crate(dll_name).map(|s| s.to_string()),
+        // Runtime libraries and other categories have no crate replacement
         _ => None,
     }
 }
@@ -395,10 +432,7 @@ mod tests {
             DllCategory::KnownThirdParty
         );
         assert_eq!(classify_dll_name("lua51.dll"), DllCategory::KnownThirdParty);
-        assert_eq!(
-            classify_dll_name("msvbvm60.dll"),
-            DllCategory::KnownThirdParty
-        );
+        // Note: msvbvm60.dll is now classified as RuntimeLibrary (checked separately)
     }
 
     #[test]
@@ -505,5 +539,74 @@ mod tests {
         let names = imported_dll_names(&imports);
         assert_eq!(names.len(), 1);
         assert_eq!(names[0], "advapi32.dll");
+    }
+
+    // ─── Runtime library detection tests ───
+
+    #[test]
+    fn test_is_runtime_library_dll_msvc() {
+        assert!(is_runtime_library_dll("msvcr70.dll"));
+        assert!(is_runtime_library_dll("msvcr80.dll"));
+        assert!(is_runtime_library_dll("msvcr100.dll"));
+        assert!(is_runtime_library_dll("MSVCR90.DLL")); // case-insensitive
+        assert!(!is_runtime_library_dll("myapp.dll"));
+    }
+
+    #[test]
+    fn test_is_runtime_library_dll_vb6() {
+        assert!(is_runtime_library_dll("msvbvm60.dll"));
+        assert!(is_runtime_library_dll("MSVBVM60.DLL"));
+        assert!(is_runtime_library_dll("msvbvm50.dll"));
+    }
+
+    #[test]
+    fn test_is_runtime_library_dll_qt() {
+        assert!(is_runtime_library_dll("Qt5Core.dll"));
+        assert!(is_runtime_library_dll("Qt5Gui.dll"));
+        assert!(is_runtime_library_dll("Qt6Core.dll"));
+        assert!(is_runtime_library_dll("qt5widgets.dll")); // case-insensitive prefix
+    }
+
+    #[test]
+    fn test_is_runtime_library_dll_sdl2() {
+        assert!(is_runtime_library_dll("SDL2.dll"));
+        assert!(is_runtime_library_dll("sdl2.dll"));
+    }
+
+    #[test]
+    fn test_is_runtime_library_dll_not_runtime() {
+        assert!(!is_runtime_library_dll("myapp.dll"));
+        assert!(!is_runtime_library_dll("game.dll"));
+        assert!(!is_runtime_library_dll("user32.dll"));
+        assert!(!is_runtime_library_dll("game_logic.dll"));
+    }
+
+    #[test]
+    fn test_classify_dll_name_runtime_library() {
+        assert_eq!(
+            classify_dll_name("msvcr100.dll"),
+            DllCategory::RuntimeLibrary
+        );
+        assert_eq!(
+            classify_dll_name("msvbvm60.dll"),
+            DllCategory::RuntimeLibrary
+        );
+        assert_eq!(
+            classify_dll_name("Qt5Core.dll"),
+            DllCategory::RuntimeLibrary
+        );
+        assert_eq!(classify_dll_name("SDL2.dll"), DllCategory::RuntimeLibrary);
+    }
+
+    #[test]
+    fn test_crate_replacement_for_runtime_library() {
+        assert_eq!(
+            crate_replacement_for("msvcr100.dll", &DllCategory::RuntimeLibrary),
+            None
+        );
+        assert_eq!(
+            crate_replacement_for("Qt5Core.dll", &DllCategory::RuntimeLibrary),
+            None
+        );
     }
 }

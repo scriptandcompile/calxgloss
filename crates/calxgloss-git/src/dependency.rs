@@ -14,6 +14,7 @@
 //! | `WindowsOs` | No shim deps — PAL uses std lib directly |
 //! | `ProjectSpecific` | No shim deps — pure RE target |
 //! | `UnknownThirdParty` | No shim deps — treat as opaque |
+//! | `RuntimeLibrary` | No shim deps — skip during translation |
 
 use std::collections::HashMap;
 
@@ -210,10 +211,11 @@ impl DependencyChecker {
                 // If both shim_branch_name and crate_replacement are available,
                 // prefer the DLL-name lookup (it's more authoritative).
             }
-            // WindowsOs, ProjectSpecific, UnknownThirdParty — no shim deps
+            // WindowsOs, ProjectSpecific, UnknownThirdParty, RuntimeLibrary — no shim deps
             DllCategory::WindowsOs
             | DllCategory::ProjectSpecific
-            | DllCategory::UnknownThirdParty => {}
+            | DllCategory::UnknownThirdParty
+            | DllCategory::RuntimeLibrary => {}
         }
 
         DependencyCheckResult {

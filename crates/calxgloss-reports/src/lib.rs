@@ -503,6 +503,7 @@ fn format_category(category: &calxgloss_types::DllCategory) -> String {
         calxgloss_types::DllCategory::KnownThirdParty => "Known Third-Party".to_string(),
         calxgloss_types::DllCategory::ProjectSpecific => "Project-Specific".to_string(),
         calxgloss_types::DllCategory::UnknownThirdParty => "Unknown Third-Party".to_string(),
+        calxgloss_types::DllCategory::RuntimeLibrary => "Runtime Library".to_string(),
     }
 }
 
@@ -643,6 +644,10 @@ mod tests {
         assert_eq!(
             format_category(&calxgloss_types::DllCategory::UnknownThirdParty),
             "Unknown Third-Party"
+        );
+        assert_eq!(
+            format_category(&calxgloss_types::DllCategory::RuntimeLibrary),
+            "Runtime Library"
         );
     }
 

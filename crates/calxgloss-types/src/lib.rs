@@ -80,6 +80,15 @@ mod tests {
     }
 
     #[test]
+    fn test_dll_category_runtime_library_serialization() {
+        let category = DllCategory::RuntimeLibrary;
+        let json = serde_json::to_string(&category).unwrap();
+        assert_eq!(json, "\"RuntimeLibrary\"");
+        let deserialized: DllCategory = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, DllCategory::RuntimeLibrary);
+    }
+
+    #[test]
     fn test_api_category_serialization() {
         let category = ApiCategory::DirectX;
         let json = serde_json::to_string(&category).unwrap();

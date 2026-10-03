@@ -31,6 +31,11 @@ pub enum DllCategory {
     /// Third-party DLLs with no known Rust crate equivalent.
     /// Strategy: reverse engineer from disassembly.
     UnknownThirdParty,
+
+    /// Runtime library DLLs (e.g. `msvcr*.dll`, `msvbvm60.dll`, `Qt5*.dll`,
+    /// `SDL2.dll`). These are not target binaries — their functions should be
+    /// skipped during translation.
+    RuntimeLibrary,
 }
 
 /// An exported symbol from a DLL.
@@ -77,6 +82,10 @@ pub struct DllInfo {
 
     /// Classification category that determines the reverse-engineering strategy.
     pub category: DllCategory,
+
+    /// Whether this DLL is a known runtime library (e.g. `msvcr*.dll`, `msvbvm60.dll`,
+    /// `Qt5*.dll`, `SDL2.dll`). Runtime library DLLs should be skipped during translation.
+    pub known_runtime: bool,
 
     /// Exported symbols from this DLL.
     pub exports: Vec<Export>,
