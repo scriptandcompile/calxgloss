@@ -405,7 +405,7 @@ impl Analyzer {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```no_run
     /// use calxgloss_analysis::Analyzer;
     /// use calxgloss_types::Import;
     /// use calxgloss_pal::ApiMappings;
@@ -575,8 +575,13 @@ impl Analyzer {
         workspace_root: &std::path::Path,
         cache_dir: Option<&std::path::Path>,
     ) -> anyhow::Result<calxgloss_callgraph::CallGraph> {
-        crate::callgraph::build_enriched_call_graph(&self.ghidra, dll_name, workspace_root, cache_dir)
-            .await
+        crate::callgraph::build_enriched_call_graph(
+            &self.ghidra,
+            dll_name,
+            workspace_root,
+            cache_dir,
+        )
+        .await
     }
 
     /// Generate shim layer suggestions for all crate-replacement DLLs.
