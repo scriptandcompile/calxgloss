@@ -30,9 +30,11 @@ pub async fn handle_batch_translate(
         all_functions,
         output_dir,
         skip_git,
+        no_callgraph,
     } = args;
     let (target, dll) = (target.as_path(), dll.as_str());
     let skip_git = *skip_git;
+    let no_callgraph = *no_callgraph;
     // Use the output_dir arg if provided, otherwise use the resolved repo_dir.
     let output_dir = output_dir.clone().unwrap_or(repo_dir);
 
@@ -134,9 +136,12 @@ pub async fn handle_batch_translate(
     // Build translation pipeline
     let api_mappings = calxgloss_pal::ApiMappings::default();
     let detector = build_hallucination_detector(&ghidra, &api_mappings).await;
-    let pipeline = TranslationPipeline::new(ghidra, llm, api_mappings)
+    let mut pipeline = TranslationPipeline::new(ghidra, llm, api_mappings)
         .with_testgen(testgen)
         .with_hallucination_detector(detector);
+    if no_callgraph {
+        pipeline = pipeline.with_no_callgraph();
+    }
 
     // Git setup
     let mut git = if !skip_git {

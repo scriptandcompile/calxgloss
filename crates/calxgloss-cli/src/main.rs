@@ -134,6 +134,7 @@ fn main() -> Result<()> {
         all_functions: false,
         classify_only: false,
         skip_git: false,
+        no_callgraph: false,
     });
     let result = match command {
         Command::Config => {
@@ -246,6 +247,7 @@ fn main() -> Result<()> {
             all_functions,
             classify_only,
             skip_git,
+            no_callgraph,
         } => {
             let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
@@ -262,6 +264,7 @@ fn main() -> Result<()> {
                     false, // interactive mode — prompt user, stop after classification
                     None,  // no event emitter in interactive mode
                     repo_dir,
+                    no_callgraph,
                 ))
         }
         Command::AutoShim { dll, skip_git } => {
@@ -304,6 +307,7 @@ fn main() -> Result<()> {
             classify_only,
             skip_git,
             port,
+            no_callgraph,
             ..
         } => {
             // live always uses CWD as repo_dir — config / env overrides are
@@ -323,6 +327,7 @@ fn main() -> Result<()> {
                     repo_dir,
                     port,
                     &settings,
+                    no_callgraph,
                 ))
         }
     };

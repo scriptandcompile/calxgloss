@@ -22,6 +22,7 @@ pub async fn handle_live(
     repo_dir: PathBuf,
     port: u16,
     settings: &Settings,
+    no_callgraph: bool,
 ) -> Result<()> {
     info!(
         port,
@@ -131,6 +132,7 @@ pub async fn handle_live(
         true,          // continue mode — don't stop after classification, translate all
         Some(&events), // pass event emitter for live progress streaming
         repo_dir,      // resolved repo_dir (same value used by serve task)
+        no_callgraph,
     )
     .await;
 

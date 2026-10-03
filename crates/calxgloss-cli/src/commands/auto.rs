@@ -36,6 +36,7 @@ pub async fn run_translation_for_dll(
     skip_git: bool,
     settings: &Settings,
     events: Option<&TranslationEvents>,
+    no_callgraph: bool,
 ) -> Result<()> {
     // output_dir is the workspace directory — git, src/, scratch all live here.
 
@@ -109,6 +110,9 @@ pub async fn run_translation_for_dll(
     let mut pipeline = TranslationPipeline::new(ghidra, llm, api_mappings)
         .with_testgen(testgen)
         .with_hallucination_detector(detector);
+    if no_callgraph {
+        pipeline = pipeline.with_no_callgraph();
+    }
     if let Some(events) = events {
         pipeline = pipeline.with_events(events.clone());
     }
@@ -296,6 +300,7 @@ pub async fn handle_auto(
     continue_mode: bool,
     events: Option<&TranslationEvents>,
     repo_dir: PathBuf,
+    no_callgraph: bool,
 ) -> Result<()> {
     info!("Auto mode: detecting project state");
 
@@ -436,7 +441,7 @@ pub async fn handle_auto(
                 bold(dll)
             );
             println!();
-            run_translation_for_dll(dll, &output_dir, skip_git, settings, events).await?;
+            run_translation_for_dll(dll, &output_dir, skip_git, settings, events, no_callgraph).await?;
         }
     } else {
         // Ask which file to translate (interactive mode).
@@ -471,7 +476,7 @@ pub async fn handle_auto(
         );
         println!();
 
-        run_translation_for_dll(dll, &output_dir, skip_git, settings, events).await?;
+        run_translation_for_dll(dll, &output_dir, skip_git, settings, events, no_callgraph).await?;
     }
 
     Ok(())

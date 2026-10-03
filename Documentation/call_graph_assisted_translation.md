@@ -630,23 +630,38 @@ impl ContextEnricher {
 
 ---
 
-### Task 12: CLI `--no-callgraph` Flag
+### Task 12: CLI `--no-callgraph` Flag ✅ COMPLETED
 
-**Files to modify:** `crates/calxgloss-cli/src/main.rs`
+**Files modified:**
+- `crates/calxgloss-translator/src/pipeline.rs` — add `no_callgraph: AtomicBool` field, `with_no_callgraph()` builder method, and conditional skip in `fetch_function`
+- `crates/calxgloss-cli/src/cli_types.rs` — add `--no-callgraph` to `TranslateArgs`, `BatchTranslateArgs`, `Auto`, and `Live`
+- `crates/calxgloss-cli/src/commands/translate.rs` — pass flag to pipeline
+- `crates/calxgloss-cli/src/commands/batch_translate.rs` — pass flag to pipeline
+- `crates/calxgloss-cli/src/commands/auto.rs` — add `no_callgraph` param to `run_translation_for_dll` and `handle_auto`
+- `crates/calxgloss-cli/src/commands/live.rs` — add `no_callgraph` param to `handle_live` and pass to `handle_auto`
+- `crates/calxgloss-cli/src/main.rs` — thread flag through `Auto`/`Live` match arms
 
 **Changes:**
-1. Add `--no-callgraph` flag to disable call graph analysis
-2. When flag is present, skip `CallGraphBuilder` step
-3. When flag is absent (default), run call graph analysis
+1. Add `--no-callgraph` flag to `translate`, `batch-translate`, `auto`, and `live` subcommands
+2. Add `no_callgraph: AtomicBool` field to `TranslationPipeline`
+3. Add `with_no_callgraph()` builder method
+4. When flag is present, `fetch_function` returns an empty call graph (`Vec::new()`) instead of extracting callers/callees from the Ghidra report
+5. When flag is absent (default), call graph analysis proceeds as before
 
-**TODO:**
+**Remaining TODOs:**
 ```rust
 // TODO: Add `--callgraph-mode` with choices: full, root-only, leaf-only, none
 // TODO: Add `--callgraph-timeout` for large binaries
 // TODO: Log call graph analysis duration for performance tracking
 ```
 
----
+**Acceptance:**
+- ✅ `--no-callgraph` flag available on `translate`, `batch-translate`, `auto`, and `live` commands
+- ✅ Default behavior (flag absent) is unchanged — call graph is extracted
+- ✅ With flag, `fetch_function` returns empty `call_graph` (no callers/callees)
+- ✅ Higher context tiers (ModuleContext, FullModule) receive empty neighbor data when flag is set
+- ✅ `cargo check --workspace` passes with zero warnings
+- ✅ All existing unit tests pass
 
 ### Task 13: Extended Root/Leaf Patterns
 
@@ -708,7 +723,7 @@ Task 1  (skeleton)
   │                                 Task 11  (prompt integration)
   │                                     │
   │                                     ▼
-  │                                 Task 12  (CLI flag)
+  │                                 Task 12  (CLI flag) ✅
   │                                     │
   │                                     ▼
   │                                 Task 8  (docs)

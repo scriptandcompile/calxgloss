@@ -111,6 +111,10 @@ pub(super) struct TranslateArgs {
     /// Skip git operations
     #[arg(long)]
     pub(super) skip_git: bool,
+
+    /// Skip call-graph extraction (faster when call-graph context is not needed)
+    #[arg(long)]
+    pub(super) no_callgraph: bool,
 }
 
 /// Arguments for the `batch-translate` subcommand.
@@ -139,6 +143,10 @@ pub(super) struct BatchTranslateArgs {
     /// Skip git operations
     #[arg(long)]
     pub(super) skip_git: bool,
+
+    /// Skip call-graph extraction (faster when call-graph context is not needed)
+    #[arg(long)]
+    pub(super) no_callgraph: bool,
 }
 
 /// Subcommands for the CLI.
@@ -239,6 +247,10 @@ pub(super) enum Command {
         /// Skip git operations
         #[arg(long)]
         skip_git: bool,
+
+        /// Skip call-graph extraction (faster when call-graph context is not needed)
+        #[arg(long)]
+        no_callgraph: bool,
     },
 
     /// Start the web review UI server
@@ -288,6 +300,7 @@ pub(super) enum Command {
     /// * `--all-functions` — Translate all exported functions (passed to auto).
     /// * `--classify-only` — Only classify, do not translate (passed to auto).
     /// * `--skip-git` — Skip git operations (passed to auto).
+    /// * `--no-callgraph` — Skip call-graph extraction (passed to auto).
     ///
     /// # Examples
     ///
@@ -324,6 +337,10 @@ pub(super) enum Command {
         /// Skip git operations
         #[arg(long)]
         skip_git: bool,
+
+        /// Skip call-graph extraction (faster when call-graph context is not needed)
+        #[arg(long)]
+        no_callgraph: bool,
     },
 
     /// Generate shim layers for all crate-replacement DLLs automatically.
