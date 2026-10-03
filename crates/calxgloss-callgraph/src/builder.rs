@@ -225,6 +225,9 @@ impl CallGraphBuilder {
 /// is mapped to its entry address using `name_to_addr`.  If a name is not
 /// found in the lookup map it is still included with `target == 0` so that
 /// no call target is silently lost.
+///
+/// The original callee name is preserved in [`CallGraphEdge::callee_name`]
+/// so that leaf detection can match against known API names.
 fn resolve_callees(
     source: u64,
     callee_names: &[String],
@@ -243,6 +246,7 @@ fn resolve_callees(
                 target,
                 call_site: 0, // TODO: extract from decompiler output
                 call_type: CallType::Direct,
+                callee_name: callee_name.clone(),
             }
         })
         .collect()

@@ -31,6 +31,9 @@ pub struct CallGraphEdge {
     pub call_site: u64,
     /// How this edge was discovered.
     pub call_type: CallType,
+    /// Original callee name as parsed from decompiled output.
+    /// Empty when the edge was created without a name context.
+    pub callee_name: String,
 }
 
 /// Category of a function in the call graph.
