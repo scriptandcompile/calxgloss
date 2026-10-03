@@ -323,9 +323,14 @@ In `crates/calxgloss-analysis/src/callgraph.rs`:
 
 Available on `translate`, `batch-translate`, `auto`, and `live` subcommands. Returns empty call graph when set.
 
-### Step 7.2 — Add `--callgraph-cache` Flag ❌ NOT DONE
+### Step 7.2 — Add `--callgraph-cache` Flag ✅ DONE (Task 14)
 
-Default path is hardcoded in `CallGraphPersistor` (`re/analysis/{dll}_call_graph.json`).
+Added `--callgraph-cache` flag to `translate`, `batch-translate`, `auto`, and `live` subcommands.
+- `CallGraphPersistor::with_cache_dir()` constructor allows explicit cache path
+- `CallGraphPersistor::new()` still defaults to `{workspace_root}/re/analysis/` for backward compatibility
+- `build_enriched_call_graph()` and `load_call_graph()` accept optional `cache_dir` parameter
+- `TranslationPipeline::with_callgraph_cache_dir()` builder method threads cache dir through the pipeline
+- Default path remains `re/analysis/{dll}_call_graph.json` when flag is not specified
 
 ### Step 7.3 — Add `--callgraph-verbose` Flag ❌ NOT DONE
 
@@ -384,7 +389,7 @@ No CLI flag to print call graph statistics during analysis.
 | **Dependency graph** | `build_dependency_graph_from_call_graph` with 8 tests |
 | **Prompt templates** | `call_graph_context` fields on all templates |
 | **Context enrichment wiring** | `ContextEnricher` called from `TranslationPipeline::translate()`, `retry/helpers.rs`, and `Translator` |
-| **CLI flag** | `--no-callgraph` on all subcommands |
+| **CLI flag** | `--no-callgraph`, `--callgraph-cache` on all subcommands |
 | **Runtime library** | `RuntimeLibrary` DLL category with classification and skip logic |
 | **Tests** | 103 unit tests + 4 integration tests across all modules |
 
@@ -397,7 +402,7 @@ No CLI flag to print call graph statistics during analysis.
 | **Virtual call detection** | Vtable pattern matching in decompiler output |
 | **Cross-DLL import mapping** | PE import table parsing |
 | **Pipeline integration** | `Analyzer` calls `build_enriched_call_graph` automatically |
-| **Additional CLI flags** | `--callgraph-cache`, `--callgraph-verbose` |
+| **CLI flags** | `--callgraph-verbose` |
 | **Real-binary testing** | Manual validation on VB6, DirectX, large DLLs |
 
 ### Priority Order for Remaining Work
