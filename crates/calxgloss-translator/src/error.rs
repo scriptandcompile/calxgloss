@@ -32,6 +32,10 @@ pub enum TranslatorError {
     /// The translation request had insufficient context (no disassembly, no tests).
     #[error("translation request missing required context: {0}")]
     MissingContext(String),
+
+    /// Failed to plan translation order from the call graph.
+    #[error("call graph planning failed: {0}")]
+    CallGraph(String),
 }
 
 pub type Result<T> = std::result::Result<T, TranslatorError>;
