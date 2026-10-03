@@ -441,7 +441,8 @@ pub async fn handle_auto(
                 bold(dll)
             );
             println!();
-            run_translation_for_dll(dll, &output_dir, skip_git, settings, events, no_callgraph).await?;
+            run_translation_for_dll(dll, &output_dir, skip_git, settings, events, no_callgraph)
+                .await?;
         }
     } else {
         // Ask which file to translate (interactive mode).

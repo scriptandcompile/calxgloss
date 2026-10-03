@@ -921,10 +921,7 @@ impl LeafDetector {
             },
         ];
 
-        let api_names = api_signatures
-            .iter()
-            .map(|s| s.api_name.clone())
-            .collect();
+        let api_names = api_signatures.iter().map(|s| s.api_name.clone()).collect();
 
         Self {
             api_names,
@@ -992,15 +989,15 @@ impl LeafDetector {
 
             // Try fuzzy match via normalization
             let normalized = self.normalize_name(&edge.callee_name);
-            if normalized != edge.callee_name && self.api_names.contains(&normalized) {
-                if let Some(sig) = self
+            if normalized != edge.callee_name
+                && self.api_names.contains(&normalized)
+                && let Some(sig) = self
                     .api_signatures
                     .iter()
                     .find(|s| s.api_name == normalized)
                     .cloned()
-                {
-                    matched.push(sig);
-                }
+            {
+                matched.push(sig);
             }
         }
 
@@ -1031,28 +1028,22 @@ impl LeafDetector {
     /// 2. Identify all direct leaf functions (those with matched API callees).
     /// 3. For each direct leaf, find all callers, then their callers, etc.
     /// 4. Stop at depth `max_depth` (default 3) to avoid excessive traversal.
-    pub fn transitive_leaf_analysis(
-        &self,
-        graph: &CallGraph,
-    ) -> Vec<TransitiveLeafContext> {
+    pub fn transitive_leaf_analysis(&self, graph: &CallGraph) -> Vec<TransitiveLeafContext> {
         if graph.functions.is_empty() {
             return Vec::new();
         }
 
         // Build address-to-function lookup
-        let addr_to_func: HashMap<u64, &FunctionCallGraph> = graph
-            .functions
-            .iter()
-            .map(|f| (f.address, f))
-            .collect();
+        let addr_to_func: HashMap<u64, &FunctionCallGraph> =
+            graph.functions.iter().map(|f| (f.address, f)).collect();
 
         // Identify direct leaf functions: address → matched signatures
         let mut direct_leaves: HashMap<u64, Vec<ApiSignature>> = HashMap::new();
         for func in &graph.functions {
-            if let Some(sigs) = self.classify(func) {
-                if !sigs.is_empty() {
-                    direct_leaves.insert(func.address, sigs);
-                }
+            if let Some(sigs) = self.classify(func)
+                && !sigs.is_empty()
+            {
+                direct_leaves.insert(func.address, sigs);
             }
         }
 
@@ -1221,7 +1212,11 @@ mod tests {
         let func = make_func_with_callees("load_config", &["CreateFile", "ReadFile"]);
         let matches = detector.classify(&func).expect("should match");
         assert_eq!(matches.len(), 2);
-        assert!(matches.iter().all(|m| m.category == LeafCategory::Filesystem));
+        assert!(
+            matches
+                .iter()
+                .all(|m| m.category == LeafCategory::Filesystem)
+        );
     }
 
     #[test]
@@ -1236,8 +1231,7 @@ mod tests {
     #[test]
     fn test_co_create_instance_is_leaf() {
         let detector = LeafDetector::new();
-        let func =
-            make_func_with_callees("init_com", &["CoInitialize", "CoCreateInstance"]);
+        let func = make_func_with_callees("init_com", &["CoInitialize", "CoCreateInstance"]);
         let matches = detector.classify(&func).expect("should match");
         assert_eq!(matches.len(), 2);
         assert!(matches.iter().all(|m| m.category == LeafCategory::Com));
@@ -1246,8 +1240,7 @@ mod tests {
     #[test]
     fn test_fmod_audio_leaf() {
         let detector = LeafDetector::new();
-        let func =
-            make_func_with_callees("init_audio", &["FMOD_StudioSystem_Create"]);
+        let func = make_func_with_callees("init_audio", &["FMOD_StudioSystem_Create"]);
         let matches = detector.classify(&func).expect("should match");
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].category, LeafCategory::Audio);
@@ -1257,10 +1250,7 @@ mod tests {
     #[test]
     fn test_crypto_leaf() {
         let detector = LeafDetector::new();
-        let func = make_func_with_callees(
-            "encrypt_data",
-            &["CryptAcquireContext", "CryptEncrypt"],
-        );
+        let func = make_func_with_callees("encrypt_data", &["CryptAcquireContext", "CryptEncrypt"]);
         let matches = detector.classify(&func).expect("should match");
         assert_eq!(matches.len(), 2);
         assert!(matches.iter().all(|m| m.category == LeafCategory::Crypto));
@@ -1269,10 +1259,7 @@ mod tests {
     #[test]
     fn test_gdi_leaf() {
         let detector = LeafDetector::new();
-        let func = make_func_with_callees(
-            "draw_buffer",
-            &["CreateCompatibleDC", "SelectObject"],
-        );
+        let func = make_func_with_callees("draw_buffer", &["CreateCompatibleDC", "SelectObject"]);
         let matches = detector.classify(&func).expect("should match");
         assert_eq!(matches.len(), 2);
         assert!(matches.iter().all(|m| m.category == LeafCategory::Gdi));
@@ -1290,10 +1277,7 @@ mod tests {
     #[test]
     fn test_vulkan_leaf() {
         let detector = LeafDetector::new();
-        let func = make_func_with_callees(
-            "init_vulkan",
-            &["vkCreateInstance", "vkCreateDevice"],
-        );
+        let func = make_func_with_callees("init_vulkan", &["vkCreateInstance", "vkCreateDevice"]);
         let matches = detector.classify(&func).expect("should match");
         assert_eq!(matches.len(), 2);
         assert!(matches.iter().all(|m| m.category == LeafCategory::Vulkan));
@@ -1302,10 +1286,7 @@ mod tests {
     #[test]
     fn test_opengl_leaf() {
         let detector = LeafDetector::new();
-        let func = make_func_with_callees(
-            "init_gl",
-            &["wglCreateContext", "wglMakeCurrent"],
-        );
+        let func = make_func_with_callees("init_gl", &["wglCreateContext", "wglMakeCurrent"]);
         let matches = detector.classify(&func).expect("should match");
         assert_eq!(matches.len(), 2);
         assert!(matches.iter().all(|m| m.category == LeafCategory::OpenGL));
@@ -1314,8 +1295,7 @@ mod tests {
     #[test]
     fn test_d3d11_leaf() {
         let detector = LeafDetector::new();
-        let func =
-            make_func_with_callees("init_d3d11", &["D3D11CreateDevice"]);
+        let func = make_func_with_callees("init_d3d11", &["D3D11CreateDevice"]);
         let matches = detector.classify(&func).expect("should match");
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].category, LeafCategory::Graphics);
@@ -1359,11 +1339,10 @@ mod tests {
     fn test_dll_qualified_name_matching() {
         let detector = LeafDetector::new();
         // d3d9.Direct3DCreate9 should match Direct3DCreate9
-        let func = make_func_with_callees(
-            "create_display",
-            &["d3d9.Direct3DCreate9"],
-        );
-        let matches = detector.classify(&func).expect("should match DLL-qualified");
+        let func = make_func_with_callees("create_display", &["d3d9.Direct3DCreate9"]);
+        let matches = detector
+            .classify(&func)
+            .expect("should match DLL-qualified");
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].api_name, "Direct3DCreate9");
     }
@@ -1394,10 +1373,7 @@ mod tests {
     #[test]
     fn test_normal_function_not_leaf() {
         let detector = LeafDetector::new();
-        let func = make_func_with_callees(
-            "translate_me",
-            &["internal_calc", "format_string"],
-        );
+        let func = make_func_with_callees("translate_me", &["internal_calc", "format_string"]);
         assert!(!detector.has_leaf_call(&func));
     }
 
@@ -1406,17 +1382,11 @@ mod tests {
         let detector = LeafDetector::new();
         let func = make_func_with_callees(
             "complex_init",
-            &[
-                "MessageBox",
-                "CreateFile",
-                "Direct3DCreate9",
-                "internal_fn",
-            ],
+            &["MessageBox", "CreateFile", "Direct3DCreate9", "internal_fn"],
         );
         let matches = detector.classify(&func).expect("should match 3 APIs");
         assert_eq!(matches.len(), 3);
-        let categories: Vec<_> =
-            matches.iter().map(|m| &m.category).collect();
+        let categories: Vec<_> = matches.iter().map(|m| &m.category).collect();
         assert!(categories.contains(&&LeafCategory::Ui));
         assert!(categories.contains(&&LeafCategory::Filesystem));
         assert!(categories.contains(&&LeafCategory::Graphics));
@@ -1444,11 +1414,7 @@ mod tests {
             .iter()
             .map(|s| s.category.clone())
             .collect();
-        assert_eq!(
-            unique.len(),
-            10,
-            "all 10 categories should be represented"
-        );
+        assert_eq!(unique.len(), 10, "all 10 categories should be represented");
     }
 
     #[test]
@@ -1495,10 +1461,7 @@ mod tests {
     #[test]
     fn test_default_constructs() {
         let detector = LeafDetector::default();
-        assert!(detector.has_leaf_call(&make_func_with_callees(
-            "test",
-            &["Direct3DCreate9"]
-        )));
+        assert!(detector.has_leaf_call(&make_func_with_callees("test", &["Direct3DCreate9"])));
     }
 
     // ─── Transitive leaf analysis tests ───
@@ -1535,25 +1498,19 @@ mod tests {
         let graph = CallGraph {
             dll: "transitive.dll".to_string(),
             functions: vec![
-                make_func_with_address(
-                    "app_init",
-                    0x1000,
-                    vec![],
-                    &["init_ui"],
-                ),
-                make_func_with_address(
-                    "init_ui",
-                    0x2000,
-                    vec![0x1000],
-                    &["MessageBox"],
-                ),
+                make_func_with_address("app_init", 0x1000, vec![], &["init_ui"]),
+                make_func_with_address("init_ui", 0x2000, vec![0x1000], &["MessageBox"]),
             ],
         };
         let detector = LeafDetector::new();
         let results = detector.transitive_leaf_analysis(&graph);
         // app_init should be found as transitive leaf through init_ui → MessageBox
         assert!(!results.is_empty());
-        assert!(results.iter().any(|r| r.intermediate_function == "app_init"));
+        assert!(
+            results
+                .iter()
+                .any(|r| r.intermediate_function == "app_init")
+        );
     }
 
     #[test]
@@ -1561,14 +1518,12 @@ mod tests {
         // init_ui calls MessageBox directly; it's a direct leaf, not transitive
         let graph = CallGraph {
             dll: "direct.dll".to_string(),
-            functions: vec![
-                make_func_with_address(
-                    "init_ui",
-                    0x1000,
-                    vec![],
-                    &["MessageBox"],
-                ),
-            ],
+            functions: vec![make_func_with_address(
+                "init_ui",
+                0x1000,
+                vec![],
+                &["MessageBox"],
+            )],
         };
         let detector = LeafDetector::new();
         let results = detector.transitive_leaf_analysis(&graph);
@@ -1585,20 +1540,14 @@ mod tests {
             functions: vec![
                 make_func_with_address("entry", 0x1000, vec![], &["middle"]),
                 make_func_with_address("middle", 0x2000, vec![0x1000], &["leaf_fn"]),
-                make_func_with_address(
-                    "leaf_fn",
-                    0x3000,
-                    vec![0x2000],
-                    &["MessageBox"],
-                ),
+                make_func_with_address("leaf_fn", 0x3000, vec![0x2000], &["MessageBox"]),
             ],
         };
         let detector = LeafDetector::new();
         let results = detector.transitive_leaf_analysis(&graph);
         assert!(!results.is_empty());
         // Both middle and entry should be found as intermediaries
-        let intermediaries: Vec<_> =
-            results.iter().map(|r| &r.intermediate_function).collect();
+        let intermediaries: Vec<_> = results.iter().map(|r| &r.intermediate_function).collect();
         assert!(intermediaries.contains(&&"middle".to_string()));
     }
 
@@ -1613,12 +1562,7 @@ mod tests {
                 make_func_with_address("b", 0x2000, vec![0x1000], &["c"]),
                 make_func_with_address("c", 0x3000, vec![0x2000], &["d"]),
                 make_func_with_address("d", 0x4000, vec![0x3000], &["leaf"]),
-                make_func_with_address(
-                    "leaf",
-                    0x5000,
-                    vec![0x4000],
-                    &["MessageBox"],
-                ),
+                make_func_with_address("leaf", 0x5000, vec![0x4000], &["MessageBox"]),
             ],
         };
         let detector = LeafDetector::new();

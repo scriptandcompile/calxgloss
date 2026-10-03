@@ -151,11 +151,8 @@ impl ContextEnricher {
         }
 
         // Build an address-to-function lookup for quick caller name resolution.
-        let addr_to_func: HashMap<u64, &FunctionCallGraph> = graph
-            .functions
-            .iter()
-            .map(|f| (f.address, f))
-            .collect();
+        let addr_to_func: HashMap<u64, &FunctionCallGraph> =
+            graph.functions.iter().map(|f| (f.address, f)).collect();
 
         let mut contexts = Vec::with_capacity(graph.functions.len());
 
@@ -250,10 +247,7 @@ impl ContextEnricher {
     ///
     /// Only callees that match the leaf detector's known API signatures
     /// are included. Internal function calls are excluded from categorization.
-    fn build_categorized_callees(
-        &self,
-        func: &FunctionCallGraph,
-    ) -> Vec<CalleeGroup> {
+    fn build_categorized_callees(&self, func: &FunctionCallGraph) -> Vec<CalleeGroup> {
         let matched = match self.leaf_detector.classify(func) {
             Some(sigs) => sigs,
             None => return Vec::new(),
@@ -279,10 +273,7 @@ impl ContextEnricher {
     ///
     /// Returns a list of matched API signatures with category and
     /// suggested Rust crate, suitable for prompt injection.
-    fn build_leaf_api_context(
-        &self,
-        func: &FunctionCallGraph,
-    ) -> Vec<LeafApiContext> {
+    fn build_leaf_api_context(&self, func: &FunctionCallGraph) -> Vec<LeafApiContext> {
         let matched = match self.leaf_detector.classify(func) {
             Some(sigs) => sigs,
             None => return Vec::new(),
@@ -515,8 +506,7 @@ mod tests {
             assert!(matches!(api.category, LeafCategory::Crypto));
         }
 
-        let api_names: Vec<_> =
-            ctx.leaf_api_context.iter().map(|a| &a.api_name).collect();
+        let api_names: Vec<_> = ctx.leaf_api_context.iter().map(|a| &a.api_name).collect();
         assert!(api_names.contains(&&"CryptAcquireContext".to_string()));
         assert!(api_names.contains(&&"CryptEncrypt".to_string()));
     }
@@ -605,11 +595,7 @@ mod tests {
         let ctx = &contexts[0];
         assert_eq!(ctx.callees.len(), 2);
 
-        let types: Vec<_> = ctx
-            .callees
-            .iter()
-            .map(|e| e.call_type.as_str())
-            .collect();
+        let types: Vec<_> = ctx.callees.iter().map(|e| e.call_type.as_str()).collect();
         assert!(types.contains(&"indirect"));
         assert!(types.contains(&"virtual"));
     }

@@ -29,9 +29,7 @@ use anyhow::Result;
 use calxgloss_ghidra::parse;
 use tracing::{info, warn};
 
-use crate::{
-    CallGraph, CallGraphEdge, CallType, FunctionCallGraph, NodeCategory,
-};
+use crate::{CallGraph, CallGraphEdge, CallType, FunctionCallGraph, NodeCategory};
 
 /// Fetches function metadata from Ghidra and constructs a call graph.
 ///
@@ -54,10 +52,7 @@ pub struct CallGraphBuilder {
 
 impl CallGraphBuilder {
     /// Creates a new builder for the given DLL.
-    pub fn new(
-        ghidra: calxgloss_ghidra::GhidraClient,
-        dll_name: impl Into<String>,
-    ) -> Self {
+    pub fn new(ghidra: calxgloss_ghidra::GhidraClient, dll_name: impl Into<String>) -> Self {
         Self {
             ghidra,
             dll_name: dll_name.into(),
@@ -170,24 +165,20 @@ impl CallGraphBuilder {
         let callers: Vec<u64> = caller_names
             .into_iter()
             .filter_map(|caller_name| {
-                name_to_addr
-                    .get(&caller_name)
-                    .copied()
-                    .or({
-                        // The caller name isn't in the listing — it might be
-                        // an unnamed or anonymous caller reference.  Treat it
-                        // as an xref whose target function has no listing
-                        // entry and skip it.
-                        None
-                    })
+                name_to_addr.get(&caller_name).copied().or({
+                    // The caller name isn't in the listing — it might be
+                    // an unnamed or anonymous caller reference.  Treat it
+                    // as an xref whose target function has no listing
+                    // entry and skip it.
+                    None
+                })
             })
             .collect();
 
         // 3. Fetch decompiled output and parse callees.
         let callees = match self.ghidra.decompile_function(address).await {
             Ok(decompiled) => {
-                let callee_names =
-                    parse::callees_from_decompiled(&decompiled.body);
+                let callee_names = parse::callees_from_decompiled(&decompiled.body);
                 resolve_callees(address, &callee_names, name_to_addr)
             }
             Err(e) => {
@@ -236,10 +227,7 @@ fn resolve_callees(
     callee_names
         .iter()
         .map(|callee_name| {
-            let target = name_to_addr
-                .get(callee_name)
-                .copied()
-                .unwrap_or(0);
+            let target = name_to_addr.get(callee_name).copied().unwrap_or(0);
 
             CallGraphEdge {
                 source,
@@ -294,10 +282,7 @@ mod tests {
 
         let callees = resolve_callees(
             0x1000,
-            &[
-                "known".to_string(),
-                "unknown".to_string(),
-            ],
+            &["known".to_string(), "unknown".to_string()],
             &lookup,
         );
 
@@ -317,11 +302,7 @@ mod tests {
     fn test_resolve_callees_preserves_call_type() {
         let lookup = make_lookup(&["target"]);
 
-        let callees = resolve_callees(
-            0x1000,
-            &["target".to_string()],
-            &lookup,
-        );
+        let callees = resolve_callees(0x1000, &["target".to_string()], &lookup);
 
         assert_eq!(callees[0].call_type, CallType::Direct);
     }
@@ -330,11 +311,7 @@ mod tests {
     fn test_resolve_callees_source_address() {
         let lookup = make_lookup(&["target"]);
 
-        let callees = resolve_callees(
-            0xDEAD0000,
-            &["target".to_string()],
-            &lookup,
-        );
+        let callees = resolve_callees(0xDEAD0000, &["target".to_string()], &lookup);
 
         assert_eq!(callees[0].source, 0xDEAD0000);
         assert_eq!(callees[0].target, 0x1000);
@@ -359,11 +336,7 @@ void FUN_18000a0d0(void)\n{\n  ppiVar4 = (int **)FUN_1800861f0(local_58);\n  uVa
         lookup.insert("FUN_180069f80".to_string(), 0x180069f80);
         // FUN_180085460 is intentionally missing
 
-        let callees = resolve_callees(
-            0x18000a0d0,
-            &callee_names,
-            &lookup,
-        );
+        let callees = resolve_callees(0x18000a0d0, &callee_names, &lookup);
 
         assert_eq!(callees.len(), 3);
         assert_eq!(callees[0].target, 0x1800861f0);
@@ -394,10 +367,7 @@ void FUN_18000a0d0(void)\n{\n  ppiVar4 = (int **)FUN_1800861f0(local_58);\n  uVa
         let mut lookup = std::collections::HashMap::new();
         lookup.insert("known".to_string(), 0x2000);
 
-        let caller_names = vec![
-            "known".to_string(),
-            "unnamed".to_string(),
-        ];
+        let caller_names = vec!["known".to_string(), "unnamed".to_string()];
         let callers: Vec<u64> = caller_names
             .into_iter()
             .filter_map(|name| lookup.get(&name).copied())

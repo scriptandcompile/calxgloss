@@ -123,18 +123,14 @@ mod tests {
     fn test_serialize_deserialize_roundtrip() {
         let graph = sample_graph();
         let json = serde_json::to_string_pretty(&graph).expect("serialize");
-        let loaded: CallGraph =
-            serde_json::from_str(&json).expect("deserialize");
+        let loaded: CallGraph = serde_json::from_str(&json).expect("deserialize");
 
         assert_eq!(loaded.dll, graph.dll);
         assert_eq!(loaded.functions.len(), graph.functions.len());
         assert_eq!(loaded.functions[0].name, "main");
         assert_eq!(loaded.functions[0].callers.len(), 0);
         assert_eq!(loaded.functions[0].callees.len(), 1);
-        assert_eq!(
-            loaded.functions[0].callees[0].callee_name,
-            "helper"
-        );
+        assert_eq!(loaded.functions[0].callees[0].callee_name, "helper");
         assert_eq!(loaded.functions[1].name, "helper");
         assert_eq!(loaded.functions[1].callers, vec![0x401000]);
         assert_eq!(loaded.functions[1].callees.len(), 2);
@@ -143,14 +139,8 @@ mod tests {
             "Direct3DCreate9"
         );
         assert_eq!(loaded.functions[1].callees[0].call_type, CallType::Direct);
-        assert_eq!(
-            loaded.functions[1].callees[1].call_type,
-            CallType::Indirect
-        );
-        assert_eq!(
-            loaded.functions[1].node_category,
-            NodeCategory::Leaf
-        );
+        assert_eq!(loaded.functions[1].callees[1].call_type, CallType::Indirect);
+        assert_eq!(loaded.functions[1].node_category, NodeCategory::Leaf);
     }
 
     #[test]
@@ -209,8 +199,7 @@ mod tests {
         };
         let json = serde_json::to_string(&graph).expect("json serialize");
         // Verify the JSON contains expected keys
-        let parsed: serde_json::Value =
-            serde_json::from_str(&json).expect("json parse");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("json parse");
         assert!(parsed["dll"].is_string());
         assert!(parsed["functions"].is_array());
         assert_eq!(parsed["dll"], "simple.dll");

@@ -55,7 +55,7 @@
 //! # }
 //! ```
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::collections::{HashMap, HashSet, VecDeque};
 use tracing::debug;
 
@@ -189,10 +189,15 @@ impl TranslationOrderer {
         }
 
         // Topologically sort each tier and collect the final plan.
-        let mut plan: VecDeque<FunctionTranslationPlan> = VecDeque::with_capacity(graph.functions.len());
+        let mut plan: VecDeque<FunctionTranslationPlan> =
+            VecDeque::with_capacity(graph.functions.len());
 
         // Process tiers in priority order (Root → Middle → Leaf).
-        for priority in [TranslationPriority::Root, TranslationPriority::Middle, TranslationPriority::Leaf] {
+        for priority in [
+            TranslationPriority::Root,
+            TranslationPriority::Middle,
+            TranslationPriority::Leaf,
+        ] {
             let tier_indices = match tiers.get(&priority) {
                 Some(indices) if !indices.is_empty() => indices,
                 _ => continue,
@@ -279,7 +284,8 @@ impl TranslationOrderer {
             let func = &graph.functions[idx];
             for edge in &func.callees {
                 if let Some(&callee_idx) = addr_to_index.get(&edge.target)
-                    && tier_set.contains(&callee_idx) && callee_idx != idx
+                    && tier_set.contains(&callee_idx)
+                    && callee_idx != idx
                 {
                     // Edge: callee_idx → idx (callee must be placed before caller)
                     adj.entry(callee_idx).or_default().push(idx);
@@ -352,7 +358,13 @@ mod tests {
     use crate::FunctionCallGraph;
     use crate::{CallGraphEdge, CallType};
 
-    fn make_func(name: &str, address: u64, callers: Vec<u64>, callee_edges: Vec<CallGraphEdge>, category: NodeCategory) -> FunctionCallGraph {
+    fn make_func(
+        name: &str,
+        address: u64,
+        callers: Vec<u64>,
+        callee_edges: Vec<CallGraphEdge>,
+        category: NodeCategory,
+    ) -> FunctionCallGraph {
         FunctionCallGraph {
             name: name.to_string(),
             address,

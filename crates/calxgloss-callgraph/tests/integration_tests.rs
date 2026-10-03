@@ -11,9 +11,8 @@
 use std::collections::HashMap;
 
 use calxgloss_callgraph::{
-    CallGraph, CallGraphEdge, CallGraphPersistor, CallType,
-    FunctionCallGraph, LeafCategory, LeafDetector, NodeCategory,
-    RootDetector,
+    CallGraph, CallGraphEdge, CallGraphPersistor, CallType, FunctionCallGraph, LeafCategory,
+    LeafDetector, NodeCategory, RootDetector,
 };
 
 /// ---------------------------------------------------------------------------
@@ -221,8 +220,7 @@ fn test_root_detection_classifies_dllmain() {
 #[ignore = "needs a running GhidraMCP server with a program open"]
 async fn test_full_pipeline_ghidra_to_persist() {
     let url = std::env::var("CALXGLOSS_GHIDRA_URL").expect("CALXGLOSS_GHIDRA_URL");
-    let ghidra = calxgloss_ghidra::GhidraClient::new(&url)
-        .expect("connect to Ghidra");
+    let ghidra = calxgloss_ghidra::GhidraClient::new(&url).expect("connect to Ghidra");
 
     let functions = ghidra
         .list_functions()
@@ -234,8 +232,7 @@ async fn test_full_pipeline_ghidra_to_persist() {
     );
 
     // Build the graph.
-    let builder =
-        calxgloss_callgraph::CallGraphBuilder::new(ghidra, "test.dll");
+    let builder = calxgloss_callgraph::CallGraphBuilder::new(ghidra, "test.dll");
     let mut graph = builder.build().await.expect("build should succeed");
 
     // All functions should be present.
@@ -247,15 +244,17 @@ async fn test_full_pipeline_ghidra_to_persist() {
     // Verify no function is unclassified.
     for func in &graph.functions {
         assert!(
-            matches!(func.node_category, NodeCategory::Root | NodeCategory::Leaf | NodeCategory::Middle),
+            matches!(
+                func.node_category,
+                NodeCategory::Root | NodeCategory::Leaf | NodeCategory::Middle
+            ),
             "function {} has unclassified category",
             func.name
         );
     }
 
     // Persist and reload.
-    let temp_dir = std::env::temp_dir()
-        .join("calxgloss_integration_pipeline");
+    let temp_dir = std::env::temp_dir().join("calxgloss_integration_pipeline");
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -275,8 +274,7 @@ async fn test_full_pipeline_ghidra_to_persist() {
 
 #[test]
 fn test_classify_preserves_node_categories() {
-    let temp_dir =
-        std::env::temp_dir().join("calxgloss_integration_classify");
+    let temp_dir = std::env::temp_dir().join("calxgloss_integration_classify");
     let _ = std::fs::remove_dir_all(&temp_dir);
     std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -358,18 +356,9 @@ fn test_classify_preserves_node_categories() {
         .collect();
 
     assert_eq!(by_name.remove("DllMain"), Some(NodeCategory::Root));
-    assert_eq!(
-        by_name.remove("app_init"),
-        Some(NodeCategory::Leaf)
-    );
-    assert_eq!(
-        by_name.remove("compute_hash"),
-        Some(NodeCategory::Middle)
-    );
-    assert_eq!(
-        by_name.remove("rotate_left"),
-        Some(NodeCategory::Middle)
-    );
+    assert_eq!(by_name.remove("app_init"), Some(NodeCategory::Leaf));
+    assert_eq!(by_name.remove("compute_hash"), Some(NodeCategory::Middle));
+    assert_eq!(by_name.remove("rotate_left"), Some(NodeCategory::Middle));
     assert!(
         by_name.is_empty(),
         "all functions should be classified: remaining = {:?}",
@@ -434,7 +423,6 @@ fn test_leaf_classify_returns_all_matched_categories() {
     assert!(categories.contains(&&LeafCategory::Crypto));
 
     // The internal function should not be in the results.
-    let names: Vec<_> =
-        apis.iter().map(|a| a.api_name.as_str()).collect();
+    let names: Vec<_> = apis.iter().map(|a| a.api_name.as_str()).collect();
     assert!(!names.contains(&"internal_init"));
 }

@@ -31,9 +31,7 @@
 //! # }
 //! ```
 
-use calxgloss_callgraph::{
-    CallGraphBuilder, CallGraphPersistor, LeafDetector, RootDetector,
-};
+use calxgloss_callgraph::{CallGraphBuilder, CallGraphPersistor, LeafDetector, RootDetector};
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_types::{
     DependencyEdge, DependencyGraph, DependencyNode, NodeCategory, ReviewStatus,
@@ -295,8 +293,7 @@ pub fn build_dependency_graph_from_call_graph(
         // Edges to callees
         for edge in &func.callees {
             // Try to find the callee's function node by address
-            if let Some(callee_name) =
-                helpers::find_function_by_address(call_graph, edge.target)
+            if let Some(callee_name) = helpers::find_function_by_address(call_graph, edge.target)
                 && let Some(callee_id) = function_node_ids.get(callee_name)
             {
                 graph.edges.push(DependencyEdge {
@@ -386,7 +383,10 @@ mod tests {
         }
     }
 
-    fn make_call_graph(dll: &str, functions: Vec<FunctionCallGraph>) -> calxgloss_callgraph::CallGraph {
+    fn make_call_graph(
+        dll: &str,
+        functions: Vec<FunctionCallGraph>,
+    ) -> calxgloss_callgraph::CallGraph {
         calxgloss_callgraph::CallGraph {
             dll: dll.to_string(),
             functions,
@@ -672,14 +672,8 @@ mod tests {
             .position(|&id| id == "dll_classify_game_logic")
             .unwrap();
 
-        assert!(
-            c_idx < b_idx,
-            "C (depended on) should come before B"
-        );
-        assert!(
-            b_idx < a_idx,
-            "B (depended on) should come before A"
-        );
+        assert!(c_idx < b_idx, "C (depended on) should come before B");
+        assert!(b_idx < a_idx, "B (depended on) should come before A");
         assert!(
             dll_idx < a_idx,
             "DLL classification should come before functions"
@@ -690,10 +684,7 @@ mod tests {
 
     #[test]
     fn dll_node_id_strips_dll_extension() {
-        assert_eq!(
-            super::helpers::dll_node_id("d3d9.dll"),
-            "dll_classify_d3d9"
-        );
+        assert_eq!(super::helpers::dll_node_id("d3d9.dll"), "dll_classify_d3d9");
         assert_eq!(
             super::helpers::dll_node_id("GAME_LOGIC.DLL"),
             "dll_classify_game_logic"
@@ -710,14 +701,8 @@ mod tests {
 
     #[test]
     fn base_name_strips_extension() {
-        assert_eq!(
-            super::helpers::base_name("d3d9.dll"),
-            "d3d9"
-        );
-        assert_eq!(
-            super::helpers::base_name("game_logic.dll"),
-            "game_logic"
-        );
+        assert_eq!(super::helpers::base_name("d3d9.dll"), "d3d9");
+        assert_eq!(super::helpers::base_name("game_logic.dll"), "game_logic");
     }
 
     #[test]

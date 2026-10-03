@@ -143,10 +143,8 @@ impl RootDetector {
         let patterns = vec![
             // C/C++ entry points (MSVC / MinGW)
             RootPattern {
-                name_regex: Regex::new(
-                    r"^(mainCRTStartup|_main|WinMain|WinMain@16|WinMain@20)$",
-                )
-                .expect("valid root pattern"),
+                name_regex: Regex::new(r"^(mainCRTStartup|_main|WinMain|WinMain@16|WinMain@20)$")
+                    .expect("valid root pattern"),
                 description: "C/C++ entry point (MSVC/MinGW)",
                 action: RootAction::Skip,
             },
@@ -164,35 +162,28 @@ impl RootDetector {
             },
             // VB6 runtime functions
             RootPattern {
-                name_regex: Regex::new(
-                    r"^(__vbaInitialize|__vbaInit|SUBMAIN)$",
-                )
-                .expect("valid root pattern"),
+                name_regex: Regex::new(r"^(__vbaInitialize|__vbaInit|SUBMAIN)$")
+                    .expect("valid root pattern"),
                 description: "VB6 runtime initializer",
                 action: RootAction::Skip,
             },
             // .NET CLR entry points
             RootPattern {
-                name_regex: Regex::new(
-                    r"^(__managed_main|_CorExeMain)$",
-                )
-                .expect("valid root pattern"),
+                name_regex: Regex::new(r"^(__managed_main|_CorExeMain)$")
+                    .expect("valid root pattern"),
                 description: ".NET CLR entry point",
                 action: RootAction::Skip,
             },
             // MinGW runtime entry points
             RootPattern {
-                name_regex: Regex::new(
-                    r"^(_start|__libc_start_main)$",
-                )
-                .expect("valid root pattern"),
+                name_regex: Regex::new(r"^(_start|__libc_start_main)$")
+                    .expect("valid root pattern"),
                 description: "MinGW runtime entry point",
                 action: RootAction::Skip,
             },
             // MSVC debug runtime
             RootPattern {
-                name_regex: Regex::new(r"^_RTC_Initialize$")
-                    .expect("valid root pattern"),
+                name_regex: Regex::new(r"^_RTC_Initialize$").expect("valid root pattern"),
                 description: "MSVC debug runtime initializer",
                 action: RootAction::Skip,
             },
@@ -329,8 +320,7 @@ impl ConfigurableRootDetector {
     /// - The JSON is malformed.
     /// - Any regex in the patterns is invalid.
     pub fn from_config_file(path: impl AsRef<Path>) -> anyhow::Result<Self> {
-        let config: RootDetectorConfig =
-            serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+        let config: RootDetectorConfig = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
         let mut custom_patterns = Vec::new();
 
         for cfg in config.patterns {

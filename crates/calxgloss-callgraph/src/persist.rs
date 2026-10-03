@@ -62,10 +62,10 @@ impl CallGraphPersistor {
 
     /// Returns the path where the call graph JSON file is stored.
     fn graph_path(&self, dll_name: &str) -> PathBuf {
-        self.workspace_root.join("re").join("analysis").join(format!(
-            "{}_call_graph.json",
-            dll_name
-        ))
+        self.workspace_root
+            .join("re")
+            .join("analysis")
+            .join(format!("{}_call_graph.json", dll_name))
     }
 
     /// Saves a call graph to JSON.
@@ -160,8 +160,7 @@ mod tests {
 
     #[test]
     fn test_save_creates_directory_hierarchy() {
-        let temp_dir =
-            std::env::temp_dir().join("calxgloss_callgraph_test_mkdir");
+        let temp_dir = std::env::temp_dir().join("calxgloss_callgraph_test_mkdir");
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -193,8 +192,7 @@ mod tests {
 
     #[test]
     fn test_load_roundtrip_preserves_addresses() {
-        let temp_dir =
-            std::env::temp_dir().join("calxgloss_callgraph_test_addr");
+        let temp_dir = std::env::temp_dir().join("calxgloss_callgraph_test_addr");
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -230,10 +228,7 @@ mod tests {
 
         assert_eq!(loaded.functions[0].address, 0x180001000);
         assert_eq!(loaded.functions[1].address, 0x180002000);
-        assert_eq!(
-            loaded.functions[0].callees[0].call_site,
-            0x180001010
-        );
+        assert_eq!(loaded.functions[0].callees[0].call_site, 0x180001010);
         assert_eq!(loaded.functions[1].callers, vec![0x180001000]);
         assert_eq!(loaded.functions[1].node_category, NodeCategory::Leaf);
 
@@ -242,8 +237,7 @@ mod tests {
 
     #[test]
     fn test_graph_path_format() {
-        let temp_dir =
-            std::env::temp_dir().join("calxgloss_callgraph_test_path");
+        let temp_dir = std::env::temp_dir().join("calxgloss_callgraph_test_path");
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).unwrap();
 
@@ -263,8 +257,7 @@ mod tests {
 
     #[test]
     fn test_multiple_graphs_independent() {
-        let temp_dir = std::env::temp_dir()
-            .join("calxgloss_callgraph_test_multi");
+        let temp_dir = std::env::temp_dir().join("calxgloss_callgraph_test_multi");
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).unwrap();
 

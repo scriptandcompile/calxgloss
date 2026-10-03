@@ -59,18 +59,15 @@ pub mod ordering;
 pub mod persist;
 pub mod root_detector;
 
-pub use models::*;
 pub use builder::CallGraphBuilder;
-pub use root_detector::{
-    ConfigurableRootDetector, RootAction, RootDetector, RootDetectorConfig,
-    RootPattern, RootPatternConfig,
-};
-pub use leaf_detector::{
-    ApiSignature, LeafCategory, LeafDetector, TransitiveLeafContext,
-};
 pub use context::{
-    CallEdgeInfo, CalleeGroup, CallGraphNode, ContextEnricher, FunctionContext,
-    LeafApiContext,
+    CallEdgeInfo, CallGraphNode, CalleeGroup, ContextEnricher, FunctionContext, LeafApiContext,
 };
-pub use persist::CallGraphPersistor;
+pub use leaf_detector::{ApiSignature, LeafCategory, LeafDetector, TransitiveLeafContext};
+pub use models::*;
 pub use ordering::{FunctionTranslationPlan, TranslationOrderer, TranslationPriority};
+pub use persist::CallGraphPersistor;
+pub use root_detector::{
+    ConfigurableRootDetector, RootAction, RootDetector, RootDetectorConfig, RootPattern,
+    RootPatternConfig,
+};
