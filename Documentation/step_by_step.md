@@ -14,7 +14,7 @@ This plan turns the concepts in `Calxgloss.md` and `call_graph_assisted_translat
 | **M3** — Root & Leaf Classification | Detect roots, leaves, middle nodes | 3–4 days | ✅ Partial |
 | **M3.5** — Runtime Library Detection | RuntimeLibrary category, DLL wiring | 0.5 days | ✅ DONE |
 | **M4** — Translation Ordering | Topological sort, priority queue | 2–3 days | ✅ DONE |
-| **M5** — Context Enrichment | Call graph data in LLM prompts | 2–3 days | ❌ Not done |
+| **M5** — Context Enrichment | Call graph data in LLM prompts | 2–3 days | ✅ Partial |
 | **M6** — Pipeline Integration | Wire everything into the analysis pipeline | 3–4 days | ❌ Not done |
 | **M7** — CLI & Flags | `--no-callgraph`, streaming mode | 1–2 days | ✅ Partial |
 | **M8** — Tests & Verification | Unit, integration, manual | 3–4 days | ✅ Partial |
@@ -228,11 +228,17 @@ In `crates/calxgloss-prompts/src/templates.rs`:
 - `call_graph_context: Vec<FunctionContext>` field on all prompt data structs
 - Template rendering for callers, callees, leaf API context
 
-### Step 5.2 — Context Enrichment Logic ❌ NOT WIRED INTO PIPELINE
+### Step 5.2 — Context Enrichment Logic ✅ DONE
 
-`ContextEnricher` exists in `crates/calxgloss-callgraph/src/context.rs` and works correctly (15 unit tests pass), but:
-- Not called anywhere outside the callgraph crate
-- `call_graph_context` on prompt structs is always `Vec::new()` in production
+`ContextEnricher` in `crates/calxgloss-callgraph/src/context.rs` is now wired into production:
+
+- `TranslationPipeline::translate()` builds an enriched call graph via `Analyzer::build_call_graph()` and uses `ContextEnricher::enrich()` to produce `Vec<FunctionContext>`.
+- The enriched context is passed to all prompt data constructors that support it: `WithTestsPromptData`, `ModuleContextPromptData`, and `FullModulePromptData`.
+- `EscalatePromptCtx` carries the stored `call_graph_context` from the initial `Translation` into escalation retries.
+- `Translator` and `retry/helpers.rs::build_escalated_prompt()` populate `call_graph_context` from the stored data.
+- `build_escalate_prompt_with_context()` in the prompts crate renders enriched context in escalation prompts.
+
+All templates (`escalate.j2`, `with_tests_translate.j2`, `module_context_translate.j2`, `full_module_translate.j2`) already had rendering logic for the `call_graph_context` field.
 
 ### Step 5.3 — Caller/Callee Limiting ❌ NOT DONE
 
@@ -340,6 +346,7 @@ No CLI flag to print call graph statistics during analysis.
 | **Batch planning** | `TranslationPipeline::plan_from_callgraph()` wires `TranslationOrderer` into the translator |
 | **Dependency graph** | `build_dependency_graph_from_call_graph` with 8 tests |
 | **Prompt templates** | `call_graph_context` fields on all templates |
+| **Context enrichment wiring** | `ContextEnricher` called from `TranslationPipeline::translate()`, `retry/helpers.rs`, and `Translator` |
 | **CLI flag** | `--no-callgraph` on all subcommands |
 | **Runtime library** | `RuntimeLibrary` DLL category with classification and skip logic |
 | **Tests** | 103 unit tests + 4 integration tests across all modules |
@@ -352,7 +359,6 @@ No CLI flag to print call graph statistics during analysis.
 | **Indirect call detection** | Disassembly scan for `call [reg]` patterns |
 | **Virtual call detection** | Vtable pattern matching in decompiler output |
 | **Cross-DLL import mapping** | PE import table parsing |
-| **Context enrichment pipeline** | `ContextEnricher` called from production code |
 | **Caller/callee limiting** | Top-N and size-based filtering |
 | **Pipeline integration** | `Analyzer` calls `build_enriched_call_graph` automatically |
 | **Skip runtime functions** | `NodeCategory` checked before translation, stub generation |
