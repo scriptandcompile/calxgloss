@@ -54,5 +54,5 @@ pub mod root_detector;
 pub use models::*;
 pub use builder::CallGraphBuilder;
 pub use root_detector::RootDetector;
-pub use leaf_detector::LeafDetector;
+pub use leaf_detector::{ApiSignature, LeafCategory, LeafDetector};
 pub use persist::CallGraphPersistor;
