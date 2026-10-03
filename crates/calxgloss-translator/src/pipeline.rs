@@ -393,6 +393,7 @@ impl TranslationPipeline {
                     call_graph_neighbors,
                     neighboring_functions,
                     data_structures,
+                    Vec::new(),
                 );
                 calxgloss_prompts::build_module_context_prompt(&data)?
             }
@@ -432,6 +433,7 @@ impl TranslationPipeline {
                     data_structures,
                     shim_layers,
                     pal_traits,
+                    Vec::new(),
                 );
                 calxgloss_prompts::build_full_module_prompt(&data)?
             }
