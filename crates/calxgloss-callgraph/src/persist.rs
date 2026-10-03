@@ -112,7 +112,7 @@ impl CallGraphPersistor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{NodeCategory, FunctionCallGraph};
+    use crate::{CallGraphEdge, CallType, FunctionCallGraph, NodeCategory};
 
     fn sample_graph() -> CallGraph {
         CallGraph {
@@ -154,6 +154,154 @@ mod tests {
 
         let persistor = CallGraphPersistor::new(&temp_dir);
         assert!(persistor.load("nonexistent.dll").is_err());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_save_creates_directory_hierarchy() {
+        let temp_dir =
+            std::env::temp_dir().join("calxgloss_callgraph_test_mkdir");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let persistor = CallGraphPersistor::new(&temp_dir);
+        let graph = CallGraph {
+            dll: "nested.dll".to_string(),
+            functions: vec![FunctionCallGraph {
+                name: "entry".to_string(),
+                address: 0x1000,
+                callers: vec![],
+                callees: vec![],
+                node_category: NodeCategory::Root,
+            }],
+        };
+
+        persistor.save(&graph).unwrap();
+
+        let expected_path = temp_dir.join("re").join("analysis");
+        assert!(
+            expected_path.exists(),
+            "re/analysis/ directory should be created"
+        );
+
+        let json_path = expected_path.join("nested.dll_call_graph.json");
+        assert!(json_path.exists(), "JSON file should exist");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_load_roundtrip_preserves_addresses() {
+        let temp_dir =
+            std::env::temp_dir().join("calxgloss_callgraph_test_addr");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let persistor = CallGraphPersistor::new(&temp_dir);
+        let graph = CallGraph {
+            dll: "addr_test.dll".to_string(),
+            functions: vec![
+                FunctionCallGraph {
+                    name: "caller".to_string(),
+                    address: 0x180001000,
+                    callers: vec![],
+                    callees: vec![CallGraphEdge {
+                        source: 0x180001000,
+                        target: 0x180002000,
+                        call_site: 0x180001010,
+                        call_type: CallType::Direct,
+                        callee_name: "callee".to_string(),
+                    }],
+                    node_category: NodeCategory::Middle,
+                },
+                FunctionCallGraph {
+                    name: "callee".to_string(),
+                    address: 0x180002000,
+                    callers: vec![0x180001000],
+                    callees: vec![],
+                    node_category: NodeCategory::Leaf,
+                },
+            ],
+        };
+
+        persistor.save(&graph).unwrap();
+        let loaded = persistor.load("addr_test.dll").unwrap();
+
+        assert_eq!(loaded.functions[0].address, 0x180001000);
+        assert_eq!(loaded.functions[1].address, 0x180002000);
+        assert_eq!(
+            loaded.functions[0].callees[0].call_site,
+            0x180001010
+        );
+        assert_eq!(loaded.functions[1].callers, vec![0x180001000]);
+        assert_eq!(loaded.functions[1].node_category, NodeCategory::Leaf);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_graph_path_format() {
+        let temp_dir =
+            std::env::temp_dir().join("calxgloss_callgraph_test_path");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let persistor = CallGraphPersistor::new(&temp_dir);
+
+        let path = persistor.graph_path("foo.dll");
+        assert_eq!(
+            path,
+            temp_dir
+                .join("re")
+                .join("analysis")
+                .join("foo.dll_call_graph.json")
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_multiple_graphs_independent() {
+        let temp_dir = std::env::temp_dir()
+            .join("calxgloss_callgraph_test_multi");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let persistor = CallGraphPersistor::new(&temp_dir);
+
+        let graph_a = CallGraph {
+            dll: "game.dll".to_string(),
+            functions: vec![FunctionCallGraph {
+                name: "game_loop".to_string(),
+                address: 0x400000,
+                callers: vec![],
+                callees: vec![],
+                node_category: NodeCategory::Middle,
+            }],
+        };
+        let graph_b = CallGraph {
+            dll: "renderer.dll".to_string(),
+            functions: vec![FunctionCallGraph {
+                name: "render_frame".to_string(),
+                address: 0x500000,
+                callers: vec![],
+                callees: vec![],
+                node_category: NodeCategory::Leaf,
+            }],
+        };
+
+        persistor.save(&graph_a).unwrap();
+        persistor.save(&graph_b).unwrap();
+
+        let loaded_a = persistor.load("game.dll").unwrap();
+        let loaded_b = persistor.load("renderer.dll").unwrap();
+
+        assert_eq!(loaded_a.dll, "game.dll");
+        assert_eq!(loaded_a.functions[0].name, "game_loop");
+        assert_eq!(loaded_b.dll, "renderer.dll");
+        assert_eq!(loaded_b.functions[0].name, "render_frame");
+        assert_ne!(loaded_a.functions[0].address, loaded_b.functions[0].address);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
