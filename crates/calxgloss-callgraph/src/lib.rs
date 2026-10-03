@@ -1,11 +1,12 @@
 //! Call graph analysis for calxgloss.
 //!
 //! Extracts call graphs from Ghidra, detects root and leaf functions,
-//! and persists results to JSON for consumption by the translation pipeline.
+//! produces translation ordering, and persists results to JSON for
+//! consumption by the translation pipeline.
 //!
 //! # Architecture
 //!
-//! The crate is organized into five modules:
+//! The crate is organized into six modules:
 //!
 //! - [`models`] — Core data types: [`CallGraph`], [`FunctionCallGraph`], [`CallGraphEdge`],
 //!   [`NodeCategory`], and [`CallType`].
@@ -16,6 +17,7 @@
 //! - [`leaf_detector`] — [`LeafDetector`] identifies functions that call known
 //!   third-party APIs, enabling context enrichment.
 //! - [`persist`] — [`CallGraphPersistor`] saves and loads call graphs to/from JSON.
+//! - [`ordering`] — [`TranslationOrderer`] produces a priority-ordered translation plan.
 //!
 //! # Example
 //!
@@ -48,6 +50,7 @@
 pub mod builder;
 pub mod leaf_detector;
 pub mod models;
+pub mod ordering;
 pub mod persist;
 pub mod root_detector;
 
@@ -56,3 +59,4 @@ pub use builder::CallGraphBuilder;
 pub use root_detector::RootDetector;
 pub use leaf_detector::{ApiSignature, LeafCategory, LeafDetector};
 pub use persist::CallGraphPersistor;
+pub use ordering::{FunctionTranslationPlan, TranslationOrderer, TranslationPriority};

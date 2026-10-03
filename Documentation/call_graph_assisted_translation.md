@@ -466,7 +466,7 @@ persistor.save(&call_graph)?;
 
 These are planned but not urgent. Each is a self-contained enhancement that can be done independently.
 
-### Task 9: Translation Ordering
+### Task 9: Translation Ordering ✅ COMPLETED
 
 **File:** `crates/calxgloss-callgraph/src/ordering.rs` (new)
 
@@ -477,7 +477,31 @@ These are planned but not urgent. Each is a self-contained enhancement that can 
 2. Sort by priority: Root (skip/stub first) → Middle (topological) → Leaf (context last)
 3. Within each priority tier, use topological sort from call graph edges
 
-**TODO:**
+**Types implemented:**
+```rust
+pub enum TranslationPriority { Root, Middle, Leaf }
+pub struct FunctionTranslationPlan {
+    pub name: String,
+    pub address: u64,
+    pub priority: TranslationPriority,
+    pub caller_count: usize,
+    pub callee_count: usize,
+    pub caller_names: Vec<String>,
+    pub callee_names: Vec<String>,
+}
+pub struct TranslationOrderer { /* ... */ }
+impl TranslationOrderer {
+    pub fn new() -> Self;
+    pub fn with_max_functions(mut self, max: usize) -> Self;
+    pub fn order(&self, graph: &CallGraph) -> Result<VecDeque<FunctionTranslationPlan>>;
+}
+```
+
+**Topological sort:** Kahn's algorithm with edges reversed (callee → caller) so that
+functions with no internal callees are placed first within their tier. Cycles are
+resolved by appending cyclic nodes in address order.
+
+**Remaining TODOs:**
 ```rust
 // TODO: Add priority weighting: functions with more callers get higher priority within tier
 // TODO: Add cycle detection and resolution (break cycles by picking lowest-address function)
@@ -487,10 +511,15 @@ These are planned but not urgent. Each is a self-contained enhancement that can 
 ```
 
 **Acceptance:**
-- Root functions listed before Middle and Leaf
-- Middle functions respect topological order
-- Leaf functions listed last
-- `FunctionTranslationPlan` includes caller/callee counts and leaf APIs
+- ✅ Root functions listed before Middle and Leaf
+- ✅ Middle functions respect topological order (callees before callers within tier)
+- ✅ Leaf functions listed last
+- ✅ `FunctionTranslationPlan` includes caller/callee counts and names
+- ✅ Cyclic functions handled gracefully (appended at end of tier in address order)
+- ✅ Duplicate address detection returns an error
+- ✅ `max_functions` limit truncates the plan when set
+- ✅ 15 unit tests covering all core behavior
+- ✅ 1 doc test passes
 
 ---
 
@@ -584,7 +613,7 @@ These are planned but not urgent. Each is a self-contained enhancement that can 
 
 | Task | Est. Days | Blockers |
 |------|-----------|----------|
-| 9: Translation ordering | 3 | None |
+| 9: Translation ordering | 3 | None ✅ |
 | 10: Context enrichment | 2 | None |
 | 11: Prompt integration | 3 | Depends on Task 10 |
 | 12: CLI flag | 0.5 | None |
@@ -611,7 +640,7 @@ Task 1  (skeleton)
   │                              └── Task 5  (leaf detector) ─┘
   │                                     │
   │                                     ▼
-  │                                 Task 9  (translation ordering)
+  │                                 Task 9  (translation ordering) ✅
   │                                     │
   │                                     ▼
   │                                 Task 10  (context enrichment)
