@@ -10,6 +10,7 @@ pub mod init;
 pub mod live;
 pub mod serve;
 pub mod translate;
+pub mod typesdb;
 pub mod verify;
 
 // Re-export helper functions used across command files.

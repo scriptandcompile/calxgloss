@@ -11,6 +11,7 @@
 //! - `auto-shim` — Generate shim layers for crate-replacement DLLs
 //! - `translate` — Translate a single function from disassembly to Rust
 //! - `batch-translate` — Translate multiple functions from a single DLL
+//! - `typesdb` — Recover the type database (named types, vtables, inferred structs) for the binary open in Ghidra
 //! - `verify` — Verify a previously translated function
 //! - `config` — Show the configuration in force and where each value came from
 //! - `dashboard` — Show a structured terminal review dashboard
@@ -60,6 +61,7 @@ use commands::init::handle_init;
 use commands::live::handle_live;
 use commands::serve::handle_serve;
 use commands::translate::handle_translate;
+use commands::typesdb::handle_typesdb;
 use commands::verify::handle_verify;
 
 fn main() -> Result<()> {
@@ -112,11 +114,12 @@ fn main() -> Result<()> {
     let settings = Settings::resolve(&layers, flags, &loaded);
 
     // target_dir is required for all commands that do real work.
-    // `config` is the only command that doesn't need it, so we check
+    // `config`, `gc`, and `typesdb` don't need it — `typesdb` reads the
+    // program open in Ghidra and writes to the workspace — so we check
     // here and fail fast with a helpful message.
     if let Some(ref target) = cli.command {
         match target {
-            Command::Config | Command::Gc { .. } => {}
+            Command::Config | Command::Gc { .. } | Command::Typesdb { .. } => {}
             _ if settings.target_dir.is_none() => {
                 anyhow::bail!(
                     "target_dir is required.\n\nSet it via:\n  --target-dir <path>\n  [target_dir] in calxgloss.toml\n  CALXGLOSS_TARGET_DIR env var"
@@ -170,7 +173,13 @@ fn main() -> Result<()> {
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_translate(&args, &settings, repo_dir, callgraph_cache, callgraph_verbose))
+                .block_on(handle_translate(
+                    &args,
+                    &settings,
+                    repo_dir,
+                    callgraph_cache,
+                    callgraph_verbose,
+                ))
         }
         Command::BatchTranslate(args) => {
             let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
@@ -180,7 +189,21 @@ fn main() -> Result<()> {
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_batch_translate(&args, &settings, repo_dir, callgraph_cache, callgraph_verbose))
+                .block_on(handle_batch_translate(
+                    &args,
+                    &settings,
+                    repo_dir,
+                    callgraph_cache,
+                    callgraph_verbose,
+                ))
+        }
+        Command::Typesdb { dll, show, no_tag } => {
+            let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_typesdb(&dll, &repo_dir, show, no_tag, &settings))
         }
         Command::Verify {
             dll,

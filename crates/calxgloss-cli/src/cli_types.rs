@@ -200,6 +200,46 @@ pub(super) enum Command {
     /// Translate multiple functions from a single DLL in one pass
     BatchTranslate(BatchTranslateArgs),
 
+    /// Recover the type database for the binary open in Ghidra.
+    ///
+    /// Runs the three recovery scans — named types from Ghidra's Type
+    /// Manager, vtable detection, and string-guided struct inference —
+    /// against the currently open program and saves the result to
+    /// `re/analysis/typesdb/<dll>.json` in the workspace. Batch
+    /// translation recovers this automatically before its first batch
+    /// when no database is cached; this command is the manual entry
+    /// point: it rebuilds the database on demand and can print what a
+    /// cached one holds.
+    ///
+    /// # Arguments
+    ///
+    /// * `--dll` — Binary the open Ghidra program was loaded from, e.g.
+    ///   `eqmain.dll`. Names the persisted file.
+    /// * `--show` — Print a summary of the cached database without
+    ///   connecting to Ghidra.
+    /// * `--no-tag` — Detect vtable methods without writing
+    ///   `vtable-method` tags back into the program.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss typesdb --dll eqmain.dll
+    /// calxgloss typesdb --dll eqmain.dll --show
+    /// ```
+    Typesdb {
+        /// Binary the open Ghidra program was loaded from, e.g. `eqmain.dll`
+        #[arg(long, required = true)]
+        dll: String,
+
+        /// Show the cached database instead of running the scans
+        #[arg(long)]
+        show: bool,
+
+        /// Do not write vtable-method tags back into the Ghidra program
+        #[arg(long)]
+        no_tag: bool,
+    },
+
     /// Show the configuration in force and where each value came from
     ///
     /// Secrets are reported as `<set>` rather than printed, so this output is
