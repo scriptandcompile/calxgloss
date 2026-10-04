@@ -1089,15 +1089,15 @@ The UI is a **review gate** — it shows the *result* of each translation unit b
   - [x] `cargo check` passes with no errors
   - [x] `cargo clippy` clean
 
-- [ ] **Phase 1 — C++ this-Pointer Detection**
-  - [ ] `InferredParamType`, `InferenceMethod`, `InferenceScope` types defined
-  - [ ] `ThisPointerDetector` struct implemented
-  - [ ] `detect_this_pointer()` parses decompiled output for vtable patterns
-  - [ ] Class name extraction from vtable function names
-  - [ ] Namespace false-positive avoidance
-  - [ ] COM interface detection
-  - [ ] All 8 Phase 1 unit tests pass
-  - [ ] `cargo clippy` clean
+- [x] **Phase 1 — C++ this-Pointer Detection** *(done 2026-10-04)*
+  - [x] `InferredParamType`, `InferenceMethod`, `InferenceScope` types defined *(done 2026-10-04, with 5 unit tests)*
+  - [x] `ThisPointerDetector` struct implemented *(done 2026-10-04, stateless over `DecompiledFunction` text — the decompile fetch happens once per function in the orchestrating engine and is read by all three detectors, unlike the P1 scanners which own their sources; 2 unit tests)*
+  - [x] `detect_this_pointer()` parses decompiled output for vtable patterns *(done 2026-10-04, string-aware indirect-call scan: cast-stripped double-deref callee + this-argument match, inline and hoisted-table-base spellings; unnamed class reads as `void *` at class scope, one strongest-evidence record per parameter; 13 unit tests)*
+  - [x] Class name extraction from vtable function names *(done 2026-10-04, qualified member calls in the body (`Widget::paint(param_1, ...)`, cast-stripped first argument, destructor segments, nested namespace chains) and the analyzed function's own demangled name name the class; name beside a vtable dispatch narrows the record to `Class *` at VtableCall confidence 90, name alone reads as FirstParamUsage at 80; 8 unit tests)*
+  - [x] Namespace false-positive avoidance *(done 2026-10-04, `class_name` refuses qualified chains carrying a `std` or `operator` segment — `std::string::compare(param_1)` and `Widget::operator()(param_1)` name no class, covering body calls and the analyzed function's own demangled name; whole-segment match, so `MyStd::string::paint` still names its chain; 3 unit tests)*
+  - [x] COM interface detection *(done 2026-10-04, IUnknown slot prefix: each indirect dispatch resolves to a vtable slot (`[N]` index, `+ 0xNN` table byte offset ÷ 8, bare double-deref slot 0; an offset added to the object — `**(param_1 + 0x10)` — is slot 0 of a secondary table), and a parameter dispatched at two or three of slots 0/1/2 (QueryInterface/AddRef/Release) reads as `IUnknown *` via ComInterface at 88, below a named class but above an anonymous vtable call; 8 unit tests)*
+  - [x] All Phase 1 unit tests pass (39: 34 this-pointer detector + 5 model)
+  - [x] `cargo clippy` clean
 
 - [ ] **Phase 2 — Parameter Size Detection**
   - [ ] `ParameterSizeDetector` struct implemented
