@@ -95,6 +95,12 @@ pub use calxgloss_analysis::classify_dll_name;
 pub use calxgloss_analysis::crate_replacement_for;
 
 // ============================================================
+// calxgloss-typesdb — data structure recovery
+// ============================================================
+
+pub use calxgloss_typesdb::{Result as TypesDbResult, TypesDbError};
+
+// ============================================================
 // calxgloss-testgen — FFI stubs, test input generation
 // ============================================================
 

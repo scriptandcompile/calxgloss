@@ -334,6 +334,7 @@ dependencies = [
  "calxgloss-testgen",
  "calxgloss-translator",
  "calxgloss-types",
+ "calxgloss-typesdb",
  "calxgloss-verify",
 ]
 
