@@ -1010,12 +1010,13 @@ The UI is a **review gate** — it shows the *result* of each translation unit b
 
 ### 1. P1 — Data Structure Recovery (`calxgloss-typesdb`)
 
-- [x] **Phase 0a — Ghidra Client Port to bethington/ghidra-mcp (Prerequisite)** *(done 2026-10-03, except write-back wrappers — deferred to P2 Phase 5, no P1 consumer)*
+- [x] **Phase 0a — Ghidra Client Port to bethington/ghidra-mcp (Prerequisite)** *(done 2026-10-03, except type write-back wrappers — deferred to P2 Phase 5, no P1 consumer; `add_function_tag` landed with vtable detection)*
   - [x] GhidraMCP 6.0.0 extension installed on Ghidra 12.1.2 (release zip → user Extensions dir; LaurieWired extension backed up to `~/Downloads/GhidraMCP-lauriewired-backup`)
   - [x] Plugin enabled in the CodeBrowser tool; `curl 127.0.0.1:8089/check_connection` green (verified live, `eqmain.dll` open); naming-enforcement setting chosen. We use a custom port of 8089 instead of the default of 8080.
   - [x] `client.rs`/`parse.rs` ported to the 6.x response formats (JSON where the bridge answers JSON — most endpoints stay `text/plain`, see the Record formats note); `error::classify` updated for JSON errors
   - [x] `list_data_items()` client wrapper + paged parser (text records, not JSON), unit-tested with re-captured fixtures + live tests
   - [x] Type-library wrappers added: `list_data_types`, `get_struct_layout`, `get_enum_values` (replaces the old strategy decision — fork/pseudo-C options obsolete)
+  - [x] `read_memory()` (raw bytes via `parse_memory_bytes`) and `add_function_tag()` (POST write-back) wrappers added alongside the vtable work
   - [ ] Write-back wrappers added: `set_function_prototype`, `set_local_variable_type`, `rename_function`/`rename_data`, `create_struct`/`add_struct_field` — **deferred to P2 Phase 5** (no P1 consumer)
   - [x] `cargo clippy` clean
 
@@ -1038,15 +1039,16 @@ The UI is a **review gate** — it shows the *result* of each translation unit b
   - [x] `cargo clippy` clean
   - Verified live: `list_data_types`'s `category` filter matches the word as a case-insensitive substring against the category name **or** the type's classification (`struct`/`union`/`enum`/`typedef`/`pointer`/`array`/`function`/`primitive`) — `DataTypeService.listDataTypes`. The scanner's four kind-bucket listings rely on this; certainty = category name does not contain the kind word, and a certain bucket membership is trusted over a suspect one (a typedef in a category named e.g. `unions` would otherwise misclassify).
 
-- [ ] **Phase 2 — Vtable Detection**
-  - [ ] `Vtable`, `VtableMethod` types defined with `Serialize`/`Deserialize`
-  - [ ] `VtableDetector` struct implemented
-  - [ ] `detect_vtables()` scans `list_data_items` output for vtable-shaped data objects
-  - [ ] Method pointers resolved to names and addresses
-  - [ ] Base class inheritance tracked
-  - [ ] COM interface detection (QueryInterface/AddRef/Release pattern)
-  - [ ] All 8 Phase 2 unit tests pass
-  - [ ] `cargo clippy` clean
+- [x] **Phase 2 — Vtable Detection** *(done 2026-10-03, verified live against the v6.0.0 bridge with `eqmain.dll` open)*
+  - [x] `Vtable`, `VtableMethod` types defined with `Serialize`/`Deserialize`
+  - [x] `VtableDetector` struct implemented (generic over a `VtableSource` trait; `GhidraClient` implements it)
+  - [x] `detect_vtables()` scans `list_data_items` output for vtable-shaped data objects (`vftable`-named items keyed by address; a preceding `vftable_meta_ptr` entry is the RTTI confirmation)
+  - [x] Method pointers resolved to names and addresses (table bytes read via `read_memory`; element size from the declared `pointer[N]` count)
+  - [x] Base class inheritance tracked (RTTI chain: meta pointer → CompleteObjectLocator → TypeDescriptor + ClassHierarchyDescriptor; x64 RVAs resolved against the image base; `.?AVWidget@@` demangled to `Widget`)
+  - [x] COM interface detection (QueryInterface/AddRef/Release pattern)
+  - [x] Confirmed vtable methods tagged with `add_function_tag` (`without_tagging()` runs read-only)
+  - [x] All Phase 2 unit tests pass (18: 16 detector + 2 model) + 2 `#[ignore]`d live tests green against the running bridge
+  - [x] `cargo clippy` clean
 
 - [ ] **Phase 3 — String-Guided Inference**
   - [ ] `InferredStruct`, `InferredField`, `FieldType` types defined with `Serialize`/`Deserialize`
