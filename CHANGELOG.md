@@ -85,6 +85,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### `calxgloss-analysis`
 - **Token usage logger** (`TokenUsageLogger`) — persists per-attempt token entries to `<workspace>/re/analysis/token_usage.json`. Provides `record()`, `load()`, `compute_stats()`, and `log_path()` methods. Auto-creates the `re/analysis/` directory; handles corrupted-file recovery by starting fresh.
 
+#### `calxgloss-typesdb`
+- **New crate: data structure recovery (P1 Phase 0 — project setup)** — scaffolded `calxgloss-typesdb` as a workspace member per the unified plan (`Documentation/step_by_step.md`). Module skeleton: `types`, `scanner`, `vtable`, `string_infer`, `persist`, `error`. `TypesDbError` (thiserror) with `Ghidra`/`Io`/`Json`/`EmptyTypeName`/`ScanFailed` variants plus a crate-wide `Result` alias. Dependencies wired for Phases 1–4 (`calxgloss-ghidra`, `calxgloss-types`, `serde`, `serde_json`, `tokio`, `tracing`, `thiserror`, `regex`; unused-dependency lint allowed until the phases land, same as `calxgloss-web`). Re-exported from the `calxgloss` meta-crate.
+
 ### Changed
 
 #### GhidraMCP 6.x migration

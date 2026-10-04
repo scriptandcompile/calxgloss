@@ -1019,14 +1019,14 @@ The UI is a **review gate** — it shows the *result* of each translation unit b
   - [ ] Write-back wrappers added: `set_function_prototype`, `set_local_variable_type`, `rename_function`/`rename_data`, `create_struct`/`add_struct_field`
   - [ ] `cargo clippy` clean
 
-- [ ] **Phase 0 — Project Setup**
-  - [ ] `calxgloss-typesdb` crate created at `crates/calxgloss-typesdb/`
-  - [ ] Added to workspace `Cargo.toml` members list
-  - [ ] Re-exported from the `calxgloss` meta-crate (`crates/calxgloss`)
-  - [ ] `Cargo.toml` dependencies correct (`calxgloss-ghidra`, `calxgloss-types`, `serde`, `tokio`, `tracing`, `thiserror`, `regex`)
-  - [ ] Module structure created: `lib.rs`, `types.rs`, `scanner.rs`, `vtable.rs`, `string_infer.rs`, `persist.rs`, `error.rs`
-  - [ ] `cargo check` passes with no errors
-  - [ ] `cargo clippy` clean
+- [x] **Phase 0 — Project Setup**
+  - [x] `calxgloss-typesdb` crate created at `crates/calxgloss-typesdb/`
+  - [x] Added to workspace `Cargo.toml` members list
+  - [x] Re-exported from the `calxgloss` meta-crate (`crates/calxgloss`)
+  - [x] `Cargo.toml` dependencies correct (`calxgloss-ghidra`, `calxgloss-types`, `serde`, `tokio`, `tracing`, `thiserror`, `regex`)
+  - [x] Module structure created: `lib.rs`, `types.rs`, `scanner.rs`, `vtable.rs`, `string_infer.rs`, `persist.rs`, `error.rs`
+  - [x] `cargo check` passes with no errors
+  - [x] `cargo clippy` clean
 
 - [ ] **Phase 1 — Named Type Recovery**
   - [ ] `NamedType`, `TypeKind`, `StructField` types defined with `Serialize`/`Deserialize`
