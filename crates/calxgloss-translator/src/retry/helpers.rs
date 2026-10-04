@@ -1,4 +1,4 @@
-//! Ghidra context extraction helpers used by prompt builders.
+//! Context extraction helpers used by prompt builders.
 
 use crate::Translation;
 use calxgloss_callgraph::FunctionContext;
@@ -7,6 +7,7 @@ use calxgloss_prompts::{
     CallGraphNeighbor, NeighborFunction, PalTraitDef, PalTraitMethod, ShimCode,
 };
 use calxgloss_types::{ApiCategory, ContextTier, TranslationRequest, WindowsApiCall};
+use tracing::debug;
 
 /// Extract call graph neighbor details from an enriched context list.
 ///
@@ -122,15 +123,74 @@ pub async fn extract_neighboring_context(
     neighbors
 }
 
-/// Extract data structure information from Ghidra.
-pub async fn extract_data_structures(
-    _ghidra: &GhidraClient,
-    _address: u64,
+/// Extract data structure information from the persisted type database.
+///
+/// Reads the per-binary database recovered by the `calxgloss-typesdb`
+/// engines from `re/analysis/typesdb/{dll}.json` and keeps the records
+/// tied to the target function:
+///
+/// - inferred struct candidates whose literals the function
+///   cross-references (the function appears in the candidate's
+///   `referenced_by` list);
+/// - named types recovered for classes whose vtable lists the function
+///   as a method — the method list is the only per-function link the
+///   database records for Type Manager types.
+///
+/// Returns an empty vector when no workspace is configured, no database
+/// is persisted for `dll` (the scan has not run), or the document is
+/// corrupt: missing data structure context degrades the prompt, it never
+/// fails it.
+pub fn extract_data_structures(
+    workspace: Option<&std::path::Path>,
+    dll: &str,
+    function: &str,
 ) -> Vec<calxgloss_prompts::StructuredData> {
-    // GhidraMCP doesn't have a dedicated data-structure endpoint,
-    // so we return empty for now. This is a placeholder for future
-    // integration with Ghidra's type database.
-    Vec::new()
+    let Some(workspace) = workspace else {
+        return Vec::new();
+    };
+
+    let persistor = calxgloss_typesdb::persist::TypeDatabasePersistor::new(workspace);
+    let db = match persistor.load(dll) {
+        Ok(db) => db,
+        Err(e) => {
+            debug!(
+                dll,
+                error = %e,
+                "No usable type database; continuing without data structure context"
+            );
+            return Vec::new();
+        }
+    };
+
+    let mut structures = Vec::new();
+
+    for candidate in db
+        .inferred_structs
+        .iter()
+        .filter(|s| s.referenced_by.iter().any(|f| f == function))
+    {
+        structures.push(calxgloss_prompts::StructuredData::from(candidate));
+    }
+
+    let class_names: std::collections::HashSet<&str> = db
+        .vtables
+        .iter()
+        .filter(|v| {
+            v.methods
+                .iter()
+                .any(|m| m.name.as_deref() == Some(function))
+        })
+        .filter_map(|v| v.class_name.as_deref())
+        .collect();
+    for named in db
+        .named_types
+        .iter()
+        .filter(|t| class_names.contains(t.name.as_str()))
+    {
+        structures.push(calxgloss_prompts::StructuredData::from(named));
+    }
+
+    structures
 }
 
 /// Extract type information from Ghidra for the given function.
@@ -414,7 +474,8 @@ pub fn extract_pal_traits(windows_apis: &[WindowsApiCall]) -> Vec<PalTraitDef> {
 /// * `translation` — The initial [`Translation`] produced by the pipeline.
 /// * `tier` — The target context tier to build for.
 /// * `ghidra` — Ghidra client for fetching additional context.
-/// * `workspace` — Optional workspace path for shim layer extraction.
+/// * `workspace` — Optional workspace path for shim layer and type
+///   database extraction.
 ///
 /// # Returns
 ///
@@ -527,8 +588,7 @@ pub async fn build_escalated_prompt(
             .await;
             let neighboring_functions =
                 extract_neighboring_context(ghidra, &translation.call_graph).await;
-            let data_structures =
-                extract_data_structures(ghidra, translation.function_address.unwrap_or(0)).await;
+            let data_structures = extract_data_structures(workspace, dll, function);
 
             let data = calxgloss_prompts::ModuleContextPromptData::from_request_with_context(
                 &request,
@@ -568,8 +628,7 @@ pub async fn build_escalated_prompt(
             .await;
             let neighboring_functions =
                 extract_neighboring_context(ghidra, &translation.call_graph).await;
-            let data_structures =
-                extract_data_structures(ghidra, translation.function_address.unwrap_or(0)).await;
+            let data_structures = extract_data_structures(workspace, dll, function);
 
             let shim_layers = extract_shim_layers(workspace, dll);
             let pal_traits = Vec::<PalTraitDef>::new();
@@ -585,5 +644,211 @@ pub async fn build_escalated_prompt(
             );
             calxgloss_prompts::build_full_module_prompt(&data).map_err(|e| e.to_string())
         }
+    }
+}
+
+// ============================================================
+// Tests
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calxgloss_typesdb::persist::TypeDatabasePersistor;
+    use calxgloss_typesdb::types::{
+        EnumMember, FieldType, InferredField, InferredStruct, NameOrigin, NamedType, ScanMetadata,
+        TypeDatabase, TypeKind, Vtable, VtableMethod,
+    };
+    use tempfile::TempDir;
+
+    fn inferred_struct(name: &str, referenced_by: &[&str]) -> InferredStruct {
+        InferredStruct {
+            name: name.to_string(),
+            name_origin: NameOrigin::LiteralPrefix,
+            fields: vec![
+                InferredField {
+                    name: "x".into(),
+                    field_type: FieldType::Integer,
+                    size: Some(4),
+                    offset: Some(0),
+                    source_value: format!("{name}.x"),
+                    source_address: 0x1801_29350,
+                },
+                InferredField {
+                    name: "label".into(),
+                    field_type: FieldType::String,
+                    size: Some(8),
+                    offset: None,
+                    source_value: format!("{name}.label"),
+                    source_address: 0x1801_29360,
+                },
+            ],
+            confidence: 79,
+            referenced_by: referenced_by.iter().map(|f| f.to_string()).collect(),
+        }
+    }
+
+    fn named_struct(name: &str) -> NamedType {
+        NamedType {
+            name: name.to_string(),
+            kind: TypeKind::Struct,
+            category: "excpt.h".into(),
+            path: format!("/excpt.h/{name}"),
+            size: Some(16),
+            alignment: None,
+            fields: vec![calxgloss_typesdb::types::StructField {
+                name: "header".into(),
+                offset: 0,
+                size: 4,
+                type_name: "dword".into(),
+            }],
+            members: Vec::new(),
+        }
+    }
+
+    fn vtable_for(class: &str, method: &str) -> Vtable {
+        Vtable {
+            address: 0x1801_306f0,
+            label: "vftable".into(),
+            size: 8,
+            meta_ptr_address: None,
+            methods: vec![VtableMethod {
+                slot: 0,
+                address: 0x1800_3ab00,
+                name: Some(method.to_string()),
+            }],
+            class_name: Some(class.to_string()),
+            base_classes: Vec::new(),
+            is_com_interface: false,
+        }
+    }
+
+    fn persist(dir: &TempDir, db: TypeDatabase) {
+        TypeDatabasePersistor::new(dir.path()).save(&db).unwrap();
+    }
+
+    #[test]
+    fn no_workspace_configured_yields_no_structures() {
+        assert!(extract_data_structures(None, "eqmain.dll", "FUN_18000b620").is_empty());
+    }
+
+    #[test]
+    fn a_missing_database_yields_no_structures() {
+        let dir = TempDir::new().unwrap();
+        assert!(
+            extract_data_structures(Some(dir.path()), "eqmain.dll", "FUN_18000b620").is_empty()
+        );
+    }
+
+    #[test]
+    fn a_corrupt_database_degrades_to_no_structures() {
+        let dir = TempDir::new().unwrap();
+        let path = dir
+            .path()
+            .join("re")
+            .join("analysis")
+            .join("typesdb")
+            .join("eqmain.dll.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{ not json").unwrap();
+
+        assert!(
+            extract_data_structures(Some(dir.path()), "eqmain.dll", "FUN_18000b620").is_empty()
+        );
+    }
+
+    #[test]
+    fn inferred_candidates_the_function_references_are_converted() {
+        let dir = TempDir::new().unwrap();
+        let mut db = TypeDatabase::new(ScanMetadata::new("eqmain.dll"));
+        db.inferred_structs = vec![
+            inferred_struct("Player", &["FUN_18000b620"]),
+            inferred_struct("Other", &["FUN_zzz"]),
+        ];
+        persist(&dir, db);
+
+        let found = extract_data_structures(Some(dir.path()), "eqmain.dll", "FUN_18000b620");
+
+        assert_eq!(found.len(), 1, "only the referenced candidate is kept");
+        assert_eq!(found[0].name, "Player");
+        assert_eq!(found[0].size, 12, "both fields carry a size");
+        assert_eq!(found[0].fields[0].name, "x");
+        assert_eq!(found[0].fields[0].type_, "int");
+        assert_eq!(found[0].fields[0].offset, 0);
+        assert_eq!(found[0].fields[1].type_, "char *");
+        assert_eq!(
+            found[0].fields[1].offset, -1,
+            "an unplaced field stays unknown"
+        );
+    }
+
+    #[test]
+    fn named_types_of_classes_the_function_methods_are_included() {
+        let dir = TempDir::new().unwrap();
+        let mut db = TypeDatabase::new(ScanMetadata::new("eqmain.dll"));
+        db.vtables = vec![vtable_for("Widget", "FUN_18003ab00")];
+        db.named_types = vec![named_struct("Widget"), named_struct("Unrelated")];
+        persist(&dir, db);
+
+        let found = extract_data_structures(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        assert_eq!(found.len(), 1, "only the class the function is a method of");
+        assert_eq!(found[0].name, "Widget");
+        assert_eq!(found[0].size, 16);
+        assert_eq!(found[0].fields[0].name, "header");
+        assert_eq!(found[0].fields[0].type_, "dword");
+        assert_eq!(found[0].fields[0].offset, 0);
+
+        let none = extract_data_structures(Some(dir.path()), "eqmain.dll", "FUN_zzz");
+        assert!(none.is_empty(), "an unrelated function gets nothing");
+    }
+
+    #[test]
+    fn enum_members_arrive_as_fields_without_offsets() {
+        let dir = TempDir::new().unwrap();
+        let mut db = TypeDatabase::new(ScanMetadata::new("eqmain.dll"));
+        db.vtables = vec![vtable_for("Mode", "FUN_18003e750")];
+        db.named_types = vec![NamedType {
+            members: vec![
+                EnumMember {
+                    name: "Idle".into(),
+                    value: 0,
+                },
+                EnumMember {
+                    name: "Running".into(),
+                    value: 1,
+                },
+            ],
+            ..named_struct("Mode")
+        }];
+        persist(&dir, db);
+
+        let found = extract_data_structures(Some(dir.path()), "eqmain.dll", "FUN_18003e750");
+
+        assert_eq!(found.len(), 1);
+        // Structure fields come first, then the enum members.
+        assert_eq!(found[0].fields[0].name, "header");
+        assert_eq!(found[0].fields[1].name, "Idle");
+        assert_eq!(found[0].fields[2].name, "Running");
+        assert_eq!(
+            found[0].fields[2].type_, "1",
+            "the member value is its type"
+        );
+        assert_eq!(found[0].fields[2].offset, -1);
+    }
+
+    #[test]
+    fn both_evidence_paths_land_in_one_result() {
+        let dir = TempDir::new().unwrap();
+        let mut db = TypeDatabase::new(ScanMetadata::new("eqmain.dll"));
+        db.inferred_structs = vec![inferred_struct("Player", &["FUN_18000b620"])];
+        db.vtables = vec![vtable_for("Widget", "FUN_18000b620")];
+        db.named_types = vec![named_struct("Widget")];
+        persist(&dir, db);
+
+        let found = extract_data_structures(Some(dir.path()), "eqmain.dll", "FUN_18000b620");
+
+        let names: Vec<&str> = found.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["Player", "Widget"]);
     }
 }

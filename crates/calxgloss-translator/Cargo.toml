@@ -16,9 +16,13 @@ calxgloss-testgen = { path = "../calxgloss-testgen" }
 calxgloss-analysis = { path = "../calxgloss-analysis" }
 calxgloss-callgraph = { path = "../calxgloss-callgraph" }
 calxgloss-verify = { path = "../calxgloss-verify" }
+calxgloss-typesdb = { path = "../calxgloss-typesdb" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 serde_json = { workspace = true }
 askama = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

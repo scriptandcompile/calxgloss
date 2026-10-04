@@ -23,6 +23,8 @@ pub struct EscalatePromptCtx {
     pub history: Vec<calxgloss_types::FailureHint>,
     /// Enriched call graph context from the initial translation.
     pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
+    /// Workspace root for reading the persisted type database.
+    pub workspace: Option<std::path::PathBuf>,
 }
 
 /// Build an escalated fix prompt that injects additional Ghidra context.
@@ -43,7 +45,11 @@ async fn build_escalate_prompt_inner(
 
     let neighboring_functions = extract_neighboring_context(&ctx.ghidra, &ctx.call_graph).await;
 
-    let data_structures = super::helpers::extract_data_structures(&ctx.ghidra, ctx.address).await;
+    let data_structures = super::helpers::extract_data_structures(
+        ctx.workspace.as_deref(),
+        &ctx.dll_name,
+        &ctx.function_name,
+    );
     let type_info = super::helpers::extract_type_info(&ctx.ghidra, &ctx.function_name).await;
 
     // Clone for the error fallback (original is moved into build_escalate_prompt)

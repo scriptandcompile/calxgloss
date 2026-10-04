@@ -30,6 +30,7 @@ use crate::utils::*;
 /// This function encapsulates all the plumbing needed to translate one DLL:
 /// Ghidra setup, LLM client, test generator, pipeline, git operations, and
 /// result reporting.  Both `handle_auto` and `handle_live` call this.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_translation_for_dll(
     dll: &str,
     output_dir: &Path,
@@ -124,6 +125,7 @@ pub async fn run_translation_for_dll(
     if let Some(events) = events {
         pipeline = pipeline.with_events(events.clone());
     }
+    pipeline = pipeline.with_workspace(output_dir);
 
     // Git setup
     let mut git = if !skip_git {
@@ -451,8 +453,17 @@ pub async fn handle_auto(
                 bold(dll)
             );
             println!();
-            run_translation_for_dll(dll, &output_dir, skip_git, settings, events, no_callgraph, callgraph_cache.clone(), callgraph_verbose)
-                .await?;
+            run_translation_for_dll(
+                dll,
+                &output_dir,
+                skip_git,
+                settings,
+                events,
+                no_callgraph,
+                callgraph_cache.clone(),
+                callgraph_verbose,
+            )
+            .await?;
         }
     } else {
         // Ask which file to translate (interactive mode).
@@ -487,7 +498,17 @@ pub async fn handle_auto(
         );
         println!();
 
-        run_translation_for_dll(dll, &output_dir, skip_git, settings, events, no_callgraph, callgraph_cache, callgraph_verbose).await?;
+        run_translation_for_dll(
+            dll,
+            &output_dir,
+            skip_git,
+            settings,
+            events,
+            no_callgraph,
+            callgraph_cache,
+            callgraph_verbose,
+        )
+        .await?;
     }
 
     Ok(())

@@ -45,6 +45,8 @@ use calxgloss_types::{
     ContextTier, Export, FunctionInfo, ProgressEvent, TestCase, TranslationEvents,
     TranslationRequest,
 };
+use calxgloss_typesdb::engine::TypesDBEngine;
+use calxgloss_typesdb::persist::TypeDatabasePersistor;
 use calxgloss_verify::Verifier;
 use tracing::{debug, info, instrument, warn};
 
@@ -279,10 +281,7 @@ impl TranslationPipeline {
     /// The graph is also used by
     /// [`batch_translate_from_callgraph`](Self::batch_translate_from_callgraph)
     /// to derive priority ordering and per-function context.
-    pub fn with_call_graph(
-        mut self,
-        graph: calxgloss_callgraph::CallGraph,
-    ) -> Self {
+    pub fn with_call_graph(mut self, graph: calxgloss_callgraph::CallGraph) -> Self {
         self.call_graph = Some(graph);
         self
     }
@@ -444,9 +443,16 @@ impl TranslationPipeline {
             let enricher = ContextEnricher::new();
             enricher.enrich(graph)
         } else {
-            let workspace_root = self.workspace.as_deref().unwrap_or_else(|| std::path::Path::new("."));
+            let workspace_root = self
+                .workspace
+                .as_deref()
+                .unwrap_or_else(|| std::path::Path::new("."));
             let cache_dir = self.callgraph_cache_dir.as_deref();
-            match self.analyzer.build_call_graph(&function_info.dll, workspace_root, cache_dir).await {
+            match self
+                .analyzer
+                .build_call_graph(&function_info.dll, workspace_root, cache_dir)
+                .await
+            {
                 Ok(call_graph) => {
                     if self.callgraph_verbose {
                         calxgloss_analysis::print_call_graph_stats(&call_graph);
@@ -502,10 +508,10 @@ impl TranslationPipeline {
                 )
                 .await;
                 let data_structures = crate::retry::helpers::extract_data_structures(
-                    &self.ghidra,
-                    function_info.address,
-                )
-                .await;
+                    self.workspace.as_deref(),
+                    &function_info.dll,
+                    function,
+                );
                 let data = calxgloss_prompts::ModuleContextPromptData::from_request_with_context(
                     &request,
                     call_graph_neighbors,
@@ -528,10 +534,10 @@ impl TranslationPipeline {
                 )
                 .await;
                 let data_structures = crate::retry::helpers::extract_data_structures(
-                    &self.ghidra,
-                    function_info.address,
-                )
-                .await;
+                    self.workspace.as_deref(),
+                    &function_info.dll,
+                    function,
+                );
 
                 // Extract shim layer code from the workspace
                 let shim_layers = crate::retry::helpers::extract_shim_layers(
@@ -1002,33 +1008,47 @@ impl TranslationPipeline {
         // Handle common entry point patterns
         let stub = match name {
             // C/C++ entry points — return 0
-            "main" | "wmain" | "_main" | "WinMain" | "WinMain@16" | "WinMain@20" | "wWinMain" | "wWinMain@16" | "wWinMain@20" | "mainCRTStartup" | "__mainCRTStartup" | "_mainCRTStartup" => {
-                format!("/// Entry point stub for `{name}`.\npub fn {name}() {{\n    std::process::exit(0);\n}}")
-            },
+            "main" | "wmain" | "_main" | "WinMain" | "WinMain@16" | "WinMain@20" | "wWinMain"
+            | "wWinMain@16" | "wWinMain@20" | "mainCRTStartup" | "__mainCRTStartup"
+            | "_mainCRTStartup" => {
+                format!(
+                    "/// Entry point stub for `{name}`.\npub fn {name}() {{\n    std::process::exit(0);\n}}"
+                )
+            }
             // DLL entry points
             "DllMain" | "DllMain@16" | "DllMainCRTStartup" | "__DllMainCRTStartup" => {
-                format!("/// DLL entry point stub for `{name}`.\npub fn {name}() {{\n    // DLL initialization\n}}")
-            },
+                format!(
+                    "/// DLL entry point stub for `{name}`.\npub fn {name}() {{\n    // DLL initialization\n}}"
+                )
+            }
             // Ghidra auto-generated entry
             "entry" => {
                 "/// Entry point stub.\npub fn entry() {\n    std::process::exit(0);\n}".to_string()
-            },
+            }
             // VB6 initialization
             name if name.starts_with("__vba") => {
-                format!("/// VB6 runtime initialization stub for `{name}`.\npub fn {name}() {{\n    // VB6 runtime init\n}}")
-            },
+                format!(
+                    "/// VB6 runtime initialization stub for `{name}`.\npub fn {name}() {{\n    // VB6 runtime init\n}}"
+                )
+            }
             // .NET CLR entry
             "__managed_main" | "_CorExeMain" | "_CorDllMain" => {
-                format!("/// .NET CLR entry stub for `{name}`.\npub fn {name}() {{\n    // CLR host initialization\n}}")
-            },
+                format!(
+                    "/// .NET CLR entry stub for `{name}`.\npub fn {name}() {{\n    // CLR host initialization\n}}"
+                )
+            }
             // MinGW entry
             "_start" | "__libc_start_main" => {
-                format!("/// MinGW entry stub for `{name}`.\npub fn {name}() {{\n    std::process::exit(0);\n}}")
-            },
+                format!(
+                    "/// MinGW entry stub for `{name}`.\npub fn {name}() {{\n    std::process::exit(0);\n}}"
+                )
+            }
             // MSVC debug runtime
             name if name.starts_with("_RTC_") => {
-                format!("/// MSVC runtime check stub for `{name}`.\npub fn {name}() {{\n    // Runtime check\n}}")
-            },
+                format!(
+                    "/// MSVC runtime check stub for `{name}`.\npub fn {name}() {{\n    // Runtime check\n}}"
+                )
+            }
             // Generic entry point — use the signature to infer a stub
             _ => {
                 // Try to extract a return type and parameters from the signature
@@ -1038,8 +1058,10 @@ impl TranslationPipeline {
                 } else {
                     name.to_string()
                 };
-                format!("/// Auto-generated stub for `{safe_name}`.\npub fn {safe_name}() {{\n    // TODO: Translate\n}}")
-            },
+                format!(
+                    "/// Auto-generated stub for `{safe_name}`.\npub fn {safe_name}() {{\n    // TODO: Translate\n}}"
+                )
+            }
         };
 
         // Include the signature as a comment for reference
@@ -1234,12 +1256,82 @@ impl TranslationPipeline {
     // Batch translation
     // =========================================================
 
+    /// Recover the per-binary type database before a batch starts, unless one
+    /// is already cached.
+    ///
+    /// Tier 3/4 prompts and escalated retries read recovered data structures
+    /// from `re/analysis/typesdb/{dll}.json` (see
+    /// [`extract_data_structures`](crate::retry::helpers::extract_data_structures));
+    /// running the recovery scan once up front means every function in the
+    /// batch can see type context instead of none. The persisted file is the
+    /// cache: when a database is already saved for `dll`, the scan is skipped
+    /// entirely.
+    ///
+    /// Returns whether a database is available afterwards. A missing
+    /// workspace, an unreachable Ghidra server, or a failed save only log a
+    /// warning and return `false` — prompts without data structure context
+    /// are degraded, not fatal, and the batch proceeds either way.
+    pub async fn ensure_type_database(&self, dll: &str) -> bool {
+        let Some(workspace) = self.workspace.as_deref() else {
+            debug!(
+                dll,
+                "No workspace configured; skipping type database recovery"
+            );
+            return false;
+        };
+
+        let persistor = TypeDatabasePersistor::new(workspace);
+        if persistor.exists(dll) {
+            debug!(
+                dll,
+                path = %persistor.path_for(dll).display(),
+                "Type database already cached; skipping recovery"
+            );
+            return true;
+        }
+
+        info!(dll, "Recovering type database before batch translation");
+        let engine = TypesDBEngine::new(&self.ghidra);
+        match engine.scan(dll).await {
+            Ok(db) => {
+                if let Err(e) = persistor.save(&db) {
+                    warn!(
+                        dll,
+                        error = %e,
+                        "Failed to persist recovered type database; continuing without data structure context"
+                    );
+                    return false;
+                }
+                info!(
+                    dll,
+                    named_types = db.named_types.len(),
+                    vtables = db.vtables.len(),
+                    inferred_structs = db.inferred_structs.len(),
+                    "Type database recovered"
+                );
+                true
+            }
+            Err(e) => {
+                warn!(
+                    dll,
+                    error = %e,
+                    "Type database recovery failed; continuing without data structure context"
+                );
+                false
+            }
+        }
+    }
+
     /// Translate multiple functions from a single DLL, one at a time.
     ///
     /// For each function, this runs the full translation pipeline with retry
     /// logic (same as the single-function
     /// [`try_translate_with_retry`](Self::try_translate_with_retry) path).
     /// Functions are processed sequentially in the order provided.
+    ///
+    /// Before the first function, the per-binary type database is recovered
+    /// (or loaded from its cache) so higher context tiers have data structure
+    /// context — see [`ensure_type_database`](Self::ensure_type_database).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
     /// invoked **immediately after each function completes** (before moving on
@@ -1367,6 +1459,8 @@ impl TranslationPipeline {
     ) -> Result<batch::BatchTranslationResult> {
         debug!(dll, count = functions.len(), "Starting batch translation");
 
+        self.ensure_type_database(dll).await;
+
         let mut batch_result = batch::BatchTranslationResult::new(dll.to_string());
 
         for (idx, function) in functions.iter().enumerate() {
@@ -1475,6 +1569,10 @@ impl TranslationPipeline {
     /// processed. This ordering lets the LLM reference already-translated
     /// callee code when generating shim layers or caller wrappers.
     ///
+    /// Before the first function, the per-binary type database is recovered
+    /// (or loaded from its cache) so higher context tiers have data structure
+    /// context — see [`ensure_type_database`](Self::ensure_type_database).
+    ///
     /// The caller can provide a callback (`on_function_completed`) that is
     /// invoked **immediately after each function completes** (before moving on
     /// to the next). This enables incremental git commits and per-function
@@ -1557,6 +1655,8 @@ impl TranslationPipeline {
     ) -> Result<batch::BatchTranslationResult> {
         debug!(dll = %graph.dll, count = graph.functions.len(), "Starting call-graph batch translation");
 
+        self.ensure_type_database(&graph.dll).await;
+
         // Build a priority-ordered plan
         let orderer = calxgloss_callgraph::TranslationOrderer::new();
         let plan = orderer
@@ -1580,10 +1680,8 @@ impl TranslationPipeline {
                         address = plan_func.address,
                         "Skipping runtime library function"
                     );
-                    let skipped = batch::FunctionResult::skipped(
-                        dll.clone(),
-                        plan_func.name.clone(),
-                    );
+                    let skipped =
+                        batch::FunctionResult::skipped(dll.clone(), plan_func.name.clone());
                     batch_result.add(skipped.clone());
 
                     self.emit(ProgressEvent::FunctionCompleted {
@@ -1613,11 +1711,8 @@ impl TranslationPipeline {
                     "Generating stub for root function"
                 );
                 let stub_code = self.generate_stub(&plan_func.name, "");
-                let stubbed = batch::FunctionResult::stubbed(
-                    dll.clone(),
-                    plan_func.name.clone(),
-                    stub_code,
-                );
+                let stubbed =
+                    batch::FunctionResult::stubbed(dll.clone(), plan_func.name.clone(), stub_code);
                 batch_result.add(stubbed.clone());
 
                 self.emit(ProgressEvent::FunctionCompleted {
@@ -1692,7 +1787,11 @@ impl TranslationPipeline {
                         "Batch function translation failed (pipeline error)"
                     );
                     let empty_result = retry::RetryResult::new();
-                    batch::FunctionResult::failure(dll.clone(), plan_func.name.clone(), empty_result)
+                    batch::FunctionResult::failure(
+                        dll.clone(),
+                        plan_func.name.clone(),
+                        empty_result,
+                    )
                 }
             };
 
@@ -1775,4 +1874,60 @@ pub async fn build_hallucination_detector(
         .collect();
 
     HallucinationDetector::new(ghidra_functions, ghidra_imports)
+}
+
+// ============================================================
+// Tests
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calxgloss_typesdb::types::{ScanMetadata, TypeDatabase};
+    use tempfile::TempDir;
+
+    /// A client pointed at a closed port: every scan request is refused, so
+    /// a successful recovery can only come from an already-cached database.
+    fn unreachable_ghidra() -> GhidraClient {
+        GhidraClient::new("http://127.0.0.1:9").expect("client config")
+    }
+
+    fn pipeline_over(workspace: Option<&std::path::Path>) -> TranslationPipeline {
+        let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").expect("llm config");
+        let pipeline = TranslationPipeline::new(unreachable_ghidra(), llm, ApiMappings::default());
+        match workspace {
+            Some(dir) => pipeline.with_workspace(dir.to_path_buf()),
+            None => pipeline,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cached_database_is_reused_without_rescanning() {
+        let dir = TempDir::new().unwrap();
+        TypeDatabasePersistor::new(dir.path())
+            .save(&TypeDatabase::new(ScanMetadata::new("eqmain.dll")))
+            .unwrap();
+
+        // The Ghidra server is unreachable, so `true` can only come from the cache.
+        let pipeline = pipeline_over(Some(dir.path()));
+        assert!(pipeline.ensure_type_database("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn a_failed_recovery_degrades_instead_of_failing() {
+        let dir = TempDir::new().unwrap();
+        let pipeline = pipeline_over(Some(dir.path()));
+
+        assert!(!pipeline.ensure_type_database("eqmain.dll").await);
+        assert!(
+            !TypeDatabasePersistor::new(dir.path()).exists("eqmain.dll"),
+            "a failed scan persists nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_workspace_skips_the_recovery() {
+        let pipeline = pipeline_over(None);
+        assert!(!pipeline.ensure_type_database("eqmain.dll").await);
+    }
 }

@@ -63,6 +63,7 @@ mod retry_loop;
 /// Persists the entry to `re/analysis/token_usage.json` via the
 /// [`TokenUsageLogger`](calxgloss_analysis::TokenUsageLogger).
 /// If the workspace path is `None`, the entry is silently discarded.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn log_token_usage(
     dll_name: &str,
     function: &str,

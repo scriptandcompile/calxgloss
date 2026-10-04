@@ -807,6 +807,7 @@ pub async fn try_translate_with_retry(
                     call_graph,
                     history: failure_history.clone(),
                     call_graph_context: initial_translation.call_graph_context.clone(),
+                    workspace: ctx.workspace.map(std::path::PathBuf::from),
                 };
 
                 // Use failure-informed escalated prompt
