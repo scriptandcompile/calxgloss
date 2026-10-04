@@ -203,6 +203,68 @@ impl NamedType {
 }
 
 // ============================================================
+// Vtables
+// ============================================================
+
+/// One resolved entry of a detected vtable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VtableMethod {
+    /// Slot index within the table, starting at 0.
+    pub slot: usize,
+    /// The address the slot's pointer points at.
+    pub address: u64,
+    /// The function Ghidra has at that address. `None` when the pointer lands
+    /// outside any known function body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// A vtable recovered from the program's defined data.
+///
+/// Ghidra names every MSVC vtable `vftable`, so the label identifies nothing
+/// on its own and the database keys by address. A vtable paired with the
+/// `vftable_meta_ptr` entry that precedes it is confirmed by the RTTI pattern,
+/// and its class name and base classes are recovered by following the RTTI
+/// chain; an unpaired one is still a vtable, just without the RTTI record to
+/// read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Vtable {
+    /// Address of the table itself.
+    pub address: u64,
+    /// The label Ghidra shows, e.g. `vftable`.
+    pub label: String,
+    /// Size of the table in bytes.
+    pub size: u64,
+    /// The address of the paired `vftable_meta_ptr` entry, when one precedes
+    /// the table — the RTTI confirmation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta_ptr_address: Option<u64>,
+    /// Method slots, in table order. Empty when the table's contents could not
+    /// be read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub methods: Vec<VtableMethod>,
+    /// The owning class, demangled from the RTTI TypeDescriptor
+    /// (`.?AVWidget@@` → `Widget`), when the chain resolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class_name: Option<String>,
+    /// Base classes from the RTTI ClassHierarchyDescriptor, in descriptor
+    /// order. Empty for a root class or an unresolved chain.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub base_classes: Vec<String>,
+    /// Whether the leading slots spell the COM `IUnknown` prefix
+    /// (QueryInterface / AddRef / Release).
+    #[serde(default)]
+    pub is_com_interface: bool,
+}
+
+impl Vtable {
+    /// Whether the table carried the `vftable_meta_ptr` RTTI confirmation.
+    pub fn is_confirmed(&self) -> bool {
+        self.meta_ptr_address.is_some()
+    }
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -336,5 +398,54 @@ mod tests {
         assert_eq!(TypeKind::Struct.to_string(), "struct");
         assert_eq!(TypeKind::Typedef.to_string(), "typedef");
         assert_eq!(TypeKind::Other.to_string(), "other");
+    }
+
+    #[test]
+    fn vtable_serde_round_trips() {
+        let vtable = Vtable {
+            address: 0x1801306f0,
+            label: "vftable".into(),
+            size: 40,
+            meta_ptr_address: Some(0x1801306e8),
+            methods: vec![
+                VtableMethod {
+                    slot: 0,
+                    address: 0x18003ab00,
+                    name: Some("FUN_18003ab00".into()),
+                },
+                VtableMethod {
+                    slot: 1,
+                    address: 0x18003e750,
+                    name: None,
+                },
+            ],
+            class_name: Some("UdpLibrary::UdpRefCount".into()),
+            base_classes: vec!["Base".into()],
+            is_com_interface: false,
+        };
+        let json = serde_json::to_string(&vtable).unwrap();
+        let back: Vtable = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, vtable);
+        assert!(vtable.is_confirmed());
+    }
+
+    #[test]
+    fn empty_vtable_sections_are_not_serialized() {
+        let vtable = Vtable {
+            address: 0x1801306f0,
+            label: "vftable".into(),
+            size: 40,
+            meta_ptr_address: None,
+            methods: Vec::new(),
+            class_name: None,
+            base_classes: Vec::new(),
+            is_com_interface: false,
+        };
+        let json = serde_json::to_string(&vtable).unwrap();
+        assert!(!json.contains("\"methods\""));
+        assert!(!json.contains("\"class_name\""));
+        assert!(!json.contains("\"base_classes\""));
+        assert!(!json.contains("\"meta_ptr_address\""));
+        assert!(!vtable.is_confirmed());
     }
 }
