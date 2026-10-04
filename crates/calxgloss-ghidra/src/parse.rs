@@ -11,7 +11,8 @@
 //! wrong call target.
 
 use crate::model::{
-    DecompiledFunction, FunctionBody, FunctionSummary, OpenProgram, Segment, StringLiteral, Symbol,
+    DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, EnumMember, FunctionBody,
+    FunctionSummary, OpenProgram, Segment, StringLiteral, StructFieldLayout, StructLayout, Symbol,
     Xref,
 };
 use serde_json::Value;
@@ -500,6 +501,136 @@ fn call_targets(line: &str) -> Vec<&str> {
     out
 }
 
+/// Parse a `/list_data_types` page: `name | category | N bytes | path`.
+///
+/// The split runs from the right so a name that itself contains ` | ` cannot
+/// swallow the other fields. A `variable` size becomes `None`, and the
+/// "No data types found" sentinel yields no records rather than an error.
+pub fn parse_data_types(body: &str) -> Vec<DataTypeEntry> {
+    records(body)
+        .into_iter()
+        .filter_map(|line| {
+            let mut parts = line.rsplitn(4, " | ");
+            let path = parts.next()?;
+            let size = parts.next()?;
+            let category = parts.next()?;
+            let name = parts.next()?;
+            if name.is_empty() {
+                return None;
+            }
+            Some(DataTypeEntry {
+                name: name.to_string(),
+                category: category.to_string(),
+                size: size.strip_suffix(" bytes").and_then(|s| s.parse().ok()),
+                path: path.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Parse a `/list_data_items` page: `LABEL @ addr [TYPE] (N bytes)`.
+///
+/// The address separator is taken from the right, matching the function
+/// listing convention, and the size group from the right of the remainder so
+/// a type name containing spaces cannot shift the fields.
+pub fn parse_data_items(body: &str) -> Vec<DataItem> {
+    records(body)
+        .into_iter()
+        .filter_map(|line| {
+            let (label, rest) = line.rsplit_once(" @ ")?;
+            let mut rest = rest.splitn(2, ' ');
+            let address = parse_address(rest.next()?)?;
+            let tail = rest.next()?.trim();
+            let (type_group, size_group) = tail.rsplit_once(" (")?;
+            let type_name = type_group.strip_prefix('[')?.strip_suffix(']')?;
+            let size = size_group
+                .strip_suffix(')')?
+                .trim_end_matches(" bytes")
+                .trim_end_matches(" byte")
+                .parse()
+                .ok()?;
+            Some(DataItem {
+                label: label.to_string(),
+                address,
+                type_name: type_name.to_string(),
+                length: size,
+            })
+        })
+        .collect()
+}
+
+/// Parse a `get_struct_layout` body: a header block followed by
+/// `offset | size | type | name` field lines.
+///
+/// Returns `None` for the server's sentinel bodies (`Structure not found: …`,
+/// `Data type is not a structure: …`) so the caller can turn them into a
+/// proper error; the column header and separator lines are skipped because
+/// they do not fit the field shape.
+pub fn parse_struct_layout(body: &str) -> Option<StructLayout> {
+    let mut lines = records(body).into_iter();
+    let name = lines.next()?.strip_prefix("Structure: ")?.to_string();
+    let size: u64 = lines
+        .next()?
+        .strip_prefix("Size: ")?
+        .strip_suffix(" bytes")?
+        .parse()
+        .ok()?;
+    let alignment: u64 = lines.next()?.strip_prefix("Alignment: ")?.parse().ok()?;
+    let fields = lines
+        .filter_map(|line| {
+            let mut parts = line.rsplitn(4, " | ");
+            let field_name = parts.next()?;
+            let type_name = parts.next()?;
+            let size: u64 = parts.next()?.trim().parse().ok()?;
+            let offset: u64 = parts.next()?.trim().parse().ok()?;
+            Some(StructFieldLayout {
+                offset,
+                size,
+                type_name: type_name.trim().to_string(),
+                field_name: field_name.to_string(),
+            })
+        })
+        .collect();
+    Some(StructLayout {
+        name,
+        size,
+        alignment,
+        fields,
+    })
+}
+
+/// Parse a `get_enum_values` body: a header block followed by
+/// `name | value (0x…)` member lines.
+///
+/// Returns `None` for the server's sentinel bodies (`Enumeration not found: …`,
+/// `Data type is not an enumeration: …`) so the caller can turn them into a
+/// proper error.
+pub fn parse_enum_values(body: &str) -> Option<EnumDefinition> {
+    let mut lines = records(body).into_iter();
+    let name = lines.next()?.strip_prefix("Enumeration: ")?.to_string();
+    let size: u64 = lines
+        .next()?
+        .strip_prefix("Size: ")?
+        .strip_suffix(" bytes")?
+        .parse()
+        .ok()?;
+    let members = lines
+        .filter_map(|line| {
+            let (name, value) = line.split_once(" | ")?;
+            let value: i64 = value.split(" (").next()?.parse().ok()?;
+            Some(EnumMember {
+                name: name.to_string(),
+                value,
+            })
+        })
+        .collect();
+    Some(EnumDefinition {
+        name,
+        size,
+        members,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -820,5 +951,117 @@ mod tests {
         assert_eq!(programs[0].function_count, Some(4587));
         // A malformed body yields no records rather than a failure.
         assert!(parse_open_programs("not json").is_empty());
+    }
+
+    #[test]
+    fn test_parses_a_data_types_page() {
+        // `GET /list_data_types?offset=0&limit=4` on the 6.x bridge, eqmain.dll.
+        let body = "<lambda_01a7098693036236037e7cdb9bca3d73> | demangler | 1 bytes | /Demangler/<lambda_01a7098693036236037e7cdb9bca3d73>\n<lambda_01a7098693036236037e7cdb9bca3d73> * | demangler | 8 bytes | /Demangler/<lambda_01a7098693036236037e7cdb9bca3d73> *\n_EXCEPTION_DISPOSITION | excpt.h | 4 bytes | /excpt.h/_EXCEPTION_DISPOSITION\n";
+        let types = parse_data_types(body);
+        assert_eq!(types.len(), 3);
+        assert_eq!(
+            types[2],
+            DataTypeEntry {
+                name: "_EXCEPTION_DISPOSITION".into(),
+                category: "excpt.h".into(),
+                size: Some(4),
+                path: "/excpt.h/_EXCEPTION_DISPOSITION".into(),
+            }
+        );
+        // A pointer variant is its own entry, star included in the name.
+        assert_eq!(types[1].name, "<lambda_01a7098693036236037e7cdb9bca3d73> *");
+    }
+
+    #[test]
+    fn test_data_types_variable_size_and_empty_sentinel() {
+        // The server renders an unsized type as `variable` in the size slot
+        // (DataTypeService.listDataTypes), and an empty result as a prose
+        // line; neither is a record.
+        let body = "some_void_like | / | variable bytes | /some_void_like\nNo data types found for category: nope\n";
+        let types = parse_data_types(body);
+        assert_eq!(types.len(), 1);
+        assert_eq!(types[0].size, None);
+        assert!(parse_data_types("No data types found").is_empty());
+    }
+
+    #[test]
+    fn test_parses_a_data_items_page() {
+        // `GET /list_data_items?offset=0&limit=4` on the 6.x bridge, eqmain.dll.
+        let body = "IMAGE_DOS_HEADER_180000000 @ 180000000 [IMAGE_DOS_HEADER] (128 bytes)\nDAT_180000080 @ 180000080 [IMAGE_RICH_HEADER] (152 bytes)\nIMAGE_SECTION_HEADER_180000228 @ 180000228 [IMAGE_SECTION_HEADER] (40 bytes)\n";
+        let items = parse_data_items(body);
+        assert_eq!(items.len(), 3);
+        assert_eq!(
+            items[0],
+            DataItem {
+                label: "IMAGE_DOS_HEADER_180000000".into(),
+                address: 0x180000000,
+                type_name: "IMAGE_DOS_HEADER".into(),
+                length: 128,
+            }
+        );
+        assert_eq!(items[1].label, "DAT_180000080");
+    }
+
+    #[test]
+    fn test_data_items_accepts_the_singular_byte_unit() {
+        // The server writes `1 byte` for one-byte items (ListingService).
+        let items = parse_data_items("DAT_180000300 @ 180000300 [byte] (1 byte)");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].length, 1);
+        // A page past the end is an empty body, not an error.
+        assert!(parse_data_items("").is_empty());
+    }
+
+    #[test]
+    fn test_parses_a_struct_layout() {
+        // `GET /get_struct_layout?struct_name=IMAGE_DOS_HEADER` on the 6.x
+        // bridge, eqmain.dll — verbatim, padding included.
+        let body = "Structure: IMAGE_DOS_HEADER\nSize: 128 bytes\nAlignment: 1\n\nLayout:\nOffset | Size | Type | Name\n-------|------|------|-----\n     0 |    2 | char[2]              | e_magic\n     2 |    2 | word                 | e_cblp\n    60 |    4 | dword                | e_lfanew\n    64 |   64 | byte[64]             | e_program\n";
+        let layout = parse_struct_layout(body).expect("layout should parse");
+        assert_eq!(layout.name, "IMAGE_DOS_HEADER");
+        assert_eq!(layout.size, 128);
+        assert_eq!(layout.alignment, 1);
+        assert_eq!(layout.fields.len(), 4);
+        assert_eq!(
+            layout.fields[0],
+            StructFieldLayout {
+                offset: 0,
+                size: 2,
+                type_name: "char[2]".into(),
+                field_name: "e_magic".into(),
+            }
+        );
+        assert_eq!(layout.fields[3].field_name, "e_program");
+        assert_eq!(layout.fields[3].offset, 64);
+    }
+
+    #[test]
+    fn test_struct_layout_sentinels_parse_to_none() {
+        // The 6.x bridge answers misses as prose, not as {"error": ...}, so
+        // the parser must refuse them for the client to raise an error.
+        assert!(parse_struct_layout("Structure not found: NoSuchStructXyz").is_none());
+        assert!(parse_struct_layout("Data type is not a structure: someEnum").is_none());
+        assert!(parse_struct_layout("Struct name is required").is_none());
+    }
+
+    #[test]
+    fn test_parses_enum_values() {
+        // `GET /get_enum_values?enum_name=_EXCEPTION_DISPOSITION` on the 6.x
+        // bridge, eqmain.dll.
+        let body = "Enumeration: _EXCEPTION_DISPOSITION\nSize: 4 bytes\n\nValues:\nName | Value\n-----|------\nExceptionContinueExecution | 0 (0x0)\nExceptionContinueSearch | 1 (0x1)\nExceptionNestedException | 2 (0x2)\nExceptionCollidedUnwind | 3 (0x3)\n";
+        let definition = parse_enum_values(body).expect("enum should parse");
+        assert_eq!(definition.name, "_EXCEPTION_DISPOSITION");
+        assert_eq!(definition.size, 4);
+        assert_eq!(definition.members.len(), 4);
+        assert_eq!(definition.members[0].name, "ExceptionContinueExecution");
+        assert_eq!(definition.members[0].value, 0);
+        assert_eq!(definition.members[3].value, 3);
+    }
+
+    #[test]
+    fn test_enum_values_sentinels_parse_to_none() {
+        assert!(parse_enum_values("Enumeration not found: NoSuchEnumXyz").is_none());
+        assert!(parse_enum_values("Data type is not an enumeration: someStruct").is_none());
+        assert!(parse_enum_values("Enum name is required").is_none());
     }
 }

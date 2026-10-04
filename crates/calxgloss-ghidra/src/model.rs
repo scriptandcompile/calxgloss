@@ -224,3 +224,91 @@ impl FunctionReport {
         &self.decompiled.signature
     }
 }
+
+/// A named type in Ghidra's Type Manager, as `/list_data_types` renders it.
+///
+/// The Type Manager holds every type Ghidra knows about — including types
+/// never applied to a symbol — which is what makes this listing the source
+/// for named-type recovery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataTypeEntry {
+    /// The type name, e.g. `_EXCEPTION_DISPOSITION`. Pointer variants arrive
+    /// as separate entries (`name *`).
+    pub name: String,
+    /// The category the type sits in, e.g. `excpt.h`.
+    pub category: String,
+    /// Size in bytes. `None` when Ghidra reports the size as `variable`.
+    pub size: Option<u64>,
+    /// Full path through the Type Manager, e.g. `/excpt.h/_EXCEPTION_DISPOSITION`.
+    pub path: String,
+}
+
+/// A defined data object in the listing, as `/list_data_items` renders it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataItem {
+    /// The label Ghidra shows, e.g. `IMAGE_DOS_HEADER_180000000`, or a
+    /// generated `DAT_...` name when the object carries no label.
+    pub label: String,
+    /// Address of the object.
+    pub address: u64,
+    /// The applied data type name, e.g. `IMAGE_DOS_HEADER`.
+    pub type_name: String,
+    /// Size in bytes.
+    pub length: u64,
+}
+
+impl fmt::Display for DataItem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} @ {:x} [{}] ({} bytes)",
+            self.label, self.address, self.type_name, self.length
+        )
+    }
+}
+
+/// One field of a structure layout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructFieldLayout {
+    /// Byte offset of the field from the start of the structure.
+    pub offset: u64,
+    /// Size of the field in bytes.
+    pub size: u64,
+    /// The field's data type name, e.g. `dword` or `char[2]`.
+    pub type_name: String,
+    /// Field name; the server writes `(unnamed)` for anonymous fields.
+    pub field_name: String,
+}
+
+/// A structure's full field layout, as `/get_struct_layout` renders it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructLayout {
+    /// The structure name.
+    pub name: String,
+    /// Total size in bytes.
+    pub size: u64,
+    /// Alignment in bytes.
+    pub alignment: u64,
+    /// Defined fields, in offset order.
+    pub fields: Vec<StructFieldLayout>,
+}
+
+/// One member of an enumeration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumMember {
+    /// Member name, e.g. `ExceptionContinueExecution`.
+    pub name: String,
+    /// Member value; signed because Ghidra enums may hold negative values.
+    pub value: i64,
+}
+
+/// An enumeration and its members, as `/get_enum_values` renders it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumDefinition {
+    /// The enumeration name.
+    pub name: String,
+    /// Storage size in bytes.
+    pub size: u64,
+    /// The members.
+    pub members: Vec<EnumMember>,
+}

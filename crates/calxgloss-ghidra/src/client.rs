@@ -3,8 +3,8 @@
 use crate::error;
 use crate::error::Classification;
 use crate::model::{
-    DecompiledFunction, FunctionBody, FunctionReport, FunctionSummary, OpenProgram, Segment,
-    StringLiteral, Symbol, Xref,
+    DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionBody, FunctionReport,
+    FunctionSummary, OpenProgram, Segment, StringLiteral, StructLayout, Symbol, Xref,
 };
 use crate::parse;
 use reqwest::Client;
@@ -14,6 +14,13 @@ use url::Url;
 
 /// Result of a GhidraMCP operation.
 pub type Result<T> = std::result::Result<T, GhidraError>;
+
+/// Page size used when the client collects a paged endpoint in full.
+///
+/// The server defaults to 100 per page, which means hundreds of round trips
+/// for a large binary's listings; a larger page trades one bigger response
+/// for far fewer requests.
+const DATA_PAGE: usize = 1000;
 
 // ============================================================
 // Error types
@@ -614,6 +621,120 @@ impl GhidraClient {
             .into_iter()
             .map(str::to_string)
             .collect())
+    }
+
+    // =========================================================
+    // Type Manager and defined data
+    // =========================================================
+
+    /// Every named type in Ghidra's Type Manager, optionally filtered by
+    /// category or name fragment.
+    ///
+    /// The Type Manager holds types that were never applied to a symbol, so
+    /// this sees more than the symbol table. Pages are collected until the
+    /// server runs out.
+    #[instrument(skip(self), fields(category))]
+    pub async fn list_data_types(&self, category: Option<&str>) -> Result<Vec<DataTypeEntry>> {
+        let mut all = Vec::new();
+        let mut offset = 0;
+        loop {
+            let page = self.data_types_page(category, offset, DATA_PAGE).await?;
+            let got = page.len();
+            all.extend(page);
+            if got < DATA_PAGE {
+                return Ok(all);
+            }
+            offset += got;
+        }
+    }
+
+    /// One page of the Type Manager listing, with the server's own
+    /// `offset`/`limit` windowing.
+    #[instrument(skip(self), fields(category, offset, limit))]
+    pub async fn data_types_page(
+        &self,
+        category: Option<&str>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<DataTypeEntry>> {
+        let mut params: Vec<(&str, String)> =
+            vec![("offset", offset.to_string()), ("limit", limit.to_string())];
+        if let Some(c) = category {
+            params.push(("category", c.to_string()));
+        }
+        let body = self.get_text("list_data_types", &params).await?;
+        Ok(parse::parse_data_types(&body))
+    }
+
+    /// Field layout of a structure from the Type Manager.
+    ///
+    /// A name the Type Manager does not know becomes [`GhidraError::NotFound`];
+    /// a name that resolves to a non-structure becomes [`GhidraError::Malformed`]
+    /// carrying the server's explanation.
+    #[instrument(skip(self), fields(name))]
+    pub async fn get_struct_layout(&self, name: &str) -> Result<StructLayout> {
+        let body = self
+            .get_text("get_struct_layout", &[("struct_name", name.to_string())])
+            .await?;
+        if let Some(missing) = body.trim().strip_prefix("Structure not found: ") {
+            return Err(GhidraError::NotFound {
+                kind: "structure",
+                query: missing.trim().to_string(),
+            });
+        }
+        parse::parse_struct_layout(&body).ok_or_else(|| GhidraError::Malformed {
+            kind: "structure layout",
+            detail: body.trim().to_string(),
+        })
+    }
+
+    /// Members and values of an enumeration from the Type Manager.
+    ///
+    /// Error mapping follows [`get_struct_layout`](Self::get_struct_layout).
+    #[instrument(skip(self), fields(name))]
+    pub async fn get_enum_values(&self, name: &str) -> Result<EnumDefinition> {
+        let body = self
+            .get_text("get_enum_values", &[("enum_name", name.to_string())])
+            .await?;
+        if let Some(missing) = body.trim().strip_prefix("Enumeration not found: ") {
+            return Err(GhidraError::NotFound {
+                kind: "enumeration",
+                query: missing.trim().to_string(),
+            });
+        }
+        parse::parse_enum_values(&body).ok_or_else(|| GhidraError::Malformed {
+            kind: "enumeration values",
+            detail: body.trim().to_string(),
+        })
+    }
+
+    /// Every defined data object in the listing, collected across pages.
+    ///
+    /// Large binaries hold tens of thousands of defined items, so this pages
+    /// through the whole listing; use [`data_items_page`](Self::data_items_page)
+    /// to work a window at a time.
+    #[instrument(skip(self))]
+    pub async fn list_data_items(&self) -> Result<Vec<DataItem>> {
+        let mut all = Vec::new();
+        let mut offset = 0;
+        loop {
+            let page = self.data_items_page(offset, DATA_PAGE).await?;
+            let got = page.len();
+            all.extend(page);
+            if got < DATA_PAGE {
+                return Ok(all);
+            }
+            offset += got;
+        }
+    }
+
+    /// One page of defined data items, with the server's own `offset`/`limit`
+    /// windowing.
+    #[instrument(skip(self), fields(offset, limit))]
+    pub async fn data_items_page(&self, offset: usize, limit: usize) -> Result<Vec<DataItem>> {
+        let params = [("offset", offset.to_string()), ("limit", limit.to_string())];
+        let body = self.get_text("list_data_items", &params).await?;
+        Ok(parse::parse_data_items(&body))
     }
 
     // =========================================================

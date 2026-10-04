@@ -333,3 +333,121 @@ async fn a_whole_program_listing_parses_completely() {
         "every record should yield a name and an address"
     );
 }
+
+#[tokio::test]
+#[ignore = "needs a running GhidraMCP server with eqmain.dll open"]
+async fn the_type_manager_lists_named_types() {
+    let Some(ghidra) = client() else {
+        eprintln!("CALXGLOSS_GHIDRA_URL not set; skipping");
+        return;
+    };
+
+    // The Type Manager holds types never applied to a symbol; eqmain.dll's
+    // imported PE and CRT types make a checkable expectation.
+    let types = ghidra.list_data_types(None).await.expect("data types");
+    assert!(types.len() > 100, "only {} parsed", types.len());
+    assert!(
+        types
+            .iter()
+            .all(|t| !t.name.is_empty() && t.path.starts_with('/')),
+        "every record should yield a name and a Type Manager path"
+    );
+    assert!(
+        types.iter().any(|t| t.name == "IMAGE_DOS_HEADER"),
+        "the PE headers should be in the Type Manager"
+    );
+
+    // The category filter narrows the listing without emptying it.
+    let pe = ghidra
+        .list_data_types(Some("pe"))
+        .await
+        .expect("filtered data types");
+    assert!(!pe.is_empty(), "the `pe` filter should match something");
+}
+
+#[tokio::test]
+#[ignore = "needs a running GhidraMCP server with eqmain.dll open"]
+async fn a_known_struct_layout_round_trips() {
+    let Some(ghidra) = client() else {
+        eprintln!("CALXGLOSS_GHIDRA_URL not set; skipping");
+        return;
+    };
+
+    let layout = ghidra
+        .get_struct_layout("IMAGE_DOS_HEADER")
+        .await
+        .expect("struct layout");
+    assert_eq!(layout.name, "IMAGE_DOS_HEADER");
+    assert_eq!(layout.size, 128);
+    assert_eq!(layout.fields[0].field_name, "e_magic");
+    assert_eq!(layout.fields[0].type_name, "char[2]");
+    // The field that locates the PE headers, which is why this struct matters
+    // to the pipeline at all.
+    let lfanew = layout
+        .fields
+        .iter()
+        .find(|f| f.field_name == "e_lfanew")
+        .expect("e_lfanew field");
+    assert_eq!(lfanew.offset, 60);
+
+    // A miss is an error, not the server's prose parsed as a layout.
+    match ghidra.get_struct_layout("zzz_not_a_struct").await {
+        Err(GhidraError::NotFound { query, .. }) => assert_eq!(query, "zzz_not_a_struct"),
+        other => panic!("expected not-found, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs a running GhidraMCP server with eqmain.dll open"]
+async fn a_known_enum_round_trips() {
+    let Some(ghidra) = client() else {
+        eprintln!("CALXGLOSS_GHIDRA_URL not set; skipping");
+        return;
+    };
+
+    let definition = ghidra
+        .get_enum_values("_EXCEPTION_DISPOSITION")
+        .await
+        .expect("enum values");
+    assert_eq!(definition.name, "_EXCEPTION_DISPOSITION");
+    assert_eq!(definition.size, 4);
+    assert_eq!(definition.members.len(), 4);
+    assert_eq!(definition.members[0].name, "ExceptionContinueExecution");
+    assert_eq!(definition.members[0].value, 0);
+
+    match ghidra.get_enum_values("zzz_not_an_enum").await {
+        Err(GhidraError::NotFound { query, .. }) => assert_eq!(query, "zzz_not_an_enum"),
+        other => panic!("expected not-found, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs a running GhidraMCP server with eqmain.dll open"]
+async fn the_defined_data_listing_parses_completely() {
+    let Some(ghidra) = client() else {
+        eprintln!("CALXGLOSS_GHIDRA_URL not set; skipping");
+        return;
+    };
+
+    // One page first: the windowing has to hold before the full collection.
+    let page = ghidra
+        .data_items_page(0, 10)
+        .await
+        .expect("data items page");
+    assert_eq!(page.len(), 10);
+
+    // eqmain.dll defines thousands of data items, so this exercises paging
+    // across many server pages, not a single fixture.
+    let items = ghidra.list_data_items().await.expect("data items");
+    assert!(items.len() > 1000, "only {} parsed", items.len());
+    assert!(
+        items.iter().all(|i| !i.label.is_empty() && i.address > 0),
+        "every record should yield a label and an address"
+    );
+    assert!(
+        items
+            .iter()
+            .any(|i| i.label == "IMAGE_DOS_HEADER_180000000" && i.address == KNOWN_IMAGE_BASE),
+        "the DOS header should be a defined data item"
+    );
+}

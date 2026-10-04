@@ -32,6 +32,7 @@ pub mod parse;
 pub use client::{GhidraClient, GhidraConfig, GhidraError, ProgramInfo, Result, rva_from_va};
 pub use error::Classification;
 pub use model::{
-    DecompiledFunction, FunctionBody, FunctionReport, FunctionSummary, OpenProgram, Segment,
-    StringLiteral, Symbol, Xref,
+    DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, EnumMember, FunctionBody,
+    FunctionReport, FunctionSummary, OpenProgram, Segment, StringLiteral, StructFieldLayout,
+    StructLayout, Symbol, Xref,
 };
