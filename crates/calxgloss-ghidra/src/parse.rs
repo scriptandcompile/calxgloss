@@ -559,6 +559,21 @@ pub fn parse_data_items(body: &str) -> Vec<DataItem> {
         .collect()
 }
 
+/// Parse a `read_memory` response:
+/// `{"address":"1801306f0","length":40,"data":[0,171,...],"hex":"..."}`.
+///
+/// The `data` array is the byte list; the hex rendering is a convenience for
+/// humans and is not read. A value outside `0..=255` makes the whole response
+/// untrustworthy rather than yielding a shifted byte.
+pub fn parse_memory_bytes(body: &str) -> Option<Vec<u8>> {
+    let value = serde_json::from_str::<Value>(body).ok()?;
+    let items = value.get("data").and_then(Value::as_array)?;
+    items
+        .iter()
+        .map(|v| v.as_u64().and_then(|n| u8::try_from(n).ok()))
+        .collect()
+}
+
 /// Parse a `get_struct_layout` body: a header block followed by
 /// `offset | size | type | name` field lines.
 ///
@@ -1010,6 +1025,20 @@ mod tests {
         assert_eq!(items[0].length, 1);
         // A page past the end is an empty body, not an error.
         assert!(parse_data_items("").is_empty());
+    }
+
+    #[test]
+    fn test_parses_memory_bytes() {
+        // `GET /read_memory?address=1801306f0&length=40` on the 6.x bridge,
+        // eqmain.dll — the first vftable slot pointing at FUN_18003ab00.
+        let body = "{\"address\":\"1801306f0\",\"length\":40,\"data\":[0,171,3,128,1,0,0,0,80,231,3,128,1,0,0,0],\"hex\":\"00ab03800100000050e7038001000000\"}";
+        let bytes = parse_memory_bytes(body).expect("bytes should parse");
+        assert_eq!(bytes.len(), 16);
+        assert_eq!(bytes[0], 0);
+        assert_eq!(bytes[3], 128);
+        // A prose sentinel or a byte out of range is not a byte list.
+        assert!(parse_memory_bytes("Address is required").is_none());
+        assert!(parse_memory_bytes("{\"data\":[0,256]}").is_none());
     }
 
     #[test]

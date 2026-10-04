@@ -451,3 +451,20 @@ async fn the_defined_data_listing_parses_completely() {
         "the DOS header should be a defined data item"
     );
 }
+
+#[tokio::test]
+#[ignore = "needs a running GhidraMCP server with eqmain.dll open"]
+async fn read_memory_returns_the_raw_bytes() {
+    let Some(ghidra) = client() else {
+        eprintln!("CALXGLOSS_GHIDRA_URL not set; skipping");
+        return;
+    };
+
+    // The image base of a PE always opens with the `MZ` signature, so the
+    // expected bytes are known without depending on any symbol.
+    let bytes = ghidra
+        .read_memory(KNOWN_IMAGE_BASE, 2)
+        .await
+        .expect("read memory");
+    assert_eq!(bytes, vec![b'M', b'Z']);
+}

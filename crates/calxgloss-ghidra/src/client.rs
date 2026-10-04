@@ -182,7 +182,27 @@ impl GhidraClient {
         if let Some(ref key) = self.config.api_key {
             request = request.bearer_auth(key);
         }
+        self.deliver(request, &url).await
+    }
 
+    /// Issue a POST with a JSON body and return the body, having established
+    /// that it is a result.
+    ///
+    /// The write endpoints answer `{"status":"success",...}` on success and
+    /// `{"error":"..."}` on failure; the failure shape goes through
+    /// [`error::classify`] like every other response.
+    async fn post_json(&self, endpoint: &str, payload: &serde_json::Value) -> Result<String> {
+        let url = self.config.base_url.join(endpoint)?;
+        trace!(%url, endpoint, "POST");
+        let mut request = self.http.post(url.clone()).json(payload);
+        if let Some(ref key) = self.config.api_key {
+            request = request.bearer_auth(key);
+        }
+        self.deliver(request, &url).await
+    }
+
+    /// Send a built request and establish that its body is a result.
+    async fn deliver(&self, request: reqwest::RequestBuilder, url: &Url) -> Result<String> {
         let send = |source: reqwest::Error| GhidraError::Transport {
             url: url.to_string(),
             source,
@@ -735,6 +755,38 @@ impl GhidraClient {
         let params = [("offset", offset.to_string()), ("limit", limit.to_string())];
         let body = self.get_text("list_data_items", &params).await?;
         Ok(parse::parse_data_items(&body))
+    }
+
+    /// The raw bytes at `address`.
+    ///
+    /// This is how the contents of a defined data object are read — a vtable's
+    /// method pointers, an RTTI locator — which no listing endpoint reports.
+    #[instrument(skip(self), fields(address = format_args!("{address:#x}"), length))]
+    pub async fn read_memory(&self, address: u64, length: usize) -> Result<Vec<u8>> {
+        let params = [
+            ("address", Self::addr(address)),
+            ("length", length.to_string()),
+        ];
+        let body = self.get_text("read_memory", &params).await?;
+        parse::parse_memory_bytes(&body).ok_or_else(|| GhidraError::Malformed {
+            kind: "memory bytes",
+            detail: body.trim().to_string(),
+        })
+    }
+
+    // =========================================================
+    // Write-back
+    // =========================================================
+
+    /// Attach `tag` to a function, naming it by address or by name.
+    ///
+    /// The tag is created if it does not exist. Only functions take tags: a
+    /// data address is refused with `No function found for ...`.
+    #[instrument(skip(self), fields(function, tag))]
+    pub async fn add_function_tag(&self, function: &str, tag: &str) -> Result<()> {
+        let payload = serde_json::json!({ "function": function, "tags": tag });
+        self.post_json("add_function_tag", &payload).await?;
+        Ok(())
     }
 
     // =========================================================
