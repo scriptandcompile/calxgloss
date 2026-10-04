@@ -750,8 +750,15 @@ impl TranslationPipeline {
             function, "Starting translation with retry (max {} attempts)", config.max_attempts
         );
 
-        // Step 1: Initial translation via the full pipeline
-        let initial = self.translate(dll, function).await?;
+        // Step 1: Initial translation via the full pipeline.
+        // The futures below are boxed so that downstream crates' `Send` checks
+        // stop at this boundary instead of recursively descending through the
+        // whole pipeline (which overflows the compiler's trait evaluation
+        // recursion limit — see rust-lang/rust#159228).
+        let initial_translation: std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Translation>> + Send + '_>,
+        > = Box::pin(self.translate(dll, function));
+        let initial = initial_translation.await?;
 
         info!(
             dll,
@@ -771,7 +778,11 @@ impl TranslationPipeline {
             resource_detector: None,
             fault_logger: None,
         };
-        let result = retry::try_translate_with_retry(initial, &ctx).await;
+        // Boxed for the same reason as above.
+        let retry_loop: std::pin::Pin<
+            Box<dyn std::future::Future<Output = retry::RetryResult> + Send + '_>,
+        > = Box::pin(retry::try_translate_with_retry(initial, &ctx));
+        let result = retry_loop.await;
 
         if result.success {
             self.emit(ProgressEvent::TranslationCompleted {
