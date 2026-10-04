@@ -6,7 +6,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into six modules:
+//! The crate is organized into seven modules:
 //!
 //! - [`types`] - Core data types: `NamedType`, `TypeKind`, `StructField` for
 //!   named types from Ghidra's Type Manager; `Vtable`, `VtableMethod` for
@@ -22,10 +22,14 @@
 //! - [`string_infer`] - String-guided inference: `StringInferenceEngine`
 //!   infers struct layouts from string collection, cross-reference
 //!   clustering, and confidence scoring.
+//! - [`engine`] - Orchestration: [`engine::TypesDBEngine`] runs the three
+//!   recovery engines concurrently over one program and assembles their
+//!   results into a single [`types::TypeDatabase`].
 //! - [`persist`] - JSON persistence: `TypeDatabasePersistor` saves and loads
 //!   the per-DLL database under `re/analysis/typesdb/`.
 //! - [`error`] - [`TypesDbError`] and the crate-wide [`Result`] alias.
 
+pub mod engine;
 pub mod error;
 pub mod persist;
 pub mod scanner;

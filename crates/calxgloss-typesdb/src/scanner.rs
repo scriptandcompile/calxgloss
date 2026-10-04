@@ -145,10 +145,7 @@ impl KindHints {
     /// word. When it does not, the membership can only come from the
     /// classification side — and each kind word is a substring of only its
     /// own classification, so a certain membership *is* the bridge's verdict.
-    fn memberships<'a>(
-        &'a self,
-        entry: &'a DataTypeEntry,
-    ) -> impl Iterator<Item = KindHint> + 'a {
+    fn memberships<'a>(&'a self, entry: &'a DataTypeEntry) -> impl Iterator<Item = KindHint> + 'a {
         self.buckets.iter().filter_map(move |(kind, paths)| {
             paths.contains(&entry.path).then_some(KindHint {
                 kind: *kind,
@@ -204,14 +201,19 @@ pub struct TypeLibraryScanner<S = GhidraClient> {
 impl TypeLibraryScanner<GhidraClient> {
     /// A scanner over a live GhidraMCP client.
     pub fn new(client: &GhidraClient) -> TypeLibraryScanner<GhidraClient> {
-        TypeLibraryScanner {
-            source: client.clone(),
-            category: None,
-        }
+        Self::with_source(client.clone())
     }
 }
 
 impl<S> TypeLibraryScanner<S> {
+    /// A scanner over any source that can read the Type Manager.
+    pub fn with_source(source: S) -> Self {
+        Self {
+            source,
+            category: None,
+        }
+    }
+
     /// Restrict the scan to a Type Manager category or name fragment.
     pub fn with_category(mut self, category: impl Into<String>) -> Self {
         self.category = Some(category.into());

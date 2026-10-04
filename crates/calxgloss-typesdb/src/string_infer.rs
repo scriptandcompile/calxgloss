@@ -35,10 +35,8 @@ pub trait StringSource {
 
     /// References to `address` — the instructions pointing at a literal, each
     /// naming its enclosing function.
-    fn xrefs_to(
-        &self,
-        address: u64,
-    ) -> impl std::future::Future<Output = Result<Vec<Xref>>> + Send;
+    fn xrefs_to(&self, address: u64)
+    -> impl std::future::Future<Output = Result<Vec<Xref>>> + Send;
 }
 
 impl StringSource for GhidraClient {
@@ -103,8 +101,7 @@ struct Shapes {
 impl Shapes {
     fn new() -> Self {
         Self {
-            format_spec: Regex::new(r"%[-+ #0]*[0-9]*(\.[0-9]+)?[a-zA-Z]")
-                .expect("static pattern"),
+            format_spec: Regex::new(r"%[-+ #0]*[0-9]*(\.[0-9]+)?[a-zA-Z]").expect("static pattern"),
             integer: Regex::new(r"^[+-]?[0-9]+$").expect("static pattern"),
             float: Regex::new(r"^[+-]?([0-9]+\.[0-9]*|\.[0-9]+)$").expect("static pattern"),
         }
@@ -157,7 +154,10 @@ async fn cluster_literals(
 
     let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for index in 0..literals.len() {
-        groups.entry(find(&mut parent, index)).or_default().push(index);
+        groups
+            .entry(find(&mut parent, index))
+            .or_default()
+            .push(index);
     }
 
     groups
@@ -225,8 +225,7 @@ fn literal_prefix(literals: &[StringLiteral]) -> Option<String> {
         shared = common_prefix(shared, key);
     }
     let qualifier = shared.trim_end_matches(NAME_SEPARATORS);
-    if qualifier.len() < MIN_NAME_PART
-        || !qualifier.starts_with(|c: char| c.is_ascii_alphabetic())
+    if qualifier.len() < MIN_NAME_PART || !qualifier.starts_with(|c: char| c.is_ascii_alphabetic())
     {
         return None;
     }
@@ -257,12 +256,17 @@ fn function_stem(functions: &[String]) -> Option<String> {
         return None;
     }
     // A stem that is the whole of a function name is that name, not a stem.
-    functions.iter().all(|f| f.len() > stem.len()).then(|| stem.to_string())
+    functions
+        .iter()
+        .all(|f| f.len() > stem.len())
+        .then(|| stem.to_string())
 }
 
 /// Whether a name is one Ghidra generated, carrying no information.
 fn is_auto_name(name: &str) -> bool {
-    AUTO_NAME_PREFIXES.iter().any(|prefix| name.starts_with(prefix))
+    AUTO_NAME_PREFIXES
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
 }
 
 /// A name fragment as a type-style identifier (`player` → `Player`).
@@ -395,9 +399,7 @@ fn score(cluster: &Cluster, origin: NameOrigin, clean_fields: usize, fields: usi
         NameOrigin::FunctionStem => 15,
         NameOrigin::Address => 0,
     };
-    let shape = (20 * clean_fields)
-        .checked_div(fields)
-        .unwrap_or(0);
+    let shape = (20 * clean_fields).checked_div(fields).unwrap_or(0);
     (breadth + agreement + naming + shape).min(100) as u8
 }
 
@@ -436,8 +438,15 @@ pub struct StringInferenceEngine<S = GhidraClient> {
 impl StringInferenceEngine<GhidraClient> {
     /// An engine over a live GhidraMCP client.
     pub fn new(client: &GhidraClient) -> StringInferenceEngine<GhidraClient> {
-        StringInferenceEngine {
-            source: client.clone(),
+        Self::with_source(client.clone())
+    }
+}
+
+impl<S> StringInferenceEngine<S> {
+    /// An engine over any source that can read strings and cross-references.
+    pub fn with_source(source: S) -> Self {
+        Self {
+            source,
             filter: None,
             min_fields: DEFAULT_MIN_FIELDS,
             min_confidence: DEFAULT_MIN_CONFIDENCE,
@@ -445,9 +454,7 @@ impl StringInferenceEngine<GhidraClient> {
             pointer_size: 8,
         }
     }
-}
 
-impl<S> StringInferenceEngine<S> {
     /// Regex the bridge filters its string listing by.
     pub fn with_string_filter(mut self, pattern: impl Into<String>) -> Self {
         self.filter = Some(pattern.into());
@@ -710,7 +717,10 @@ mod tests {
 
     impl StringSource for MockSource {
         async fn strings(&self, filter: Option<&str>) -> Result<Vec<StringLiteral>> {
-            self.filters.lock().unwrap().push(filter.map(str::to_string));
+            self.filters
+                .lock()
+                .unwrap()
+                .push(filter.map(str::to_string));
             if self.listing_failure {
                 return Err(GhidraError::Reported {
                     status: Some(200),
@@ -1064,7 +1074,12 @@ mod tests {
         assert_eq!(candidate.name, "strings_at_180129340");
         assert_eq!(candidate.fields.len(), 8);
         assert_eq!(candidate.confidence, 40 + 5 + 20);
-        assert!(candidate.fields.iter().all(|f| f.field_type == FieldType::String));
+        assert!(
+            candidate
+                .fields
+                .iter()
+                .all(|f| f.field_type == FieldType::String)
+        );
     }
 
     #[test]
@@ -1090,7 +1105,10 @@ mod tests {
             "chat logging turned OFF.",
             "Ünïcödé",
         ] {
-            assert!(!is_useful_literal(junk, &shapes), "{junk} should be screened");
+            assert!(
+                !is_useful_literal(junk, &shapes),
+                "{junk} should be screened"
+            );
         }
     }
 
@@ -1122,7 +1140,10 @@ mod tests {
         let snake = vec![literal("get_width", 0x100), literal("get_height", 0x108)];
         assert_eq!(literal_prefix(&snake), None);
 
-        let methods = vec!["Widget_getWidth".to_string(), "Widget_getHeight".to_string()];
+        let methods = vec![
+            "Widget_getWidth".to_string(),
+            "Widget_getHeight".to_string(),
+        ];
         assert_eq!(function_stem(&methods).as_deref(), Some("Widget"));
         // Ghidra's generated names carry nothing to name a struct after.
         let generated = vec!["FUN_18003ab00".to_string(), "FUN_18003e750".to_string()];
@@ -1137,8 +1158,14 @@ mod tests {
         let shapes = Shapes::new();
         assert_eq!(infer_field_type("width=100", &shapes), FieldType::Integer);
         assert_eq!(infer_field_type("ratio=-0.5", &shapes), FieldType::Float);
-        assert_eq!(infer_field_type("enabled=FALSE", &shapes), FieldType::Boolean);
-        assert_eq!(infer_field_type("title=Sir Bezzek", &shapes), FieldType::String);
+        assert_eq!(
+            infer_field_type("enabled=FALSE", &shapes),
+            FieldType::Boolean
+        );
+        assert_eq!(
+            infer_field_type("title=Sir Bezzek", &shapes),
+            FieldType::String
+        );
         assert_eq!(infer_field_type("flowname", &shapes), FieldType::String);
         assert_eq!(infer_field_type("flowname=", &shapes), FieldType::Unknown);
     }
@@ -1153,16 +1180,10 @@ mod tests {
         };
         assert_eq!(score(&cluster(1, 1), NameOrigin::Address, 1, 1), 8 + 5 + 20);
         // The parts sum past the ceiling, so the score is capped at 100.
-        assert_eq!(
-            score(&cluster(5, 4), NameOrigin::LiteralPrefix, 5, 5),
-            100
-        );
+        assert_eq!(score(&cluster(5, 4), NameOrigin::LiteralPrefix, 5, 5), 100);
         // More literals and more functions than that add nothing: the score
         // saturates rather than crowding out the other signals.
-        assert_eq!(
-            score(&cluster(9, 9), NameOrigin::LiteralPrefix, 9, 9),
-            100
-        );
+        assert_eq!(score(&cluster(9, 9), NameOrigin::LiteralPrefix, 9, 9), 100);
         // Names that had to be cleaned up count for nothing.
         assert_eq!(score(&cluster(2, 1), NameOrigin::Address, 0, 2), 16 + 5);
     }

@@ -232,15 +232,20 @@ pub struct VtableDetector<S = GhidraClient> {
 impl VtableDetector<GhidraClient> {
     /// A detector over a live GhidraMCP client.
     pub fn new(client: &GhidraClient) -> VtableDetector<GhidraClient> {
-        VtableDetector {
-            source: client.clone(),
-            pointer_size: 8,
-            tag: Some(DEFAULT_TAG.to_string()),
-        }
+        Self::with_source(client.clone())
     }
 }
 
 impl<S> VtableDetector<S> {
+    /// A detector over any source that can read the listing and memory.
+    pub fn with_source(source: S) -> Self {
+        Self {
+            source,
+            pointer_size: 8,
+            tag: Some(DEFAULT_TAG.to_string()),
+        }
+    }
+
     /// Override the pointer size assumed for tables whose type name does not
     /// declare one (a 32-bit program uses 4).
     pub fn with_pointer_size(mut self, pointer_size: usize) -> Self {
