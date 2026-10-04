@@ -268,6 +268,11 @@ impl fmt::Display for DataItem {
 }
 
 /// One field of a structure layout.
+///
+/// Wire shape for `/get_struct_layout` only. The persisted recovered shape is
+/// `calxgloss-typesdb`'s `StructField`; the two stay deliberately split (wire
+/// vs. persisted ownership) and are mapped by its `From<&StructFieldLayout>`
+/// impl — the only place the shapes meet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructFieldLayout {
     /// Byte offset of the field from the start of the structure.
@@ -294,6 +299,10 @@ pub struct StructLayout {
 }
 
 /// One member of an enumeration.
+///
+/// Wire shape for `/get_enum_values` only. The persisted recovered shape is
+/// `calxgloss-typesdb`'s `EnumMember`; the records are identical but stay
+/// split on purpose, mapped by its `From<&EnumMember>` impl.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumMember {
     /// Member name, e.g. `ExceptionContinueExecution`.

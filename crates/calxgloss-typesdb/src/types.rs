@@ -12,11 +12,14 @@
 //! - `TypeDatabase`, `ScanMetadata`: the persisted per-DLL database and its
 //!   scan provenance.
 //!
-//! All types derive `Serialize`/`Deserialize`. Recovered records also convert
-//! into prompt data: `From<&NamedType>` and `From<&InferredStruct>` render a
+//! All types derive `Serialize`/`Deserialize`. Ghidra wire records convert into
+//! recovered records via `From<&StructFieldLayout>` and `From<&calxgloss_ghidra::EnumMember>`
+//! — the wire and persisted shapes stay deliberately split, and these impls are
+//! the only mapping between them. Recovered records also convert into prompt
+//! data: `From<&NamedType>` and `From<&InferredStruct>` render a
 //! [`calxgloss_prompts::StructuredData`] for the translation prompts.
 
-use calxgloss_ghidra::{DataTypeEntry, EnumDefinition, StructLayout};
+use calxgloss_ghidra::{DataTypeEntry, EnumDefinition, StructFieldLayout, StructLayout};
 use calxgloss_prompts::StructuredData;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -77,6 +80,11 @@ impl fmt::Display for TypeKind {
 // ============================================================
 
 /// One field of a recovered structure layout.
+///
+/// The persisted counterpart of the wire shape `calxgloss_ghidra::StructFieldLayout`.
+/// The two stay deliberately split — that one is the parsed `/get_struct_layout`
+/// response owned by the HTTP client, this one the serde'd recovered record —
+/// and [`From<&StructFieldLayout>`] is the only mapping between them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructField {
     /// Field name as Ghidra labels it; `(unnamed)` for anonymous fields.
@@ -90,12 +98,43 @@ pub struct StructField {
 }
 
 /// One member of a recovered enumeration.
+///
+/// The persisted counterpart of the wire shape `calxgloss_ghidra::EnumMember`.
+/// The two records are identical today but stay split on purpose, for the same
+/// reason as [`StructField`], and [`From<&calxgloss_ghidra::EnumMember>`] is
+/// the only mapping between them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnumMember {
     /// Member name, e.g. `ExceptionContinueExecution`.
     pub name: String,
     /// Member value; signed because Ghidra enums may hold negative values.
     pub value: i64,
+}
+
+/// Wire → recovered conversions for the layout leaves.
+///
+/// These impls are the single place the Ghidra wire shapes and the persisted
+/// recovered shapes meet; keeping the field copies here rather than inline in
+/// [`NamedType::from_struct`] / [`NamedType::from_enum`] means a wire-shape
+/// change breaks exactly one compile.
+impl From<&StructFieldLayout> for StructField {
+    fn from(field: &StructFieldLayout) -> Self {
+        Self {
+            name: field.field_name.clone(),
+            offset: field.offset,
+            size: field.size,
+            type_name: field.type_name.clone(),
+        }
+    }
+}
+
+impl From<&calxgloss_ghidra::EnumMember> for EnumMember {
+    fn from(member: &calxgloss_ghidra::EnumMember) -> Self {
+        Self {
+            name: member.name.clone(),
+            value: member.value,
+        }
+    }
 }
 
 // ============================================================
@@ -170,16 +209,7 @@ impl NamedType {
             path: entry.path.clone(),
             size: Some(layout.size),
             alignment: Some(layout.alignment),
-            fields: layout
-                .fields
-                .iter()
-                .map(|f| StructField {
-                    name: f.field_name.clone(),
-                    offset: f.offset,
-                    size: f.size,
-                    type_name: f.type_name.clone(),
-                })
-                .collect(),
+            fields: layout.fields.iter().map(StructField::from).collect(),
             members: Vec::new(),
         }
     }
@@ -194,14 +224,7 @@ impl NamedType {
             size: Some(definition.size),
             alignment: None,
             fields: Vec::new(),
-            members: definition
-                .members
-                .iter()
-                .map(|m| EnumMember {
-                    name: m.name.clone(),
-                    value: m.value,
-                })
-                .collect(),
+            members: definition.members.iter().map(EnumMember::from).collect(),
         }
     }
 
