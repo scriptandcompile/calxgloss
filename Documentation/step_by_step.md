@@ -1028,14 +1028,15 @@ The UI is a **review gate** — it shows the *result* of each translation unit b
   - [x] `cargo check` passes with no errors
   - [x] `cargo clippy` clean
 
-- [ ] **Phase 1 — Named Type Recovery**
-  - [ ] `NamedType`, `TypeKind`, `StructField` types defined with `Serialize`/`Deserialize`
-  - [ ] `TypeLibraryScanner` struct implemented
-  - [ ] `scan_named_types()` queries Ghidra and returns `Vec<NamedType>`
-  - [ ] Parsing handles `list_data_types`/`get_struct_layout` JSON (struct, class, union, enum)
-  - [ ] Graceful degradation for missing/malformed types
-  - [ ] All 11 Phase 1 unit tests pass
-  - [ ] `cargo clippy` clean
+- [x] **Phase 1 — Named Type Recovery** *(done 2026-10-03, verified live against the v6.0.0 bridge with `eqmain.dll` open)*
+  - [x] `NamedType`, `TypeKind`, `StructField` types defined with `Serialize`/`Deserialize` (plus `EnumMember`)
+  - [x] `TypeLibraryScanner` struct implemented (generic over a `TypeLibrarySource` trait; `GhidraClient` implements it)
+  - [x] `scan_named_types()` queries Ghidra and returns `Vec<NamedType>`
+  - [x] Parsing handles `list_data_types`/`get_struct_layout`/`get_enum_values` responses (text formats, not JSON — see the Record formats note; prose sentinels like `Structure not found: X` refused as `NotFound`/`Malformed`)
+  - [x] Graceful degradation for missing/malformed types (probe misses degrade to listing-only records; server failures abort)
+  - [x] All Phase 1 unit tests pass (20: 14 scanner + 6 types) + 4 `#[ignore]`d live tests green against the running bridge
+  - [x] `cargo clippy` clean
+  - Verified live: `list_data_types`'s `category` filter matches the word as a case-insensitive substring against the category name **or** the type's classification (`struct`/`union`/`enum`/`typedef`/`pointer`/`array`/`function`/`primitive`) — `DataTypeService.listDataTypes`. The scanner's four kind-bucket listings rely on this; certainty = category name does not contain the kind word, and a certain bucket membership is trusted over a suspect one (a typedef in a category named e.g. `unions` would otherwise misclassify).
 
 - [ ] **Phase 2 — Vtable Detection**
   - [ ] `Vtable`, `VtableMethod` types defined with `Serialize`/`Deserialize`
