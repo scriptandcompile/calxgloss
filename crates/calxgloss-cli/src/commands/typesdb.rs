@@ -175,7 +175,7 @@ fn print_type_database_report(db: &TypeDatabase, path: &Path) {
                 dim("●"),
                 white_bold(&candidate.name),
                 candidate.fields.len(),
-                confidence_color(candidate.confidence)(&candidate.confidence.to_string())
+                confidence_color(candidate.confidence.value())(&candidate.confidence.to_string())
             ));
         }
         print_hidden_count("candidate", db.inferred_structs.len());

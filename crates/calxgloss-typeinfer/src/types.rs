@@ -13,6 +13,7 @@
 //!
 //! All types derive `Serialize`/`Deserialize`.
 
+use calxgloss_types::Confidence;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -143,7 +144,7 @@ pub struct InferredParamType {
     /// How far the inference reaches beyond this function.
     pub scope: InferenceScope,
     /// Confidence that the inference is right, 0–100.
-    pub confidence: u8,
+    pub confidence: Confidence,
     /// The decompiled line or pattern that supports the inference — kept so
     /// a reviewer (or a translation prompt) can check the reasoning.
     pub evidence: String,
@@ -178,7 +179,7 @@ mod tests {
             inferred_type: "Widget *".into(),
             method: InferenceMethod::VtableCall,
             scope: InferenceScope::Class,
-            confidence: 85,
+            confidence: Confidence::new(85),
             evidence: "(*(code *)(**param_1))[3](param_1)".into(),
         };
         let json = serde_json::to_string(&record).unwrap();
@@ -201,7 +202,7 @@ mod tests {
             inferred_type: "char *".into(),
             method: InferenceMethod::StringFunction,
             scope: InferenceScope::Function,
-            confidence: 70,
+            confidence: Confidence::new(70),
             evidence: "strlen(param_2)".into(),
         };
         let json = serde_json::to_string(&record).unwrap();

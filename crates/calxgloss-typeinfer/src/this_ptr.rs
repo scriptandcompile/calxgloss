@@ -720,7 +720,7 @@ impl ThisPointerDetector {
                     inferred_type,
                     method,
                     scope: InferenceScope::Class,
-                    confidence,
+                    confidence: confidence.into(),
                     evidence,
                 })
             })

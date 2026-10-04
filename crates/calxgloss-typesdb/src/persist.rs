@@ -149,8 +149,8 @@ impl TypeDatabasePersistor {
 mod tests {
     use super::*;
     use crate::types::{
-        FieldType, InferredField, InferredStruct, NameOrigin, NamedType, ScanMetadata, TypeKind,
-        Vtable,
+        Confidence, FieldType, InferredField, InferredStruct, NameOrigin, NamedType, ScanMetadata,
+        TypeKind, Vtable,
     };
     use calxgloss_ghidra::DataTypeEntry;
     use tempfile::TempDir;
@@ -194,7 +194,7 @@ mod tests {
                     source_value: "player.x".into(),
                     source_address: 0x1801_29350,
                 }],
-                confidence: 79,
+                confidence: Confidence::new(79),
                 referenced_by: vec!["FUN_18000b620".into()],
             }],
         }

@@ -927,7 +927,7 @@ impl ParameterSizeDetector {
                 inferred_type: reading.inferred_type.to_string(),
                 method: reading.method,
                 scope: InferenceScope::Function,
-                confidence: reading.confidence,
+                confidence: reading.confidence.into(),
                 evidence: reading.evidence,
             })
             .collect()

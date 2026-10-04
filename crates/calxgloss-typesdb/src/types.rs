@@ -21,11 +21,11 @@ use calxgloss_prompts::StructuredData;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-// `ScanMetadata` is the shared per-binary scan provenance; it lives in
-// `calxgloss-types` so every engine crate keys its artifacts the same way.
-// Re-exported here so `calxgloss_typesdb::types::*` keeps resolving for
-// existing callers.
-pub use calxgloss_types::ScanMetadata;
+// `ScanMetadata` is the shared per-binary scan provenance and `Confidence` the
+// shared 0–100 evidence score; both live in `calxgloss-types` so every engine
+// crate keys its artifacts and scores the same way. Re-exported here so
+// `calxgloss_typesdb::types::*` keeps resolving for existing callers.
+pub use calxgloss_types::{Confidence, ScanMetadata};
 
 // ============================================================
 // Type kind
@@ -380,7 +380,7 @@ pub struct InferredStruct {
     /// Fields, in literal-address order.
     pub fields: Vec<InferredField>,
     /// Confidence that the cluster is one struct, 0–100.
-    pub confidence: u8,
+    pub confidence: Confidence,
     /// The functions whose cross-references tie the literals together.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub referenced_by: Vec<String>,
@@ -723,7 +723,7 @@ mod tests {
                     source_address: 0x1801_29360,
                 },
             ],
-            confidence: 79,
+            confidence: Confidence::new(79),
             referenced_by: vec!["FUN_18000b620".into()],
         };
         let json = serde_json::to_string(&candidate).unwrap();
@@ -750,7 +750,7 @@ mod tests {
                 source_value: "mystery".into(),
                 source_address: 0x1801_29350,
             }],
-            confidence: 28,
+            confidence: Confidence::new(28),
             referenced_by: Vec::new(),
         };
         let json = serde_json::to_string(&candidate).unwrap();
@@ -858,7 +858,7 @@ mod tests {
                     source_address: 0x1801_29360,
                 },
             ],
-            confidence: 79,
+            confidence: Confidence::new(79),
             referenced_by: Vec::new(),
         };
         let rendered = StructuredData::from(&candidate);
@@ -886,7 +886,7 @@ mod tests {
                 source_value: "mystery".into(),
                 source_address: 0x1801_29350,
             }],
-            confidence: 28,
+            confidence: Confidence::new(28),
             referenced_by: Vec::new(),
         };
         let rendered = StructuredData::from(&candidate);
@@ -929,7 +929,7 @@ mod tests {
                 name: "Player".into(),
                 name_origin: NameOrigin::LiteralPrefix,
                 fields: Vec::new(),
-                confidence: 79,
+                confidence: Confidence::new(79),
                 referenced_by: Vec::new(),
             }],
         };

@@ -712,7 +712,7 @@ impl KnownTypePropagationEngine {
                 inferred_type: reading.inferred_type.to_string(),
                 method: InferenceMethod::KnownSignature,
                 scope: InferenceScope::Program,
-                confidence: reading.confidence,
+                confidence: reading.confidence.into(),
                 evidence: reading.evidence,
             })
             .collect()

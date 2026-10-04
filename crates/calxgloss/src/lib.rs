@@ -30,6 +30,7 @@ pub use calxgloss_types::dashboard::{
 pub use calxgloss_types::context_tier::ContextTier;
 
 // Progress event types
+pub use calxgloss_types::confidence::Confidence;
 pub use calxgloss_types::progress::{ProgressEvent, TranslationEvents};
 pub use calxgloss_types::scan::ScanMetadata;
 

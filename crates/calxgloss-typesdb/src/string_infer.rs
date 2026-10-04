@@ -13,7 +13,7 @@
 //! hypothesis, and its score says how strongly the evidence supports it.
 
 use crate::error::{Result, TypesDbError};
-use crate::types::{FieldType, InferredField, InferredStruct, NameOrigin};
+use crate::types::{Confidence, FieldType, InferredField, InferredStruct, NameOrigin};
 use calxgloss_ghidra::{GhidraClient, GhidraError, StringLiteral, Xref};
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -608,7 +608,7 @@ impl<S> StringInferenceEngine<S> {
         }
 
         InferredStruct {
-            confidence: score(cluster, origin, clean, fields.len()),
+            confidence: Confidence::new(score(cluster, origin, clean, fields.len())),
             name,
             name_origin: origin,
             fields,

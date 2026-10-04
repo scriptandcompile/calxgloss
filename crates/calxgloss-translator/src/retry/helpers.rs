@@ -683,7 +683,7 @@ mod tests {
                     source_address: 0x1801_29360,
                 },
             ],
-            confidence: 79,
+            confidence: 79.into(),
             referenced_by: referenced_by.iter().map(|f| f.to_string()).collect(),
         }
     }
