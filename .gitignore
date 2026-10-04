@@ -20,3 +20,12 @@ Thumbs.db
 # Review data / generated artifacts
 re/
 recompiled_project/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+/.claude/
+/.gemini/
+AGENTS.md
+GEMINI.md
+.mcp.json
+opencode.json
