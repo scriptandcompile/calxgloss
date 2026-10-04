@@ -910,22 +910,16 @@ impl TranslationPipeline {
         &self,
         disassembly: &str,
         imports: &[String],
-    ) -> Result<Vec<calxgloss_types::translation::WindowsApiCall>> {
+    ) -> Result<Vec<calxgloss_types::WindowsApiCall>> {
         // Use the analyzer's tagging logic via the analyzer we constructed
         let tagged = self
             .analyzer
             .tag_windows_apis(disassembly, imports)
             .map_err(|e| TranslatorError::TestGen(anyhow::anyhow!("API tagging failed: {e}")))?;
 
-        // Convert from analysis WindowsApiCall to translation WindowsApiCall
-        Ok(tagged
-            .into_iter()
-            .map(|api| calxgloss_types::translation::WindowsApiCall {
-                name: api.name,
-                category: api.category,
-                pal_mapping: api.pal_mapping,
-            })
-            .collect())
+        // The analyzer already tags into the shared `WindowsApiCall`, so the
+        // tagged list is the prompt's list — no conversion needed.
+        Ok(tagged)
     }
 
     /// Generate baseline test inputs for a function.
@@ -973,7 +967,7 @@ impl TranslationPipeline {
         dll: &str,
         function: &str,
         function_info: &FunctionInfo,
-        tagged_apis: Vec<calxgloss_types::translation::WindowsApiCall>,
+        tagged_apis: Vec<calxgloss_types::WindowsApiCall>,
         baseline_tests: Vec<TestCase>,
     ) -> TranslationRequest {
         TranslationRequest {

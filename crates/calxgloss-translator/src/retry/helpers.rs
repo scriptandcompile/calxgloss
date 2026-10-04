@@ -514,10 +514,10 @@ pub async fn build_escalated_prompt(
         }
         ContextTier::Disassembly => {
             // Tier 1: disassembly + decompiler + type info
-            let call_graph: Vec<calxgloss_types::translation::WindowsApiCall> = translation
+            let call_graph: Vec<calxgloss_types::WindowsApiCall> = translation
                 .call_graph
                 .iter()
-                .map(|name| calxgloss_types::translation::WindowsApiCall {
+                .map(|name| calxgloss_types::WindowsApiCall {
                     name: name.clone(),
                     category: ApiCategory::Win32Core,
                     pal_mapping: String::new(),
@@ -537,10 +537,10 @@ pub async fn build_escalated_prompt(
         }
         ContextTier::WithTests => {
             // Tier 2: disassembly + decompiler + baseline tests
-            let call_graph: Vec<calxgloss_types::translation::WindowsApiCall> = translation
+            let call_graph: Vec<calxgloss_types::WindowsApiCall> = translation
                 .call_graph
                 .iter()
-                .map(|name| calxgloss_types::translation::WindowsApiCall {
+                .map(|name| calxgloss_types::WindowsApiCall {
                     name: name.clone(),
                     category: ApiCategory::Win32Core,
                     pal_mapping: String::new(),
@@ -561,10 +561,10 @@ pub async fn build_escalated_prompt(
         }
         ContextTier::ModuleContext => {
             // Tier 3: module context + neighboring functions + data structures
-            let call_graph: Vec<calxgloss_types::translation::WindowsApiCall> = translation
+            let call_graph: Vec<calxgloss_types::WindowsApiCall> = translation
                 .call_graph
                 .iter()
-                .map(|name| calxgloss_types::translation::WindowsApiCall {
+                .map(|name| calxgloss_types::WindowsApiCall {
                     name: name.clone(),
                     category: ApiCategory::Win32Core,
                     pal_mapping: String::new(),
@@ -601,10 +601,10 @@ pub async fn build_escalated_prompt(
         }
         ContextTier::FullModule => {
             // Tier 4: full module + shim layer code + PAL trait definitions
-            let call_graph: Vec<calxgloss_types::translation::WindowsApiCall> = translation
+            let call_graph: Vec<calxgloss_types::WindowsApiCall> = translation
                 .call_graph
                 .iter()
-                .map(|name| calxgloss_types::translation::WindowsApiCall {
+                .map(|name| calxgloss_types::WindowsApiCall {
                     name: name.clone(),
                     category: ApiCategory::Win32Core,
                     pal_mapping: String::new(),

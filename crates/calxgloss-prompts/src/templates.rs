@@ -216,7 +216,7 @@ pub struct MinimalTemplate {
     /// Pseudo-C decompiler output from Ghidra.
     pub decompiler_output: String,
     /// Windows API calls identified in the disassembly.
-    pub windows_apis: Vec<calxgloss_types::translation::WindowsApiCall>,
+    pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
     /// Baseline test cases the translated Rust code must pass.
     pub test_cases: Vec<TestCaseFormatted>,
     /// Whether there are no Windows API calls (for conditional rendering).
@@ -276,7 +276,7 @@ pub struct TranslateTemplate {
     /// Pseudo-C decompiler output from Ghidra.
     pub decompiler_output: String,
     /// Windows API calls identified in the disassembly.
-    pub windows_apis: Vec<calxgloss_types::translation::WindowsApiCall>,
+    pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
     /// Baseline test cases the translated Rust code must pass.
     pub test_cases: Vec<TestCaseFormatted>,
     /// Whether there are no Windows API calls (for conditional rendering).
@@ -572,7 +572,7 @@ pub struct RichTemplate {
     /// Pseudo-C decompiler output from Ghidra.
     pub decompiler_output: String,
     /// Windows API calls identified in the disassembly.
-    pub windows_apis: Vec<calxgloss_types::translation::WindowsApiCall>,
+    pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
     /// Whether there are no Windows API calls.
     pub no_windows_apis: bool,
     /// Baseline test cases.
@@ -632,7 +632,7 @@ pub struct DetailedTemplate {
     /// Pseudo-C decompiler output from Ghidra.
     pub decompiler_output: String,
     /// Windows API calls identified in the disassembly.
-    pub windows_apis: Vec<calxgloss_types::translation::WindowsApiCall>,
+    pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
     /// Whether there are no Windows API calls.
     pub no_windows_apis: bool,
     /// Baseline test cases.

@@ -65,7 +65,7 @@ pub struct DisassemblyPromptData {
     pub address: u64,
     pub disassembly: String,
     pub decompiler_output: String,
-    pub windows_apis: Vec<calxgloss_types::translation::WindowsApiCall>,
+    pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
     pub no_windows_apis: bool,
     pub test_cases: Vec<TestCase>,
 }
@@ -78,15 +78,7 @@ impl DisassemblyPromptData {
             address: info.address,
             disassembly: info.disassembly.clone(),
             decompiler_output: info.decompiler_output.clone(),
-            windows_apis: info
-                .windows_apis
-                .iter()
-                .map(|api| calxgloss_types::translation::WindowsApiCall {
-                    name: api.name.clone(),
-                    category: api.category.clone(),
-                    pal_mapping: api.pal_mapping.clone(),
-                })
-                .collect(),
+            windows_apis: info.windows_apis.clone(),
             no_windows_apis: info.windows_apis.is_empty(),
             test_cases: Vec::new(),
         }
@@ -125,16 +117,7 @@ impl WithTestsPromptData {
             .map(|(i, test)| FormattedTestResult::from_baseline(test, i + 1))
             .collect();
 
-        // Convert from translation::WindowsApiCall to calxgloss_types::WindowsApiCall
-        let windows_apis: Vec<calxgloss_types::WindowsApiCall> = req
-            .windows_apis
-            .iter()
-            .map(|api| calxgloss_types::WindowsApiCall {
-                name: api.name.clone(),
-                category: api.category.clone(),
-                pal_mapping: api.pal_mapping.clone(),
-            })
-            .collect();
+        let windows_apis = req.windows_apis.clone();
 
         Self {
             function_name: req.function.clone(),
@@ -211,15 +194,7 @@ impl ModuleContextPromptData {
             .map(|(i, test)| FormattedTestResult::from_baseline(test, i + 1))
             .collect();
 
-        let windows_apis: Vec<calxgloss_types::WindowsApiCall> = req
-            .windows_apis
-            .iter()
-            .map(|api| calxgloss_types::WindowsApiCall {
-                name: api.name.clone(),
-                category: api.category.clone(),
-                pal_mapping: api.pal_mapping.clone(),
-            })
-            .collect();
+        let windows_apis = req.windows_apis.clone();
 
         Self {
             function_name: req.function.clone(),
@@ -257,15 +232,7 @@ impl ModuleContextPromptData {
             .map(|(i, test)| FormattedTestResult::from_baseline(test, i + 1))
             .collect();
 
-        let windows_apis: Vec<calxgloss_types::WindowsApiCall> = req
-            .windows_apis
-            .iter()
-            .map(|api| calxgloss_types::WindowsApiCall {
-                name: api.name.clone(),
-                category: api.category.clone(),
-                pal_mapping: api.pal_mapping.clone(),
-            })
-            .collect();
+        let windows_apis = req.windows_apis.clone();
 
         Self {
             function_name: req.function.clone(),
@@ -296,7 +263,7 @@ pub struct ComplexityPromptData {
     pub address: u64,
     pub disassembly: String,
     pub decompiler_output: String,
-    pub windows_apis: Vec<calxgloss_types::translation::WindowsApiCall>,
+    pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
     pub test_cases: Vec<super::templates::TestCaseFormatted>,
     pub api_category_mappings: Vec<calxgloss_types::ApiCategoryMapping>,
     pub call_graph_neighbors: Vec<CallGraphNeighbor>,
@@ -398,15 +365,7 @@ impl FullModulePromptData {
             .map(|(i, test)| FormattedTestResult::from_baseline(test, i + 1))
             .collect();
 
-        let windows_apis: Vec<calxgloss_types::WindowsApiCall> = req
-            .windows_apis
-            .iter()
-            .map(|api| calxgloss_types::WindowsApiCall {
-                name: api.name.clone(),
-                category: api.category.clone(),
-                pal_mapping: api.pal_mapping.clone(),
-            })
-            .collect();
+        let windows_apis = req.windows_apis.clone();
 
         Self {
             function_name: req.function.clone(),
@@ -449,15 +408,7 @@ impl FullModulePromptData {
             .map(|(i, test)| FormattedTestResult::from_baseline(test, i + 1))
             .collect();
 
-        let windows_apis: Vec<calxgloss_types::WindowsApiCall> = req
-            .windows_apis
-            .iter()
-            .map(|api| calxgloss_types::WindowsApiCall {
-                name: api.name.clone(),
-                category: api.category.clone(),
-                pal_mapping: api.pal_mapping.clone(),
-            })
-            .collect();
+        let windows_apis = req.windows_apis.clone();
 
         Self {
             function_name: req.function.clone(),

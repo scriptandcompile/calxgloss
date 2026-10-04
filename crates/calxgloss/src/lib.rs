@@ -18,7 +18,6 @@ pub use calxgloss_types::error::TypesError;
 pub use calxgloss_types::function::*;
 pub use calxgloss_types::git::*;
 pub use calxgloss_types::test::*;
-pub use calxgloss_types::translation::WindowsApiCall;
 pub use calxgloss_types::verification::{FailedTest, VerificationResult};
 
 // Dashboard types

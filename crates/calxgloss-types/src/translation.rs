@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ApiCategory, TestCase};
+use crate::{TestCase, WindowsApiCall};
 
 /// A request to translate a single function from disassembly to Rust.
 ///
@@ -31,22 +31,6 @@ pub struct TranslationRequest {
 
     /// Baseline test cases the translated Rust code must pass.
     pub baseline_tests: Vec<TestCase>,
-}
-
-/// A single Windows API call identified within a function's disassembly.
-///
-/// When Ghidra analysis finds a call to a known Windows API, this struct
-/// records the API name, its category, and the PAL mapping target.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WindowsApiCall {
-    /// The Windows API function name (e.g., `CreateFileA`).
-    pub name: String,
-
-    /// The platform API category this call belongs to.
-    pub category: ApiCategory,
-
-    /// The cross-platform Rust equivalent (e.g., `std::fs::File::open`).
-    pub pal_mapping: String,
 }
 
 /// The result produced by a successful LLM translation.

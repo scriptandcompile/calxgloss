@@ -81,12 +81,12 @@ mod tests {
             disassembly: "mov eax, [esp+4]\nadd eax, ebx\nret".to_string(),
             decompiler_output: "int DrawSprite(int x, int y) { return x + y; }".to_string(),
             windows_apis: vec![
-                calxgloss_types::translation::WindowsApiCall {
+                calxgloss_types::WindowsApiCall {
                     name: "GetTickCount".to_string(),
                     category: ApiCategory::Win32Core,
                     pal_mapping: "std::time::Instant::now()".to_string(),
                 },
-                calxgloss_types::translation::WindowsApiCall {
+                calxgloss_types::WindowsApiCall {
                     name: "CreateFileA".to_string(),
                     category: ApiCategory::Win32Core,
                     pal_mapping: "std::fs::File::open".to_string(),
@@ -283,7 +283,7 @@ mod tests {
             address: 0x2000,
             disassembly: "mov eax, [esp+4]\nadd eax, ebx\nret".to_string(),
             decompiler_output: "int StdFunc(int x, int y) { return x + y; }".to_string(),
-            windows_apis: vec![calxgloss_types::translation::WindowsApiCall {
+            windows_apis: vec![calxgloss_types::WindowsApiCall {
                 name: "GetTickCount".to_string(),
                 category: ApiCategory::Win32Core,
                 pal_mapping: "std::time::Instant::now()".to_string(),
@@ -311,12 +311,12 @@ mod tests {
             disassembly: "mov eax, 0\nret".to_string(),
             decompiler_output: "int TestFunc() { return 0; }".to_string(),
             windows_apis: vec![
-                calxgloss_types::translation::WindowsApiCall {
+                calxgloss_types::WindowsApiCall {
                     name: "CreateFileA".to_string(),
                     category: ApiCategory::Win32Core,
                     pal_mapping: "std::fs::File::open".to_string(),
                 },
-                calxgloss_types::translation::WindowsApiCall {
+                calxgloss_types::WindowsApiCall {
                     name: "Direct3DCreate9".to_string(),
                     category: ApiCategory::DirectX,
                     pal_mapping: "wgpu::Instance::new [PAL placeholder]".to_string(),
@@ -345,12 +345,12 @@ mod tests {
             disassembly: "mov eax, 0\nret".to_string(),
             decompiler_output: "int TestFunc() { return 0; }".to_string(),
             windows_apis: vec![
-                calxgloss_types::translation::WindowsApiCall {
+                calxgloss_types::WindowsApiCall {
                     name: "CreateFileA".to_string(),
                     category: ApiCategory::Win32Core,
                     pal_mapping: "std::fs::File::open".to_string(),
                 },
-                calxgloss_types::translation::WindowsApiCall {
+                calxgloss_types::WindowsApiCall {
                     name: "ReadFile".to_string(),
                     category: ApiCategory::Win32Core,
                     pal_mapping: "std::fs::read".to_string(),
@@ -398,7 +398,7 @@ mod tests {
             address: 0x2000,
             disassembly: "mov eax, [esp+4]\nret".to_string(),
             decompiler_output: "int TestFunc(int x) { return x; }".to_string(),
-            windows_apis: vec![calxgloss_types::translation::WindowsApiCall {
+            windows_apis: vec![calxgloss_types::WindowsApiCall {
                 name: "CreateFileA".to_string(),
                 category: ApiCategory::Win32Core,
                 pal_mapping: "std::fs::File::open".to_string(),
@@ -427,7 +427,7 @@ mod tests {
             address: 0x1000,
             disassembly: "mov eax, 0\nret".to_string(),
             decompiler_output: "int SimpleFunc() { return 0; }".to_string(),
-            windows_apis: vec![calxgloss_types::translation::WindowsApiCall {
+            windows_apis: vec![calxgloss_types::WindowsApiCall {
                 name: "BitBlt".to_string(),
                 category: ApiCategory::Gdi,
                 pal_mapping: "tiny_skia::Pixmap::blit_rect [PAL placeholder]".to_string(),
@@ -460,12 +460,12 @@ mod tests {
                 .join("\n"),
             decompiler_output: "int ComplexFunc() { return 0; }".to_string(),
             windows_apis: vec![
-                calxgloss_types::translation::WindowsApiCall {
+                calxgloss_types::WindowsApiCall {
                     name: "Direct3DCreate9".to_string(),
                     category: ApiCategory::DirectX,
                     pal_mapping: "wgpu::Instance::new [PAL placeholder]".to_string(),
                 },
-                calxgloss_types::translation::WindowsApiCall {
+                calxgloss_types::WindowsApiCall {
                     name: "GetDC".to_string(),
                     category: ApiCategory::Gdi,
                     pal_mapping: "tiny_skia::Pixmap::new [PAL placeholder]".to_string(),
