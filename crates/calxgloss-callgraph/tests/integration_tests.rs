@@ -578,30 +578,26 @@ fn game_plugin_graph() -> CallGraph {
                 name: "UpdateParticles".to_string(),
                 address: 0x7000,
                 callers: vec![0x5000],
-                callees: vec![
-                    CallGraphEdge {
-                        source: 0x7000,
-                        target: 0x8001, // D3D::UpdateParticleBuffers
-                        call_site: 0x7010,
-                        call_type: CallType::Direct,
-                        callee_name: "D3D::UpdateParticleBuffers".to_string(),
-                    },
-                ],
+                callees: vec![CallGraphEdge {
+                    source: 0x7000,
+                    target: 0x8001, // D3D::UpdateParticleBuffers
+                    call_site: 0x7010,
+                    call_type: CallType::Direct,
+                    callee_name: "D3D::UpdateParticleBuffers".to_string(),
+                }],
                 node_category: NodeCategory::Middle,
             },
             FunctionCallGraph {
                 name: "PollInput".to_string(),
                 address: 0x9000,
                 callers: vec![0x5000],
-                callees: vec![
-                    CallGraphEdge {
-                        source: 0x9000,
-                        target: 0x702000, // XInputGetState
-                        call_site: 0x9010,
-                        call_type: CallType::Direct,
-                        callee_name: "XInputGetState".to_string(),
-                    },
-                ],
+                callees: vec![CallGraphEdge {
+                    source: 0x9000,
+                    target: 0x702000, // XInputGetState
+                    call_site: 0x9010,
+                    call_type: CallType::Direct,
+                    callee_name: "XInputGetState".to_string(),
+                }],
                 node_category: NodeCategory::Middle,
             },
             // ── Cleanup ──────────────────────────────────────────────────
@@ -680,7 +676,11 @@ fn test_end_to_end_realistic_plugin_pipeline() {
 
     // Verify the persisted JSON is valid and contains all functions
     let json_path = temp_dir.join("game_plugin.dll_call_graph.json");
-    assert!(json_path.exists(), "persisted JSON should exist at {:?}", json_path);
+    assert!(
+        json_path.exists(),
+        "persisted JSON should exist at {:?}",
+        json_path
+    );
 
     let json_content = std::fs::read_to_string(&json_path).expect("read persisted JSON");
     let saved_graph: CallGraph =
@@ -689,7 +689,9 @@ fn test_end_to_end_realistic_plugin_pipeline() {
     assert_eq!(saved_graph.functions.len(), 9);
 
     // ===== Phase 4: Reload from disk =====
-    let reloaded = persistor.load("game_plugin.dll").expect("should load persisted graph");
+    let reloaded = persistor
+        .load("game_plugin.dll")
+        .expect("should load persisted graph");
 
     // Verify the reload preserves all function data
     assert_eq!(reloaded.dll, "game_plugin.dll");
@@ -741,18 +743,29 @@ fn test_end_to_end_realistic_plugin_pipeline() {
     // ===== Phase 5: Context enrichment =====
     // Debug: check reloaded graph data
     for func in &reloaded.functions {
-        eprintln!("  reloaded '{}' callers={} callees={}",
-            func.name, func.callers.len(), func.callees.len());
+        eprintln!(
+            "  reloaded '{}' callers={} callees={}",
+            func.name,
+            func.callers.len(),
+            func.callees.len()
+        );
     }
 
     let enricher = ContextEnricher::new();
     let contexts = enricher.enrich(&reloaded);
 
-    assert_eq!(contexts.len(), 9, "should produce context for all functions");
+    assert_eq!(
+        contexts.len(),
+        9,
+        "should produce context for all functions"
+    );
 
     // Build a lookup for contexts by function name
-    let context_map: std::collections::HashMap<_, _> =
-        contexts.iter().cloned().map(|c| (c.name.clone(), c)).collect();
+    let context_map: std::collections::HashMap<_, _> = contexts
+        .iter()
+        .cloned()
+        .map(|c| (c.name.clone(), c))
+        .collect();
 
     // NOTE: Context enrichment filters out internal callees by default,
     // keeping only external API calls. Internal function references are
@@ -763,7 +776,10 @@ fn test_end_to_end_realistic_plugin_pipeline() {
     let dllmain_ctx = &context_map["DllMain"];
     assert!(dllmain_ctx.callers.is_empty(), "DllMain has no callers");
     // DllMain's callees (Initialize, Cleanup) are internal, so filtered out
-    assert!(dllmain_ctx.callees.is_empty(), "DllMain has no external API callees");
+    assert!(
+        dllmain_ctx.callees.is_empty(),
+        "DllMain has no external API callees"
+    );
 
     // Initialize: 1 caller (DllMain), callees include Direct3DCreate9 (external API)
     // After filtering: only Direct3DCreate9 remains (Setup is internal)
@@ -896,7 +912,10 @@ fn test_end_to_end_realistic_plugin_pipeline() {
             assert!(
                 rf_idx < nrf_idx,
                 "Root func {} (idx {}) should come before non-Root {} (idx {})",
-                rf, rf_idx, nrf, nrf_idx
+                rf,
+                rf_idx,
+                nrf,
+                nrf_idx
             );
         }
     }
@@ -986,11 +1005,7 @@ fn test_end_to_end_realistic_plugin_pipeline() {
     );
 
     // Verify node types
-    let dep_node_ids: Vec<_> = dep_graph
-        .nodes
-        .iter()
-        .map(|n| n.unit_id.as_str())
-        .collect();
+    let dep_node_ids: Vec<_> = dep_graph.nodes.iter().map(|n| n.unit_id.as_str()).collect();
     assert!(dep_node_ids.contains(&"dll_classify_game_plugin"));
     for func in &reloaded.functions {
         let expected_id = format!("func_{}", func.name);
@@ -1015,10 +1030,7 @@ fn test_end_to_end_realistic_plugin_pipeline() {
 
     // Verify topological ordering: callees before callers
     let (ordered_nodes, cycles) = dep_graph.topological_order();
-    assert!(
-        cycles.is_empty(),
-        "dependency graph should have no cycles"
-    );
+    assert!(cycles.is_empty(), "dependency graph should have no cycles");
 
     let dep_order_ids: Vec<&str> = ordered_nodes.iter().map(|n| n.unit_id.as_str()).collect();
 

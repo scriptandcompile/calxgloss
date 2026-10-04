@@ -32,13 +32,13 @@ pub use translator::{Translation, Translator};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use calxgloss_callgraph::CallGraph;
     use calxgloss_ghidra::GhidraClient;
     use calxgloss_llm::LlmClient;
     use calxgloss_pal::ApiMappings;
     use calxgloss_types::ContextTier;
     use calxgloss_types::Export;
     use calxgloss_types::FunctionInfo;
-    use calxgloss_callgraph::CallGraph;
 
     #[test]
     fn test_translator_creation() {
@@ -99,7 +99,10 @@ mod tests {
         assert_eq!(cloned.rust_code, translation.rust_code);
         assert_eq!(cloned.tokens_used, translation.tokens_used);
         assert_eq!(cloned.call_graph, translation.call_graph);
-        assert_eq!(cloned.call_graph_context.len(), translation.call_graph_context.len());
+        assert_eq!(
+            cloned.call_graph_context.len(),
+            translation.call_graph_context.len()
+        );
         assert_eq!(cloned.context_tier, translation.context_tier);
     }
 
@@ -349,18 +352,30 @@ mod tests {
 
         // Root functions first
         assert_eq!(plan[0].name, "WinMain");
-        assert_eq!(plan[0].priority, calxgloss_callgraph::TranslationPriority::Root);
+        assert_eq!(
+            plan[0].priority,
+            calxgloss_callgraph::TranslationPriority::Root
+        );
 
         // Middle functions (topologically sorted: game_loop before app_init)
         assert_eq!(plan[1].name, "game_loop");
-        assert_eq!(plan[1].priority, calxgloss_callgraph::TranslationPriority::Middle);
+        assert_eq!(
+            plan[1].priority,
+            calxgloss_callgraph::TranslationPriority::Middle
+        );
 
         assert_eq!(plan[2].name, "app_init");
-        assert_eq!(plan[2].priority, calxgloss_callgraph::TranslationPriority::Middle);
+        assert_eq!(
+            plan[2].priority,
+            calxgloss_callgraph::TranslationPriority::Middle
+        );
 
         // Leaf functions last
         assert_eq!(plan[3].name, "render_frame");
-        assert_eq!(plan[3].priority, calxgloss_callgraph::TranslationPriority::Leaf);
+        assert_eq!(
+            plan[3].priority,
+            calxgloss_callgraph::TranslationPriority::Leaf
+        );
     }
 
     #[test]
@@ -374,14 +389,12 @@ mod tests {
         let graph = CallGraph {
             dll: "trunc.dll".to_string(),
             functions: (0..10)
-                .map(|i| {
-                    FunctionCallGraph {
-                        name: format!("func_{i}"),
-                        address: 0x1000 + i * 0x100,
-                        callers: vec![],
-                        callees: vec![],
-                        node_category: calxgloss_types::NodeCategory::Middle,
-                    }
+                .map(|i| FunctionCallGraph {
+                    name: format!("func_{i}"),
+                    address: 0x1000 + i * 0x100,
+                    callers: vec![],
+                    callees: vec![],
+                    node_category: calxgloss_types::NodeCategory::Middle,
                 })
                 .collect(),
         };
@@ -472,15 +485,24 @@ mod tests {
 
         // Root and Skip both map to Root priority
         let winmain = plan.iter().find(|f| f.name == "WinMain").unwrap();
-        assert_eq!(winmain.priority, calxgloss_callgraph::TranslationPriority::Root);
+        assert_eq!(
+            winmain.priority,
+            calxgloss_callgraph::TranslationPriority::Root
+        );
         assert_eq!(winmain.category, calxgloss_types::NodeCategory::Root);
 
         let runtime = plan.iter().find(|f| f.name == "runtime_helper").unwrap();
-        assert_eq!(runtime.priority, calxgloss_callgraph::TranslationPriority::Root);
+        assert_eq!(
+            runtime.priority,
+            calxgloss_callgraph::TranslationPriority::Root
+        );
         assert_eq!(runtime.category, calxgloss_types::NodeCategory::Skip);
 
         let app = plan.iter().find(|f| f.name == "app_logic").unwrap();
-        assert_eq!(app.priority, calxgloss_callgraph::TranslationPriority::Middle);
+        assert_eq!(
+            app.priority,
+            calxgloss_callgraph::TranslationPriority::Middle
+        );
         assert_eq!(app.category, calxgloss_types::NodeCategory::Middle);
     }
 }

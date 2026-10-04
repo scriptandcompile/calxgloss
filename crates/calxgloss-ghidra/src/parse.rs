@@ -922,8 +922,7 @@ mod tests {
     #[test]
     fn test_parses_current_function_from_json_and_text() {
         // `GET /get_current_function` on the 6.x bridge.
-        let body =
-            "{\"function_name\":\"entry\",\"address\":\"1800e2110\",\"program\":\"/eqmain.dll\",\"signature\":\"undefined entry(void)\"}";
+        let body = "{\"function_name\":\"entry\",\"address\":\"1800e2110\",\"program\":\"/eqmain.dll\",\"signature\":\"undefined entry(void)\"}";
         let f = parse_current_function(body).expect("should parse");
         assert_eq!(f.name, "entry");
         assert_eq!(f.entry, 0x1800e2110);
@@ -939,8 +938,7 @@ mod tests {
     #[test]
     fn test_parses_imports_from_json_array() {
         // `GET /list_imports` on the 6.x bridge answers JSON.
-        let body =
-            "[{\"name\":\"Ordinal_7\",\"address\":\"EXTERNAL:00000001\"},{\"name\":\"dll_main\",\"address\":\"18000c690\"}]";
+        let body = "[{\"name\":\"Ordinal_7\",\"address\":\"EXTERNAL:00000001\"},{\"name\":\"dll_main\",\"address\":\"18000c690\"}]";
         let imports = parse_symbols_json(body, true).expect("should parse as JSON");
         assert_eq!(imports.len(), 2);
         assert_eq!(imports[0].name, "Ordinal_7");

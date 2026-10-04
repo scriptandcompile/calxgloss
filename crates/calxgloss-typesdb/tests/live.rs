@@ -225,7 +225,9 @@ async fn the_engine_infers_candidates_from_eqmain_literals() {
         .expect("string inference");
     assert!(!candidates.is_empty(), "no candidates inferred");
     assert!(
-        candidates.windows(2).all(|w| w[0].confidence >= w[1].confidence),
+        candidates
+            .windows(2)
+            .all(|w| w[0].confidence >= w[1].confidence),
         "not strongest-first"
     );
     assert!(
@@ -261,7 +263,10 @@ async fn the_engine_recovers_the_startup_flow_field_list() {
         .expect("a candidate should carry the `flowname` literal");
     let names: Vec<&str> = flow.fields.iter().map(|f| f.name.as_str()).collect();
     for key in ["startupflow", "screen", "nextflow", "action"] {
-        assert!(names.contains(&key), "flow candidate missing {key}: {names:?}");
+        assert!(
+            names.contains(&key),
+            "flow candidate missing {key}: {names:?}"
+        );
     }
     assert!(
         flow.referenced_by.iter().any(|f| f == "FUN_18000b620"),

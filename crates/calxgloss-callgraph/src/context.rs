@@ -209,8 +209,7 @@ impl ContextEnricher {
         let addr_to_func: HashMap<u64, &FunctionCallGraph> =
             graph.functions.iter().map(|f| (f.address, f)).collect();
 
-        let internal_addrs: HashSet<u64> =
-            graph.functions.iter().map(|f| f.address).collect();
+        let internal_addrs: HashSet<u64> = graph.functions.iter().map(|f| f.address).collect();
 
         let mut contexts = Vec::with_capacity(graph.functions.len());
 
@@ -892,9 +891,7 @@ mod tests {
         let callers: Vec<_> = caller_data
             .iter()
             .enumerate()
-            .map(|(_i, (name, addr))| {
-                make_func(name, *addr, vec![], vec![], NodeCategory::Middle)
-            })
+            .map(|(_i, (name, addr))| make_func(name, *addr, vec![], vec![], NodeCategory::Middle))
             .collect();
 
         // Add the target function to the graph.
@@ -931,7 +928,11 @@ mod tests {
             .iter()
             .find(|c| c.name == "target")
             .expect("target not found");
-        assert_eq!(target_ctx.callers.len(), 2, "should be limited to 2 callers");
+        assert_eq!(
+            target_ctx.callers.len(),
+            2,
+            "should be limited to 2 callers"
+        );
         assert_eq!(target_ctx.callers[0].node.name, "caller_a");
         assert_eq!(target_ctx.callers[1].node.name, "caller_b");
     }
@@ -941,7 +942,13 @@ mod tests {
         let graph = CallGraph {
             dll: "no_limit.dll".to_string(),
             functions: vec![
-                make_func("target", 0x5000, vec![0x1000, 0x1001, 0x1002], vec![], NodeCategory::Middle),
+                make_func(
+                    "target",
+                    0x5000,
+                    vec![0x1000, 0x1001, 0x1002],
+                    vec![],
+                    NodeCategory::Middle,
+                ),
                 make_func("caller_a", 0x1000, vec![], vec![], NodeCategory::Middle),
                 make_func("caller_b", 0x1001, vec![], vec![], NodeCategory::Middle),
                 make_func("caller_c", 0x1002, vec![], vec![], NodeCategory::Middle),
@@ -1008,13 +1015,31 @@ mod tests {
 
     #[test]
     fn test_internal_callees_filtered() {
-        let func_a = make_func("func_a", 0x1000, vec![], vec![("func_b", 0x2000, CallType::Direct)], NodeCategory::Middle);
+        let func_a = make_func(
+            "func_a",
+            0x1000,
+            vec![],
+            vec![("func_b", 0x2000, CallType::Direct)],
+            NodeCategory::Middle,
+        );
         // func_b calls func_c (internal at 0x3000) AND MessageBox (external at 0x500000).
-        let func_b = make_func("func_b", 0x2000, vec![0x1000], vec![
-            ("func_c", 0x3000, CallType::Direct),
-            ("MessageBox", 0x500000, CallType::Direct),
-        ], NodeCategory::Middle);
-        let func_c = make_func("func_c", 0x3000, vec![0x2000], vec![("MessageBox", 0x500000, CallType::Direct)], NodeCategory::Leaf);
+        let func_b = make_func(
+            "func_b",
+            0x2000,
+            vec![0x1000],
+            vec![
+                ("func_c", 0x3000, CallType::Direct),
+                ("MessageBox", 0x500000, CallType::Direct),
+            ],
+            NodeCategory::Middle,
+        );
+        let func_c = make_func(
+            "func_c",
+            0x3000,
+            vec![0x2000],
+            vec![("MessageBox", 0x500000, CallType::Direct)],
+            NodeCategory::Leaf,
+        );
 
         let graph = CallGraph {
             dll: "filter_internal.dll".to_string(),
@@ -1042,9 +1067,27 @@ mod tests {
 
     #[test]
     fn test_internal_callees_not_filtered_when_disabled() {
-        let func_a = make_func("func_a", 0x1000, vec![], vec![("func_b", 0x2000, CallType::Direct)], NodeCategory::Middle);
-        let func_b = make_func("func_b", 0x2000, vec![0x1000], vec![("func_c", 0x3000, CallType::Direct)], NodeCategory::Middle);
-        let func_c = make_func("func_c", 0x3000, vec![0x2000], vec![("MessageBox", 0x500000, CallType::Direct)], NodeCategory::Leaf);
+        let func_a = make_func(
+            "func_a",
+            0x1000,
+            vec![],
+            vec![("func_b", 0x2000, CallType::Direct)],
+            NodeCategory::Middle,
+        );
+        let func_b = make_func(
+            "func_b",
+            0x2000,
+            vec![0x1000],
+            vec![("func_c", 0x3000, CallType::Direct)],
+            NodeCategory::Middle,
+        );
+        let func_c = make_func(
+            "func_c",
+            0x3000,
+            vec![0x2000],
+            vec![("MessageBox", 0x500000, CallType::Direct)],
+            NodeCategory::Leaf,
+        );
 
         let graph = CallGraph {
             dll: "no_filter.dll".to_string(),

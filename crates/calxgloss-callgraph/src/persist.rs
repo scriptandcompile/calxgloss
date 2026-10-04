@@ -308,10 +308,7 @@ mod tests {
         let persistor = CallGraphPersistor::with_cache_dir(&custom_cache);
 
         let path = persistor.graph_path("foo.dll");
-        assert_eq!(
-            path,
-            custom_cache.join("foo.dll_call_graph.json")
-        );
+        assert_eq!(path, custom_cache.join("foo.dll_call_graph.json"));
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

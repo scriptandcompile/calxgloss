@@ -302,7 +302,10 @@ async fn the_string_listing_pages_to_the_end() {
 
     // A scan that reasons over the program's literals needs the whole
     // listing; eqmain defines far more strings than one page carries.
-    let all = ghidra.list_strings(None).await.expect("full string listing");
+    let all = ghidra
+        .list_strings(None)
+        .await
+        .expect("full string listing");
     assert!(all.len() > 1000, "only {} collected", all.len());
     assert!(
         all.iter().all(|s| !s.value.is_empty() && s.address > 0),

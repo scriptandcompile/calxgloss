@@ -722,13 +722,7 @@ mod tests {
         let graph = CallGraph {
             dll: "categories.dll".to_string(),
             functions: vec![
-                make_func(
-                    "WinMain",
-                    0x401000,
-                    vec![],
-                    vec![],
-                    NodeCategory::Root,
-                ),
+                make_func("WinMain", 0x401000, vec![], vec![], NodeCategory::Root),
                 make_func(
                     "runtime_helper",
                     0x402000,
@@ -736,20 +730,8 @@ mod tests {
                     vec![],
                     NodeCategory::Skip,
                 ),
-                make_func(
-                    "app_logic",
-                    0x403000,
-                    vec![],
-                    vec![],
-                    NodeCategory::Middle,
-                ),
-                make_func(
-                    "render_frame",
-                    0x404000,
-                    vec![],
-                    vec![],
-                    NodeCategory::Leaf,
-                ),
+                make_func("app_logic", 0x403000, vec![], vec![], NodeCategory::Middle),
+                make_func("render_frame", 0x404000, vec![], vec![], NodeCategory::Leaf),
             ],
         };
 

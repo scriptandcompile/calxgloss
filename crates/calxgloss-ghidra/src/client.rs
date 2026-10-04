@@ -590,7 +590,8 @@ impl GhidraClient {
         limit: Option<usize>,
         filter: Option<&str>,
     ) -> Result<Vec<StringLiteral>> {
-        self.strings_page(0, limit.unwrap_or(DATA_PAGE), filter).await
+        self.strings_page(0, limit.unwrap_or(DATA_PAGE), filter)
+            .await
     }
 
     /// Every defined string in the program, collected across pages.
@@ -830,10 +831,11 @@ impl GhidraClient {
     /// reason.
     pub async fn probe(&self) -> Result<ProgramInfo> {
         let body = self.get_text("get_current_address", &[]).await?;
-        let address = parse::parse_current_address(&body).ok_or_else(|| GhidraError::Malformed {
-            kind: "the current address",
-            detail: body.trim().to_string(),
-        })?;
+        let address =
+            parse::parse_current_address(&body).ok_or_else(|| GhidraError::Malformed {
+                kind: "the current address",
+                detail: body.trim().to_string(),
+            })?;
         let program = parse::json_string(&body, "program").unwrap_or_default();
         let function = self.current_function().await?;
         info!(

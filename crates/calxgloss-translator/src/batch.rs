@@ -165,7 +165,9 @@ impl BatchTranslationResult {
     ///
     /// Skipped functions count as successful in terms of `success_count`.
     pub fn skipped_count(&self) -> usize {
-        self.results.iter().filter(|r| r.success && r.rust_code.is_none() && r.stub_code.is_none())
+        self.results
+            .iter()
+            .filter(|r| r.success && r.rust_code.is_none() && r.stub_code.is_none())
             .count()
     }
 
@@ -173,7 +175,10 @@ impl BatchTranslationResult {
     ///
     /// Stubbed functions count as successful in terms of `success_count`.
     pub fn stub_count(&self) -> usize {
-        self.results.iter().filter(|r| r.success && r.stub_code.is_some()).count()
+        self.results
+            .iter()
+            .filter(|r| r.success && r.stub_code.is_some())
+            .count()
     }
 
     /// Total number of functions in the batch.

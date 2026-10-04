@@ -37,7 +37,9 @@
 //! # }
 //! ```
 
-use calxgloss_callgraph::{CallGraphBuilder, CallGraphPersistor, CallType, LeafDetector, RootDetector};
+use calxgloss_callgraph::{
+    CallGraphBuilder, CallGraphPersistor, CallType, LeafDetector, RootDetector,
+};
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_types::{
     DependencyEdge, DependencyGraph, DependencyNode, NodeCategory, ReviewStatus,
@@ -65,10 +67,26 @@ fn bold(s: &str) -> String {
 /// the logging configuration.
 pub fn print_call_graph_stats(graph: &calxgloss_callgraph::CallGraph) {
     let total = graph.functions.len();
-    let roots = graph.functions.iter().filter(|f| matches!(f.node_category, NodeCategory::Root)).count();
-    let middles = graph.functions.iter().filter(|f| matches!(f.node_category, NodeCategory::Middle)).count();
-    let leaves = graph.functions.iter().filter(|f| matches!(f.node_category, NodeCategory::Leaf)).count();
-    let skips = graph.functions.iter().filter(|f| matches!(f.node_category, NodeCategory::Skip)).count();
+    let roots = graph
+        .functions
+        .iter()
+        .filter(|f| matches!(f.node_category, NodeCategory::Root))
+        .count();
+    let middles = graph
+        .functions
+        .iter()
+        .filter(|f| matches!(f.node_category, NodeCategory::Middle))
+        .count();
+    let leaves = graph
+        .functions
+        .iter()
+        .filter(|f| matches!(f.node_category, NodeCategory::Leaf))
+        .count();
+    let skips = graph
+        .functions
+        .iter()
+        .filter(|f| matches!(f.node_category, NodeCategory::Skip))
+        .count();
 
     let mut direct = 0u64;
     let mut indirect = 0u64;
@@ -109,9 +127,16 @@ pub fn print_call_graph_stats(graph: &calxgloss_callgraph::CallGraph) {
     }
 
     println!();
-    println!("  → Call Graph Statistics for {} ({})", bold(&graph.dll), bold(&total.to_string()));
+    println!(
+        "  → Call Graph Statistics for {} ({})",
+        bold(&graph.dll),
+        bold(&total.to_string())
+    );
     println!("  {top}");
-    println!("  │ Functions: {}                  │", pad(&bold(&total.to_string()), 21));
+    println!(
+        "  │ Functions: {}                  │",
+        pad(&bold(&total.to_string()), 21)
+    );
     println!("  {hsep}");
     println!(
         "  │ Roots:    {:>4}  Middle: {:>4}  │",

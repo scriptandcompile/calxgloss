@@ -61,8 +61,8 @@ pub mod root_detector;
 
 pub use builder::CallGraphBuilder;
 pub use context::{
-    skipped_contexts, CallEdgeInfo, CallGraphNode, CalleeGroup, ContextEnricher,
-    ContextEnricherConfig, FunctionContext, LeafApiContext,
+    CallEdgeInfo, CallGraphNode, CalleeGroup, ContextEnricher, ContextEnricherConfig,
+    FunctionContext, LeafApiContext, skipped_contexts,
 };
 pub use leaf_detector::{ApiSignature, LeafCategory, LeafDetector, TransitiveLeafContext};
 pub use models::*;
