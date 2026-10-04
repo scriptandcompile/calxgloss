@@ -24,6 +24,7 @@ members = [
     "crates/calxgloss-web",
     "crates/calxgloss-config",
     "crates/calxgloss-callgraph",
+    "crates/calxgloss-typesdb",
 ]
 
 [workspace.dependencies]
