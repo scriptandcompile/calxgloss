@@ -1,4 +1,5 @@
-//! Live named-type and vtable scans against a running GhidraMCP server.
+//! Live named-type, vtable, and string-inference scans against a running
+//! GhidraMCP server.
 //!
 //! The engines' unit tests run over canned responses; these ask a real
 //! bridge, so a change in the endpoints' output shows up here rather than as
@@ -17,6 +18,7 @@
 
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_typesdb::scanner::TypeLibraryScanner;
+use calxgloss_typesdb::string_infer::StringInferenceEngine;
 use calxgloss_typesdb::types::TypeKind;
 use calxgloss_typesdb::vtable::VtableDetector;
 
@@ -207,4 +209,90 @@ async fn the_detector_resolves_methods_classes_and_bases() {
         .filter(|v| !v.base_classes.is_empty())
         .count();
     assert!(with_bases > 0, "no vtable recovered a base class");
+}
+
+#[tokio::test]
+#[ignore = "needs a running GhidraMCP server with eqmain.dll open"]
+async fn the_engine_infers_candidates_from_eqmain_literals() {
+    let Some(ghidra) = client() else {
+        eprintln!("CALXGLOSS_GHIDRA_URL not set; skipping");
+        return;
+    };
+
+    let candidates = StringInferenceEngine::new(&ghidra)
+        .infer_structures()
+        .await
+        .expect("string inference");
+    assert!(!candidates.is_empty(), "no candidates inferred");
+    assert!(
+        candidates.windows(2).all(|w| w[0].confidence >= w[1].confidence),
+        "not strongest-first"
+    );
+    assert!(
+        candidates.iter().all(|c| c.fields.len() >= 2),
+        "a candidate is below the field floor"
+    );
+    assert!(
+        candidates
+            .iter()
+            .all(|c| c.fields.iter().all(|f| !f.name.is_empty())),
+        "a field name is empty"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a running GhidraMCP server with eqmain.dll open"]
+async fn the_engine_recovers_the_startup_flow_field_list() {
+    let Some(ghidra) = client() else {
+        eprintln!("CALXGLOSS_GHIDRA_URL not set; skipping");
+        return;
+    };
+
+    // eqmain's startup-flow keys are read together in one function; the
+    // engine should group them into one candidate even though Ghidra named
+    // nothing.
+    let candidates = StringInferenceEngine::new(&ghidra)
+        .infer_structures()
+        .await
+        .expect("string inference");
+    let flow = candidates
+        .iter()
+        .find(|c| c.fields.iter().any(|f| f.name == "flowname"))
+        .expect("a candidate should carry the `flowname` literal");
+    let names: Vec<&str> = flow.fields.iter().map(|f| f.name.as_str()).collect();
+    for key in ["startupflow", "screen", "nextflow", "action"] {
+        assert!(names.contains(&key), "flow candidate missing {key}: {names:?}");
+    }
+    assert!(
+        flow.referenced_by.iter().any(|f| f == "FUN_18000b620"),
+        "the flow cluster should name its referencing function: {:?}",
+        flow.referenced_by
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a running GhidraMCP server with eqmain.dll open"]
+async fn the_string_filter_narrows_the_run() {
+    let Some(ghidra) = client() else {
+        eprintln!("CALXGLOSS_GHIDRA_URL not set; skipping");
+        return;
+    };
+
+    let candidates = StringInferenceEngine::new(&ghidra)
+        .with_string_filter("flow")
+        .infer_structures()
+        .await
+        .expect("filtered string inference");
+    assert!(
+        candidates.iter().all(|c| c
+            .fields
+            .iter()
+            .all(|f| f.source_value.to_ascii_lowercase().contains("flow"))),
+        "filter leaked: {:?}",
+        candidates
+            .iter()
+            .flat_map(|c| c.fields.iter())
+            .map(|f| &f.source_value)
+            .collect::<Vec<_>>()
+    );
 }
