@@ -1050,13 +1050,13 @@ The UI is a **review gate** — it shows the *result* of each translation unit b
   - [x] All Phase 2 unit tests pass (18: 16 detector + 2 model) + 2 `#[ignore]`d live tests green against the running bridge
   - [x] `cargo clippy` clean
 
-- [ ] **Phase 3 — String-Guided Inference**
-  - [ ] `InferredStruct`, `InferredField`, `FieldType` types defined with `Serialize`/`Deserialize`
-  - [ ] `StringInferenceEngine` struct implemented
-  - [ ] `infer_structures()` runs full pipeline (collect → cluster → infer → score)
-  - [ ] Confidence scoring implemented with configurable threshold
-  - [ ] All 8 Phase 3 unit tests pass
-  - [ ] `cargo clippy` clean
+- [x] **Phase 3 — String-Guided Inference** *(done 2026-10-03, verified live against the v6.0.0 bridge with `eqmain.dll` open)*
+  - [x] `InferredStruct`, `InferredField`, `FieldType` types defined with `Serialize`/`Deserialize` (plus `NameOrigin`)
+  - [x] `StringInferenceEngine` struct implemented (generic over a `StringSource` trait; `GhidraClient` implements it)
+  - [x] `infer_structures()` runs full pipeline (collect → cluster → infer → score); collection uses the new auto-paged `list_strings()` client wrapper
+  - [x] Confidence scoring implemented with configurable threshold (`with_min_confidence`, default 40; also `with_min_fields`, `with_max_literals`, `with_string_filter`, `with_pointer_size`)
+  - [x] All Phase 3 unit tests pass (23: 20 engine + 3 model) + 3 `#[ignore]`d live tests green against the running bridge
+  - [x] `cargo clippy` clean
 
 - [ ] **Phase 4 — Pipeline Integration**
   - [ ] `TypeDatabase`, `ScanMetadata` types defined
