@@ -532,6 +532,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "calxgloss-typeinfer"
+version = "0.2.0"
+dependencies = [
+ "calxgloss-ghidra",
+ "calxgloss-types",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "calxgloss-types"
 version = "0.2.0"
 dependencies = [
