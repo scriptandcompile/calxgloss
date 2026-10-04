@@ -20,7 +20,12 @@ use calxgloss_ghidra::{DataTypeEntry, EnumDefinition, StructLayout};
 use calxgloss_prompts::StructuredData;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use std::time::{SystemTime, UNIX_EPOCH};
+
+// `ScanMetadata` is the shared per-binary scan provenance; it lives in
+// `calxgloss-types` so every engine crate keys its artifacts the same way.
+// Re-exported here so `calxgloss_typesdb::types::*` keeps resolving for
+// existing callers.
+pub use calxgloss_types::ScanMetadata;
 
 // ============================================================
 // Type kind
@@ -456,35 +461,6 @@ impl From<&InferredStruct> for StructuredData {
 // Persisted database
 // ============================================================
 
-/// Provenance of the scan that produced a [`TypeDatabase`].
-///
-/// A persisted database doubles as a cache, and this is the part a
-/// consumer reads when deciding whether the cache is still good: which
-/// binary it describes and when it was built.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ScanMetadata {
-    /// The binary the scan read, e.g. `eqmain.dll`. The persistor names
-    /// the JSON file after it.
-    pub binary: String,
-    /// When the scan finished, as a Unix timestamp in seconds.
-    pub scanned_at: u64,
-    /// Wall-clock duration of the scan, in seconds.
-    #[serde(default)]
-    pub duration_secs: u64,
-}
-
-impl ScanMetadata {
-    /// Metadata for a scan of `binary` finishing now. The engine fills
-    /// in `duration_secs` once the scan is done.
-    pub fn new(binary: impl Into<String>) -> Self {
-        Self {
-            binary: binary.into(),
-            scanned_at: now_unix_secs(),
-            duration_secs: 0,
-        }
-    }
-}
-
 /// The recovered type database for one binary — the document persisted
 /// to `re/analysis/typesdb/{dll}.json`.
 ///
@@ -537,15 +513,6 @@ impl TypeDatabase {
     pub fn is_empty(&self) -> bool {
         self.named_types.is_empty() && self.vtables.is_empty() && self.inferred_structs.is_empty()
     }
-}
-
-/// The current time as a Unix timestamp in seconds, `0` if the clock
-/// predates the epoch.
-fn now_unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 // ============================================================

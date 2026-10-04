@@ -27,6 +27,7 @@ pub mod fault;
 pub mod function;
 pub mod git;
 pub mod progress;
+pub mod scan;
 pub mod shim;
 pub mod test;
 pub mod token_usage;
@@ -53,6 +54,7 @@ pub use fault::{
 pub use function::{ApiCategory, FunctionInfo, NodeCategory, WindowsApiCall};
 pub use git::{GitBranch, GitCommit};
 pub use progress::{ProgressEvent, TranslationEvents};
+pub use scan::ScanMetadata;
 pub use shim::{
     ComplexityScore, ReturnMapping, ShimApiMapping, ShimLayer, ShimMappingTestResult,
     ShimSuggestion, ShimSuggestionReport, ShimVerificationResult, dll_to_module_name,

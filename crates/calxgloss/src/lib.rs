@@ -31,6 +31,7 @@ pub use calxgloss_types::context_tier::ContextTier;
 
 // Progress event types
 pub use calxgloss_types::progress::{ProgressEvent, TranslationEvents};
+pub use calxgloss_types::scan::ScanMetadata;
 
 // ============================================================
 // calxgloss-ghidra — GhidraMCP HTTP client
