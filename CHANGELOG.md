@@ -81,6 +81,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### `calxgloss-types`
 - **Token usage types** (`calxgloss-types::token_usage`) — `TokenUsageEntry` (per-attempt token count with DLL, function, attempt number, strategy, and success status), `TokenUsageLog` (collectible entries with serde), `TokenUsageStats` (aggregate totals with per-DLL breakdown into `DllTokenStats`), and `current_timestamp()` helper. Full test suite with serialization round-trips.
 - **Token usage with context tier tracking** — `TokenUsageEntry` now carries a `context_tier` field (serialized only when non-empty) and a `new_with_tier()` constructor. `log_token_usage()` accepts and persists a tier label alongside token counts. All retry loop code paths (initial, strategy-based, tier-escalated, resource exhaustion, empty code) log their tier with token counts to `re/analysis/token_usage.json`.
+- **`Confidence` evidence score** (`calxgloss-types::confidence`) — a shared 0–100 confidence score for recovered and inferred findings, replacing the bare `u8` restated at each site. Clamped to `0..=100` on construction, `#[serde(transparent)]` so persisted documents keep the bare-number shape, comparable directly against bare `u8` numbers so detector thresholds stay plain, and convertible to/from `u8`. The 0–10 diagnosis scores in `fault.rs` and `progress.rs` are a separate scale and deliberately stay `u8`. 5 unit tests.
+- **`ScanMetadata` scan provenance** (`calxgloss-types::scan`) — the per-binary scan provenance (binary name, finish timestamp, scan duration) every persisted scan artifact carries, plus the `now_unix_secs()` helper, moved out of `calxgloss-typesdb` so each engine crate keys its artifacts with the same shape instead of forking its own copy. 2 unit tests.
 
 #### `calxgloss-analysis`
 - **Token usage logger** (`TokenUsageLogger`) — persists per-attempt token entries to `<workspace>/re/analysis/token_usage.json`. Provides `record()`, `load()`, `compute_stats()`, and `log_path()` methods. Auto-creates the `re/analysis/` directory; handles corrupted-file recovery by starting fresh.
@@ -157,6 +159,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### `calxgloss-types`
 - **Dashboard subdirectory** — extracted dashboard data model into `dashboard/` subdirectory (`types.rs`, `work_unit.rs`, `graph.rs`, `status.rs`, `review.rs`, `action.rs`, `mod.rs`, `tests.rs`). Old `dashboard.rs` removed.
+- **`WindowsApiCall` unification** — `translation.rs` held a second `WindowsApiCall` identical in shape to `function::WindowsApiCall`; the duplicate is gone and `TranslationRequest` now uses the single shared type, collapsing the hand-written field-by-field conversion shims in `calxgloss-prompts` and `calxgloss-translator` to plain clones.
+
+#### `calxgloss-typesdb`
+- **Shared provenance and confidence types** — `ScanMetadata` now comes from `calxgloss-types::scan` (re-exported from `typesdb::types` so existing imports keep resolving), and `InferredStruct.confidence` uses the shared `calxgloss-types::Confidence` type instead of a bare `u8`.
+
+#### `calxgloss-typeinfer`
+- **Shared confidence score** — `InferredParamType.confidence` now uses `calxgloss-types::Confidence`; the detectors keep their plain `u8` confidence constants and thresholds through the type's bare-number comparisons and `into()` conversions.
 
 #### `calxgloss-pal`
 - **Module split** — extracted `ApiMapping` and `ApiMappings` types with their implementations into `types.rs` (209 lines), moved all 20 unit tests into a separate `tests.rs` file. `lib.rs` is now 23 lines of module declarations and re-exports only.
