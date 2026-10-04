@@ -163,6 +163,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### `calxgloss-typesdb`
 - **Shared provenance and confidence types** — `ScanMetadata` now comes from `calxgloss-types::scan` (re-exported from `typesdb::types` so existing imports keep resolving), and `InferredStruct.confidence` uses the shared `calxgloss-types::Confidence` type instead of a bare `u8`.
+- **Wire/recovered leaf conversions** — the Ghidra wire shapes (`StructFieldLayout`, `calxgloss_ghidra::EnumMember`) and the persisted recovered shapes (`StructField`, `EnumMember`) stay deliberately split; the hand-written field-by-field copies inside `NamedType::from_struct` / `from_enum` collapsed into `From<&StructFieldLayout> for StructField` and `From<&calxgloss_ghidra::EnumMember> for EnumMember` as the single mapping between the two shapes, so a wire-shape change breaks one compile instead of scattered call sites. Doc comments in both crates name the counterpart shape and record the split.
 
 #### `calxgloss-typeinfer`
 - **Shared confidence score** — `InferredParamType.confidence` now uses `calxgloss-types::Confidence`; the detectors keep their plain `u8` confidence constants and thresholds through the type's bare-number comparisons and `into()` conversions.
