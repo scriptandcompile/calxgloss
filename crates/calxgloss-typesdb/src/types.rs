@@ -265,6 +265,132 @@ impl Vtable {
 }
 
 // ============================================================
+// Inferred structs
+// ============================================================
+
+/// The kind inferred for one string-inferred field.
+///
+/// The kind comes from the *shape* of the literal that named the field —
+/// `width=100` suggests an integer, `ratio=0.5` a float, `enabled=true` a
+/// flag, a bare identifier text — so it is a suggestion for the translator
+/// rather than a fact read out of the program.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldType {
+    /// Text, reached through a pointer.
+    String,
+    /// An integer of unspecified width.
+    Integer,
+    /// A floating-point value.
+    Float,
+    /// A boolean flag.
+    Boolean,
+    /// Anything the inference could not classify.
+    Unknown,
+}
+
+impl FieldType {
+    /// The C declaration a field of this kind suggests.
+    pub fn c_type(&self) -> &'static str {
+        match self {
+            FieldType::String => "char *",
+            FieldType::Integer => "int",
+            FieldType::Float => "float",
+            FieldType::Boolean => "bool",
+            FieldType::Unknown => "undefined",
+        }
+    }
+
+    /// The size a field of this kind occupies, in bytes. `None` for a kind
+    /// with no size of its own; text is reached through a pointer, so it
+    /// takes the program's pointer size.
+    pub fn suggested_size(&self, pointer_size: u64) -> Option<u64> {
+        match self {
+            FieldType::String => Some(pointer_size),
+            FieldType::Integer | FieldType::Float => Some(4),
+            FieldType::Boolean => Some(1),
+            FieldType::Unknown => None,
+        }
+    }
+}
+
+impl fmt::Display for FieldType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.c_type())
+    }
+}
+
+/// How an inferred struct's name was derived.
+///
+/// The name is part of the evidence report: a candidate named from the data
+/// it came from is a better hypothesis than one named after its own address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NameOrigin {
+    /// The literals share a qualifier: `player.x`, `player.y` → `Player`.
+    LiteralPrefix,
+    /// The referencing functions share a stem: `Widget_getWidth` → `Widget`.
+    FunctionStem,
+    /// Neither yielded anything usable, so the name is the cluster's address.
+    Address,
+}
+
+/// One field of a struct inferred from string literals.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InferredField {
+    /// Field name, taken from the literal that named it.
+    pub name: String,
+    /// The kind the literal's shape suggests.
+    pub field_type: FieldType,
+    /// Size estimated from the kind. `None` when the kind has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    /// Offset estimated by accumulating the sizes of the fields before it.
+    /// `None` when a field's size is unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<u64>,
+    /// The literal this field was inferred from.
+    pub source_value: String,
+    /// Address of that literal.
+    pub source_address: u64,
+}
+
+/// A struct candidate inferred from clustered string literals.
+///
+/// Literals the same functions point at are grouped together, and a group
+/// large enough to read as a field list becomes a candidate: the literals
+/// name the fields, and the confidence score says how far the evidence
+/// supports reading them as one struct. Nothing here was declared in the
+/// program — a candidate is a hypothesis for the translator to test.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InferredStruct {
+    /// Name derived from the cluster; see [`InferredStruct::name_origin`].
+    pub name: String,
+    /// Where the name came from.
+    pub name_origin: NameOrigin,
+    /// Fields, in literal-address order.
+    pub fields: Vec<InferredField>,
+    /// Confidence that the cluster is one struct, 0–100.
+    pub confidence: u8,
+    /// The functions whose cross-references tie the literals together.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub referenced_by: Vec<String>,
+}
+
+impl InferredStruct {
+    /// Whether the name came from the data rather than the cluster's address.
+    pub fn is_named(&self) -> bool {
+        self.name_origin != NameOrigin::Address
+    }
+
+    /// Estimated size: the sum of the field sizes, or `None` when any one of
+    /// them is unknown.
+    pub fn size(&self) -> Option<u64> {
+        self.fields.iter().map(|f| f.size).sum()
+    }
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -447,5 +573,75 @@ mod tests {
         assert!(!json.contains("\"base_classes\""));
         assert!(!json.contains("\"meta_ptr_address\""));
         assert!(!vtable.is_confirmed());
+    }
+
+    #[test]
+    fn inferred_struct_serde_round_trips() {
+        let candidate = InferredStruct {
+            name: "Player".into(),
+            name_origin: NameOrigin::LiteralPrefix,
+            fields: vec![
+                InferredField {
+                    name: "x".into(),
+                    field_type: FieldType::Integer,
+                    size: Some(4),
+                    offset: Some(0),
+                    source_value: "player.x".into(),
+                    source_address: 0x1801_29350,
+                },
+                InferredField {
+                    name: "name".into(),
+                    field_type: FieldType::String,
+                    size: Some(8),
+                    offset: Some(4),
+                    source_value: "player.name".into(),
+                    source_address: 0x1801_29360,
+                },
+            ],
+            confidence: 79,
+            referenced_by: vec!["FUN_18000b620".into()],
+        };
+        let json = serde_json::to_string(&candidate).unwrap();
+        // Kinds and origins serialize snake_case, matching the workspace's
+        // serde convention.
+        assert!(json.contains("\"field_type\":\"integer\""));
+        assert!(json.contains("\"name_origin\":\"literal_prefix\""));
+        let back: InferredStruct = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, candidate);
+        assert!(candidate.is_named());
+        assert_eq!(candidate.size(), Some(12));
+    }
+
+    #[test]
+    fn an_unclassifiable_field_carries_no_layout_and_an_empty_section_is_omitted() {
+        let candidate = InferredStruct {
+            name: "strings_at_180129350".into(),
+            name_origin: NameOrigin::Address,
+            fields: vec![InferredField {
+                name: "mystery".into(),
+                field_type: FieldType::Unknown,
+                size: None,
+                offset: None,
+                source_value: "mystery".into(),
+                source_address: 0x1801_29350,
+            }],
+            confidence: 28,
+            referenced_by: Vec::new(),
+        };
+        let json = serde_json::to_string(&candidate).unwrap();
+        assert!(!json.contains("\"size\""));
+        assert!(!json.contains("\"offset\""));
+        assert!(!json.contains("\"referenced_by\""));
+        assert!(!candidate.is_named());
+        assert_eq!(candidate.size(), None);
+    }
+
+    #[test]
+    fn field_type_suggests_a_declaration_and_a_size() {
+        assert_eq!(FieldType::String.to_string(), "char *");
+        assert_eq!(FieldType::Integer.c_type(), "int");
+        assert_eq!(FieldType::Boolean.suggested_size(8), Some(1));
+        assert_eq!(FieldType::String.suggested_size(4), Some(4));
+        assert_eq!(FieldType::Unknown.suggested_size(8), None);
     }
 }
