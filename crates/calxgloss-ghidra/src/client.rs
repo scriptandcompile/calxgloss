@@ -590,10 +590,40 @@ impl GhidraClient {
         limit: Option<usize>,
         filter: Option<&str>,
     ) -> Result<Vec<StringLiteral>> {
-        let mut params: Vec<(&str, String)> = Vec::new();
-        if let Some(n) = limit {
-            params.push(("limit", n.to_string()));
+        self.strings_page(0, limit.unwrap_or(DATA_PAGE), filter).await
+    }
+
+    /// Every defined string in the program, collected across pages.
+    ///
+    /// A scan that reasons over the program's literals — grouping the ones a
+    /// function shares into candidate structs, say — needs the whole listing
+    /// rather than a window of it, so this pages through to the end.
+    #[instrument(skip(self), fields(filter))]
+    pub async fn list_strings(&self, filter: Option<&str>) -> Result<Vec<StringLiteral>> {
+        let mut all = Vec::new();
+        let mut offset = 0;
+        loop {
+            let page = self.strings_page(offset, DATA_PAGE, filter).await?;
+            let got = page.len();
+            all.extend(page);
+            if got < DATA_PAGE {
+                return Ok(all);
+            }
+            offset += got;
         }
+    }
+
+    /// One page of the string listing, with the server's own `offset`/`limit`
+    /// windowing.
+    #[instrument(skip(self), fields(offset, limit, filter))]
+    pub async fn strings_page(
+        &self,
+        offset: usize,
+        limit: usize,
+        filter: Option<&str>,
+    ) -> Result<Vec<StringLiteral>> {
+        let mut params: Vec<(&str, String)> =
+            vec![("offset", offset.to_string()), ("limit", limit.to_string())];
         if let Some(f) = filter {
             params.push(("filter", f.to_string()));
         }

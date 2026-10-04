@@ -294,6 +294,39 @@ async fn strings_decode_to_their_contents() {
 
 #[tokio::test]
 #[ignore = "needs a running GhidraMCP server with a program open"]
+async fn the_string_listing_pages_to_the_end() {
+    let Some(ghidra) = client() else {
+        eprintln!("CALXGLOSS_GHIDRA_URL not set; skipping");
+        return;
+    };
+
+    // A scan that reasons over the program's literals needs the whole
+    // listing; eqmain defines far more strings than one page carries.
+    let all = ghidra.list_strings(None).await.expect("full string listing");
+    assert!(all.len() > 1000, "only {} collected", all.len());
+    assert!(
+        all.iter().all(|s| !s.value.is_empty() && s.address > 0),
+        "every record should yield a value and an address"
+    );
+
+    let filtered = ghidra
+        .list_strings(Some("flow"))
+        .await
+        .expect("filtered string listing");
+    assert!(!filtered.is_empty(), "the filter should match something");
+    // The bridge matches case-insensitively: `flow` also selects
+    // `FlowName` and `NextFlow`.
+    assert!(
+        filtered
+            .iter()
+            .all(|s| s.value.to_ascii_lowercase().contains("flow")),
+        "filter leaked: {:?}",
+        filtered.iter().map(|s| &s.value).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a running GhidraMCP server with a program open"]
 async fn open_programs_names_the_current_program() {
     let Some(ghidra) = client() else {
         eprintln!("CALXGLOSS_GHIDRA_URL not set; skipping");
