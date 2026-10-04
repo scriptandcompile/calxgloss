@@ -1099,15 +1099,15 @@ The UI is a **review gate** — it shows the *result* of each translation unit b
   - [x] All Phase 1 unit tests pass (39: 34 this-pointer detector + 5 model)
   - [x] `cargo clippy` clean
 
-- [ ] **Phase 2 — Parameter Size Detection**
-  - [ ] `ParameterSizeDetector` struct implemented
-  - [ ] `detect_parameter_sizes()` scans for pointer/integer/string patterns
-  - [ ] String function detection (strlen, strcpy, strcmp, etc.)
-  - [ ] Integer bit-pattern detection (shift, bitwise AND)
-  - [ ] Pointer arithmetic detection (offset, dereference, field access)
-  - [ ] Ambiguity handling (highest confidence wins)
-  - [ ] All 9 Phase 2 unit tests pass
-  - [ ] `cargo clippy` clean
+- [x] **Phase 2 — Parameter Size Detection** *(done 2026-10-04)*
+  - [x] `ParameterSizeDetector` struct implemented *(done 2026-10-04, stateless over `DecompiledFunction` text like the this-pointer detector — one detector serves the whole scan, the decompile fetched once per function and read by every detector; 2 unit tests)*
+  - [x] `detect_parameter_sizes()` scans for pointer/integer/string patterns *(done 2026-10-04, one pass over the body per function: a string-aware direct-call scan matches callees against the string-function table and reads a parameter sitting in a character-pointer position as `char *` (casts seen through), and a whole-word occurrence scan reads shift/bitwise-AND operands as `u32` and stars or numeric offsets something reads through as `void *`, refusing multiplies, logical `&&`, unary address-of, and bare offsets; at most one reading per parameter per family with the first matching shape in source order as evidence, each scoped to its function — readings from competing families all stand until conflict resolution; 13 unit tests)*
+  - [x] String function detection (strlen, strcpy, strcmp, etc.) *(done 2026-10-04, the table grown from the core six to the full C string family — `strlen`/`strnlen`, `strcpy`/`strncpy`, `strcat`/`strncat`, `strcmp`/`strncmp`/`strcasecmp`/`strncasecmp`, `strchr`/`strrchr`, `strstr`, `strpbrk`/`strspn`/`strcspn`, `strtok`, `strdup`/`strndup`, and the `sprintf`/`snprintf`/`vsprintf`/`vsnprintf` line — entries name the argument positions their contract reads as `char *` instead of a leading count, so `snprintf`'s format behind its size argument still reads while count, character, buffer-size, and variadic-tail positions get no reading; 5 unit tests)*
+  - [x] Integer bit-pattern detection (shift, bitwise AND) *(done 2026-10-04, the skeleton's shape reading deepened with width weighing: the constant beside each bit operation bounds the parameter's width — a mask needs its own bit length, a shift the parameter is the operand of needs one bit more than its count, and left-hand masks (`0x100000000 & param_1`) and compound `&=` masks count; constants the word covers keep `u32` at 55, a mask or count beyond it (`param_1 & 0xffffffff00`, `param_1 >> 0x20`) widens the reading to `u64` at 60 with the line carrying the widest constant as evidence; refused: a shift whose count the parameter supplies (`0x20 << param_1`) and a parameter behind a cast (`(ulonglong)param_1 << 0x20`) — the cast types the expression; integer suffixes (`0xffffffffu`) parse without changing the width; 10 unit tests)*
+  - [x] Pointer arithmetic detection (offset, dereference, field access) *(done 2026-10-04, the pointer family completed beside the skeleton's dereferencing star (`*param_1`, `(code *)*param_1`) and read-through numeric offset (`*(undefined4 *)(param_2 + 4)`): an arrow into a field (`param_1->count`, chained `param_1->next->value` — the arrow only exists on a pointer) and an array index (`param_2[2]` — the decompiler indexes what it types as a pointer) now read the parameter as `void *` at 65; a field's own bit operations (`param_1->flags & 0xff`) still read the field, not the parameter, as an integer; 3 unit tests)*
+  - [x] Ambiguity handling (highest confidence wins) *(done 2026-10-04, competing family readings for one parameter resolve inside the detector: the highest-confidence reading is kept and the rest dropped — `strcpy`'s `char *` (70) beats a bare dereference's `void *` (65), which beats a pinned `u64` (60) and the default word (55) — a tie keeps the reading the body showed first, and the winner's evidence line travels with the record; 4 unit tests)*
+  - [x] All Phase 2 unit tests pass (36: 2 detector state + 8 string family + 11 integer family + 7 pointer family + 4 misc/refusals + 4 ambiguity resolution)
+  - [x] `cargo clippy` clean
 
 - [ ] **Phase 3 — Known Type Propagation**
   - [ ] `KnownTypePropagationEngine` struct implemented
