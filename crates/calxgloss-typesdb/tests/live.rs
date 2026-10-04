@@ -1,8 +1,8 @@
-//! Live named-type scans against a running GhidraMCP server.
+//! Live named-type and vtable scans against a running GhidraMCP server.
 //!
-//! The scanner's unit tests run over canned responses; these ask a real
-//! bridge, so a change in the Type Manager endpoints' output shows up here
-//! rather than as silently wrong data in a persisted type database.
+//! The engines' unit tests run over canned responses; these ask a real
+//! bridge, so a change in the endpoints' output shows up here rather than as
+//! silently wrong data in a persisted type database.
 //!
 //! They are `#[ignore]`d by default because they need a Ghidra instance with
 //! a program open. To run them:
@@ -18,6 +18,7 @@
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_typesdb::scanner::TypeLibraryScanner;
 use calxgloss_typesdb::types::TypeKind;
+use calxgloss_typesdb::vtable::VtableDetector;
 
 fn client() -> Option<GhidraClient> {
     let url = std::env::var("CALXGLOSS_GHIDRA_URL").ok()?;
@@ -142,4 +143,68 @@ async fn the_category_filter_narrows_the_scan() {
         "filter leaked: {:?}",
         types.iter().map(|t| &t.category).collect::<Vec<_>>()
     );
+}
+
+#[tokio::test]
+#[ignore = "needs a running GhidraMCP server with eqmain.dll open"]
+async fn the_detector_finds_and_confirms_eqmain_vftables() {
+    let Some(ghidra) = client() else {
+        eprintln!("CALXGLOSS_GHIDRA_URL not set; skipping");
+        return;
+    };
+
+    // Tagging writes back into the program, so the live scan runs read-only.
+    let vtables = VtableDetector::new(&ghidra)
+        .without_tagging()
+        .detect_vtables()
+        .await
+        .expect("vtable detection");
+    assert!(vtables.len() > 50, "only {} detected", vtables.len());
+
+    // `vftable` names are not unique; the address is the key, and eqmain's
+    // tables all carry the RTTI metadata pointer.
+    let addresses: Vec<u64> = vtables.iter().map(|v| v.address).collect();
+    assert!(
+        addresses.windows(2).all(|w| w[0] < w[1]),
+        "not sorted/unique"
+    );
+    assert!(
+        vtables.iter().all(|v| v.is_confirmed()),
+        "a vftable lacked its metadata pointer"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a running GhidraMCP server with eqmain.dll open"]
+async fn the_detector_resolves_methods_classes_and_bases() {
+    let Some(ghidra) = client() else {
+        eprintln!("CALXGLOSS_GHIDRA_URL not set; skipping");
+        return;
+    };
+
+    let vtables = VtableDetector::new(&ghidra)
+        .without_tagging()
+        .detect_vtables()
+        .await
+        .expect("vtable detection");
+
+    let with_methods = vtables.iter().filter(|v| !v.methods.is_empty()).count();
+    assert!(with_methods > 50, "only {with_methods} resolved methods");
+    assert!(
+        vtables
+            .iter()
+            .all(|v| v.methods.iter().all(|m| m.slot < v.methods.len())),
+        "slot indices should be table-order"
+    );
+
+    let with_classes = vtables.iter().filter(|v| v.class_name.is_some()).count();
+    assert!(
+        with_classes > 50,
+        "only {with_classes} recovered a class name"
+    );
+    let with_bases = vtables
+        .iter()
+        .filter(|v| !v.base_classes.is_empty())
+        .count();
+    assert!(with_bases > 0, "no vtable recovered a base class");
 }
