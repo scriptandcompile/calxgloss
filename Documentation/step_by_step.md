@@ -1058,17 +1058,17 @@ The UI is a **review gate** — it shows the *result* of each translation unit b
   - [x] All Phase 3 unit tests pass (23: 20 engine + 3 model) + 3 `#[ignore]`d live tests green against the running bridge
   - [x] `cargo clippy` clean
 
-- [ ] **Phase 4 — Pipeline Integration**
-  - [ ] `TypeDatabase`, `ScanMetadata` types defined
-  - [ ] `TypesDBEngine` orchestrates all three scanners in parallel
-  - [ ] `TypeDatabasePersistor` saves/loads JSON to `re/analysis/typesdb/`
-  - [ ] `extract_data_structures()` updated to load from persisted DB
-  - [ ] `From<&NamedType>` and `From<&InferredStruct>` conversions to `StructuredData`
-  - [ ] Pre-processing phase added to batch translation
-  - [ ] `calxgloss typesdb` CLI command implemented and wired up
-  - [ ] All 5 engine unit tests pass
-  - [ ] All 10 integration tests pass
-  - [ ] `cargo clippy` clean
+- [x] **Phase 4 — Pipeline Integration** *(done 2026-10-03)*
+  - [x] `TypeDatabase`, `ScanMetadata` types defined
+  - [x] `TypesDBEngine` orchestrates all three scanners in parallel
+  - [x] `TypeDatabasePersistor` saves/loads JSON to `re/analysis/typesdb/` (`new(workspace)` → `re/analysis/typesdb/{binary}.json`, `with_cache_dir` for an explicit dir, `exists()` as the cache check, `path_for()`; missing file → new `TypesDbError::NotFound`, corrupt file → `Json`; 10 unit tests)
+  - [x] `extract_data_structures()` updated to load from persisted DB (reads `re/analysis/typesdb/{dll}.json` through `TypeDatabasePersistor`; keeps inferred candidates whose `referenced_by` names the function plus named types of classes whose vtable lists it as a method; enum members render as offset-less fields; sync now — takes workspace/dll/function instead of client/address, so `EscalatePromptCtx` gained a `workspace` field; missing/corrupt DB degrades to empty; 7 unit tests)
+  - [x] `From<&NamedType>` and `From<&InferredStruct>` conversions to `StructuredData` (implemented on the recovered records in `calxgloss-typesdb/src/types.rs`; typesdb gained a `calxgloss-prompts` dependency for the target type, the translator's private conversion helpers were removed in favor of these; 4 unit tests)
+  - [x] Pre-processing phase added to batch translation (`TranslationPipeline::ensure_type_database(dll)`: `exists()` cache check → skip, else run `TypesDBEngine::scan` and save; called at the top of `batch_translate` and `batch_translate_from_callgraph`; missing workspace, unreachable Ghidra server, or a failed save only log a warning and the batch proceeds; `auto.rs` now sets `with_workspace` so the database files under the output repo — `batch-translate` already set it; 3 unit tests)
+  - [x] `calxgloss typesdb` CLI command implemented and wired up (`commands/typesdb.rs`: `--dll` runs the scan and saves, `--show` prints the cached database without connecting to Ghidra, `--no-tag` keeps the vtable scan read-only; exempt from the `target_dir` requirement like `config`/`gc`; verified live against the running bridge with `eqmain.dll` open — 300 named types, 73 RTTI-confirmed vtables, 38 inferred candidates in 52s)
+  - [x] All 5 engine unit tests pass (canned-program orchestration: three-section assembly with RTTI vtable + inferred candidate, concurrent-scan overlap, server failure aborts the run, empty program, configuration reaching every scanner)
+  - [x] All 10 integration tests pass (`tests/integration_tests.rs`, no server needed: scan → save → load round trip, `re/analysis/typesdb/` file layout, cache check gating a scan, rescan replacing the document, path/address lookups on the loaded document with layouts/methods/RTTI/evidence intact, and prompt rendering of a named struct, an enum, and an inferred candidate)
+  - [x] `cargo clippy` clean (over the crates this phase touches: `calxgloss-typesdb`, `calxgloss-translator`, `calxgloss-cli`; the pre-existing `too_many_arguments` hits on `run_translation_for_dll` and `log_token_usage` carry the repo's standard `#[allow]`)
 
 - [ ] **Phase 5 — Full Implementation (Future)**
   - [ ] Cross-reference clustering implemented
