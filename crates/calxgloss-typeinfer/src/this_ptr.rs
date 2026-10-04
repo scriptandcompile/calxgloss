@@ -234,7 +234,8 @@ fn adds_to_object(expr: &str, plus: usize) -> bool {
 fn number_end(bytes: &[u8], start: usize) -> usize {
     let hex = bytes[start..].starts_with(b"0x") || bytes[start..].starts_with(b"0X");
     let mut i = if hex { start + 2 } else { start };
-    while i < bytes.len() && (hex && bytes[i].is_ascii_hexdigit() || !hex && bytes[i].is_ascii_digit())
+    while i < bytes.len()
+        && (hex && bytes[i].is_ascii_hexdigit() || !hex && bytes[i].is_ascii_digit())
     {
         i += 1;
     }
@@ -685,34 +686,33 @@ impl ThisPointerDetector {
                     .iter()
                     .filter(|(at, _, _)| *at == index)
                     .max_by_key(|(_, score, _)| *score);
-                let (inferred_type, method, confidence, evidence) =
-                    match (named, com, unnamed) {
-                        (Some((_, class, evidence)), _, Some(_)) => (
-                            format!("{class} *"),
-                            InferenceMethod::VtableCall,
-                            NAMED_CLASS_CONFIDENCE,
-                            evidence.clone(),
-                        ),
-                        (Some((_, class, evidence)), _, None) => (
-                            format!("{class} *"),
-                            InferenceMethod::FirstParamUsage,
-                            MEMBER_CALL_CONFIDENCE,
-                            evidence.clone(),
-                        ),
-                        (None, Some((_, evidence)), _) => (
-                            IUNKNOWN_INTERFACE.to_string(),
-                            InferenceMethod::ComInterface,
-                            COM_CONFIDENCE,
-                            evidence.clone(),
-                        ),
-                        (None, None, Some((_, confidence, evidence))) => (
-                            UNNAMED_CLASS.to_string(),
-                            InferenceMethod::VtableCall,
-                            *confidence,
-                            evidence.clone(),
-                        ),
-                        (None, None, None) => return None,
-                    };
+                let (inferred_type, method, confidence, evidence) = match (named, com, unnamed) {
+                    (Some((_, class, evidence)), _, Some(_)) => (
+                        format!("{class} *"),
+                        InferenceMethod::VtableCall,
+                        NAMED_CLASS_CONFIDENCE,
+                        evidence.clone(),
+                    ),
+                    (Some((_, class, evidence)), _, None) => (
+                        format!("{class} *"),
+                        InferenceMethod::FirstParamUsage,
+                        MEMBER_CALL_CONFIDENCE,
+                        evidence.clone(),
+                    ),
+                    (None, Some((_, evidence)), _) => (
+                        IUNKNOWN_INTERFACE.to_string(),
+                        InferenceMethod::ComInterface,
+                        COM_CONFIDENCE,
+                        evidence.clone(),
+                    ),
+                    (None, None, Some((_, confidence, evidence))) => (
+                        UNNAMED_CLASS.to_string(),
+                        InferenceMethod::VtableCall,
+                        *confidence,
+                        evidence.clone(),
+                    ),
+                    (None, None, None) => return None,
+                };
                 Some(InferredParamType {
                     function: func.name.clone(),
                     param_index: index,
@@ -1136,7 +1136,10 @@ mod tests {
         );
         let record = one_reading(&func);
         assert_eq!(record.method, InferenceMethod::ComInterface);
-        assert_eq!(record.evidence, "(*(code *)(**param_1 + 0x10))(param_1, 1);");
+        assert_eq!(
+            record.evidence,
+            "(*(code *)(**param_1 + 0x10))(param_1, 1);"
+        );
     }
 
     #[test]
