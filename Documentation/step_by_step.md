@@ -56,7 +56,7 @@ Automatic recovery of struct layouts, class hierarchies, vtables, and type alias
 
 Setup (done 2026-10-03): `GhidraMCP-6.0.0.zip` installed to `~/.config/ghidra/ghidra_12.1.2_PUBLIC/Extensions/GhidraMCP` — no build needed, the release zip is prebuilt against 12.1.2; the old LaurieWired extension was moved to `~/Downloads/GhidraMCP-lauriewired-backup`. Bridge repo: `~/Programming/ghidra-mcp` @ tag v6.0.0, run via `uv run --directory ~/Programming/ghidra-mcp bridge-mcp-ghidra` — the OpenCode MCP config now points at it. `calxgloss-ghidra` keeps talking raw HTTP to the Java plugin on 8080 (we run a custom port of 8089). Turn **Strict Naming Enforcement off** in Tool Options unless we want the Hungarian-notation gates on write endpoints; consider `GHIDRA_MCP_REQUIRE_PROGRAM_SELECTORS=1` once multiple programs can be open.
 
-Endpoint mapping for the existing client methods (old HTTP path → new; all responses become JSON — re-capture every fixture, and use `GET /mcp/schema` on the running server as the authoritative endpoint/param list):
+Endpoint mapping for the existing client methods (old HTTP path → new; responses are JSON only where the bridge answers JSON — most stay `text/plain`, see the Record formats note below; use `GET /mcp/schema` on the running server as the authoritative endpoint/param list):
 
 | `calxgloss-ghidra` method | Stock plugin | bethington bridge |
 |---|---|---|
@@ -80,7 +80,7 @@ Endpoint mapping for the existing client methods (old HTTP path → new; all res
 
 The `calxgloss-ghidra` client (`src/client.rs`) currently wraps none of the write-back tools and has no `list_data_items` wrapper; `classes()`/`methods()` return symbol names only (no field/layout data).
 
-> **Record formats:** the stock plugin's plain-text line formats (`addr: name = value`, `From <addr> in <FUNC_NAME> [DATA]`, bare-name listings) are gone — every endpoint returns JSON. Re-capture all `parse.rs` fixtures live against the new bridge (`eqmain.dll` loaded). Domain facts that survive the switch: vftables appear in `list_data_items` as `vftable`-named items preceded by `vftable_meta_ptr` entries (MSVC RTTI pattern), `vftable` names are **not unique** — key by address, and `eqmain.dll` has ~22k–40k data items (page with `offset`/`limit`).
+> **Record formats (corrected 2026-10-03, verified against the live v6.0.0 plugin):** the earlier premise that every endpoint returns JSON is wrong — the plugin still answers most endpoints `text/plain`, including the Phase 0a additions: `list_data_types` (`name | category | N bytes | path`), `list_data_items` (`LABEL @ addr [TYPE] (N bytes)`), and `get_struct_layout`/`get_enum_values` (header block + ` | ` field lines; misses arrive as prose sentinels like `Structure not found: X`, not `{"error": ...}`, so parsers must refuse them). Only a handful answer JSON (`get_current_address`, `get_current_function`, `list_imports`, `list_open_programs`); `list_data_items_by_xrefs` accepts `format=json`. `parse.rs` fixtures are re-captured live and the parsers accept both shapes. Domain facts that survive the switch: vftables appear in `list_data_items` as `vftable`-named items preceded by `vftable_meta_ptr` entries (MSVC RTTI pattern), `vftable` names are **not unique** — key by address, and `eqmain.dll` has ~22k–40k data items (page with `offset`/`limit`).
 
 1. Port `client.rs` transport + `parse.rs` from plain-text line formats to JSON (`serde` structs replace the line parsers); update `error::classify` for JSON error bodies
 2. Add the new wrappers from the mapping table — paged `list_data_items()` is the data-object source for vtable scanning, and `list_data_types` + `get_struct_layout` feed Phase 1 directly (the decompiled-pseudo-C fallback and the patched-fork option are both obsolete)
@@ -1010,14 +1010,14 @@ The UI is a **review gate** — it shows the *result* of each translation unit b
 
 ### 1. P1 — Data Structure Recovery (`calxgloss-typesdb`)
 
-- [ ] **Phase 0a — Ghidra Client Port to bethington/ghidra-mcp (Prerequisite)**
+- [x] **Phase 0a — Ghidra Client Port to bethington/ghidra-mcp (Prerequisite)** *(done 2026-10-03, except write-back wrappers — deferred to P2 Phase 5, no P1 consumer)*
   - [x] GhidraMCP 6.0.0 extension installed on Ghidra 12.1.2 (release zip → user Extensions dir; LaurieWired extension backed up to `~/Downloads/GhidraMCP-lauriewired-backup`)
-  - [ ] Plugin enabled in the CodeBrowser tool; `curl 127.0.0.1:8080/check_connection` green; naming-enforcement setting chosen. We use a custom port of 8089 instead of the default of 8080.
-  - [ ] `client.rs`/`parse.rs` ported to JSON responses; `error::classify` updated for JSON errors
-  - [ ] `list_data_items()` client wrapper + paged JSON parser, unit-tested with re-captured fixtures
-  - [ ] Type-library wrappers added: `list_data_types`, `get_struct_layout`, `get_enum_values` (replaces the old strategy decision — fork/pseudo-C options obsolete)
-  - [ ] Write-back wrappers added: `set_function_prototype`, `set_local_variable_type`, `rename_function`/`rename_data`, `create_struct`/`add_struct_field`
-  - [ ] `cargo clippy` clean
+  - [x] Plugin enabled in the CodeBrowser tool; `curl 127.0.0.1:8089/check_connection` green (verified live, `eqmain.dll` open); naming-enforcement setting chosen. We use a custom port of 8089 instead of the default of 8080.
+  - [x] `client.rs`/`parse.rs` ported to the 6.x response formats (JSON where the bridge answers JSON — most endpoints stay `text/plain`, see the Record formats note); `error::classify` updated for JSON errors
+  - [x] `list_data_items()` client wrapper + paged parser (text records, not JSON), unit-tested with re-captured fixtures + live tests
+  - [x] Type-library wrappers added: `list_data_types`, `get_struct_layout`, `get_enum_values` (replaces the old strategy decision — fork/pseudo-C options obsolete)
+  - [ ] Write-back wrappers added: `set_function_prototype`, `set_local_variable_type`, `rename_function`/`rename_data`, `create_struct`/`add_struct_field` — **deferred to P2 Phase 5** (no P1 consumer)
+  - [x] `cargo clippy` clean
 
 - [x] **Phase 0 — Project Setup**
   - [x] `calxgloss-typesdb` crate created at `crates/calxgloss-typesdb/`

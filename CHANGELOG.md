@@ -88,6 +88,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### `calxgloss-typesdb`
 - **New crate: data structure recovery (P1 Phase 0 — project setup)** — scaffolded `calxgloss-typesdb` as a workspace member per the unified plan (`Documentation/step_by_step.md`). Module skeleton: `types`, `scanner`, `vtable`, `string_infer`, `persist`, `error`. `TypesDbError` (thiserror) with `Ghidra`/`Io`/`Json`/`EmptyTypeName`/`ScanFailed` variants plus a crate-wide `Result` alias. Dependencies wired for Phases 1–4 (`calxgloss-ghidra`, `calxgloss-types`, `serde`, `serde_json`, `tokio`, `tracing`, `thiserror`, `regex`; unused-dependency lint allowed until the phases land, same as `calxgloss-web`). Re-exported from the `calxgloss` meta-crate.
 
+#### `calxgloss-ghidra`
+- **Type Manager and defined-data client wrappers (P1 Phase 0a)** — new `GhidraClient` methods for the bethington bridge's type/data endpoints: `list_data_types()` (category filter, auto-paged) and `data_types_page()`, `get_struct_layout()`, `get_enum_values()`, `list_data_items()` (auto-paged) and `data_items_page()`. New model types `DataTypeEntry`, `DataItem`, `StructLayout`/`StructFieldLayout`, `EnumDefinition`/`EnumMember` with parsers written against live-captured v6.0.0 responses — these endpoints answer `text/plain`, not JSON, and misses arrive as prose sentinels (`Structure not found: X`) that surface as `GhidraError::NotFound`. 8 new parser unit tests + 4 new live tests, all passing against the running bridge with `eqmain.dll` open.
+
 ### Changed
 
 #### GhidraMCP 6.x migration
