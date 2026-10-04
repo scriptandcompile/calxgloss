@@ -12,11 +12,15 @@
 //! - `TypeDatabase`, `ScanMetadata`: the persisted per-DLL database and its
 //!   scan provenance.
 //!
-//! All types derive `Serialize`/`Deserialize`.
+//! All types derive `Serialize`/`Deserialize`. Recovered records also convert
+//! into prompt data: `From<&NamedType>` and `From<&InferredStruct>` render a
+//! [`calxgloss_prompts::StructuredData`] for the translation prompts.
 
 use calxgloss_ghidra::{DataTypeEntry, EnumDefinition, StructLayout};
+use calxgloss_prompts::StructuredData;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // ============================================================
 // Type kind
@@ -391,6 +395,160 @@ impl InferredStruct {
 }
 
 // ============================================================
+// Prompt conversions
+// ============================================================
+
+/// Render a Type Manager record as prompt data. Structure fields keep
+/// their offsets; enum members arrive as fields whose "type" is the
+/// member value and whose offset is unknown (`-1`).
+impl From<&NamedType> for StructuredData {
+    fn from(named: &NamedType) -> Self {
+        let fields = named
+            .fields
+            .iter()
+            .map(|f| calxgloss_prompts::StructField {
+                name: f.name.clone(),
+                type_: f.type_name.clone(),
+                offset: f.offset as i64,
+            })
+            .chain(
+                named
+                    .members
+                    .iter()
+                    .map(|m| calxgloss_prompts::StructField {
+                        name: m.name.clone(),
+                        type_: m.value.to_string(),
+                        offset: -1,
+                    }),
+            )
+            .collect();
+        Self {
+            name: named.name.clone(),
+            size: named.size.unwrap_or(0) as usize,
+            fields,
+        }
+    }
+}
+
+/// Render an inferred candidate as prompt data. Field types are the C
+/// declarations the inference suggested; offsets are estimates and stay
+/// unknown (`-1`) when the candidate could not place a field.
+impl From<&InferredStruct> for StructuredData {
+    fn from(candidate: &InferredStruct) -> Self {
+        let fields = candidate
+            .fields
+            .iter()
+            .map(|f| calxgloss_prompts::StructField {
+                name: f.name.clone(),
+                type_: f.field_type.c_type().to_string(),
+                offset: f.offset.map(|o| o as i64).unwrap_or(-1),
+            })
+            .collect();
+        Self {
+            name: candidate.name.clone(),
+            size: candidate.size().unwrap_or(0) as usize,
+            fields,
+        }
+    }
+}
+
+// ============================================================
+// Persisted database
+// ============================================================
+
+/// Provenance of the scan that produced a [`TypeDatabase`].
+///
+/// A persisted database doubles as a cache, and this is the part a
+/// consumer reads when deciding whether the cache is still good: which
+/// binary it describes and when it was built.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanMetadata {
+    /// The binary the scan read, e.g. `eqmain.dll`. The persistor names
+    /// the JSON file after it.
+    pub binary: String,
+    /// When the scan finished, as a Unix timestamp in seconds.
+    pub scanned_at: u64,
+    /// Wall-clock duration of the scan, in seconds.
+    #[serde(default)]
+    pub duration_secs: u64,
+}
+
+impl ScanMetadata {
+    /// Metadata for a scan of `binary` finishing now. The engine fills
+    /// in `duration_secs` once the scan is done.
+    pub fn new(binary: impl Into<String>) -> Self {
+        Self {
+            binary: binary.into(),
+            scanned_at: now_unix_secs(),
+            duration_secs: 0,
+        }
+    }
+}
+
+/// The recovered type database for one binary — the document persisted
+/// to `re/analysis/typesdb/{dll}.json`.
+///
+/// The three sections are the outputs of the three recovery engines:
+/// [`NamedType`]s from the Type Manager scan, [`Vtable`]s from vtable
+/// detection, and [`InferredStruct`]s from string-guided inference. Each
+/// section keeps a stable order — path, address, confidence — so two
+/// scans of the same program diff cleanly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeDatabase {
+    /// Provenance of the scan that produced this database.
+    pub metadata: ScanMetadata,
+    /// Named types from Ghidra's Type Manager, in Type Manager path
+    /// order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub named_types: Vec<NamedType>,
+    /// Detected vtables, in address order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vtables: Vec<Vtable>,
+    /// Struct candidates from string-guided inference, highest
+    /// confidence first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inferred_structs: Vec<InferredStruct>,
+}
+
+impl TypeDatabase {
+    /// An empty database for the binary described by `metadata`.
+    pub fn new(metadata: ScanMetadata) -> Self {
+        Self {
+            metadata,
+            named_types: Vec::new(),
+            vtables: Vec::new(),
+            inferred_structs: Vec::new(),
+        }
+    }
+
+    /// The named type stored at a Type Manager path, e.g.
+    /// `/pe/IMAGE_DOS_HEADER`. Paths are unique; type names are not.
+    pub fn find_named_type(&self, path: &str) -> Option<&NamedType> {
+        self.named_types.iter().find(|t| t.path == path)
+    }
+
+    /// The vtable at an address — the stable identity of a table whose
+    /// label is usually just `vftable`.
+    pub fn find_vtable(&self, address: u64) -> Option<&Vtable> {
+        self.vtables.iter().find(|v| v.address == address)
+    }
+
+    /// Whether the scan recovered nothing at all.
+    pub fn is_empty(&self) -> bool {
+        self.named_types.is_empty() && self.vtables.is_empty() && self.inferred_structs.is_empty()
+    }
+}
+
+/// The current time as a Unix timestamp in seconds, `0` if the clock
+/// predates the epoch.
+fn now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -643,5 +801,216 @@ mod tests {
         assert_eq!(FieldType::Boolean.suggested_size(8), Some(1));
         assert_eq!(FieldType::String.suggested_size(4), Some(4));
         assert_eq!(FieldType::Unknown.suggested_size(8), None);
+    }
+
+    #[test]
+    fn a_named_struct_converts_with_field_offsets_and_size() {
+        let recovered = NamedType {
+            fields: vec![
+                StructField {
+                    name: "e_magic".into(),
+                    offset: 0,
+                    size: 2,
+                    type_name: "char[2]".into(),
+                },
+                StructField {
+                    name: "e_lfanew".into(),
+                    offset: 60,
+                    size: 4,
+                    type_name: "dword".into(),
+                },
+            ],
+            ..NamedType::from_listing(
+                &entry("IMAGE_DOS_HEADER", "pe", Some(128)),
+                TypeKind::Struct,
+            )
+        };
+        let rendered = StructuredData::from(&recovered);
+        assert_eq!(rendered.name, "IMAGE_DOS_HEADER");
+        assert_eq!(rendered.size, 128);
+        assert_eq!(rendered.fields.len(), 2);
+        assert_eq!(rendered.fields[1].name, "e_lfanew");
+        assert_eq!(rendered.fields[1].type_, "dword");
+        assert_eq!(rendered.fields[1].offset, 60);
+    }
+
+    #[test]
+    fn enum_members_convert_after_the_fields_holding_their_value() {
+        let recovered = NamedType {
+            fields: vec![StructField {
+                name: "header".into(),
+                offset: 0,
+                size: 4,
+                type_name: "dword".into(),
+            }],
+            members: vec![
+                EnumMember {
+                    name: "Idle".into(),
+                    value: 0,
+                },
+                EnumMember {
+                    name: "Running".into(),
+                    value: 1,
+                },
+            ],
+            ..NamedType::from_listing(&entry("Mode", "excpt.h", None), TypeKind::Enum)
+        };
+        let rendered = StructuredData::from(&recovered);
+        assert_eq!(rendered.size, 0, "a type with no known size reports zero");
+        // Structure fields come first, then the enum members.
+        assert_eq!(rendered.fields[0].name, "header");
+        assert_eq!(rendered.fields[1].name, "Idle");
+        assert_eq!(rendered.fields[2].name, "Running");
+        assert_eq!(
+            rendered.fields[2].type_, "1",
+            "the member value is its type"
+        );
+        assert_eq!(rendered.fields[2].offset, -1);
+    }
+
+    #[test]
+    fn an_inferred_candidate_converts_with_suggested_c_types() {
+        let candidate = InferredStruct {
+            name: "Player".into(),
+            name_origin: NameOrigin::LiteralPrefix,
+            fields: vec![
+                InferredField {
+                    name: "x".into(),
+                    field_type: FieldType::Integer,
+                    size: Some(4),
+                    offset: Some(0),
+                    source_value: "player.x".into(),
+                    source_address: 0x1801_29350,
+                },
+                InferredField {
+                    name: "label".into(),
+                    field_type: FieldType::String,
+                    size: Some(8),
+                    offset: None,
+                    source_value: "player.label".into(),
+                    source_address: 0x1801_29360,
+                },
+            ],
+            confidence: 79,
+            referenced_by: Vec::new(),
+        };
+        let rendered = StructuredData::from(&candidate);
+        assert_eq!(rendered.name, "Player");
+        assert_eq!(rendered.size, 12, "both fields carry a size");
+        assert_eq!(rendered.fields[0].type_, "int");
+        assert_eq!(rendered.fields[0].offset, 0);
+        assert_eq!(rendered.fields[1].type_, "char *");
+        assert_eq!(
+            rendered.fields[1].offset, -1,
+            "an unplaced field stays unknown"
+        );
+    }
+
+    #[test]
+    fn an_inferred_candidate_without_a_size_estimate_reports_zero() {
+        let candidate = InferredStruct {
+            name: "strings_at_180129350".into(),
+            name_origin: NameOrigin::Address,
+            fields: vec![InferredField {
+                name: "mystery".into(),
+                field_type: FieldType::Unknown,
+                size: None,
+                offset: None,
+                source_value: "mystery".into(),
+                source_address: 0x1801_29350,
+            }],
+            confidence: 28,
+            referenced_by: Vec::new(),
+        };
+        let rendered = StructuredData::from(&candidate);
+        assert_eq!(rendered.size, 0);
+        assert_eq!(rendered.fields[0].type_, "undefined");
+        assert_eq!(rendered.fields[0].offset, -1);
+    }
+
+    fn metadata() -> ScanMetadata {
+        ScanMetadata {
+            binary: "eqmain.dll".into(),
+            scanned_at: 1_759_488_000,
+            duration_secs: 12,
+        }
+    }
+
+    fn vtable_at(address: u64) -> Vtable {
+        Vtable {
+            address,
+            label: "vftable".into(),
+            size: 40,
+            meta_ptr_address: None,
+            methods: Vec::new(),
+            class_name: None,
+            base_classes: Vec::new(),
+            is_com_interface: false,
+        }
+    }
+
+    #[test]
+    fn type_database_serde_round_trips_all_three_sections() {
+        let db = TypeDatabase {
+            metadata: metadata(),
+            named_types: vec![NamedType::from_listing(
+                &entry("IMAGE_DOS_HEADER", "pe", Some(128)),
+                TypeKind::Struct,
+            )],
+            vtables: vec![vtable_at(0x1801306f0)],
+            inferred_structs: vec![InferredStruct {
+                name: "Player".into(),
+                name_origin: NameOrigin::LiteralPrefix,
+                fields: Vec::new(),
+                confidence: 79,
+                referenced_by: Vec::new(),
+            }],
+        };
+        let json = serde_json::to_string(&db).unwrap();
+        let back: TypeDatabase = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, db);
+        assert!(!back.is_empty());
+    }
+
+    #[test]
+    fn a_metadata_only_database_omits_empty_sections_and_reads_back() {
+        let db = TypeDatabase::new(metadata());
+        let json = serde_json::to_string(&db).unwrap();
+        assert!(!json.contains("\"named_types\""));
+        assert!(!json.contains("\"vtables\""));
+        assert!(!json.contains("\"inferred_structs\""));
+        let back: TypeDatabase = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, db);
+        assert!(back.is_empty());
+    }
+
+    #[test]
+    fn lookups_key_on_type_path_and_vtable_address() {
+        // Type names repeat across categories; paths and addresses do not.
+        let db = TypeDatabase {
+            metadata: metadata(),
+            named_types: vec![
+                NamedType::from_listing(&entry("FOO", "pe", Some(4)), TypeKind::Struct),
+                NamedType::from_listing(&entry("FOO", "excpt.h", Some(8)), TypeKind::Union),
+            ],
+            vtables: vec![vtable_at(0x1801306f0)],
+            inferred_structs: Vec::new(),
+        };
+        assert_eq!(db.find_named_type("/pe/FOO").unwrap().category, "pe");
+        assert_eq!(
+            db.find_named_type("/excpt.h/FOO").unwrap().kind,
+            TypeKind::Union
+        );
+        assert!(db.find_named_type("/nope/FOO").is_none());
+        assert!(db.find_vtable(0x1801306f0).is_some());
+        assert!(db.find_vtable(0x180000000).is_none());
+    }
+
+    #[test]
+    fn scan_metadata_new_stamps_the_current_time() {
+        let meta = ScanMetadata::new("eqmain.dll");
+        assert_eq!(meta.binary, "eqmain.dll");
+        assert!(meta.scanned_at > 0);
+        assert_eq!(meta.duration_secs, 0);
     }
 }

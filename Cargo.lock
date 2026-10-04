@@ -544,10 +544,12 @@ name = "calxgloss-typesdb"
 version = "0.2.0"
 dependencies = [
  "calxgloss-ghidra",
+ "calxgloss-prompts",
  "calxgloss-types",
  "regex",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",

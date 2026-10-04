@@ -21,6 +21,10 @@ pub enum TypesDbError {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// No persisted type database exists at the requested path.
+    #[error("type database not found: {}", .path.display())]
+    NotFound { path: std::path::PathBuf },
+
     /// A type name was empty or unparseable.
     #[error("empty type name")]
     EmptyTypeName,

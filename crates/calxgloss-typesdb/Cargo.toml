@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 calxgloss-ghidra = { path = "../calxgloss-ghidra" }
+calxgloss-prompts = { path = "../calxgloss-prompts" }
 calxgloss-types = { path = "../calxgloss-types" }
 
 serde = { workspace = true }
@@ -16,6 +17,9 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 regex = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
 
 # `calxgloss-types` and `regex` back the type conversions and string
 # clustering the recovery engines need; they are declared now so the manifest
