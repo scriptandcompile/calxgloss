@@ -1081,13 +1081,13 @@ The UI is a **review gate** — it shows the *result* of each translation unit b
 
 ### 2. P2 — Type Inference & Propagation (`calxgloss-typeinfer`)
 
-- [ ] **Phase 0 — Project Setup**
-  - [ ] `calxgloss-typeinfer` crate created at `crates/calxgloss-typeinfer/`
-  - [ ] Added to workspace `Cargo.toml` members list
-  - [ ] `Cargo.toml` dependencies correct
-  - [ ] Module structure created: `lib.rs`, `types.rs`, `this_ptr.rs`, `param_size.rs`, `known_type.rs`, `confidence.rs`, `persist.rs`, `error.rs` (`cross_function.rs` deferred to Phase 5)
-  - [ ] `cargo check` passes with no errors
-  - [ ] `cargo clippy` clean
+- [x] **Phase 0 — Project Setup**
+  - [x] `calxgloss-typeinfer` crate created at `crates/calxgloss-typeinfer/`
+  - [x] Added to workspace `Cargo.toml` members list
+  - [x] `Cargo.toml` dependencies correct (`calxgloss-ghidra`, `calxgloss-types`, `serde`, `serde_json`, `tokio`, `tracing`, `thiserror`, `regex`; unused-dependency lint allowed until the detectors land, same as `calxgloss-typesdb`)
+  - [x] Module structure created: `lib.rs`, `types.rs`, `this_ptr.rs`, `param_size.rs`, `known_type.rs`, `confidence.rs`, `persist.rs`, `error.rs` (`cross_function.rs` deferred to Phase 5)
+  - [x] `cargo check` passes with no errors
+  - [x] `cargo clippy` clean
 
 - [ ] **Phase 1 — C++ this-Pointer Detection**
   - [ ] `InferredParamType`, `InferenceMethod`, `InferenceScope` types defined

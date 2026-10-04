@@ -890,8 +890,7 @@ mod tests {
         ];
         let callers: Vec<_> = caller_data
             .iter()
-            .enumerate()
-            .map(|(_i, (name, addr))| make_func(name, *addr, vec![], vec![], NodeCategory::Middle))
+            .map(|(name, addr)| make_func(name, *addr, vec![], vec![], NodeCategory::Middle))
             .collect();
 
         // Add the target function to the graph.

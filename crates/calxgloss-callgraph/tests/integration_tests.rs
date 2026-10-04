@@ -830,7 +830,7 @@ fn test_end_to_end_realistic_plugin_pipeline() {
     // PollInput: verify context structure is valid (XInputGetState may or may not be in API DB)
     let poll_ctx = &context_map["PollInput"];
     assert!(
-        poll_ctx.callers.len() >= 1,
+        !poll_ctx.callers.is_empty(),
         "PollInput should have at least 1 caller"
     );
 

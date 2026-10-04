@@ -102,6 +102,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### `calxgloss-cli`
 - **`typesdb` command** — `calxgloss typesdb --dll <dll>` recovers the per-binary type database on demand: it runs `TypesDBEngine::scan` against the program currently open in Ghidra and saves the result to `re/analysis/typesdb/<dll>.json` in the workspace — the same file batch translation's pre-processing reads, so a manual scan seeds (or rebuilds) the cache the pipeline consumes. `--show` prints a cached database without connecting to Ghidra: file location, scan timestamp and duration, named-type counts broken down by kind, a vtable table with RTTI/COM confirmation and base-class notes, and inferred struct candidates with confidence coloring, each section collapsing past ten entries. `--no-tag` runs the vtable scan read-only, skipping the `vtable-method` tag write-back. Like `config` and `gc`, the command is exempt from the `target_dir` requirement — it reads the open Ghidra program and writes to the workspace. Verified live against the running bridge with `eqmain.dll` open: 300 named types, 73 RTTI-confirmed vtables, and 38 inferred candidates recovered in 52s; `--show` re-reads the saved file, and a missing cache fails with a message pointing at the recovery command.
 
+#### `calxgloss-typeinfer`
+- **New crate: type inference and propagation** — scaffolded `calxgloss-typeinfer` as a workspace member. Module skeleton: `types`, `this_ptr`, `param_size`, `known_type`, `confidence`, `persist`, `error`. `TypeInferError` (thiserror) with `Ghidra`/`Io`/`Json`/`EmptyFunctionName`/`ScanFailed` variants plus a crate-wide `Result` alias. Dependencies wired for the inference detectors (`calxgloss-ghidra`, `calxgloss-types`, `serde`, `serde_json`, `tokio`, `tracing`, `thiserror`, `regex`; unused-dependency lint allowed until the detectors land, same as `calxgloss-typesdb`).
+
 ### Changed
 
 #### GhidraMCP 6.x migration
