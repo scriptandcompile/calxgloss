@@ -31,6 +31,8 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use calxgloss_algorithm::engine::AlgorithmEngine;
+use calxgloss_algorithm::persist::AlgorithmPersistor;
 use calxgloss_analysis::Analyzer;
 use calxgloss_analysis::FaultLogger;
 use calxgloss_callgraph::{ContextEnricher, FunctionContext, NodeCategory};
@@ -1379,6 +1381,70 @@ impl TranslationPipeline {
         }
     }
 
+    /// Recognize algorithms across the binary before a batch starts, unless a
+    /// recognition result is already cached.
+    ///
+    /// Escalated retries read recognized algorithm hints from
+    /// `re/analysis/algorithm/{dll}.json` (see
+    /// [`extract_algorithm_hints`](crate::retry::helpers::extract_algorithm_hints));
+    /// running the recognition scan once up front means every function in the
+    /// batch can see algorithm context instead of none. The persisted file is
+    /// the cache: when a result is already saved for `dll`, the scan is
+    /// skipped entirely.
+    ///
+    /// Returns whether a result is available afterwards. A missing workspace,
+    /// an unreachable Ghidra server, or a failed save only log a warning and
+    /// return `false` — prompts without algorithm context are degraded, not
+    /// fatal, and the batch proceeds either way.
+    pub async fn ensure_algorithm_recognition(&self, dll: &str) -> bool {
+        let Some(workspace) = self.workspace.as_deref() else {
+            debug!(
+                dll,
+                "No workspace configured; skipping algorithm recognition"
+            );
+            return false;
+        };
+
+        let persistor = AlgorithmPersistor::new(workspace);
+        if persistor.exists(dll) {
+            debug!(
+                dll,
+                path = %persistor.path_for(dll).display(),
+                "Algorithm recognition result already cached; skipping scan"
+            );
+            return true;
+        }
+
+        info!(dll, "Recognizing algorithms before batch translation");
+        let engine = AlgorithmEngine::new(&self.ghidra);
+        match engine.scan(dll).await {
+            Ok(result) => {
+                if let Err(e) = persistor.save(&result) {
+                    warn!(
+                        dll,
+                        error = %e,
+                        "Failed to persist algorithm recognition result; continuing without algorithm context"
+                    );
+                    return false;
+                }
+                info!(
+                    dll,
+                    hints = result.hints.len(),
+                    "Algorithm recognition complete"
+                );
+                true
+            }
+            Err(e) => {
+                warn!(
+                    dll,
+                    error = %e,
+                    "Algorithm recognition failed; continuing without algorithm context"
+                );
+                false
+            }
+        }
+    }
+
     /// Translate multiple functions from a single DLL, one at a time.
     ///
     /// For each function, this runs the full translation pipeline with retry
@@ -1386,11 +1452,13 @@ impl TranslationPipeline {
     /// [`try_translate_with_retry`](Self::try_translate_with_retry) path).
     /// Functions are processed sequentially in the order provided.
     ///
-    /// Before the first function, the per-binary type database and type
-    /// inference result are recovered (or loaded from their caches) so higher
-    /// context tiers have data structure and parameter type context — see
-    /// [`ensure_type_database`](Self::ensure_type_database) and
-    /// [`ensure_type_inference`](Self::ensure_type_inference).
+    /// Before the first function, the per-binary type database, type inference
+    /// result, and algorithm recognition result are recovered (or loaded from
+    /// their caches) so higher context tiers have data structure, parameter
+    /// type, and algorithm context — see
+    /// [`ensure_type_database`](Self::ensure_type_database),
+    /// [`ensure_type_inference`](Self::ensure_type_inference), and
+    /// [`ensure_algorithm_recognition`](Self::ensure_algorithm_recognition).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
     /// invoked **immediately after each function completes** (before moving on
@@ -1520,6 +1588,7 @@ impl TranslationPipeline {
 
         self.ensure_type_database(dll).await;
         self.ensure_type_inference(dll).await;
+        self.ensure_algorithm_recognition(dll).await;
 
         let mut batch_result = batch::BatchTranslationResult::new(dll.to_string());
 
@@ -1629,11 +1698,13 @@ impl TranslationPipeline {
     /// processed. This ordering lets the LLM reference already-translated
     /// callee code when generating shim layers or caller wrappers.
     ///
-    /// Before the first function, the per-binary type database and type
-    /// inference result are recovered (or loaded from their caches) so higher
-    /// context tiers have data structure and parameter type context — see
-    /// [`ensure_type_database`](Self::ensure_type_database) and
-    /// [`ensure_type_inference`](Self::ensure_type_inference).
+    /// Before the first function, the per-binary type database, type inference
+    /// result, and algorithm recognition result are recovered (or loaded from
+    /// their caches) so higher context tiers have data structure, parameter
+    /// type, and algorithm context — see
+    /// [`ensure_type_database`](Self::ensure_type_database),
+    /// [`ensure_type_inference`](Self::ensure_type_inference), and
+    /// [`ensure_algorithm_recognition`](Self::ensure_algorithm_recognition).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
     /// invoked **immediately after each function completes** (before moving on
@@ -1719,6 +1790,7 @@ impl TranslationPipeline {
 
         self.ensure_type_database(&graph.dll).await;
         self.ensure_type_inference(&graph.dll).await;
+        self.ensure_algorithm_recognition(&graph.dll).await;
 
         // Build a priority-ordered plan
         let orderer = calxgloss_callgraph::TranslationOrderer::new();
@@ -1946,6 +2018,8 @@ pub async fn build_hallucination_detector(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use calxgloss_algorithm::persist::AlgorithmPersistor;
+    use calxgloss_algorithm::types::AlgorithmRecognitionResult;
     use calxgloss_typeinfer::persist::TypeInferPersistor;
     use calxgloss_typeinfer::types::TypeInferenceResult;
     use calxgloss_typesdb::types::{ScanMetadata, TypeDatabase};
@@ -2024,5 +2098,37 @@ mod tests {
     async fn no_workspace_skips_the_inference() {
         let pipeline = pipeline_over(None);
         assert!(!pipeline.ensure_type_inference("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn a_cached_algorithm_result_is_reused_without_rescanning() {
+        let dir = TempDir::new().unwrap();
+        AlgorithmPersistor::new(dir.path())
+            .save(&AlgorithmRecognitionResult::new(ScanMetadata::new(
+                "eqmain.dll",
+            )))
+            .unwrap();
+
+        // The Ghidra server is unreachable, so `true` can only come from the cache.
+        let pipeline = pipeline_over(Some(dir.path()));
+        assert!(pipeline.ensure_algorithm_recognition("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn a_failed_algorithm_scan_degrades_instead_of_failing() {
+        let dir = TempDir::new().unwrap();
+        let pipeline = pipeline_over(Some(dir.path()));
+
+        assert!(!pipeline.ensure_algorithm_recognition("eqmain.dll").await);
+        assert!(
+            !AlgorithmPersistor::new(dir.path()).exists("eqmain.dll"),
+            "a failed scan persists nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_workspace_skips_the_algorithm_scan() {
+        let pipeline = pipeline_over(None);
+        assert!(!pipeline.ensure_algorithm_recognition("eqmain.dll").await);
     }
 }
