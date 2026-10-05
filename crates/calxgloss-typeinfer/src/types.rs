@@ -268,6 +268,43 @@ impl InferredType {
 }
 
 // ============================================================
+// Prompt conversions
+// ============================================================
+
+/// Render an inference as prompt data. The name is what the inference
+/// types — a parameter, a local variable, or a call-site argument — and
+/// the description carries the narrowed type with the method and
+/// confidence behind it, so the prompt shows the reading and the
+/// evidence class that produced it.
+impl From<&InferredType> for calxgloss_prompts::TypeInfo {
+    fn from(inference: &InferredType) -> Self {
+        let name = match inference {
+            InferredType::Param(record) => record
+                .param_name
+                .clone()
+                .unwrap_or_else(|| format!("param_{}", record.param_index + 1)),
+            InferredType::Local(record) => record.variable_name.clone(),
+            InferredType::CallSite(record) => match record.arg_name.as_deref() {
+                Some(arg) => format!("{}({arg})", record.callee),
+                None => format!("{} arg {}", record.callee, record.arg_index + 1),
+            },
+        };
+        let (method, confidence) = match inference {
+            InferredType::Param(record) => (record.method, record.confidence),
+            InferredType::Local(record) => (record.method, record.confidence),
+            InferredType::CallSite(record) => (record.method, record.confidence),
+        };
+        Self {
+            name,
+            description: format!(
+                "{} (via {method}, confidence {confidence})",
+                inference.inferred_type()
+            ),
+        }
+    }
+}
+
+// ============================================================
 // Persisted result
 // ============================================================
 
@@ -500,6 +537,45 @@ mod tests {
         assert_eq!(inferences[2].inferred_type(), "void *");
         assert_eq!(inferences[0].confidence(), Confidence::new(85));
         assert_eq!(inferences[2].confidence(), Confidence::new(75));
+    }
+
+    #[test]
+    fn a_named_parameter_renders_with_its_type_and_evidence() {
+        let info = calxgloss_prompts::TypeInfo::from(&InferredType::Param(param_record()));
+        assert_eq!(info.name, "param_1");
+        assert_eq!(info.description, "Widget * (via vtable_call, confidence 85)");
+    }
+
+    #[test]
+    fn an_unnamed_parameter_falls_back_to_its_position() {
+        let record = InferredParamType {
+            param_name: None,
+            param_index: 2,
+            ..param_record()
+        };
+        let info = calxgloss_prompts::TypeInfo::from(&InferredType::Param(record));
+        assert_eq!(info.name, "param_3");
+    }
+
+    #[test]
+    fn a_local_variable_renders_under_its_decompiled_name() {
+        let info = calxgloss_prompts::TypeInfo::from(&InferredType::Local(local_record()));
+        assert_eq!(info.name, "local_8");
+        assert_eq!(info.description, "char * (via known_signature, confidence 60)");
+    }
+
+    #[test]
+    fn a_call_site_renders_as_the_site_it_typed() {
+        let info = calxgloss_prompts::TypeInfo::from(&InferredType::CallSite(call_record()));
+        assert_eq!(info.name, "CloseHandle(param_2)");
+        assert_eq!(info.description, "void * (via known_signature, confidence 75)");
+
+        let literal_arg = InferredCallType {
+            arg_name: None,
+            ..call_record()
+        };
+        let info = calxgloss_prompts::TypeInfo::from(&InferredType::CallSite(literal_arg));
+        assert_eq!(info.name, "CloseHandle arg 1");
     }
 
     #[test]
