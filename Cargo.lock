@@ -395,6 +395,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "calxgloss",
+ "calxgloss-algorithm",
  "calxgloss-analysis",
  "calxgloss-config",
  "calxgloss-ghidra",

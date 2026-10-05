@@ -274,6 +274,40 @@ pub(super) enum Command {
         show: bool,
     },
 
+    /// Recognize algorithms in the binary open in Ghidra.
+    ///
+    /// Runs the three recognition detectors — control flow signature
+    /// matching, string-guided hints, and callback pattern detection —
+    /// against the currently open program and saves the result to
+    /// `re/analysis/algorithm/<dll>.json` in the workspace. Batch
+    /// translation runs the same scan automatically before its first
+    /// batch when no result is cached; this command is the manual entry
+    /// point: it rebuilds the result on demand and can print what a
+    /// cached one holds.
+    ///
+    /// # Arguments
+    ///
+    /// * `--dll` — Binary the open Ghidra program was loaded from, e.g.
+    ///   `eqmain.dll`. Names the persisted file.
+    /// * `--show` — Print a summary of the cached result without
+    ///   connecting to Ghidra.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss algorithm --dll eqmain.dll
+    /// calxgloss algorithm --dll eqmain.dll --show
+    /// ```
+    Algorithm {
+        /// Binary the open Ghidra program was loaded from, e.g. `eqmain.dll`
+        #[arg(long, required = true)]
+        dll: String,
+
+        /// Show the cached result instead of running the scan
+        #[arg(long)]
+        show: bool,
+    },
+
     /// Show the configuration in force and where each value came from
     ///
     /// Secrets are reported as `<set>` rather than printed, so this output is

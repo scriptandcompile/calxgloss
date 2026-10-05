@@ -14,6 +14,7 @@ calxgloss-testgen = { path = "../calxgloss-testgen" }
 calxgloss-translator = { path = "../calxgloss-translator" }
 calxgloss-typesdb = { path = "../calxgloss-typesdb" }
 calxgloss-typeinfer = { path = "../calxgloss-typeinfer" }
+calxgloss-algorithm = { path = "../calxgloss-algorithm" }
 calxgloss-verify = { path = "../calxgloss-verify" }
 calxgloss-git = { path = "../calxgloss-git" }
 calxgloss-reports = { path = "../calxgloss-reports" }
