@@ -160,6 +160,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### `calxgloss-types`
 - **Dashboard subdirectory** — extracted dashboard data model into `dashboard/` subdirectory (`types.rs`, `work_unit.rs`, `graph.rs`, `status.rs`, `review.rs`, `action.rs`, `mod.rs`, `tests.rs`). Old `dashboard.rs` removed.
 - **`WindowsApiCall` unification** — `translation.rs` held a second `WindowsApiCall` identical in shape to `function::WindowsApiCall`; the duplicate is gone and `TranslationRequest` now uses the single shared type, collapsing the hand-written field-by-field conversion shims in `calxgloss-prompts` and `calxgloss-translator` to plain clones.
+- **`display_serde_label!` macro** (`display.rs`) — a shared `Display` pattern for `#[serde(rename_all = "snake_case")]` enums whose `Display` exists only to re-emit the serde label, replacing the hand-written `match`/`write_str` boilerplate; the generated match is exhaustive, so a new variant without a label is a compile error. Applied to `TypeKind` (`calxgloss-typesdb`) and `InferenceMethod` / `InferenceScope` (`calxgloss-typeinfer`); `FieldType` (its `Display` emits the `c_type()` C declaration), `NameOrigin` (no `Display` impl), and `ApiCategory` (non-snake_case labels) stay hand-written.
 
 #### `calxgloss-typesdb`
 - **Shared provenance and confidence types** — `ScanMetadata` now comes from `calxgloss-types::scan` (re-exported from `typesdb::types` so existing imports keep resolving), and `InferredStruct.confidence` uses the shared `calxgloss-types::Confidence` type instead of a bare `u8`.
@@ -167,6 +168,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### `calxgloss-typeinfer`
 - **Shared confidence score** — `InferredParamType.confidence` now uses `calxgloss-types::Confidence`; the detectors keep their plain `u8` confidence constants and thresholds through the type's bare-number comparisons and `into()` conversions.
+- **Shared internal `Reading`** — `known_type.rs` and `param_size.rs` each held a private `Reading` accumulator plus a copy of the highest-confidence-wins resolution loop and the `InferredParamType` assembly; both now feed one crate-internal `reading::Reading` (the superset shape, carrying `method`) through the shared `resolve` / `into_record`, with the size detector keeping its per-family first-reading rule in front of the resolution. 3 unit tests.
 
 #### `calxgloss-pal`
 - **Module split** — extracted `ApiMapping` and `ApiMappings` types with their implementations into `types.rs` (209 lines), moved all 20 unit tests into a separate `tests.rs` file. `lib.rs` is now 23 lines of module declarations and re-exports only.
