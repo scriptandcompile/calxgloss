@@ -12,6 +12,7 @@
 //! - `translate` — Translate a single function from disassembly to Rust
 //! - `batch-translate` — Translate multiple functions from a single DLL
 //! - `typesdb` — Recover the type database (named types, vtables, inferred structs) for the binary open in Ghidra
+//! - `typeinfer` — Infer parameter types (this pointers, sizes, known signatures) for the binary open in Ghidra
 //! - `verify` — Verify a previously translated function
 //! - `config` — Show the configuration in force and where each value came from
 //! - `dashboard` — Show a structured terminal review dashboard
@@ -61,6 +62,7 @@ use commands::init::handle_init;
 use commands::live::handle_live;
 use commands::serve::handle_serve;
 use commands::translate::handle_translate;
+use commands::typeinfer::handle_typeinfer;
 use commands::typesdb::handle_typesdb;
 use commands::verify::handle_verify;
 
@@ -114,12 +116,15 @@ fn main() -> Result<()> {
     let settings = Settings::resolve(&layers, flags, &loaded);
 
     // target_dir is required for all commands that do real work.
-    // `config`, `gc`, and `typesdb` don't need it — `typesdb` reads the
-    // program open in Ghidra and writes to the workspace — so we check
-    // here and fail fast with a helpful message.
+    // `config`, `gc`, `typesdb`, and `typeinfer` don't need it — the two
+    // analysis commands read the program open in Ghidra and write to the
+    // workspace — so we check here and fail fast with a helpful message.
     if let Some(ref target) = cli.command {
         match target {
-            Command::Config | Command::Gc { .. } | Command::Typesdb { .. } => {}
+            Command::Config
+            | Command::Gc { .. }
+            | Command::Typesdb { .. }
+            | Command::Typeinfer { .. } => {}
             _ if settings.target_dir.is_none() => {
                 anyhow::bail!(
                     "target_dir is required.\n\nSet it via:\n  --target-dir <path>\n  [target_dir] in calxgloss.toml\n  CALXGLOSS_TARGET_DIR env var"
@@ -204,6 +209,14 @@ fn main() -> Result<()> {
                 .build()
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_typesdb(&dll, &repo_dir, show, no_tag, &settings))
+        }
+        Command::Typeinfer { dll, show } => {
+            let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_typeinfer(&dll, &repo_dir, show, &settings))
         }
         Command::Verify {
             dll,

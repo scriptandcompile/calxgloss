@@ -240,6 +240,40 @@ pub(super) enum Command {
         no_tag: bool,
     },
 
+    /// Infer parameter types for the binary open in Ghidra.
+    ///
+    /// Runs the three inference detectors — C++ this-pointer detection,
+    /// parameter-size detection, and known-type propagation — against the
+    /// currently open program and saves the result to
+    /// `re/analysis/typeinfer/<dll>.json` in the workspace. Batch
+    /// translation runs the same scan automatically before its first
+    /// batch when no result is cached; this command is the manual entry
+    /// point: it rebuilds the result on demand and can print what a
+    /// cached one holds.
+    ///
+    /// # Arguments
+    ///
+    /// * `--dll` — Binary the open Ghidra program was loaded from, e.g.
+    ///   `eqmain.dll`. Names the persisted file.
+    /// * `--show` — Print a summary of the cached result without
+    ///   connecting to Ghidra.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss typeinfer --dll eqmain.dll
+    /// calxgloss typeinfer --dll eqmain.dll --show
+    /// ```
+    Typeinfer {
+        /// Binary the open Ghidra program was loaded from, e.g. `eqmain.dll`
+        #[arg(long, required = true)]
+        dll: String,
+
+        /// Show the cached result instead of running the scan
+        #[arg(long)]
+        show: bool,
+    },
+
     /// Show the configuration in force and where each value came from
     ///
     /// Secrets are reported as `<set>` rather than printed, so this output is
