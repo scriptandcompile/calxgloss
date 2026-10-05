@@ -314,15 +314,12 @@ pub(super) enum Command {
     /// The lifecycle findings are persisted per binary to
     /// `re/analysis/memory/<dll>.json` in the workspace — the same file
     /// batch translation will read as prompt context. `--show` prints a
-    /// cached result without connecting to Ghidra; the on-demand scan
-    /// that produces one arrives with the memory engine, and until it
-    /// lands running the command without `--show` reports that the scan
-    /// is not wired up yet.
+    /// cached result without connecting to Ghidra.
     ///
     /// # Arguments
     ///
-    /// * `--dll` — Binary the result was scanned from, e.g.
-    ///   `eqmain.dll`. Names the persisted file.
+    /// * `--dll` — Binary to scan, e.g. `eqmain.dll`. Names the
+    ///   persisted file.
     /// * `--show` — Print a summary of the cached result.
     ///
     /// # Examples
@@ -331,7 +328,7 @@ pub(super) enum Command {
     /// calxgloss memory --dll eqmain.dll --show
     /// ```
     Memory {
-        /// Binary the result was scanned from, e.g. `eqmain.dll`
+        /// Binary to scan, e.g. `eqmain.dll`
         #[arg(long, required = true)]
         dll: String,
 

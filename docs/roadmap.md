@@ -94,20 +94,21 @@ stack), handle lifetimes (→ RAII guard + `Drop`), reference counting (→ `Rc<
 Done: `MemoryResult` + shared `ScanMetadata` per-binary document type (with the
 `MemoryFinding` union, serde-tagged by kind); `MemoryPersistor` →
 `re/analysis/memory/{dll}.json` (wrapping `calxgloss_types::persist::JsonStore`,
-typesdb convention); `calxgloss memory --dll <dll> --show` prints the cached
-document (target-dir-exempt); `calxgloss-memory` re-exported from the
-meta-crate.
+typesdb convention); `MemoryEngine` scan orchestration (engine generic over a
+`ScanSource` source trait — `functions()` + `decompile(name)`, implemented for
+`GhidraClient`, canned-source tests; one sequential pass, one decompile per
+function read by all three detectors, findings in scan order, skip-with-warning
+on body-fetch failure, only a failed listing aborts, per-detector name sets
+swappable whole); `calxgloss memory --dll <dll>` scan+save wired to the engine
+and `--show` printing the cached document (target-dir-exempt);
+`calxgloss-memory` re-exported from the meta-crate; 5 scan-to-disk integration
+tests; clippy + fmt clean.
 
 Remaining:
 
-- `MemoryEngine` orchestrating the three detectors (source-trait generic,
-  canned-source tests)
 - `extract_memory_hints()` in `calxgloss-translator/src/retry/helpers.rs` +
   prompt section (`MemoryHint` → prompt struct in `calxgloss-prompts`)
 - `ensure_memory_detection(dll)` pre-analysis in batch translation
-- `calxgloss memory --dll <dll>` scan+save half of the CLI command (lands
-  with `MemoryEngine`)
-- Integration tests + clippy clean
 
 Dependencies: soft on P2 (done).
 

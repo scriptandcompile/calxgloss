@@ -8,7 +8,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into six modules:
+//! The crate is organized into seven modules:
 //!
 //! - [`types`] - Core data types: `MemoryHint`, `AllocationType` for
 //!   per-function detection records; `HandleLifecycle` and
@@ -26,11 +26,17 @@
 //! - [`refcount`] - Reference counting detection: detects
 //!   `ref_count++`/`ref_count--` and `AddRef`/`Release` patterns and
 //!   suggests `Rc<T>`/`Arc<T>`.
+//! - [`engine`] - Scan orchestration: `MemoryEngine` runs the three
+//!   detectors over one open Ghidra program through a `ScanSource`
+//!   (function listing + decompile-by-name), one sequential pass that
+//!   decompiles each function exactly once and keeps the findings in
+//!   scan order.
 //! - [`persist`] - JSON persistence: `MemoryPersistor` saves and loads
 //!   the per-binary detection results under `re/analysis/memory/`.
 //! - [`error`] - [`MemoryError`] and the crate-wide [`Result`] alias.
 
 pub mod allocator;
+pub mod engine;
 pub mod error;
 pub mod handle;
 pub mod persist;

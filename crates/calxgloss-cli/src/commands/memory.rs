@@ -1,49 +1,73 @@
-//! The `memory` command — inspect the cached memory lifecycle result.
+//! The `memory` command — detect memory lifecycles for the open binary.
 //!
-//! The three lifecycle detectors — allocation/release pair tracking,
-//! handle lifetime detection, and reference-counting detection — file
-//! their findings per binary at `re/analysis/memory/{dll}.json` in the
-//! workspace, the same file batch translation will read as prompt
-//! context. `--show` prints a cached document without connecting to
-//! Ghidra; the on-demand scan that produces one arrives with the memory
-//! engine, so running the command without `--show` reports that the
-//! scan is not wired up yet.
+//! Runs the three lifecycle detectors — allocation/release pair tracking,
+//! handle lifetime detection, and reference-counting detection — against
+//! the program currently open in Ghidra and saves the result to
+//! `re/analysis/memory/{dll}.json` in the workspace, the same file batch
+//! translation will read as prompt context. Batch translation runs the
+//! same scan before its first batch when no result is cached; this
+//! command is the manual entry point: it rebuilds the result on demand
+//! and can print what a cached one holds.
 
 use std::path::Path;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
+use calxgloss_ghidra::{GhidraClient, GhidraConfig};
+use calxgloss_memory::engine::MemoryEngine;
 use calxgloss_memory::persist::MemoryPersistor;
 use calxgloss_memory::types::MemoryResult;
 use chrono::DateTime;
+use tracing::info;
 
+use crate::Settings;
 use crate::utils::*;
 
 /// How many entries a detail section lists before collapsing the rest.
 const DETAIL_LIMIT: usize = 10;
 
-/// Handle the `memory` subcommand: print the cached lifecycle result
-/// for `dll` when `show` is set.
-pub async fn handle_memory(dll: &str, workspace: &Path, show: bool) -> Result<()> {
+/// Handle the `memory` subcommand: detect memory lifecycles for `dll`,
+/// or print the cached result when `show` is set.
+pub async fn handle_memory(
+    dll: &str,
+    workspace: &Path,
+    show: bool,
+    settings: &Settings,
+) -> Result<()> {
     let persistor = MemoryPersistor::new(workspace);
 
     if show {
         let result = persistor.load(dll).with_context(|| {
             format!(
                 "No cached memory lifecycle result for {dll}; \
-                 the scan that produces one (`calxgloss memory --dll {dll}`) \
-                 is not wired up yet"
+                 run `calxgloss memory --dll {dll}` to produce one"
             )
         })?;
         print_memory_lifecycle_report(&result, &persistor.path_for(dll));
         return Ok(());
     }
 
-    // The scan against the open Ghidra program lands with `MemoryEngine`
-    // (the next P4 step); until then the command is read-only.
-    Err(anyhow!(
-        "the memory lifecycle scan is not wired up yet; \
-         `calxgloss memory --dll {dll} --show` prints a cached document"
-    ))
+    info!(dll, workspace = %workspace.display(), "Detecting memory lifecycles");
+
+    let ghidra_url = &settings.ghidra_url.value;
+    let mut config = GhidraConfig::new(ghidra_url)
+        .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
+    if let Some(key) = &settings.ghidra_api_key {
+        config = config.with_api_key(key.value.clone());
+    }
+    let ghidra = GhidraClient::from_config(config)
+        .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))?;
+
+    let engine = MemoryEngine::new(&ghidra);
+    let result = engine
+        .scan(dll)
+        .await
+        .with_context(|| format!("Memory lifecycle detection failed for {dll}"))?;
+    persistor
+        .save(&result)
+        .with_context(|| format!("Failed to save the memory lifecycle result for {dll}"))?;
+
+    print_memory_lifecycle_report(&result, &persistor.path_for(dll));
+    Ok(())
 }
 
 /// Print a summary of a lifecycle result: where it is filed, when it

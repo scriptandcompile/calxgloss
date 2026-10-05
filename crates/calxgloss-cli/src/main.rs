@@ -14,7 +14,7 @@
 //! - `typesdb` — Recover the type database (named types, vtables, inferred structs) for the binary open in Ghidra
 //! - `typeinfer` — Infer parameter types (this pointers, sizes, known signatures) for the binary open in Ghidra
 //! - `algorithm` — Recognize algorithms (control flow shapes, string markers, callback contracts) in the binary open in Ghidra
-//! - `memory` — Print the cached memory lifecycle result (allocation/release pairs, handle lifetimes, reference counting) for a binary
+//! - `memory` — Detect memory lifecycles (allocation/release pairs, handle lifetimes, reference counting) for the open binary and cache the result
 //! - `verify` — Verify a previously translated function
 //! - `config` — Show the configuration in force and where each value came from
 //! - `dashboard` — Show a structured terminal review dashboard
@@ -239,7 +239,7 @@ fn main() -> Result<()> {
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_memory(&dll, &repo_dir, show))
+                .block_on(handle_memory(&dll, &repo_dir, show, &settings))
         }
         Command::Verify {
             dll,
