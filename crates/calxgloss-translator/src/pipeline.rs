@@ -41,6 +41,8 @@ use calxgloss_llm::{
 use calxgloss_pal::ApiMappings;
 use calxgloss_prompts::build_translate_prompt;
 use calxgloss_testgen::TestGenerator;
+use calxgloss_typeinfer::engine::TypeInferEngine;
+use calxgloss_typeinfer::persist::TypeInferPersistor;
 use calxgloss_types::{
     ContextTier, Export, FunctionInfo, ProgressEvent, TestCase, TranslationEvents,
     TranslationRequest,
@@ -1316,6 +1318,67 @@ impl TranslationPipeline {
         }
     }
 
+    /// Infer parameter types across the binary before a batch starts, unless
+    /// an inference result is already cached.
+    ///
+    /// Prompts and escalated retries read inferred parameter types from
+    /// `re/analysis/typeinfer/{dll}.json` (see
+    /// [`extract_type_info`](crate::retry::helpers::extract_type_info));
+    /// running the inference scan once up front means every function in the
+    /// batch can see type context instead of none. The persisted file is the
+    /// cache: when a result is already saved for `dll`, the scan is skipped
+    /// entirely.
+    ///
+    /// Returns whether a result is available afterwards. A missing workspace,
+    /// an unreachable Ghidra server, or a failed save only log a warning and
+    /// return `false` — prompts without type context are degraded, not
+    /// fatal, and the batch proceeds either way.
+    pub async fn ensure_type_inference(&self, dll: &str) -> bool {
+        let Some(workspace) = self.workspace.as_deref() else {
+            debug!(dll, "No workspace configured; skipping type inference");
+            return false;
+        };
+
+        let persistor = TypeInferPersistor::new(workspace);
+        if persistor.exists(dll) {
+            debug!(
+                dll,
+                path = %persistor.path_for(dll).display(),
+                "Type inference result already cached; skipping scan"
+            );
+            return true;
+        }
+
+        info!(dll, "Inferring parameter types before batch translation");
+        let engine = TypeInferEngine::new(&self.ghidra);
+        match engine.scan(dll).await {
+            Ok(result) => {
+                if let Err(e) = persistor.save(&result) {
+                    warn!(
+                        dll,
+                        error = %e,
+                        "Failed to persist type inference result; continuing without type context"
+                    );
+                    return false;
+                }
+                info!(
+                    dll,
+                    inferences = result.inferences.len(),
+                    "Type inference complete"
+                );
+                true
+            }
+            Err(e) => {
+                warn!(
+                    dll,
+                    error = %e,
+                    "Type inference failed; continuing without type context"
+                );
+                false
+            }
+        }
+    }
+
     /// Translate multiple functions from a single DLL, one at a time.
     ///
     /// For each function, this runs the full translation pipeline with retry
@@ -1323,9 +1386,11 @@ impl TranslationPipeline {
     /// [`try_translate_with_retry`](Self::try_translate_with_retry) path).
     /// Functions are processed sequentially in the order provided.
     ///
-    /// Before the first function, the per-binary type database is recovered
-    /// (or loaded from its cache) so higher context tiers have data structure
-    /// context — see [`ensure_type_database`](Self::ensure_type_database).
+    /// Before the first function, the per-binary type database and type
+    /// inference result are recovered (or loaded from their caches) so higher
+    /// context tiers have data structure and parameter type context — see
+    /// [`ensure_type_database`](Self::ensure_type_database) and
+    /// [`ensure_type_inference`](Self::ensure_type_inference).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
     /// invoked **immediately after each function completes** (before moving on
@@ -1454,6 +1519,7 @@ impl TranslationPipeline {
         debug!(dll, count = functions.len(), "Starting batch translation");
 
         self.ensure_type_database(dll).await;
+        self.ensure_type_inference(dll).await;
 
         let mut batch_result = batch::BatchTranslationResult::new(dll.to_string());
 
@@ -1563,9 +1629,11 @@ impl TranslationPipeline {
     /// processed. This ordering lets the LLM reference already-translated
     /// callee code when generating shim layers or caller wrappers.
     ///
-    /// Before the first function, the per-binary type database is recovered
-    /// (or loaded from its cache) so higher context tiers have data structure
-    /// context — see [`ensure_type_database`](Self::ensure_type_database).
+    /// Before the first function, the per-binary type database and type
+    /// inference result are recovered (or loaded from their caches) so higher
+    /// context tiers have data structure and parameter type context — see
+    /// [`ensure_type_database`](Self::ensure_type_database) and
+    /// [`ensure_type_inference`](Self::ensure_type_inference).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
     /// invoked **immediately after each function completes** (before moving on
@@ -1650,6 +1718,7 @@ impl TranslationPipeline {
         debug!(dll = %graph.dll, count = graph.functions.len(), "Starting call-graph batch translation");
 
         self.ensure_type_database(&graph.dll).await;
+        self.ensure_type_inference(&graph.dll).await;
 
         // Build a priority-ordered plan
         let orderer = calxgloss_callgraph::TranslationOrderer::new();
@@ -1877,6 +1946,8 @@ pub async fn build_hallucination_detector(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use calxgloss_typeinfer::persist::TypeInferPersistor;
+    use calxgloss_typeinfer::types::TypeInferenceResult;
     use calxgloss_typesdb::types::{ScanMetadata, TypeDatabase};
     use tempfile::TempDir;
 
@@ -1923,5 +1994,35 @@ mod tests {
     async fn no_workspace_skips_the_recovery() {
         let pipeline = pipeline_over(None);
         assert!(!pipeline.ensure_type_database("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn a_cached_inference_result_is_reused_without_rescanning() {
+        let dir = TempDir::new().unwrap();
+        TypeInferPersistor::new(dir.path())
+            .save(&TypeInferenceResult::new(ScanMetadata::new("eqmain.dll")))
+            .unwrap();
+
+        // The Ghidra server is unreachable, so `true` can only come from the cache.
+        let pipeline = pipeline_over(Some(dir.path()));
+        assert!(pipeline.ensure_type_inference("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn a_failed_inference_degrades_instead_of_failing() {
+        let dir = TempDir::new().unwrap();
+        let pipeline = pipeline_over(Some(dir.path()));
+
+        assert!(!pipeline.ensure_type_inference("eqmain.dll").await);
+        assert!(
+            !TypeInferPersistor::new(dir.path()).exists("eqmain.dll"),
+            "a failed scan persists nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_workspace_skips_the_inference() {
+        let pipeline = pipeline_over(None);
+        assert!(!pipeline.ensure_type_inference("eqmain.dll").await);
     }
 }
