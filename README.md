@@ -21,10 +21,10 @@ Calxgloss reverse engineers project executables and DLLs, transforming disassemb
 ## Architecture
 
 ```
-  ┌────────────────────────────────────────────────────┐      ┌────────────────────────────┐
-  │                   calxgloss-cli                    │      │       calxgloss-web        │
-  │ translate · batch · classify · auto · serve · live │      │accept · reject · work-on-it│
-  └────────────────────────────────────────────────────┘      └────────────────────────────┘
+  ┌────────────────────────────────────────────────────┐      ┌──────────────────────────────────┐
+  │                   calxgloss-cli                    │      │          calxgloss-web           │
+  │ translate · batch · classify · auto · serve · live │      │accept · send back · request patch│
+  └────────────────────────────────────────────────────┘      └──────────────────────────────────┘
                              │                                               ▲
                              │                                               │
                              ▼                                               │
