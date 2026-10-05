@@ -6,14 +6,19 @@
 //! - `InferredParamType`, `InferenceMethod`, `InferenceScope`: per-parameter
 //!   inference records — the narrowed type, which detector produced it, and
 //!   how far the inference reaches.
-//! - `InferredType`, `InferredLocalType`, `InferredCallType`: inferred types
-//!   for parameters, local variables, and call sites.
+//! - `InferredLocalType`, `InferredCallType`: the same record shape for
+//!   inferred local variables and call-site arguments.
+//! - `InferredType`: the union over the three record kinds — one inference
+//!   wherever it lands.
 //! - `TypeInferenceResult`, `ScanMetadata`: the persisted per-binary result
 //!   and its scan provenance.
 //!
 //! All types derive `Serialize`/`Deserialize`.
 
-use calxgloss_types::Confidence;
+// `ScanMetadata` is the shared per-binary scan provenance and `Confidence`
+// the shared 0–100 evidence score; both are re-exported so consumers name
+// them through this crate, matching the typesdb convention.
+pub use calxgloss_types::{Confidence, ScanMetadata};
 use serde::{Deserialize, Serialize};
 
 // ============================================================
@@ -152,6 +157,160 @@ impl InferredParamType {
 }
 
 // ============================================================
+// Inferred local variables and call sites
+// ============================================================
+
+/// A local variable's inferred type, with the evidence behind it.
+///
+/// The sibling of [`InferredParamType`] for the decompiler's stack slots:
+/// the same hypothesis shape — narrowed type, method, scope, confidence,
+/// evidence — keyed by the variable's decompiled name instead of a
+/// parameter position.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InferredLocalType {
+    /// The function the variable belongs to, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The variable's name in the decompiled output, e.g. `local_8`.
+    pub variable_name: String,
+    /// The narrowed type as C text, e.g. `Widget *`, `char *`, `u32`.
+    pub inferred_type: String,
+    /// The technique that produced the inference.
+    pub method: InferenceMethod,
+    /// How far the inference reaches beyond this function.
+    pub scope: InferenceScope,
+    /// Confidence that the inference is right, 0–100.
+    pub confidence: Confidence,
+    /// The decompiled line or pattern that supports the inference.
+    pub evidence: String,
+}
+
+/// One call-site argument's inferred type, with the evidence behind it.
+///
+/// A known library signature types the argument sitting at one of its
+/// positions; this record pins the reading to the site that produced it —
+/// the enclosing function, the callee as spelled there, and the argument
+/// position — so conflict resolution and the prompt rendering can tell
+/// where the contract was seen, not just what it typed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InferredCallType {
+    /// The function holding the call site, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The callee as spelled at the site, e.g. `CloseHandle`.
+    pub callee: String,
+    /// Argument position at the call site, starting at 0.
+    pub arg_index: usize,
+    /// The argument's variable name when it is one, e.g. `param_2`.
+    /// `None` when the argument is a literal, cast, or nested call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arg_name: Option<String>,
+    /// The narrowed type as C text, e.g. `void *`, `wchar_t *`.
+    pub inferred_type: String,
+    /// The technique that produced the inference.
+    pub method: InferenceMethod,
+    /// How far the inference reaches beyond this function.
+    pub scope: InferenceScope,
+    /// Confidence that the inference is right, 0–100.
+    pub confidence: Confidence,
+    /// The decompiled line carrying the call site.
+    pub evidence: String,
+}
+
+// ============================================================
+// Inference union
+// ============================================================
+
+/// One inferred type wherever it lands — a parameter, a local variable,
+/// or a call-site argument.
+///
+/// The detectors emit the concrete records; the union is what the
+/// persisted result carries, so one list can hold every inference for a
+/// binary and conflict resolution can weigh records across kinds by
+/// confidence. The serde `kind` tag names the record shape in the
+/// persisted JSON.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InferredType {
+    /// A narrowed function parameter.
+    Param(InferredParamType),
+    /// A narrowed local variable.
+    Local(InferredLocalType),
+    /// A narrowed call-site argument.
+    CallSite(InferredCallType),
+}
+
+impl InferredType {
+    /// The function the inference belongs to.
+    pub fn function(&self) -> &str {
+        match self {
+            InferredType::Param(record) => &record.function,
+            InferredType::Local(record) => &record.function,
+            InferredType::CallSite(record) => &record.function,
+        }
+    }
+
+    /// The narrowed type as C text.
+    pub fn inferred_type(&self) -> &str {
+        match self {
+            InferredType::Param(record) => &record.inferred_type,
+            InferredType::Local(record) => &record.inferred_type,
+            InferredType::CallSite(record) => &record.inferred_type,
+        }
+    }
+
+    /// Confidence that the inference is right.
+    pub fn confidence(&self) -> Confidence {
+        match self {
+            InferredType::Param(record) => record.confidence,
+            InferredType::Local(record) => record.confidence,
+            InferredType::CallSite(record) => record.confidence,
+        }
+    }
+}
+
+// ============================================================
+// Persisted result
+// ============================================================
+
+/// The inference result for one binary — the document persisted to
+/// `re/analysis/typeinfer/{dll}.json`.
+///
+/// The inferences are the resolved outputs of the detectors: at most one
+/// record per parameter, local, or call-site argument, highest confidence
+/// winning where detectors competed. The list keeps scan order — function
+/// by function, records in the order the bodies showed them — so two
+/// scans of the same program diff cleanly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeInferenceResult {
+    /// Provenance of the scan that produced these inferences.
+    pub metadata: ScanMetadata,
+    /// Every surviving inference, in scan order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inferences: Vec<InferredType>,
+}
+
+impl TypeInferenceResult {
+    /// An empty result for the binary described by `metadata`.
+    pub fn new(metadata: ScanMetadata) -> Self {
+        Self {
+            metadata,
+            inferences: Vec::new(),
+        }
+    }
+
+    /// The inferences recorded for one function, e.g. `FUN_18003ab00`.
+    pub fn for_function(&self, function: &str) -> impl Iterator<Item = &InferredType> {
+        self.inferences
+            .iter()
+            .filter(move |inference| inference.function() == function)
+    }
+
+    /// Whether the scan inferred nothing at all.
+    pub fn is_empty(&self) -> bool {
+        self.inferences.is_empty()
+    }
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -237,5 +396,173 @@ mod tests {
         );
         assert_eq!(InferenceScope::Function.to_string(), "function");
         assert_eq!(InferenceScope::Program.to_string(), "program");
+    }
+
+    fn param_record() -> InferredParamType {
+        InferredParamType {
+            function: "FUN_18003ab00".into(),
+            param_index: 0,
+            param_name: Some("param_1".into()),
+            inferred_type: "Widget *".into(),
+            method: InferenceMethod::VtableCall,
+            scope: InferenceScope::Class,
+            confidence: Confidence::new(85),
+            evidence: "(*(code *)(**param_1))[3](param_1)".into(),
+        }
+    }
+
+    fn local_record() -> InferredLocalType {
+        InferredLocalType {
+            function: "FUN_18003ab00".into(),
+            variable_name: "local_8".into(),
+            inferred_type: "char *".into(),
+            method: InferenceMethod::KnownSignature,
+            scope: InferenceScope::Function,
+            confidence: Confidence::new(60),
+            evidence: "local_8 = (char *)malloc(0x10);".into(),
+        }
+    }
+
+    fn call_record() -> InferredCallType {
+        InferredCallType {
+            function: "FUN_1800412a0".into(),
+            callee: "CloseHandle".into(),
+            arg_index: 0,
+            arg_name: Some("param_2".into()),
+            inferred_type: "void *".into(),
+            method: InferenceMethod::KnownSignature,
+            scope: InferenceScope::Program,
+            confidence: Confidence::new(75),
+            evidence: "CloseHandle(param_2);".into(),
+        }
+    }
+
+    fn metadata() -> ScanMetadata {
+        ScanMetadata {
+            binary: "eqmain.dll".into(),
+            scanned_at: 1_759_488_000,
+            duration_secs: 12,
+        }
+    }
+
+    #[test]
+    fn a_local_inference_serde_round_trips() {
+        let record = local_record();
+        let json = serde_json::to_string(&record).unwrap();
+        let back: InferredLocalType = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn a_call_inference_serde_round_trips_and_an_unnamed_argument_omits_its_name() {
+        let record = call_record();
+        let json = serde_json::to_string(&record).unwrap();
+        let back: InferredCallType = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, record);
+
+        let literal_arg = InferredCallType {
+            arg_name: None,
+            ..call_record()
+        };
+        let json = serde_json::to_string(&literal_arg).unwrap();
+        assert!(!json.contains("\"arg_name\""));
+        let back: InferredCallType = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, literal_arg);
+    }
+
+    #[test]
+    fn the_inference_union_tags_its_kind_in_json() {
+        let inferences = vec![
+            InferredType::Param(param_record()),
+            InferredType::Local(local_record()),
+            InferredType::CallSite(call_record()),
+        ];
+        let json = serde_json::to_string(&inferences).unwrap();
+        assert!(json.contains("\"kind\":\"param\""));
+        assert!(json.contains("\"kind\":\"local\""));
+        assert!(json.contains("\"kind\":\"call_site\""));
+        let back: Vec<InferredType> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, inferences);
+    }
+
+    #[test]
+    fn union_accessors_reach_through_every_variant() {
+        let inferences = [
+            InferredType::Param(param_record()),
+            InferredType::Local(local_record()),
+            InferredType::CallSite(call_record()),
+        ];
+        assert_eq!(inferences[0].function(), "FUN_18003ab00");
+        assert_eq!(inferences[1].function(), "FUN_18003ab00");
+        assert_eq!(inferences[2].function(), "FUN_1800412a0");
+        assert_eq!(inferences[0].inferred_type(), "Widget *");
+        assert_eq!(inferences[1].inferred_type(), "char *");
+        assert_eq!(inferences[2].inferred_type(), "void *");
+        assert_eq!(inferences[0].confidence(), Confidence::new(85));
+        assert_eq!(inferences[2].confidence(), Confidence::new(75));
+    }
+
+    #[test]
+    fn type_inference_result_serde_round_trips_all_three_kinds() {
+        let result = TypeInferenceResult {
+            metadata: metadata(),
+            inferences: vec![
+                InferredType::Param(param_record()),
+                InferredType::Local(local_record()),
+                InferredType::CallSite(call_record()),
+            ],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let back: TypeInferenceResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, result);
+        assert!(!back.is_empty());
+    }
+
+    #[test]
+    fn a_metadata_only_result_omits_its_inferences_and_reads_back() {
+        let result = TypeInferenceResult::new(metadata());
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(!json.contains("\"inferences\""));
+        let back: TypeInferenceResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, result);
+        assert!(back.is_empty());
+    }
+
+    #[test]
+    fn a_result_without_an_inferences_field_reads_back_empty() {
+        // Documents persisted before the field existed still load.
+        let json = r#"{
+            "metadata": {
+                "binary": "eqmain.dll",
+                "scanned_at": 1759488000,
+                "duration_secs": 12
+            }
+        }"#;
+        let back: TypeInferenceResult = serde_json::from_str(json).unwrap();
+        assert_eq!(back.metadata.binary, "eqmain.dll");
+        assert!(back.inferences.is_empty());
+    }
+
+    #[test]
+    fn result_lookups_key_on_the_function_name() {
+        let result = TypeInferenceResult {
+            metadata: metadata(),
+            inferences: vec![
+                InferredType::Param(param_record()),
+                InferredType::Local(local_record()),
+                InferredType::CallSite(call_record()),
+            ],
+        };
+        assert_eq!(result.for_function("FUN_18003ab00").count(), 2);
+        assert_eq!(result.for_function("FUN_1800412a0").count(), 1);
+        assert_eq!(result.for_function("FUN_180099999").count(), 0);
+    }
+
+    #[test]
+    fn scan_metadata_new_stamps_the_current_time() {
+        let meta = ScanMetadata::new("eqmain.dll");
+        assert_eq!(meta.binary, "eqmain.dll");
+        assert!(meta.scanned_at > 0);
+        assert_eq!(meta.duration_secs, 0);
     }
 }

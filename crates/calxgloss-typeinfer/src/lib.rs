@@ -10,10 +10,11 @@
 //! The crate is organized into eight modules:
 //!
 //! - [`types`] - Core data types: `InferredParamType`, `InferenceMethod`,
-//!   `InferenceScope` for per-parameter inference records; `InferredType`,
-//!   `InferredLocalType`, `InferredCallType` for inferred parameters, local
-//!   variables, and call sites; `TypeInferenceResult`, `ScanMetadata` for
-//!   the persisted per-binary results.
+//!   `InferenceScope` for per-parameter inference records; `InferredLocalType`
+//!   and `InferredCallType` for inferred local variables and call-site
+//!   arguments; `InferredType` as the union over the three record kinds;
+//!   `TypeInferenceResult`, `ScanMetadata` for the persisted per-binary
+//!   results.
 //! - [`this_ptr`] - C++ this-pointer detection: `ThisPointerDetector`
 //!   parses decompiled output for `vtable[index]` call patterns and
 //!   first-parameter usage, extracts class names from vtable function
