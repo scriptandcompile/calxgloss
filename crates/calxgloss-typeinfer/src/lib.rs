@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into eight modules:
+//! The crate is organized into nine modules:
 //!
 //! - [`types`] - Core data types: `InferredParamType`, `InferenceMethod`,
 //!   `InferenceScope` for per-parameter inference records; `InferredLocalType`
@@ -15,6 +15,11 @@
 //!   arguments; `InferredType` as the union over the three record kinds;
 //!   `TypeInferenceResult`, `ScanMetadata` for the persisted per-binary
 //!   results.
+//! - [`engine`] - Scan orchestration: `TypeInferEngine` decompiles each
+//!   function of a program exactly once, reads it with all three detectors,
+//!   and assembles their records into one `TypeInferenceResult`;
+//!   `DecompileSource` abstracts the decompiler reads so tests run the
+//!   orchestration over canned bodies.
 //! - [`this_ptr`] - C++ this-pointer detection: `ThisPointerDetector`
 //!   parses decompiled output for `vtable[index]` call patterns and
 //!   first-parameter usage, extracts class names from vtable function
