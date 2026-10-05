@@ -25,6 +25,11 @@ recompiled_project/
 /graft/
 /.claude/
 /.gemini/
+
+# agent skills (installed via `npx skills add mattpocock/skills`) — local tooling, not source
+/.agents/
+/skills/
+skills-lock.json
 AGENTS.md
 GEMINI.md
 .mcp.json
