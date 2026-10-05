@@ -8,6 +8,8 @@
 //! # Module Organization
 //!
 //! - [`dll`] — DLL classification and symbol information
+//! - [`display`] — `display_serde_label!`, the shared `Display` pattern for
+//!   serde-label enums
 //! - [`function`] — Function disassembly, decompiler output, and API tagging
 //! - [`shim`] — Shim layer API contract for crate-replacement DLLs
 //! - [`test`] — Test case generation and baseline execution
@@ -21,6 +23,7 @@ pub mod complexity;
 pub mod confidence;
 pub mod context_tier;
 pub mod dashboard;
+pub mod display;
 pub mod dll;
 pub mod error;
 pub mod experiment_log;

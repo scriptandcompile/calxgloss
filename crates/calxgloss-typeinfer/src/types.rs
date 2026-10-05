@@ -15,7 +15,6 @@
 
 use calxgloss_types::Confidence;
 use serde::{Deserialize, Serialize};
-use std::fmt;
 
 // ============================================================
 // Inference method
@@ -65,20 +64,15 @@ impl InferenceMethod {
     }
 }
 
-impl fmt::Display for InferenceMethod {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = match self {
-            InferenceMethod::VtableCall => "vtable_call",
-            InferenceMethod::FirstParamUsage => "first_param_usage",
-            InferenceMethod::ComInterface => "com_interface",
-            InferenceMethod::StringFunction => "string_function",
-            InferenceMethod::IntegerBitPattern => "integer_bit_pattern",
-            InferenceMethod::PointerArithmetic => "pointer_arithmetic",
-            InferenceMethod::KnownSignature => "known_signature",
-        };
-        f.write_str(label)
-    }
-}
+calxgloss_types::display_serde_label!(InferenceMethod {
+    VtableCall => "vtable_call",
+    FirstParamUsage => "first_param_usage",
+    ComInterface => "com_interface",
+    StringFunction => "string_function",
+    IntegerBitPattern => "integer_bit_pattern",
+    PointerArithmetic => "pointer_arithmetic",
+    KnownSignature => "known_signature",
+});
 
 // ============================================================
 // Inference scope
@@ -104,16 +98,11 @@ pub enum InferenceScope {
     Program,
 }
 
-impl fmt::Display for InferenceScope {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = match self {
-            InferenceScope::Function => "function",
-            InferenceScope::Class => "class",
-            InferenceScope::Program => "program",
-        };
-        f.write_str(label)
-    }
-}
+calxgloss_types::display_serde_label!(InferenceScope {
+    Function => "function",
+    Class => "class",
+    Program => "program",
+});
 
 // ============================================================
 // Inferred parameter types

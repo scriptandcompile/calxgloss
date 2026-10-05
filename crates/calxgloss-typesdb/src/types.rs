@@ -61,19 +61,14 @@ pub enum TypeKind {
     Other,
 }
 
-impl fmt::Display for TypeKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = match self {
-            TypeKind::Struct => "struct",
-            TypeKind::Class => "class",
-            TypeKind::Union => "union",
-            TypeKind::Enum => "enum",
-            TypeKind::Typedef => "typedef",
-            TypeKind::Other => "other",
-        };
-        f.write_str(label)
-    }
-}
+calxgloss_types::display_serde_label!(TypeKind {
+    Struct => "struct",
+    Class => "class",
+    Union => "union",
+    Enum => "enum",
+    Typedef => "typedef",
+    Other => "other",
+});
 
 // ============================================================
 // Layout members
