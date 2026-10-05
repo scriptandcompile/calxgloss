@@ -217,14 +217,15 @@ pub(super) fn hsep_bold() {
 /// Safe for ANSI codes and multi-byte UTF-8.
 pub(super) fn println_content(content: impl AsRef<str>) {
     let s = content.as_ref();
-    let visible: String = s.chars().filter(|c| !c.is_control()).collect();
-    let padded = if visible.len() < SEP_WIDTH {
+    // Count visible *characters*, not bytes: a multi-byte character like
+    // the ● bullet would otherwise push a short line into the truncation
+    // branch, where the character-counting cut below never reaches the
+    // byte-based limit and the whole line prints empty.
+    let visible_chars = s.chars().filter(|c| !c.is_control()).count();
+    let padded = if visible_chars < SEP_WIDTH {
         format!("{:<SEP_WIDTH$}", s)
     } else {
-        let mut end = SEP_WIDTH.min(visible.len());
-        while !visible.is_char_boundary(end) {
-            end -= 1;
-        }
+        let end = SEP_WIDTH.min(visible_chars);
         let mut vcount = 0usize;
         let mut bend = 0usize;
         for (bi, ch) in s.chars().enumerate() {
