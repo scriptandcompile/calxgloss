@@ -49,6 +49,7 @@
 //! logger.record(entry);
 //! ```
 
+use calxgloss_types::persist::{PersistError, analysis_dir, load_json, save_json};
 use calxgloss_types::TokenUsageEntry;
 use tracing::{debug, warn};
 
@@ -87,18 +88,16 @@ impl TokenUsageLogger {
         let log_path = self.log_path();
 
         // Try to read existing log
-        let mut log = match std::fs::read_to_string(&log_path) {
-            Ok(contents) => match serde_json::from_str(&contents) {
-                Ok(existing) => existing,
-                Err(e) => {
-                    warn!(
-                        path = ?log_path,
-                        error = %e,
-                        "Failed to parse existing token usage log, starting fresh"
-                    );
-                    calxgloss_types::TokenUsageLog::new()
-                }
-            },
+        let mut log = match load_json(&log_path) {
+            Ok(existing) => existing,
+            Err(PersistError::Json { path, source }) => {
+                warn!(
+                    path = ?path,
+                    error = %source,
+                    "Failed to parse existing token usage log, starting fresh"
+                );
+                calxgloss_types::TokenUsageLog::new()
+            }
             Err(_) => calxgloss_types::TokenUsageLog::new(),
         };
 
@@ -106,7 +105,7 @@ impl TokenUsageLogger {
         log.add_entry(entry);
 
         // Persist
-        if let Err(e) = self.persist(&log) {
+        if let Err(e) = save_json(&log_path, &log) {
             warn!(error = %e, "Failed to persist token usage log to disk");
         } else {
             debug!(
@@ -122,26 +121,7 @@ impl TokenUsageLogger {
     ///
     /// Returns [`None`] if the file does not exist or cannot be parsed.
     pub fn load(&self) -> Option<calxgloss_types::TokenUsageLog> {
-        let log_path = self.log_path();
-        std::fs::read_to_string(&log_path)
-            .ok()
-            .and_then(|contents| serde_json::from_str(&contents).ok())
-    }
-
-    /// Persist the in-memory log to the JSON file.
-    fn persist(&self, log: &calxgloss_types::TokenUsageLog) -> std::io::Result<()> {
-        let log_path = self.log_path();
-
-        // Ensure the directory exists
-        if let Some(parent) = log_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        // Serialize with indentation for readability
-        let contents = serde_json::to_string_pretty(log)?;
-        std::fs::write(&log_path, contents)?;
-
-        Ok(())
+        load_json(&self.log_path()).ok()
     }
 
     /// Compute aggregated statistics from the current log.
@@ -155,10 +135,7 @@ impl TokenUsageLogger {
 
     /// Get the path to the token usage log JSON file.
     fn log_path(&self) -> std::path::PathBuf {
-        self.workspace
-            .join("re")
-            .join("analysis")
-            .join("token_usage.json")
+        analysis_dir(&self.workspace).join("token_usage.json")
     }
 }
 
