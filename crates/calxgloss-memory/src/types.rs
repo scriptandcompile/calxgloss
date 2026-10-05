@@ -154,6 +154,75 @@ pub struct HandleLifecycle {
 }
 
 // ============================================================
+// Reference counting
+// ============================================================
+
+/// The counting style a recognized bump or drop belongs to.
+///
+/// The style says how the code spells its reference counting —
+/// arithmetic on a named count field, or the COM `AddRef`/`Release`
+/// method pair — and what ties the two sides of a pairing: a bump
+/// answers a drop on the same field of the same owner for
+/// [`FieldArithmetic`](Self::FieldArithmetic), and on the same object
+/// variable for [`ComMethods`](Self::ComMethods). A bump never
+/// crosses styles: `AddRef` answers no field arithmetic, and neither
+/// does a field drop answer a method call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CountStyle {
+    /// A count the code keeps in a named field, raised and lowered by
+    /// arithmetic on it: `ref_count++` and `ref_count--`.
+    FieldArithmetic,
+    /// A count the code keeps behind an object, raised and lowered
+    /// through the COM `AddRef`/`Release` method pair.
+    ComMethods,
+}
+
+calxgloss_types::display_serde_label!(CountStyle {
+    FieldArithmetic => "field_arithmetic",
+    ComMethods => "com_methods",
+});
+
+/// One reference-counting observation about one function, with the
+/// evidence behind it.
+///
+/// A record says the function bumps a reference count — through
+/// [`increment`](Self::increment) — and drops it again through
+/// [`decrement`](Self::decrement), the two tied by what carries the
+/// count: the same field of the same owner under
+/// [`CountStyle::FieldArithmetic`](CountStyle::FieldArithmetic), the
+/// same object variable under
+/// [`CountStyle::ComMethods`](CountStyle::ComMethods). The pairing
+/// reads like [`suggestion`](Self::suggestion) — the shared-ownership
+/// pattern standing in for the manual counting, `Rc<T>` where the
+/// counted object stays inside the function and `Arc<T>` where the
+/// body hands it to a thread. The bump line and the drop line are
+/// kept as [`evidence`](Self::evidence) so a reviewer (or a
+/// translation prompt) can check the reasoning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReferenceCount {
+    /// The function the record is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The counting style the bump and the drop belong to.
+    pub style: CountStyle,
+    /// The bump spelling that raised the count, e.g. `ref_count++` or
+    /// `AddRef`.
+    pub increment: String,
+    /// The drop spelling that lowered the count, e.g. `ref_count--`
+    /// or `Release`.
+    pub decrement: String,
+    /// The Rust pattern the pairing suggests, e.g. `Rc<T>` or
+    /// `Arc<T>`.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+    /// The decompiled lines that support the record — the bump and
+    /// its drop — kept so a reviewer (or a translation prompt) can
+    /// check the reasoning.
+    pub evidence: String,
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -170,6 +239,8 @@ mod tests {
     ];
 
     const ALL_HANDLE_TYPES: [HandleType; 2] = [HandleType::KernelObject, HandleType::FileStream];
+
+    const ALL_COUNT_STYLES: [CountStyle; 2] = [CountStyle::FieldArithmetic, CountStyle::ComMethods];
 
     fn hint() -> MemoryHint {
         MemoryHint {
@@ -288,6 +359,70 @@ mod tests {
         assert_eq!(back.opener, "fopen");
         assert_eq!(back.closer, "fclose");
         assert_eq!(back.suggestion, "scoped RAII guard struct with Drop impl");
+        assert_eq!(back.confidence, 65);
+    }
+
+    fn reference_count() -> ReferenceCount {
+        ReferenceCount {
+            function: "FUN_18003ab00".into(),
+            style: CountStyle::ComMethods,
+            increment: "AddRef".into(),
+            decrement: "Release".into(),
+            suggestion: "Rc<T>".into(),
+            confidence: Confidence::new(70),
+            evidence: "AddRef((IUnknown *)param_1); Release((IUnknown *)param_1);".into(),
+        }
+    }
+
+    #[test]
+    fn a_reference_count_serde_round_trips() {
+        let record = reference_count();
+        let json = serde_json::to_string(&record).unwrap();
+        // The counting style serializes snake_case and the confidence
+        // as a plain number, matching the workspace's serde
+        // convention.
+        assert!(json.contains("\"style\":\"com_methods\""));
+        assert!(json.contains("\"confidence\":70"));
+        let back: ReferenceCount = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn count_styles_display_their_serde_labels() {
+        for style in ALL_COUNT_STYLES {
+            let label = serde_json::to_value(style).unwrap();
+            assert_eq!(style.to_string(), label.as_str().unwrap());
+        }
+        assert_eq!(CountStyle::FieldArithmetic.to_string(), "field_arithmetic");
+    }
+
+    #[test]
+    fn a_record_names_the_function_the_style_and_the_spellings() {
+        let json = serde_json::to_value(reference_count()).unwrap();
+        assert_eq!(json["function"], "FUN_18003ab00");
+        assert_eq!(json["style"], "com_methods");
+        assert_eq!(json["increment"], "AddRef");
+        assert_eq!(json["decrement"], "Release");
+        assert_eq!(json["suggestion"], "Rc<T>");
+        assert_eq!(json["confidence"], 70);
+    }
+
+    #[test]
+    fn a_field_arithmetic_record_reads_back_from_json() {
+        let json = r#"{
+            "function": "FUN_18003e750",
+            "style": "field_arithmetic",
+            "increment": "ref_count++",
+            "decrement": "ref_count--",
+            "suggestion": "Arc<T>",
+            "confidence": 65,
+            "evidence": "param_1->ref_count++; param_1->ref_count--;"
+        }"#;
+        let back: ReferenceCount = serde_json::from_str(json).unwrap();
+        assert_eq!(back.style, CountStyle::FieldArithmetic);
+        assert_eq!(back.increment, "ref_count++");
+        assert_eq!(back.decrement, "ref_count--");
+        assert_eq!(back.suggestion, "Arc<T>");
         assert_eq!(back.confidence, 65);
     }
 }
