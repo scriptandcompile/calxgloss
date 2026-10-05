@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into seven modules:
+//! The crate is organized into eight modules:
 //!
 //! - [`types`] - Core data types: `AlgorithmHint`, `AlgorithmCategory`,
 //!   `DetectionMethod`, `AlgorithmPattern` for per-function detection
@@ -32,6 +32,10 @@
 //!   standard set `default_patterns` carries: qsort compare, bsearch
 //!   compare, and hash table comparator — with caller name pattern
 //!   matching through the call graph.
+//! - [`engine`] - Scan orchestration: `AlgorithmEngine` decompiles each
+//!   function of an open program exactly once, reads it with all three
+//!   detectors, and assembles their hints into one
+//!   `AlgorithmRecognitionResult` with its scan provenance.
 //! - [`confidence`] - Shared confidence model: score composition per
 //!   detection method, configurable thresholds, and highest-confidence-wins
 //!   resolution when several detectors hint at different algorithms for
@@ -43,6 +47,7 @@
 pub mod callback_db;
 pub mod cfg_patterns;
 pub mod confidence;
+pub mod engine;
 pub mod error;
 pub mod persist;
 pub mod string_hints;
