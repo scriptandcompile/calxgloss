@@ -261,6 +261,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- **Docs restructure** — `step_by_step.md` split: the status index became `docs/roadmap.md`, the frozen plan with completion notes moved to `docs/archive/step_by_step-2026-10-05.md`, and the Ghidra bridge decision became `docs/adr/0001-bethington-ghidra-mcp-bridge.md`. The `Documentation/` folder was merged into `docs/`, and all cross-references updated.
+- **`docs/standards.md`** — documented coding standards (workspace/crate conventions, error handling, crate anatomy, persistence, logging, testing, commit/process rules) for the `code-review` skill's Standards axis to check diffs against.
+- **Ghidra docs split by lifespan** — the completed v6.0.0 endpoint mapping and record-format reference moved out of `ghidra_integration.md` §6 into `docs/ghidra_endpoint_map.md`; `ghidra_integration.md` stays the lifecycle-integration design doc. The roadmap gained a G1 infrastructure track (Ghidra Lifecycle Integration) pointing at both.
+- **`docs/skills-review.md`** — updated to the post-setup, post-cleanup state: removed skills and resolved concerns pruned, new basic-usage and workflow section added.
+
 ### `calxgloss-translator`
 - **`batch_translate()` accepts a per-function callback** — the batch method now takes an optional `&mut dyn FnMut(&str, &str, &mut FunctionResult) -> bool` closure that is invoked immediately after each function's translation pipeline (including retries) completes, before the next function is processed. The callback can perform post-processing (e.g. writing files, git operations) incrementally. Returns `true` to continue the batch or `false` to stop early.
 
