@@ -21,6 +21,10 @@ pub enum AlgorithmError {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// No persisted recognition result exists at the requested path.
+    #[error("algorithm recognition result not found: {}", .path.display())]
+    NotFound { path: std::path::PathBuf },
+
     /// A function name was empty or unparseable.
     #[error("empty function name")]
     EmptyFunctionName,
@@ -28,6 +32,20 @@ pub enum AlgorithmError {
     /// An algorithm recognition scan failed for a DLL.
     #[error("algorithm recognition scan failed for '{dll}': {reason}")]
     ScanFailed { dll: String, reason: String },
+}
+
+/// Maps the shared JSON store's errors onto this crate's error type: the
+/// store's not-found becomes [`AlgorithmError::NotFound`], and its I/O and
+/// JSON errors fold into the existing pass-through variants.
+impl From<calxgloss_types::persist::PersistError> for AlgorithmError {
+    fn from(error: calxgloss_types::persist::PersistError) -> Self {
+        use calxgloss_types::persist::PersistError;
+        match error {
+            PersistError::NotFound { path } => Self::NotFound { path },
+            PersistError::Io { source, .. } => Self::Io(source),
+            PersistError::Json { source, .. } => Self::Json(source),
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, AlgorithmError>;

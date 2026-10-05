@@ -18,6 +18,9 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 regex = { workspace = true }
 
+[dev-dependencies]
+tempfile = "3"
+
 # `calxgloss-ghidra` and `regex` back the decompiler and string fetches and
 # the pattern matching the recognition detectors run on; they are declared
 # now so the manifest stays stable as the detectors land. Same allowance as
