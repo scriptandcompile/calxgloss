@@ -343,6 +343,7 @@ name = "calxgloss-algorithm"
 version = "0.2.0"
 dependencies = [
  "calxgloss-ghidra",
+ "calxgloss-prompts",
  "calxgloss-types",
  "regex",
  "serde",

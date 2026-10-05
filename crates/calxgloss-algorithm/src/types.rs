@@ -196,6 +196,26 @@ pub struct AlgorithmHint {
 }
 
 // ============================================================
+// Prompt conversions
+// ============================================================
+
+/// Render a hint as prompt data: the recognized algorithm with its
+/// family, the detector and confidence behind the claim, and the
+/// evidence line, so the prompt shows the hypothesis and how strongly
+/// it was made.
+impl From<&AlgorithmHint> for calxgloss_prompts::AlgorithmInfo {
+    fn from(hint: &AlgorithmHint) -> Self {
+        Self {
+            algorithm: hint.algorithm.clone(),
+            category: hint.category.to_string(),
+            method: hint.method.to_string(),
+            confidence: hint.confidence.value(),
+            evidence: hint.evidence.clone(),
+        }
+    }
+}
+
+// ============================================================
 // Persisted result
 // ============================================================
 
@@ -408,5 +428,15 @@ mod tests {
         assert_eq!(found, vec![&other]);
         assert!(result.for_function("FUN_180099999").next().is_none());
         assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn a_hint_renders_as_prompt_data_with_its_evidence() {
+        let info = calxgloss_prompts::AlgorithmInfo::from(&hint());
+        assert_eq!(info.algorithm, "comparison_sort");
+        assert_eq!(info.category, "sorting");
+        assert_eq!(info.method, "cfg_pattern");
+        assert_eq!(info.confidence, 75);
+        assert!(info.evidence.starts_with("for (local_10 = 0;"));
     }
 }
