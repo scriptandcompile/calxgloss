@@ -196,6 +196,52 @@ pub struct AlgorithmHint {
 }
 
 // ============================================================
+// Persisted result
+// ============================================================
+
+/// The recognition result for one binary — the document persisted to
+/// `re/analysis/algorithm/{dll}.json`.
+///
+/// The hints are the three detectors' outputs in scan order: function by
+/// function, and within one function the control flow matches, then the
+/// string-guided hints, then the callback matches. Each detector already
+/// reports one algorithm once per function, and detectors naming
+/// different algorithms for one function all stand — a sort shape beside
+/// a qsort compare contract is two readings of one function that a
+/// translation prompt weighs together. The stable order means two scans
+/// of the same program diff cleanly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AlgorithmRecognitionResult {
+    /// Provenance of the scan that produced these hints.
+    pub metadata: ScanMetadata,
+    /// Every hint the detectors made, in scan order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hints: Vec<AlgorithmHint>,
+}
+
+impl AlgorithmRecognitionResult {
+    /// An empty result for the binary described by `metadata`.
+    pub fn new(metadata: ScanMetadata) -> Self {
+        Self {
+            metadata,
+            hints: Vec::new(),
+        }
+    }
+
+    /// The hints recorded for one function, e.g. `FUN_18003ab00`.
+    pub fn for_function(&self, function: &str) -> impl Iterator<Item = &AlgorithmHint> {
+        self.hints
+            .iter()
+            .filter(move |hint| hint.function == function)
+    }
+
+    /// Whether the scan recognized nothing at all.
+    pub fn is_empty(&self) -> bool {
+        self.hints.is_empty()
+    }
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -315,5 +361,52 @@ mod tests {
         assert_eq!(back, pattern);
         assert_eq!(back.exclude_patterns, vec!["\\bqsort\\b"]);
         assert_eq!(back.min_lines, 20);
+    }
+
+    #[test]
+    fn an_algorithm_recognition_result_serde_round_trips() {
+        let result = AlgorithmRecognitionResult {
+            metadata: ScanMetadata {
+                binary: "eqmain.dll".into(),
+                scanned_at: 1_759_488_000,
+                duration_secs: 12,
+            },
+            hints: vec![hint()],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let back: AlgorithmRecognitionResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, result);
+    }
+
+    #[test]
+    fn a_result_without_hints_omits_them_and_reads_back_empty() {
+        // Documents persisted before a hint landed still load, and an
+        // empty scan stays small on disk.
+        let result = AlgorithmRecognitionResult::new(ScanMetadata::new("eqmain.dll"));
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(!json.contains("\"hints\""));
+        let back: AlgorithmRecognitionResult = serde_json::from_str(&json).unwrap();
+        assert!(back.is_empty());
+        assert_eq!(back.metadata.binary, "eqmain.dll");
+    }
+
+    #[test]
+    fn for_function_yields_only_that_function_s_hints_in_order() {
+        let other = AlgorithmHint {
+            function: "FUN_18003e750".into(),
+            algorithm: "crc".into(),
+            category: AlgorithmCategory::Checksum,
+            method: DetectionMethod::StringHint,
+            confidence: Confidence::new(60),
+            evidence: "crc_table = *(code (*)())0x180129350;".into(),
+        };
+        let result = AlgorithmRecognitionResult {
+            metadata: ScanMetadata::new("eqmain.dll"),
+            hints: vec![other.clone(), hint()],
+        };
+        let found: Vec<&AlgorithmHint> = result.for_function("FUN_18003e750").collect();
+        assert_eq!(found, vec![&other]);
+        assert!(result.for_function("FUN_180099999").next().is_none());
+        assert!(!result.is_empty());
     }
 }
