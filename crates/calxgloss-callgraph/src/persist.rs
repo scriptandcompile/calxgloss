@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use calxgloss_types::persist::{JsonStore, analysis_dir};
 use tracing::{info, warn};
 
 use crate::CallGraph;
@@ -50,7 +51,7 @@ use crate::CallGraph;
 /// # }
 /// ```
 pub struct CallGraphPersistor {
-    cache_dir: PathBuf,
+    store: JsonStore<CallGraph>,
 }
 
 impl CallGraphPersistor {
@@ -59,7 +60,7 @@ impl CallGraphPersistor {
     /// Call graphs are stored in `<workspace_root>/re/analysis/`.
     pub fn new(workspace_root: impl AsRef<Path>) -> Self {
         Self {
-            cache_dir: workspace_root.as_ref().join("re").join("analysis"),
+            store: JsonStore::with_naming(analysis_dir(workspace_root), call_graph_name),
         }
     }
 
@@ -68,13 +69,13 @@ impl CallGraphPersistor {
     /// Call graphs are stored directly under the provided `cache_dir` path.
     pub fn with_cache_dir(cache_dir: impl AsRef<Path>) -> Self {
         Self {
-            cache_dir: cache_dir.as_ref().to_path_buf(),
+            store: JsonStore::with_naming(cache_dir, call_graph_name),
         }
     }
 
     /// Returns the path where the call graph JSON file is stored.
     fn graph_path(&self, dll_name: &str) -> PathBuf {
-        self.cache_dir.join(format!("{}_call_graph.json", dll_name))
+        self.store.path_for(dll_name)
     }
 
     /// Saves a call graph to JSON.
@@ -86,15 +87,9 @@ impl CallGraphPersistor {
     ///
     /// Returns an error if directory creation or file I/O fails.
     pub fn save(&self, graph: &CallGraph) -> Result<()> {
-        let path = self.graph_path(&graph.dll);
-        info!(path = %path.display(), "Saving call graph");
+        info!(path = %self.graph_path(&graph.dll).display(), "Saving call graph");
 
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        let json = serde_json::to_string_pretty(graph)?;
-        std::fs::write(&path, json)?;
+        self.store.save(&graph.dll, graph)?;
         Ok(())
     }
 
@@ -107,15 +102,18 @@ impl CallGraphPersistor {
         let path = self.graph_path(dll_name);
         info!(path = %path.display(), "Loading call graph");
 
-        if !path.exists() {
+        if !self.store.exists(dll_name) {
             warn!(path = %path.display(), "Call graph file not found");
             anyhow::bail!("Call graph not found: {}", path.display());
         }
 
-        let json = std::fs::read_to_string(&path)?;
-        let graph: CallGraph = serde_json::from_str(&json)?;
-        Ok(graph)
+        Ok(self.store.load(dll_name)?)
     }
+}
+
+/// Files each graph as `{dll}_call_graph.json`.
+fn call_graph_name(dll_name: &str) -> String {
+    format!("{dll_name}_call_graph.json")
 }
 
 #[cfg(test)]
