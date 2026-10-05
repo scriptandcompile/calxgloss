@@ -139,6 +139,23 @@ No additional type information available.
 
 ---
 
+## ADDITIONAL CONTEXT — RECOGNIZED ALGORITHMS
+
+{% if !recognized_algorithms.is_empty() %}
+The following known algorithms were recognized in this function by static
+analysis. Where a recognition is credible, implement the known algorithm
+idiomatically in Rust instead of transliterating the pseudo-C line by line:
+
+{% for algo in recognized_algorithms %}
+- **{{ algo.algorithm }}** ({{ algo.category }}; via {{ algo.method }}, confidence {{ algo.confidence }})
+  Evidence: `{{ algo.evidence }}`
+{% endfor %}
+{% else %}
+No recognized algorithm context available.
+{% endif %}
+
+---
+
 ## TRANSLATION REQUIREMENTS
 
 1. **Output ONLY the corrected Rust code** — no explanations, no markdown fences, no code blocks.

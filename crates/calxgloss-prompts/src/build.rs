@@ -96,6 +96,7 @@ pub fn build_escalate_prompt(
         neighboring_functions,
         data_structures,
         type_info,
+        Vec::new(),
         failure_history,
         Vec::new(),
     )
@@ -106,8 +107,9 @@ pub fn build_escalate_prompt(
 ///
 /// Used when previous attempts failed with compile_fix or test_fix strategies.
 /// Adds call graph neighbors, neighboring functions, data structures,
-/// type information, and enriched call graph context (caller/callee details
-/// and leaf API suggestions) to help the LLM understand the broader context.
+/// type information, recognized algorithms, and enriched call graph context
+/// (caller/callee details and leaf API suggestions) to help the LLM
+/// understand the broader context.
 #[allow(clippy::too_many_arguments)]
 pub fn build_escalate_prompt_with_context(
     function_name: String,
@@ -118,6 +120,7 @@ pub fn build_escalate_prompt_with_context(
     neighboring_functions: Vec<super::templates::NeighborFunction>,
     data_structures: Vec<super::templates::StructuredData>,
     type_info: Vec<super::templates::TypeInfo>,
+    recognized_algorithms: Vec<super::templates::AlgorithmInfo>,
     failure_history: Vec<calxgloss_types::FailureHint>,
     call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
 ) -> Result<String, PromptError> {
@@ -130,6 +133,7 @@ pub fn build_escalate_prompt_with_context(
         neighboring_functions,
         data_structures,
         type_info,
+        recognized_algorithms,
         failure_history,
         call_graph_context,
     );

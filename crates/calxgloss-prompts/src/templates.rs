@@ -123,6 +123,21 @@ pub struct TypeInfo {
     pub description: String,
 }
 
+/// An algorithm recognized in the target function by the analysis pipeline.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AlgorithmInfo {
+    /// The recognized algorithm, e.g. `comparison_sort`.
+    pub algorithm: String,
+    /// The family the algorithm belongs to, e.g. `sorting`.
+    pub category: String,
+    /// The detector that recognized it, e.g. `cfg_pattern`.
+    pub method: String,
+    /// Confidence that the recognition is right, 0–100.
+    pub confidence: u8,
+    /// The decompiled line or string that supports the recognition.
+    pub evidence: String,
+}
+
 /// A formatted test result for template rendering.
 ///
 /// Carries the test case data alongside the pass/fail outcome observed
@@ -398,6 +413,8 @@ pub struct EscalateTemplate {
     pub data_structures: Vec<StructuredData>,
     /// Type information inferred by Ghidra.
     pub type_info: Vec<TypeInfo>,
+    /// Algorithms recognized in this function by the analysis pipeline.
+    pub recognized_algorithms: Vec<AlgorithmInfo>,
     /// Previous attempt failures to reference in the prompt.
     pub failure_history: Vec<FailureHint>,
     /// Enriched call graph context with caller/callee/leaf-API details.
@@ -416,6 +433,7 @@ impl EscalateTemplate {
         neighboring_functions: Vec<NeighborFunction>,
         data_structures: Vec<StructuredData>,
         type_info: Vec<TypeInfo>,
+        recognized_algorithms: Vec<AlgorithmInfo>,
     ) -> Self {
         Self {
             function_name,
@@ -426,6 +444,7 @@ impl EscalateTemplate {
             neighboring_functions,
             data_structures,
             type_info,
+            recognized_algorithms,
             failure_history: Vec::new(),
             call_graph_context: Vec::new(),
         }
@@ -442,6 +461,7 @@ impl EscalateTemplate {
         neighboring_functions: Vec<NeighborFunction>,
         data_structures: Vec<StructuredData>,
         type_info: Vec<TypeInfo>,
+        recognized_algorithms: Vec<AlgorithmInfo>,
         failure_history: Vec<FailureHint>,
     ) -> Self {
         Self {
@@ -453,6 +473,7 @@ impl EscalateTemplate {
             neighboring_functions,
             data_structures,
             type_info,
+            recognized_algorithms,
             failure_history,
             call_graph_context: Vec::new(),
         }
@@ -469,6 +490,7 @@ impl EscalateTemplate {
         neighboring_functions: Vec<NeighborFunction>,
         data_structures: Vec<StructuredData>,
         type_info: Vec<TypeInfo>,
+        recognized_algorithms: Vec<AlgorithmInfo>,
         failure_history: Vec<FailureHint>,
         call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
     ) -> Self {
@@ -481,6 +503,7 @@ impl EscalateTemplate {
             neighboring_functions,
             data_structures,
             type_info,
+            recognized_algorithms,
             failure_history,
             call_graph_context,
         }
