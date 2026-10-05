@@ -1141,23 +1141,23 @@ The UI is a **review gate** — it shows the *result* of each translation unit b
 
 ### 3. P3 — Algorithm Recognition (`calxgloss-algorithm`)
 
-- [ ] **Phase 0 — Project Setup**
-  - [ ] `calxgloss-algorithm` crate created at `crates/calxgloss-algorithm/`
-  - [ ] Added to workspace `Cargo.toml` members list
-  - [ ] `Cargo.toml` dependencies correct
-  - [ ] Module structure created: `lib.rs`, `types.rs`, `cfg_patterns.rs`, `string_hints.rs`, `callback_db.rs`, `confidence.rs`, `persist.rs`, `error.rs`
-  - [ ] `cargo check` passes with no errors
-  - [ ] `cargo clippy` clean
+- [x] **Phase 0 — Project Setup** *(done 2026-10-04)*
+  - [x] `calxgloss-algorithm` crate created at `crates/calxgloss-algorithm/`
+  - [x] Added to workspace `Cargo.toml` members list
+  - [x] `Cargo.toml` dependencies correct (`calxgloss-ghidra`, `calxgloss-types`, `serde`, `serde_json`, `tokio`, `tracing`, `thiserror`, `regex`; unused-dependency lint allowed until the detectors land, same as `calxgloss-typesdb` and `calxgloss-typeinfer`)
+  - [x] Module structure created: `lib.rs`, `types.rs`, `cfg_patterns.rs`, `string_hints.rs`, `callback_db.rs`, `confidence.rs`, `persist.rs`, `error.rs`
+  - [x] `cargo check` passes with no errors
+  - [x] `cargo clippy` clean
 
-- [ ] **Phase 1 — Control Flow Signature Matching**
-  - [ ] `AlgorithmHint`, `AlgorithmCategory`, `DetectionMethod`, `AlgorithmPattern` types defined
-  - [ ] `CfgPatternMatcher` struct implemented
-  - [ ] `match_patterns()` scans decompiled body against hardcoded patterns
-  - [ ] MVP patterns: comparison sort, binary search, linear search, hash table lookup, state machine, recursion, linked list traversal
-  - [ ] Regex pattern matching with configurable match/exclude patterns
-  - [ ] Minimum line count check prevents false matches
-  - [ ] All 13 Phase 1 unit tests pass
-  - [ ] `cargo clippy` clean
+- [x] **Phase 1 — Control Flow Signature Matching** *(done 2026-10-04)*
+  - [x] `AlgorithmHint`, `AlgorithmCategory`, `DetectionMethod`, `AlgorithmPattern` types defined *(done 2026-10-04, with 6 unit tests; `Confidence`/`ScanMetadata` re-exported from `calxgloss-types`, typesdb/typeinfer convention — `AlgorithmCategory` covers the families the three detectors hint at (sorting, searching, hashing, checksum, compression, serialization, parsing, state_machine, traversal, recursion, network_protocol), `DetectionMethod` names the three detectors (cfg_pattern, string_hint, callback_pattern), `AlgorithmPattern` is the cfg matcher's signature shape — name, category, all-must-match regexes, any-matches-reject exclusions (omitted from JSON when empty), and a minimum line-count floor (`DEFAULT_MIN_LINES` 10), and `AlgorithmHint` is the per-function record: function, algorithm, category, method, confidence, evidence)*
+  - [x] `CfgPatternMatcher` struct implemented *(done 2026-10-04, holds the configurable signature set a scan reads bodies against — `AlgorithmPattern` records supplied whole with `with_patterns` or grown one at a time with `add_pattern`, reported in configuration order by `patterns()` so two matchers built alike scan identically; `new()` starts with no signatures until the standard set is built, `Default`/`Clone`/`PartialEq` derived so construction is free and alike matchers compare equal, and the matcher is `Send + Sync` — one matcher serves a whole scan, shared by reference across concurrent per-function passes, holding no Ghidra client and never writing back to the program; 4 unit tests)*
+  - [x] `match_patterns()` scans decompiled body against hardcoded patterns *(done 2026-10-04, reads a `DecompiledFunction` body against every configured signature in configuration order and emits one `AlgorithmHint` per fit — the line floor runs before any regex (a body shorter than `min_lines` is too small to carry a real shape and is refused outright), then every required regex must match the body and no exclusion regex may; each hint names the pattern and its category, is marked `cfg_pattern` at confidence 60 (the body carries every shape the signature requires, but regexes over pseudo-C approximate the algorithm rather than prove it), and carries the trimmed body line holding the first match of the signature's first required regex as evidence; a signature asserting nothing fits nothing, and one carrying an uncompilable regex can make no claim — it matches nothing, an uncompilable exclusion rejects nothing; 11 unit tests)*
+  - [x] MVP patterns: comparison sort, binary search, linear search, hash table lookup, state machine, recursion, linked list traversal *(done 2026-10-04, `default_patterns()` carries the standard signature set in scan order and `CfgPatternMatcher::with_default_patterns()` builds a matcher that scans against it — `comparison_sort` (loop inside a loop + ordering `<` + the three-assignment swap shape the decompiler emits, excluding bodies that call `qsort`), `binary_search` (probe loop + halved range `/ 2`/`>> 1` + midpoint `if`/`<>` comparison), `linear_search` (scan loop + `==` target test + early `return`/`break`, excluding halved ranges and `% ` bucket folding so a hash probe reads as a lookup, not a plain scan), `hash_table_lookup` (`% ` digest fold + `[` bucket access + probe/bucket check), `state_machine` (state/status/mode-named variable + `if`/`switch` dispatch + `else`/`case` chain), `recursion` (self-call via a new `{name}` placeholder — the matcher substitutes the scanned function's name, regex-escaped, into match and exclude sources, and the `);` tail keeps the signature line, where the name also appears, from reading as a call; its floor drops to 6 because a self-call is precise evidence even in a short body), `linked_list_traversal` (walk loop + `->` field reads + cursor advance `= x->`); 11 unit tests)*
+  - [x] Regex pattern matching with configurable match/exclude patterns *(done 2026-10-04, the matcher's signature set is fully configurable — supplied whole with `with_patterns` or grown one at a time with `add_pattern`, reported in configuration order by `patterns()` — and each `AlgorithmPattern` carries its own regex sources: every one in `match_patterns` must appear in the body and any one in `exclude_patterns` rejects the match, so signatures can be tuned or new algorithms added without touching the matcher; both lists accept the `{name}` placeholder the matcher substitutes with the regex-escaped scanned function name; a broken source can never fabricate or veto a hint — an uncompilable match regex makes the signature match nothing and an uncompilable exclusion rejects nothing)*
+  - [x] Minimum line count check prevents false matches *(done 2026-10-04, each pattern carries a `min_lines` floor — `AlgorithmPattern::DEFAULT_MIN_LINES` 10 for the standard set, dropped to 6 for `recursion` where a self-call is precise evidence even in a short body — and the floor runs before any regex in `match_patterns()`: a body shorter than it is too small to carry a real control flow shape and is refused outright, so the standard set stays quiet on a five-line stub; the floor is inclusive — a body spanning exactly `min_lines` lines clears it)*
+  - [x] All 13 Phase 1 unit tests pass *(done 2026-10-04 — 32 unit tests pass: 6 in `types` (hint/pattern serde round trips, snake_case labels, pattern defaults) and 26 in `cfg_patterns` (matcher configuration and sharing, hint shape and evidence line, required-shape/exclusion/line-floor behavior, and each of the seven standard signatures recognized from a realistic decompiled body while the set stays quiet on tiny bodies); the plan's 13 was an indicative count)*
+  - [x] `cargo clippy` clean *(done 2026-10-04, `cargo clippy --workspace --all-targets` with no warnings; `cargo fmt` clean)*
 
 - [ ] **Phase 2 — String-Guided Algorithm Hints**
   - [ ] `StringHintEngine` struct implemented
