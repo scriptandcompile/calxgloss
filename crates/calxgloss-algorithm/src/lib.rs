@@ -28,9 +28,10 @@
 //!   case-insensitive matching per signature and per-function
 //!   deduplication.
 //! - [`callback_db`] - Callback pattern detection: `CallbackPatternDb`
-//!   matches function signatures and usage against callback shapes —
-//!   qsort compare, bsearch compare, hash table comparator — with caller
-//!   name pattern matching through the call graph.
+//!   matches function signatures and usage against callback shapes — the
+//!   standard set `default_patterns` carries: qsort compare, bsearch
+//!   compare, and hash table comparator — with caller name pattern
+//!   matching through the call graph.
 //! - [`confidence`] - Shared confidence model: score composition per
 //!   detection method, configurable thresholds, and highest-confidence-wins
 //!   resolution when several detectors hint at different algorithms for
