@@ -1195,7 +1195,7 @@ The UI is a **review gate** — it shows the *result* of each translation unit b
 
 ---
 
-### 4. P3 — Memory Lifecycle / RAII Detection (`calxgloss-memory`)
+### 4. P4 — Memory Lifecycle / RAII Detection (`calxgloss-memory`)
 
 - [ ] **Phase 0 — Project Setup**
   - [ ] `calxgloss-memory` crate created at `crates/calxgloss-memory/`
@@ -1245,7 +1245,7 @@ The UI is a **review gate** — it shows the *result* of each translation unit b
 
 ---
 
-### 5. P3 — Concurrency & Synchronization Detection (`calxgloss-sync`)
+### 5. P5 — Concurrency & Synchronization Detection (`calxgloss-sync`)
 
 - [ ] **Phase 0 — Project Setup**
   - [ ] `calxgloss-sync` crate created at `crates/calxgloss-sync/`
@@ -1295,7 +1295,7 @@ The UI is a **review gate** — it shows the *result* of each translation unit b
 
 ---
 
-### 6. P3 — Callback / Function Pointer Table Detection (`calxgloss-callback`)
+### 6. P6 — Callback / Function Pointer Table Detection (`calxgloss-callback`)
 
 - [ ] **Phase 0 — Project Setup**
   - [ ] `calxgloss-callback` crate created at `crates/calxgloss-callback/`
@@ -1344,7 +1344,7 @@ The UI is a **review gate** — it shows the *result* of each translation unit b
 
 ---
 
-### 7. P4 — Control Flow Pattern Recognition (`calxgloss-controlflow`)
+### 7. P7 — Control Flow Pattern Recognition (`calxgloss-controlflow`)
 
 - [ ] **Phase 0 — Project Setup**
   - [ ] `calxgloss-controlflow` crate created at `crates/calxgloss-controlflow/`
@@ -1399,7 +1399,7 @@ The UI is a **review gate** — it shows the *result* of each translation unit b
 
 ---
 
-### 8. P4 — String & Configuration Context (`calxgloss-stringctx`)
+### 8. P8 — String & Configuration Context (`calxgloss-stringctx`)
 
 - [ ] **Phase 0 — Project Setup**
   - [ ] `calxgloss-stringctx` crate created at `crates/calxgloss-stringctx/`
@@ -1453,7 +1453,7 @@ The UI is a **review gate** — it shows the *result* of each translation unit b
 
 ---
 
-### 9. P4 — Library & API Identification (`calxgloss-apidetect`)
+### 9. P9 — Library & API Identification (`calxgloss-apidetect`)
 
 - [ ] **Phase 0 — Project Setup**
   - [ ] `calxgloss-apidetect` crate created at `crates/calxgloss-apidetect/`
@@ -1499,7 +1499,7 @@ The UI is a **review gate** — it shows the *result* of each translation unit b
 
 ---
 
-### 10. P4 — Constants & Enum Recovery (`calxgloss-consts`)
+### 10. P10 — Constants & Enum Recovery (`calxgloss-consts`)
 
 - [ ] **Phase 0 — Project Setup**
   - [ ] `calxgloss-consts` crate created at `crates/calxgloss-consts/`
@@ -1548,7 +1548,7 @@ The UI is a **review gate** — it shows the *result* of each translation unit b
 
 ---
 
-### 11. P4 — Endianness & Serialization Detection (`calxgloss-serialize`)
+### 11. P11 — Endianness & Serialization Detection (`calxgloss-serialize`)
 
 - [ ] **Phase 0 — Project Setup**
   - [ ] `calxgloss-serialize` crate created at `crates/calxgloss-serialize/`
