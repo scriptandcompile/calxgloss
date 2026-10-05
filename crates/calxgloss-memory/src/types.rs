@@ -91,6 +91,69 @@ pub struct MemoryHint {
 }
 
 // ============================================================
+// Handle lifecycle
+// ============================================================
+
+/// The handle family a recognized open or close belongs to.
+///
+/// The family says which opener spellings obtain the handle and which
+/// closer releases it — a Win32 kernel object handle from a
+/// `CreateFile` spelling closed by `CloseHandle`, or a C stdio stream
+/// from `fopen` closed by `fclose`. A closer only ever closes a handle
+/// of its own family: `fclose` on a kernel object handle names no
+/// pairing, and neither does `CloseHandle` on a stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandleType {
+    /// A Win32 kernel object handle — file, event, mutex, pipe, or
+    /// socket — obtained from a `CreateFile` spelling and released by
+    /// `CloseHandle`.
+    KernelObject,
+    /// A C stdio stream, obtained from `fopen` and released by
+    /// `fclose`.
+    FileStream,
+}
+
+calxgloss_types::display_serde_label!(HandleType {
+    KernelObject => "kernel_object",
+    FileStream => "file_stream",
+});
+
+/// One handle lifecycle observation about one function, with the
+/// evidence behind it.
+///
+/// A record says the function opens a handle of
+/// [`handle_type`](Self::handle_type) — through the recognized opener
+/// spelling [`opener`](Self::opener) — and closes it again through
+/// [`closer`](Self::closer), the two tied by the variable the
+/// decompiler stored the opener's result in. The pairing reads like
+/// [`suggestion`](Self::suggestion) — the RAII guard pattern standing
+/// in for the manual close — and the confidence says how strongly the
+/// guard's shape was read. The opener and closer lines are kept as
+/// [`evidence`](Self::evidence) so a reviewer (or a translation
+/// prompt) can check the reasoning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HandleLifecycle {
+    /// The function the record is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The handle family the open and the close belong to.
+    pub handle_type: HandleType,
+    /// The opener spelling that obtained the handle, e.g. `CreateFileW`.
+    pub opener: String,
+    /// The closer spelling that released the handle, e.g. `CloseHandle`.
+    pub closer: String,
+    /// The Rust pattern the pairing suggests, e.g. `RAII guard struct
+    /// with Drop impl`.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+    /// The decompiled lines that support the record — the open and
+    /// its close — kept so a reviewer (or a translation prompt) can
+    /// check the reasoning.
+    pub evidence: String,
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -105,6 +168,8 @@ mod tests {
         AllocationType::New,
         AllocationType::NewArray,
     ];
+
+    const ALL_HANDLE_TYPES: [HandleType; 2] = [HandleType::KernelObject, HandleType::FileStream];
 
     fn hint() -> MemoryHint {
         MemoryHint {
@@ -159,6 +224,70 @@ mod tests {
         let back: MemoryHint = serde_json::from_str(json).unwrap();
         assert_eq!(back.allocation_type, AllocationType::NewArray);
         assert_eq!(back.suggestion, "Vec<T>");
+        assert_eq!(back.confidence, 65);
+    }
+
+    fn handle_lifecycle() -> HandleLifecycle {
+        HandleLifecycle {
+            function: "FUN_18003ab00".into(),
+            handle_type: HandleType::KernelObject,
+            opener: "CreateFileW".into(),
+            closer: "CloseHandle".into(),
+            suggestion: "RAII guard struct with Drop impl".into(),
+            confidence: Confidence::new(70),
+            evidence: "hFile = CreateFileW(&DAT_3801a2b0,0xc0000000,0,(LPSECURITY_ATTRIBUTES)0x0,3,0x80,0); CloseHandle(hFile);".into(),
+        }
+    }
+
+    #[test]
+    fn a_handle_lifecycle_serde_round_trips() {
+        let record = handle_lifecycle();
+        let json = serde_json::to_string(&record).unwrap();
+        // The handle family serializes snake_case and the confidence
+        // as a plain number, matching the workspace's serde
+        // convention.
+        assert!(json.contains("\"handle_type\":\"kernel_object\""));
+        assert!(json.contains("\"confidence\":70"));
+        let back: HandleLifecycle = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn handle_types_display_their_serde_labels() {
+        for handle_type in ALL_HANDLE_TYPES {
+            let label = serde_json::to_value(handle_type).unwrap();
+            assert_eq!(handle_type.to_string(), label.as_str().unwrap());
+        }
+        assert_eq!(HandleType::KernelObject.to_string(), "kernel_object");
+    }
+
+    #[test]
+    fn a_record_names_the_function_the_family_the_spellings_and_the_guard() {
+        let json = serde_json::to_value(handle_lifecycle()).unwrap();
+        assert_eq!(json["function"], "FUN_18003ab00");
+        assert_eq!(json["handle_type"], "kernel_object");
+        assert_eq!(json["opener"], "CreateFileW");
+        assert_eq!(json["closer"], "CloseHandle");
+        assert_eq!(json["suggestion"], "RAII guard struct with Drop impl");
+        assert_eq!(json["confidence"], 70);
+    }
+
+    #[test]
+    fn a_file_stream_record_reads_back_from_json() {
+        let json = r#"{
+            "function": "FUN_18003e750",
+            "handle_type": "file_stream",
+            "opener": "fopen",
+            "closer": "fclose",
+            "suggestion": "scoped RAII guard struct with Drop impl",
+            "confidence": 65,
+            "evidence": "local_10 = fopen(&DAT_3801a2b0,\"rb\"); fclose(local_10);"
+        }"#;
+        let back: HandleLifecycle = serde_json::from_str(json).unwrap();
+        assert_eq!(back.handle_type, HandleType::FileStream);
+        assert_eq!(back.opener, "fopen");
+        assert_eq!(back.closer, "fclose");
+        assert_eq!(back.suggestion, "scoped RAII guard struct with Drop impl");
         assert_eq!(back.confidence, 65);
     }
 }
