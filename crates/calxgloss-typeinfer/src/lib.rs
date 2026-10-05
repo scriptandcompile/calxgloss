@@ -30,14 +30,15 @@
 //! - [`reading`] - Detector-internal accumulator: the single `Reading`
 //!   shape every detector feeds, with highest-confidence-wins resolution
 //!   and shared record assembly.
-//! - [`confidence`] - Shared confidence model: score composition per
-//!   inference method, configurable thresholds, and highest-confidence-wins
-//!   resolution when detectors infer different types for one parameter.
+//! - [`confidence`] - Shared confidence model: `resolve_conflicts` —
+//!   highest-confidence-wins resolution when several detectors read one
+//!   parameter, local, or call-site argument differently.
 //! - [`persist`] - JSON persistence: `TypeInferPersistor` saves and loads
 //!   the per-binary inference results under `re/analysis/typeinfer/`.
 //! - [`error`] - [`TypeInferError`] and the crate-wide [`Result`] alias.
 
 pub mod confidence;
+pub mod engine;
 pub mod error;
 pub mod known_type;
 pub mod param_size;
