@@ -238,7 +238,8 @@ attempts, per-attempt metadata). Archive §16 + §17.16.
 Carried from the archive's Cross-Cutting Checklist (all still open):
 
 - Shared `re/analysis/` path helper (every persistor builds the path ad hoc today)
-- All 11 crates re-exported from the `calxgloss` meta-crate; all 11 CLI
+- All crates re-exported from the `calxgloss` meta-crate (done with the 5-context
+  reorg: `callgraph`, `typeinfer`, `algorithm`, `config` added); all 11 CLI
   commands registered (typesdb, typeinfer, algorithm, memory done; rest pending)
 - Integration-test backend: prefer bethington's headless server over a
   hand-built mock (current: inline fixtures + `#[ignore]`d live tests)

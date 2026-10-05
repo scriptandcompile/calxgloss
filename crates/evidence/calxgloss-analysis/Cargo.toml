@@ -1,0 +1,25 @@
+[package]
+name = "calxgloss-analysis"
+version.workspace = true
+edition.workspace = true
+description = "DLL classification, call graph analysis, and Windows API tagging"
+license.workspace = true
+repository.workspace = true
+
+[dev-dependencies]
+chrono = { workspace = true }
+
+[dependencies]
+calxgloss-callgraph = { path = "../calxgloss-callgraph" }
+calxgloss-ghidra = { path = "../../integrations/calxgloss-ghidra" }
+calxgloss-git = { path = "../../pipeline/calxgloss-git" }
+calxgloss-llm = { path = "../../integrations/calxgloss-llm" }
+calxgloss-pal = { path = "../../integrations/calxgloss-pal" }
+calxgloss-types = { path = "../../shared/calxgloss-types" }
+calxgloss-verify = { path = "../../pipeline/calxgloss-verify" }
+goblin = { version = "0.10.7", default-features = false, features = ["pe32", "pe64"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

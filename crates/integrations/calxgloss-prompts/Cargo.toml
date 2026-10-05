@@ -1,0 +1,19 @@
+[package]
+name = "calxgloss-prompts"
+version.workspace = true
+edition.workspace = true
+description = "Prompt templates and rendering for LLM translation tasks"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+calxgloss-types = { path = "../../shared/calxgloss-types" }
+calxgloss-pal = { path = "../calxgloss-pal" }
+calxgloss-callgraph = { path = "../../evidence/calxgloss-callgraph" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+askama = { version = "0.16.1" }
+
+[package.metadata.askama]
+autoescape = "none"

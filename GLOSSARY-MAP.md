@@ -4,11 +4,11 @@ Calxgloss reverse-engineers target binaries into cross-platform Rust. Its domain
 
 ## Contexts
 
-- [Pipeline](./docs/contexts/pipeline/GLOSSARY.md): the translate ▸ verify ▸ retry ▸ commit loop that turns units of work into verified Rust
-- [Evidence](./docs/contexts/evidence/GLOSSARY.md): engines that extract facts about target binaries — classification, call graphs, types, algorithms, memory *(pending)*
-- [Integrations](./docs/contexts/integrations/GLOSSARY.md): bridges to external tools and mappings — Ghidra, local LLMs, prompt templates, Windows-API mappings *(pending)*
-- [Interface](./docs/contexts/interface/GLOSSARY.md): the human touchpoints where work is run and reviewed — CLI, web review UI, reports *(pending)*
-- [Shared](./docs/contexts/shared/GLOSSARY.md): the records and settings every context exchanges *(pending)*
+- [Pipeline](./crates/pipeline/GLOSSARY.md): the translate ▸ verify ▸ retry ▸ commit loop that turns units of work into verified Rust
+- [Evidence](./crates/evidence/GLOSSARY.md): engines that extract facts about target binaries — classification, call graphs, types, algorithms, memory *(pending)*
+- [Integrations](./crates/integrations/GLOSSARY.md): bridges to external tools and mappings — Ghidra, local LLMs, prompt templates, Windows-API mappings *(pending)*
+- [Interface](./crates/interface/GLOSSARY.md): the human touchpoints where work is run and reviewed — CLI, web review UI, reports *(pending)*
+- [Shared](./crates/shared/GLOSSARY.md): the records and settings every context exchanges *(pending)*
 
 ## Relationships
 

@@ -56,4 +56,4 @@ Default vocabulary — `needs-triage`, `needs-info`, `ready-for-agent`, `ready-f
 
 ### Domain docs
 
-Multi-context: root `GLOSSARY-MAP.md` points to per-context `GLOSSARY.md` files; ADRs in `docs/adr/` (system-wide) and `crates/<crate>/docs/adr/` (context-scoped). See `docs/agents/domain.md`.
+Multi-context: root `GLOSSARY-MAP.md` points to per-context `GLOSSARY.md` files (`crates/<context>/GLOSSARY.md`); ADRs in `docs/adr/` (system-wide) and `crates/<context>/docs/adr/` (context-scoped). See `docs/agents/domain.md`.

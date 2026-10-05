@@ -1,0 +1,30 @@
+[package]
+name = "calxgloss-translator"
+version.workspace = true
+edition.workspace = true
+description = "Translation pipeline — GhidraMCP + LLM + prompt orchestration"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+calxgloss-types = { path = "../../shared/calxgloss-types" }
+calxgloss-ghidra = { path = "../../integrations/calxgloss-ghidra" }
+calxgloss-llm = { path = "../../integrations/calxgloss-llm" }
+calxgloss-prompts = { path = "../../integrations/calxgloss-prompts" }
+calxgloss-pal = { path = "../../integrations/calxgloss-pal" }
+calxgloss-testgen = { path = "../calxgloss-testgen" }
+calxgloss-analysis = { path = "../../evidence/calxgloss-analysis" }
+calxgloss-callgraph = { path = "../../evidence/calxgloss-callgraph" }
+calxgloss-verify = { path = "../calxgloss-verify" }
+calxgloss-typesdb = { path = "../../evidence/calxgloss-typesdb" }
+calxgloss-typeinfer = { path = "../../evidence/calxgloss-typeinfer" }
+calxgloss-algorithm = { path = "../../evidence/calxgloss-algorithm" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde_json = { workspace = true }
+askama = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

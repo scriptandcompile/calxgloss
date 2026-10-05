@@ -7,16 +7,20 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-calxgloss-types = { path = "../calxgloss-types" }
-calxgloss-ghidra = { path = "../calxgloss-ghidra" }
-calxgloss-llm = { path = "../calxgloss-llm" }
-calxgloss-prompts = { path = "../calxgloss-prompts" }
-calxgloss-pal = { path = "../calxgloss-pal" }
-calxgloss-analysis = { path = "../calxgloss-analysis" }
-calxgloss-typesdb = { path = "../calxgloss-typesdb" }
-calxgloss-memory = { path = "../calxgloss-memory" }
-calxgloss-testgen = { path = "../calxgloss-testgen" }
-calxgloss-translator = { path = "../calxgloss-translator" }
-calxgloss-verify = { path = "../calxgloss-verify" }
-calxgloss-git = { path = "../calxgloss-git" }
-calxgloss-reports = { path = "../calxgloss-reports" }
+calxgloss-types = { path = "../shared/calxgloss-types" }
+calxgloss-ghidra = { path = "../integrations/calxgloss-ghidra" }
+calxgloss-llm = { path = "../integrations/calxgloss-llm" }
+calxgloss-prompts = { path = "../integrations/calxgloss-prompts" }
+calxgloss-pal = { path = "../integrations/calxgloss-pal" }
+calxgloss-analysis = { path = "../evidence/calxgloss-analysis" }
+calxgloss-callgraph = { path = "../evidence/calxgloss-callgraph" }
+calxgloss-typesdb = { path = "../evidence/calxgloss-typesdb" }
+calxgloss-typeinfer = { path = "../evidence/calxgloss-typeinfer" }
+calxgloss-algorithm = { path = "../evidence/calxgloss-algorithm" }
+calxgloss-memory = { path = "../evidence/calxgloss-memory" }
+calxgloss-testgen = { path = "../pipeline/calxgloss-testgen" }
+calxgloss-translator = { path = "../pipeline/calxgloss-translator" }
+calxgloss-verify = { path = "../pipeline/calxgloss-verify" }
+calxgloss-git = { path = "../pipeline/calxgloss-git" }
+calxgloss-reports = { path = "../interface/calxgloss-reports" }
+calxgloss-config = { path = "../shared/calxgloss-config" }

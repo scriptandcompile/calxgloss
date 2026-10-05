@@ -7,27 +7,15 @@ repository = "https://github.com/anomalyco/calxgloss"
 
 [workspace]
 resolver = "3"
+# The meta-lib sits at `crates/`; every other crate lives under its context
+# directory (pipeline, evidence, integrations, interface, shared — see GLOSSARY-MAP.md).
 members = [
-    "crates/calxgloss-types",
-    "crates/calxgloss-ghidra",
-    "crates/calxgloss-llm",
-    "crates/calxgloss-analysis",
-    "crates/calxgloss-testgen",
-    "crates/calxgloss-translator",
-    "crates/calxgloss-verify",
-    "crates/calxgloss-git",
-    "crates/calxgloss-prompts",
-    "crates/calxgloss-pal",
-    "crates/calxgloss-reports",
     "crates/calxgloss",
-    "crates/calxgloss-cli",
-    "crates/calxgloss-web",
-    "crates/calxgloss-config",
-    "crates/calxgloss-callgraph",
-    "crates/calxgloss-typesdb",
-    "crates/calxgloss-typeinfer",
-    "crates/calxgloss-algorithm",
-    "crates/calxgloss-memory",
+    "crates/pipeline/*",
+    "crates/evidence/*",
+    "crates/integrations/*",
+    "crates/interface/*",
+    "crates/shared/*",
 ]
 
 [workspace.dependencies]

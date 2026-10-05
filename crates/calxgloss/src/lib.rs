@@ -96,6 +96,28 @@ pub use calxgloss_analysis::classify_dll_name;
 pub use calxgloss_analysis::crate_replacement_for;
 
 // ============================================================
+// calxgloss-callgraph — call graph analysis and ordering
+// ============================================================
+
+pub use calxgloss_callgraph::builder::CallGraphBuilder;
+pub use calxgloss_callgraph::context::{
+    CallEdgeInfo, CallGraphNode, CalleeGroup, ContextEnricher, ContextEnricherConfig,
+    FunctionContext, LeafApiContext, skipped_contexts,
+};
+pub use calxgloss_callgraph::leaf_detector::{
+    ApiSignature, LeafCategory, LeafDetector, TransitiveLeafContext,
+};
+pub use calxgloss_callgraph::models::{CallGraph, CallGraphEdge, CallType, FunctionCallGraph};
+pub use calxgloss_callgraph::ordering::{
+    FunctionTranslationPlan, TranslationOrderer, TranslationPriority,
+};
+pub use calxgloss_callgraph::persist::CallGraphPersistor;
+pub use calxgloss_callgraph::root_detector::{
+    ConfigurableRootDetector, RootAction, RootDetector, RootDetectorConfig, RootPattern,
+    RootPatternConfig,
+};
+
+// ============================================================
 // calxgloss-typesdb — data structure recovery
 // ============================================================
 
@@ -112,6 +134,45 @@ pub use calxgloss_memory::MemoryError;
 pub use calxgloss_memory::types::{
     AllocationType, CountStyle, HandleLifecycle, HandleType, MemoryFinding, MemoryHint,
     MemoryResult, ReferenceCount,
+};
+
+// ============================================================
+// calxgloss-typeinfer — type inference and propagation
+// ============================================================
+
+// The crate's `ScanMetadata` is deliberately not re-exported:
+// `calxgloss-types::scan::ScanMetadata` already owns that name here.
+pub use calxgloss_typeinfer::engine::{DecompileSource, TypeInferEngine};
+pub use calxgloss_typeinfer::error::{Result as TypeInferResult, TypeInferError};
+pub use calxgloss_typeinfer::known_type::{
+    ExtractedCall, KNOWN_SIGNATURES, KnownSignature, KnownTypePropagationEngine, SignatureArg,
+    SignatureMatch,
+};
+pub use calxgloss_typeinfer::param_size::ParameterSizeDetector;
+pub use calxgloss_typeinfer::persist::TypeInferPersistor;
+pub use calxgloss_typeinfer::this_ptr::ThisPointerDetector;
+pub use calxgloss_typeinfer::types::{
+    InferenceMethod, InferenceScope, InferredCallType, InferredLocalType, InferredParamType,
+    InferredType, TypeInferenceResult,
+};
+
+// ============================================================
+// calxgloss-algorithm — algorithm recognition
+// ============================================================
+
+// The crate's `ScanMetadata` is deliberately not re-exported (same name
+// clash as `calxgloss-typeinfer` above).
+pub use calxgloss_algorithm::callback_db::{
+    CallbackDetection, CallbackPattern, CallbackPatternDb, HostMatch, TypeHint, TypeTarget,
+};
+pub use calxgloss_algorithm::cfg_patterns::CfgPatternMatcher;
+pub use calxgloss_algorithm::engine::{AlgorithmEngine, ScanSource};
+pub use calxgloss_algorithm::error::{AlgorithmError, Result as AlgorithmResult};
+pub use calxgloss_algorithm::persist::AlgorithmPersistor;
+pub use calxgloss_algorithm::string_hints::{StringHintEngine, StringSignature};
+pub use calxgloss_algorithm::types::{
+    AlgorithmCategory, AlgorithmHint, AlgorithmPattern, AlgorithmRecognitionResult,
+    DetectionMethod,
 };
 
 // ============================================================
@@ -175,3 +236,15 @@ pub use calxgloss_reports::print_success;
 pub use calxgloss_reports::print_translation_summary;
 pub use calxgloss_reports::print_verification_results;
 pub use calxgloss_reports::prompt_acceptance;
+
+// ============================================================
+// calxgloss-config — layered configuration
+// ============================================================
+
+// The generic names are qualified on re-export so the crate root stays
+// readable: `load_config`, `CONFIG_PROJECT_FILE`, `CONFIG_EXAMPLE`.
+pub use calxgloss_config::{
+    ConfigError, EXAMPLE as CONFIG_EXAMPLE, FileConfig, GhidraSection, Layers, LlmSection,
+    LoadedConfig, PROJECT_FILE as CONFIG_PROJECT_FILE, Resolved, Source, defaults,
+    load as load_config,
+};

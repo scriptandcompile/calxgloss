@@ -155,6 +155,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+#### Workspace layout
+
+- **Reorganized `crates/` into the 5-context layout from `GLOSSARY-MAP.md`** — workspace crates moved from the flat `crates/calxgloss-*` into per-context directories: `crates/pipeline/` (translator, verify, testgen, git), `crates/evidence/` (analysis, callgraph, typeinfer, typesdb, algorithm, memory), `crates/integrations/` (ghidra, llm, prompts, pal), `crates/interface/` (cli, web, reports), and `crates/shared/` (types, config). The meta-lib stays at `crates/calxgloss`; workspace members are now per-context globs. The pipeline context's `GLOSSARY.md` moved from `docs/contexts/pipeline/` to `crates/pipeline/GLOSSARY.md` (the other four glossaries are still pending) with `GLOSSARY-MAP.md` links updated. The `calxgloss` meta-crate was reconciled to re-export every library crate except `calxgloss-web` — `callgraph`, `typeinfer`, `algorithm`, and `config` added (the generic `load`/`PROJECT_FILE`/`EXAMPLE` surface as `load_config`/`CONFIG_PROJECT_FILE`/`CONFIG_EXAMPLE`; the evidence crates' per-crate `ScanMetadata` stay unexported in favor of `calxgloss-types::scan::ScanMetadata`).
+
 #### GhidraMCP 6.x migration
 
 - **Migrated `calxgloss-ghidra` to the new GhidraMCP bridge** (ghidra-mcp v6.0.0, replacing the deprecated LaurieWired extension). The client keeps talking raw HTTP to the Ghidra plugin but follows the 6.x endpoint surface:

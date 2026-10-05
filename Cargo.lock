@@ -324,7 +324,10 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 name = "calxgloss"
 version = "0.2.0"
 dependencies = [
+ "calxgloss-algorithm",
  "calxgloss-analysis",
+ "calxgloss-callgraph",
+ "calxgloss-config",
  "calxgloss-ghidra",
  "calxgloss-git",
  "calxgloss-llm",
@@ -334,6 +337,7 @@ dependencies = [
  "calxgloss-reports",
  "calxgloss-testgen",
  "calxgloss-translator",
+ "calxgloss-typeinfer",
  "calxgloss-types",
  "calxgloss-typesdb",
  "calxgloss-verify",

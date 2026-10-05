@@ -5,7 +5,7 @@ How the engineering skills should consume this repo's domain documentation when 
 ## Before exploring, read these
 
 - **`GLOSSARY-MAP.md`** at the repo root: it points at one `GLOSSARY.md` per context. Read each one relevant to the topic.
-- **`docs/adr/`**: read ADRs that touch the area you're about to work in. Also check `crates/<crate>/docs/adr/` for context-scoped decisions.
+- **`docs/adr/`**: read ADRs that touch the area you're about to work in. Also check `crates/<context>/docs/adr/` for context-scoped decisions.
 
 If any of these files don't exist, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The `/domain-modeling` skill (reached via `/grill-with-docs` and `/improve-codebase-architecture`) creates them lazily when terms or decisions actually get resolved.
 
@@ -18,13 +18,14 @@ Multi-context repo (presence of `GLOSSARY-MAP.md` at the root). Contexts here ar
 ├── GLOSSARY-MAP.md
 ├── docs/adr/                              ← system-wide decisions
 └── crates/
-    ├── calxgloss-ghidra/
+    ├── pipeline/
     │   ├── GLOSSARY.md
-    │   └── docs/adr/                      ← context-specific decisions
-    ├── calxgloss-translator/
+    │   ├── docs/adr/                      ← context-specific decisions
+    │   └── calxgloss-translator/  · verify · testgen · git
+    ├── evidence/
     │   ├── GLOSSARY.md
-    │   └── docs/adr/
-    └── ...
+    │   └── calxgloss-analysis/  · callgraph · typeinfer · typesdb · algorithm · memory
+    └── ...                                ← integrations · interface · shared
 ```
 
 ## Use the glossary's vocabulary

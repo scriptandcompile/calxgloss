@@ -1,0 +1,38 @@
+[package]
+name = "calxgloss-cli"
+version.workspace = true
+edition.workspace = true
+description = "CLI binary — wires all Calxgloss crates together"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+calxgloss = { path = "../../calxgloss" }
+calxgloss-ghidra = { path = "../../integrations/calxgloss-ghidra" }
+calxgloss-analysis = { path = "../../evidence/calxgloss-analysis" }
+calxgloss-testgen = { path = "../../pipeline/calxgloss-testgen" }
+calxgloss-translator = { path = "../../pipeline/calxgloss-translator" }
+calxgloss-typesdb = { path = "../../evidence/calxgloss-typesdb" }
+calxgloss-typeinfer = { path = "../../evidence/calxgloss-typeinfer" }
+calxgloss-algorithm = { path = "../../evidence/calxgloss-algorithm" }
+calxgloss-memory = { path = "../../evidence/calxgloss-memory" }
+calxgloss-verify = { path = "../../pipeline/calxgloss-verify" }
+calxgloss-git = { path = "../../pipeline/calxgloss-git" }
+calxgloss-reports = { path = "../calxgloss-reports" }
+calxgloss-llm = { path = "../../integrations/calxgloss-llm" }
+calxgloss-pal = { path = "../../integrations/calxgloss-pal" }
+calxgloss-config = { path = "../../shared/calxgloss-config" }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["json"] }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+url = { workspace = true }
+chrono = { workspace = true }
+git2 = { workspace = true }
+
+calxgloss-web = { path = "../calxgloss-web", features = ["server"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,14 @@
+[package]
+name = "calxgloss-verify"
+version.workspace = true
+edition.workspace = true
+description = "Compile Rust code, run tests, and compare against baseline behavior"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+calxgloss-types = { path = "../../shared/calxgloss-types" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+serde_json = { workspace = true }
