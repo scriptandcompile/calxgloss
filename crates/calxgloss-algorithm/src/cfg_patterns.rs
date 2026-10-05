@@ -314,7 +314,7 @@ pub fn default_patterns() -> Vec<AlgorithmPattern> {
 // ============================================================
 
 /// The trimmed source line containing `offset`.
-fn line_at(body: &str, offset: usize) -> String {
+pub(crate) fn line_at(body: &str, offset: usize) -> String {
     let line = body[..offset].matches('\n').count();
     body.lines().nth(line).unwrap_or("").trim().to_string()
 }

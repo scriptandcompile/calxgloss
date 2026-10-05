@@ -22,8 +22,9 @@
 //!   on tiny functions.
 //! - [`string_hints`] - String-guided algorithm hints: `StringHintEngine`
 //!   scans decompiled bodies and the binary's string listing against a
-//!   signature database (CRC, checksum, inflate, deflate, gzip, bz2, lzo,
-//!   serialize, deserialize, md5, sha, hmac, http, tcp, udp) with
+//!   signature database — the standard set `default_signatures` carries:
+//!   CRC, checksum, inflate, deflate, gzip, bz2, lzo, serialize,
+//!   deserialize, md5, sha, hmac, http, tcp, and udp — with
 //!   case-insensitive matching per signature and per-function
 //!   deduplication.
 //! - [`callback_db`] - Callback pattern detection: `CallbackPatternDb`
