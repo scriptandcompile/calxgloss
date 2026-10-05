@@ -1119,7 +1119,7 @@ The UI is a **review gate** — it shows the *result* of each translation unit b
   - [x] `cargo clippy` clean
 
 - [ ] **Phase 4 — Pipeline Integration**
-  - [ ] `TypeInferenceResult`, `InferredLocalType`, `InferredType`, `InferredCallType`, `ScanMetadata` types defined
+  - [x] `TypeInferenceResult`, `InferredLocalType`, `InferredType`, `InferredCallType`, `ScanMetadata` types defined *(done 2026-10-04, `types.rs`: `InferredLocalType` (function + decompiled variable name + the shared payload) and `InferredCallType` (function + callee + argument position + optional argument name + payload) as siblings of `InferredParamType`; `InferredType` is the union over the three record kinds — serde-tagged by `kind` (`param`/`local`/`call_site`) with `function()`/`inferred_type()`/`confidence()` accessors reaching through every variant; `TypeInferenceResult` is the per-binary document — shared `ScanMetadata` (re-exported from `calxgloss-types`, typesdb convention) plus the inference list in scan order, empty list omitted from JSON, with `new`/`for_function`/`is_empty`; 9 unit tests)*
   - [ ] `TypeInferEngine` orchestrates all three detectors
   - [ ] `TypeInferPersistor` saves/loads JSON to `re/analysis/typeinfer/`
   - [ ] `extract_type_info()` updated to load from persisted cache
