@@ -339,6 +339,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "calxgloss-algorithm"
+version = "0.2.0"
+dependencies = [
+ "calxgloss-ghidra",
+ "calxgloss-types",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "calxgloss-analysis"
 version = "0.2.0"
 dependencies = [
