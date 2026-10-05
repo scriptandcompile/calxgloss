@@ -47,8 +47,8 @@
 //! logger.record(entry);
 //! ```
 
-use calxgloss_types::persist::{PersistError, analysis_dir, load_json, save_json};
 use calxgloss_types::PromptStrategyEntry;
+use calxgloss_types::persist::{PersistError, analysis_dir, load_json, save_json};
 use tracing::{debug, warn};
 
 /// Logger for prompt strategy experiment entries.

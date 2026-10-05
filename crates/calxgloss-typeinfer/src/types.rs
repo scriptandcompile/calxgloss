@@ -543,7 +543,10 @@ mod tests {
     fn a_named_parameter_renders_with_its_type_and_evidence() {
         let info = calxgloss_prompts::TypeInfo::from(&InferredType::Param(param_record()));
         assert_eq!(info.name, "param_1");
-        assert_eq!(info.description, "Widget * (via vtable_call, confidence 85)");
+        assert_eq!(
+            info.description,
+            "Widget * (via vtable_call, confidence 85)"
+        );
     }
 
     #[test]
@@ -561,14 +564,20 @@ mod tests {
     fn a_local_variable_renders_under_its_decompiled_name() {
         let info = calxgloss_prompts::TypeInfo::from(&InferredType::Local(local_record()));
         assert_eq!(info.name, "local_8");
-        assert_eq!(info.description, "char * (via known_signature, confidence 60)");
+        assert_eq!(
+            info.description,
+            "char * (via known_signature, confidence 60)"
+        );
     }
 
     #[test]
     fn a_call_site_renders_as_the_site_it_typed() {
         let info = calxgloss_prompts::TypeInfo::from(&InferredType::CallSite(call_record()));
         assert_eq!(info.name, "CloseHandle(param_2)");
-        assert_eq!(info.description, "void * (via known_signature, confidence 75)");
+        assert_eq!(
+            info.description,
+            "void * (via known_signature, confidence 75)"
+        );
 
         let literal_arg = InferredCallType {
             arg_name: None,

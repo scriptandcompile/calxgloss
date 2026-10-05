@@ -949,7 +949,10 @@ mod tests {
 
         assert_eq!(found.len(), 1, "only the target function's inference");
         assert_eq!(found[0].name, "param_1");
-        assert_eq!(found[0].description, "Widget * (via vtable_call, confidence 85)");
+        assert_eq!(
+            found[0].description,
+            "Widget * (via vtable_call, confidence 85)"
+        );
     }
 
     #[test]

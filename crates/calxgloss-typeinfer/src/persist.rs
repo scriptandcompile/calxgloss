@@ -229,7 +229,10 @@ mod tests {
         persistor.save(&result("eqgame.exe")).unwrap();
 
         assert!(cache.join("eqgame.exe.json").is_file());
-        assert!(!dir.path().join("re").exists(), "no workspace layout is built");
+        assert!(
+            !dir.path().join("re").exists(),
+            "no workspace layout is built"
+        );
     }
 
     #[test]

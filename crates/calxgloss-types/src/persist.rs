@@ -223,7 +223,10 @@ mod tests {
         save_json(&path, &doc("eqmain.dll")).unwrap();
 
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("\n  \"binary\""), "expected pretty JSON: {text}");
+        assert!(
+            text.contains("\n  \"binary\""),
+            "expected pretty JSON: {text}"
+        );
     }
 
     #[test]
@@ -265,7 +268,10 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let store = JsonStore::<Doc>::new(dir.path());
 
-        assert_eq!(store.path_for("eqmain.dll"), dir.path().join("eqmain.dll.json"));
+        assert_eq!(
+            store.path_for("eqmain.dll"),
+            dir.path().join("eqmain.dll.json")
+        );
         assert!(!store.exists("eqmain.dll"));
 
         store.save("eqmain.dll", &doc("eqmain.dll")).unwrap();

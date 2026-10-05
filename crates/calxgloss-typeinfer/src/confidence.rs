@@ -165,8 +165,20 @@ mod tests {
         // `char *` at 70) and the known-signature engine (`CloseHandle`'s
         // `void *` at 75); the stronger reading survives.
         let winners = resolve_conflicts(vec![
-            param("FUN_1800412a0", 0, InferenceMethod::StringFunction, "char *", 70),
-            param("FUN_1800412a0", 0, InferenceMethod::KnownSignature, "void *", 75),
+            param(
+                "FUN_1800412a0",
+                0,
+                InferenceMethod::StringFunction,
+                "char *",
+                70,
+            ),
+            param(
+                "FUN_1800412a0",
+                0,
+                InferenceMethod::KnownSignature,
+                "void *",
+                75,
+            ),
         ]);
         assert_eq!(
             winners,
@@ -185,8 +197,20 @@ mod tests {
         // `strlen` is a string-function call and a known signature at
         // once, both at 70; the scan showed the size detector first.
         let winners = resolve_conflicts(vec![
-            param("FUN_1800412a0", 0, InferenceMethod::StringFunction, "char *", 70),
-            param("FUN_1800412a0", 0, InferenceMethod::KnownSignature, "char *", 70),
+            param(
+                "FUN_1800412a0",
+                0,
+                InferenceMethod::StringFunction,
+                "char *",
+                70,
+            ),
+            param(
+                "FUN_1800412a0",
+                0,
+                InferenceMethod::KnownSignature,
+                "char *",
+                70,
+            ),
         ]);
         assert_eq!(
             winners,
@@ -203,7 +227,13 @@ mod tests {
     #[test]
     fn different_parameters_each_keep_their_own() {
         let winners = resolve_conflicts(vec![
-            param("FUN_18003ab00", 0, InferenceMethod::VtableCall, "Widget *", 85),
+            param(
+                "FUN_18003ab00",
+                0,
+                InferenceMethod::VtableCall,
+                "Widget *",
+                85,
+            ),
             param(
                 "FUN_18003ab00",
                 1,
@@ -211,7 +241,13 @@ mod tests {
                 "char *",
                 70,
             ),
-            param("FUN_18003ab00", 2, InferenceMethod::KnownSignature, "void *", 75),
+            param(
+                "FUN_18003ab00",
+                2,
+                InferenceMethod::KnownSignature,
+                "void *",
+                75,
+            ),
         ]);
         assert_eq!(winners.len(), 3);
         assert_eq!(winners[0].inferred_type(), "Widget *");
@@ -222,8 +258,20 @@ mod tests {
     #[test]
     fn the_same_parameter_in_two_functions_does_not_conflict() {
         let winners = resolve_conflicts(vec![
-            param("FUN_18003ab00", 0, InferenceMethod::StringFunction, "char *", 70),
-            param("FUN_18003e750", 0, InferenceMethod::KnownSignature, "void *", 75),
+            param(
+                "FUN_18003ab00",
+                0,
+                InferenceMethod::StringFunction,
+                "char *",
+                70,
+            ),
+            param(
+                "FUN_18003e750",
+                0,
+                InferenceMethod::KnownSignature,
+                "void *",
+                75,
+            ),
         ]);
         assert_eq!(winners.len(), 2);
         assert_eq!(winners[0].function(), "FUN_18003ab00");
@@ -262,9 +310,27 @@ mod tests {
         // The stronger record for param_1 arrives after param_2's record;
         // the resolved list keeps the order the scan showed the targets.
         let winners = resolve_conflicts(vec![
-            param("FUN_18003ab00", 0, InferenceMethod::IntegerBitPattern, "u32", 55),
-            param("FUN_18003ab00", 1, InferenceMethod::PointerArithmetic, "void *", 65),
-            param("FUN_18003ab00", 0, InferenceMethod::VtableCall, "Widget *", 85),
+            param(
+                "FUN_18003ab00",
+                0,
+                InferenceMethod::IntegerBitPattern,
+                "u32",
+                55,
+            ),
+            param(
+                "FUN_18003ab00",
+                1,
+                InferenceMethod::PointerArithmetic,
+                "void *",
+                65,
+            ),
+            param(
+                "FUN_18003ab00",
+                0,
+                InferenceMethod::VtableCall,
+                "Widget *",
+                85,
+            ),
         ]);
         assert_eq!(winners.len(), 2);
         assert_eq!(winners[0].inferred_type(), "Widget *");
@@ -274,7 +340,13 @@ mod tests {
     #[test]
     fn a_conflict_free_scan_passes_through_unchanged() {
         let inferences = vec![
-            param("FUN_18003ab00", 0, InferenceMethod::VtableCall, "Widget *", 85),
+            param(
+                "FUN_18003ab00",
+                0,
+                InferenceMethod::VtableCall,
+                "Widget *",
+                85,
+            ),
             local("FUN_18003ab00", "local_8", 60),
             call("FUN_1800412a0", "CloseHandle", 0, "void *", 75),
         ];

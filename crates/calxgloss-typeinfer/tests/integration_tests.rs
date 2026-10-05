@@ -19,10 +19,10 @@ use std::collections::HashMap;
 
 use calxgloss_ghidra::{DecompiledFunction, FunctionSummary};
 use calxgloss_prompts::TypeInfo;
+use calxgloss_typeinfer::Result;
 use calxgloss_typeinfer::engine::{DecompileSource, TypeInferEngine};
 use calxgloss_typeinfer::persist::TypeInferPersistor;
 use calxgloss_typeinfer::types::{InferenceMethod, InferenceScope, InferredType};
-use calxgloss_typeinfer::Result;
 use tempfile::TempDir;
 
 // ------------------------------------------------------------
@@ -66,14 +66,13 @@ impl DecompileSource for FakeProgram {
     }
 
     async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
-        self.bodies
-            .get(name)
-            .cloned()
-            .ok_or_else(|| calxgloss_ghidra::GhidraError::NotFound {
+        self.bodies.get(name).cloned().ok_or_else(|| {
+            calxgloss_ghidra::GhidraError::NotFound {
                 kind: "function",
                 query: name.to_string(),
             }
-            .into())
+            .into()
+        })
     }
 }
 
@@ -92,7 +91,11 @@ fn program() -> FakeProgram {
     );
     program.bodies.insert(
         "FUN_18003e750".into(),
-        function("FUN_18003e750", "undefined FUN_18003e750(void)", "  return;\n"),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(void)",
+            "  return;\n",
+        ),
     );
     program
 }
@@ -243,7 +246,11 @@ async fn a_rescan_replaces_the_cached_document() {
     quiet.listing = vec![summary("FUN_18003e750")];
     quiet.bodies.insert(
         "FUN_18003e750".into(),
-        function("FUN_18003e750", "undefined FUN_18003e750(void)", "  return;\n"),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(void)",
+            "  return;\n",
+        ),
     );
     let second = TypeInferEngine::with_source(quiet)
         .scan("eqmain.dll")
