@@ -17,6 +17,7 @@
 //! - [`verification`] — Compilation and behavioral verification results
 //! - [`git`] — Branch and commit tracking
 //! - [`dashboard`] — Review dashboard data model
+//! - [`persist`] — Shared JSON persistence plumbing (`JsonStore`, `save_json`/`load_json`)
 //! - [`error`] — Unified error type (`TypesError`)
 
 pub mod complexity;
@@ -30,6 +31,7 @@ pub mod experiment_log;
 pub mod fault;
 pub mod function;
 pub mod git;
+pub mod persist;
 pub mod progress;
 pub mod scan;
 pub mod shim;
@@ -58,6 +60,7 @@ pub use fault::{
 };
 pub use function::{ApiCategory, FunctionInfo, NodeCategory, WindowsApiCall};
 pub use git::{GitBranch, GitCommit};
+pub use persist::{JsonStore, PersistError, analysis_dir, load_json, save_json};
 pub use progress::{ProgressEvent, TranslationEvents};
 pub use scan::ScanMetadata;
 pub use shim::{
