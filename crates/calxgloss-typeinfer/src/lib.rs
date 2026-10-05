@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into seven modules:
+//! The crate is organized into eight modules:
 //!
 //! - [`types`] - Core data types: `InferredParamType`, `InferenceMethod`,
 //!   `InferenceScope` for per-parameter inference records; `InferredType`,
@@ -26,6 +26,9 @@
 //!   extracts calls from decompiled text and propagates parameter types
 //!   through a signature database of well-known library functions, with
 //!   A/W-suffix name matching and per-signature confidence scores.
+//! - [`reading`] - Detector-internal accumulator: the single `Reading`
+//!   shape every detector feeds, with highest-confidence-wins resolution
+//!   and shared record assembly.
 //! - [`confidence`] - Shared confidence model: score composition per
 //!   inference method, configurable thresholds, and highest-confidence-wins
 //!   resolution when detectors infer different types for one parameter.
@@ -38,6 +41,7 @@ pub mod error;
 pub mod known_type;
 pub mod param_size;
 pub mod persist;
+pub(crate) mod reading;
 pub mod this_ptr;
 pub mod types;
 

@@ -17,6 +17,7 @@
 //! [`IntegerBitPattern`]: crate::types::InferenceMethod::IntegerBitPattern
 //! [`PointerArithmetic`]: crate::types::InferenceMethod::PointerArithmetic
 
+use crate::reading::Reading;
 use crate::types::{InferenceMethod, InferenceScope, InferredParamType};
 use calxgloss_ghidra::DecompiledFunction;
 use std::collections::HashMap;
@@ -731,15 +732,6 @@ fn matching_open(bytes: &[u8], close: usize) -> Option<usize> {
 // Detector
 // ============================================================
 
-/// One family's reading of one parameter, before record assembly.
-struct Reading {
-    param_index: usize,
-    method: InferenceMethod,
-    inferred_type: &'static str,
-    confidence: u8,
-    evidence: String,
-}
-
 /// Parameter size detection over decompiled functions.
 ///
 /// The detector is stateless: every reading comes from the decompiled
@@ -901,34 +893,23 @@ impl ParameterSizeDetector {
                 .entry((reading.param_index, reading.method))
                 .or_insert(slot);
         }
+        let kept: Vec<Reading> = readings
+            .into_iter()
+            .enumerate()
+            .filter(|(slot, reading)| {
+                first.get(&(reading.param_index, reading.method)) == Some(slot)
+            })
+            .map(|(_, reading)| reading)
+            .collect();
         // Ambiguity handling: when families read one parameter
         // differently, the highest-confidence reading wins and the rest
         // are dropped; a tie keeps the reading the body showed first.
-        let mut winners: Vec<Reading> = Vec::new();
-        for (slot, reading) in readings.into_iter().enumerate() {
-            if first.get(&(reading.param_index, reading.method)) != Some(&slot) {
-                continue;
-            }
-            match winners
-                .iter_mut()
-                .find(|w| w.param_index == reading.param_index)
-            {
-                Some(winner) if reading.confidence > winner.confidence => *winner = reading,
-                Some(_) => {}
-                None => winners.push(reading),
-            }
-        }
+        let winners = Reading::resolve(kept);
         winners
             .into_iter()
-            .map(|reading| InferredParamType {
-                function: func.name.clone(),
-                param_index: reading.param_index,
-                param_name: Some(params[reading.param_index].clone()),
-                inferred_type: reading.inferred_type.to_string(),
-                method: reading.method,
-                scope: InferenceScope::Function,
-                confidence: reading.confidence.into(),
-                evidence: reading.evidence,
+            .map(|reading| {
+                let param_name = params[reading.param_index].clone();
+                reading.into_record(func.name.clone(), param_name, InferenceScope::Function)
             })
             .collect()
     }
