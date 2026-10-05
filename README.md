@@ -21,62 +21,47 @@ Calxgloss reverse engineers project executables and DLLs, transforming disassemb
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────────────────────────────────────┐
-│                        Agent Harness                                          │
-│                                                                               │
-│  ┌───────────┐   ┌───────────┐   ┌──────────────────────┐                    │
-│  │  GhidraMCP │──▶│ Decompiler│──▶│  Disassembly/IR      │                    │
-│  │   Bridge   │   │ Pipeline  │   │  Extraction           │                    │
-│  └───────────┘   └───────────┘   └──────────┬───────────┘                    │
-│                                              │                                 │
-│  ┌───────────┐    ┌───────────┐              ▼                                │
-│  │ Git Branch │◀───│  LLM      │    ┌──────────────────────┐                   │
-│  │  Manager   │    │  Pipeline │    │  Behavior Testing     │                   │
-│  │            │    │           │    │  Layer                │                   │
-│  └───────────┘    └───────────┘    └──────────┬───────────┘                   │
-│       │              │                         │                                │
-│       │              ▼                         ▼                                │
-│       │    ┌─────────────────┐       ┌─────────────────┐                       │
-│       │    │  Fault          │       │  Rust Code      │                       │
-│       │    │  Detection &    │       │  Generation      │                       │
-│       │    │  Recovery       │       │                  │                       │
-│       │    └─────────────────┘       └────────┬────────┘                       │
-│       │                                        │                                │
-│       │              ┌─────────────────────────▼───────────────────┐            │
-│       │              │         LLM Orchestration Engine             │            │
-│       │              │  - Prompt scheduling, context management     │            │
-│       │              │  - Token tracking, retry/fallback logic      │            │
-│       │              │  - Branch per function, commit per unit      │            │
-│       │              └─────────────────────────────────────────────┘            │
-│       │                                        │                                │
-│       │                                        ▼                                │
-│  ┌──────────────────────────────────────────────────────────┐                  │
-│  │  Restitch Engine ──▶ Compilation ──▶ Verification Loop   │                  │
-│  └──────────────────────────────────────────────────────────┘                  │
-│                                                                               │
-│  ┌─────────────────────────────────────────────────────┐                       │
-│  │              Web Review UI                           │                       │
-│  │  - Unit diff view with justifications                │                       │
-│  │  - Dependency graph visualization                     │                       │
-│  │  - Accept/reject/work-on-it actions                   │                       │
-│  └─────────────────────────────────────────────────────┘                       │
-└───────────────────────────────────────────────────────────────────────────────┘
+  ┌────────────────────────────────────────────────────┐      ┌────────────────────────────┐
+  │                   calxgloss-cli                    │      │       calxgloss-web        │
+  │ translate · batch · classify · auto · serve · live │      │accept · reject · work-on-it│
+  └────────────────────────────────────────────────────┘      └────────────────────────────┘
+                             │                                               ▲
+                             │                                               │
+                             ▼                                               │
+  ┌────────────────────────────────────────────────────────────────────────────────────────┐
+  │                    calxgloss-translator — the translation pipeline                     │
+  │                  fetch ▸ prompt ▸ translate ▸ verify ▸ retry ▸ commit                  │
+  │                    compile-fix retries · failure-informed prompting                    │
+  └────────────────────────────────────────────────────────────────────────────────────────┘
+           ▲                        ▲                        ▲                    ▲
+           │                        │                        │                    │
+           │                        │                        │                    │
+  ┌────────────────┐   ┌────────────────────────┐  ┌──────────────────┐  ┌────────────────┐
+  │                │   │    evidence engines    │  │                  │  │                │
+  │calxgloss-ghidra│   │  analysis · callgraph  │  │calxgloss-prompts │  │ calxgloss-llm  │
+  │  HTTP client   │   │  typeinfer · typesdb   │  │  calxgloss-pal   │  │ fault monitors │
+  │                │   │   algorithm · memory   │  │                  │  │                │
+  └────────────────┘   └────────────────────────┘  └──────────────────┘  └────────────────┘
+           │                                                                      │
+  ┌────────────────┐                                                     ┌────────────────┐
+  │     Ghidra     │                                                     │Local LLM server│
+  │GhidraMCP bridge│                                                     │ Ollama · vLLM  │
+  └────────────────┘                                                     └────────────────┘
+
+  Foundation: calxgloss-types (shared types) · calxgloss-config (layered settings) ·
+  calxgloss-testgen (FFI stubs & baseline tests) · calxgloss-verify (compile & test) ·
+  calxgloss-git (branch per unit) · calxgloss-reports (terminal output)
 ```
-
-## MVP
-
-The MVP proves the core concept: **can an LLM reliably translate disassembled functions to Rust that passes behavior tests?**
-
-Translate a single function from a single DLL from disassembly to working Rust that compiles and passes baseline tests.
-
-See [`Documentation/step_by_step_mvp.md`](Documentation/step_by_step_mvp.md) for the full step-by-step plan.
 
 ## Quick Start
 
-Write your server addresses to a config file once:
+Write your directories and server addresses to a config file once:
 
 ```toml
 # ~/.config/calxgloss/config.toml
+target_dir = "/path/to/binaries"   # DLLs and EXEs, read-only
+repo_dir   = "/path/to/workspace"  # where src/, re/, scratch, and the git repo go
+
 [ghidra]
 url = "http://127.0.0.1:8080"
 
@@ -85,7 +70,18 @@ url   = "http://127.0.0.1:1919/v1"
 model = "Qwen3.6-35B-A3B-FP8"
 ```
 
-Then translate without repeating them:
+Then run the pipeline and the review UI together — `live` classifies and
+translates in the foreground while you review units in the browser at
+`http://localhost:3000` (`--port` to change it). Ctrl+C stops both:
+
+```bash
+cd /path/to/workspace
+cargo run --bin calxgloss-cli -- live
+```
+
+`live` always works on the current directory — `cd` into the workspace first;
+only `--repo <dir>` overrides it. The `repo_dir` setting applies to the other
+commands, like translating a single function:
 
 ```bash
 cargo run --bin calxgloss-cli -- translate \
@@ -98,6 +94,12 @@ cargo run --bin calxgloss-cli -- translate \
 a value you did not expect can be traced to its source:
 
 ```
+target_dir
+  path         /path/to/binaries                  (config file)
+
+repo_dir
+  path         /path/to/workspace                 (config file)
+
 ghidra
   url          http://127.0.0.1:8080              (config file)
 
@@ -111,8 +113,8 @@ llm
 
 Settings are resolved in this order, most specific first:
 
-1. a command-line flag (`--ghidra-url`, `--llm-model`, ...),
-2. an environment variable (`CALXGLOSS_GHIDRA_URL`, `CALXGLOSS_LLM_MODEL`, ...),
+1. a command-line flag (`--target-dir`, `--ghidra-url`, `--llm-model`, ...),
+2. an environment variable (`CALXGLOSS_TARGET_DIR`, `CALXGLOSS_GHIDRA_URL`, `CALXGLOSS_LLM_MODEL`, ...),
 3. a TOML file,
 4. a built-in default.
 
@@ -125,6 +127,10 @@ Ghidra's URL has a default, because GhidraMCP has a well-known port. The LLM URL
 and model have none — a local inference server has no conventional address — so
 `translate` reports them as unset, listing all three ways to provide one, rather
 than failing later with a connection error to a port nothing is listening on.
+`target_dir` has no default either: commands that do real work fail fast and
+print the three ways to set it. `repo_dir` defaults to the current directory —
+and `live`/`serve` always use the current directory, ignoring config and
+environment unless you pass `--repo`.
 
 ## Workspace Structure
 
@@ -137,6 +143,11 @@ than failing later with a connection error to a port nothing is listening on.
 | `calxgloss-prompts` | Prompt templates |
 | `calxgloss-pal` | Windows API → Rust mappings |
 | `calxgloss-analysis` | DLL classification, call graphs, API tagging |
+| `calxgloss-callgraph` | Root/leaf detection, translation ordering, context enrichment |
+| `calxgloss-typesdb` | Ghidra type library scanning, vtable detection, struct inference |
+| `calxgloss-typeinfer` | This-pointer detection, parameter size detection, type propagation |
+| `calxgloss-algorithm` | Control-flow signature matching, string-guided hints, callback patterns |
+| `calxgloss-memory` | Allocation/deallocation pair tracking, handle lifecycle, refcount detection |
 | `calxgloss-testgen` | FFI stubs, test inputs, baseline execution |
 | `calxgloss-translator` | Ghidra → LLM → Rust pipeline |
 | `calxgloss-verify` | Compile and test verification |
