@@ -17,6 +17,7 @@ calxgloss-analysis = { path = "../calxgloss-analysis" }
 calxgloss-callgraph = { path = "../calxgloss-callgraph" }
 calxgloss-verify = { path = "../calxgloss-verify" }
 calxgloss-typesdb = { path = "../calxgloss-typesdb" }
+calxgloss-typeinfer = { path = "../calxgloss-typeinfer" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }

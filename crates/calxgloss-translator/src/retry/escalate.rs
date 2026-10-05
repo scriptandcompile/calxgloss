@@ -23,7 +23,8 @@ pub struct EscalatePromptCtx {
     pub history: Vec<calxgloss_types::FailureHint>,
     /// Enriched call graph context from the initial translation.
     pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
-    /// Workspace root for reading the persisted type database.
+    /// Workspace root for reading the persisted type database and
+    /// inference cache.
     pub workspace: Option<std::path::PathBuf>,
 }
 
@@ -50,7 +51,11 @@ async fn build_escalate_prompt_inner(
         &ctx.dll_name,
         &ctx.function_name,
     );
-    let type_info = super::helpers::extract_type_info(&ctx.ghidra, &ctx.function_name).await;
+    let type_info = super::helpers::extract_type_info(
+        ctx.workspace.as_deref(),
+        &ctx.dll_name,
+        &ctx.function_name,
+    );
 
     // Clone for the error fallback (original is moved into build_escalate_prompt)
     let rust_code_for_error = ctx.original_rust_code.clone();

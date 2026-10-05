@@ -521,6 +521,7 @@ dependencies = [
  "calxgloss-pal",
  "calxgloss-prompts",
  "calxgloss-testgen",
+ "calxgloss-typeinfer",
  "calxgloss-types",
  "calxgloss-typesdb",
  "calxgloss-verify",

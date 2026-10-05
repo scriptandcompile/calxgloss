@@ -193,14 +193,43 @@ pub fn extract_data_structures(
     structures
 }
 
-/// Extract type information from Ghidra for the given function.
-pub async fn extract_type_info(
-    _ghidra: &GhidraClient,
-    _function_name: &str,
+/// Extract inferred type information from the persisted inference cache.
+///
+/// Reads the per-binary result produced by the `calxgloss-typeinfer`
+/// engine from `re/analysis/typeinfer/{dll}.json` and keeps the
+/// inferences made for the target function — the parameter, local
+/// variable, and call-site readings whose evidence lives in
+/// `function`'s decompiled body.
+///
+/// Returns an empty vector when no workspace is configured, no result
+/// is persisted for `dll` (the scan has not run), or the document is
+/// corrupt: missing type context degrades the prompt, it never fails it.
+pub fn extract_type_info(
+    workspace: Option<&std::path::Path>,
+    dll: &str,
+    function: &str,
 ) -> Vec<calxgloss_prompts::TypeInfo> {
-    // GhidraMCP doesn't expose type inference directly.
-    // This is a placeholder for future integration.
-    Vec::new()
+    let Some(workspace) = workspace else {
+        return Vec::new();
+    };
+
+    let persistor = calxgloss_typeinfer::persist::TypeInferPersistor::new(workspace);
+    let result = match persistor.load(dll) {
+        Ok(result) => result,
+        Err(e) => {
+            debug!(
+                dll,
+                error = %e,
+                "No usable type inference result; continuing without type context"
+            );
+            return Vec::new();
+        }
+    };
+
+    result
+        .for_function(function)
+        .map(calxgloss_prompts::TypeInfo::from)
+        .collect()
 }
 
 // ============================================================
@@ -654,6 +683,11 @@ pub async fn build_escalated_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use calxgloss_typeinfer::persist::TypeInferPersistor;
+    use calxgloss_typeinfer::types::{
+        Confidence, InferenceMethod, InferenceScope, InferredCallType, InferredLocalType,
+        InferredParamType, InferredType, TypeInferenceResult,
+    };
     use calxgloss_typesdb::persist::TypeDatabasePersistor;
     use calxgloss_typesdb::types::{
         EnumMember, FieldType, InferredField, InferredStruct, NameOrigin, NamedType, ScanMetadata,
@@ -850,5 +884,111 @@ mod tests {
 
         let names: Vec<&str> = found.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["Player", "Widget"]);
+    }
+
+    fn param_inference(function: &str, index: usize, inferred_type: &str) -> InferredType {
+        InferredType::Param(InferredParamType {
+            function: function.to_string(),
+            param_index: index,
+            param_name: Some(format!("param_{}", index + 1)),
+            inferred_type: inferred_type.to_string(),
+            method: InferenceMethod::VtableCall,
+            scope: InferenceScope::Class,
+            confidence: Confidence::new(85),
+            evidence: "(*(code *)(**param_1))[3](param_1)".into(),
+        })
+    }
+
+    fn persist_inferences(dir: &TempDir, inferences: Vec<InferredType>) {
+        let mut result = TypeInferenceResult::new(ScanMetadata::new("eqmain.dll"));
+        result.inferences = inferences;
+        TypeInferPersistor::new(dir.path()).save(&result).unwrap();
+    }
+
+    #[test]
+    fn no_workspace_configured_yields_no_type_info() {
+        assert!(extract_type_info(None, "eqmain.dll", "FUN_18003ab00").is_empty());
+    }
+
+    #[test]
+    fn a_missing_cache_yields_no_type_info() {
+        let dir = TempDir::new().unwrap();
+        assert!(
+            extract_type_info(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "a scan that has not run yet just means no type context"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_cache_degrades_to_no_type_info() {
+        let dir = TempDir::new().unwrap();
+        let path = dir
+            .path()
+            .join("re")
+            .join("analysis")
+            .join("typeinfer")
+            .join("eqmain.dll.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{ not json").unwrap();
+
+        assert!(extract_type_info(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty());
+    }
+
+    #[test]
+    fn inferences_of_other_functions_are_dropped() {
+        let dir = TempDir::new().unwrap();
+        persist_inferences(
+            &dir,
+            vec![
+                param_inference("FUN_18003ab00", 0, "Widget *"),
+                param_inference("FUN_zzz", 0, "char *"),
+            ],
+        );
+
+        let found = extract_type_info(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        assert_eq!(found.len(), 1, "only the target function's inference");
+        assert_eq!(found[0].name, "param_1");
+        assert_eq!(found[0].description, "Widget * (via vtable_call, confidence 85)");
+    }
+
+    #[test]
+    fn every_record_kind_of_the_function_lands_in_the_prompt() {
+        let dir = TempDir::new().unwrap();
+        persist_inferences(
+            &dir,
+            vec![
+                param_inference("FUN_18003ab00", 0, "Widget *"),
+                InferredType::Local(InferredLocalType {
+                    function: "FUN_18003ab00".into(),
+                    variable_name: "local_8".into(),
+                    inferred_type: "char *".into(),
+                    method: InferenceMethod::KnownSignature,
+                    scope: InferenceScope::Function,
+                    confidence: Confidence::new(60),
+                    evidence: "local_8 = (char *)malloc(0x10);".into(),
+                }),
+                InferredType::CallSite(InferredCallType {
+                    function: "FUN_18003ab00".into(),
+                    callee: "CloseHandle".into(),
+                    arg_index: 0,
+                    arg_name: None,
+                    inferred_type: "void *".into(),
+                    method: InferenceMethod::KnownSignature,
+                    scope: InferenceScope::Program,
+                    confidence: Confidence::new(75),
+                    evidence: "CloseHandle(0x1234);".into(),
+                }),
+            ],
+        );
+
+        let found = extract_type_info(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        let names: Vec<&str> = found.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["param_1", "local_8", "CloseHandle arg 1"]);
+        assert_eq!(
+            found[2].description,
+            "void * (via known_signature, confidence 75)"
+        );
     }
 }
