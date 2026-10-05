@@ -11,6 +11,10 @@ Everything below was verified against the local stack on 2026-10-03:
 Ghidra 12.1.2 at `~/ghidra_12.1.2_PUBLIC`, GhidraMCP 6.0.0 extension,
 bridge repo `~/Programming/ghidra-mcp` @ v6.0.0.
 
+The *completed* client port (stock plugin → v6.0.0 endpoint mapping, record
+formats) is reference material, not design — it lives in
+[`ghidra_endpoint_map.md`](ghidra_endpoint_map.md).
+
 ---
 
 ## 1. What the stack already gives us (verified)
@@ -249,3 +253,4 @@ Safety:
 6. **Security env** — respect the bridge defaults: script execution endpoints
    are off (`GHIDRA_MCP_ALLOW_SCRIPTS` unset), and consider
    `GHIDRA_MCP_REQUIRE_PROGRAM_SELECTORS=1` once multiple programs load at once.
+
