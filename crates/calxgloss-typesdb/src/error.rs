@@ -34,4 +34,18 @@ pub enum TypesDbError {
     ScanFailed { dll: String, reason: String },
 }
 
+/// Maps the shared JSON store's errors onto this crate's error type: the
+/// store's not-found becomes [`TypesDbError::NotFound`], and its I/O and
+/// JSON errors fold into the existing pass-through variants.
+impl From<calxgloss_types::persist::PersistError> for TypesDbError {
+    fn from(error: calxgloss_types::persist::PersistError) -> Self {
+        use calxgloss_types::persist::PersistError;
+        match error {
+            PersistError::NotFound { path } => Self::NotFound { path },
+            PersistError::Io { source, .. } => Self::Io(source),
+            PersistError::Json { source, .. } => Self::Json(source),
+        }
+    }
+}
+
 pub type Result<T> = std::result::Result<T, TypesDbError>;

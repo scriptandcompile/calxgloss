@@ -15,6 +15,7 @@
 
 use std::path::{Path, PathBuf};
 
+use calxgloss_types::persist::{JsonStore, analysis_dir};
 use tracing::{info, warn};
 
 use crate::error::{Result, TypesDbError};
@@ -52,7 +53,7 @@ use crate::types::TypeDatabase;
 /// # }
 /// ```
 pub struct TypeDatabasePersistor {
-    cache_dir: PathBuf,
+    store: JsonStore<TypeDatabase>,
 }
 
 impl TypeDatabasePersistor {
@@ -61,11 +62,7 @@ impl TypeDatabasePersistor {
     /// Databases are stored in `<workspace_root>/re/analysis/typesdb/`.
     pub fn new(workspace_root: impl AsRef<Path>) -> Self {
         Self {
-            cache_dir: workspace_root
-                .as_ref()
-                .join("re")
-                .join("analysis")
-                .join("typesdb"),
+            store: JsonStore::new(analysis_dir(workspace_root).join("typesdb")),
         }
     }
 
@@ -74,13 +71,13 @@ impl TypeDatabasePersistor {
     /// Databases are stored directly under the provided `cache_dir` path.
     pub fn with_cache_dir(cache_dir: impl AsRef<Path>) -> Self {
         Self {
-            cache_dir: cache_dir.as_ref().to_path_buf(),
+            store: JsonStore::new(cache_dir),
         }
     }
 
     /// Returns the path the database for `binary` is filed under.
     pub fn path_for(&self, binary: &str) -> PathBuf {
-        self.cache_dir.join(format!("{binary}.json"))
+        self.store.path_for(binary)
     }
 
     /// Whether a persisted database exists for `binary`.
@@ -90,7 +87,7 @@ impl TypeDatabasePersistor {
     /// [`TypesDBEngine`](crate::engine::TypesDBEngine) when the answer is
     /// `false`.
     pub fn exists(&self, binary: &str) -> bool {
-        self.path_for(binary).is_file()
+        self.store.exists(binary)
     }
 
     /// Saves a type database to JSON, keyed on its metadata's binary name.
@@ -112,12 +109,7 @@ impl TypeDatabasePersistor {
             "Saving type database"
         );
 
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        let json = serde_json::to_string_pretty(db)?;
-        std::fs::write(&path, json)?;
+        self.store.save(&db.metadata.binary, db)?;
         Ok(())
     }
 
@@ -129,15 +121,13 @@ impl TypeDatabasePersistor {
     /// `binary`, or [`TypesDbError::Json`] if the document is corrupt.
     pub fn load(&self, binary: &str) -> Result<TypeDatabase> {
         let path = self.path_for(binary);
-        if !path.is_file() {
+        if !self.store.exists(binary) {
             warn!(path = %path.display(), "Type database file not found");
             return Err(TypesDbError::NotFound { path });
         }
         info!(path = %path.display(), "Loading type database");
 
-        let json = std::fs::read_to_string(&path)?;
-        let db: TypeDatabase = serde_json::from_str(&json)?;
-        Ok(db)
+        Ok(self.store.load(binary)?)
     }
 }
 
