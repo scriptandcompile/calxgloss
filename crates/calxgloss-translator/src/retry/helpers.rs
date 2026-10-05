@@ -232,6 +232,45 @@ pub fn extract_type_info(
         .collect()
 }
 
+/// Extract recognized algorithm hints from the persisted recognition result.
+///
+/// Reads the per-binary result produced by the `calxgloss-algorithm`
+/// engine from `re/analysis/algorithm/{dll}.json` and keeps the hints
+/// made for the target function — the algorithms whose evidence lives in
+/// `function`'s decompiled body or whose name the function carries.
+///
+/// Returns an empty vector when no workspace is configured, no result
+/// is persisted for `dll` (the scan has not run), or the document is
+/// corrupt: missing algorithm context degrades the prompt, it never
+/// fails it.
+pub fn extract_algorithm_hints(
+    workspace: Option<&std::path::Path>,
+    dll: &str,
+    function: &str,
+) -> Vec<calxgloss_prompts::AlgorithmInfo> {
+    let Some(workspace) = workspace else {
+        return Vec::new();
+    };
+
+    let persistor = calxgloss_algorithm::persist::AlgorithmPersistor::new(workspace);
+    let result = match persistor.load(dll) {
+        Ok(result) => result,
+        Err(e) => {
+            debug!(
+                dll,
+                error = %e,
+                "No usable algorithm recognition result; continuing without algorithm context"
+            );
+            return Vec::new();
+        }
+    };
+
+    result
+        .for_function(function)
+        .map(calxgloss_prompts::AlgorithmInfo::from)
+        .collect()
+}
+
 // ============================================================
 // Tier 4 — Shim layer and PAL trait extraction
 // ============================================================
@@ -993,5 +1032,107 @@ mod tests {
             found[2].description,
             "void * (via known_signature, confidence 75)"
         );
+    }
+
+    fn algorithm_hint(
+        function: &str,
+        algorithm: &str,
+    ) -> calxgloss_algorithm::types::AlgorithmHint {
+        calxgloss_algorithm::types::AlgorithmHint {
+            function: function.to_string(),
+            algorithm: algorithm.to_string(),
+            category: calxgloss_algorithm::types::AlgorithmCategory::Sorting,
+            method: calxgloss_algorithm::types::DetectionMethod::CfgPattern,
+            confidence: calxgloss_algorithm::types::Confidence::new(60),
+            evidence: "for (local_10 = 0; local_10 < uVar2; local_10 = local_10 + 1)".into(),
+        }
+    }
+
+    fn persist_hints(dir: &TempDir, hints: Vec<calxgloss_algorithm::types::AlgorithmHint>) {
+        let mut result = calxgloss_algorithm::types::AlgorithmRecognitionResult::new(
+            ScanMetadata::new("eqmain.dll"),
+        );
+        result.hints = hints;
+        calxgloss_algorithm::persist::AlgorithmPersistor::new(dir.path())
+            .save(&result)
+            .unwrap();
+    }
+
+    #[test]
+    fn no_workspace_configured_yields_no_algorithm_hints() {
+        assert!(extract_algorithm_hints(None, "eqmain.dll", "FUN_18003ab00").is_empty());
+    }
+
+    #[test]
+    fn a_missing_cache_yields_no_algorithm_hints() {
+        let dir = TempDir::new().unwrap();
+        assert!(
+            extract_algorithm_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "a scan that has not run yet just means no algorithm context"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_cache_degrades_to_no_algorithm_hints() {
+        let dir = TempDir::new().unwrap();
+        let path = dir
+            .path()
+            .join("re")
+            .join("analysis")
+            .join("algorithm")
+            .join("eqmain.dll.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{ not json").unwrap();
+
+        assert!(
+            extract_algorithm_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty()
+        );
+    }
+
+    #[test]
+    fn hints_of_other_functions_are_dropped() {
+        let dir = TempDir::new().unwrap();
+        persist_hints(
+            &dir,
+            vec![
+                algorithm_hint("FUN_18003ab00", "comparison_sort"),
+                algorithm_hint("FUN_zzz", "binary_search"),
+            ],
+        );
+
+        let found = extract_algorithm_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        assert_eq!(found.len(), 1, "only the target function's hint");
+        assert_eq!(found[0].algorithm, "comparison_sort");
+        assert_eq!(found[0].category, "sorting");
+        assert_eq!(found[0].method, "cfg_pattern");
+        assert_eq!(found[0].confidence, 60);
+        assert!(found[0].evidence.starts_with("for (local_10 = 0;"));
+    }
+
+    #[test]
+    fn every_hint_of_the_function_lands_in_the_prompt() {
+        let dir = TempDir::new().unwrap();
+        persist_hints(
+            &dir,
+            vec![
+                algorithm_hint("FUN_18003ab00", "comparison_sort"),
+                calxgloss_algorithm::types::AlgorithmHint {
+                    function: "FUN_18003ab00".into(),
+                    algorithm: "crc".into(),
+                    category: calxgloss_algorithm::types::AlgorithmCategory::Checksum,
+                    method: calxgloss_algorithm::types::DetectionMethod::StringHint,
+                    confidence: calxgloss_algorithm::types::Confidence::new(30),
+                    evidence: "crc_table".into(),
+                },
+            ],
+        );
+
+        let found = extract_algorithm_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        let algorithms: Vec<&str> = found.iter().map(|a| a.algorithm.as_str()).collect();
+        assert_eq!(algorithms, vec!["comparison_sort", "crc"]);
+        assert_eq!(found[1].category, "checksum");
+        assert_eq!(found[1].method, "string_hint");
     }
 }

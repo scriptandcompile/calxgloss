@@ -23,8 +23,8 @@ pub struct EscalatePromptCtx {
     pub history: Vec<calxgloss_types::FailureHint>,
     /// Enriched call graph context from the initial translation.
     pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
-    /// Workspace root for reading the persisted type database and
-    /// inference cache.
+    /// Workspace root for reading the persisted type database, inference
+    /// cache, and algorithm recognition result.
     pub workspace: Option<std::path::PathBuf>,
 }
 
@@ -32,7 +32,8 @@ pub struct EscalatePromptCtx {
 ///
 /// This prompt is used when previous `compile_fix` or `test_fix` attempts have
 /// failed. It adds call graph neighbors, neighboring function code, data
-/// structures, and type information to help the LLM resolve the failure.
+/// structures, type information, and recognized algorithms to help the LLM
+/// resolve the failure.
 pub async fn build_escalate_prompt_with_context(ctx: EscalatePromptCtx) -> String {
     build_escalate_prompt_inner(ctx, Vec::new()).await
 }
@@ -56,6 +57,11 @@ async fn build_escalate_prompt_inner(
         &ctx.dll_name,
         &ctx.function_name,
     );
+    let algorithm_hints = super::helpers::extract_algorithm_hints(
+        ctx.workspace.as_deref(),
+        &ctx.dll_name,
+        &ctx.function_name,
+    );
 
     // Clone for the error fallback (original is moved into build_escalate_prompt)
     let rust_code_for_error = ctx.original_rust_code.clone();
@@ -69,6 +75,7 @@ async fn build_escalate_prompt_inner(
         neighboring_functions,
         data_structures,
         type_info,
+        algorithm_hints,
         history,
         ctx.call_graph_context,
     )

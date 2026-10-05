@@ -531,6 +531,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "askama",
+ "calxgloss-algorithm",
  "calxgloss-analysis",
  "calxgloss-callgraph",
  "calxgloss-ghidra",
