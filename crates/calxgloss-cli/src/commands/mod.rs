@@ -9,6 +9,7 @@ pub mod dashboard;
 pub mod gc;
 pub mod init;
 pub mod live;
+pub mod memory;
 pub mod serve;
 pub mod translate;
 pub mod typeinfer;

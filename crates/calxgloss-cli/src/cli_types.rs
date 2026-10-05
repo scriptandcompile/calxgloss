@@ -308,6 +308,38 @@ pub(super) enum Command {
         show: bool,
     },
 
+    /// Detect memory lifecycles (allocation/release pairs, handle
+    /// lifetimes, reference counting) for a binary.
+    ///
+    /// The lifecycle findings are persisted per binary to
+    /// `re/analysis/memory/<dll>.json` in the workspace — the same file
+    /// batch translation will read as prompt context. `--show` prints a
+    /// cached result without connecting to Ghidra; the on-demand scan
+    /// that produces one arrives with the memory engine, and until it
+    /// lands running the command without `--show` reports that the scan
+    /// is not wired up yet.
+    ///
+    /// # Arguments
+    ///
+    /// * `--dll` — Binary the result was scanned from, e.g.
+    ///   `eqmain.dll`. Names the persisted file.
+    /// * `--show` — Print a summary of the cached result.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss memory --dll eqmain.dll --show
+    /// ```
+    Memory {
+        /// Binary the result was scanned from, e.g. `eqmain.dll`
+        #[arg(long, required = true)]
+        dll: String,
+
+        /// Show the cached result instead of running the scan
+        #[arg(long)]
+        show: bool,
+    },
+
     /// Show the configuration in force and where each value came from
     ///
     /// Secrets are reported as `<set>` rather than printed, so this output is

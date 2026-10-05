@@ -14,6 +14,7 @@ calxgloss-prompts = { path = "../calxgloss-prompts" }
 calxgloss-pal = { path = "../calxgloss-pal" }
 calxgloss-analysis = { path = "../calxgloss-analysis" }
 calxgloss-typesdb = { path = "../calxgloss-typesdb" }
+calxgloss-memory = { path = "../calxgloss-memory" }
 calxgloss-testgen = { path = "../calxgloss-testgen" }
 calxgloss-translator = { path = "../calxgloss-translator" }
 calxgloss-verify = { path = "../calxgloss-verify" }

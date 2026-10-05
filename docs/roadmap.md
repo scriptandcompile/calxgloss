@@ -41,7 +41,7 @@ are indicative targets, not exact requirements.
 | P1 | Data Structure Recovery | `calxgloss-typesdb` | 4–6 wk | ✅ Phases 0a–4 done (2026-10-03) | Phase 5 future items | — |
 | P2 | Type Inference & Propagation | `calxgloss-typeinfer` | 3–4 wk | ✅ Phases 0–4 done (2026-10-04) | Phase 5 future items (incl. Ghidra write-back) | — |
 | P3 | Algorithm Recognition | `calxgloss-algorithm` | 4–6 wk | ✅ Phases 0–4 done (2026-10-05) | Phase 5 future items | — |
-| P4 | Memory Lifecycle / RAII | `calxgloss-memory` | 3–4 wk | 🔶 Phases 0–3 done (2026-10-05) | **Phase 4 — pipeline integration** ← next up | — |
+| P4 | Memory Lifecycle / RAII | `calxgloss-memory` | 3–4 wk | 🔶 Phases 0–3 done, Phase 4 in progress (2026-10-05) | **Phase 4 — pipeline integration** ← next up | — |
 | P5 | Concurrency & Synchronization | `calxgloss-sync` | 2–3 wk | ⬜ not started | spec + crate | — |
 | P6 | Callback / Function Pointer Tables | `calxgloss-callback` | 2–3 wk | ⬜ not started | spec + crate | — |
 | P7 | Control Flow Pattern Recognition | `calxgloss-controlflow` | 2–4 wk | ⬜ not started | spec + crate | — |
@@ -88,18 +88,25 @@ Full completion notes for each phase: archive §17.1–17.4.
 
 Detectors done (2026-10-05): allocator/deallocator pair tracking (→ `Box<T>`/
 stack), handle lifetimes (→ RAII guard + `Drop`), reference counting (→ `Rc<T>`/
-`Arc<T>`); 132 unit tests. **Remaining: Phase 4 — pipeline integration**, which
-follows the exact shape P3 shipped (archive §17.4 Phase 4):
+`Arc<T>`); 132 unit tests. **Phase 4 — pipeline integration in progress
+(2026-10-05)**, following the exact shape P3 shipped (archive §17.4 Phase 4).
 
-- `MemoryResult` + shared `ScanMetadata` per-binary document type
+Done: `MemoryResult` + shared `ScanMetadata` per-binary document type (with the
+`MemoryFinding` union, serde-tagged by kind); `MemoryPersistor` →
+`re/analysis/memory/{dll}.json` (wrapping `calxgloss_types::persist::JsonStore`,
+typesdb convention); `calxgloss memory --dll <dll> --show` prints the cached
+document (target-dir-exempt); `calxgloss-memory` re-exported from the
+meta-crate.
+
+Remaining:
+
 - `MemoryEngine` orchestrating the three detectors (source-trait generic,
   canned-source tests)
-- `MemoryPersistor` → `re/analysis/memory/{dll}.json` (wrap
-  `calxgloss_types::persist::JsonStore`, typesdb convention)
 - `extract_memory_hints()` in `calxgloss-translator/src/retry/helpers.rs` +
   prompt section (`MemoryHint` → prompt struct in `calxgloss-prompts`)
 - `ensure_memory_detection(dll)` pre-analysis in batch translation
-- `calxgloss memory` CLI command (`--dll` scan+save, `--show` cached)
+- `calxgloss memory --dll <dll>` scan+save half of the CLI command (lands
+  with `MemoryEngine`)
 - Integration tests + clippy clean
 
 Dependencies: soft on P2 (done).

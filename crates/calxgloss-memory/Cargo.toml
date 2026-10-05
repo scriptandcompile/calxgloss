@@ -17,6 +17,9 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 regex = { workspace = true }
 
+[dev-dependencies]
+tempfile = "3"
+
 # `calxgloss-ghidra` and `regex` back the decompiler fetches and the call
 # and pattern matching the lifecycle detectors run on; they are declared
 # now so the manifest stays stable as the detectors land. Same allowance as

@@ -13,6 +13,7 @@
 //! - [`types`] - Core data types: `MemoryHint`, `AllocationType` for
 //!   per-function detection records; `HandleLifecycle` and
 //!   `ReferenceCount` for the handle and reference-counting shapes;
+//!   `MemoryFinding` as the union over the three record kinds;
 //!   `MemoryResult`, `ScanMetadata` for the persisted per-binary
 //!   results.
 //! - [`allocator`] - Allocation/deallocation pair tracking:

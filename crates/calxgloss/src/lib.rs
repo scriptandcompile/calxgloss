@@ -102,6 +102,19 @@ pub use calxgloss_analysis::crate_replacement_for;
 pub use calxgloss_typesdb::{Result as TypesDbResult, TypesDbError};
 
 // ============================================================
+// calxgloss-memory — memory lifecycle / RAII detection
+// ============================================================
+
+// The crate's `Result` alias is deliberately not re-exported:
+// `MemoryResult` already names the per-binary document, and a second
+// alias spelled like it would read as the same thing.
+pub use calxgloss_memory::MemoryError;
+pub use calxgloss_memory::types::{
+    AllocationType, CountStyle, HandleLifecycle, HandleType, MemoryFinding, MemoryHint,
+    MemoryResult, ReferenceCount,
+};
+
+// ============================================================
 // calxgloss-testgen — FFI stubs, test input generation
 // ============================================================
 

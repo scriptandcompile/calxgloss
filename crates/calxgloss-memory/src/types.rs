@@ -8,6 +8,8 @@
 //!   and the Rust ownership pattern the pairing suggests.
 //! - `HandleLifecycle`, `ReferenceCount`: the handle-lifecycle and
 //!   reference-counting shapes beside plain allocations.
+//! - `MemoryFinding`: the union over the three record kinds — one
+//!   finding whichever detector made it — serde-tagged by `kind`.
 //! - `MemoryResult`, `ScanMetadata`: the persisted per-binary result
 //!   and its scan provenance.
 //!
@@ -223,6 +225,133 @@ pub struct ReferenceCount {
 }
 
 // ============================================================
+// Finding union
+// ============================================================
+
+/// One memory lifecycle finding, whichever detector made it.
+///
+/// The detectors emit the concrete records; the union is what the
+/// persisted result carries, so one list can hold every finding for a
+/// binary and a consumer reads the shared shape — function, suggestion,
+/// confidence, evidence — without naming which detector produced it.
+/// Unlike typeinfer's competing families, the three detectors read
+/// disjoint body shapes and can't make competing claims for one target,
+/// so nothing is resolved between variants. The serde `kind` tag names
+/// the record shape in the persisted JSON.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MemoryFinding {
+    /// An allocation paired with its release.
+    Allocation(MemoryHint),
+    /// A handle opened and closed again.
+    Handle(HandleLifecycle),
+    /// A reference-count bump paired with its drop.
+    RefCount(ReferenceCount),
+}
+
+impl MemoryFinding {
+    /// The function the finding is about.
+    pub fn function(&self) -> &str {
+        match self {
+            MemoryFinding::Allocation(record) => &record.function,
+            MemoryFinding::Handle(record) => &record.function,
+            MemoryFinding::RefCount(record) => &record.function,
+        }
+    }
+
+    /// The Rust pattern the pairing suggests.
+    pub fn suggestion(&self) -> &str {
+        match self {
+            MemoryFinding::Allocation(record) => &record.suggestion,
+            MemoryFinding::Handle(record) => &record.suggestion,
+            MemoryFinding::RefCount(record) => &record.suggestion,
+        }
+    }
+
+    /// Confidence that the finding is right.
+    pub fn confidence(&self) -> Confidence {
+        match self {
+            MemoryFinding::Allocation(record) => record.confidence,
+            MemoryFinding::Handle(record) => record.confidence,
+            MemoryFinding::RefCount(record) => record.confidence,
+        }
+    }
+
+    /// The decompiled lines that support the finding.
+    pub fn evidence(&self) -> &str {
+        match self {
+            MemoryFinding::Allocation(record) => &record.evidence,
+            MemoryFinding::Handle(record) => &record.evidence,
+            MemoryFinding::RefCount(record) => &record.evidence,
+        }
+    }
+
+    /// The serde `kind` tag — `allocation`, `handle`, or `ref_count` —
+    /// naming the detector behind the finding.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            MemoryFinding::Allocation(_) => "allocation",
+            MemoryFinding::Handle(_) => "handle",
+            MemoryFinding::RefCount(_) => "ref_count",
+        }
+    }
+
+    /// What the finding pairs, spelled for a report row: the allocation
+    /// family, the opener/closer spellings, or the bump/drop spellings.
+    pub fn target(&self) -> String {
+        match self {
+            MemoryFinding::Allocation(record) => record.allocation_type.to_string(),
+            MemoryFinding::Handle(record) => format!("{}→{}", record.opener, record.closer),
+            MemoryFinding::RefCount(record) => format!("{}→{}", record.increment, record.decrement),
+        }
+    }
+}
+
+// ============================================================
+// Persisted result
+// ============================================================
+
+/// The memory lifecycle result for one binary — the document persisted
+/// to `re/analysis/memory/{dll}.json`.
+///
+/// The findings are the three detectors' outputs in scan order: function
+/// by function, and within one function the allocation pairs, then the
+/// handle lifetimes, then the reference counts. The detectors read
+/// disjoint body shapes, so a function can carry findings of every kind
+/// at once and none competes with another; the stable order means two
+/// scans of the same program diff cleanly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryResult {
+    /// Provenance of the scan that produced these findings.
+    pub metadata: ScanMetadata,
+    /// Every finding the detectors made, in scan order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub findings: Vec<MemoryFinding>,
+}
+
+impl MemoryResult {
+    /// An empty result for the binary described by `metadata`.
+    pub fn new(metadata: ScanMetadata) -> Self {
+        Self {
+            metadata,
+            findings: Vec::new(),
+        }
+    }
+
+    /// The findings recorded for one function, e.g. `FUN_18003ab00`.
+    pub fn for_function(&self, function: &str) -> impl Iterator<Item = &MemoryFinding> {
+        self.findings
+            .iter()
+            .filter(move |finding| finding.function() == function)
+    }
+
+    /// Whether the scan found nothing at all.
+    pub fn is_empty(&self) -> bool {
+        self.findings.is_empty()
+    }
+}
+
+// ============================================================
 // Tests
 // ============================================================
 
@@ -424,5 +553,121 @@ mod tests {
         assert_eq!(back.decrement, "ref_count--");
         assert_eq!(back.suggestion, "Arc<T>");
         assert_eq!(back.confidence, 65);
+    }
+
+    #[test]
+    fn an_allocation_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = MemoryFinding::Allocation(hint());
+        let json = serde_json::to_string(&finding).expect("allocation finding should serialize");
+        // The union is internally tagged: the kind names the record
+        // shape and the payload's own fields sit beside it.
+        assert!(json.contains("\"kind\":\"allocation\""));
+        assert!(json.contains("\"allocation_type\":\"malloc\""));
+        let back: MemoryFinding =
+            serde_json::from_str(&json).expect("allocation finding should read back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
+    fn a_handle_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = MemoryFinding::Handle(handle_lifecycle());
+        let json = serde_json::to_string(&finding).expect("handle finding should serialize");
+        assert!(json.contains("\"kind\":\"handle\""));
+        assert!(json.contains("\"handle_type\":\"kernel_object\""));
+        let back: MemoryFinding =
+            serde_json::from_str(&json).expect("handle finding should read back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
+    fn a_ref_count_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = MemoryFinding::RefCount(reference_count());
+        let json = serde_json::to_string(&finding).expect("ref count finding should serialize");
+        assert!(json.contains("\"kind\":\"ref_count\""));
+        assert!(json.contains("\"style\":\"com_methods\""));
+        let back: MemoryFinding =
+            serde_json::from_str(&json).expect("ref count finding should read back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
+    fn the_union_accessors_reach_through_every_variant() {
+        let findings = [
+            MemoryFinding::Allocation(hint()),
+            MemoryFinding::Handle(handle_lifecycle()),
+            MemoryFinding::RefCount(reference_count()),
+        ];
+        for finding in &findings {
+            assert_eq!(finding.function(), "FUN_18003ab00");
+            assert_eq!(finding.confidence(), Confidence::new(70));
+            assert!(!finding.suggestion().is_empty());
+            assert!(!finding.evidence().is_empty());
+        }
+        let kinds: Vec<&str> = findings.iter().map(|f| f.kind()).collect();
+        assert_eq!(kinds, vec!["allocation", "handle", "ref_count"]);
+        let suggestions: Vec<&str> = findings.iter().map(|f| f.suggestion()).collect();
+        assert_eq!(
+            suggestions,
+            vec!["Box<T>", "RAII guard struct with Drop impl", "Rc<T>"]
+        );
+        let targets: Vec<String> = findings.iter().map(|f| f.target()).collect();
+        assert_eq!(
+            targets,
+            vec!["malloc", "CreateFileW→CloseHandle", "AddRef→Release"]
+        );
+    }
+
+    #[test]
+    fn a_memory_result_serde_round_trips() {
+        let result = MemoryResult {
+            metadata: ScanMetadata {
+                binary: "eqmain.dll".into(),
+                scanned_at: 1_759_488_000,
+                duration_secs: 12,
+            },
+            findings: vec![
+                MemoryFinding::Allocation(hint()),
+                MemoryFinding::Handle(handle_lifecycle()),
+                MemoryFinding::RefCount(reference_count()),
+            ],
+        };
+        let json = serde_json::to_string(&result).expect("memory result should serialize");
+        let back: MemoryResult =
+            serde_json::from_str(&json).expect("memory result should read back");
+        assert_eq!(back, result);
+    }
+
+    #[test]
+    fn a_result_without_findings_omits_them_and_reads_back_empty() {
+        // Documents persisted before a finding landed still load, and an
+        // empty scan stays small on disk.
+        let result = MemoryResult::new(ScanMetadata::new("eqmain.dll"));
+        let json = serde_json::to_string(&result).expect("empty memory result should serialize");
+        assert!(!json.contains("\"findings\""));
+        let back: MemoryResult =
+            serde_json::from_str(&json).expect("empty memory result should read back");
+        assert!(back.is_empty());
+        assert_eq!(back.metadata.binary, "eqmain.dll");
+    }
+
+    #[test]
+    fn for_function_yields_only_that_function_s_findings_in_order() {
+        let other = MemoryFinding::RefCount(ReferenceCount {
+            function: "FUN_18003e750".into(),
+            style: CountStyle::FieldArithmetic,
+            increment: "ref_count++".into(),
+            decrement: "ref_count--".into(),
+            suggestion: "Arc<T>".into(),
+            confidence: Confidence::new(65),
+            evidence: "param_1->ref_count++; param_1->ref_count--;".into(),
+        });
+        let result = MemoryResult {
+            metadata: ScanMetadata::new("eqmain.dll"),
+            findings: vec![other.clone(), MemoryFinding::Allocation(hint())],
+        };
+        let found: Vec<&MemoryFinding> = result.for_function("FUN_18003e750").collect();
+        assert_eq!(found, vec![&other]);
+        assert!(result.for_function("FUN_180099999").next().is_none());
+        assert!(!result.is_empty());
     }
 }
