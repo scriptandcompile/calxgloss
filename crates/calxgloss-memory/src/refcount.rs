@@ -15,12 +15,24 @@
 //! Where the code counts through the COM method pair, a bump is a
 //! call to a recognized increment name and a drop is a call to a
 //! recognized decrement name, the two tied by the object variable
-//! their first argument names; a body that hands the counted object
-//! to a thread-spawn call counts across threads. [`default_field_names`],
-//! [`default_increments`], [`default_decrements`] and
-//! [`default_thread_spawns`] carry the standard name sets, and
-//! [`ReferenceCountDetector::with_default_names`] builds a detector
-//! that scans against them.
+//! their first argument names. [`default_field_names`],
+//! [`default_increments`] and [`default_decrements`] carry the
+//! standard name sets, and [`ReferenceCountDetector::with_default_names`]
+//! builds a detector that scans against them.
+//!
+//! [`ReferenceCountDetector::detect_reference_counts`] runs the
+//! reading: it walks a decompiled body in source order, answers each
+//! recognized bump with the drop that closes it, and reports one
+//! [`ReferenceCount`] per pair. Each pair carries the shared-ownership
+//! pattern standing in for the manual counting: `Rc<T>` wherever the
+//! counted object stays inside this function, `Arc<T>` wherever the
+//! body hands the object to a thread-spawn call — a count reaching
+//! another thread has to be atomic, and `Arc` is the shared ownership
+//! that spells it. [`default_thread_spawns`] carries the standard
+//! spawn names the narrowing reads against.
+
+use crate::types::{CountStyle, ReferenceCount};
+use calxgloss_ghidra::DecompiledFunction;
 
 // ============================================================
 // Detector
@@ -143,6 +155,588 @@ impl ReferenceCountDetector {
     pub fn thread_spawns(&self) -> &[String] {
         &self.thread_spawns
     }
+
+    /// The bump/drop pairs one function's body carries.
+    ///
+    /// The reading walks the body in source order — outside string
+    /// literals, whole names only — and reads both counting shapes.
+    /// The arithmetic shape keys on a configured field name hanging
+    /// off a plain-owner variable through `->` or `.`: a bump is `++`
+    /// or `+= 1` on it, a drop is `--` or `-= 1`, and a field reached
+    /// through a chain or a dereference (`a->next->ref_count`,
+    /// `(*pObj)->ref_count`) hangs off no owner the pairing can key
+    /// on. The COM shape keys on the object variable a recognized
+    /// increment or decrement call names as its first argument, seen
+    /// through any cast; a member-spelled `param_1->Release(param_1)`
+    /// is a member access, not a plain call, and names nothing. A
+    /// drop answers the most recent still-open bump of the same
+    /// counter *in its own shape* — bumps never cross shapes — and a
+    /// bump with no drop naming its counter in this function is
+    /// reported by nothing: whether the count escapes or leaks is a
+    /// cross-function question, outside this pairing.
+    ///
+    /// Each pair becomes one [`ReferenceCount`] naming the shape and
+    /// the two recognized spellings that raised and lowered the
+    /// count, with the bump line and the drop line joined as the
+    /// evidence. The record carries the shared-ownership pattern
+    /// standing in for the manual counting: [`RC_SUGGESTION`] at
+    /// [`COUNT_PAIR_CONFIDENCE`], narrowed to [`ARC_SUGGESTION`] at
+    /// [`ARC_CONFIDENCE`] where the body hands the counted object to
+    /// one of the configured thread-spawn names. Records come back in
+    /// bump order, so two scans of one body diff cleanly.
+    pub fn detect_reference_counts(&self, func: &DecompiledFunction) -> Vec<ReferenceCount> {
+        let calls = direct_calls(&func.body);
+        let mut pairs: Vec<(usize, ReferenceCount)> = Vec::new();
+        self.detect_field_pairs(&func.body, &calls, &func.name, &mut pairs);
+        self.detect_com_pairs(&func.body, &calls, &func.name, &mut pairs);
+        pairs.sort_by_key(|(offset, _)| *offset);
+        pairs.into_iter().map(|(_, record)| record).collect()
+    }
+
+    /// The arithmetic-shape pairs one body carries: a configured
+    /// counter field on a plain owner, raised by `++`/`+= 1` and
+    /// lowered by `--`/`-= 1`, a drop answering the most recent
+    /// still-open bump on the same field of the same owner.
+    fn detect_field_pairs(
+        &self,
+        body: &str,
+        calls: &[CallSite<'_>],
+        function: &str,
+        pairs: &mut Vec<(usize, ReferenceCount)>,
+    ) {
+        let mut open: Vec<CountSite<'_>> = Vec::new();
+        for site in count_sites(body, &self.fields) {
+            if site.bump {
+                open.push(site);
+            } else if let Some(at) = open
+                .iter()
+                .rposition(|bump| bump.owner == site.owner && bump.field == site.field)
+            {
+                let bump = open.remove(at);
+                let (suggestion, confidence) = self.ownership_pattern(calls, bump.owner);
+                pairs.push((
+                    bump.offset,
+                    ReferenceCount {
+                        function: function.to_string(),
+                        style: CountStyle::FieldArithmetic,
+                        increment: format!("{}++", bump.field),
+                        decrement: format!("{}--", bump.field),
+                        suggestion: suggestion.to_string(),
+                        confidence: confidence.into(),
+                        evidence: format!("{} {}", bump.line, site.line),
+                    },
+                ));
+            }
+        }
+    }
+
+    /// The COM-shape pairs one body carries: a recognized increment
+    /// call bound to the plain variable its first argument names, and
+    /// a recognized decrement naming that same variable, the drop
+    /// answering the most recent still-open bump of the variable.
+    fn detect_com_pairs(
+        &self,
+        body: &str,
+        calls: &[CallSite<'_>],
+        function: &str,
+        pairs: &mut Vec<(usize, ReferenceCount)>,
+    ) {
+        let mut open: Vec<OpenCall> = Vec::new();
+        for call in calls {
+            if let Some(name) = self.increments.iter().find(|n| n == &call.callee) {
+                // An increment naming no variable its drop could
+                // answer counts no object this function releases.
+                let bumped = call.args.first().map(|arg| strip_casts(arg));
+                if let Some(object) = bumped.as_deref().and_then(plain_variable) {
+                    open.push(OpenCall {
+                        object: object.to_string(),
+                        method: name.clone(),
+                        offset: call.offset,
+                        line: line_at(body, call.offset),
+                    });
+                }
+            } else if let Some(name) = self.decrements.iter().find(|n| n == &call.callee) {
+                let dropped = call.args.first().map(|arg| strip_casts(arg));
+                if let Some(object) = dropped.as_deref().and_then(plain_variable)
+                    && let Some(at) = open.iter().rposition(|bump| bump.object == object)
+                {
+                    let bump = open.remove(at);
+                    let (suggestion, confidence) = self.ownership_pattern(calls, object);
+                    pairs.push((
+                        bump.offset,
+                        ReferenceCount {
+                            function: function.to_string(),
+                            style: CountStyle::ComMethods,
+                            increment: bump.method,
+                            decrement: name.clone(),
+                            suggestion: suggestion.to_string(),
+                            confidence: confidence.into(),
+                            evidence: format!("{} {}", bump.line, line_at(body, call.offset)),
+                        },
+                    ));
+                }
+            }
+        }
+    }
+
+    /// The shared-ownership pattern a counted object reads as:
+    /// [`ARC_SUGGESTION`] where the body hands the object to one of
+    /// the configured thread-spawn names — the new thread works
+    /// through the same object, so its count is shared across threads
+    /// and only an atomic count is safe there — and [`RC_SUGGESTION`]
+    /// wherever the object stays inside this function.
+    fn ownership_pattern(&self, calls: &[CallSite<'_>], object: &str) -> (&'static str, u8) {
+        let shared = calls.iter().any(|call| {
+            self.thread_spawns.iter().any(|spawn| spawn == call.callee)
+                && call
+                    .args
+                    .iter()
+                    .any(|arg| plain_variable(&strip_casts(arg)) == Some(object))
+        });
+        if shared {
+            (ARC_SUGGESTION, ARC_CONFIDENCE)
+        } else {
+            (RC_SUGGESTION, COUNT_PAIR_CONFIDENCE)
+        }
+    }
+}
+
+// ============================================================
+// The pairing reading
+// ============================================================
+
+/// Confidence of a pairing read from a bump and a drop of the same
+/// counter in one body: both sides are explicit recognized
+/// spellings — arithmetic on a configured field name, or calls to
+/// configured method names — but the tie between them is the
+/// decompiler's naming rather than resolved data flow, and a branch
+/// could leave either side unreached.
+const COUNT_PAIR_CONFIDENCE: u8 = 70;
+
+/// The Rust pattern a bump/drop pairing stands in for: the manual
+/// counting is exactly what `Rc<T>` automates — handing out a shared
+/// owner bumps the count and dropping one lowers it — and where the
+/// counted object never reaches another thread in this body, the
+/// non-atomic `Rc` is the pattern to translate toward.
+const RC_SUGGESTION: &str = "Rc<T>";
+
+/// The pattern a pairing reads as where the body hands the counted
+/// object to a thread spawn: the new thread works through the same
+/// object, so its count is shared across threads and only an atomic
+/// count is safe there — `Arc<T>` is the shared ownership that spells it.
+const ARC_SUGGESTION: &str = "Arc<T>";
+
+/// Confidence of the `Arc` narrowing: the pairing evidence is
+/// [`COUNT_PAIR_CONFIDENCE`]'s, but the narrowing rests on reading
+/// which call the object sits in — a recognized spawn rather than an
+/// ordinary callee — and a spawn the reading misses keeps an `Rc`
+/// suggestion on a count that crosses threads.
+const ARC_CONFIDENCE: u8 = 65;
+
+/// A reference-count bump or drop found in a body: the plain owner
+/// variable the counted field hangs off, the field name, whether the
+/// site raises (`++`, `+= 1`) or lowers (`--`, `-= 1`) the count, and
+/// where and on which line the site sits.
+struct CountSite<'a> {
+    owner: &'a str,
+    field: &'a str,
+    bump: bool,
+    offset: usize,
+    line: String,
+}
+
+/// A recognized increment still waiting for its drop while the body
+/// is walked: the object variable it bumped, the recognized method
+/// spelling behind it, and where and on which line the call sits.
+struct OpenCall {
+    object: String,
+    method: String,
+    offset: usize,
+    line: String,
+}
+
+/// Every bump and drop of a configured counter field in the body, in
+/// source order: a configured field name hanging off a plain-owner
+/// variable through `->` or `.`, followed by `++` or `+= 1` (a bump)
+/// or `--` or `-= 1` (a drop). The scan runs outside string literals,
+/// and a field name carried by a longer identifier names nothing. A
+/// field reached through a chain or a dereference (`a->next->ref_count`,
+/// `(*pObj)->ref_count`) hangs off no plain owner the pairing can key
+/// on, and a comparison (`ref_count == 1`), a bare read, or a bump by
+/// anything but one (`+= 2`) counts nothing.
+fn count_sites<'a>(body: &'a str, fields: &[String]) -> Vec<CountSite<'a>> {
+    let bytes = body.as_bytes();
+    let mut sites = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => i = skip_string(bytes, i + 1),
+            b if is_ident_byte(b) => {
+                if i > 0 && is_ident_byte(bytes[i - 1]) {
+                    i += 1;
+                    continue;
+                }
+                let mut end = i;
+                while end < bytes.len() && is_ident_byte(bytes[end]) {
+                    end += 1;
+                }
+                let arrow = i >= 2 && bytes[i - 1] == b'>' && bytes[i - 2] == b'-';
+                let dot = i >= 1 && bytes[i - 1] == b'.';
+                if (arrow || dot)
+                    && fields.iter().any(|f| f.as_str() == &body[i..end])
+                    && let Some(owner_start) =
+                        plain_owner_start(bytes, if arrow { i - 2 } else { i - 1 })
+                    && let Some(bump) = bump_operator(bytes, end)
+                {
+                    sites.push(CountSite {
+                        owner: &body[owner_start..if arrow { i - 2 } else { i - 1 }],
+                        field: &body[i..end],
+                        bump,
+                        offset: i,
+                        line: line_at(body, i),
+                    });
+                }
+                i = end;
+            }
+            _ => i += 1,
+        }
+    }
+    sites
+}
+
+/// The start of the plain owner identifier ending at `owner_end` —
+/// the identifier immediately left of the `->` or `.` the counted
+/// field hangs off — or `None` when nothing plain ends there: no
+/// identifier at all, or one reached through a chain, a dereference,
+/// or an index (`a->next->ref_count`, `(*pObj)->ref_count`,
+/// `p[1]->ref_count`), where the owner is no variable the pairing can
+/// key on.
+fn plain_owner_start(bytes: &[u8], owner_end: usize) -> Option<usize> {
+    let mut start = owner_end;
+    while start > 0 && is_ident_byte(bytes[start - 1]) {
+        start -= 1;
+    }
+    if start == owner_end {
+        return None;
+    }
+    if start > 0 && matches!(bytes[start - 1], b'*' | b'&' | b'.' | b')' | b']' | b'>') {
+        return None;
+    }
+    Some(start)
+}
+
+/// The direction the operator following a counter field moves it:
+/// `true` for `++` and `+= 1`, `false` for `--` and `-= 1`, and
+/// `None` for anything else — a comparison, a bare read, or a bump by
+/// any other amount (`+= 2`, `+= 1u`).
+fn bump_operator(bytes: &[u8], name_end: usize) -> Option<bool> {
+    let i = skip_ws(bytes, name_end);
+    let first = *bytes.get(i)?;
+    let second = *bytes.get(i + 1)?;
+    match (first, second) {
+        (b'+', b'+') => Some(true),
+        (b'-', b'-') => Some(false),
+        (b'+', b'=') | (b'-', b'=') => {
+            let n = skip_ws(bytes, i + 2);
+            if bytes.get(n) == Some(&b'1')
+                && !bytes
+                    .get(n + 1)
+                    .is_some_and(|b| is_ident_byte(*b) || *b == b'.')
+            {
+                Some(first == b'+')
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// The control-flow keywords Ghidra writes with a parenthesised
+/// operand; none of them is a callee.
+const NON_CALL_KEYWORDS: [&str; 7] = ["if", "while", "for", "switch", "case", "return", "sizeof"];
+
+/// A direct call found in a body: the callee name, the text of each
+/// top-level argument, and the byte offset of the callee.
+struct CallSite<'a> {
+    callee: &'a str,
+    args: Vec<&'a str>,
+    offset: usize,
+}
+
+/// Every direct call `name(args)` in the body whose callee is a plain
+/// identifier, scanned outside string literals so a stray `(` in a
+/// format string cannot be read as a call. A name preceded by an
+/// identifier byte is the tail of a longer identifier, and one
+/// preceded by a `>` is a member access through a pointer; neither is
+/// a plain call — the COM shape reads `param_1->Release(param_1)` as
+/// a member access, not a call. A qualified spelling the decompiler
+/// writes with `::` separators still names its method whole. Like the
+/// allocator tracker's scan this one keeps a demangled spelling whole:
+/// a `.` followed by an identifier byte continues the name — Ghidra
+/// writes demangled `operator new` as `operator.new`. A call whose
+/// `(` never closes — a truncated decompile — yields nothing, and
+/// nested calls are each visited.
+fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
+    let bytes = body.as_bytes();
+    let mut calls = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => i = skip_string(bytes, i + 1),
+            b if b.is_ascii_alphabetic() || b == b'_' => {
+                if i > 0
+                    && (is_ident_byte(bytes[i - 1]) || bytes[i - 1] == b'.' || bytes[i - 1] == b'>')
+                {
+                    i += 1;
+                    continue;
+                }
+                let mut j = i;
+                while j < bytes.len() {
+                    // A `.` followed by an identifier byte continues
+                    // the name: Ghidra writes demangled `operator new`
+                    // as `operator.new`.
+                    let continues = is_ident_byte(bytes[j])
+                        || (bytes[j] == b'.'
+                            && bytes
+                                .get(j + 1)
+                                .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_'));
+                    if continues {
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+                // The array spelling carries its brackets: `operator.new[]`.
+                let mut name_end = j;
+                let bracket = skip_ws(bytes, j);
+                if bytes.get(bracket) == Some(&b'[')
+                    && bytes.get(skip_ws(bytes, bracket + 1)) == Some(&b']')
+                {
+                    name_end = skip_ws(bytes, bracket + 1) + 1;
+                }
+                let open = skip_ws(bytes, name_end);
+                if bytes.get(open) == Some(&b'(')
+                    && !NON_CALL_KEYWORDS.contains(&&body[i..j])
+                    && let Some(close) = closing_paren(body, open)
+                {
+                    calls.push(CallSite {
+                        callee: &body[i..name_end],
+                        args: split_arguments(body, open, close),
+                        offset: i,
+                    });
+                }
+                i = j;
+            }
+            _ => i += 1,
+        }
+    }
+    calls
+}
+
+/// The text of each top-level argument of the call whose `(` sits at
+/// `open` and whose `)` sits at `close`, in order. A call with no
+/// arguments yields none, and commas nested inside a parenthesised or
+/// bracketed argument — a nested call, an array index — belong to that
+/// argument rather than splitting it. The COM pairing reads only the
+/// first argument, the object the method counts.
+fn split_arguments(body: &str, open: usize, close: usize) -> Vec<&str> {
+    let bytes = body.as_bytes();
+    let mut args = Vec::new();
+    let mut depth = 0usize;
+    let mut start = open + 1;
+    let mut i = start;
+    while i < close {
+        match bytes[i] {
+            b'"' => i = skip_string(bytes, i + 1),
+            b'(' | b'[' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' | b']' => {
+                depth -= 1;
+                i += 1;
+            }
+            b',' if depth == 0 => {
+                args.push(body[start..i].trim());
+                start = i + 1;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    let last = body[start..close].trim();
+    if !last.is_empty() {
+        args.push(last);
+    }
+    args
+}
+
+/// The index of `)` matching the `(` at `open`, skipping string literals.
+fn closing_paren(body: &str, open: usize) -> Option<usize> {
+    let bytes = body.as_bytes();
+    let mut depth = 0usize;
+    let mut i = open;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => i = skip_string(bytes, i + 1),
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// The index just past the string literal whose opening `"` sits at `open`.
+fn skip_string(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'"' => return i + 1,
+            _ => i += 1,
+        }
+    }
+    bytes.len()
+}
+
+fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// The trimmed source line containing `offset`.
+fn line_at(body: &str, offset: usize) -> String {
+    let line = body[..offset].matches('\n').count();
+    body.lines().nth(line).unwrap_or("").trim().to_string()
+}
+
+/// A call argument with Ghidra casts stripped: the decompiler writes
+/// `AddRef((IUnknown *)param_1)` when the argument's applied type
+/// differs from the callee's parameter, and the value behind the cast
+/// is the object the method counts.
+fn strip_casts(arg: &str) -> String {
+    let bytes = arg.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'('
+            && let Some(close) = cast_group(bytes, i)
+        {
+            i = skip_ws(bytes, close + 1);
+            while bytes.get(i) == Some(&b'*') {
+                i = skip_ws(bytes, i + 1);
+            }
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).trim().to_string()
+}
+
+/// The index of `)` when the `(` at `open` opens a Ghidra type cast —
+/// a group holding only type words and stars, like `(IUnknown *)` or
+/// `(void *)` — and `None` when it opens a call or a grouped
+/// expression instead.
+fn cast_group(bytes: &[u8], open: usize) -> Option<usize> {
+    let mut i = open + 1;
+    let mut saw_word = false;
+    loop {
+        i = skip_ws(bytes, i);
+        let b = *bytes.get(i)?;
+        match b {
+            b'*' => i += 1,
+            b')' => return saw_word.then_some(i),
+            b if b.is_ascii_alphabetic() || b == b'_' => {
+                let start = i;
+                while i < bytes.len() && is_ident_byte(bytes[i]) {
+                    i += 1;
+                }
+                let word = String::from_utf8_lossy(&bytes[start..i]).to_lowercase();
+                if !is_type_word(&word) {
+                    return None;
+                }
+                saw_word = true;
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// The type words a Ghidra cast may spell, the decompiler's
+/// vocabulary the other detectors' scans strip plus the interface
+/// typedefs this detector's casts carry: COM analysis types an
+/// `AddRef` or `Release` argument as `IUnknown *` or `IDispatch *`,
+/// the pointer typedef a thread spawn passes its argument as
+/// (`LPVOID`), and the decompiler writes those names on a cast when
+/// the applied type differs from the callee's parameter.
+fn is_type_word(word: &str) -> bool {
+    matches!(
+        word,
+        "undefined"
+            | "undefined1"
+            | "undefined2"
+            | "undefined3"
+            | "undefined4"
+            | "undefined5"
+            | "undefined6"
+            | "undefined7"
+            | "undefined8"
+            | "ushort"
+            | "uint"
+            | "ulong"
+            | "ulonglong"
+            | "longlong"
+            | "short"
+            | "uchar"
+            | "char"
+            | "byte"
+            | "word"
+            | "dword"
+            | "qword"
+            | "void"
+            | "code"
+            | "size_t"
+            | "wchar_t"
+            | "bool"
+            | "int"
+            | "float"
+            | "double"
+            | "long"
+            | "iunknown"
+            | "idispatch"
+            | "lpvoid"
+    )
+}
+
+/// The argument text when it is one plain variable name — the spelling
+/// a bump or drop names the counted object by. Anything else — a
+/// dereferenced pointer, an offset into a table, a literal — names no
+/// variable the pairing can key on.
+fn plain_variable(arg: &str) -> Option<&str> {
+    let trimmed = arg.trim();
+    let mut bytes = trimmed.bytes();
+    let first = bytes.next()?;
+    if !(first.is_ascii_alphabetic() || first == b'_') || !bytes.all(is_ident_byte) {
+        return None;
+    }
+    Some(trimmed)
 }
 
 // ============================================================
@@ -288,5 +882,587 @@ mod tests {
         assert_eq!(detector.increments(), default_increments());
         assert_eq!(detector.decrements(), default_decrements());
         assert_eq!(detector.thread_spawns(), default_thread_spawns());
+    }
+
+    // ------------------------------------------------------------
+    // COM method pairs
+    // ------------------------------------------------------------
+
+    fn function(body: &str) -> DecompiledFunction {
+        DecompiledFunction {
+            name: "FUN_18003ab00".into(),
+            signature: "undefined FUN_18003ab00(void)".into(),
+            body: body.into(),
+        }
+    }
+
+    fn counts(body: &str) -> Vec<ReferenceCount> {
+        ReferenceCountDetector::with_default_names().detect_reference_counts(&function(body))
+    }
+
+    #[test]
+    fn an_add_ref_release_pair_is_detected() {
+        let records = counts(
+            "\
+undefined4 FUN_18003ab00(IUnknown *param_1) {
+  AddRef((IUnknown *)param_1);
+  iVar1 = some_method(param_1);
+  Release((IUnknown *)param_1);
+  return iVar1;
+}",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].function, "FUN_18003ab00");
+        assert_eq!(records[0].style, CountStyle::ComMethods);
+        // The record names the two recognized spellings the pairing
+        // read, so a prompt sees which method bumped the count.
+        assert_eq!(records[0].increment, "AddRef");
+        assert_eq!(records[0].decrement, "Release");
+        // The object stays inside this function: the manual counting
+        // reads as the non-atomic shared owner.
+        assert_eq!(records[0].suggestion, "Rc<T>");
+        assert_eq!(records[0].confidence, COUNT_PAIR_CONFIDENCE);
+        // The evidence carries both sides of the pairing.
+        assert_eq!(
+            records[0].evidence,
+            "AddRef((IUnknown *)param_1); Release((IUnknown *)param_1);"
+        );
+    }
+
+    #[test]
+    fn a_cast_over_the_counted_object_is_seen_through() {
+        let records = counts(
+            "\
+  AddRef((IUnknown *)param_1);
+  Release((IUnknown *)param_1);",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].style, CountStyle::ComMethods);
+    }
+
+    #[test]
+    fn a_qualified_method_spelling_names_the_pair() {
+        // Ghidra writes the interface-qualified thunk spelling; the
+        // `::` separators break the name, and the method word behind
+        // them is the recognized callee.
+        let records = counts(
+            "\
+  IUnknown::AddRef(param_1);
+  IUnknown::Release(param_1);",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].increment, "AddRef");
+        assert_eq!(records[0].decrement, "Release");
+    }
+
+    #[test]
+    fn an_increment_with_no_decrement_is_not_reported() {
+        // Whether the extra reference escapes or leaks is a
+        // cross-function question; this pairing stays quiet on it.
+        assert!(
+            counts(
+                "\
+  AddRef((IUnknown *)param_1);
+  return param_1;"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_decrement_before_the_increment_pairs_nothing() {
+        // The drop answers an earlier bump, not the one the body
+        // raises after it.
+        assert!(
+            counts(
+                "\
+  Release((IUnknown *)param_1);
+  AddRef((IUnknown *)param_1);"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_bump_and_drop_of_different_objects_pair_nothing() {
+        assert!(
+            counts(
+                "\
+  AddRef((IUnknown *)param_1);
+  Release((IUnknown *)param_2);"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_bump_naming_something_other_than_a_variable_pairs_nothing() {
+        // A dereferenced pointer names no variable the pairing can
+        // key on.
+        assert!(
+            counts(
+                "\
+  AddRef(*ppObj);
+  Release(*ppObj);"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn two_bumps_and_two_drops_pair_in_bump_order() {
+        // Drops answer out of nesting order, but the records come
+        // back in bump order so two scans diff cleanly.
+        let records = counts(
+            "\
+  AddRef((IUnknown *)param_1);
+  AddRef((IUnknown *)param_2);
+  Release((IUnknown *)param_2);
+  Release((IUnknown *)param_1);",
+        );
+        assert_eq!(records.len(), 2);
+        assert_eq!(
+            records[0].evidence,
+            "AddRef((IUnknown *)param_1); Release((IUnknown *)param_1);"
+        );
+        assert_eq!(
+            records[1].evidence,
+            "AddRef((IUnknown *)param_2); Release((IUnknown *)param_2);"
+        );
+    }
+
+    #[test]
+    fn one_drop_answers_the_latest_bump_of_a_reused_variable() {
+        let records = counts(
+            "\
+  AddRef((IUnknown *)param_1);
+  AddRef((IUnknown *)param_1);
+  Release((IUnknown *)param_1);",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].evidence,
+            "AddRef((IUnknown *)param_1); Release((IUnknown *)param_1);"
+        );
+    }
+
+    #[test]
+    fn a_member_spelling_or_a_longer_name_matches_no_configured_name() {
+        // Whole plain calls only: a member access through an object
+        // is no call the pairing reads, and a longer spelling is a
+        // different callee.
+        assert!(
+            counts(
+                "\
+  param_1->AddRef(param_1);
+  MyRelease(param_1);
+  Release2(param_1);"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_name_spelled_inside_a_string_literal_invents_no_pair() {
+        assert!(counts("  printf(\"AddRef then Release\");").is_empty());
+    }
+
+    #[test]
+    fn a_truncated_body_pairs_nothing() {
+        assert!(counts("  AddRef((IUnknown *)param_1;").is_empty());
+    }
+
+    // ------------------------------------------------------------
+    // Field arithmetic pairs
+    // ------------------------------------------------------------
+
+    #[test]
+    fn a_ref_count_bump_and_drop_are_detected() {
+        let records = counts(
+            "\
+void FUN_18003ab00(void) {
+  param_1->ref_count++;
+  uVar2 = read_something(param_1);
+  param_1->ref_count--;
+  return;
+}",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].function, "FUN_18003ab00");
+        assert_eq!(records[0].style, CountStyle::FieldArithmetic);
+        // The record names the two recognized spellings the pairing
+        // read, so a prompt sees which field carried the count.
+        assert_eq!(records[0].increment, "ref_count++");
+        assert_eq!(records[0].decrement, "ref_count--");
+        assert_eq!(records[0].suggestion, "Rc<T>");
+        assert_eq!(records[0].confidence, COUNT_PAIR_CONFIDENCE);
+        assert_eq!(
+            records[0].evidence,
+            "param_1->ref_count++; param_1->ref_count--;"
+        );
+    }
+
+    #[test]
+    fn the_compound_assignment_forms_pair() {
+        let records = counts(
+            "\
+  param_1->ref_count += 1;
+  param_1->ref_count -= 1;",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].style, CountStyle::FieldArithmetic);
+    }
+
+    #[test]
+    fn a_bump_on_one_owner_does_not_answer_a_drop_on_another() {
+        // The owner is part of the counter's identity: two objects
+        // carrying the same field name count separately.
+        assert!(
+            counts(
+                "\
+  a->ref_count++;
+  b->ref_count--;"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn independent_owners_each_pair_in_bump_order() {
+        let records = counts(
+            "\
+  a->ref_count++;
+  b->ref_count++;
+  b->ref_count--;
+  a->ref_count--;",
+        );
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].evidence, "a->ref_count++; a->ref_count--;");
+        assert_eq!(records[1].evidence, "b->ref_count++; b->ref_count--;");
+    }
+
+    #[test]
+    fn one_drop_answers_the_latest_bump_of_a_field() {
+        // Two bumps under one owner and field, one drop: the drop
+        // answers the second, and the first stands unpaired.
+        let records = counts(
+            "\
+  p->ref_count = 2;
+  p->ref_count++;
+  p->ref_count++;
+  p->ref_count--;",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].evidence, "p->ref_count++; p->ref_count--;");
+    }
+
+    #[test]
+    fn a_comparison_or_a_bare_read_is_not_a_bump() {
+        // The `==` moves nothing, and the verbose rewrite
+        // `x = x + 1` is an assignment, not the bump shape the
+        // pairing reads.
+        assert!(
+            counts(
+                "\
+  if (p->ref_count == 1) { iVar1 = 1; }
+  p->ref_count = p->ref_count + 1;"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_bump_by_any_other_amount_is_not_a_bump() {
+        // Only a move by one reads as counting: `+= 2` scales a
+        // value, and `+= 1u` carries the constant's type suffix.
+        assert!(
+            counts(
+                "\
+  p->ref_count += 2;
+  p->ref_count -= 2;
+  p->ref_count += 1u;
+  p->ref_count -= 1u;"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_longer_name_or_a_string_names_no_bump() {
+        // Whole field names outside string literals only: a longer
+        // spelling is a different field, and the field's letters
+        // inside a format string name nothing.
+        assert!(
+            counts(
+                "\
+  p->ref_count_x++;
+  p->ref_count_x--;
+  printf(\"ref_count++\");
+  printf(\"ref_count--\");"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_chained_or_dereferenced_owner_names_no_pair() {
+        // The owner must be one plain variable: a field reached
+        // through a chain or a dereference hangs off something the
+        // pairing cannot key on.
+        assert!(
+            counts(
+                "\
+  a->next->ref_count++;
+  (*pObj)->ref_count--;"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_pair_inside_a_loop_body_is_detected() {
+        let records = counts(
+            "\
+  while (iVar1 != 0) {
+    param_1->ref_count++;
+    param_1->ref_count--;
+  }",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].style, CountStyle::FieldArithmetic);
+    }
+
+    // ------------------------------------------------------------
+    // Shared-ownership suggestions
+    // ------------------------------------------------------------
+
+    #[test]
+    fn an_object_handed_to_create_thread_suggests_arc() {
+        // The new thread works through the same interface pointer, so
+        // the count is shared across threads and only an atomic count
+        // is safe there.
+        let records = counts(
+            "\
+undefined FUN_18003ab00(IUnknown *param_1) {
+  AddRef((IUnknown *)param_1);
+  hThread = CreateThread(0,0,thread_main,(LPVOID)param_1,0,0);
+  Release((IUnknown *)param_1);
+  return;
+}",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].suggestion, "Arc<T>");
+        assert_eq!(records[0].confidence, ARC_CONFIDENCE);
+    }
+
+    #[test]
+    fn a_field_owner_handed_to_a_thread_suggests_arc() {
+        // The narrowing keys on the owner the field arithmetic names,
+        // not only on COM objects.
+        let records = counts(
+            "\
+  obj->ref_count++;
+  pthread_create(&local_10,0,worker,(void *)obj);
+  obj->ref_count--;",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].suggestion, "Arc<T>");
+    }
+
+    #[test]
+    fn the_spawn_may_sit_before_the_bump() {
+        // The object reaches the thread wherever the spawn sits in
+        // the body; the count is shared either way.
+        let records = counts(
+            "\
+  CreateThread(0,0,thread_main,(LPVOID)param_1,0,0);
+  AddRef((IUnknown *)param_1);
+  Release((IUnknown *)param_1);",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].suggestion, "Arc<T>");
+    }
+
+    #[test]
+    fn a_spawn_naming_another_variable_keeps_rc() {
+        // The spawn shares that other object, not the counted one.
+        let records = counts(
+            "\
+  AddRef((IUnknown *)param_1);
+  CreateThread(0,0,thread_main,(LPVOID)param_2,0,0);
+  Release((IUnknown *)param_1);",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].suggestion, "Rc<T>");
+        assert_eq!(records[0].confidence, COUNT_PAIR_CONFIDENCE);
+    }
+
+    #[test]
+    fn each_object_takes_its_own_reading() {
+        // One pair's object reaches a thread and the other's does
+        // not: the two records carry the two patterns.
+        let records = counts(
+            "\
+  AddRef((IUnknown *)param_1);
+  AddRef((IUnknown *)param_2);
+  CreateThread(0,0,thread_main,(LPVOID)param_2,0,0);
+  Release((IUnknown *)param_2);
+  Release((IUnknown *)param_1);",
+        );
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].suggestion, "Rc<T>");
+        assert_eq!(records[1].suggestion, "Arc<T>");
+    }
+
+    #[test]
+    fn a_spawn_name_inside_a_string_invents_no_narrowing() {
+        let records = counts(
+            "\
+  AddRef((IUnknown *)param_1);
+  printf(\"CreateThread %p\", param_1);
+  Release((IUnknown *)param_1);",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].suggestion, "Rc<T>");
+    }
+
+    #[test]
+    fn a_longer_spawn_name_names_no_spawn() {
+        // Whole names only: a longer spelling is a different callee.
+        let records = counts(
+            "\
+  AddRef((IUnknown *)param_1);
+  MyCreateThread((LPVOID)param_1);
+  Release((IUnknown *)param_1);",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].suggestion, "Rc<T>");
+    }
+
+    #[test]
+    fn a_thread_argument_that_is_not_a_plain_variable_keeps_rc() {
+        // `&obj` passes the variable's own storage, not the object
+        // the pairing keyed on; nothing here names the counted object
+        // to the new thread.
+        let records = counts(
+            "\
+  obj->ref_count++;
+  pthread_create(&local_10,0,worker,&obj);
+  obj->ref_count--;",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].suggestion, "Rc<T>");
+    }
+
+    #[test]
+    fn custom_thread_spawn_names_narrow_too() {
+        let mut detector = ReferenceCountDetector::new();
+        detector.add_field("mCount");
+        detector.add_thread_spawn("spawn_worker");
+        let records = detector.detect_reference_counts(&function(
+            "\
+  obj->mCount++;
+  spawn_worker(obj);
+  obj->mCount--;",
+        ));
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].suggestion, "Arc<T>");
+    }
+
+    #[test]
+    fn a_detector_without_thread_spawn_names_never_narrows() {
+        let mut detector = ReferenceCountDetector::new();
+        detector.add_field("ref_count");
+        let records = detector.detect_reference_counts(&function(
+            "\
+  obj->ref_count++;
+  CreateThread(0,0,thread_main,(LPVOID)obj,0,0);
+  obj->ref_count--;",
+        ));
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].suggestion, "Rc<T>");
+    }
+
+    // ------------------------------------------------------------
+    // Shapes and configuration
+    // ------------------------------------------------------------
+
+    #[test]
+    fn the_shapes_do_not_cross_pair() {
+        // A method drop answers a method bump and a field drop
+        // answers a field bump; neither spelling answers the other
+        // shape's bump.
+        assert!(
+            counts(
+                "\
+  AddRef((IUnknown *)param_1);
+  param_1->ref_count--;"
+            )
+            .is_empty()
+        );
+        assert!(
+            counts(
+                "\
+  param_1->ref_count++;
+  Release((IUnknown *)param_1);"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn both_shapes_report_in_bump_order() {
+        // The two shape readings merge into one source-ordered list
+        // so two scans of one body diff cleanly.
+        let records = counts(
+            "\
+  AddRef((IUnknown *)param_1);
+  param_1->ref_count++;
+  param_1->ref_count--;
+  Release((IUnknown *)param_1);",
+        );
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].increment, "AddRef");
+        assert_eq!(records[1].increment, "ref_count++");
+    }
+
+    #[test]
+    fn a_detector_with_no_names_detects_nothing() {
+        let detector = ReferenceCountDetector::new();
+        let records = detector.detect_reference_counts(&function(
+            "\
+  AddRef((IUnknown *)param_1);
+  Release((IUnknown *)param_1);
+  param_1->ref_count++;
+  param_1->ref_count--;",
+        ));
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn custom_names_pair_like_the_standard_ones() {
+        let mut detector = ReferenceCountDetector::new();
+        detector.add_field("mCount");
+        detector.add_increment("retain");
+        detector.add_decrement("release");
+        let records = detector.detect_reference_counts(&function(
+            "\
+  obj->mCount++;
+  obj->mCount--;
+  retain(p);
+  release(p);",
+        ));
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].style, CountStyle::FieldArithmetic);
+        assert_eq!(records[0].increment, "mCount++");
+        assert_eq!(records[0].decrement, "mCount--");
+        assert_eq!(records[1].style, CountStyle::ComMethods);
+        assert_eq!(records[1].increment, "retain");
+        assert_eq!(records[1].decrement, "release");
+        // No spawn names configured: both pairs keep the plain
+        // shared-ownership reading.
+        for record in &records {
+            assert_eq!(record.suggestion, "Rc<T>");
+        }
     }
 }
