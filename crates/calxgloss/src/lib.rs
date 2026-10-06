@@ -167,6 +167,20 @@ pub use calxgloss_sync::types::{
 };
 
 // ============================================================
+// calxgloss-consts — constant & enum recovery
+// ============================================================
+
+// The crate's `Result` alias is deliberately not re-exported:
+// `ConstResult` already names the per-binary document, and a second
+// alias spelled like it would read as the same thing. The crate's
+// `ScanMetadata` is the shared one from calxgloss-types, already
+// named here.
+pub use calxgloss_consts::ConstError;
+pub use calxgloss_consts::types::{
+    BitflagGroup, ConstFinding, ConstResult, EnumCandidate, NamedConstant,
+};
+
+// ============================================================
 // calxgloss-apidetect — library & API identification
 // ============================================================
 

@@ -61,6 +61,7 @@ use commands::auto_shim::handle_auto_shim;
 use commands::batch_translate::handle_batch_translate;
 use commands::callback::handle_callback;
 use commands::classify::handle_classify;
+use commands::consts::handle_consts;
 use commands::controlflow::handle_controlflow;
 use commands::dashboard::{
     handle_dashboard, handle_dashboard_accept, handle_dashboard_accept_all,
@@ -129,7 +130,7 @@ fn main() -> Result<()> {
 
     // target_dir is required for all commands that do real work.
     // `config`, `gc`, `typesdb`, `typeinfer`, `algorithm`, `memory`, `sync`,
-    // `callback`, `controlflow`, `stringctx`, and `apidetect` don't need it —
+    // `consts`, `callback`, `controlflow`, `stringctx`, and `apidetect` don't need it —
     // the analysis
     // commands read the program open
     // in Ghidra and write to the workspace — so we check here and fail
@@ -143,6 +144,7 @@ fn main() -> Result<()> {
             | Command::Algorithm { .. }
             | Command::Memory { .. }
             | Command::Sync { .. }
+            | Command::Consts { .. }
             | Command::Callback { .. }
             | Command::ControlFlow { .. }
             | Command::StringCtx { .. }
@@ -263,6 +265,14 @@ fn main() -> Result<()> {
                 .build()
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_sync(&dll, &workspace, show, &settings))
+        }
+        Command::Consts { dll, show } => {
+            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_consts(&dll, &workspace, show, &settings))
         }
         Command::Callback { dll, show } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);

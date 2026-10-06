@@ -358,6 +358,35 @@ pub(super) enum Command {
         show: bool,
     },
 
+    /// Detect constant structures (bitflag groups, enum candidates,
+    /// repeated magic numbers) for a binary.
+    ///
+    /// The constant findings are persisted per binary to
+    /// `re/analysis/consts/<dll>.json` in the workspace — the same file
+    /// batch translation will read as prompt context. `--show` prints a
+    /// cached result without connecting to Ghidra.
+    ///
+    /// # Arguments
+    ///
+    /// * `--dll` — Binary to scan, e.g. `eqmain.dll`. Names the
+    ///   persisted file.
+    /// * `--show` — Print a summary of the cached result.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss consts --dll eqmain.dll --show
+    /// ```
+    Consts {
+        /// Binary to scan, e.g. `eqmain.dll`
+        #[arg(long, required = true)]
+        dll: String,
+
+        /// Show the cached result instead of running the scan
+        #[arg(long)]
+        show: bool,
+    },
+
     /// Detect callback and function-pointer tables in the open binary
     ///
     /// Finds the dispatch patterns ChatGPT most often flattens: arrays
