@@ -1452,7 +1452,9 @@ impl TranslationPipeline {
     ///
     /// The scan's findings — allocation pairs, handle lifetimes, and
     /// reference counts — are filed at `re/analysis/memory/{dll}.json` for
-    /// the prompt path to read; running the detection scan once up front
+    /// the prompt path to read (see
+    /// [`extract_memory_hints`](crate::retry::helpers::extract_memory_hints));
+    /// running the detection scan once up front
     /// means every function in the batch can see memory context instead of
     /// none. The persisted file is the cache: when a result is already
     /// saved for `dll`, the scan is skipped entirely.

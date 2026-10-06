@@ -207,6 +207,54 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     assert_eq!(record.suggestion, "Rc<T>");
 }
 
+#[tokio::test]
+async fn a_loaded_result_renders_into_the_escalate_prompt() {
+    // The whole escalate path, no Ghidra server needed: the fixture
+    // document on disk answers the per-function lookup, the findings
+    // render into `MemoryInfo` prompt data, and the rendered escalate
+    // prompt carries the MEMORY LIFECYCLE section with each finding's
+    // suggestion, kind, confidence, and evidence.
+    let workspace = TempDir::new().unwrap();
+    let result = MemoryEngine::with_source(program())
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = MemoryPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let findings: Vec<calxgloss_prompts::MemoryInfo> = loaded
+        .for_function("FUN_18003ab00")
+        .map(calxgloss_prompts::MemoryInfo::from)
+        .collect();
+    assert_eq!(findings.len(), 3, "the target function's three findings");
+
+    let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
+        "FUN_18003ab00".into(),
+        "eqmain.dll".into(),
+        "fn fun_18003ab00() { /* manual open/close */ }".into(),
+        "Wrong result".into(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        findings,
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("the escalate prompt should render");
+
+    assert!(prompt.contains("MEMORY LIFECYCLE"));
+    assert!(prompt.contains("stack allocation"));
+    assert!(prompt.contains("allocation lifecycle, confidence 65"));
+    assert!(prompt.contains("RAII guard struct with Drop impl"));
+    assert!(prompt.contains("handle lifecycle, confidence 70"));
+    assert!(prompt.contains("Rc<T>"));
+    assert!(prompt.contains("ref_count lifecycle, confidence 70"));
+    assert!(prompt.contains("pvVar1 = malloc(0x20); free(pvVar1);"));
+}
+
 // ------------------------------------------------------------
 // Cache behavior
 // ------------------------------------------------------------

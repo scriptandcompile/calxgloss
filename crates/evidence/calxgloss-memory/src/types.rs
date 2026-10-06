@@ -308,6 +308,27 @@ impl MemoryFinding {
 }
 
 // ============================================================
+// Prompt conversions
+// ============================================================
+
+/// Render a finding as prompt data: the function it is about, the kind
+/// of lifecycle the detector read, the Rust pattern the pairing
+/// suggests, and the confidence and evidence behind the claim — so the
+/// escalate prompt shows the hypothesis and how strongly it was made,
+/// whichever detector produced it.
+impl From<&MemoryFinding> for calxgloss_prompts::MemoryInfo {
+    fn from(finding: &MemoryFinding) -> Self {
+        Self {
+            function: finding.function().to_string(),
+            kind: finding.kind().to_string(),
+            suggestion: finding.suggestion().to_string(),
+            confidence: finding.confidence().value(),
+            evidence: finding.evidence().to_string(),
+        }
+    }
+}
+
+// ============================================================
 // Persisted result
 // ============================================================
 
@@ -669,5 +690,34 @@ mod tests {
         assert_eq!(found, vec![&other]);
         assert!(result.for_function("FUN_180099999").next().is_none());
         assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn a_finding_renders_into_prompt_data_whichever_kind_it_is() {
+        // The prompt conversion reaches through the union, so every kind
+        // carries its label, suggestion, confidence, and evidence whole
+        // into `MemoryInfo`.
+        let allocation = MemoryFinding::Allocation(hint());
+        let info = calxgloss_prompts::MemoryInfo::from(&allocation);
+        assert_eq!(info.function, "FUN_18003ab00");
+        assert_eq!(info.kind, "allocation");
+        assert_eq!(info.suggestion, "Box<T>");
+        assert_eq!(info.confidence, 70);
+        assert_eq!(
+            info.evidence,
+            "pvVar1 = malloc(0x20); /* ... */ free(pvVar1);"
+        );
+
+        let handle = MemoryFinding::Handle(handle_lifecycle());
+        let info = calxgloss_prompts::MemoryInfo::from(&handle);
+        assert_eq!(info.kind, "handle");
+        assert_eq!(info.suggestion, "RAII guard struct with Drop impl");
+        assert_eq!(info.confidence, 70);
+
+        let ref_count = MemoryFinding::RefCount(reference_count());
+        let info = calxgloss_prompts::MemoryInfo::from(&ref_count);
+        assert_eq!(info.kind, "ref_count");
+        assert_eq!(info.suggestion, "Rc<T>");
+        assert_eq!(info.confidence, 70);
     }
 }

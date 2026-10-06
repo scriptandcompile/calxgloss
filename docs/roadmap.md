@@ -41,8 +41,8 @@ are indicative targets, not exact requirements.
 | P1 | Data Structure Recovery | `calxgloss-typesdb` | 4–6 wk | ✅ Phases 0a–4 done (2026-10-03) | Phase 5 future items | — |
 | P2 | Type Inference & Propagation | `calxgloss-typeinfer` | 3–4 wk | ✅ Phases 0–4 done (2026-10-04) | Phase 5 future items (incl. Ghidra write-back) | — |
 | P3 | Algorithm Recognition | `calxgloss-algorithm` | 4–6 wk | ✅ Phases 0–4 done (2026-10-05) | Phase 5 future items | — |
-| P4 | Memory Lifecycle / RAII | `calxgloss-memory` | 3–4 wk | 🔶 Phases 0–3 done, Phase 4 in progress (2026-10-05) | **Phase 4 — pipeline integration** ← next up | — |
-| P5 | Concurrency & Synchronization | `calxgloss-sync` | 2–3 wk | ⬜ not started | spec + crate | — |
+| P4 | Memory Lifecycle / RAII | `calxgloss-memory` | 3–4 wk | ✅ Phases 0–4 done (2026-10-05) | Phase 5 future items | — |
+| P5 | Concurrency & Synchronization | `calxgloss-sync` | 2–3 wk | ⬜ not started | spec + crate ← next up | — |
 | P6 | Callback / Function Pointer Tables | `calxgloss-callback` | 2–3 wk | ⬜ not started | spec + crate | — |
 | P7 | Control Flow Pattern Recognition | `calxgloss-controlflow` | 2–4 wk | ⬜ not started | spec + crate | — |
 | P8 | String & Configuration Context | `calxgloss-stringctx` | 1–2 wk | ⬜ not started | spec + crate | — |
@@ -84,12 +84,12 @@ reference: `docs/ghidra_endpoint_map.md`.
 
 Full completion notes for each phase: archive §17.1–17.4.
 
-## P4 — Memory Lifecycle / RAII (`calxgloss-memory`) ← next up
+## P4 — Memory Lifecycle / RAII (`calxgloss-memory`)
 
 Detectors done (2026-10-05): allocator/deallocator pair tracking (→ `Box<T>`/
 stack), handle lifetimes (→ RAII guard + `Drop`), reference counting (→ `Rc<T>`/
-`Arc<T>`); 132 unit tests. **Phase 4 — pipeline integration in progress
-(2026-10-05)**, following the exact shape P3 shipped (archive §17.4 Phase 4).
+`Arc<T>`); 132 unit tests. **Phase 4 — pipeline integration done (2026-10-05)**,
+following the exact shape P3 shipped (archive §17.4 Phase 4).
 
 Done: `MemoryResult` + shared `ScanMetadata` per-binary document type (with the
 `MemoryFinding` union, serde-tagged by kind); `MemoryPersistor` →
@@ -107,16 +107,19 @@ and `batch_translate_from_callgraph` (`exists()` cache check → skip, else
 `MemoryEngine::scan` + save to `re/analysis/memory/{dll}.json`; missing workspace,
 unreachable Ghidra server, or a failed save only log a warning and the batch
 proceeds; 5 unit tests, with a canned in-test GhidraMCP server driving the
-scan-to-save and failed-save paths); clippy + fmt clean.
-
-Remaining:
-
-- `extract_memory_hints()` in `calxgloss-translator/src/retry/helpers.rs` +
-  prompt section (`MemoryHint` → prompt struct in `calxgloss-prompts`)
+scan-to-save and failed-save paths); `extract_memory_hints()` in
+`calxgloss-translator/src/retry/helpers.rs` reads the cached document on the
+retry path (only the target function's findings; missing workspace, missing
+cache, or corrupt document degrade to empty; 5 unit tests) and the escalate
+template renders a MEMORY LIFECYCLE section beside RECOGNIZED ALGORITHMS
+(`MemoryInfo` prompt data in `calxgloss-prompts`, `From<&MemoryFinding>`
+conversion on the finding in the memory crate per the typesdb/typeinfer/
+algorithm convention; 2 template unit tests, 1 conversion unit test, 1
+fixture-document-to-prompt integration test); clippy + fmt clean.
 
 Dependencies: soft on P2 (done).
 
-## P5 — Concurrency & Synchronization (`calxgloss-sync`)
+## P5 — Concurrency & Synchronization (`calxgloss-sync`) ← next up
 
 Soft dependency on P2. MVP: mutex/lock detection (`pthread_mutex_*`,
 `EnterCriticalSection` → `std::sync::Mutex`/`RwLock`); atomics

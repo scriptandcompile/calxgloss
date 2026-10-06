@@ -138,6 +138,27 @@ pub struct AlgorithmInfo {
     pub evidence: String,
 }
 
+/// A memory lifecycle finding about the target function, made by the
+/// analysis pipeline.
+///
+/// One finding whichever detector made it — the kind names the detector
+/// behind the claim (`allocation`, `handle`, `ref_count`) so the prompt
+/// can weigh the hypothesis beside the evidence without knowing the
+/// record shape that produced it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MemoryInfo {
+    /// The function the finding is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The kind of finding, e.g. `allocation`, `handle`, `ref_count`.
+    pub kind: String,
+    /// The Rust pattern the pairing suggests, e.g. `Box<T>`.
+    pub suggestion: String,
+    /// Confidence that the finding is right, 0–100.
+    pub confidence: u8,
+    /// The decompiled lines that support the finding.
+    pub evidence: String,
+}
+
 /// A formatted test result for template rendering.
 ///
 /// Carries the test case data alongside the pass/fail outcome observed
@@ -415,6 +436,9 @@ pub struct EscalateTemplate {
     pub type_info: Vec<TypeInfo>,
     /// Algorithms recognized in this function by the analysis pipeline.
     pub recognized_algorithms: Vec<AlgorithmInfo>,
+    /// Memory lifecycle findings about this function made by the analysis
+    /// pipeline.
+    pub memory_findings: Vec<MemoryInfo>,
     /// Previous attempt failures to reference in the prompt.
     pub failure_history: Vec<FailureHint>,
     /// Enriched call graph context with caller/callee/leaf-API details.
@@ -434,6 +458,7 @@ impl EscalateTemplate {
         data_structures: Vec<StructuredData>,
         type_info: Vec<TypeInfo>,
         recognized_algorithms: Vec<AlgorithmInfo>,
+        memory_findings: Vec<MemoryInfo>,
     ) -> Self {
         Self {
             function_name,
@@ -445,6 +470,7 @@ impl EscalateTemplate {
             data_structures,
             type_info,
             recognized_algorithms,
+            memory_findings,
             failure_history: Vec::new(),
             call_graph_context: Vec::new(),
         }
@@ -462,6 +488,7 @@ impl EscalateTemplate {
         data_structures: Vec<StructuredData>,
         type_info: Vec<TypeInfo>,
         recognized_algorithms: Vec<AlgorithmInfo>,
+        memory_findings: Vec<MemoryInfo>,
         failure_history: Vec<FailureHint>,
     ) -> Self {
         Self {
@@ -474,6 +501,7 @@ impl EscalateTemplate {
             data_structures,
             type_info,
             recognized_algorithms,
+            memory_findings,
             failure_history,
             call_graph_context: Vec::new(),
         }
@@ -491,6 +519,7 @@ impl EscalateTemplate {
         data_structures: Vec<StructuredData>,
         type_info: Vec<TypeInfo>,
         recognized_algorithms: Vec<AlgorithmInfo>,
+        memory_findings: Vec<MemoryInfo>,
         failure_history: Vec<FailureHint>,
         call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
     ) -> Self {
@@ -504,6 +533,7 @@ impl EscalateTemplate {
             data_structures,
             type_info,
             recognized_algorithms,
+            memory_findings,
             failure_history,
             call_graph_context,
         }

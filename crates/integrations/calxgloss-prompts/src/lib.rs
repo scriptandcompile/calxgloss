@@ -55,10 +55,10 @@ pub use context::{
 pub use error::PromptError;
 pub use templates::{
     AlgorithmInfo, BoundaryValue, CallGraphNeighbor, EdgeCaseTemplate, EdgeCaseTest,
-    EscalateTemplate, FixTemplate, FormattedTestResult, FullModuleTemplate, MinimalTemplate,
-    ModuleContextTemplate, NeighborFunction, PalTraitDef, PalTraitMethod, ShimCode,
-    SignatureTemplate, StructField, StructuredData, TestCaseFormatted, TranslateTemplate, TypeInfo,
-    WithTestsTemplate,
+    EscalateTemplate, FixTemplate, FormattedTestResult, FullModuleTemplate, MemoryInfo,
+    MinimalTemplate, ModuleContextTemplate, NeighborFunction, PalTraitDef, PalTraitMethod,
+    ShimCode, SignatureTemplate, StructField, StructuredData, TestCaseFormatted, TranslateTemplate,
+    TypeInfo, WithTestsTemplate,
 };
 
 // Re-export types used by template constructors
@@ -589,6 +589,58 @@ mod tests {
         assert!(prompt.contains("Attempt #1"));
         assert!(prompt.contains("compile_fix"));
         assert!(prompt.contains("Wrong shader constant mapping"));
+    }
+
+    #[test]
+    fn test_escalate_template_with_memory_findings() {
+        let findings = vec![MemoryInfo {
+            function: "FUN_18003ab00".to_string(),
+            kind: "handle".to_string(),
+            suggestion: "RAII guard struct with Drop impl".to_string(),
+            confidence: 70,
+            evidence: "hFile = CreateFileW(...); CloseHandle(hFile);".to_string(),
+        }];
+
+        let prompt = build_escalate_prompt_with_context(
+            "FUN_18003ab00".to_string(),
+            "eqmain.dll".to_string(),
+            "fn fun_18003ab00() { /* manual open/close */ }".to_string(),
+            "Wrong result".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            findings,
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(prompt.contains("MEMORY LIFECYCLE"));
+        assert!(prompt.contains("RAII guard struct with Drop impl"));
+        assert!(prompt.contains("handle lifecycle"));
+        assert!(prompt.contains("confidence 70"));
+        assert!(prompt.contains("hFile = CreateFileW(...); CloseHandle(hFile);"));
+    }
+
+    #[test]
+    fn test_escalate_template_without_memory_findings_says_so() {
+        let prompt = build_escalate_prompt(
+            "DrawSprite".to_string(),
+            "game_logic.dll".to_string(),
+            "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
+            "Wrong result".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(prompt.contains("MEMORY LIFECYCLE"));
+        assert!(prompt.contains("No memory lifecycle context available."));
     }
 
     #[test]

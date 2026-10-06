@@ -271,6 +271,46 @@ pub fn extract_algorithm_hints(
         .collect()
 }
 
+/// Extract memory lifecycle findings for a function from the persisted
+/// detection result.
+///
+/// Reads the per-binary result produced by the `calxgloss-memory`
+/// engine from `re/analysis/memory/{dll}.json` and keeps the findings
+/// made for the target function — the lifecycles whose pairing lives in
+/// `function`'s decompiled body.
+///
+/// Returns an empty vector when no workspace is configured, no result
+/// is persisted for `dll` (the scan has not run), or the document is
+/// corrupt: missing memory context degrades the prompt, it never fails
+/// it.
+pub fn extract_memory_hints(
+    workspace: Option<&std::path::Path>,
+    dll: &str,
+    function: &str,
+) -> Vec<calxgloss_prompts::MemoryInfo> {
+    let Some(workspace) = workspace else {
+        return Vec::new();
+    };
+
+    let persistor = calxgloss_memory::persist::MemoryPersistor::new(workspace);
+    let result = match persistor.load(dll) {
+        Ok(result) => result,
+        Err(e) => {
+            debug!(
+                dll,
+                error = %e,
+                "No usable memory lifecycle result; continuing without memory context"
+            );
+            return Vec::new();
+        }
+    };
+
+    result
+        .for_function(function)
+        .map(calxgloss_prompts::MemoryInfo::from)
+        .collect()
+}
+
 // ============================================================
 // Tier 4 — Shim layer and PAL trait extraction
 // ============================================================
@@ -1134,5 +1174,120 @@ mod tests {
         assert_eq!(algorithms, vec!["comparison_sort", "crc"]);
         assert_eq!(found[1].category, "checksum");
         assert_eq!(found[1].method, "string_hint");
+    }
+
+    fn allocation_hint(function: &str, suggestion: &str) -> calxgloss_memory::types::MemoryHint {
+        calxgloss_memory::types::MemoryHint {
+            function: function.to_string(),
+            allocation_type: calxgloss_memory::types::AllocationType::Malloc,
+            suggestion: suggestion.to_string(),
+            confidence: calxgloss_memory::types::Confidence::new(70),
+            evidence: "pvVar1 = malloc(0x20); free(pvVar1);".into(),
+        }
+    }
+
+    fn handle_record(function: &str) -> calxgloss_memory::types::HandleLifecycle {
+        calxgloss_memory::types::HandleLifecycle {
+            function: function.to_string(),
+            handle_type: calxgloss_memory::types::HandleType::KernelObject,
+            opener: "CreateFileW".into(),
+            closer: "CloseHandle".into(),
+            suggestion: "RAII guard struct with Drop impl".into(),
+            confidence: calxgloss_memory::types::Confidence::new(70),
+            evidence: "hFile = CreateFileW(...); CloseHandle(hFile);".into(),
+        }
+    }
+
+    fn persist_findings(dir: &TempDir, findings: Vec<calxgloss_memory::types::MemoryFinding>) {
+        let mut result =
+            calxgloss_memory::types::MemoryResult::new(ScanMetadata::new("eqmain.dll"));
+        result.findings = findings;
+        calxgloss_memory::persist::MemoryPersistor::new(dir.path())
+            .save(&result)
+            .expect("the memory result should be saved");
+    }
+
+    #[test]
+    fn no_workspace_configured_yields_no_memory_findings() {
+        assert!(extract_memory_hints(None, "eqmain.dll", "FUN_18003ab00").is_empty());
+    }
+
+    #[test]
+    fn a_missing_cache_yields_no_memory_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        assert!(
+            extract_memory_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "a scan that has not run yet just means no memory context"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_cache_degrades_to_no_memory_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        let path = dir
+            .path()
+            .join("re")
+            .join("analysis")
+            .join("memory")
+            .join("eqmain.dll.json");
+        std::fs::create_dir_all(
+            path.parent()
+                .expect("the document path should have a parent"),
+        )
+        .expect("the cache directory should be creatable");
+        std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
+
+        assert!(extract_memory_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty());
+    }
+
+    #[test]
+    fn findings_of_other_functions_are_dropped() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_findings(
+            &dir,
+            vec![
+                calxgloss_memory::types::MemoryFinding::Allocation(allocation_hint(
+                    "FUN_18003ab00",
+                    "Box<T>",
+                )),
+                calxgloss_memory::types::MemoryFinding::Allocation(allocation_hint(
+                    "FUN_zzz", "Box<T>",
+                )),
+            ],
+        );
+
+        let found = extract_memory_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        assert_eq!(found.len(), 1, "only the target function's finding");
+        assert_eq!(found[0].function, "FUN_18003ab00");
+        assert_eq!(found[0].kind, "allocation");
+        assert_eq!(found[0].suggestion, "Box<T>");
+        assert_eq!(found[0].confidence, 70);
+        assert_eq!(found[0].evidence, "pvVar1 = malloc(0x20); free(pvVar1);");
+    }
+
+    #[test]
+    fn every_finding_of_the_function_lands_in_the_prompt() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_findings(
+            &dir,
+            vec![
+                calxgloss_memory::types::MemoryFinding::Allocation(allocation_hint(
+                    "FUN_18003ab00",
+                    "stack allocation",
+                )),
+                calxgloss_memory::types::MemoryFinding::Handle(handle_record("FUN_18003ab00")),
+                calxgloss_memory::types::MemoryFinding::Allocation(allocation_hint(
+                    "FUN_zzz", "Box<T>",
+                )),
+            ],
+        );
+
+        let found = extract_memory_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        let kinds: Vec<&str> = found.iter().map(|f| f.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["allocation", "handle"]);
+        assert_eq!(found[0].suggestion, "stack allocation");
+        assert_eq!(found[1].suggestion, "RAII guard struct with Drop impl");
     }
 }

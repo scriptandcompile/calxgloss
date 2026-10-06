@@ -156,6 +156,24 @@ No recognized algorithm context available.
 
 ---
 
+## ADDITIONAL CONTEXT — MEMORY LIFECYCLE
+
+{% if !memory_findings.is_empty() %}
+The following memory lifecycles were recognized in this function by static
+analysis. Where a finding is credible, express the resource with the suggested
+Rust ownership pattern instead of transliterating the manual allocate/free or
+open/close pairs:
+
+{% for finding in memory_findings %}
+- **{{ finding.suggestion|safe }}** ({{ finding.kind }} lifecycle, confidence {{ finding.confidence }})
+  Evidence: `{{ finding.evidence|safe }}`
+{% endfor %}
+{% else %}
+No memory lifecycle context available.
+{% endif %}
+
+---
+
 ## TRANSLATION REQUIREMENTS
 
 1. **Output ONLY the corrected Rust code** — no explanations, no markdown fences, no code blocks.
