@@ -40,8 +40,11 @@
 //!   the per-binary detection results under `re/analysis/sync/`.
 //! - [`error`] - [`SyncError`] and the crate-wide [`Result`] alias.
 
+pub mod atomic;
+pub mod engine;
 pub mod error;
 pub mod mutex;
+pub mod threading;
 pub mod types;
 
 pub use error::{Result, SyncError};
