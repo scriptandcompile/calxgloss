@@ -534,6 +534,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "calxgloss-sync"
+version = "0.2.0"
+dependencies = [
+ "calxgloss-ghidra",
+ "calxgloss-prompts",
+ "calxgloss-types",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "calxgloss-testgen"
 version = "0.2.0"
 dependencies = [

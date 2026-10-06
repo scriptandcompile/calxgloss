@@ -1,0 +1,30 @@
+[package]
+name = "calxgloss-sync"
+version.workspace = true
+edition.workspace = true
+description = "Concurrency and synchronization detection: mutex/lock pair tracking, atomic operation detection, threading pattern detection"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+calxgloss-ghidra = { path = "../../integrations/calxgloss-ghidra" }
+calxgloss-prompts = { path = "../../integrations/calxgloss-prompts" }
+calxgloss-types = { path = "../../shared/calxgloss-types" }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+regex = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+# `calxgloss-ghidra` and `regex` back the decompiler fetches and the call
+# and pattern matching the concurrency detectors run on; they are declared
+# now so the manifest stays stable as the detectors land. Same allowance as
+# `calxgloss-typesdb`, `calxgloss-typeinfer`, `calxgloss-algorithm`, and
+# `calxgloss-memory`.
+[lints.cargo]
+unused_dependencies = "allow"
