@@ -392,6 +392,47 @@ pub fn extract_api_hints(
         .collect()
 }
 
+/// Extract constant findings for a function from the persisted
+/// detection result.
+///
+/// Reads the per-binary result produced by the `calxgloss-consts`
+/// engine from `re/analysis/consts/{dll}.json` and keeps the findings
+/// about the target function — the bitflag groups and enum candidates
+/// made in `function`'s decompiled body, plus the program-level named
+/// constants whose value `function` repeats.
+///
+/// Returns an empty vector when no workspace is configured, no result
+/// is persisted for `dll` (the scan has not run), or the document is
+/// corrupt: missing constant context degrades the prompt, it never
+/// fails it.
+pub fn extract_constant_hints(
+    workspace: Option<&std::path::Path>,
+    dll: &str,
+    function: &str,
+) -> Vec<calxgloss_prompts::ConstInfo> {
+    let Some(workspace) = workspace else {
+        return Vec::new();
+    };
+
+    let persistor = calxgloss_consts::persist::ConstPersistor::new(workspace);
+    let result = match persistor.load(dll) {
+        Ok(result) => result,
+        Err(e) => {
+            debug!(
+                dll,
+                error = %e,
+                "No usable constant result; continuing without constant context"
+            );
+            return Vec::new();
+        }
+    };
+
+    result
+        .for_function(function)
+        .map(calxgloss_prompts::ConstInfo::from)
+        .collect()
+}
+
 /// Extract callback findings for a function from the persisted
 /// detection result.
 ///
@@ -1883,6 +1924,152 @@ mod tests {
         assert_eq!(found[0].suggestion, "Vec<Box<dyn Fn(i32)>>");
         assert_eq!(found[1].suggestion, "Box<dyn Fn(i32)>");
         assert_eq!(found[2].suggestion, "[fn(...); 5]");
+    }
+
+    // ---- constant hints ----
+
+    fn bitflag_record(function: &str) -> calxgloss_consts::types::BitflagGroup {
+        calxgloss_consts::types::BitflagGroup {
+            function: function.to_string(),
+            bits: vec![8, 10],
+            mask: 0x500,
+            bit_width: 11,
+            suggestion: "bitflags! struct Flags: u16 { /* bits: 0x100, 0x400 */ }".into(),
+            confidence: calxgloss_consts::types::Confidence::new(70),
+            evidence: "if ((uVar1 & 0x400) != 0) { uVar1 |= 0x100; }".into(),
+        }
+    }
+
+    fn enum_record(function: &str) -> calxgloss_consts::types::EnumCandidate {
+        calxgloss_consts::types::EnumCandidate {
+            function: function.to_string(),
+            values: vec![0, 1, 2, 3],
+            count: 4,
+            suggestion: "enum State { /* variants for 0..=3 */ }".into(),
+            confidence: calxgloss_consts::types::Confidence::new(70),
+            evidence: "switch(uVar2) { case 0: case 1: case 2: case 3: }".into(),
+        }
+    }
+
+    fn named_record(functions: &[&str]) -> calxgloss_consts::types::NamedConstant {
+        calxgloss_consts::types::NamedConstant {
+            value: 0x400,
+            count: 5,
+            functions: functions.iter().map(|f| f.to_string()).collect(),
+            suggestion: "const VALUE_0x400: u32 = 0x400;".into(),
+            confidence: calxgloss_consts::types::Confidence::new(60),
+            evidence: "0x400 used 5 times in FUN_18003ab00, FUN_zzz".into(),
+        }
+    }
+
+    fn persist_const_findings(dir: &TempDir, findings: Vec<calxgloss_consts::types::ConstFinding>) {
+        let mut result = calxgloss_consts::types::ConstResult::new(ScanMetadata::new("eqmain.dll"));
+        result.findings = findings;
+        calxgloss_consts::persist::ConstPersistor::new(dir.path())
+            .save(&result)
+            .expect("the constant result should be saved");
+    }
+
+    #[test]
+    fn no_workspace_configured_yields_no_constant_findings() {
+        assert!(
+            extract_constant_hints(None, "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "no workspace means no constant context"
+        );
+    }
+
+    #[test]
+    fn a_missing_cache_yields_no_constant_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        assert!(
+            extract_constant_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "a scan that has not run yet just means no constant context"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_cache_degrades_to_no_constant_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        let path = dir
+            .path()
+            .join("re")
+            .join("analysis")
+            .join("consts")
+            .join("eqmain.dll.json");
+        std::fs::create_dir_all(
+            path.parent()
+                .expect("the document path should have a parent"),
+        )
+        .expect("the cache directory should be creatable");
+        std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
+
+        assert!(extract_constant_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty());
+    }
+
+    #[test]
+    fn constant_findings_of_other_functions_are_dropped() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_const_findings(
+            &dir,
+            vec![
+                calxgloss_consts::types::ConstFinding::BitflagGroup(bitflag_record(
+                    "FUN_18003ab00",
+                )),
+                calxgloss_consts::types::ConstFinding::BitflagGroup(bitflag_record("FUN_zzz")),
+            ],
+        );
+
+        let found = extract_constant_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        assert_eq!(found.len(), 1, "only the target function's finding");
+        assert_eq!(found[0].function, "FUN_18003ab00");
+        assert_eq!(found[0].kind, "bitflag_group");
+        assert_eq!(
+            found[0].suggestion,
+            "bitflags! struct Flags: u16 { /* bits: 0x100, 0x400 */ }"
+        );
+        assert_eq!(found[0].confidence, 70);
+        assert_eq!(
+            found[0].evidence,
+            "if ((uVar1 & 0x400) != 0) { uVar1 |= 0x100; }"
+        );
+    }
+
+    #[test]
+    fn every_constant_finding_of_the_function_lands_in_the_prompt() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_const_findings(
+            &dir,
+            vec![
+                calxgloss_consts::types::ConstFinding::BitflagGroup(bitflag_record(
+                    "FUN_18003ab00",
+                )),
+                calxgloss_consts::types::ConstFinding::EnumCandidate(enum_record("FUN_18003ab00")),
+                calxgloss_consts::types::ConstFinding::EnumCandidate(enum_record("FUN_zzz")),
+                calxgloss_consts::types::ConstFinding::NamedConstant(named_record(&[
+                    "FUN_18003ab00",
+                    "FUN_zzz",
+                ])),
+            ],
+        );
+
+        let found = extract_constant_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        let kinds: Vec<&str> = found.iter().map(|f| f.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            vec!["bitflag_group", "enum_candidate", "named_constant"]
+        );
+        assert_eq!(
+            found[0].suggestion,
+            "bitflags! struct Flags: u16 { /* bits: 0x100, 0x400 */ }"
+        );
+        assert_eq!(
+            found[1].suggestion,
+            "enum State { /* variants for 0..=3 */ }"
+        );
+        assert_eq!(found[2].suggestion, "const VALUE_0x400: u32 = 0x400;");
+        assert_eq!(found[2].confidence, 60);
     }
 
     // ---- control-flow hint extraction ---------------------------------

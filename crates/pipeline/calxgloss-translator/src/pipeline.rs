@@ -40,6 +40,8 @@ use calxgloss_apidetect::persist::ApiPersistor;
 use calxgloss_callback::engine::CallbackEngine;
 use calxgloss_callback::persist::CallbackPersistor;
 use calxgloss_callgraph::{ContextEnricher, FunctionContext, NodeCategory};
+use calxgloss_consts::engine::ConstEngine;
+use calxgloss_consts::persist::ConstPersistor;
 use calxgloss_controlflow::engine::ControlFlowEngine;
 use calxgloss_controlflow::persist::ControlFlowPersistor;
 use calxgloss_ghidra::GhidraClient;
@@ -1602,6 +1604,71 @@ impl TranslationPipeline {
         }
     }
 
+    /// Detect constant structures across the binary before a batch
+    /// starts, unless a detection result is already cached.
+    ///
+    /// The scan's findings — bitflag groups, enum candidates, and
+    /// repeated magic numbers — are filed at
+    /// `re/analysis/consts/{dll}.json` for the prompt path to read (see
+    /// [`extract_constant_hints`](crate::retry::helpers::extract_constant_hints));
+    /// running the detection scan once up front means every function in
+    /// the batch can see constant context instead of none. The
+    /// persisted file is the cache: when a result is already saved for
+    /// `dll`, the scan is skipped entirely.
+    ///
+    /// Returns whether a result is available afterwards. A missing workspace,
+    /// an unreachable Ghidra server, or a failed save only log a warning and
+    /// return `false` — prompts without constant context are degraded, not
+    /// fatal, and the batch proceeds either way.
+    pub async fn ensure_const_detection(&self, dll: &str) -> bool {
+        let Some(workspace) = self.workspace.as_deref() else {
+            debug!(dll, "No workspace configured; skipping constant detection");
+            return false;
+        };
+
+        let persistor = ConstPersistor::new(workspace);
+        if persistor.exists(dll) {
+            debug!(
+                dll,
+                path = %persistor.path_for(dll).display(),
+                "Constant result already cached; skipping scan"
+            );
+            return true;
+        }
+
+        info!(
+            dll,
+            "Detecting constant structures before batch translation"
+        );
+        let engine = ConstEngine::new(&self.ghidra);
+        match engine.scan(dll).await {
+            Ok(result) => {
+                if let Err(e) = persistor.save(&result) {
+                    warn!(
+                        dll,
+                        error = %e,
+                        "Failed to persist constant result; continuing without constant context"
+                    );
+                    return false;
+                }
+                info!(
+                    dll,
+                    findings = result.findings.len(),
+                    "Constant detection complete"
+                );
+                true
+            }
+            Err(e) => {
+                warn!(
+                    dll,
+                    error = %e,
+                    "Constant detection failed; continuing without constant context"
+                );
+                false
+            }
+        }
+    }
+
     /// Detect callback and function-pointer tables across the binary
     /// before a batch starts, unless a detection result is already cached.
     ///
@@ -1880,7 +1947,8 @@ impl TranslationPipeline {
     /// [`ensure_callback_detection`](Self::ensure_callback_detection),
     /// [`ensure_controlflow_detection`](Self::ensure_controlflow_detection),
     /// and [`ensure_string_context`](Self::ensure_string_context),
-    /// and [`ensure_api_detection`](Self::ensure_api_detection).
+    /// and [`ensure_api_detection`](Self::ensure_api_detection),
+    /// and [`ensure_const_detection`](Self::ensure_const_detection).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
     /// invoked **immediately after each function completes** (before moving on
@@ -2017,6 +2085,7 @@ impl TranslationPipeline {
         self.ensure_controlflow_detection(dll).await;
         self.ensure_string_context(dll).await;
         self.ensure_api_detection(dll).await;
+        self.ensure_const_detection(dll).await;
 
         let mut batch_result = batch::BatchTranslationResult::new(dll.to_string());
 
@@ -2139,7 +2208,8 @@ impl TranslationPipeline {
     /// [`ensure_callback_detection`](Self::ensure_callback_detection),
     /// [`ensure_controlflow_detection`](Self::ensure_controlflow_detection),
     /// and [`ensure_string_context`](Self::ensure_string_context),
-    /// and [`ensure_api_detection`](Self::ensure_api_detection).
+    /// and [`ensure_api_detection`](Self::ensure_api_detection),
+    /// and [`ensure_const_detection`](Self::ensure_const_detection).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
     /// invoked **immediately after each function completes** (before moving on
@@ -2232,6 +2302,7 @@ impl TranslationPipeline {
         self.ensure_controlflow_detection(&graph.dll).await;
         self.ensure_string_context(&graph.dll).await;
         self.ensure_api_detection(&graph.dll).await;
+        self.ensure_const_detection(&graph.dll).await;
 
         // Build a priority-ordered plan
         let orderer = calxgloss_callgraph::TranslationOrderer::new();
@@ -2465,6 +2536,8 @@ mod tests {
     use calxgloss_apidetect::types::ApiDetectionResult;
     use calxgloss_callback::persist::CallbackPersistor;
     use calxgloss_callback::types::CallbackResult;
+    use calxgloss_consts::persist::ConstPersistor;
+    use calxgloss_consts::types::ConstResult;
     use calxgloss_controlflow::persist::ControlFlowPersistor;
     use calxgloss_controlflow::types::ControlFlowResult;
     use calxgloss_memory::persist::MemoryPersistor;
@@ -2778,6 +2851,74 @@ mod tests {
     async fn no_workspace_skips_the_concurrency_scan() {
         let pipeline = pipeline_over(None);
         assert!(!pipeline.ensure_sync_detection("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn a_cached_constant_result_is_reused_without_rescanning() {
+        let dir = TempDir::new().unwrap();
+        ConstPersistor::new(dir.path())
+            .save(&ConstResult::new(ScanMetadata::new("eqmain.dll")))
+            .unwrap();
+
+        // The Ghidra server is unreachable, so `true` can only come from the cache.
+        let pipeline = pipeline_over(Some(dir.path()));
+        assert!(pipeline.ensure_const_detection("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn a_constant_cache_miss_scans_and_saves_the_result() {
+        let dir = TempDir::new().unwrap();
+        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
+        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+
+        assert!(pipeline.ensure_const_detection("eqmain.dll").await);
+
+        let persistor = ConstPersistor::new(dir.path());
+        assert!(
+            persistor.exists("eqmain.dll"),
+            "a cache miss should leave a saved document behind"
+        );
+        assert_eq!(
+            persistor.path_for("eqmain.dll"),
+            dir.path()
+                .join("re")
+                .join("analysis")
+                .join("consts")
+                .join("eqmain.dll.json"),
+            "the document should be filed under re/analysis/consts"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_constant_scan_degrades_instead_of_failing() {
+        let dir = TempDir::new().unwrap();
+        let pipeline = pipeline_over(Some(dir.path()));
+
+        assert!(!pipeline.ensure_const_detection("eqmain.dll").await);
+        assert!(
+            !ConstPersistor::new(dir.path()).exists("eqmain.dll"),
+            "a failed scan persists nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_constant_save_degrades_instead_of_failing() {
+        let dir = TempDir::new().unwrap();
+        // `re/analysis` as a plain file makes the save's directory
+        // creation fail even though the scan itself succeeds.
+        std::fs::create_dir_all(dir.path().join("re")).unwrap();
+        std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
+
+        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
+        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+
+        assert!(!pipeline.ensure_const_detection("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn no_workspace_skips_the_constant_scan() {
+        let pipeline = pipeline_over(None);
+        assert!(!pipeline.ensure_const_detection("eqmain.dll").await);
     }
 
     #[tokio::test]
