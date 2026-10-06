@@ -146,17 +146,31 @@ impl<S> StringContextEngine<S> {
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad entry
     /// point) is skipped with a warning, as is a nameless listing entry;
-    /// a failed xref lookup costs only that string's fallback coverage.
-    /// Only a failure of the listings themselves — the function listing
-    /// or the string listing, the server being down — aborts the run,
-    /// since then nothing can be scanned.
+    /// a failed xref lookup costs only that string's fallback coverage,
+    /// and a failed string listing only the fallback and `DAT_`
+    /// resolution. Only a failure of the function listing itself — the
+    /// server being down — aborts the run, since then nothing can be
+    /// scanned.
     pub async fn scan(&self, binary: impl Into<String>) -> Result<StringContextResult>
     where
         S: ScanSource,
     {
         let started = Instant::now();
         let functions = self.source.functions().await?;
-        let program_strings = self.source.strings().await?;
+        // Only the function listing is fatal. A failed string listing
+        // costs the fallback and `DAT_` resolution — the body parse
+        // still reads its direct literals — so the scan degrades to a
+        // warning rather than aborting.
+        let program_strings = match self.source.strings().await {
+            Ok(strings) => strings,
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "String listing failed; scanning body literals only"
+                );
+                Vec::new()
+            }
+        };
         let string_table: HashMap<u64, String> = program_strings
             .iter()
             .map(|string| (string.address, string.value.clone()))
@@ -236,7 +250,9 @@ impl<S> StringContextEngine<S> {
                             .filter(|usage| usage.function == function.name),
                     );
                 }
-                fallback
+                // Two references from one function to one string — two
+                // call sites, say — still record once.
+                HybridXrefMapper::merge_usages(Vec::new(), fallback)
             } else {
                 body_usages
             };
@@ -545,15 +561,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failed_string_listing_aborts_the_scan() {
+    async fn a_failed_string_listing_degrades_to_body_literals_only() {
+        // Only the function listing is fatal: with no string table the
+        // body parse still reads its direct literals, and the fallback
+        // and `DAT_` resolution simply find nothing.
         let mut program = program();
         program.fail_strings = true;
+        let result = StringContextEngine::with_source(program)
+            .scan("eqmain.dll")
+            .await
+            .expect("the scan survives a failed string listing");
+
+        let ab00: Vec<&StringFinding> = result.for_function("FUN_18003ab00").collect();
         assert!(
-            StringContextEngine::with_source(program)
-                .scan("eqmain.dll")
-                .await
-                .is_err()
+            ab00.iter().any(|finding| finding.target() == "Journal.txt"),
+            "the body's direct literal is still recorded"
         );
+        assert!(
+            !ab00
+                .iter()
+                .any(|finding| finding.target() == "********** Chat logging turned OFF."),
+            "the unresolvable DAT_ reference is not"
+        );
+        assert_eq!(
+            result.for_function("FUN_18003e750").count(),
+            0,
+            "the fallback has no strings to ask about"
+        );
+    }
+
+    #[tokio::test]
+    async fn two_xrefs_to_one_string_from_one_function_record_once() {
+        // Two call sites, one string: the fallback dedups by address
+        // and value, so the function carries a single record.
+        let mut program = program();
+        program
+            .xrefs
+            .get_mut(&0x180128cf0)
+            .expect("the fixture string has an xref")
+            .push(Xref {
+                address: 0x1800_7a20,
+                function: Some("FUN_18003e750".to_string()),
+                kind: Some("DATA".to_string()),
+            });
+        let result = StringContextEngine::with_source(program)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        let e750: Vec<&StringFinding> = result.for_function("FUN_18003e750").collect();
+        assert_eq!(e750.len(), 1, "one record for the two references");
+        assert_eq!(e750[0].target(), "********** Chat logging turned OFF.");
     }
 
     #[tokio::test]

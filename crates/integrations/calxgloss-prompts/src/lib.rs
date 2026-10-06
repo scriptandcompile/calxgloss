@@ -818,7 +818,7 @@ mod tests {
             StringContextInfo {
                 function: "FUN_18003ab00".to_string(),
                 kind: "format_string".to_string(),
-                suggestion: "(*const i8, i32)".to_string(),
+                suggestion: "`*const i8`, `i32`".to_string(),
                 confidence: 70,
                 evidence: "sprintf(local_10, \"%s: %d hits\", pcVar2, uVar3);".to_string(),
             },
@@ -847,7 +847,7 @@ mod tests {
         assert!(prompt.contains("STRINGS"));
         assert!(prompt.contains("config file path"));
         assert!(prompt.contains("file_path string"));
-        assert!(prompt.contains("(*const i8, i32)"));
+        assert!(prompt.contains("`*const i8`, `i32`"));
         assert!(prompt.contains("format_string string"));
         assert!(prompt.contains("confidence 70"));
         assert!(prompt.contains("sprintf(local_10, \"%s: %d hits\", pcVar2, uVar3);"));

@@ -37,7 +37,7 @@ pub mod types;
 pub use classify::{CategoryPatterns, StringClassifyEngine};
 pub use engine::{ScanSource, StringContextEngine};
 pub use error::{Result, StringCtxError};
-pub use format_str::{FormatStringEngine, extract_format_hints};
+pub use format_str::{FormatStringEngine, extract_format_hints, summarize_hints};
 pub use hybrid_mapper::{
     BODY_CONFIDENCE, FormatCall, HybridXrefMapper, MappedString, XREF_CONFIDENCE,
 };

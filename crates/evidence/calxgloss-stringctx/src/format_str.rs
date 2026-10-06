@@ -324,15 +324,25 @@ impl FormatStringEngine {
     /// Render a hint list as the argument-type summary the prompt shows,
     /// e.g. `` `*const i8`, `i32` ``. An empty list reads as no arguments.
     pub fn summarize(&self, hints: &[FormatHint]) -> String {
-        if hints.is_empty() {
-            return "no format arguments".to_string();
-        }
-        hints
-            .iter()
-            .map(|hint| format!("`{}`", hint.rust_type))
-            .collect::<Vec<_>>()
-            .join(", ")
+        summarize_hints(hints)
     }
+}
+
+/// Render a hint list as the argument-type summary the prompt shows,
+/// e.g. `` `*const i8`, `i32` ``. An empty list reads as no arguments.
+///
+/// This is the free form of [`FormatStringEngine::summarize`], so the
+/// finding's own [`suggestion`](crate::types::StringFinding::suggestion)
+/// renders the same summary the engine does.
+pub fn summarize_hints(hints: &[FormatHint]) -> String {
+    if hints.is_empty() {
+        return "no format arguments".to_string();
+    }
+    hints
+        .iter()
+        .map(|hint| format!("`{}`", hint.rust_type))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 // ============================================================

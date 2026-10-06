@@ -22,6 +22,8 @@
 pub use calxgloss_types::{Confidence, ScanMetadata};
 use serde::{Deserialize, Serialize};
 
+use crate::format_str::summarize_hints;
+
 // ============================================================
 // String classification
 // ============================================================
@@ -211,14 +213,7 @@ impl StringFinding {
     pub fn suggestion(&self) -> String {
         match self {
             StringFinding::Classified(record) => record.purpose.clone(),
-            StringFinding::FormatString(record) => {
-                let types: Vec<&str> = record
-                    .arg_types
-                    .iter()
-                    .map(|hint| hint.rust_type.as_str())
-                    .collect();
-                format!("({})", types.join(", "))
-            }
+            StringFinding::FormatString(record) => summarize_hints(&record.arg_types),
         }
     }
 
@@ -508,7 +503,7 @@ mod tests {
         let kinds: Vec<&str> = findings.iter().map(|f| f.kind()).collect();
         assert_eq!(kinds, vec!["classified", "format_string"]);
         let suggestions: Vec<String> = findings.iter().map(|f| f.suggestion()).collect();
-        assert_eq!(suggestions, vec!["config file path", "(*const i8, i32)"]);
+        assert_eq!(suggestions, vec!["config file path", "`*const i8`, `i32`"]);
         let targets: Vec<String> = findings.iter().map(|f| f.target()).collect();
         assert_eq!(targets, vec!["Journal.txt", "%s: %d hits"]);
     }

@@ -339,7 +339,7 @@ async fn the_loaded_findings_render_into_the_escalate_prompt() {
     assert!(prompt.contains("STRINGS"));
     assert!(prompt.contains("file or registry path"));
     assert!(prompt.contains("file_path string, confidence 70"));
-    assert!(prompt.contains("(*const i8, i32)"));
+    assert!(prompt.contains("`*const i8`, `i32`"));
     assert!(prompt.contains("format_string string, confidence 70"));
     assert!(prompt.contains("CreateFileA"));
     assert!(prompt.contains("sprintf"));
