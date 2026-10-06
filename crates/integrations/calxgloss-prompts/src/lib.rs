@@ -54,11 +54,11 @@ pub use context::{
 };
 pub use error::PromptError;
 pub use templates::{
-    AlgorithmInfo, BoundaryValue, CallGraphNeighbor, EdgeCaseTemplate, EdgeCaseTest,
-    EscalateTemplate, FixTemplate, FormattedTestResult, FullModuleTemplate, MemoryInfo,
-    MinimalTemplate, ModuleContextTemplate, NeighborFunction, PalTraitDef, PalTraitMethod,
-    ShimCode, SignatureTemplate, StructField, StructuredData, TestCaseFormatted, TranslateTemplate,
-    TypeInfo, WithTestsTemplate,
+    AlgorithmInfo, BoundaryValue, CallGraphNeighbor, ConcurrencyInfo, EdgeCaseTemplate,
+    EdgeCaseTest, EscalateTemplate, FixTemplate, FormattedTestResult, FullModuleTemplate,
+    MemoryInfo, MinimalTemplate, ModuleContextTemplate, NeighborFunction, PalTraitDef,
+    PalTraitMethod, ShimCode, SignatureTemplate, StructField, StructuredData, TestCaseFormatted,
+    TranslateTemplate, TypeInfo, WithTestsTemplate,
 };
 
 // Re-export types used by template constructors
@@ -614,6 +614,7 @@ mod tests {
             findings,
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -641,6 +642,59 @@ mod tests {
 
         assert!(prompt.contains("MEMORY LIFECYCLE"));
         assert!(prompt.contains("No memory lifecycle context available."));
+    }
+
+    #[test]
+    fn test_escalate_template_with_concurrency_findings() {
+        let findings = vec![ConcurrencyInfo {
+            function: "FUN_18003ab00".to_string(),
+            kind: "mutex".to_string(),
+            suggestion: "std::sync::Mutex<T>".to_string(),
+            confidence: 70,
+            evidence: "pthread_mutex_lock(&mtx); ... pthread_mutex_unlock(&mtx);".to_string(),
+        }];
+
+        let prompt = build_escalate_prompt_with_context(
+            "FUN_18003ab00".to_string(),
+            "eqmain.dll".to_string(),
+            "fn fun_18003ab00() { /* manual lock/unlock */ }".to_string(),
+            "Wrong result".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            findings,
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(prompt.contains("CONCURRENCY"));
+        assert!(prompt.contains("std::sync::Mutex<T>"));
+        assert!(prompt.contains("mutex construct"));
+        assert!(prompt.contains("confidence 70"));
+        assert!(prompt.contains("pthread_mutex_lock(&mtx); ... pthread_mutex_unlock(&mtx);"));
+    }
+
+    #[test]
+    fn test_escalate_template_without_concurrency_findings_says_so() {
+        let prompt = build_escalate_prompt(
+            "DrawSprite".to_string(),
+            "game_logic.dll".to_string(),
+            "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
+            "Wrong result".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(prompt.contains("CONCURRENCY"));
+        assert!(prompt.contains("No concurrency context available."));
     }
 
     #[test]

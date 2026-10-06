@@ -174,6 +174,24 @@ No memory lifecycle context available.
 
 ---
 
+## ADDITIONAL CONTEXT — CONCURRENCY
+
+{% if !concurrency_findings.is_empty() %}
+The following concurrency constructs were recognized in this function by static
+analysis. Where a finding is credible, express the synchronization with the
+suggested Rust type instead of transliterating the manual lock/unlock or
+spawn/join calls:
+
+{% for finding in concurrency_findings %}
+- **{{ finding.suggestion|safe }}** ({{ finding.kind }} construct, confidence {{ finding.confidence }})
+  Evidence: `{{ finding.evidence|safe }}`
+{% endfor %}
+{% else %}
+No concurrency context available.
+{% endif %}
+
+---
+
 ## TRANSLATION REQUIREMENTS
 
 1. **Output ONLY the corrected Rust code** — no explanations, no markdown fences, no code blocks.

@@ -159,6 +159,27 @@ pub struct MemoryInfo {
     pub evidence: String,
 }
 
+/// A concurrency finding about the target function, made by the
+/// analysis pipeline.
+///
+/// One finding whichever detector made it — the kind names the detector
+/// behind the claim (`mutex`, `atomic`, `thread`) so the prompt can weigh
+/// the hypothesis beside the evidence without knowing the record shape
+/// that produced it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ConcurrencyInfo {
+    /// The function the finding is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The kind of finding, e.g. `mutex`, `atomic`, `thread`.
+    pub kind: String,
+    /// The Rust pattern the finding suggests, e.g. `std::sync::Mutex<T>`.
+    pub suggestion: String,
+    /// Confidence that the finding is right, 0–100.
+    pub confidence: u8,
+    /// The decompiled lines that support the finding.
+    pub evidence: String,
+}
+
 /// A formatted test result for template rendering.
 ///
 /// Carries the test case data alongside the pass/fail outcome observed
@@ -439,6 +460,9 @@ pub struct EscalateTemplate {
     /// Memory lifecycle findings about this function made by the analysis
     /// pipeline.
     pub memory_findings: Vec<MemoryInfo>,
+    /// Concurrency findings about this function made by the analysis
+    /// pipeline.
+    pub concurrency_findings: Vec<ConcurrencyInfo>,
     /// Previous attempt failures to reference in the prompt.
     pub failure_history: Vec<FailureHint>,
     /// Enriched call graph context with caller/callee/leaf-API details.
@@ -459,6 +483,7 @@ impl EscalateTemplate {
         type_info: Vec<TypeInfo>,
         recognized_algorithms: Vec<AlgorithmInfo>,
         memory_findings: Vec<MemoryInfo>,
+        concurrency_findings: Vec<ConcurrencyInfo>,
     ) -> Self {
         Self {
             function_name,
@@ -471,6 +496,7 @@ impl EscalateTemplate {
             type_info,
             recognized_algorithms,
             memory_findings,
+            concurrency_findings,
             failure_history: Vec::new(),
             call_graph_context: Vec::new(),
         }
@@ -489,6 +515,7 @@ impl EscalateTemplate {
         type_info: Vec<TypeInfo>,
         recognized_algorithms: Vec<AlgorithmInfo>,
         memory_findings: Vec<MemoryInfo>,
+        concurrency_findings: Vec<ConcurrencyInfo>,
         failure_history: Vec<FailureHint>,
     ) -> Self {
         Self {
@@ -502,6 +529,7 @@ impl EscalateTemplate {
             type_info,
             recognized_algorithms,
             memory_findings,
+            concurrency_findings,
             failure_history,
             call_graph_context: Vec::new(),
         }
@@ -520,6 +548,7 @@ impl EscalateTemplate {
         type_info: Vec<TypeInfo>,
         recognized_algorithms: Vec<AlgorithmInfo>,
         memory_findings: Vec<MemoryInfo>,
+        concurrency_findings: Vec<ConcurrencyInfo>,
         failure_history: Vec<FailureHint>,
         call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
     ) -> Self {
@@ -534,6 +563,7 @@ impl EscalateTemplate {
             type_info,
             recognized_algorithms,
             memory_findings,
+            concurrency_findings,
             failure_history,
             call_graph_context,
         }

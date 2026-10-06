@@ -82,6 +82,7 @@ async fn build_escalate_prompt_inner(
         type_info,
         algorithm_hints,
         memory_findings,
+        Vec::new(),
         history,
         ctx.call_graph_context,
     )
