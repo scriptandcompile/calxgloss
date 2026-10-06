@@ -246,6 +246,19 @@ fn read_number(source: &str, bytes: &[u8], start: usize) -> (usize, Option<u64>)
     (end, value)
 }
 
+/// The decompiled lines a finding was read from, joined for evidence.
+///
+/// `lines` are 1-based line numbers as carried by [`Token`]; lines the
+/// body no longer has are skipped.
+pub(crate) fn evidence(body: &str, lines: &std::collections::BTreeSet<usize>) -> String {
+    lines
+        .iter()
+        .filter_map(|line| body.lines().nth(line - 1))
+        .map(str::trim)
+        .collect::<Vec<&str>>()
+        .join(" ")
+}
+
 // ============================================================
 // Tests
 // ============================================================

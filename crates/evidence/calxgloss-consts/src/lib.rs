@@ -49,6 +49,6 @@ pub mod persist;
 pub mod sequential;
 pub mod types;
 
-mod tokenize;
+pub(crate) mod tokenize;
 
 pub use error::{ConstError, Result};

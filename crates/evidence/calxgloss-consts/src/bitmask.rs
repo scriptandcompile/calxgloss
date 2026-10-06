@@ -11,11 +11,12 @@
 
 use std::collections::BTreeSet;
 
-use crate::tokenize::{Token, tokenize};
+use crate::tokenize::{Token, evidence, tokenize};
 use crate::types::{BitflagGroup, Confidence};
 
 /// The bitwise operators a mask literal can sit beside: plain and
-/// compound assignment.
+/// compound assignment — the default spelling set a
+/// [`BitmaskDetector`] reads.
 const BITWISE_OPERATORS: [&str; 6] = ["&", "|", "^", "&=", "|=", "^="];
 
 /// Whether `value` is a power of two (and not zero).
@@ -42,24 +43,42 @@ fn flags_type(bit_width: u32) -> &'static str {
 /// bitwise operations.
 ///
 /// The detector is stateless; [`with_default_threshold`] configures
-/// the standard "at least two distinct bits" bar, and
-/// [`with_min_bits`](Self::with_min_bits) swaps it whole.
+/// the standard "at least two distinct bits" bar over the standard
+/// operator spellings, [`with_min_bits`](Self::with_min_bits) swaps
+/// the bar, and [`with_bitwise_ops`](Self::with_bitwise_ops) swaps the
+/// bar and the operator spellings whole.
 #[derive(Debug, Clone)]
 pub struct BitmaskDetector {
     min_bits: usize,
+    ops: Vec<String>,
 }
 
 impl BitmaskDetector {
     /// A detector reading groups at the standard threshold: two or
     /// more distinct bits make a flags field.
     pub fn with_default_threshold() -> Self {
-        Self { min_bits: 2 }
+        Self::with_min_bits(2)
     }
 
     /// A detector that reports a group once it sees `min_bits`
-    /// distinct bits.
+    /// distinct bits, beside the standard bitwise operator spellings.
     pub fn with_min_bits(min_bits: usize) -> Self {
-        Self { min_bits }
+        Self {
+            min_bits,
+            ops: BITWISE_OPERATORS
+                .iter()
+                .map(|op| (*op).to_string())
+                .collect(),
+        }
+    }
+
+    /// A detector reading masks beside the given operator spellings,
+    /// reporting once it sees `min_bits` distinct bits.
+    pub fn with_bitwise_ops(min_bits: usize, ops: &[&str]) -> Self {
+        Self {
+            min_bits,
+            ops: ops.iter().map(|op| (*op).to_string()).collect(),
+        }
     }
 
     /// The flag group in one decompiled body, if the function
@@ -121,8 +140,8 @@ impl BitmaskDetector {
     }
 
     /// Whether the literal at `index` sits in a bitwise context:
-    /// beside a bitwise operator, or after the `~` of a complemented
-    /// mask like `x &= ~0x400`.
+    /// beside one of the detector's configured operators, or after
+    /// the `~` of a complemented mask like `x &= ~0x400`.
     fn bitwise_context(&self, tokens: &[Token<'_>], index: usize) -> bool {
         let before = index
             .checked_sub(1)
@@ -130,8 +149,10 @@ impl BitmaskDetector {
             .filter(|t| !t.is_punct(&["~"]))
             .or_else(|| index.checked_sub(2).map(|j| &tokens[j]));
         let after = tokens.get(index + 1);
-        matches!(before, Some(t) if t.is_punct(&BITWISE_OPERATORS))
-            || matches!(after, Some(t) if t.is_punct(&BITWISE_OPERATORS))
+        let beside_op = |token: Option<&Token>| {
+            token.is_some_and(|t| self.ops.iter().any(|op| t.is_punct(&[op.as_str()])))
+        };
+        beside_op(before) || beside_op(after)
     }
 
     /// The shift amount when the literal at `index` heads a shift
@@ -143,16 +164,6 @@ impl BitmaskDetector {
         }
         tokens.get(index + 2)?.int().map(|shift| shift as u32)
     }
-}
-
-/// The decompiled lines a finding was read from, joined for evidence.
-fn evidence(body: &str, lines: &BTreeSet<usize>) -> String {
-    lines
-        .iter()
-        .filter_map(|line| body.lines().nth(line - 1))
-        .map(str::trim)
-        .collect::<Vec<&str>>()
-        .join(" ")
 }
 
 // ============================================================
@@ -259,5 +270,20 @@ mod tests {
                 .detect("FUN_18003ab00", body)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn custom_bitwise_op_spellings_reach_the_detector() {
+        let body = "  x &= 0x1;\n  x |= 0x2;";
+        let only_and = BitmaskDetector::with_bitwise_ops(2, &["&"]);
+        assert!(
+            only_and.detect("FUN_18003ab00", body).is_none(),
+            "`|=` is not in the configured spelling set"
+        );
+        let both = BitmaskDetector::with_bitwise_ops(2, &["&=", "|="]);
+        let group = both
+            .detect("FUN_18003ab00", body)
+            .expect("both operators are configured");
+        assert_eq!(group.bits, vec![0, 1]);
     }
 }

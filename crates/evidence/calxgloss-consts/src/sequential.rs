@@ -10,7 +10,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::tokenize::{Token, tokenize};
+use crate::tokenize::{Token, evidence, tokenize};
 use crate::types::{Confidence, EnumCandidate};
 
 /// One `switch` block's worth of case values, with the lines the
@@ -168,17 +168,6 @@ fn qualifying_runs(values: &[i64], min_run: usize) -> Vec<Vec<i64>> {
         }
     }
     runs
-}
-
-/// The decompiled case lines a candidate was read from, joined for
-/// evidence.
-fn evidence(body: &str, lines: &BTreeSet<usize>) -> String {
-    lines
-        .iter()
-        .filter_map(|line| body.lines().nth(line - 1))
-        .map(str::trim)
-        .collect::<Vec<&str>>()
-        .join(" ")
 }
 
 // ============================================================
