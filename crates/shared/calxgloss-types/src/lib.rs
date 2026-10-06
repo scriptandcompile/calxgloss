@@ -47,7 +47,7 @@ pub use confidence::Confidence;
 pub use context_tier::{ContextTier, SuccessRate, record_translation_result, select_context_tier};
 pub use dashboard::{
     DependencyEdge, DependencyGraph, DependencyNode, ReviewAction, ReviewActionKind,
-    ReviewDashboard, ReviewStatus, StatusCounts, UnitOfWork, WorkUnitKind,
+    ReviewDashboard, ReviewStatus, StatusCounts, UnitOfWork, WorkKind,
 };
 pub use dll::{DllCategory, DllInfo, Export, Import};
 pub use error::TypesError;

@@ -7,7 +7,7 @@
 // Re-export types from calxgloss-types
 pub use calxgloss_types::{
     DependencyEdge, DependencyGraph, DependencyNode, ReviewAction, ReviewActionKind,
-    ReviewDashboard, ReviewStatus, StatusCounts, UnitOfWork, WorkUnitKind,
+    ReviewDashboard, ReviewStatus, StatusCounts, UnitOfWork, WorkKind,
 };
 
 // Server module (behind server feature)

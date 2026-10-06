@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use calxgloss_git::GitManager;
 use calxgloss_types::dashboard::{
-    ReviewDashboard, ReviewStatus, Staleness, StatusCounts, UnitOfWork, WorkUnitKind,
+    ReviewDashboard, ReviewStatus, Staleness, StatusCounts, UnitOfWork, WorkKind,
 };
 use chrono::Utc;
 
@@ -71,15 +71,15 @@ fn status_symbol(status: &ReviewStatus) -> &str {
     }
 }
 
-fn format_kind(kind: &WorkUnitKind) -> String {
+fn format_kind(kind: &WorkKind) -> String {
     match kind {
-        WorkUnitKind::DllClassification => "classify".to_string(),
-        WorkUnitKind::ShimLayer => "shim".to_string(),
-        WorkUnitKind::FunctionTranslation => "func".to_string(),
-        WorkUnitKind::TestCaseAddition => "test".to_string(),
-        WorkUnitKind::PalTrait => "pal".to_string(),
-        WorkUnitKind::IntegrationStep => "integrate".to_string(),
-        WorkUnitKind::BugFix => "fix".to_string(),
+        WorkKind::DllClassification => "classify".to_string(),
+        WorkKind::ShimLayer => "shim".to_string(),
+        WorkKind::FunctionTranslation => "func".to_string(),
+        WorkKind::TestCaseAddition => "test".to_string(),
+        WorkKind::PalTrait => "pal".to_string(),
+        WorkKind::IntegrationStep => "integrate".to_string(),
+        WorkKind::BugFix => "fix".to_string(),
     }
 }
 
@@ -537,7 +537,7 @@ pub fn render_unit_view(data: &UnitViewData) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calxgloss_types::dashboard::{ReviewStatus, WorkUnitKind};
+    use calxgloss_types::dashboard::{ReviewStatus, WorkKind};
 
     #[test]
     fn status_symbol_mapping() {
@@ -550,8 +550,8 @@ mod tests {
 
     #[test]
     fn format_kind_mapping() {
-        assert_eq!(format_kind(&WorkUnitKind::DllClassification), "classify");
-        assert_eq!(format_kind(&WorkUnitKind::FunctionTranslation), "func");
-        assert_eq!(format_kind(&WorkUnitKind::ShimLayer), "shim");
+        assert_eq!(format_kind(&WorkKind::DllClassification), "classify");
+        assert_eq!(format_kind(&WorkKind::FunctionTranslation), "func");
+        assert_eq!(format_kind(&WorkKind::ShimLayer), "shim");
     }
 }

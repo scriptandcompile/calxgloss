@@ -1,7 +1,7 @@
 //! Core enums for the dashboard data model.
 //!
-//! - [`WorkUnitLevel`] — dependency priority ordering
-//! - [`WorkUnitKind`] — the kind of work unit
+//! - [`WorkLevel`] — dependency priority ordering
+//! - [`WorkKind`] — the kind of work
 //! - [`ReviewStatus`] — the review status of a unit
 //! - [`Staleness`] — how stale a unit is
 
@@ -10,13 +10,13 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 // ============================================================
-// WorkUnitLevel — dependency priority ordering
+// WorkLevel — dependency priority ordering
 // ============================================================
 
-/// The processing level of a work unit in the dependency graph.
+/// The processing level of a piece of work in the dependency graph.
 ///
-/// Levels define the *phase* a unit belongs to in the pipeline.
-/// Units at a lower level must be processed before units at a
+/// Levels define the *phase* the work belongs to in the pipeline.
+/// Work at a lower level must be processed before work at a
 /// higher level, even when the DAG has no explicit edge between them.
 ///
 /// This ordering implements the requirement from Phase 4 / Step 4.2:
@@ -29,7 +29,7 @@ use std::time::Duration;
 /// units have the same topological depth, the one at the lower level
 /// is returned first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
-pub enum WorkUnitLevel {
+pub enum WorkLevel {
     /// DLL classification — roots of the dependency graph, no dependencies.
     #[default]
     DllClassification,
@@ -47,34 +47,40 @@ pub enum WorkUnitLevel {
     BugFix,
 }
 
-impl WorkUnitLevel {
+impl WorkLevel {
     /// Returns a short human-readable label for this level.
     pub fn label(&self) -> &'static str {
         match self {
-            WorkUnitLevel::DllClassification => "classify",
-            WorkUnitLevel::ShimLayer => "shim",
-            WorkUnitLevel::PalTrait => "pal",
-            WorkUnitLevel::TestCaseAddition => "test",
-            WorkUnitLevel::FunctionTranslation => "func",
-            WorkUnitLevel::IntegrationStep => "integrate",
-            WorkUnitLevel::BugFix => "fix",
+            WorkLevel::DllClassification => "classify",
+            WorkLevel::ShimLayer => "shim",
+            WorkLevel::PalTrait => "pal",
+            WorkLevel::TestCaseAddition => "test",
+            WorkLevel::FunctionTranslation => "func",
+            WorkLevel::IntegrationStep => "integrate",
+            WorkLevel::BugFix => "fix",
         }
     }
 }
 
-impl std::fmt::Display for WorkUnitLevel {
+impl std::fmt::Display for WorkLevel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.label())
     }
 }
 
 // ============================================================
-// WorkUnitKind — the kind of work unit
+// WorkKind — the kind of work
 // ============================================================
 
-/// The kind of work unit in the review dashboard.
+/// The kind of work tracked in the review dashboard.
+///
+/// Only [`WorkKind::FunctionTranslation`] is a *unit of work* in the
+/// glossary sense (one function or struct definition, delivered as one
+/// commit); the other kinds are the supporting work — classification,
+/// shim layers, PAL traits, test cases, integration, bug fixes — that
+/// the pipeline schedules and reviews alongside units.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WorkUnitKind {
+pub enum WorkKind {
     /// DLL classification — categorizing a DLL.
     DllClassification,
     /// Shim layer generation — creating a shim for a crate-replacement DLL.
@@ -91,31 +97,31 @@ pub enum WorkUnitKind {
     BugFix,
 }
 
-impl WorkUnitKind {
-    /// Maps a work unit kind to its processing level.
-    pub fn level(&self) -> WorkUnitLevel {
+impl WorkKind {
+    /// Maps a work kind to its processing level.
+    pub fn level(&self) -> WorkLevel {
         match self {
-            WorkUnitKind::DllClassification => WorkUnitLevel::DllClassification,
-            WorkUnitKind::ShimLayer => WorkUnitLevel::ShimLayer,
-            WorkUnitKind::PalTrait => WorkUnitLevel::PalTrait,
-            WorkUnitKind::TestCaseAddition => WorkUnitLevel::TestCaseAddition,
-            WorkUnitKind::FunctionTranslation => WorkUnitLevel::FunctionTranslation,
-            WorkUnitKind::IntegrationStep => WorkUnitLevel::IntegrationStep,
-            WorkUnitKind::BugFix => WorkUnitLevel::BugFix,
+            WorkKind::DllClassification => WorkLevel::DllClassification,
+            WorkKind::ShimLayer => WorkLevel::ShimLayer,
+            WorkKind::PalTrait => WorkLevel::PalTrait,
+            WorkKind::TestCaseAddition => WorkLevel::TestCaseAddition,
+            WorkKind::FunctionTranslation => WorkLevel::FunctionTranslation,
+            WorkKind::IntegrationStep => WorkLevel::IntegrationStep,
+            WorkKind::BugFix => WorkLevel::BugFix,
         }
     }
 }
 
-impl std::fmt::Display for WorkUnitKind {
+impl std::fmt::Display for WorkKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            WorkUnitKind::DllClassification => write!(f, "DLL Classification"),
-            WorkUnitKind::ShimLayer => write!(f, "Shim Layer"),
-            WorkUnitKind::FunctionTranslation => write!(f, "Function Translation"),
-            WorkUnitKind::TestCaseAddition => write!(f, "Test Case Addition"),
-            WorkUnitKind::PalTrait => write!(f, "PAL Trait"),
-            WorkUnitKind::IntegrationStep => write!(f, "Integration Step"),
-            WorkUnitKind::BugFix => write!(f, "Bug Fix"),
+            WorkKind::DllClassification => write!(f, "DLL Classification"),
+            WorkKind::ShimLayer => write!(f, "Shim Layer"),
+            WorkKind::FunctionTranslation => write!(f, "Function Translation"),
+            WorkKind::TestCaseAddition => write!(f, "Test Case Addition"),
+            WorkKind::PalTrait => write!(f, "PAL Trait"),
+            WorkKind::IntegrationStep => write!(f, "Integration Step"),
+            WorkKind::BugFix => write!(f, "Bug Fix"),
         }
     }
 }

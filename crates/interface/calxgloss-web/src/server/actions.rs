@@ -181,7 +181,7 @@ pub async fn request_patch(
 
     // Create the branch in git (from main)
     let policy = match unit.kind.clone() {
-        calxgloss_types::WorkUnitKind::FunctionTranslation => {
+        calxgloss_types::WorkKind::FunctionTranslation => {
             // For function translations, check shim dependencies
             let shim_map = ShimDependencyMap::new();
             let shim_crate = shim_map.get(&unit.dll).map(|s| s.to_string());

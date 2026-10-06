@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use calxgloss_git::GitManager;
 use calxgloss_types::dashboard::{
-    ReviewDashboard, ReviewStatus, Staleness, UnitOfWork, WorkUnitKind,
+    ReviewDashboard, ReviewStatus, Staleness, UnitOfWork, WorkKind,
 };
 use chrono::Utc;
 
@@ -40,13 +40,13 @@ pub fn parse_branch_name(name: &str) -> Option<BranchParts> {
     };
 
     let kind = match kind {
-        "classify" => WorkUnitKind::DllClassification,
-        "shim" => WorkUnitKind::ShimLayer,
-        "pal" => WorkUnitKind::PalTrait,
-        "test" => WorkUnitKind::TestCaseAddition,
-        "integration" => WorkUnitKind::IntegrationStep,
-        "fix" => WorkUnitKind::BugFix,
-        _ => WorkUnitKind::FunctionTranslation,
+        "classify" => WorkKind::DllClassification,
+        "shim" => WorkKind::ShimLayer,
+        "pal" => WorkKind::PalTrait,
+        "test" => WorkKind::TestCaseAddition,
+        "integration" => WorkKind::IntegrationStep,
+        "fix" => WorkKind::BugFix,
+        _ => WorkKind::FunctionTranslation,
     };
 
     Some(BranchParts {
@@ -80,7 +80,7 @@ pub fn branch_matches(branch: &str, dll: &str, function: &str, attempt: Option<u
 
 #[derive(Debug)]
 pub struct BranchParts {
-    kind: WorkUnitKind,
+    kind: WorkKind,
     dll: String,
     function: Option<String>,
     attempt: u32,
@@ -179,7 +179,7 @@ impl<'a> DashboardBuilder<'a> {
                 let unit = UnitOfWork {
                     id: key.clone(),
                     name: format!("Classify {}", cls.dll),
-                    kind: WorkUnitKind::DllClassification,
+                    kind: WorkKind::DllClassification,
                     dll: cls.dll.clone(),
                     function: None,
                     attempt: 1,
@@ -214,12 +214,12 @@ impl<'a> DashboardBuilder<'a> {
         // Add dependency edges
         let class_keys: Vec<String> = units
             .iter()
-            .filter(|u| u.kind == WorkUnitKind::DllClassification)
+            .filter(|u| u.kind == WorkKind::DllClassification)
             .map(|u| u.id.clone())
             .collect();
 
         for unit in &mut units {
-            if unit.kind == WorkUnitKind::FunctionTranslation
+            if unit.kind == WorkKind::FunctionTranslation
                 && let Some(class_key) = class_keys.iter().find(|k| {
                     k.starts_with("classify/")
                         && unit
@@ -513,7 +513,7 @@ fn parse_branch_name_for_key(key: &str, default_attempt: u32) -> BranchParts {
     if key.starts_with("classify/") {
         let dll = key.strip_prefix("classify/").unwrap_or(key);
         return BranchParts {
-            kind: WorkUnitKind::DllClassification,
+            kind: WorkKind::DllClassification,
             dll: dll.to_string(),
             function: None,
             attempt: default_attempt,
@@ -524,7 +524,7 @@ fn parse_branch_name_for_key(key: &str, default_attempt: u32) -> BranchParts {
     let parts: Vec<&str> = base.splitn(2, '/').collect();
 
     BranchParts {
-        kind: WorkUnitKind::FunctionTranslation,
+        kind: WorkKind::FunctionTranslation,
         dll: parts.first().map(|s| s.to_string()).unwrap_or_default(),
         function: parts.get(1).map(|s| s.to_string()),
         attempt: default_attempt,

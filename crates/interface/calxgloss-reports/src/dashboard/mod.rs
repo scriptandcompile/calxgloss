@@ -20,5 +20,5 @@ pub use view::{AttemptInfo, DiffSummary, UnitViewData, ViewTarget};
 
 // Re-export types used in public API
 pub use calxgloss_types::dashboard::{
-    ReviewDashboard, ReviewStatus, Staleness, StatusCounts, UnitOfWork, WorkUnitKind,
+    ReviewDashboard, ReviewStatus, Staleness, StatusCounts, UnitOfWork, WorkKind,
 };

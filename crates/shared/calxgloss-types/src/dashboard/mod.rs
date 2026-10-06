@@ -6,7 +6,7 @@
 //!
 //! # Architecture
 //!
-//! - [`types`] — `WorkUnitLevel`, `WorkUnitKind`, `ReviewStatus`, `Staleness`
+//! - [`types`] — `WorkLevel`, `WorkKind`, `ReviewStatus`, `Staleness`
 //! - [`work_unit`] — `UnitOfWork`
 //! - [`graph`] — `DependencyNode`, `DependencyEdge`, `DependencyGraph`
 //! - [`status`] — `StatusCounts`
@@ -25,7 +25,7 @@ pub use action::{ReviewAction, ReviewActionKind};
 pub use graph::{DependencyEdge, DependencyGraph, DependencyNode};
 pub use review::ReviewDashboard;
 pub use status::StatusCounts;
-pub use types::{ReviewStatus, Staleness, WorkUnitKind, WorkUnitLevel};
+pub use types::{ReviewStatus, Staleness, WorkKind, WorkLevel};
 pub use work_unit::UnitOfWork;
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 use crate::dashboard::graph::{DependencyEdge, DependencyGraph, DependencyNode};
 use crate::dashboard::review::ReviewDashboard;
 use crate::dashboard::status::StatusCounts;
-use crate::dashboard::types::{ReviewStatus, Staleness, WorkUnitKind, WorkUnitLevel};
+use crate::dashboard::types::{ReviewStatus, Staleness, WorkKind, WorkLevel};
 use crate::dashboard::work_unit::UnitOfWork;
 use chrono::Utc;
 use std::collections::HashMap;
@@ -15,7 +15,7 @@ fn dependency_graph_roots() {
                 "shim_wgpu",
                 "Shim wgpu",
                 ReviewStatus::PendingReview,
-                WorkUnitLevel::ShimLayer,
+                WorkLevel::ShimLayer,
             ),
             DependencyNode::new("func_draw", "func_DrawPrimitive", ReviewStatus::Queued),
         ],
@@ -46,7 +46,7 @@ fn dependency_graph_dependents() {
                 "shim_wgpu",
                 "Shim wgpu",
                 ReviewStatus::PendingReview,
-                WorkUnitLevel::ShimLayer,
+                WorkLevel::ShimLayer,
             ),
         ],
         edges: vec![DependencyEdge {
@@ -69,7 +69,7 @@ fn dependency_graph_dependencies() {
                 "shim_wgpu",
                 "Shim wgpu",
                 ReviewStatus::Accepted,
-                WorkUnitLevel::ShimLayer,
+                WorkLevel::ShimLayer,
             ),
         ],
         edges: vec![DependencyEdge {
@@ -89,7 +89,7 @@ fn dashboard_sorts_by_dependencies() {
         UnitOfWork {
             id: "func_3".into(),
             name: "func_3".into(),
-            kind: WorkUnitKind::FunctionTranslation,
+            kind: WorkKind::FunctionTranslation,
             dll: "test.dll".into(),
             function: Some("func3".into()),
             attempt: 1,
@@ -111,7 +111,7 @@ fn dashboard_sorts_by_dependencies() {
         UnitOfWork {
             id: "unit_1".into(),
             name: "unit_1".into(),
-            kind: WorkUnitKind::DllClassification,
+            kind: WorkKind::DllClassification,
             dll: "test.dll".into(),
             function: None,
             attempt: 1,
@@ -133,7 +133,7 @@ fn dashboard_sorts_by_dependencies() {
         UnitOfWork {
             id: "unit_2".into(),
             name: "unit_2".into(),
-            kind: WorkUnitKind::ShimLayer,
+            kind: WorkKind::ShimLayer,
             dll: "test.dll".into(),
             function: None,
             attempt: 1,
@@ -181,26 +181,26 @@ fn review_status_display() {
 }
 
 #[test]
-fn work_unit_kind_display() {
+fn work_kind_display() {
     assert_eq!(
-        WorkUnitKind::DllClassification.to_string(),
+        WorkKind::DllClassification.to_string(),
         "DLL Classification"
     );
-    assert_eq!(WorkUnitKind::ShimLayer.to_string(), "Shim Layer");
+    assert_eq!(WorkKind::ShimLayer.to_string(), "Shim Layer");
     assert_eq!(
-        WorkUnitKind::FunctionTranslation.to_string(),
+        WorkKind::FunctionTranslation.to_string(),
         "Function Translation"
     );
     assert_eq!(
-        WorkUnitKind::TestCaseAddition.to_string(),
+        WorkKind::TestCaseAddition.to_string(),
         "Test Case Addition"
     );
-    assert_eq!(WorkUnitKind::PalTrait.to_string(), "PAL Trait");
+    assert_eq!(WorkKind::PalTrait.to_string(), "PAL Trait");
     assert_eq!(
-        WorkUnitKind::IntegrationStep.to_string(),
+        WorkKind::IntegrationStep.to_string(),
         "Integration Step"
     );
-    assert_eq!(WorkUnitKind::BugFix.to_string(), "Bug Fix");
+    assert_eq!(WorkKind::BugFix.to_string(), "Bug Fix");
 }
 
 #[test]
@@ -267,19 +267,19 @@ fn review_status_serialization() {
 }
 
 #[test]
-fn work_unit_kind_serialization() {
+fn work_kind_serialization() {
     let kinds = vec![
-        WorkUnitKind::DllClassification,
-        WorkUnitKind::ShimLayer,
-        WorkUnitKind::FunctionTranslation,
-        WorkUnitKind::TestCaseAddition,
-        WorkUnitKind::PalTrait,
-        WorkUnitKind::IntegrationStep,
-        WorkUnitKind::BugFix,
+        WorkKind::DllClassification,
+        WorkKind::ShimLayer,
+        WorkKind::FunctionTranslation,
+        WorkKind::TestCaseAddition,
+        WorkKind::PalTrait,
+        WorkKind::IntegrationStep,
+        WorkKind::BugFix,
     ];
     for kind in &kinds {
         let json = serde_json::to_string(kind).unwrap();
-        let deserialized: WorkUnitKind = serde_json::from_str(&json).unwrap();
+        let deserialized: WorkKind = serde_json::from_str(&json).unwrap();
         assert_eq!(&deserialized, kind);
     }
 }
@@ -290,7 +290,7 @@ fn dashboard_accepts_units_into_recent_activity() {
         UnitOfWork {
             id: "unit_1".into(),
             name: "unit_1".into(),
-            kind: WorkUnitKind::DllClassification,
+            kind: WorkKind::DllClassification,
             dll: "test.dll".into(),
             function: None,
             attempt: 1,
@@ -312,7 +312,7 @@ fn dashboard_accepts_units_into_recent_activity() {
         UnitOfWork {
             id: "unit_2".into(),
             name: "unit_2".into(),
-            kind: WorkUnitKind::ShimLayer,
+            kind: WorkKind::ShimLayer,
             dll: "test.dll".into(),
             function: None,
             attempt: 1,
@@ -357,7 +357,7 @@ fn topological_order_respects_dependencies() {
                 "shim_wgpu",
                 "Shim wgpu",
                 ReviewStatus::PendingReview,
-                WorkUnitLevel::ShimLayer,
+                WorkLevel::ShimLayer,
             ),
             DependencyNode::new("func_draw", "func_DrawPrimitive", ReviewStatus::Queued),
             DependencyNode::new("func_present", "func_Present", ReviewStatus::Queued),
@@ -402,7 +402,7 @@ fn pending_in_dependency_order() {
         UnitOfWork {
             id: "func_3".into(),
             name: "func_3".into(),
-            kind: WorkUnitKind::FunctionTranslation,
+            kind: WorkKind::FunctionTranslation,
             dll: "test.dll".into(),
             function: Some("func3".into()),
             attempt: 1,
@@ -424,7 +424,7 @@ fn pending_in_dependency_order() {
         UnitOfWork {
             id: "unit_1".into(),
             name: "unit_1".into(),
-            kind: WorkUnitKind::DllClassification,
+            kind: WorkKind::DllClassification,
             dll: "test.dll".into(),
             function: None,
             attempt: 1,
@@ -446,7 +446,7 @@ fn pending_in_dependency_order() {
         UnitOfWork {
             id: "unit_2".into(),
             name: "unit_2".into(),
-            kind: WorkUnitKind::ShimLayer,
+            kind: WorkKind::ShimLayer,
             dll: "test.dll".into(),
             function: None,
             attempt: 1,
@@ -553,25 +553,25 @@ fn level_respects_pipeline_order() {
                 "dll_cls",
                 "DLL Classify",
                 ReviewStatus::Accepted,
-                WorkUnitLevel::DllClassification,
+                WorkLevel::DllClassification,
             ),
             DependencyNode::with_level(
                 "shim_wgpu",
                 "Shim wgpu",
                 ReviewStatus::Queued,
-                WorkUnitLevel::ShimLayer,
+                WorkLevel::ShimLayer,
             ),
             DependencyNode::with_level(
                 "pal_graphics",
                 "PAL GraphicsDevice",
                 ReviewStatus::Queued,
-                WorkUnitLevel::PalTrait,
+                WorkLevel::PalTrait,
             ),
             DependencyNode::with_level(
                 "func_draw",
                 "func_DrawPrimitive",
                 ReviewStatus::Queued,
-                WorkUnitLevel::FunctionTranslation,
+                WorkLevel::FunctionTranslation,
             ),
         ],
         edges: vec![
@@ -621,37 +621,37 @@ fn full_pipeline_order() {
                 "dll_cls",
                 "Classify d3d9.dll",
                 ReviewStatus::Accepted,
-                WorkUnitLevel::DllClassification,
+                WorkLevel::DllClassification,
             ),
             DependencyNode::with_level(
                 "shim_wgpu",
                 "Shim d3d9→wgpu",
                 ReviewStatus::Queued,
-                WorkUnitLevel::ShimLayer,
+                WorkLevel::ShimLayer,
             ),
             DependencyNode::with_level(
                 "pal_graphics",
                 "PAL GraphicsDevice",
                 ReviewStatus::Queued,
-                WorkUnitLevel::PalTrait,
+                WorkLevel::PalTrait,
             ),
             DependencyNode::with_level(
                 "func_present",
                 "func_Present",
                 ReviewStatus::Queued,
-                WorkUnitLevel::FunctionTranslation,
+                WorkLevel::FunctionTranslation,
             ),
             DependencyNode::with_level(
                 "func_draw",
                 "func_DrawPrimitive",
                 ReviewStatus::Queued,
-                WorkUnitLevel::FunctionTranslation,
+                WorkLevel::FunctionTranslation,
             ),
             DependencyNode::with_level(
                 "integrate_batch",
                 "Integrate batch 001",
                 ReviewStatus::Queued,
-                WorkUnitLevel::IntegrationStep,
+                WorkLevel::IntegrationStep,
             ),
         ],
         edges: vec![
@@ -773,59 +773,59 @@ fn partial_cycle() {
 }
 
 #[test]
-fn work_unit_level_ordering() {
-    assert!(WorkUnitLevel::DllClassification < WorkUnitLevel::ShimLayer);
-    assert!(WorkUnitLevel::ShimLayer < WorkUnitLevel::PalTrait);
-    assert!(WorkUnitLevel::PalTrait < WorkUnitLevel::TestCaseAddition);
-    assert!(WorkUnitLevel::TestCaseAddition < WorkUnitLevel::FunctionTranslation);
-    assert!(WorkUnitLevel::FunctionTranslation < WorkUnitLevel::IntegrationStep);
-    assert!(WorkUnitLevel::IntegrationStep < WorkUnitLevel::BugFix);
+fn work_level_ordering() {
+    assert!(WorkLevel::DllClassification < WorkLevel::ShimLayer);
+    assert!(WorkLevel::ShimLayer < WorkLevel::PalTrait);
+    assert!(WorkLevel::PalTrait < WorkLevel::TestCaseAddition);
+    assert!(WorkLevel::TestCaseAddition < WorkLevel::FunctionTranslation);
+    assert!(WorkLevel::FunctionTranslation < WorkLevel::IntegrationStep);
+    assert!(WorkLevel::IntegrationStep < WorkLevel::BugFix);
 
-    assert_eq!(WorkUnitLevel::DllClassification.label(), "classify");
-    assert_eq!(WorkUnitLevel::ShimLayer.label(), "shim");
-    assert_eq!(WorkUnitLevel::PalTrait.label(), "pal");
-    assert_eq!(WorkUnitLevel::FunctionTranslation.label(), "func");
-    assert_eq!(WorkUnitLevel::IntegrationStep.label(), "integrate");
-    assert_eq!(WorkUnitLevel::BugFix.label(), "fix");
+    assert_eq!(WorkLevel::DllClassification.label(), "classify");
+    assert_eq!(WorkLevel::ShimLayer.label(), "shim");
+    assert_eq!(WorkLevel::PalTrait.label(), "pal");
+    assert_eq!(WorkLevel::FunctionTranslation.label(), "func");
+    assert_eq!(WorkLevel::IntegrationStep.label(), "integrate");
+    assert_eq!(WorkLevel::BugFix.label(), "fix");
 }
 
 #[test]
-fn work_unit_kind_to_level() {
+fn work_kind_to_level() {
     assert_eq!(
-        WorkUnitKind::DllClassification.level(),
-        WorkUnitLevel::DllClassification
+        WorkKind::DllClassification.level(),
+        WorkLevel::DllClassification
     );
-    assert_eq!(WorkUnitKind::ShimLayer.level(), WorkUnitLevel::ShimLayer);
-    assert_eq!(WorkUnitKind::PalTrait.level(), WorkUnitLevel::PalTrait);
+    assert_eq!(WorkKind::ShimLayer.level(), WorkLevel::ShimLayer);
+    assert_eq!(WorkKind::PalTrait.level(), WorkLevel::PalTrait);
     assert_eq!(
-        WorkUnitKind::TestCaseAddition.level(),
-        WorkUnitLevel::TestCaseAddition
-    );
-    assert_eq!(
-        WorkUnitKind::FunctionTranslation.level(),
-        WorkUnitLevel::FunctionTranslation
+        WorkKind::TestCaseAddition.level(),
+        WorkLevel::TestCaseAddition
     );
     assert_eq!(
-        WorkUnitKind::IntegrationStep.level(),
-        WorkUnitLevel::IntegrationStep
+        WorkKind::FunctionTranslation.level(),
+        WorkLevel::FunctionTranslation
     );
-    assert_eq!(WorkUnitKind::BugFix.level(), WorkUnitLevel::BugFix);
+    assert_eq!(
+        WorkKind::IntegrationStep.level(),
+        WorkLevel::IntegrationStep
+    );
+    assert_eq!(WorkKind::BugFix.level(), WorkLevel::BugFix);
 }
 
 #[test]
 fn dependency_node_constructors() {
     let node = DependencyNode::new("id1", "Name 1", ReviewStatus::Queued);
     assert_eq!(node.unit_id, "id1");
-    assert_eq!(node.level, WorkUnitLevel::FunctionTranslation);
+    assert_eq!(node.level, WorkLevel::FunctionTranslation);
 
     let node = DependencyNode::with_level(
         "id2",
         "Name 2",
         ReviewStatus::PendingReview,
-        WorkUnitLevel::ShimLayer,
+        WorkLevel::ShimLayer,
     );
     assert_eq!(node.unit_id, "id2");
-    assert_eq!(node.level, WorkUnitLevel::ShimLayer);
+    assert_eq!(node.level, WorkLevel::ShimLayer);
 }
 
 #[test]
@@ -847,7 +847,7 @@ fn single_node_no_edges() {
             "solo",
             "Solo Unit",
             ReviewStatus::Queued,
-            WorkUnitLevel::ShimLayer,
+            WorkLevel::ShimLayer,
         )],
         edges: Vec::new(),
     };
@@ -866,25 +866,25 @@ fn level_tiebreaks_same_depth() {
                 "dll",
                 "DLL",
                 ReviewStatus::Accepted,
-                WorkUnitLevel::DllClassification,
+                WorkLevel::DllClassification,
             ),
             DependencyNode::with_level(
                 "func_x",
                 "Func X",
                 ReviewStatus::Queued,
-                WorkUnitLevel::FunctionTranslation,
+                WorkLevel::FunctionTranslation,
             ),
             DependencyNode::with_level(
                 "shim_y",
                 "Shim Y",
                 ReviewStatus::Queued,
-                WorkUnitLevel::ShimLayer,
+                WorkLevel::ShimLayer,
             ),
             DependencyNode::with_level(
                 "pal_z",
                 "PAL Z",
                 ReviewStatus::Queued,
-                WorkUnitLevel::PalTrait,
+                WorkLevel::PalTrait,
             ),
         ],
         edges: vec![
@@ -918,7 +918,7 @@ fn auto_block_marks_dependent_on_failed_dependency() {
         UnitOfWork {
             id: "shim_wgpu".into(),
             name: "Shim wgpu".into(),
-            kind: WorkUnitKind::ShimLayer,
+            kind: WorkKind::ShimLayer,
             dll: "d3d9.dll".into(),
             function: None,
             attempt: 1,
@@ -940,7 +940,7 @@ fn auto_block_marks_dependent_on_failed_dependency() {
         UnitOfWork {
             id: "func_draw".into(),
             name: "func_DrawPrimitive".into(),
-            kind: WorkUnitKind::FunctionTranslation,
+            kind: WorkKind::FunctionTranslation,
             dll: "game_logic.dll".into(),
             function: Some("DrawPrimitive".into()),
             attempt: 1,
@@ -987,7 +987,7 @@ fn auto_block_noop_when_all_deps_accepted() {
         UnitOfWork {
             id: "shim_wgpu".into(),
             name: "Shim wgpu".into(),
-            kind: WorkUnitKind::ShimLayer,
+            kind: WorkKind::ShimLayer,
             dll: "d3d9.dll".into(),
             function: None,
             attempt: 1,
@@ -1009,7 +1009,7 @@ fn auto_block_noop_when_all_deps_accepted() {
         UnitOfWork {
             id: "func_draw".into(),
             name: "func_DrawPrimitive".into(),
-            kind: WorkUnitKind::FunctionTranslation,
+            kind: WorkKind::FunctionTranslation,
             dll: "game_logic.dll".into(),
             function: Some("DrawPrimitive".into()),
             attempt: 1,
@@ -1047,7 +1047,7 @@ fn auto_block_multiple_deps_any_failed_blocks_dependent() {
         UnitOfWork {
             id: "shim_wgpu".into(),
             name: "Shim wgpu".into(),
-            kind: WorkUnitKind::ShimLayer,
+            kind: WorkKind::ShimLayer,
             dll: "d3d9.dll".into(),
             function: None,
             attempt: 1,
@@ -1069,7 +1069,7 @@ fn auto_block_multiple_deps_any_failed_blocks_dependent() {
         UnitOfWork {
             id: "pal_graphics".into(),
             name: "PAL GraphicsDevice".into(),
-            kind: WorkUnitKind::PalTrait,
+            kind: WorkKind::PalTrait,
             dll: "d3d9.dll".into(),
             function: None,
             attempt: 1,
@@ -1091,7 +1091,7 @@ fn auto_block_multiple_deps_any_failed_blocks_dependent() {
         UnitOfWork {
             id: "func_draw".into(),
             name: "func_DrawPrimitive".into(),
-            kind: WorkUnitKind::FunctionTranslation,
+            kind: WorkKind::FunctionTranslation,
             dll: "game_logic.dll".into(),
             function: Some("DrawPrimitive".into()),
             attempt: 1,
@@ -1129,7 +1129,7 @@ fn auto_block_propagates_transitively() {
         UnitOfWork {
             id: "dll_cls".into(),
             name: "Classify d3d9.dll".into(),
-            kind: WorkUnitKind::DllClassification,
+            kind: WorkKind::DllClassification,
             dll: "d3d9.dll".into(),
             function: None,
             attempt: 1,
@@ -1151,7 +1151,7 @@ fn auto_block_propagates_transitively() {
         UnitOfWork {
             id: "shim_wgpu".into(),
             name: "Shim wgpu".into(),
-            kind: WorkUnitKind::ShimLayer,
+            kind: WorkKind::ShimLayer,
             dll: "d3d9.dll".into(),
             function: None,
             attempt: 1,
@@ -1173,7 +1173,7 @@ fn auto_block_propagates_transitively() {
         UnitOfWork {
             id: "func_draw".into(),
             name: "func_DrawPrimitive".into(),
-            kind: WorkUnitKind::FunctionTranslation,
+            kind: WorkKind::FunctionTranslation,
             dll: "game_logic.dll".into(),
             function: Some("DrawPrimitive".into()),
             attempt: 1,
@@ -1195,7 +1195,7 @@ fn auto_block_propagates_transitively() {
         UnitOfWork {
             id: "integrate".into(),
             name: "Integrate batch 001".into(),
-            kind: WorkUnitKind::IntegrationStep,
+            kind: WorkKind::IntegrationStep,
             dll: "game_logic.dll".into(),
             function: None,
             attempt: 1,
@@ -1240,7 +1240,7 @@ fn auto_block_respects_terminal_statuses() {
         UnitOfWork {
             id: "shim_wgpu".into(),
             name: "Shim wgpu".into(),
-            kind: WorkUnitKind::ShimLayer,
+            kind: WorkKind::ShimLayer,
             dll: "d3d9.dll".into(),
             function: None,
             attempt: 1,
@@ -1262,7 +1262,7 @@ fn auto_block_respects_terminal_statuses() {
         UnitOfWork {
             id: "func_draw".into(),
             name: "func_DrawPrimitive (v2)".into(),
-            kind: WorkUnitKind::FunctionTranslation,
+            kind: WorkKind::FunctionTranslation,
             dll: "game_logic.dll".into(),
             function: Some("DrawPrimitive".into()),
             attempt: 2,
@@ -1309,7 +1309,7 @@ fn auto_block_patch_requested_blocks_dependents() {
         UnitOfWork {
             id: "pal_graphics".into(),
             name: "PAL GraphicsDevice".into(),
-            kind: WorkUnitKind::PalTrait,
+            kind: WorkKind::PalTrait,
             dll: "d3d9.dll".into(),
             function: None,
             attempt: 1,
@@ -1331,7 +1331,7 @@ fn auto_block_patch_requested_blocks_dependents() {
         UnitOfWork {
             id: "func_present".into(),
             name: "func_Present".into(),
-            kind: WorkUnitKind::FunctionTranslation,
+            kind: WorkKind::FunctionTranslation,
             dll: "game_logic.dll".into(),
             function: Some("Present".into()),
             attempt: 1,
@@ -1369,7 +1369,7 @@ fn auto_block_idempotent() {
         UnitOfWork {
             id: "shim_wgpu".into(),
             name: "Shim wgpu".into(),
-            kind: WorkUnitKind::ShimLayer,
+            kind: WorkKind::ShimLayer,
             dll: "d3d9.dll".into(),
             function: None,
             attempt: 1,
@@ -1391,7 +1391,7 @@ fn auto_block_idempotent() {
         UnitOfWork {
             id: "func_draw".into(),
             name: "func_DrawPrimitive".into(),
-            kind: WorkUnitKind::FunctionTranslation,
+            kind: WorkKind::FunctionTranslation,
             dll: "game_logic.dll".into(),
             function: Some("DrawPrimitive".into()),
             attempt: 1,

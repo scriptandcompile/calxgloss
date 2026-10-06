@@ -3,21 +3,23 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::types::{ReviewStatus, Staleness, WorkUnitKind};
+use super::types::{ReviewStatus, Staleness, WorkKind};
 
-/// A single unit of work in the review dashboard.
+/// A single item in the review dashboard.
 ///
-/// Each unit represents a discrete piece of work — a DLL classification,
-/// a shim layer, a function translation, etc. — that can be reviewed
-/// and accepted independently.
+/// Each item is a discrete piece of work that can be reviewed and accepted
+/// independently: a *unit of work* (a function translation — one function or
+/// struct definition, delivered as one commit) or the supporting work around
+/// it (a DLL classification, a shim layer, a PAL trait, …). See [`WorkKind`]
+/// for the distinction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnitOfWork {
     /// Unique identifier for this unit.
     pub id: String,
     /// Human-readable name (e.g., "Classify d3d9.dll").
     pub name: String,
-    /// The kind of work unit.
-    pub kind: WorkUnitKind,
+    /// The kind of work this item represents.
+    pub kind: WorkKind,
     /// Associated DLL.
     pub dll: String,
     /// Associated function (if applicable).

@@ -54,7 +54,7 @@ pub struct UnitResponseInner {
     pub id: String,
     /// Display name (e.g., "DirectX_DrawPrimitive").
     pub name: String,
-    /// Type of work unit (e.g., "Function Translation").
+    /// Kind of work (e.g., "Function Translation").
     pub kind: String,
     /// Associated DLL name.
     pub dll: String,
@@ -226,7 +226,7 @@ pub struct QueueEntry {
     pub id: String,
     /// Display name.
     pub name: String,
-    /// Kind of work unit.
+    /// Kind of work.
     pub kind: String,
     /// Associated DLL.
     pub dll: String,

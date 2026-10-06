@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::graph::DependencyGraph;
 use super::status::StatusCounts;
-use super::types::{ReviewStatus, WorkUnitLevel};
+use super::types::{ReviewStatus, WorkLevel};
 use super::work_unit::UnitOfWork;
 
 /// A dashboard view showing all units of work and their status.
@@ -360,13 +360,13 @@ impl ReviewDashboard {
                         .map(|u| u.status.clone())
                         .unwrap_or(ReviewStatus::Queued);
 
-                    // Look up the WorkUnitKind to get the correct level
+                    // Look up the WorkKind to get the correct level
                     let level = self
                         .review_queue
                         .iter()
                         .find(|u| u.id == *id)
                         .map(|u| u.kind.level())
-                        .unwrap_or(WorkUnitLevel::FunctionTranslation);
+                        .unwrap_or(WorkLevel::FunctionTranslation);
 
                     super::graph::DependencyNode::with_level(id.to_string(), name, status, level)
                 })

@@ -43,7 +43,7 @@ use calxgloss_callgraph::{
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_types::{
     DependencyEdge, DependencyGraph, DependencyNode, NodeCategory, ReviewStatus,
-    dashboard::WorkUnitLevel,
+    dashboard::WorkLevel,
 };
 use tracing::info;
 
@@ -359,7 +359,7 @@ pub fn build_dependency_graph_from_call_graph(
                 node_id.clone(),
                 format!("Classify {}", cls.dll),
                 ReviewStatus::Queued,
-                WorkUnitLevel::DllClassification,
+                WorkLevel::DllClassification,
             ));
             dll_node_ids.insert(cls.dll.clone(), node_id);
         }
@@ -372,7 +372,7 @@ pub fn build_dependency_graph_from_call_graph(
             node_id.clone(),
             format!("Classify {}", call_graph.dll),
             ReviewStatus::Queued,
-            WorkUnitLevel::DllClassification,
+            WorkLevel::DllClassification,
         ));
         dll_node_ids.insert(call_graph.dll.clone(), node_id);
     }
@@ -389,7 +389,7 @@ pub fn build_dependency_graph_from_call_graph(
                     shim_id.clone(),
                     format!("Shim {} → {}", cls.dll, crate_name),
                     ReviewStatus::Queued,
-                    WorkUnitLevel::ShimLayer,
+                    WorkLevel::ShimLayer,
                 ));
                 graph.edges.push(DependencyEdge {
                     from: shim_id.clone(),

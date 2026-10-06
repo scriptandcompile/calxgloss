@@ -12,7 +12,7 @@
 //!    callers and callees. When a function depends on a crate-replacement shim,
 //!    it gets an edge to that shim as well.
 //!
-//! The resulting graph represents the full DAG of work units in
+//! The resulting graph represents the full DAG of work items in
 //! dependency order:
 //!
 //! ```text
@@ -65,7 +65,7 @@
 //! ```
 
 use calxgloss_types::{
-    DependencyEdge, DependencyGraph, DependencyNode, ReviewStatus, dashboard::WorkUnitLevel,
+    DependencyEdge, DependencyGraph, DependencyNode, ReviewStatus, dashboard::WorkLevel,
 };
 
 use crate::DllClassification;
@@ -295,7 +295,7 @@ impl ShimLayerDeclaration {
 
 /// Builds a [`DependencyGraph`] from DLL classifications and Ghidra call graph data.
 ///
-/// The tracker produces a DAG where nodes represent work units (DLL classifications,
+/// The tracker produces a DAG where nodes represent pieces of work (DLL classifications,
 /// shim layers, function translations) and edges represent dependency relationships.
 ///
 /// # Dependency Rules
@@ -354,7 +354,7 @@ impl DependencyTracker {
     ///
     /// This is the primary entry point. It combines shim layer declarations
     /// (derived automatically from crate-replacement classifications) with
-    /// function-level call graph data to produce a complete DAG of work units.
+    /// function-level call graph data to produce a complete DAG of work items.
     ///
     /// # Arguments
     ///
@@ -366,7 +366,7 @@ impl DependencyTracker {
     ///
     /// # Returns
     ///
-    /// A [`DependencyGraph`] containing nodes and edges for all work units
+    /// A [`DependencyGraph`] containing nodes and edges for all work items
     /// in dependency order. Nodes are added in dependency order: classifications
     /// first, then shim layers, then function translations.
     ///
@@ -394,7 +394,7 @@ impl DependencyTracker {
                 node_id.clone(),
                 format!("Classify {}", cls.dll),
                 ReviewStatus::Queued,
-                WorkUnitLevel::DllClassification,
+                WorkLevel::DllClassification,
             ));
             dll_node_ids.insert(cls.dll.clone(), node_id);
         }
@@ -411,7 +411,7 @@ impl DependencyTracker {
                     shim_id.clone(),
                     format!("Shim {} → {}", cls.dll, crate_name),
                     ReviewStatus::Queued,
-                    WorkUnitLevel::ShimLayer,
+                    WorkLevel::ShimLayer,
                 ));
                 shim_node_ids.insert(cls.dll.clone(), shim_id.clone());
                 graph.edges.push(DependencyEdge {
@@ -437,7 +437,7 @@ impl DependencyTracker {
                         dll_id.clone(),
                         format!("Classify {}", func_dll),
                         ReviewStatus::Queued,
-                        WorkUnitLevel::DllClassification,
+                        WorkLevel::DllClassification,
                     ));
                     dll_node_ids.insert(func_dll.clone(), dll_id.clone());
                     dll_nodes_added.insert(dll_id);
@@ -527,7 +527,7 @@ impl DependencyTracker {
             dll_id.clone(),
             format!("Classify {}", classification.dll),
             ReviewStatus::Queued,
-            WorkUnitLevel::DllClassification,
+            WorkLevel::DllClassification,
         )];
         let mut edges = Vec::new();
 
@@ -539,7 +539,7 @@ impl DependencyTracker {
                 sid.clone(),
                 format!("Shim {} → {}", classification.dll, decl.target_crate),
                 ReviewStatus::Queued,
-                WorkUnitLevel::ShimLayer,
+                WorkLevel::ShimLayer,
             ));
             edges.push(DependencyEdge {
                 from: sid.clone(),

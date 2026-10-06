@@ -122,7 +122,7 @@ pub async fn api_get_dashboard(
             dashboard.review_queue.push(calxgloss_types::UnitOfWork {
                 id: unit_id,
                 name,
-                kind: calxgloss_types::WorkUnitKind::FunctionTranslation,
+                kind: calxgloss_types::WorkKind::FunctionTranslation,
                 dll: entry.dll.clone(),
                 function: if entry.function.is_empty() {
                     None
@@ -210,7 +210,7 @@ pub async fn api_get_unit(
             dashboard.review_queue.push(calxgloss_types::UnitOfWork {
                 id: synthetic_id,
                 name,
-                kind: calxgloss_types::WorkUnitKind::FunctionTranslation,
+                kind: calxgloss_types::WorkKind::FunctionTranslation,
                 dll: entry.dll.clone(),
                 function: if entry.function.is_empty() {
                     None

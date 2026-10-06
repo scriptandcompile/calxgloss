@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::types::{ReviewStatus, WorkUnitLevel};
+use super::types::{ReviewStatus, WorkLevel};
 
 // ============================================================
 // DependencyNode
@@ -23,7 +23,7 @@ pub struct DependencyNode {
     /// the lower level is returned first. For example, a shim layer
     /// at depth 1 is returned before a function translation at depth 1.
     #[serde(default)]
-    pub level: WorkUnitLevel,
+    pub level: WorkLevel,
 }
 
 impl DependencyNode {
@@ -33,7 +33,7 @@ impl DependencyNode {
             unit_id: unit_id.into(),
             name: name.into(),
             status,
-            level: WorkUnitLevel::FunctionTranslation, // default: treat as function translation
+            level: WorkLevel::FunctionTranslation, // default: treat as function translation
         }
     }
 
@@ -42,7 +42,7 @@ impl DependencyNode {
         unit_id: impl Into<String>,
         name: impl Into<String>,
         status: ReviewStatus,
-        level: WorkUnitLevel,
+        level: WorkLevel,
     ) -> Self {
         Self {
             unit_id: unit_id.into(),
@@ -159,12 +159,12 @@ impl DependencyGraph {
         }
 
         // Helper to get level of a node by ID
-        let get_level = |id: &str| -> WorkUnitLevel {
+        let get_level = |id: &str| -> WorkLevel {
             self.nodes
                 .iter()
                 .find(|n| n.unit_id == id)
                 .map(|n| n.level)
-                .unwrap_or(WorkUnitLevel::FunctionTranslation)
+                .unwrap_or(WorkLevel::FunctionTranslation)
         };
 
         // Kahn's algorithm with level-aware priority queue

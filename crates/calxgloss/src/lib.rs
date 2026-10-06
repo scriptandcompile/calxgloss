@@ -23,7 +23,7 @@ pub use calxgloss_types::verification::{FailedTest, VerificationResult};
 // Dashboard types
 pub use calxgloss_types::dashboard::{
     DependencyEdge, DependencyGraph, DependencyNode, ReviewAction, ReviewActionKind,
-    ReviewDashboard, ReviewStatus, StatusCounts, UnitOfWork, WorkUnitKind,
+    ReviewDashboard, ReviewStatus, StatusCounts, UnitOfWork, WorkKind,
 };
 
 // Context tier types
