@@ -17,13 +17,24 @@
 //!   per-function byte-swap record; `SerializeFinding` as the union
 //!   over the record kinds; `SerializeResult`, `ScanMetadata` for the
 //!   persisted per-binary results.
+//! - [`byteswap`] - Byte-swap call detection: `ByteSwapDetector`
+//!   recognizes `ntohs`/`ntohl`/`htons`/`htonl`, `bswap32`, and the
+//!   `__builtin_bswap16/32/64` spellings and suggests the matching
+//!   `byteorder` reader.
+//! - [`engine`] - Scan orchestration: `SerializeEngine` runs the
+//!   detectors over one open Ghidra program through a `ScanSource`
+//!   (function listing + decompile-by-name), one sequential pass that
+//!   decompiles each function exactly once and keeps the findings in
+//!   scan order.
 //! - [`persist`] - JSON persistence: `SerializePersistor` saves and
 //!   loads the per-binary detection results under `re/analysis/serialize/`.
 //! - [`error`] - [`SerializeError`] and the crate-wide [`Result`] alias.
 //!
-//! The byte-swap, bit-pack, and magic-byte detectors and the scan
-//! engine land alongside them as the phase progresses.
+//! The bit-pack and magic-byte detectors land alongside these as the
+//! phase progresses.
 
+pub mod byteswap;
+pub mod engine;
 pub mod error;
 pub mod persist;
 pub mod types;

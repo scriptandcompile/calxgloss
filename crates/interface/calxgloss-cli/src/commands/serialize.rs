@@ -13,6 +13,8 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use calxgloss_ghidra::{GhidraClient, GhidraConfig};
+use calxgloss_serialize::engine::SerializeEngine;
 use calxgloss_serialize::persist::SerializePersistor;
 use calxgloss_serialize::types::SerializeResult;
 use chrono::DateTime;
@@ -30,7 +32,7 @@ pub async fn handle_serialize(
     dll: &str,
     workspace: &Path,
     show: bool,
-    _settings: &Settings,
+    settings: &Settings,
 ) -> Result<()> {
     let persistor = SerializePersistor::new(workspace);
 
@@ -47,12 +49,26 @@ pub async fn handle_serialize(
 
     info!(dll, workspace = %workspace.display(), "Detecting serialization patterns");
 
-    // The scan engine lands with the P11 detector tickets; until it is
-    // wired in, only cached results can be shown.
-    anyhow::bail!(
-        "serialize detection is not wired up yet — \
-         `calxgloss serialize --dll {dll} --show` prints a cached result"
-    )
+    let ghidra_url = &settings.ghidra_url.value;
+    let mut config = GhidraConfig::new(ghidra_url)
+        .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
+    if let Some(key) = &settings.ghidra_api_key {
+        config = config.with_api_key(key.value.clone());
+    }
+    let ghidra = GhidraClient::from_config(config)
+        .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))?;
+
+    let engine = SerializeEngine::new(&ghidra);
+    let result = engine
+        .scan(dll)
+        .await
+        .with_context(|| format!("Serialization detection failed for {dll}"))?;
+    persistor
+        .save(&result)
+        .with_context(|| format!("Failed to save the serialization result for {dll}"))?;
+
+    print_serialization_report(&result, &persistor.path_for(dll));
+    Ok(())
 }
 
 /// Print a summary of a serialization result: where it is filed, when it
