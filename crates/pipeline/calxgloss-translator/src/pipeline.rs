@@ -35,6 +35,8 @@ use calxgloss_algorithm::engine::AlgorithmEngine;
 use calxgloss_algorithm::persist::AlgorithmPersistor;
 use calxgloss_analysis::Analyzer;
 use calxgloss_analysis::FaultLogger;
+use calxgloss_apidetect::engine::ApiEngine;
+use calxgloss_apidetect::persist::ApiPersistor;
 use calxgloss_callback::engine::CallbackEngine;
 use calxgloss_callback::persist::CallbackPersistor;
 use calxgloss_callgraph::{ContextEnricher, FunctionContext, NodeCategory};
@@ -1793,6 +1795,71 @@ impl TranslationPipeline {
         }
     }
 
+    /// Identify the libraries and APIs of the binary before a batch
+    /// starts, unless a detection result is already cached.
+    ///
+    /// The scan's findings — identified import-table entries and the
+    /// APIs each function reaches through the call graph — are filed at
+    /// `re/analysis/apidetect/{dll}.json` for the prompt path to read
+    /// (see [`extract_api_hints`](crate::retry::helpers::extract_api_hints));
+    /// running the scan once up front means every function in the batch
+    /// can see library/API context instead of none. The persisted file
+    /// is the cache: when a result is already saved for `dll`, the scan
+    /// is skipped entirely.
+    ///
+    /// Returns whether a result is available afterwards. A missing workspace,
+    /// an unreachable Ghidra server, or a failed save only log a warning and
+    /// return `false` — prompts without API context are degraded, not fatal,
+    /// and the batch proceeds either way.
+    pub async fn ensure_api_detection(&self, dll: &str) -> bool {
+        let Some(workspace) = self.workspace.as_deref() else {
+            debug!(dll, "No workspace configured; skipping API detection");
+            return false;
+        };
+
+        let persistor = ApiPersistor::new(workspace);
+        if persistor.exists(dll) {
+            debug!(
+                dll,
+                path = %persistor.path_for(dll).display(),
+                "API result already cached; skipping scan"
+            );
+            return true;
+        }
+
+        info!(
+            dll,
+            "Identifying libraries and APIs before batch translation"
+        );
+        let engine = ApiEngine::new(&self.ghidra);
+        match engine.scan(dll).await {
+            Ok(result) => {
+                if let Err(e) = persistor.save(&result) {
+                    warn!(
+                        dll,
+                        error = %e,
+                        "Failed to persist API result; continuing without API context"
+                    );
+                    return false;
+                }
+                info!(
+                    dll,
+                    findings = result.findings.len(),
+                    "API detection complete"
+                );
+                true
+            }
+            Err(e) => {
+                warn!(
+                    dll,
+                    error = %e,
+                    "API detection failed; continuing without API context"
+                );
+                false
+            }
+        }
+    }
+
     /// Translate multiple functions from a single DLL, one at a time.
     ///
     /// For each function, this runs the full translation pipeline with retry
@@ -1812,7 +1879,8 @@ impl TranslationPipeline {
     /// [`ensure_sync_detection`](Self::ensure_sync_detection),
     /// [`ensure_callback_detection`](Self::ensure_callback_detection),
     /// [`ensure_controlflow_detection`](Self::ensure_controlflow_detection),
-    /// and [`ensure_string_context`](Self::ensure_string_context).
+    /// and [`ensure_string_context`](Self::ensure_string_context),
+    /// and [`ensure_api_detection`](Self::ensure_api_detection).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
     /// invoked **immediately after each function completes** (before moving on
@@ -1948,6 +2016,7 @@ impl TranslationPipeline {
         self.ensure_callback_detection(dll).await;
         self.ensure_controlflow_detection(dll).await;
         self.ensure_string_context(dll).await;
+        self.ensure_api_detection(dll).await;
 
         let mut batch_result = batch::BatchTranslationResult::new(dll.to_string());
 
@@ -2069,7 +2138,8 @@ impl TranslationPipeline {
     /// [`ensure_sync_detection`](Self::ensure_sync_detection),
     /// [`ensure_callback_detection`](Self::ensure_callback_detection),
     /// [`ensure_controlflow_detection`](Self::ensure_controlflow_detection),
-    /// and [`ensure_string_context`](Self::ensure_string_context).
+    /// and [`ensure_string_context`](Self::ensure_string_context),
+    /// and [`ensure_api_detection`](Self::ensure_api_detection).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
     /// invoked **immediately after each function completes** (before moving on
@@ -2161,6 +2231,7 @@ impl TranslationPipeline {
         self.ensure_callback_detection(&graph.dll).await;
         self.ensure_controlflow_detection(&graph.dll).await;
         self.ensure_string_context(&graph.dll).await;
+        self.ensure_api_detection(&graph.dll).await;
 
         // Build a priority-ordered plan
         let orderer = calxgloss_callgraph::TranslationOrderer::new();
@@ -2390,6 +2461,8 @@ mod tests {
     use super::*;
     use calxgloss_algorithm::persist::AlgorithmPersistor;
     use calxgloss_algorithm::types::AlgorithmRecognitionResult;
+    use calxgloss_apidetect::persist::ApiPersistor;
+    use calxgloss_apidetect::types::ApiDetectionResult;
     use calxgloss_callback::persist::CallbackPersistor;
     use calxgloss_callback::types::CallbackResult;
     use calxgloss_controlflow::persist::ControlFlowPersistor;
@@ -2523,10 +2596,10 @@ mod tests {
 
     /// A stand-in GhidraMCP server answering the endpoints the pre-batch
     /// scans touch — the function listing, the name search that resolves
-    /// it, the decompile by address, and the string listing and xref
-    /// lookup a string-context scan adds — with one canned `malloc`/`free`
-    /// function and one string it references, so the scan-to-save path
-    /// runs without a real Ghidra.
+    /// it, the decompile by address, the string listing and xref lookup
+    /// a string-context scan adds, and the import listing an API scan
+    /// adds — with one canned `malloc`/`free` function and one string it
+    /// references, so the scan-to-save path runs without a real Ghidra.
     /// Returns the base URL to point a client at.
     async fn fake_ghidra() -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -2553,6 +2626,8 @@ mod tests {
                             .to_string()
                     } else if path.starts_with("/list_strings") {
                         "180128d18: \"Journal.txt\"".to_string()
+                    } else if path.starts_with("/list_imports") {
+                        "malloc -> EXTERNAL:00000123\nfree -> EXTERNAL:00000124".to_string()
                     } else if path.starts_with("/get_xrefs_to") {
                         "From 18003e750 in FUN_18003e750 [DATA]".to_string()
                     } else {
@@ -2914,5 +2989,84 @@ mod tests {
     async fn no_workspace_skips_the_string_context_scan() {
         let pipeline = pipeline_over(None);
         assert!(!pipeline.ensure_string_context("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn a_cached_api_result_is_reused_without_rescanning() {
+        let dir = TempDir::new().unwrap();
+        ApiPersistor::new(dir.path())
+            .save(&ApiDetectionResult::new(ScanMetadata::new("eqmain.dll")))
+            .unwrap();
+
+        // The Ghidra server is unreachable, so `true` can only come from the cache.
+        let pipeline = pipeline_over(Some(dir.path()));
+        assert!(pipeline.ensure_api_detection("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn an_api_cache_miss_scans_and_saves_the_result() {
+        let dir = TempDir::new().unwrap();
+        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
+        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+
+        assert!(pipeline.ensure_api_detection("eqmain.dll").await);
+
+        let persistor = ApiPersistor::new(dir.path());
+        assert!(
+            persistor.exists("eqmain.dll"),
+            "a cache miss should leave a saved document behind"
+        );
+        assert_eq!(
+            persistor.path_for("eqmain.dll"),
+            dir.path()
+                .join("re")
+                .join("analysis")
+                .join("apidetect")
+                .join("eqmain.dll.json"),
+            "the document should be filed under re/analysis/apidetect"
+        );
+        let saved = persistor.load("eqmain.dll").expect("saved document");
+        // The canned program's two imports are identified; the call graph
+        // the builder extracts carries only Ghidra-named callees, so the
+        // decompiled `malloc`/`free` calls add no usage edges here — the
+        // usage path is covered by the apidetect crate's own tests.
+        assert_eq!(saved.findings.len(), 2, "the two import entries");
+        assert_eq!(saved.findings[0].kind(), "import");
+        assert_eq!(saved.findings[0].target(), "malloc");
+        assert_eq!(saved.findings[0].library(), Some("POSIX"));
+        assert_eq!(saved.findings[1].kind(), "import");
+        assert_eq!(saved.findings[1].target(), "free");
+    }
+
+    #[tokio::test]
+    async fn a_failed_api_scan_degrades_instead_of_failing() {
+        let dir = TempDir::new().unwrap();
+        let pipeline = pipeline_over(Some(dir.path()));
+
+        assert!(!pipeline.ensure_api_detection("eqmain.dll").await);
+        assert!(
+            !ApiPersistor::new(dir.path()).exists("eqmain.dll"),
+            "a failed scan persists nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_api_save_degrades_instead_of_failing() {
+        let dir = TempDir::new().unwrap();
+        // `re/analysis` as a plain file makes the save's directory
+        // creation fail even though the scan itself succeeds.
+        std::fs::create_dir_all(dir.path().join("re")).unwrap();
+        std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
+
+        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
+        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+
+        assert!(!pipeline.ensure_api_detection("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn no_workspace_skips_the_api_scan() {
+        let pipeline = pipeline_over(None);
+        assert!(!pipeline.ensure_api_detection("eqmain.dll").await);
     }
 }

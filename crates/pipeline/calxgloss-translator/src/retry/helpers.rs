@@ -351,6 +351,47 @@ pub fn extract_concurrency_hints(
         .collect()
 }
 
+/// Extract library/API findings for a function from the persisted
+/// detection result.
+///
+/// Reads the per-binary result produced by the `calxgloss-apidetect`
+/// engine from `re/analysis/apidetect/{dll}.json` and keeps the usages
+/// recorded for the target function — the identified APIs the function
+/// calls directly or reaches through its call graph. Binary-level
+/// import entries belong to the binary, not to any function, and do not
+/// appear here.
+///
+/// Returns an empty vector when no workspace is configured, no result
+/// is persisted for `dll` (the scan has not run), or the document is
+/// corrupt: missing API context degrades the prompt, it never fails it.
+pub fn extract_api_hints(
+    workspace: Option<&std::path::Path>,
+    dll: &str,
+    function: &str,
+) -> Vec<calxgloss_prompts::ApiInfo> {
+    let Some(workspace) = workspace else {
+        return Vec::new();
+    };
+
+    let persistor = calxgloss_apidetect::persist::ApiPersistor::new(workspace);
+    let result = match persistor.load(dll) {
+        Ok(result) => result,
+        Err(e) => {
+            debug!(
+                dll,
+                error = %e,
+                "No usable API result; continuing without library/API context"
+            );
+            return Vec::new();
+        }
+    };
+
+    result
+        .for_function(function)
+        .map(calxgloss_prompts::ApiInfo::from)
+        .collect()
+}
+
 /// Extract callback findings for a function from the persisted
 /// detection result.
 ///
@@ -1594,6 +1635,127 @@ mod tests {
         assert_eq!(found[0].suggestion, "std::sync::Mutex<T>");
         assert_eq!(found[1].suggestion, "std::sync::atomic::AtomicU32");
         assert_eq!(found[2].suggestion, "std::thread::spawn");
+    }
+
+    fn api_usage(
+        function: &str,
+        api: &str,
+        library: &str,
+        rust_crate: &str,
+        direct: bool,
+    ) -> calxgloss_apidetect::types::ApiFinding {
+        calxgloss_apidetect::types::ApiFinding::ApiUsage(calxgloss_apidetect::types::ApiUsage {
+            function: function.to_string(),
+            api: api.to_string(),
+            library: library.to_string(),
+            rust_crate: rust_crate.to_string(),
+            direct,
+            confidence: calxgloss_apidetect::types::Confidence::new(if direct { 80 } else { 60 }),
+            evidence: format!("{function} → {api}"),
+        })
+    }
+
+    fn persist_api_findings(dir: &TempDir, findings: Vec<calxgloss_apidetect::types::ApiFinding>) {
+        let mut result =
+            calxgloss_apidetect::types::ApiDetectionResult::new(ScanMetadata::new("eqmain.dll"));
+        result.findings = findings;
+        calxgloss_apidetect::persist::ApiPersistor::new(dir.path())
+            .save(&result)
+            .expect("the API result should be saved");
+    }
+
+    #[test]
+    fn no_workspace_configured_yields_no_api_findings() {
+        assert!(
+            extract_api_hints(None, "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "no workspace means no library/API context"
+        );
+    }
+
+    #[test]
+    fn a_missing_cache_yields_no_api_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        assert!(
+            extract_api_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "a scan that has not run yet just means no library/API context"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_cache_degrades_to_no_api_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        let path = dir
+            .path()
+            .join("re")
+            .join("analysis")
+            .join("apidetect")
+            .join("eqmain.dll.json");
+        std::fs::create_dir_all(
+            path.parent()
+                .expect("the document path should have a parent"),
+        )
+        .expect("the cache directory should be creatable");
+        std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
+
+        assert!(extract_api_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty());
+    }
+
+    #[test]
+    fn api_findings_of_other_functions_and_import_entries_are_dropped() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_api_findings(
+            &dir,
+            vec![
+                calxgloss_apidetect::types::ApiFinding::Import(
+                    calxgloss_apidetect::types::ApiSignature {
+                        api: "inflate".to_string(),
+                        library: Some("zlib".to_string()),
+                        rust_crate: Some("flate2".to_string()),
+                        confidence: calxgloss_apidetect::types::Confidence::new(90),
+                    },
+                ),
+                api_usage("FUN_18003ab00", "inflate", "zlib", "flate2", true),
+                api_usage("FUN_zzz", "inflate", "zlib", "flate2", true),
+            ],
+        );
+
+        let found = extract_api_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        assert_eq!(found.len(), 1, "only the target function's usage");
+        assert_eq!(found[0].function, "FUN_18003ab00");
+        assert_eq!(found[0].api, "inflate");
+        assert_eq!(found[0].library, "zlib");
+        assert_eq!(found[0].suggestion, "flate2");
+        assert_eq!(found[0].kind, "direct");
+        assert_eq!(found[0].confidence, 80);
+        assert_eq!(found[0].evidence, "FUN_18003ab00 → inflate");
+    }
+
+    #[test]
+    fn direct_and_transitive_usages_of_the_function_land_in_the_prompt() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_api_findings(
+            &dir,
+            vec![
+                api_usage("FUN_18003ab00", "inflate", "zlib", "flate2", true),
+                api_usage(
+                    "FUN_18003ab00",
+                    "CreateFileA",
+                    "Win32",
+                    "windows / std::fs",
+                    false,
+                ),
+                api_usage("FUN_zzz", "malloc", "POSIX", "std::fs / std::io", true),
+            ],
+        );
+
+        let found = extract_api_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        let kinds: Vec<&str> = found.iter().map(|f| f.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["direct", "transitive"]);
+        assert_eq!(found[0].suggestion, "flate2");
+        assert_eq!(found[1].suggestion, "windows / std::fs");
+        assert_eq!(found[1].confidence, 60);
     }
 
     fn fp_array_hint(function: &str) -> calxgloss_callback::types::CallbackFinding {

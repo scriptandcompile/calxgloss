@@ -88,6 +88,11 @@ async fn build_escalate_prompt_inner(
         &ctx.dll_name,
         &ctx.function_name,
     );
+    let api_findings = super::helpers::extract_api_hints(
+        ctx.workspace.as_deref(),
+        &ctx.dll_name,
+        &ctx.function_name,
+    );
 
     // Clone for the error fallback (original is moved into build_escalate_prompt)
     let rust_code_for_error = ctx.original_rust_code.clone();
@@ -107,6 +112,7 @@ async fn build_escalate_prompt_inner(
         callback_findings,
         control_flow_findings,
         string_findings,
+        api_findings,
         history,
         ctx.call_graph_context,
     )
