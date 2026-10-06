@@ -329,6 +329,7 @@ dependencies = [
  "calxgloss-callback",
  "calxgloss-callgraph",
  "calxgloss-config",
+ "calxgloss-controlflow",
  "calxgloss-ghidra",
  "calxgloss-git",
  "calxgloss-llm",
@@ -421,6 +422,7 @@ dependencies = [
  "calxgloss-analysis",
  "calxgloss-callback",
  "calxgloss-config",
+ "calxgloss-controlflow",
  "calxgloss-ghidra",
  "calxgloss-git",
  "calxgloss-llm",
@@ -454,6 +456,21 @@ dependencies = [
  "tempfile",
  "thiserror",
  "toml",
+ "tracing",
+]
+
+[[package]]
+name = "calxgloss-controlflow"
+version = "0.2.0"
+dependencies = [
+ "calxgloss-ghidra",
+ "calxgloss-prompts",
+ "calxgloss-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
  "tracing",
 ]
 
@@ -594,6 +611,7 @@ dependencies = [
  "calxgloss-analysis",
  "calxgloss-callback",
  "calxgloss-callgraph",
+ "calxgloss-controlflow",
  "calxgloss-ghidra",
  "calxgloss-llm",
  "calxgloss-memory",

@@ -1,0 +1,29 @@
+[package]
+name = "calxgloss-controlflow"
+version.workspace = true
+edition.workspace = true
+description = "Control flow pattern recognition: switch-shaped if-else chains, self-recursive functions, state-variable if-else chains"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+calxgloss-ghidra = { path = "../../integrations/calxgloss-ghidra" }
+calxgloss-prompts = { path = "../../integrations/calxgloss-prompts" }
+calxgloss-types = { path = "../../shared/calxgloss-types" }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+# `calxgloss-ghidra` backs the decompiler fetches the control-flow detectors
+# scan; it is declared up front so the manifest stays stable as the detectors
+# land. Same allowance as `calxgloss-typesdb`, `calxgloss-typeinfer`,
+# `calxgloss-algorithm`, `calxgloss-memory`, `calxgloss-sync`, and
+# `calxgloss-callback`.
+[lints.cargo]
+unused_dependencies = "allow"
