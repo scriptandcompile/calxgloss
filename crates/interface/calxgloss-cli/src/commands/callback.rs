@@ -12,8 +12,10 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use calxgloss_callback::engine::CallbackEngine;
 use calxgloss_callback::persist::CallbackPersistor;
 use calxgloss_callback::types::CallbackResult;
+use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use chrono::DateTime;
 use tracing::info;
 
@@ -29,7 +31,7 @@ pub async fn handle_callback(
     dll: &str,
     workspace: &Path,
     show: bool,
-    _settings: &Settings,
+    settings: &Settings,
 ) -> Result<()> {
     let persistor = CallbackPersistor::new(workspace);
 
@@ -46,12 +48,26 @@ pub async fn handle_callback(
 
     info!(dll, workspace = %workspace.display(), "Detecting callback tables");
 
-    // The scan engine lands with the P6 detector tickets; until it is
-    // wired in, only cached results can be shown.
-    anyhow::bail!(
-        "callback detection is not wired up yet — \
-         `calxgloss callback --dll {dll} --show` prints a cached result"
-    )
+    let ghidra_url = &settings.ghidra_url.value;
+    let mut config = GhidraConfig::new(ghidra_url)
+        .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
+    if let Some(key) = &settings.ghidra_api_key {
+        config = config.with_api_key(key.value.clone());
+    }
+    let ghidra = GhidraClient::from_config(config)
+        .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))?;
+
+    let engine = CallbackEngine::new(&ghidra);
+    let result = engine
+        .scan(dll)
+        .await
+        .with_context(|| format!("Callback detection failed for {dll}"))?;
+    persistor
+        .save(&result)
+        .with_context(|| format!("Failed to save the callback result for {dll}"))?;
+
+    print_callback_report(&result, &persistor.path_for(dll));
+    Ok(())
 }
 
 /// Print a summary of a callback result: where it is filed, when it
