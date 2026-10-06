@@ -46,7 +46,7 @@ are indicative targets, not exact requirements.
 | P6 | Callback / Function Pointer Tables | `calxgloss-callback` | 2–3 wk | ✅ Phases 0–4 done (2026-10-06) | Phase 5 future items | [#12](https://github.com/scriptandcompile/calxgloss/issues/12) |
 | P7 | Control Flow Pattern Recognition | `calxgloss-controlflow` | 2–4 wk | ✅ Phases 0–4 done (2026-10-06) | Phase 5 future items | [#13](https://github.com/scriptandcompile/calxgloss/issues/13) |
 | P8 | String & Configuration Context | `calxgloss-stringctx` | 1–2 wk | ✅ Phases 0–4 done (2026-10-06) | Phase 5 future items | [#15](https://github.com/scriptandcompile/calxgloss/issues/15) |
-| P9 | Library & API Identification | `calxgloss-apidetect` | 1–2 wk | ⬜ not started | spec + crate | [#17](https://github.com/scriptandcompile/calxgloss/issues/17) |
+| P9 | Library & API Identification | `calxgloss-apidetect` | 1–2 wk | ✅ Phases 0–4 done (2026-10-06) | Phase 5 future items | [#17](https://github.com/scriptandcompile/calxgloss/issues/17) |
 | P10 | Constants & Enum Recovery | `calxgloss-consts` | 2–3 wk | ⬜ not started | spec + crate | [#14](https://github.com/scriptandcompile/calxgloss/issues/14) |
 | P11 | Endianness & Serialization | `calxgloss-serialize` | 1–2 wk | ⬜ not started | spec + crate | [#16](https://github.com/scriptandcompile/calxgloss/issues/16) |
 | W0 | Web UI Foundation & Phase Progress | `calxgloss-web` | 2–3 wk | ⬜ not started | spec (independent of P-tracks) | — |
