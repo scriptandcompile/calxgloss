@@ -41,5 +41,6 @@
 //! - [`error`] - [`SyncError`] and the crate-wide [`Result`] alias.
 
 pub mod error;
+pub mod types;
 
 pub use error::{Result, SyncError};
