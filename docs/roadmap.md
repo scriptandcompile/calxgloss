@@ -42,7 +42,7 @@ are indicative targets, not exact requirements.
 | P2 | Type Inference & Propagation | `calxgloss-typeinfer` | 3–4 wk | ✅ Phases 0–4 done (2026-10-04) | Phase 5 future items (incl. Ghidra write-back) | — |
 | P3 | Algorithm Recognition | `calxgloss-algorithm` | 4–6 wk | ✅ Phases 0–4 done (2026-10-05) | Phase 5 future items | — |
 | P4 | Memory Lifecycle / RAII | `calxgloss-memory` | 3–4 wk | ✅ Phases 0–4 done (2026-10-05) | Phase 5 future items | — |
-| P5 | Concurrency & Synchronization | `calxgloss-sync` | 2–3 wk | ⬜ not started | spec + crate ← next up | — |
+| P5 | Concurrency & Synchronization | `calxgloss-sync` | 2–3 wk | ✅ Phases 0–4 done (2026-10-06) | Phase 5 future items | [#11](https://github.com/scriptandcompile/calxgloss/issues/11) |
 | P6 | Callback / Function Pointer Tables | `calxgloss-callback` | 2–3 wk | ⬜ not started | spec + crate | — |
 | P7 | Control Flow Pattern Recognition | `calxgloss-controlflow` | 2–4 wk | ⬜ not started | spec + crate | — |
 | P8 | String & Configuration Context | `calxgloss-stringctx` | 1–2 wk | ⬜ not started | spec + crate | — |
@@ -127,15 +127,48 @@ clippy + fmt clean.
 
 Dependencies: soft on P2 (done).
 
-## P5 — Concurrency & Synchronization (`calxgloss-sync`) ← next up
+## P5 — Concurrency & Synchronization (`calxgloss-sync`)
 
-Soft dependency on P2. MVP: mutex/lock detection (`pthread_mutex_*`,
-`EnterCriticalSection` → `std::sync::Mutex`/`RwLock`); atomics
-(`InterlockedIncrement`, `__atomic_fetch_add` → `AtomicU32/64`); threading
-(`CreateThread`, `pthread_create` → `std::thread`/`tokio::spawn`).
-Phases: 0 setup → 1 mutex → 2 atomics → 3 threading → 4 pipeline integration →
-5 future (data-race analysis, lock ordering, async runtime, TLS, futex).
-Archive §5 + §17.5.
+Done (2026-10-06), following the exact shape P4 shipped (archive §5 + §17.5).
+
+Done: `SyncResult` + shared `ScanMetadata` per-binary document type (with the
+`SyncFinding` union, serde-tagged by kind — `mutex`/`atomic`/`thread`);
+`SyncPersistor` → `re/analysis/sync/{dll}.json` (wrapping
+`calxgloss_types::persist::JsonStore`, memory convention); `SyncEngine` scan
+orchestration (engine generic over a `ScanSource` source trait — `functions()`
++ `decompile(name)`, implemented for `GhidraClient`, canned-source tests; one
+sequential pass, one decompile per function read by all three detectors,
+findings in scan order — mutex pairings, then atomic calls, then thread spawns
+— skip-with-warning on body-fetch failure, only a failed listing aborts,
+per-detector name sets swappable whole); mutex/lock pairing (`EnterCriticalSection`
+→ `std::sync::Mutex<T>`, `pthread_mutex_lock` → `parking_lot::Mutex<T>` — no
+poisoning to translate — and the `pthread_rwlock_*` trio → `std::sync::RwLock<T>`,
+acquire binds the lock variable, release closes the latest open acquire of it);
+atomics (`InterlockedIncrement`/`Decrement` → `AtomicU32`,
+`__atomic_fetch_add`/`__sync_fetch_and_add` → `AtomicU64` as a documented
+default; one finding per call site); threading (`CreateThread`/
+`std::thread::spawn` bind the handle by return value, `pthread_create` by first
+argument; joined by `WaitForSingleObject`/`pthread_join` → `std::thread::spawn`
+at 70, unjoined → `tokio::spawn` at 60); 103 unit tests;
+`calxgloss sync --dll <dll>` scan+save wired to the engine and `--show`
+printing the cached document (target-dir-exempt); `calxgloss-sync` re-exported
+from the meta-crate; 6 scan-to-disk integration tests;
+`ensure_sync_detection(dll)` pre-analysis at the top of `batch_translate` and
+`batch_translate_from_callgraph` (`exists()` cache check → skip, else
+`SyncEngine::scan` + save to `re/analysis/sync/{dll}.json`; missing workspace,
+unreachable Ghidra server, or a failed save only log a warning and the batch
+proceeds; 5 unit tests, reusing the canned in-test GhidraMCP server);
+`extract_concurrency_hints()` in `calxgloss-translator/src/retry/helpers.rs`
+reads the cached document on the retry path (only the target function's
+findings; missing workspace, missing cache, or corrupt document degrade to
+empty; 5 unit tests) and the escalate template renders a CONCURRENCY section
+beside MEMORY LIFECYCLE (`ConcurrencyInfo` prompt data in `calxgloss-prompts`,
+`From<&SyncFinding>` conversion on the finding in the sync crate per the
+memory convention; 2 template unit tests, 1 conversion unit test, 1
+fixture-document-to-prompt integration test); clippy + fmt clean.
+Phase 5 future: data-race analysis, lock ordering, async runtime, TLS, futex.
+
+Dependencies: soft on P2 (done).
 
 ## P6 — Callback / Function Pointer Tables (`calxgloss-callback`)
 
