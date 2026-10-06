@@ -47,9 +47,9 @@ fn function(name: &str, signature: &str, body: &str) -> DecompiledFunction {
 }
 
 /// A canned program implementing [`ScanSource`]: one function whose
-/// body carries a cast-dereference call through `handlers` and a bare
-/// indexed call through `dispatch`, and one plain function that finds
-/// nothing.
+/// body carries a cast-dereference call through `handlers`, a bare
+/// indexed call through `dispatch`, and a `register_callback` call,
+/// and one plain function that finds nothing.
 #[derive(Clone, Default)]
 struct FakeProgram {
     listing: Vec<FunctionSummary>,
@@ -87,7 +87,8 @@ fn program() -> FakeProgram {
             "FUN_18003ab00",
             "undefined FUN_18003ab00(void)",
             "  (*(int (**)(int))handlers[uVar1])(param_1);\n\
-             \x20 dispatch[uVar2](param_2);\n",
+             \x20 dispatch[uVar2](param_2);\n\
+             \x20 register_callback(my_handler);\n",
         ),
     );
     program.bodies.insert(
@@ -151,7 +152,11 @@ async fn the_persisted_document_keeps_findings_in_scan_order() {
         .collect();
     assert_eq!(
         order,
-        vec![("FUN_18003ab00", "fp_array"), ("FUN_18003ab00", "fp_array"),]
+        vec![
+            ("FUN_18003ab00", "fp_array"),
+            ("FUN_18003ab00", "fp_array"),
+            ("FUN_18003ab00", "registration"),
+        ]
     );
 }
 
@@ -174,7 +179,7 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     // The pipeline asks what was found for the function it is about to
     // translate; the plain function carries nothing.
     let findings: Vec<&CallbackFinding> = loaded.for_function("FUN_18003ab00").collect();
-    assert_eq!(findings.len(), 2);
+    assert_eq!(findings.len(), 3);
     assert!(loaded.for_function("FUN_18003e750").next().is_none());
     assert!(loaded.for_function("FUN_180099999").next().is_none());
 
@@ -196,6 +201,14 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     };
     assert_eq!(record.table, "dispatch");
     assert_eq!(record.confidence.value(), 70);
+
+    let CallbackFinding::Registration(record) = findings[2] else {
+        unreachable!("the registration call reads as a registration finding");
+    };
+    assert_eq!(record.registration, "register_callback");
+    assert_eq!(record.callback, "my_handler");
+    assert_eq!(record.suggestion, "Box<dyn Fn(...)>");
+    assert!(record.evidence.contains("register_callback(my_handler);"));
 }
 
 // ------------------------------------------------------------

@@ -14,6 +14,7 @@
 //! shapes — and keeping the pass sequential keeps the persisted
 //! finding list in a stable, diffable order.
 
+use crate::callback_reg::CallbackRegDetector;
 use crate::error::Result;
 use crate::fp_array::FpArrayDetector;
 use crate::types::{CallbackFinding, CallbackResult, ScanMetadata};
@@ -54,13 +55,14 @@ impl ScanSource for GhidraClient {
 /// whole orchestration over canned bodies; [`new`](Self::new) builds
 /// one over a live [`GhidraClient`]. Each detector carries no state
 /// and starts configured with its standard name set —
-/// [`with_fp_array`](Self::with_fp_array) (and its counterparts as
-/// they land) swap a detector's set whole — so one instance of each
-/// serves the whole scan.
+/// [`with_fp_array`](Self::with_fp_array) and
+/// [`with_registration`](Self::with_registration) swap a detector's
+/// set whole — so one instance of each serves the whole scan.
 #[derive(Debug, Clone)]
 pub struct CallbackEngine<S = GhidraClient> {
     source: S,
     fp_array: FpArrayDetector,
+    registration: CallbackRegDetector,
 }
 
 impl CallbackEngine<GhidraClient> {
@@ -70,6 +72,7 @@ impl CallbackEngine<GhidraClient> {
         CallbackEngine {
             source: client.clone(),
             fp_array: FpArrayDetector::with_default_names(),
+            registration: CallbackRegDetector::with_default_names(),
         }
     }
 }
@@ -81,6 +84,7 @@ impl<S> CallbackEngine<S> {
         CallbackEngine {
             source,
             fp_array: FpArrayDetector::with_default_names(),
+            registration: CallbackRegDetector::with_default_names(),
         }
     }
 
@@ -88,6 +92,13 @@ impl<S> CallbackEngine<S> {
     /// instead of the standard one.
     pub fn with_fp_array(mut self, detector: FpArrayDetector) -> Self {
         self.fp_array = detector;
+        self
+    }
+
+    /// Read callback registrations against `detector`'s name set
+    /// instead of the standard one.
+    pub fn with_registration(mut self, detector: CallbackRegDetector) -> Self {
+        self.registration = detector;
         self
     }
 
@@ -146,6 +157,12 @@ impl<S> CallbackEngine<S> {
                     .detect(&decompiled)
                     .into_iter()
                     .map(CallbackFinding::FpArray),
+            );
+            findings.extend(
+                self.registration
+                    .detect(&decompiled)
+                    .into_iter()
+                    .map(CallbackFinding::Registration),
             );
         }
 
@@ -255,12 +272,14 @@ mod tests {
         }
     }
 
-    /// A body carrying a cast-dereference call through `handlers` and
-    /// a bare indexed call through `dispatch` — two fp-array findings
-    /// in one function.
+    /// A body carrying a cast-dereference call through `handlers`, a
+    /// bare indexed call through `dispatch`, and a
+    /// `register_callback` call — one finding family per detector —
+    /// all in one function.
     const EVERY_SHAPE_BODY: &str = "\
   (*(int (**)(int))handlers[uVar1])(param_1);
-  dispatch[uVar2](param_2);";
+  dispatch[uVar2](param_2);
+  register_callback(my_handler);";
 
     /// The canned program: one function whose body carries every
     /// shape, and one plain function that finds nothing.
@@ -308,7 +327,7 @@ mod tests {
         assert!(result.metadata.scanned_at > 0);
 
         let findings: Vec<&CallbackFinding> = result.for_function("FUN_18003ab00").collect();
-        assert_eq!(findings.len(), 2);
+        assert_eq!(findings.len(), 3);
 
         let CallbackFinding::FpArray(record) = findings[0] else {
             unreachable!("the cast-dereference call reads as an fp-array finding");
@@ -324,6 +343,13 @@ mod tests {
         };
         assert_eq!(record.table, "dispatch");
         assert_eq!(record.suggestion, "Vec<Box<dyn Fn(...)>>");
+
+        let CallbackFinding::Registration(record) = findings[2] else {
+            unreachable!("the registration call reads as a registration finding");
+        };
+        assert_eq!(record.registration, "register_callback");
+        assert_eq!(record.callback, "my_handler");
+        assert_eq!(record.suggestion, "Box<dyn Fn(...)>");
 
         assert!(result.for_function("FUN_18003e750").next().is_none());
     }
@@ -355,8 +381,10 @@ mod tests {
             vec![
                 ("FUN_18003e750", "fp_array"),
                 ("FUN_18003e750", "fp_array"),
+                ("FUN_18003e750", "registration"),
                 ("FUN_18003ab00", "fp_array"),
                 ("FUN_18003ab00", "fp_array"),
+                ("FUN_18003ab00", "registration"),
             ]
         );
     }
@@ -432,21 +460,32 @@ mod tests {
             function(
                 "FUN_1800412a0",
                 "undefined FUN_1800412a0(void)",
-                "  (*(code *)msg_table[uVar1])(param_1);",
+                "\
+  (*(code *)msg_table[uVar1])(param_1);
+  HookMessage(wnd_proc);",
             ),
         );
 
         let engine = CallbackEngine::with_source(program)
-            .with_fp_array(FpArrayDetector::with_names(["msg_table"]));
+            .with_fp_array(FpArrayDetector::with_names(["msg_table"]))
+            .with_registration(CallbackRegDetector::with_names(["HookMessage"]));
         let result = engine.scan("eqmain.dll").await.expect("scan");
 
-        assert_eq!(kinds(&result, "FUN_1800412a0"), ["fp_array"]);
+        assert_eq!(
+            kinds(&result, "FUN_1800412a0"),
+            ["fp_array", "registration"]
+        );
         let findings: Vec<&CallbackFinding> = result.for_function("FUN_1800412a0").collect();
         let CallbackFinding::FpArray(record) = findings[0] else {
             unreachable!("the configured table call reads as an fp-array finding");
         };
         assert_eq!(record.table, "msg_table");
         assert_eq!(record.suggestion, "Vec<Box<dyn Fn(...)>>");
+        let CallbackFinding::Registration(record) = findings[1] else {
+            unreachable!("the configured registration reads as a registration finding");
+        };
+        assert_eq!(record.registration, "HookMessage");
+        assert_eq!(record.callback, "wnd_proc");
     }
 
     #[tokio::test]
