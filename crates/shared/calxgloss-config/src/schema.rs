@@ -13,8 +13,9 @@ pub struct FileConfig {
     /// Directory containing DLLs (read-only; binaries are read from here).
     pub target_dir: Option<String>,
 
-    /// Where translation output is written (src/, re/, scratch, git repo).
-    pub repo_dir: Option<String>,
+    /// The workspace: where the translated Rust, `re/`, scratch, and the git
+    /// repo live.
+    pub workspace: Option<String>,
 
     /// How to reach GhidraMCP.
     pub ghidra: GhidraSection,
@@ -73,8 +74,9 @@ pub const EXAMPLE: &str = r#"# Calxgloss configuration.
 # Directory containing DLLs and EXEs (required).
 # target_dir = "/path/to/binaries"
 
-# Where translation output goes: src/, re/, scratch, git repo (defaults to CWD).
-# repo_dir = "/path/to/workspace"
+# The workspace: where the translated Rust, re/, scratch, and the git repo live
+# (defaults to CWD).
+# workspace = "/path/to/workspace"
 
 [ghidra]
 url = "http://127.0.0.1:8080"

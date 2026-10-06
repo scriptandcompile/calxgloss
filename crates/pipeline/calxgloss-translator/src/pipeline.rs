@@ -447,14 +447,14 @@ impl TranslationPipeline {
             let enricher = ContextEnricher::new();
             enricher.enrich(graph)
         } else {
-            let workspace_root = self
+            let workspace = self
                 .workspace
                 .as_deref()
                 .unwrap_or_else(|| std::path::Path::new("."));
             let cache_dir = self.callgraph_cache_dir.as_deref();
             match self
                 .analyzer
-                .build_call_graph(&function_info.dll, workspace_root, cache_dir)
+                .build_call_graph(&function_info.dll, workspace, cache_dir)
                 .await
             {
                 Ok(call_graph) => {

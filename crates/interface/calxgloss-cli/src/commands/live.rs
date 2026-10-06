@@ -19,7 +19,7 @@ pub async fn handle_live(
     all_functions: bool,
     classify_only: bool,
     skip_git: bool,
-    repo_dir: PathBuf,
+    workspace: PathBuf,
     port: u16,
     settings: &Settings,
     no_callgraph: bool,
@@ -28,7 +28,7 @@ pub async fn handle_live(
 ) -> Result<()> {
     info!(
         port,
-        repo = ?repo_dir,
+        repo = ?workspace,
         classify_only,
         skip_git,
         "Starting live mode: auto + serve"
@@ -69,11 +69,11 @@ pub async fn handle_live(
     // Progress state for live dashboard updates.
     let progress = calxgloss_web::ProgressState::new();
 
-    let serve_repo_dir = repo_dir.clone();
+    let serve_workspace = workspace.clone();
     let serve_progress = progress.clone();
 
     let serve_handle = tokio::spawn(async move {
-        let repo_dir = serve_repo_dir;
+        let workspace = serve_workspace;
 
         // Bind the listener and signal readiness — this happens outside of
         // serve() so we can report bind failures through the channel.
@@ -89,7 +89,7 @@ pub async fn handle_live(
             .unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], port)));
         let _ = ready_tx.send(Ok(local_addr));
 
-        let server_state = ServerState::new(repo_dir);
+        let server_state = ServerState::new(workspace);
 
         // Build the router with WebSocket support so the frontend can stream
         // progress events over the upgrade endpoint.
@@ -133,7 +133,7 @@ pub async fn handle_live(
         settings,
         true,          // continue mode — don't stop after classification, translate all
         Some(&events), // pass event emitter for live progress streaming
-        repo_dir,      // resolved repo_dir (same value used by serve task)
+        workspace,      // resolved workspace (same value used by serve task)
         no_callgraph,
         callgraph_cache,
         callgraph_verbose,

@@ -9,18 +9,18 @@ use tracing::info;
 use crate::utils::*;
 
 /// Handle the `serve` subcommand: start the web review UI HTTP server.
-pub async fn handle_serve(repo_dir: PathBuf, port: u16) -> Result<()> {
-    info!(repo = ?repo_dir, port, "Starting web review UI server");
+pub async fn handle_serve(workspace: PathBuf, port: u16) -> Result<()> {
+    info!(repo = ?workspace, port, "Starting web review UI server");
 
-    if !repo_dir.exists() {
+    if !workspace.exists() {
         anyhow::bail!(
             "Repository path does not exist: {}\n\nMake sure the path points to the \
              resultant (git) workspace that contains the translation work.",
-            repo_dir.display()
+            workspace.display()
         );
     }
 
-    // Print startup banner before moving repo_dir into ServerState
+    // Print startup banner before moving workspace into ServerState
     println!();
     println_content(format!(
         "  {}",
@@ -32,7 +32,7 @@ pub async fn handle_serve(repo_dir: PathBuf, port: u16) -> Result<()> {
     println_content("");
     println_content(format!(
         "  Repository: {}",
-        bold(&repo_dir.display().to_string())
+        bold(&workspace.display().to_string())
     ));
     println_content(format!("  Port:       {port}"));
     println_content(format!(
@@ -47,7 +47,7 @@ pub async fn handle_serve(repo_dir: PathBuf, port: u16) -> Result<()> {
     println_content("  Press Ctrl+C to stop");
     println!();
 
-    let server_state = ServerState::new(repo_dir);
+    let server_state = ServerState::new(workspace);
     println_content("Endpoints:");
     println_content("    GET  /                  Dashboard frontend");
     println_content("    GET  /api/dashboard     Full review dashboard JSON");

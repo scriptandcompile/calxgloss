@@ -197,9 +197,9 @@ pub fn print_call_graph_stats(graph: &calxgloss_callgraph::CallGraph) {
 ///
 /// * `ghidra` — The Ghidra client used to fetch function data.
 /// * `dll_name` — The DLL filename (e.g., `"eqmain.dll"`).
-/// * `workspace_root` — The workspace root directory (used as base for cache path).
+/// * `workspace` — The workspace root directory (used as base for cache path).
 /// * `cache_dir` — Explicit directory for call graph JSON files. If `None`,
-///   defaults to `{workspace_root}/re/analysis/`.
+///   defaults to `{workspace}/re/analysis/`.
 ///
 /// # Returns
 ///
@@ -224,7 +224,7 @@ pub fn print_call_graph_stats(graph: &calxgloss_callgraph::CallGraph) {
 pub async fn build_enriched_call_graph(
     ghidra: &GhidraClient,
     dll_name: &str,
-    workspace_root: &std::path::Path,
+    workspace: &std::path::Path,
     cache_dir: Option<&std::path::Path>,
 ) -> anyhow::Result<calxgloss_callgraph::CallGraph> {
     info!(%dll_name, "Building enriched call graph");
@@ -271,7 +271,7 @@ pub async fn build_enriched_call_graph(
     // 3. Persist to disk.
     let persistor = match cache_dir {
         Some(dir) => CallGraphPersistor::with_cache_dir(dir),
-        None => CallGraphPersistor::new(workspace_root),
+        None => CallGraphPersistor::new(workspace),
     };
     persistor.save(&graph)?;
 
@@ -287,18 +287,18 @@ pub async fn build_enriched_call_graph(
 ///
 /// # Arguments
 ///
-/// * `workspace_root` — The workspace root directory (used as base for cache path).
+/// * `workspace` — The workspace root directory (used as base for cache path).
 /// * `cache_dir` — Explicit directory for call graph JSON files. If `None`,
-///   defaults to `{workspace_root}/re/analysis/`.
+///   defaults to `{workspace}/re/analysis/`.
 /// * `dll_name` — The DLL filename.
 pub fn load_call_graph(
-    workspace_root: &std::path::Path,
+    workspace: &std::path::Path,
     cache_dir: Option<&std::path::Path>,
     dll_name: &str,
 ) -> Option<calxgloss_callgraph::CallGraph> {
     let persistor = match cache_dir {
         Some(dir) => CallGraphPersistor::with_cache_dir(dir),
-        None => CallGraphPersistor::new(workspace_root),
+        None => CallGraphPersistor::new(workspace),
     };
     persistor.load(dll_name).ok()
 }

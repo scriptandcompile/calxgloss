@@ -535,7 +535,7 @@ impl Analyzer {
     /// # Arguments
     ///
     /// * `dll_name` — The DLL filename (e.g., `"eqmain.dll"`).
-    /// * `workspace_root` — The workspace root directory for persistence.
+    /// * `workspace` — The workspace root directory for persistence.
     ///
     /// # Returns
     ///
@@ -572,13 +572,13 @@ impl Analyzer {
     pub async fn build_call_graph(
         &self,
         dll_name: &str,
-        workspace_root: &std::path::Path,
+        workspace: &std::path::Path,
         cache_dir: Option<&std::path::Path>,
     ) -> anyhow::Result<calxgloss_callgraph::CallGraph> {
         crate::callgraph::build_enriched_call_graph(
             &self.ghidra,
             dll_name,
-            workspace_root,
+            workspace,
             cache_dir,
         )
         .await

@@ -58,12 +58,12 @@ pub enum PersistError {
     },
 }
 
-/// The shared analysis directory convention: `{workspace_root}/re/analysis`.
+/// The shared analysis directory convention: `{workspace}/re/analysis`.
 ///
 /// Every artifact the harness persists is filed under this directory —
 /// directly (the run logs) or in a per-engine subdirectory (`typesdb/`).
-pub fn analysis_dir(workspace_root: impl AsRef<Path>) -> PathBuf {
-    workspace_root.as_ref().join("re").join("analysis")
+pub fn analysis_dir(workspace: impl AsRef<Path>) -> PathBuf {
+    workspace.as_ref().join("re").join("analysis")
 }
 
 /// Serializes `value` as pretty JSON and writes it to `path`.

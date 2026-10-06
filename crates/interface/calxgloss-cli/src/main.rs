@@ -99,8 +99,8 @@ fn main() -> Result<()> {
             .target_dir
             .as_ref()
             .map(|p| p.to_string_lossy().to_string()),
-        repo_dir: cli
-            .repo_dir
+        workspace: cli
+            .workspace
             .as_ref()
             .map(|p| p.to_string_lossy().to_string()),
         ghidra: GhidraSection {
@@ -167,18 +167,18 @@ fn main() -> Result<()> {
                     std::env::current_dir().expect("Failed to read current directory")
                 });
             let target_dir = target_dir.as_ref();
-            let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
+            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             let skip_git = false;
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_classify(
-                    &dll, target_dir, &repo_dir, skip_git, &settings, None,
+                    &dll, target_dir, &workspace, skip_git, &settings, None,
                 ))
         }
         Command::Translate(args) => {
-            let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
+            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             let callgraph_cache = args.callgraph_cache.clone();
             let callgraph_verbose = args.callgraph_verbose;
             tokio::runtime::Builder::new_current_thread()
@@ -188,13 +188,13 @@ fn main() -> Result<()> {
                 .block_on(handle_translate(
                     &args,
                     &settings,
-                    repo_dir,
+                    workspace,
                     callgraph_cache,
                     callgraph_verbose,
                 ))
         }
         Command::BatchTranslate(args) => {
-            let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
+            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             let callgraph_cache = args.callgraph_cache.clone();
             let callgraph_verbose = args.callgraph_verbose;
             tokio::runtime::Builder::new_current_thread()
@@ -204,58 +204,62 @@ fn main() -> Result<()> {
                 .block_on(handle_batch_translate(
                     &args,
                     &settings,
-                    repo_dir,
+                    workspace,
                     callgraph_cache,
                     callgraph_verbose,
                 ))
         }
         Command::Typesdb { dll, show, no_tag } => {
-            let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
+            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_typesdb(&dll, &repo_dir, show, no_tag, &settings))
+                .block_on(handle_typesdb(&dll, &workspace, show, no_tag, &settings))
         }
         Command::Typeinfer { dll, show } => {
-            let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
+            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_typeinfer(&dll, &repo_dir, show, &settings))
+                .block_on(handle_typeinfer(&dll, &workspace, show, &settings))
         }
         Command::Algorithm { dll, show } => {
-            let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
+            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_algorithm(&dll, &repo_dir, show, &settings))
+                .block_on(handle_algorithm(&dll, &workspace, show, &settings))
         }
         Command::Memory { dll, show } => {
-            let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
+            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_memory(&dll, &repo_dir, show, &settings))
+                .block_on(handle_memory(&dll, &workspace, show, &settings))
         }
         Command::Verify {
             dll,
             function,
             rust_source,
             baseline_path,
-        } => tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("Failed to create tokio runtime")?
-            .block_on(handle_verify(
-                &dll,
-                &function,
-                &rust_source,
-                baseline_path.as_deref(),
-            )),
+        } => {
+            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_verify(
+                    &dll,
+                    &function,
+                    &rust_source,
+                    baseline_path.as_deref(),
+                    &workspace,
+                ))
+        }
         Command::Dashboard {
             follow: _,
             interval: _,
@@ -316,7 +320,7 @@ fn main() -> Result<()> {
             callgraph_cache,
             callgraph_verbose,
         } => {
-            let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
+            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -330,7 +334,7 @@ fn main() -> Result<()> {
                     &settings,
                     false, // interactive mode — prompt user, stop after classification
                     None,  // no event emitter in interactive mode
-                    repo_dir,
+                    workspace,
                     no_callgraph,
                     callgraph_cache,
                     callgraph_verbose,
@@ -344,7 +348,7 @@ fn main() -> Result<()> {
                 .unwrap_or_else(|| {
                     std::env::current_dir().expect("Failed to read current directory")
                 });
-            let repo_dir = resolve_repo_dir(cli.repo_dir.as_ref(), &settings);
+            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -353,21 +357,21 @@ fn main() -> Result<()> {
                     dll.as_deref(),
                     skip_git,
                     &target_dir,
-                    &repo_dir,
+                    &workspace,
                     &settings,
                 ))
         }
         Command::Gc { days, dry_run } => handle_gc(days, dry_run),
-        Command::Serve { port, .. } => {
-            // serve always uses CWD as repo_dir — config / env overrides are
-            // ignored because the workspace (where .git, src/, scratch/ live)
-            // is always where the user runs the command from.
-            let repo_dir = resolve_live_repo_dir(cli.repo_dir.as_ref());
+        Command::Serve { port } => {
+            // serve always uses CWD as the workspace — config / env overrides
+            // are ignored because the workspace (where .git, src/, scratch/
+            // live) is always where the user runs the command from.
+            let workspace = resolve_live_workspace(cli.workspace.as_ref());
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_serve(repo_dir, port))
+                .block_on(handle_serve(workspace, port))
         }
         Command::Live {
             target,
@@ -379,12 +383,11 @@ fn main() -> Result<()> {
             no_callgraph,
             callgraph_cache,
             callgraph_verbose,
-            ..
         } => {
-            // live always uses CWD as repo_dir — config / env overrides are
-            // ignored because the workspace (where .git, src/, scratch/ live)
-            // is always where the user runs the command from.
-            let repo_dir = resolve_live_repo_dir(cli.repo_dir.as_ref());
+            // live always uses CWD as the workspace — config / env overrides
+            // are ignored because the workspace (where .git, src/, scratch/
+            // live) is always where the user runs the command from.
+            let workspace = resolve_live_workspace(cli.workspace.as_ref());
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -395,7 +398,7 @@ fn main() -> Result<()> {
                     all_functions,
                     classify_only,
                     skip_git,
-                    repo_dir,
+                    workspace,
                     port,
                     &settings,
                     no_callgraph,

@@ -15,14 +15,9 @@ pub async fn handle_verify(
     function: &str,
     rust_source: &Path,
     baseline_path: Option<&Path>,
+    workspace: &Path,
 ) -> Result<()> {
     info!(dll = %dll, function = %function, "Starting verification");
-
-    let target_dir = rust_source
-        .parent()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    let output_dir = baseline_path.map(PathBuf::from).unwrap_or(target_dir);
 
     // Read the translated Rust code
     let rust_code = std::fs::read_to_string(rust_source)
@@ -33,7 +28,7 @@ pub async fn handle_verify(
     // Load baseline tests if available
     let baseline_path = baseline_path
         .map(PathBuf::from)
-        .or_else(|| Some(TestGenerator::new(&output_dir).baseline_path(dll, function)));
+        .or_else(|| Some(TestGenerator::new(workspace).baseline_path(dll, function)));
 
     let baseline_tests: Vec<calxgloss::TestCase> = match &baseline_path {
         Some(path) if path.exists() => {
@@ -51,7 +46,7 @@ pub async fn handle_verify(
     };
 
     // Verify
-    let verifier = Verifier::new(&output_dir).context("Failed to create verifier")?;
+    let verifier = Verifier::new(workspace).context("Failed to create verifier")?;
     let verification = verifier
         .verify(dll, function, &rust_code, &baseline_tests)
         .await

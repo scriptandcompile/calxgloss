@@ -30,20 +30,20 @@ pub(super) struct Cli {
     #[arg(long, global = true, value_name = "FILE")]
     pub(super) config: Option<PathBuf>,
 
-    /// Target directory for DLLs and output
+    /// Target directory for DLLs and EXEs (read-only)
     ///
     /// Overrides the `target_dir` setting in the config file.
     #[arg(long, global = true, value_name = "DIR")]
     pub(super) target_dir: Option<PathBuf>,
 
-    /// Repo directory for translation output
+    /// Workspace directory: where the translated Rust, `re/`, scratch, and the
+    /// `.git` repo live
     ///
-    /// Overrides the `repo_dir` setting in the config file. This is the
-    /// directory where `src/`, `re/`, scratch, and the `.git` repo are
-    /// created. For `live`/`serve` defaults to CWD and ignores config/env.
+    /// Overrides the `workspace` setting in the config file. For
+    /// `live`/`serve` defaults to CWD and ignores config/env.
     /// For other commands defaults to CWD if no config setting is present.
     #[arg(long, global = true, value_name = "DIR")]
-    pub(super) repo_dir: Option<PathBuf>,
+    pub(super) workspace: Option<PathBuf>,
 
     /// GhidraMCP server URL (default: http://127.0.0.1:8080)
     #[arg(long, global = true)]
@@ -104,10 +104,6 @@ pub(super) struct TranslateArgs {
     #[arg(long)]
     pub(super) function: String,
 
-    /// Output directory for translated code (default: same as target directory)
-    #[arg(long)]
-    pub(super) output_dir: Option<PathBuf>,
-
     /// Skip git operations
     #[arg(long)]
     pub(super) skip_git: bool,
@@ -149,10 +145,6 @@ pub(super) struct BatchTranslateArgs {
     /// Translate all exported functions from the DLL (overrides --functions)
     #[arg(long)]
     pub(super) all_functions: bool,
-
-    /// Output directory for translated code (default: same as target directory)
-    #[arg(long)]
-    pub(super) output_dir: Option<PathBuf>,
 
     /// Skip git operations
     #[arg(long)]
@@ -440,22 +432,17 @@ pub(super) enum Command {
     ///
     /// # Arguments
     ///
-    /// * `--repo` — Path to the resultant (Git) repository. Defaults to the
-    ///   current directory.
+    /// * `--workspace` — Path to the workspace to review (defaults to CWD).
     /// * `--port` — TCP port to listen on (default: 3000).
     ///
     /// # Examples
     ///
     /// ```text
     /// calxgloss serve                    # Uses current directory, port 3000
-    /// calxgloss serve --repo /data/game_re  # Custom repo path
+    /// calxgloss serve --workspace /data/game_re  # Custom workspace
     /// calxgloss serve --port 8080        # Custom port
     /// ```
     Serve {
-        /// Path to the Git repository to review
-        #[arg(long, short)]
-        repo: Option<PathBuf>,
-
         /// Port to listen on (default: 3000)
         #[arg(long, short = 'p', default_value = "3000")]
         port: u16,
@@ -473,7 +460,7 @@ pub(super) enum Command {
     /// # Arguments
     ///
     /// * `--port` — TCP port for the review UI (default: 3000).
-    /// * `--repo` — Path to the Git repository to review.
+    /// * `--workspace` — Path to the workspace to translate into and review.
     /// * `--target` — Path to the target executable directory (passed to auto).
     /// * `--dlls` — Comma-separated DLL names (passed to auto).
     /// * `--all-functions` — Translate all exported functions (passed to auto).
@@ -493,10 +480,6 @@ pub(super) enum Command {
         /// Port to listen on (default: 3000)
         #[arg(long, short = 'p', default_value = "3000")]
         port: u16,
-
-        /// Path to the Git repository to review
-        #[arg(long, short)]
-        repo: Option<PathBuf>,
 
         /// Path to the target executable directory
         #[arg(long)]

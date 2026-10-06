@@ -125,7 +125,7 @@ lifecycle/
                  run_analysis (poll analysis_status; emit ProgressEvents).
 ```
 
-Project location default: **`<repo_dir>/ghidra/<target>.gpr`** (with the `<target>.gpr.lock`
+Project location default: **`<workspace>/ghidra/<target>.gpr`** (with the `<target>.gpr.lock`
 and `<target>/` dir beside it), matching the existing output layout
 (`crates/`, `re/`, `scratch/`). Add `ghidra/` to the generated `.gitignore` —
 Ghidra project files are binary and large.
@@ -151,7 +151,7 @@ url         = "http://127.0.0.1:8080"   # unchanged default
 auto_start  = true          # spawn headless when nothing answers
 headless    = "auto"        # auto | always | never (never = GUI-only, today's behavior)
 install_dir = ""            # empty → discover
-project     = ""            # empty → <repo_dir>/ghidra/<target>.gpr
+project     = ""            # empty → <workspace>/ghidra/<target>.gpr
 min_version = "12.1.2"      # Ghidra; plugin pinned ≥ 6.0 by the extension check
 start_timeout_secs = 90
 ```

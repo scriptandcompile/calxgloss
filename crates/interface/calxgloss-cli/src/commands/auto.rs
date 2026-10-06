@@ -33,7 +33,7 @@ use crate::utils::*;
 #[allow(clippy::too_many_arguments)]
 pub async fn run_translation_for_dll(
     dll: &str,
-    output_dir: &Path,
+    workspace: &Path,
     skip_git: bool,
     settings: &Settings,
     events: Option<&TranslationEvents>,
@@ -41,7 +41,7 @@ pub async fn run_translation_for_dll(
     callgraph_cache: Option<PathBuf>,
     callgraph_verbose: bool,
 ) -> Result<()> {
-    // output_dir is the workspace directory — git, src/, scratch all live here.
+    // The workspace — git, src/, scratch all live here.
 
     // Get Ghidra client to list functions
     let ghidra_url = &settings.ghidra_url.value;
@@ -90,7 +90,7 @@ pub async fn run_translation_for_dll(
     );
 
     // Initialize output directory
-    let modules_dir = output_dir.join("src").join("modules");
+    let modules_dir = workspace.join("src").join("modules");
     std::fs::create_dir_all(&modules_dir).context("Failed to create modules directory")?;
 
     // Initialize LLM client
@@ -105,7 +105,7 @@ pub async fn run_translation_for_dll(
     let llm = LlmClient::new(llm_config).context("Failed to create LLM client")?;
 
     // Initialize analyzer, test generator
-    let testgen = calxgloss_testgen::TestGenerator::new(output_dir);
+    let testgen = calxgloss_testgen::TestGenerator::new(workspace);
 
     // Build translation pipeline
     let api_mappings = calxgloss_pal::ApiMappings::default();
@@ -125,14 +125,14 @@ pub async fn run_translation_for_dll(
     if let Some(events) = events {
         pipeline = pipeline.with_events(events.clone());
     }
-    pipeline = pipeline.with_workspace(output_dir);
+    pipeline = pipeline.with_workspace(workspace);
 
     // Git setup
     let mut git = if !skip_git {
         info!("Initializing git repository");
         let git_config = calxgloss_git::InitConfig::default();
         Some(
-            GitManager::init_repo(output_dir, Some(git_config))
+            GitManager::init_repo(workspace, Some(git_config))
                 .context("Failed to initialize git repository")?,
         )
     } else {
@@ -141,7 +141,7 @@ pub async fn run_translation_for_dll(
     };
 
     // Initialize verifier for retry loop
-    let verifier = Verifier::new(output_dir).context("Failed to create verifier")?;
+    let verifier = Verifier::new(workspace).context("Failed to create verifier")?;
 
     let retry_config = RetryConfig {
         max_attempts: max_retries,
@@ -309,7 +309,7 @@ pub async fn handle_auto(
     settings: &Settings,
     continue_mode: bool,
     events: Option<&TranslationEvents>,
-    repo_dir: PathBuf,
+    workspace: PathBuf,
     no_callgraph: bool,
     callgraph_cache: Option<PathBuf>,
     callgraph_verbose: bool,
@@ -327,7 +327,7 @@ pub async fn handle_auto(
         ))?;
 
     info!(path = ?target_dir, "Auto mode: using target directory");
-    info!(path = ?repo_dir, "Auto mode: using repo directory");
+    info!(path = ?workspace, "Auto mode: using workspace");
 
     // Discover or accept DLL list
     let dlls = if let Some(ref dll_list) = dlls_arg {
@@ -362,7 +362,7 @@ pub async fn handle_auto(
         println_content(format!(
             "  • {}{}",
             bold(dll),
-            if classification_record_exists(&repo_dir, dll) {
+            if classification_record_exists(&workspace, dll) {
                 format!("  [{}] already classified", yellow_bold("done"))
             } else {
                 format!("  [{}] needs classification", red_bold("pending"))
@@ -374,12 +374,12 @@ pub async fn handle_auto(
     // Determine which DLLs are classified and which are not
     let mut classified: Vec<String> = dlls
         .iter()
-        .filter(|d| classification_record_exists(&repo_dir, d))
+        .filter(|d| classification_record_exists(&workspace, d))
         .cloned()
         .collect();
     let unclassified: Vec<String> = dlls
         .iter()
-        .filter(|d| !classification_record_exists(&repo_dir, d))
+        .filter(|d| !classification_record_exists(&workspace, d))
         .cloned()
         .collect();
 
@@ -394,7 +394,7 @@ pub async fn handle_auto(
         handle_classify(
             &unclassified,
             &target_dir,
-            &repo_dir,
+            &workspace,
             skip_git,
             settings,
             events,
@@ -434,8 +434,6 @@ pub async fn handle_auto(
         return Ok(());
     }
 
-    let output_dir = repo_dir;
-
     if continue_mode {
         // Translate all classified files in sequence (non-interactive).
         println!();
@@ -455,7 +453,7 @@ pub async fn handle_auto(
             println!();
             run_translation_for_dll(
                 dll,
-                &output_dir,
+                &workspace,
                 skip_git,
                 settings,
                 events,
@@ -500,7 +498,7 @@ pub async fn handle_auto(
 
         run_translation_for_dll(
             dll,
-            &output_dir,
+            &workspace,
             skip_git,
             settings,
             events,

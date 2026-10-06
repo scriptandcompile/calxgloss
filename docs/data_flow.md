@@ -121,7 +121,7 @@ Classification records are written to **`re/classify/{dll_name}.json`** on disk 
 For each classified DLL, `run_translation_for_dll()` runs the full pipeline:
 
 ```
-run_translation_for_dll(dll, output_dir, settings, events)
+run_translation_for_dll(dll, workspace, settings, events)
 │
 ├──► GhidraClient.list_functions()
 │    └─ Returns FunctionSummary[] (name only — Ghidra serves
@@ -130,10 +130,10 @@ run_translation_for_dll(dll, output_dir, settings, events)
 ├──► TranslationPipeline::new(ghidra, llm, api_mappings)
 │    └─ Also creates: TestGenerator, Analyzer
 │
-├──► GitManager::init_repo(output_dir)
+├──► GitManager::init_repo(workspace)
 │    └─ Creates .git, README, initial "main" commit
 │
-├──► Verifier::new(output_dir)
+├──► Verifier::new(workspace)
 │    └─ Creates scratch/ directory for sandboxed builds
 │
 └──► pipeline.batch_translate(dll, functions, retry_config, verifier)
@@ -277,7 +277,7 @@ After a function translation succeeds (at any attempt), git operations follow:
 for each successful function:
 │
 ├──► Write translated.rs to disk
-│     └─ output_dir/src/modules/{function}/translated.rs
+│     └─ workspace/src/modules/{function}/translated.rs
 │
 ├──► GitManager.create_branch(dll, function, attempt, policy)
 │     └─ Branch name: re/{dll}/{function}v{N}
@@ -360,7 +360,7 @@ The `ProgressState` in the web server maps `"dll/function"` keys to `ProgressEnt
 ## 5. File System Layout
 
 ```
-<repo_dir>/                          ← CWD (or --repo)
+<workspace>/                          ← CWD (or --workspace)
 │
 ├── .git/                            ← Git repo (auto-initialized)
 │   ├── refs/heads/main              ← accepted translations land here

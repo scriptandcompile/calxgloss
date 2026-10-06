@@ -33,7 +33,7 @@ use crate::types::TypeDatabase;
 ///     └── {binary}.json
 /// ```
 ///
-/// The default cache directory is `{workspace_root}/re/analysis/typesdb/`,
+/// The default cache directory is `{workspace}/re/analysis/typesdb/`,
 /// set by [`new`](Self::new); [`with_cache_dir`](Self::with_cache_dir) points
 /// the persistor at an explicit directory instead.
 ///
@@ -59,10 +59,10 @@ pub struct TypeDatabasePersistor {
 impl TypeDatabasePersistor {
     /// Creates a new persistor rooted at the given workspace directory.
     ///
-    /// Databases are stored in `<workspace_root>/re/analysis/typesdb/`.
-    pub fn new(workspace_root: impl AsRef<Path>) -> Self {
+    /// Databases are stored in `<workspace>/re/analysis/typesdb/`.
+    pub fn new(workspace: impl AsRef<Path>) -> Self {
         Self {
-            store: JsonStore::new(analysis_dir(workspace_root).join("typesdb")),
+            store: JsonStore::new(analysis_dir(workspace).join("typesdb")),
         }
     }
 

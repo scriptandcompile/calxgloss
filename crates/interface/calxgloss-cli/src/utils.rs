@@ -10,24 +10,27 @@ pub use calxgloss_verify::Verifier;
 use std::path::{Path, PathBuf};
 pub use tracing::{debug, warn};
 
-/// Resolve the repo directory: `--repo` flag > settings > CWD.
+/// Resolve the workspace: `--workspace` flag > settings > CWD.
 ///
 /// This is the single point of resolution for commands that use the
 /// config-file / env-var layer (`auto`, `translate`, `batch-translate`).
-pub(super) fn resolve_repo_dir(cli_repo: Option<&PathBuf>, settings: &crate::Settings) -> PathBuf {
-    cli_repo
+pub(super) fn resolve_workspace(
+    cli_workspace: Option<&PathBuf>,
+    settings: &crate::Settings,
+) -> PathBuf {
+    cli_workspace
         .cloned()
-        .or_else(|| settings.repo_dir.as_ref().map(|r| PathBuf::from(&r.value)))
+        .or_else(|| settings.workspace.as_ref().map(|r| PathBuf::from(&r.value)))
         .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"))
 }
 
-/// Resolve the repo directory for `live` and `serve`: `--repo` flag > CWD.
+/// Resolve the workspace for `live` and `serve`: `--workspace` flag > CWD.
 ///
 /// These commands always operate on the workspace in the current directory
 /// (where `.git`, `src/`, `scratch/` live).  Config file and env-var
-/// overrides are ignored — only an explicit `--repo` flag can change this.
-pub(super) fn resolve_live_repo_dir(cli_repo: Option<&PathBuf>) -> PathBuf {
-    cli_repo
+/// overrides are ignored — only an explicit `--workspace` flag can change this.
+pub(super) fn resolve_live_workspace(cli_workspace: Option<&PathBuf>) -> PathBuf {
+    cli_workspace
         .cloned()
         .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"))
 }
@@ -100,9 +103,9 @@ pub fn derive_crate_name(dll: &str) -> String {
 /// doesn't already exist, so repeated calls are safe).
 ///
 /// Returns `(crate_dir, src_dir)` for further file creation.
-pub fn setup_translation_crate(output_dir: &Path, dll: &str) -> Result<(PathBuf, PathBuf)> {
+pub fn setup_translation_crate(workspace: &Path, dll: &str) -> Result<(PathBuf, PathBuf)> {
     let crate_name = derive_crate_name(dll);
-    let crate_dir = output_dir.join("crates").join(&crate_name);
+    let crate_dir = workspace.join("crates").join(&crate_name);
     let crate_src_dir = crate_dir.join("src");
 
     std::fs::create_dir_all(&crate_src_dir).context("Failed to create crate src directory")?;

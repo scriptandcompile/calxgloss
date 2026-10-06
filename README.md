@@ -60,7 +60,7 @@ Write your directories and server addresses to a config file once:
 ```toml
 # ~/.config/calxgloss/config.toml
 target_dir = "/path/to/binaries"   # DLLs and EXEs, read-only
-repo_dir   = "/path/to/workspace"  # where src/, re/, scratch, and the git repo go
+workspace  = "/path/to/workspace"  # where the translated Rust, re/, scratch, and the git repo live
 
 [ghidra]
 url = "http://127.0.0.1:8080"
@@ -80,8 +80,8 @@ cargo run --bin calxgloss-cli -- live
 ```
 
 `live` always works on the current directory — `cd` into the workspace first;
-only `--repo <dir>` overrides it. The `repo_dir` setting applies to the other
-commands, like translating a single function:
+only `--workspace <dir>` overrides it. The `workspace` setting applies to the
+other commands, like translating a single function:
 
 ```bash
 cargo run --bin calxgloss-cli -- translate \
@@ -97,7 +97,7 @@ a value you did not expect can be traced to its source:
 target_dir
   path         /path/to/binaries                  (config file)
 
-repo_dir
+workspace
   path         /path/to/workspace                 (config file)
 
 ghidra
@@ -128,9 +128,9 @@ and model have none — a local inference server has no conventional address —
 `translate` reports them as unset, listing all three ways to provide one, rather
 than failing later with a connection error to a port nothing is listening on.
 `target_dir` has no default either: commands that do real work fail fast and
-print the three ways to set it. `repo_dir` defaults to the current directory —
+print the three ways to set it. `workspace` defaults to the current directory —
 and `live`/`serve` always use the current directory, ignoring config and
-environment unless you pass `--repo`.
+environment unless you pass `--workspace`.
 
 ## Workspace Structure
 

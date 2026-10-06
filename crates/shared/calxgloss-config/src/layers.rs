@@ -65,7 +65,7 @@ impl Layers {
             flags: FileConfig::default(),
             env: FileConfig {
                 target_dir: var("CALXGLOSS_TARGET_DIR"),
-                repo_dir: var("CALXGLOSS_REPO_DIR"),
+                workspace: var("CALXGLOSS_WORKSPACE"),
                 ghidra: GhidraSection {
                     url: var("CALXGLOSS_GHIDRA_URL"),
                     api_key: var("CALXGLOSS_GHIDRA_API_KEY"),

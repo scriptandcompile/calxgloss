@@ -33,7 +33,7 @@ use crate::types::MemoryResult;
 ///     └── {binary}.json
 /// ```
 ///
-/// The default cache directory is `{workspace_root}/re/analysis/memory/`,
+/// The default cache directory is `{workspace}/re/analysis/memory/`,
 /// set by [`new`](Self::new); [`with_cache_dir`](Self::with_cache_dir) points
 /// the persistor at an explicit directory instead.
 ///
@@ -59,10 +59,10 @@ pub struct MemoryPersistor {
 impl MemoryPersistor {
     /// Creates a new persistor rooted at the given workspace directory.
     ///
-    /// Results are stored in `<workspace_root>/re/analysis/memory/`.
-    pub fn new(workspace_root: impl AsRef<Path>) -> Self {
+    /// Results are stored in `<workspace>/re/analysis/memory/`.
+    pub fn new(workspace: impl AsRef<Path>) -> Self {
         Self {
-            store: JsonStore::new(analysis_dir(workspace_root).join("memory")),
+            store: JsonStore::new(analysis_dir(workspace).join("memory")),
         }
     }
 

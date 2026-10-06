@@ -21,7 +21,7 @@ use crate::utils::*;
 pub async fn handle_batch_translate(
     args: &BatchTranslateArgs,
     settings: &Settings,
-    repo_dir: PathBuf,
+    workspace: PathBuf,
     callgraph_cache: Option<PathBuf>,
     callgraph_verbose: bool,
 ) -> Result<()> {
@@ -30,7 +30,6 @@ pub async fn handle_batch_translate(
         dll,
         functions,
         all_functions,
-        output_dir,
         skip_git,
         no_callgraph,
         ..
@@ -38,9 +37,6 @@ pub async fn handle_batch_translate(
     let (target, dll) = (target.as_path(), dll.as_str());
     let skip_git = *skip_git;
     let no_callgraph = *no_callgraph;
-
-    // Use the output_dir arg if provided, otherwise use the resolved repo_dir.
-    let output_dir = output_dir.clone().unwrap_or(repo_dir);
 
     let llm_url = settings.require_llm_url()?;
     let llm_model = settings.require_llm_model()?;
@@ -110,7 +106,7 @@ pub async fn handle_batch_translate(
 
     // Set up the output crate directory structure.
     let (_, crate_src_dir) =
-        setup_translation_crate(&output_dir, dll).context("Failed to create output crate")?;
+        setup_translation_crate(&workspace, dll).context("Failed to create output crate")?;
 
     // Initialize Ghidra client
     let mut ghidra_config = calxgloss_ghidra::GhidraConfig::new(ghidra_url)
@@ -135,7 +131,7 @@ pub async fn handle_batch_translate(
     let llm = calxgloss_llm::LlmClient::new(llm_config).context("Failed to create LLM client")?;
 
     // Initialize analyzer and test generator
-    let testgen = calxgloss_testgen::TestGenerator::new(&output_dir);
+    let testgen = calxgloss_testgen::TestGenerator::new(&workspace);
 
     // Build translation pipeline
     let api_mappings = calxgloss_pal::ApiMappings::default();
@@ -152,14 +148,14 @@ pub async fn handle_batch_translate(
     if callgraph_verbose {
         pipeline = pipeline.with_callgraph_verbose();
     }
-    pipeline = pipeline.with_workspace(&output_dir);
+    pipeline = pipeline.with_workspace(&workspace);
 
     // Git setup
     let mut git = if !skip_git {
         info!("Initializing git repository");
         let git_config = calxgloss_git::InitConfig::default();
         Some(
-            GitManager::init_repo(&output_dir, Some(git_config))
+            GitManager::init_repo(&workspace, Some(git_config))
                 .context("Failed to initialize git repository")?,
         )
     } else {
@@ -168,7 +164,7 @@ pub async fn handle_batch_translate(
     };
 
     // Initialize verifier for retry loop
-    let verifier = Verifier::new(&output_dir).context("Failed to create verifier")?;
+    let verifier = Verifier::new(&workspace).context("Failed to create verifier")?;
 
     // Configure retry behavior
     let retry_config = RetryConfig {

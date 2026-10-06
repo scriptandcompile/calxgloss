@@ -22,7 +22,7 @@ use crate::CallGraph;
 ///     └── {dll_name}_call_graph.json
 /// ```
 ///
-/// The default cache directory is `{workspace_root}/re/analysis/`, but can be
+/// The default cache directory is `{workspace}/re/analysis/`, but can be
 /// customized via the [`CallGraphPersistor::new`] constructor or by using
 /// [`CallGraphPersistor::with_cache_dir`] for an explicit path.
 ///
@@ -57,10 +57,10 @@ pub struct CallGraphPersistor {
 impl CallGraphPersistor {
     /// Creates a new persistor rooted at the given workspace directory.
     ///
-    /// Call graphs are stored in `<workspace_root>/re/analysis/`.
-    pub fn new(workspace_root: impl AsRef<Path>) -> Self {
+    /// Call graphs are stored in `<workspace>/re/analysis/`.
+    pub fn new(workspace: impl AsRef<Path>) -> Self {
         Self {
-            store: JsonStore::with_naming(analysis_dir(workspace_root), call_graph_name),
+            store: JsonStore::with_naming(analysis_dir(workspace), call_graph_name),
         }
     }
 

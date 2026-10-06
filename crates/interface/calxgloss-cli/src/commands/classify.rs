@@ -18,7 +18,7 @@ use crate::utils::*;
 pub async fn handle_classify(
     dlls: &[String],
     target_dir: &Path,
-    repo_dir: &Path,
+    workspace: &Path,
     skip_git: bool,
     settings: &Settings,
     events: Option<&TranslationEvents>,
@@ -45,7 +45,7 @@ pub async fn handle_classify(
     let classifications = analyzer.classify_dlls(dlls, target_dir).await?;
 
     // Write classification records to disk and commit.
-    let classify_dir = repo_dir.join("re").join("classify");
+    let classify_dir = workspace.join("re").join("classify");
     std::fs::create_dir_all(&classify_dir).with_context(|| {
         format!(
             "Failed to create classification directory: {}",
@@ -88,7 +88,7 @@ pub async fn handle_classify(
     // Commit classification records to git (unless skip_git).
     if !skip_git
         && !written.is_empty()
-        && let Ok(git) = GitManager::open(repo_dir)
+        && let Ok(git) = GitManager::open(workspace)
     {
         let _commit = git
             .commit_to_main(
@@ -104,7 +104,7 @@ pub async fn handle_classify(
     // Generate shim layer suggestions for CrateReplacement DLLs.
     let report = analyzer.suggest_shim_layers(&classifications);
     if !report.is_empty() {
-        let shim_dir = repo_dir.join("re").join("shims");
+        let shim_dir = workspace.join("re").join("shims");
         std::fs::create_dir_all(&shim_dir).with_context(|| {
             format!(
                 "Failed to create shim suggestions directory: {}",
@@ -128,7 +128,7 @@ pub async fn handle_classify(
         );
 
         // Commit shim suggestions to git (unless skip_git).
-        if !skip_git && let Ok(git) = GitManager::open(repo_dir) {
+        if !skip_git && let Ok(git) = GitManager::open(workspace) {
             let _commit = git
                 .commit_to_main(
                     &format!(

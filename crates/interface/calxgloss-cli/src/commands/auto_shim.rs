@@ -20,7 +20,7 @@ pub async fn handle_auto_shim(
     dll_filter: Option<&str>,
     skip_git: bool,
     _target_dir: &Path,
-    repo_dir: &Path,
+    workspace: &Path,
     settings: &Settings,
 ) -> Result<()> {
     info!("Starting auto-shim pipeline");
@@ -66,7 +66,7 @@ pub async fn handle_auto_shim(
             (names, vec![classification])
         } else {
             // Read existing classification records to find CrateReplacement DLLs.
-            let classify_dir = repo_dir.join("re").join("classify");
+            let classify_dir = workspace.join("re").join("classify");
             if !classify_dir.exists() {
                 anyhow::bail!(
                     "No classification records found at {}. Run `classify` first.",
@@ -116,11 +116,11 @@ pub async fn handle_auto_shim(
     info!(count = dll_names.len(), dlls = ?dll_names, "Auto-shim targets");
 
     // Initialize verifier.
-    let verifier = Verifier::new(repo_dir).context("Failed to create verifier")?;
+    let verifier = Verifier::new(workspace).context("Failed to create verifier")?;
 
     // Initialize git manager if not skipped.
     let git_manager = if !skip_git {
-        GitManager::open(repo_dir).ok()
+        GitManager::open(workspace).ok()
     } else {
         None
     };
@@ -131,7 +131,7 @@ pub async fn handle_auto_shim(
         &ghidra,
         llm,
         verifier,
-        repo_dir,
+        workspace,
         skip_git,
         git_manager.as_ref(),
     )
