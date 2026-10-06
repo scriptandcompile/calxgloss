@@ -212,7 +212,9 @@ impl ReviewDashboard {
     /// 2. B is now failing (blocked) → mark A as [`Blocked`]
     ///
     /// Units already in a terminal status (`Accepted`, `Blocked`) are left
-    /// unchanged — the method is idempotent.
+    /// unchanged — the method is idempotent. Each status rewrite also moves
+    /// the unit's tally in [`StatusCounts`] to `blocked`, so the summary
+    /// reflects the cascade.
     ///
     /// # Returns
     ///
@@ -291,6 +293,7 @@ impl ReviewDashboard {
                 let old_status = std::mem::replace(&mut unit.status, ReviewStatus::Blocked);
                 if old_status != ReviewStatus::Blocked {
                     blocked_count += 1;
+                    move_count_to_blocked(&mut self.status_counts, &old_status);
                 }
             }
         }
@@ -311,6 +314,7 @@ impl ReviewDashboard {
                 let old_status = std::mem::replace(&mut unit.status, ReviewStatus::Blocked);
                 if old_status != ReviewStatus::Blocked {
                     blocked_count += 1;
+                    move_count_to_blocked(&mut self.status_counts, &old_status);
                 }
             }
         }
@@ -390,4 +394,24 @@ impl ReviewDashboard {
             })
             .collect()
     }
+}
+
+/// Moves one unit's tally from `old_status` to `blocked` so [`StatusCounts`]
+/// stays in sync with the queue after [`ReviewDashboard::auto_block_units`]
+/// rewrites a status.
+fn move_count_to_blocked(counts: &mut StatusCounts, old_status: &ReviewStatus) {
+    match old_status {
+        ReviewStatus::Queued => counts.queued = counts.queued.saturating_sub(1),
+        ReviewStatus::PendingReview => {
+            counts.pending_review = counts.pending_review.saturating_sub(1)
+        }
+        ReviewStatus::InProgress => counts.in_progress = counts.in_progress.saturating_sub(1),
+        ReviewStatus::Accepted => counts.accepted = counts.accepted.saturating_sub(1),
+        ReviewStatus::SendBack => counts.send_back = counts.send_back.saturating_sub(1),
+        ReviewStatus::PatchRequested => {
+            counts.patch_requested = counts.patch_requested.saturating_sub(1)
+        }
+        ReviewStatus::Blocked => {}
+    }
+    counts.blocked += 1;
 }

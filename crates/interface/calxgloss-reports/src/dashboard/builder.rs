@@ -7,11 +7,19 @@
 //! durable through their records — a send-back record makes a unit `SendBack`
 //! and a patch-request record makes it `PatchRequested`, both surviving a
 //! rebuild so `auto_block_units` has failing roots to cascade `Blocked` from.
+//!
+//! The builder also wires the dependency edges that cascade follows: a
+//! function unit depends on its DLL's classification unit and on the
+//! shim-layer unit its classification requires — the same dependency the
+//! branch-creation policy (`DependencyChecker`) gates `create_branch` on —
+//! so a sent-back shim or classification blocks whatever translates on top
+//! of it.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use calxgloss_git::GitManager;
+use calxgloss_git::{DependencyChecker, GitManager};
+use calxgloss_types::DllCategory;
 use calxgloss_types::dashboard::{ReviewDashboard, ReviewStatus, Staleness, UnitOfWork, WorkKind};
 use chrono::Utc;
 
@@ -41,15 +49,7 @@ pub fn parse_branch_name(name: &str) -> Option<BranchParts> {
         (parts[0].to_string(), None)
     };
 
-    let kind = match kind {
-        "classify" => WorkKind::DllClassification,
-        "shim" => WorkKind::ShimLayer,
-        "pal" => WorkKind::PalTrait,
-        "test" => WorkKind::TestCaseAddition,
-        "integration" => WorkKind::IntegrationStep,
-        "fix" => WorkKind::BugFix,
-        _ => WorkKind::FunctionTranslation,
-    };
+    let kind = work_kind_for_prefix(kind).unwrap_or(WorkKind::FunctionTranslation);
 
     Some(BranchParts {
         kind,
@@ -57,6 +57,21 @@ pub fn parse_branch_name(name: &str) -> Option<BranchParts> {
         function,
         attempt,
     })
+}
+
+/// Maps a branch name's first path segment to its supporting work kind
+/// (`shim`, `pal`, …); any other segment is a DLL name, making the branch a
+/// function translation.
+fn work_kind_for_prefix(prefix: &str) -> Option<WorkKind> {
+    match prefix {
+        "classify" => Some(WorkKind::DllClassification),
+        "shim" => Some(WorkKind::ShimLayer),
+        "pal" => Some(WorkKind::PalTrait),
+        "test" => Some(WorkKind::TestCaseAddition),
+        "integration" => Some(WorkKind::IntegrationStep),
+        "fix" => Some(WorkKind::BugFix),
+        _ => None,
+    }
 }
 
 /// Returns true if a git branch name matches the given DLL, function,
@@ -190,7 +205,7 @@ impl<'a> DashboardBuilder<'a> {
 
         // 5. Also check for classified DLLs not covered by translation branches
         let classified = self.read_classification_records();
-        for cls in classified {
+        for cls in &classified {
             let key = format!("classify/{}", cls.dll);
             if !seen_keys.contains_key(&key) {
                 let unit = UnitOfWork {
@@ -228,23 +243,62 @@ impl<'a> DashboardBuilder<'a> {
             })
             .collect();
 
-        // Add dependency edges
-        let class_keys: Vec<String> = units
+        // 6. Wire dependency edges from the branch model so the failing
+        //    verdicts above cascade `Blocked` down the graph. A function
+        //    unit depends on:
+        //    - its DLL's classification unit (`classify/{dll}`), and
+        //    - the shim-layer unit its classification requires — the same
+        //      `DependencyChecker` result `GitManager::create_branch` gates
+        //      branch creation on, so the dashboard graph reflects which
+        //      work the branch model says must merge first.
+        let classify_ids: HashMap<String, String> = units
             .iter()
             .filter(|u| u.kind == WorkKind::DllClassification)
-            .map(|u| u.id.clone())
+            .map(|u| {
+                let dll = u.id.strip_prefix("classify/").unwrap_or(&u.id);
+                (trim_dll_suffix(dll).to_string(), u.id.clone())
+            })
             .collect();
 
+        let shim_ids: HashMap<String, String> = units
+            .iter()
+            .filter(|u| u.kind == WorkKind::ShimLayer)
+            .filter_map(|u| u.function.clone().map(|krate| (krate, u.id.clone())))
+            .collect();
+
+        let classified_by_dll: HashMap<String, &ClassifiedDll> = classified
+            .iter()
+            .map(|c| (trim_dll_suffix(&c.dll).to_string(), c))
+            .collect();
+
+        let checker = DependencyChecker::new();
         for unit in &mut units {
-            if unit.kind == WorkKind::FunctionTranslation
-                && let Some(class_key) = class_keys.iter().find(|k| {
-                    k.starts_with("classify/")
-                        && unit
-                            .dll
-                            .ends_with(k.strip_prefix("classify/").unwrap_or(""))
-                })
+            if unit.kind != WorkKind::FunctionTranslation {
+                continue;
+            }
+            let dll_key = trim_dll_suffix(&unit.dll);
+
+            if let Some(class_id) = classify_ids.get(dll_key)
+                && !unit.dependencies.contains(class_id)
             {
-                unit.dependencies.push(class_key.clone());
+                unit.dependencies.push(class_id.clone());
+            }
+
+            if let Some(cls) = classified_by_dll.get(dll_key)
+                && let Some(category) = &cls.category
+            {
+                let required = checker.check(&cls.dll, category, cls.crate_replacement.as_deref());
+                for branch in &required.required {
+                    // Required deps are branch names (`re/shim/{crate}`); the
+                    // dashboard unit lives under the same parts as a shim unit.
+                    if let Some(shim_parts) = parse_branch_name(branch)
+                        && let Some(krate) = &shim_parts.function
+                        && let Some(shim_id) = shim_ids.get(krate)
+                        && !unit.dependencies.contains(shim_id)
+                    {
+                        unit.dependencies.push(shim_id.clone());
+                    }
+                }
             }
         }
 
@@ -356,6 +410,10 @@ impl<'a> DashboardBuilder<'a> {
         Ok(baselines)
     }
 
+    /// Reads every classification record under `re/classify/{dll}.json`
+    /// (written by the `classify` command). The category and crate
+    /// replacement are parsed leniently — a record that fails to parse
+    /// still counts as classified, it just declares no shim dependency.
     fn read_classification_records(&self) -> Vec<ClassifiedDll> {
         let classify_dir = self.repo_path.join("re").join("classify");
         if !classify_dir.exists() {
@@ -376,9 +434,20 @@ impl<'a> DashboardBuilder<'a> {
             let file_name = entry.file_name().to_string_lossy().to_string();
             if file_name.ends_with(".json") {
                 let dll_name = file_name.trim_end_matches(".json").to_string();
-                dlls.push(ClassifiedDll {
-                    dll: dll_name,
-                    _category: String::new(),
+                let parsed = std::fs::read_to_string(entry.path())
+                    .ok()
+                    .and_then(|content| serde_json::from_str::<ClassificationFile>(&content).ok());
+                dlls.push(match parsed {
+                    Some(p) => ClassifiedDll {
+                        dll: dll_name,
+                        category: p.category,
+                        crate_replacement: p.crate_replacement,
+                    },
+                    None => ClassifiedDll {
+                        dll: dll_name,
+                        category: None,
+                        crate_replacement: None,
+                    },
                 });
             }
         }
@@ -532,11 +601,20 @@ fn parse_branch_name_for_key(key: &str, default_attempt: u32) -> BranchParts {
     let parts: Vec<&str> = base.splitn(2, '/').collect();
 
     BranchParts {
-        kind: WorkKind::FunctionTranslation,
+        kind: parts
+            .first()
+            .and_then(|s| work_kind_for_prefix(s))
+            .unwrap_or(WorkKind::FunctionTranslation),
         dll: parts.first().map(|s| s.to_string()).unwrap_or_default(),
         function: parts.get(1).map(|s| s.to_string()),
         attempt: default_attempt,
     }
+}
+
+/// Trims a single trailing `.dll` from a DLL name for cross-artifact
+/// matching: branch names drop the extension, classification records keep it.
+fn trim_dll_suffix(name: &str) -> &str {
+    name.strip_suffix(".dll").unwrap_or(name)
 }
 
 #[derive(Debug)]
@@ -634,8 +712,59 @@ struct BaselineData {
     pass_count: usize,
 }
 
+/// The fields the builder needs from a classification record
+/// (`re/classify/{dll}.json`, written by the `classify` command); everything
+/// else in the record is ignored, and both fields are optional so older or
+/// partial records still read.
+#[derive(Debug, Default, serde::Deserialize)]
+struct ClassificationFile {
+    #[serde(default)]
+    category: Option<DllCategory>,
+    #[serde(default)]
+    crate_replacement: Option<String>,
+}
+
+/// A DLL with a classification record on disk. `dll` is the record file name
+/// minus `.json` (the `classify` command keeps the `.dll` extension in it);
+/// the category and crate replacement drive the shim dependency edge.
 #[derive(Debug)]
 struct ClassifiedDll {
     dll: String,
-    _category: String,
+    category: Option<DllCategory>,
+    crate_replacement: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_branch_name_reads_shim_branch() {
+        let parts = parse_branch_name("re/shim/wgpu").expect("shim branch parses");
+        assert_eq!(parts.kind, WorkKind::ShimLayer);
+        assert_eq!(parts.dll, "shim");
+        assert_eq!(parts.function.as_deref(), Some("wgpu"));
+        assert_eq!(unit_key(&parts), "shim/wgpu/v1");
+    }
+
+    #[test]
+    fn parse_branch_name_for_key_keeps_supporting_work_kind() {
+        // A shim unit rebuilt from its key must stay at the shim level in
+        // the dependency graph, not collapse to a function translation.
+        let parts = parse_branch_name_for_key("shim/wgpu/v2", 2);
+        assert_eq!(parts.kind, WorkKind::ShimLayer);
+        assert_eq!(parts.dll, "shim");
+        assert_eq!(parts.function.as_deref(), Some("wgpu"));
+
+        let parts = parse_branch_name_for_key("game_logic/DrawSprite/v1", 1);
+        assert_eq!(parts.kind, WorkKind::FunctionTranslation);
+        assert_eq!(parts.dll, "game_logic");
+        assert_eq!(parts.function.as_deref(), Some("DrawSprite"));
+    }
+
+    #[test]
+    fn trim_dll_suffix_matches_branch_and_record_spellings() {
+        assert_eq!(trim_dll_suffix("d3d9.dll"), "d3d9");
+        assert_eq!(trim_dll_suffix("d3d9"), "d3d9");
+    }
 }

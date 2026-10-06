@@ -963,6 +963,11 @@ fn auto_block_marks_dependent_on_failed_dependency() {
     assert!(matches!(func.status, ReviewStatus::Blocked));
     assert_eq!(dashboard.blocked_units().len(), 1);
     assert_eq!(dashboard.blocked_units()[0].id, "func_draw");
+
+    // The summary must reflect the cascade, not the pre-block snapshot.
+    assert_eq!(dashboard.status_counts.blocked, 1);
+    assert_eq!(dashboard.status_counts.queued, 0);
+    assert_eq!(dashboard.status_counts.send_back, 1);
 }
 
 #[test]

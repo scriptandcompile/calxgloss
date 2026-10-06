@@ -1,5 +1,6 @@
 //! Integration tests for [`DashboardBuilder`] — review verdicts must survive
-//! a dashboard rebuild (issue #9).
+//! a dashboard rebuild (issue #9), and the dependency edges the builder wires
+//! must be dense enough for the `Blocked` cascade to bite (issue #10).
 //!
 //! The builder recomputes every unit's status from branch state on each
 //! build; these tests pin the fix that makes the failing verdicts durable:
@@ -7,6 +8,12 @@
 //! records (`re/patches/` with a `patch_request` field) report
 //! `PatchRequested`, and a merged branch stays `Accepted` whichever records
 //! exist — branch state remains authoritative for acceptance.
+//!
+//! The cascade tests pin the branch-model edges: a function unit depends on
+//! the shim-layer unit its classification requires (the same dependency the
+//! branch-creation policy checks) and on its DLL's classification unit, so a
+//! sent-back dependency cascades `Blocked` to everything translating on top
+//! of it.
 
 use calxgloss_git::{GitManager, InitConfig};
 use calxgloss_reports::dashboard::{DashboardBuilder, ReviewDashboard, ReviewStatus, UnitOfWork};
@@ -110,6 +117,36 @@ fn write_patch_record(
         serde_json::to_string_pretty(&record).expect("serialize patch record"),
     )
     .expect("write patch record");
+}
+
+/// Writes a classification record at `re/classify/{dll}.json` in the shape
+/// the `classify` command writes (a serialized `DllClassification`), carrying
+/// the category and crate replacement the branch-creation policy checks.
+fn write_classification_record(
+    git: &GitManager,
+    dll: &str,
+    category: &str,
+    crate_replacement: Option<&str>,
+) {
+    let classify_dir = git.repo_path().join("re").join("classify");
+    std::fs::create_dir_all(&classify_dir).expect("create classify dir");
+
+    let mut record = serde_json::json!({
+        "dll": dll,
+        "category": category,
+        "strategy": "ReverseEngineer",
+        "exports_count": 10,
+        "imports_count": 2,
+    });
+    if let Some(krate) = crate_replacement {
+        record["strategy"] = serde_json::json!({ "CrateReplacement": { "crate_name": krate } });
+        record["crate_replacement"] = serde_json::Value::String(krate.to_string());
+    }
+    std::fs::write(
+        classify_dir.join(format!("{dll}.json")),
+        serde_json::to_string_pretty(&record).expect("serialize classification record"),
+    )
+    .expect("write classification record");
 }
 
 /// Builds the dashboard from the repo's current state.
@@ -241,4 +278,97 @@ fn send_back_is_scoped_to_its_attempt() {
         ReviewStatus::Queued,
         "the fresh attempt carries no verdict from the previous attempt"
     );
+}
+
+#[test]
+fn sent_back_shim_blocks_dependent_function_unit() {
+    let dir = temp_workspace();
+    let git = GitManager::open(dir.path()).expect("open repo");
+    // d3d9.dll is a crate-replacement target: the branch model requires the
+    // wgpu shim layer merged into main before its functions translate.
+    write_classification_record(&git, "d3d9.dll", "MicrosoftSdk", Some("wgpu"));
+
+    commit_on_branch(&git, "shim", "wgpu", 1);
+    let shim_branch = GitBranch::new("shim", "wgpu", 1).expect("branch name");
+    git.reject_branch(&shim_branch, "wgpu shim drops the present() stride")
+        .expect("write send-back record");
+
+    // A function translating on top of the sent-back shim.
+    commit_on_branch(&git, "d3d9", "Present", 1);
+
+    let dashboard = build(&git);
+    let unit = find_unit(&dashboard, "d3d9/Present/v1");
+    assert!(
+        unit.dependencies.iter().any(|d| d == "shim/wgpu/v1"),
+        "the function unit carries the branch-model shim edge"
+    );
+    assert_eq!(
+        unit.status,
+        ReviewStatus::Blocked,
+        "a sent-back shim blocks the function translating on top of it"
+    );
+    assert_eq!(
+        find_unit(&dashboard, "shim/wgpu/v1").status,
+        ReviewStatus::SendBack,
+        "the failing root keeps its own verdict"
+    );
+    assert!(dashboard.status_counts.blocked >= 1);
+    assert!(
+        dashboard
+            .dependency_graph
+            .edges
+            .iter()
+            .any(|e| e.from == "d3d9/Present/v1" && e.to == "shim/wgpu/v1"),
+        "the dependency graph carries the shim edge"
+    );
+}
+
+#[test]
+fn merged_shim_wires_the_edge_without_blocking() {
+    let dir = temp_workspace();
+    let git = GitManager::open(dir.path()).expect("open repo");
+    write_classification_record(&git, "d3d9.dll", "MicrosoftSdk", Some("wgpu"));
+
+    commit_on_branch(&git, "shim", "wgpu", 1);
+    let shim_branch = GitBranch::new("shim", "wgpu", 1).expect("branch name");
+    git.merge_to_main(&shim_branch).expect("merge shim to main");
+
+    commit_on_branch(&git, "d3d9", "Present", 1);
+
+    let dashboard = build(&git);
+    let unit = find_unit(&dashboard, "d3d9/Present/v1");
+    assert!(
+        unit.dependencies.iter().any(|d| d == "shim/wgpu/v1"),
+        "the shim edge is wired whichever way the shim went"
+    );
+    assert_eq!(
+        unit.status,
+        ReviewStatus::Queued,
+        "a merged (Accepted) shim blocks nothing"
+    );
+    assert_eq!(dashboard.status_counts.blocked, 0);
+}
+
+#[test]
+fn no_classification_record_means_no_shim_edge_and_no_blocking() {
+    let dir = temp_workspace();
+    let git = GitManager::open(dir.path()).expect("open repo");
+
+    // A shim branch sent back, but no classification record naming the shim:
+    // the branch model has no declared dependency, so nothing is blocked.
+    commit_on_branch(&git, "shim", "wgpu", 1);
+    let shim_branch = GitBranch::new("shim", "wgpu", 1).expect("branch name");
+    git.reject_branch(&shim_branch, "shim rejected")
+        .expect("write send-back record");
+
+    commit_on_branch(&git, "d3d9", "Present", 1);
+
+    let dashboard = build(&git);
+    let unit = find_unit(&dashboard, "d3d9/Present/v1");
+    assert!(
+        !unit.dependencies.iter().any(|d| d == "shim/wgpu/v1"),
+        "no classification record, no declared shim dependency"
+    );
+    assert_eq!(unit.status, ReviewStatus::Queued);
+    assert_eq!(dashboard.status_counts.blocked, 0);
 }
