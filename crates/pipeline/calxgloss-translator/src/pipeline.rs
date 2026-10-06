@@ -44,6 +44,8 @@ use calxgloss_memory::engine::MemoryEngine;
 use calxgloss_memory::persist::MemoryPersistor;
 use calxgloss_pal::ApiMappings;
 use calxgloss_prompts::build_translate_prompt;
+use calxgloss_sync::engine::SyncEngine;
+use calxgloss_sync::persist::SyncPersistor;
 use calxgloss_testgen::TestGenerator;
 use calxgloss_typeinfer::engine::TypeInferEngine;
 use calxgloss_typeinfer::persist::TypeInferPersistor;
@@ -1512,6 +1514,74 @@ impl TranslationPipeline {
         }
     }
 
+    /// Detect concurrency constructs across the binary before a batch
+    /// starts, unless a detection result is already cached.
+    ///
+    /// The scan's findings — mutex pairings, atomic calls, and thread
+    /// spawns — are filed at `re/analysis/sync/{dll}.json` for the prompt
+    /// path to read (see
+    /// [`extract_concurrency_hints`](crate::retry::helpers::extract_concurrency_hints));
+    /// running the detection scan once up front means every function in
+    /// the batch can see concurrency context instead of none. The
+    /// persisted file is the cache: when a result is already saved for
+    /// `dll`, the scan is skipped entirely.
+    ///
+    /// Returns whether a result is available afterwards. A missing workspace,
+    /// an unreachable Ghidra server, or a failed save only log a warning and
+    /// return `false` — prompts without concurrency context are degraded,
+    /// not fatal, and the batch proceeds either way.
+    pub async fn ensure_sync_detection(&self, dll: &str) -> bool {
+        let Some(workspace) = self.workspace.as_deref() else {
+            debug!(
+                dll,
+                "No workspace configured; skipping concurrency detection"
+            );
+            return false;
+        };
+
+        let persistor = SyncPersistor::new(workspace);
+        if persistor.exists(dll) {
+            debug!(
+                dll,
+                path = %persistor.path_for(dll).display(),
+                "Concurrency result already cached; skipping scan"
+            );
+            return true;
+        }
+
+        info!(
+            dll,
+            "Detecting concurrency constructs before batch translation"
+        );
+        let engine = SyncEngine::new(&self.ghidra);
+        match engine.scan(dll).await {
+            Ok(result) => {
+                if let Err(e) = persistor.save(&result) {
+                    warn!(
+                        dll,
+                        error = %e,
+                        "Failed to persist concurrency result; continuing without concurrency context"
+                    );
+                    return false;
+                }
+                info!(
+                    dll,
+                    findings = result.findings.len(),
+                    "Concurrency detection complete"
+                );
+                true
+            }
+            Err(e) => {
+                warn!(
+                    dll,
+                    error = %e,
+                    "Concurrency detection failed; continuing without concurrency context"
+                );
+                false
+            }
+        }
+    }
+
     /// Translate multiple functions from a single DLL, one at a time.
     ///
     /// For each function, this runs the full translation pipeline with retry
@@ -1520,13 +1590,15 @@ impl TranslationPipeline {
     /// Functions are processed sequentially in the order provided.
     ///
     /// Before the first function, the per-binary type database, type inference
-    /// result, algorithm recognition result, and memory lifecycle result are
-    /// recovered (or loaded from their caches) so higher context tiers have
-    /// data structure, parameter type, algorithm, and memory context — see
+    /// result, algorithm recognition result, memory lifecycle result, and
+    /// concurrency result are recovered (or loaded from their caches) so
+    /// higher context tiers have data structure, parameter type, algorithm,
+    /// memory, and concurrency context — see
     /// [`ensure_type_database`](Self::ensure_type_database),
     /// [`ensure_type_inference`](Self::ensure_type_inference),
     /// [`ensure_algorithm_recognition`](Self::ensure_algorithm_recognition),
-    /// and [`ensure_memory_detection`](Self::ensure_memory_detection).
+    /// [`ensure_memory_detection`](Self::ensure_memory_detection), and
+    /// [`ensure_sync_detection`](Self::ensure_sync_detection).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
     /// invoked **immediately after each function completes** (before moving on
@@ -1658,6 +1730,7 @@ impl TranslationPipeline {
         self.ensure_type_inference(dll).await;
         self.ensure_algorithm_recognition(dll).await;
         self.ensure_memory_detection(dll).await;
+        self.ensure_sync_detection(dll).await;
 
         let mut batch_result = batch::BatchTranslationResult::new(dll.to_string());
 
@@ -1768,13 +1841,15 @@ impl TranslationPipeline {
     /// callee code when generating shim layers or caller wrappers.
     ///
     /// Before the first function, the per-binary type database, type inference
-    /// result, algorithm recognition result, and memory lifecycle result are
-    /// recovered (or loaded from their caches) so higher context tiers have
-    /// data structure, parameter type, algorithm, and memory context — see
+    /// result, algorithm recognition result, memory lifecycle result, and
+    /// concurrency result are recovered (or loaded from their caches) so
+    /// higher context tiers have data structure, parameter type, algorithm,
+    /// memory, and concurrency context — see
     /// [`ensure_type_database`](Self::ensure_type_database),
     /// [`ensure_type_inference`](Self::ensure_type_inference),
     /// [`ensure_algorithm_recognition`](Self::ensure_algorithm_recognition),
-    /// and [`ensure_memory_detection`](Self::ensure_memory_detection).
+    /// [`ensure_memory_detection`](Self::ensure_memory_detection), and
+    /// [`ensure_sync_detection`](Self::ensure_sync_detection).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
     /// invoked **immediately after each function completes** (before moving on
@@ -1862,6 +1937,7 @@ impl TranslationPipeline {
         self.ensure_type_inference(&graph.dll).await;
         self.ensure_algorithm_recognition(&graph.dll).await;
         self.ensure_memory_detection(&graph.dll).await;
+        self.ensure_sync_detection(&graph.dll).await;
 
         // Build a priority-ordered plan
         let orderer = calxgloss_callgraph::TranslationOrderer::new();
@@ -2093,6 +2169,8 @@ mod tests {
     use calxgloss_algorithm::types::AlgorithmRecognitionResult;
     use calxgloss_memory::persist::MemoryPersistor;
     use calxgloss_memory::types::MemoryResult;
+    use calxgloss_sync::persist::SyncPersistor;
+    use calxgloss_sync::types::SyncResult;
     use calxgloss_typeinfer::persist::TypeInferPersistor;
     use calxgloss_typeinfer::types::TypeInferenceResult;
     use calxgloss_typesdb::types::{ScanMetadata, TypeDatabase};
@@ -2322,5 +2400,73 @@ mod tests {
     async fn no_workspace_skips_the_memory_scan() {
         let pipeline = pipeline_over(None);
         assert!(!pipeline.ensure_memory_detection("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn a_cached_concurrency_result_is_reused_without_rescanning() {
+        let dir = TempDir::new().unwrap();
+        SyncPersistor::new(dir.path())
+            .save(&SyncResult::new(ScanMetadata::new("eqmain.dll")))
+            .unwrap();
+
+        // The Ghidra server is unreachable, so `true` can only come from the cache.
+        let pipeline = pipeline_over(Some(dir.path()));
+        assert!(pipeline.ensure_sync_detection("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn a_concurrency_cache_miss_scans_and_saves_the_result() {
+        let dir = TempDir::new().unwrap();
+        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
+        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+
+        assert!(pipeline.ensure_sync_detection("eqmain.dll").await);
+
+        let persistor = SyncPersistor::new(dir.path());
+        assert!(
+            persistor.exists("eqmain.dll"),
+            "a cache miss should leave a saved document behind"
+        );
+        assert_eq!(
+            persistor.path_for("eqmain.dll"),
+            dir.path()
+                .join("re")
+                .join("analysis")
+                .join("sync")
+                .join("eqmain.dll.json"),
+            "the document should be filed under re/analysis/sync"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_concurrency_scan_degrades_instead_of_failing() {
+        let dir = TempDir::new().unwrap();
+        let pipeline = pipeline_over(Some(dir.path()));
+
+        assert!(!pipeline.ensure_sync_detection("eqmain.dll").await);
+        assert!(
+            !SyncPersistor::new(dir.path()).exists("eqmain.dll"),
+            "a failed scan persists nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_concurrency_save_degrades_instead_of_failing() {
+        let dir = TempDir::new().unwrap();
+        // `re/analysis` as a plain file makes the save's directory
+        // creation fail even though the scan itself succeeds.
+        std::fs::create_dir_all(dir.path().join("re")).unwrap();
+        std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
+
+        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
+        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+
+        assert!(!pipeline.ensure_sync_detection("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn no_workspace_skips_the_concurrency_scan() {
+        let pipeline = pipeline_over(None);
+        assert!(!pipeline.ensure_sync_detection("eqmain.dll").await);
     }
 }
