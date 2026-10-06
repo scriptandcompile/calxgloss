@@ -8,7 +8,7 @@
 //!
 //! Calling an arbitrary internal function of a Windows DLL needs the module to
 //! be mapped and the target to be called by address, so each function gets its
-//! own generated harness rather than a link-time stub:
+//! own generated harness rather than a link-time binding:
 //!
 //! 1. The DLL is parsed to find its image base, architecture, and exports.
 //! 2. The function is located — a Ghidra `FUN_<hex>` name becomes an RVA via
@@ -39,7 +39,7 @@ use tracing::{info, instrument, warn};
 
 use crate::pe::PeImage;
 use crate::wine::{HarnessSpec, WineRunner, locator_for_function};
-use crate::{FfiStub, parse_signature};
+use crate::{FfiBinding, parse_signature};
 
 /// Context data passed during test execution.
 ///
@@ -59,8 +59,8 @@ pub struct TestContext {
     /// The test case index (0-based).
     pub test_index: usize,
 
-    /// The FFI stub for the function.
-    pub ffi_stub: FfiStub,
+    /// The FFI binding for the function.
+    pub ffi_binding: FfiBinding,
 }
 
 /// Runner for baseline tests.

@@ -159,6 +159,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`ContextTier::Stub` → `ContextTier::Signature`** (`calxgloss-types`) — the bottom prompt tier sends name + signature only; "stub" is reserved by the pipeline glossary for mocks that return default values without the real action. The label is now `signature`, and the Tier-0 prompt machinery in `calxgloss-prompts` follows: `StubPromptData` → `SignaturePromptData`, `StubTemplate` → `SignatureTemplate`, `build_stub_prompt` → `build_signature_prompt`, template `stub_translate.j2` → `signature_translate.j2`.
 - **`UnitOfWork.prompt_tier` → `UnitOfWork.context_tier`** (`calxgloss-types::dashboard`) — the field records the context tier, not a separate "prompt tier" concept.
+- **FFI stub → FFI binding** (`calxgloss-testgen`) — the generated `extern "C"` block *calls* the original DLL, it does not stub it; the glossary reserves "stub" for mocks returning default values. `FfiStub` → `FfiBinding`, `FfiStubBuilder` → `FfiBindingBuilder`, `generate_ffi_stub` → `generate_ffi_binding` (free function and `TestGenerator` method), `TestContext.ffi_stub` → `ffi_binding`.
 
 #### Workspace layout
 

@@ -1,7 +1,7 @@
 //! Test generation infrastructure for the Calxgloss reverse engineering harness.
 //!
 //! This crate provides tools for reading Windows DLL metadata, generating FFI
-//! stubs, creating diverse test inputs from function signatures and disassembly
+//! bindings, creating diverse test inputs from function signatures and disassembly
 //! analysis, and executing baseline tests to capture the original binary's
 //! behavior.
 //!
@@ -10,14 +10,14 @@
 //! 1. Read the DLL's metadata with [`PeImage`]: image base, architecture, and
 //!    the export and import tables
 //! 2. Extract function signatures from Ghidra or the export table
-//! 3. Generate FFI stubs (`extern "system"` blocks) for the original DLL
+//! 3. Generate FFI bindings (`extern "system"` blocks) for the original DLL
 //! 4. Generate test inputs covering boundary values, typical values, and edge cases
 //! 5. Execute those inputs against the original binary under Wine to capture
 //!    baseline behavior
 //! 6. Save baseline results as JSON for verification against Rust translations
 //!
 //! Baseline execution calls into the real DLL, so it needs the module mapped at
-//! runtime rather than a link-time stub: [`WineRunner`] generates a small
+//! runtime rather than a link-time binding: [`WineRunner`] generates a small
 //! harness per function, cross-compiles it for the DLL's own architecture, and
 //! runs it under Wine. See the `run` module for the details.
 //!
@@ -26,8 +26,8 @@
 //! ```no_run
 //! use calxgloss_testgen::TestGenerator;
 //!
-//! // Generate FFI stub from a signature
-//! let stub = calxgloss_testgen::generate_ffi_stub(
+//! // Generate FFI binding from a signature
+//! let binding = calxgloss_testgen::generate_ffi_binding(
 //!     "game_logic.dll",
 //!     "DrawSprite",
 //!     "int __stdcall DrawSprite(int x, int y, unsigned int texture_index)",
@@ -48,7 +48,7 @@ mod run;
 mod wine;
 
 pub use ffi::{
-    FfiStub, FfiStubBuilder, ParameterTypeInfo, ParsedSignature, generate_ffi_stub,
+    FfiBinding, FfiBindingBuilder, ParameterTypeInfo, ParsedSignature, generate_ffi_binding,
     ghidra_type_to_rust, parse_signature,
 };
 pub use generator::TestGenerator;

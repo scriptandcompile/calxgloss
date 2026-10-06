@@ -1,4 +1,4 @@
-//! The [`TestGenerator`] — orchestrator for FFI stubs, test inputs, and baseline execution.
+//! The [`TestGenerator`] — orchestrator for FFI bindings, test inputs, and baseline execution.
 
 use std::path::{Path, PathBuf};
 
@@ -8,7 +8,7 @@ use tracing::{debug, info, instrument, warn};
 
 use crate::run::BaselineRunner;
 
-pub use crate::ffi::{FfiStub, generate_ffi_stub};
+pub use crate::ffi::{FfiBinding, generate_ffi_binding};
 pub use crate::inputs::generate_test_inputs;
 
 // ============================================================
@@ -17,7 +17,7 @@ pub use crate::inputs::generate_test_inputs;
 
 /// Main entry point for test generation.
 ///
-/// Manages the generation of FFI stubs, test inputs, and baseline execution
+/// Manages the generation of FFI bindings, test inputs, and baseline execution
 /// for functions extracted from DLLs. The generator stores baseline results
 /// in a structured directory layout under `re/baseline/{dll}/{function}.json`.
 ///
@@ -72,7 +72,7 @@ impl TestGenerator {
         self
     }
 
-    /// Generate an FFI stub for a function.
+    /// Generate an FFI binding for a function.
     ///
     /// Takes the function's exported signature (e.g., `"int __stdcall DrawSprite(int x, int y, unsigned int texture_index)"`)
     /// and generates a Rust `extern "C"` block with appropriate type mappings.
@@ -85,12 +85,12 @@ impl TestGenerator {
     ///
     /// # Returns
     ///
-    /// A [`FfiStub`] containing the generated FFI code and parsed type information.
-    pub fn generate_ffi_stub(&self, dll: &str, function: &str, signature: &str) -> Result<FfiStub> {
-        debug!(dll, function, signature, "Generating FFI stub");
-        let stub = generate_ffi_stub(dll, function, signature)?;
-        info!(dll, function, "Generated FFI stub");
-        Ok(stub)
+    /// A [`FfiBinding`] containing the generated FFI code and parsed type information.
+    pub fn generate_ffi_binding(&self, dll: &str, function: &str, signature: &str) -> Result<FfiBinding> {
+        debug!(dll, function, signature, "Generating FFI binding");
+        let binding = generate_ffi_binding(dll, function, signature)?;
+        info!(dll, function, "Generated FFI binding");
+        Ok(binding)
     }
 
     /// Generate test inputs for a function based on its signature and disassembly.
@@ -145,8 +145,8 @@ impl TestGenerator {
     /// Run baseline tests for a function by compiling and executing against the original DLL.
     ///
     /// This method:
-    /// 1. Generates an FFI stub for the function
-    /// 2. Creates a temporary Cargo project with the stub and a test harness
+    /// 1. Generates an FFI binding for the function
+    /// 2. Creates a temporary Cargo project with the binding and a test harness
     /// 3. Compiles and links against the original DLL
     /// 4. Executes each test case, capturing return values and side effects
     /// 5. Returns the test results
@@ -345,7 +345,7 @@ impl TestGenerator {
 mod tests {
     use super::*;
     use crate::{
-        DisassemblyEdgeCases, EdgeCaseSource, FfiStubBuilder, ParameterTypeInfo, parse_signature,
+        DisassemblyEdgeCases, EdgeCaseSource, FfiBindingBuilder, ParameterTypeInfo, parse_signature,
     };
 
     #[test]
@@ -394,36 +394,36 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_ffi_stub_simple() {
+    fn test_generate_ffi_binding_simple() {
         let sig = "int __stdcall DrawSprite(int x, int y, unsigned int texture_index)";
-        let stub = generate_ffi_stub("game_logic.dll", "DrawSprite", sig).unwrap();
+        let binding = generate_ffi_binding("game_logic.dll", "DrawSprite", sig).unwrap();
 
-        assert!(stub.code.contains("extern \"C\""));
-        assert!(stub.code.contains("DrawSprite"));
-        assert!(stub.code.contains("x"));
-        assert!(stub.code.contains("y"));
-        assert!(stub.code.contains("texture_index"));
-        assert!(stub.code.contains("i32"));
-        assert!(stub.code.contains("u32"));
+        assert!(binding.code.contains("extern \"C\""));
+        assert!(binding.code.contains("DrawSprite"));
+        assert!(binding.code.contains("x"));
+        assert!(binding.code.contains("y"));
+        assert!(binding.code.contains("texture_index"));
+        assert!(binding.code.contains("i32"));
+        assert!(binding.code.contains("u32"));
     }
 
     #[test]
-    fn test_generate_ffi_stub_void_return() {
+    fn test_generate_ffi_binding_void_return() {
         let sig = "void __stdcall Initialize()";
-        let stub = generate_ffi_stub("init.dll", "Initialize", sig).unwrap();
+        let binding = generate_ffi_binding("init.dll", "Initialize", sig).unwrap();
 
-        assert!(stub.code.contains("fn Initialize"));
-        assert!(stub.code.contains("()"));
+        assert!(binding.code.contains("fn Initialize"));
+        assert!(binding.code.contains("()"));
     }
 
     #[test]
-    fn test_generate_ffi_stub_string_param() {
+    fn test_generate_ffi_binding_string_param() {
         let sig = "int __stdcall LoadTexture(const char* path)";
-        let stub = generate_ffi_stub("tex.dll", "LoadTexture", sig).unwrap();
+        let binding = generate_ffi_binding("tex.dll", "LoadTexture", sig).unwrap();
 
-        assert!(stub.code.contains("LoadTexture"));
-        assert!(stub.code.contains("path"));
-        assert!(stub.code.contains("i8"));
+        assert!(binding.code.contains("LoadTexture"));
+        assert!(binding.code.contains("path"));
+        assert!(binding.code.contains("i8"));
     }
 
     #[test]
@@ -459,18 +459,18 @@ mod tests {
     }
 
     #[test]
-    fn test_ffi_stub_builder() {
-        let stub = FfiStubBuilder::new("test.dll", "TestFunc")
+    fn test_ffi_binding_builder() {
+        let binding = FfiBindingBuilder::new("test.dll", "TestFunc")
             .return_type("int")
             .calling_convention("__stdcall")
             .param("x", "i32")
             .param("y", "i32")
             .build();
 
-        assert!(stub.code.contains("TestFunc"));
-        assert!(stub.code.contains("extern \"C\""));
-        assert!(stub.code.contains("x: i32"));
-        assert!(stub.code.contains("y: i32"));
+        assert!(binding.code.contains("TestFunc"));
+        assert!(binding.code.contains("extern \"C\""));
+        assert!(binding.code.contains("x: i32"));
+        assert!(binding.code.contains("y: i32"));
     }
 
     #[test]

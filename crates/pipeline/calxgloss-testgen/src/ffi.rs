@@ -1,4 +1,4 @@
-//! FFI stub generation for linking against original DLLs.
+//! FFI binding generation for linking against original DLLs.
 //!
 //! This module provides functionality to parse Windows function signatures
 //! and generate Rust `extern "C"` blocks that can be used to call the
@@ -76,16 +76,16 @@ pub struct ParsedSignature {
     pub type_map: HashMap<String, String>,
 }
 
-/// A generated FFI stub.
+/// A generated FFI binding.
 ///
 /// Contains the raw Rust code for the `extern "C"` block along with
 /// parsed type information for downstream use.
 #[derive(Debug, Clone)]
-pub struct FfiStub {
+pub struct FfiBinding {
     /// The generated Rust FFI code.
     pub code: String,
 
-    /// The DLL this stub targets.
+    /// The DLL this binding targets.
     pub dll: String,
 
     /// The function name.
@@ -215,7 +215,7 @@ fn extract_params_str(sig: &str) -> Result<&str> {
     Ok(&sig[open_paren + 1..close_paren])
 }
 
-/// Generate a complete FFI stub for a function.
+/// Generate a complete FFI binding for a function.
 ///
 /// # Arguments
 ///
@@ -225,9 +225,9 @@ fn extract_params_str(sig: &str) -> Result<&str> {
 ///
 /// # Returns
 ///
-/// A [`FfiStub`] containing the generated code and parsed information.
-pub fn generate_ffi_stub(dll: &str, function: &str, signature: &str) -> Result<FfiStub> {
-    debug!(dll, function, "Generating FFI stub");
+/// A [`FfiBinding`] containing the generated code and parsed information.
+pub fn generate_ffi_binding(dll: &str, function: &str, signature: &str) -> Result<FfiBinding> {
+    debug!(dll, function, "Generating FFI binding");
 
     let parsed = parse_signature(signature)?;
 
@@ -266,7 +266,7 @@ pub fn generate_ffi_stub(dll: &str, function: &str, signature: &str) -> Result<F
     code.push_str(";\n");
     code.push_str("}\n");
 
-    Ok(FfiStub {
+    Ok(FfiBinding {
         code,
         dll: dll.to_string(),
         function: function.to_string(),
@@ -274,17 +274,17 @@ pub fn generate_ffi_stub(dll: &str, function: &str, signature: &str) -> Result<F
     })
 }
 
-/// Builder for manually constructing FFI stubs.
+/// Builder for manually constructing FFI bindings.
 ///
 /// Use this when you don't have a parsed signature string but want to
-/// construct an FFI stub from component types.
+/// construct an FFI binding from component types.
 ///
 /// # Example
 ///
 /// ```
-/// use calxgloss_testgen::FfiStubBuilder;
+/// use calxgloss_testgen::FfiBindingBuilder;
 ///
-/// let stub = FfiStubBuilder::new("game.dll", "MyFunc")
+/// let binding = FfiBindingBuilder::new("game.dll", "MyFunc")
 ///     .return_type("int")
 ///     .calling_convention("__stdcall")
 ///     .param("x", "i32")
@@ -292,7 +292,7 @@ pub fn generate_ffi_stub(dll: &str, function: &str, signature: &str) -> Result<F
 ///     .build();
 /// ```
 #[derive(Debug, Clone)]
-pub struct FfiStubBuilder {
+pub struct FfiBindingBuilder {
     dll: String,
     function: String,
     return_type: String,
@@ -300,8 +300,8 @@ pub struct FfiStubBuilder {
     params: Vec<(String, String)>, // (name, type)
 }
 
-impl FfiStubBuilder {
-    /// Create a new FFI stub builder.
+impl FfiBindingBuilder {
+    /// Create a new FFI binding builder.
     pub fn new(dll: &str, function: &str) -> Self {
         Self {
             dll: dll.to_string(),
@@ -330,8 +330,8 @@ impl FfiStubBuilder {
         self
     }
 
-    /// Build the FFI stub.
-    pub fn build(self) -> FfiStub {
+    /// Build the FFI binding.
+    pub fn build(self) -> FfiBinding {
         let rust_return = &self.return_type;
         let is_void = rust_return == "()";
 
@@ -364,12 +364,12 @@ impl FfiStubBuilder {
                 name: Some(name.clone()),
                 r#type: r#type.clone(),
                 is_pointer: r#type.ends_with('*'),
-                is_signed: false, // Assume unsigned for manual stubs
+                is_signed: false, // Assume unsigned for manual bindings
                 bit_width: None,
             })
             .collect();
 
-        FfiStub {
+        FfiBinding {
             code,
             dll: self.dll,
             function: self.function,

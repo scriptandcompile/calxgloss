@@ -49,7 +49,7 @@ Calxgloss reverse engineers project executables and DLLs, transforming disassemb
   └────────────────┘                                                     └────────────────┘
 
   Foundation: calxgloss-types (shared types) · calxgloss-config (layered settings) ·
-  calxgloss-testgen (FFI stubs & baseline tests) · calxgloss-verify (compile & test) ·
+  calxgloss-testgen (FFI bindings & baseline tests) · calxgloss-verify (compile & test) ·
   calxgloss-git (branch per unit) · calxgloss-reports (terminal output)
 ```
 
@@ -148,7 +148,7 @@ environment unless you pass `--repo`.
 | `calxgloss-typeinfer` | This-pointer detection, parameter size detection, type propagation |
 | `calxgloss-algorithm` | Control-flow signature matching, string-guided hints, callback patterns |
 | `calxgloss-memory` | Allocation/deallocation pair tracking, handle lifecycle, refcount detection |
-| `calxgloss-testgen` | FFI stubs, test inputs, baseline execution |
+| `calxgloss-testgen` | FFI bindings, test inputs, baseline execution |
 | `calxgloss-translator` | Ghidra → LLM → Rust pipeline |
 | `calxgloss-verify` | Compile and test verification |
 | `calxgloss-git` | Git branch/commit/merge automation |

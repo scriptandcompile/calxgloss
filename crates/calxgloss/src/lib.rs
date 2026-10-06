@@ -176,18 +176,18 @@ pub use calxgloss_algorithm::types::{
 };
 
 // ============================================================
-// calxgloss-testgen — FFI stubs, test input generation
+// calxgloss-testgen — FFI bindings, test input generation
 // ============================================================
 
 pub use calxgloss_testgen::BaselineRunner;
 pub use calxgloss_testgen::DisassemblyEdgeCases;
 pub use calxgloss_testgen::EdgeCaseSource;
-pub use calxgloss_testgen::FfiStub;
-pub use calxgloss_testgen::FfiStubBuilder;
+pub use calxgloss_testgen::FfiBinding;
+pub use calxgloss_testgen::FfiBindingBuilder;
 pub use calxgloss_testgen::ParameterTypeInfo;
 pub use calxgloss_testgen::TestContext;
 pub use calxgloss_testgen::TestGenerator;
-pub use calxgloss_testgen::generate_ffi_stub;
+pub use calxgloss_testgen::generate_ffi_binding;
 pub use calxgloss_testgen::generate_test_inputs;
 pub use calxgloss_testgen::parse_signature;
 
