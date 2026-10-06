@@ -558,6 +558,7 @@ dependencies = [
  "calxgloss-callgraph",
  "calxgloss-ghidra",
  "calxgloss-llm",
+ "calxgloss-memory",
  "calxgloss-pal",
  "calxgloss-prompts",
  "calxgloss-testgen",
