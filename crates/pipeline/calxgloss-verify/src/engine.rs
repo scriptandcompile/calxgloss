@@ -200,7 +200,7 @@ impl Verifier {
 
         // Cargo.toml for the shared PAL crate
         let cargo_toml = r#"[package]
-name = "calxgloss-pal"
+name = "calxgloss-verify-pal"
 version = "0.1.0"
 edition = "2021"
 
@@ -228,7 +228,7 @@ include!("stub_content.rs");
         let project_dir = self.create_scratch_dir(dll, function);
 
         let cargo_toml = format!(
-            "[package]\nname = \"{}_verify\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\npal = {{ path = \"../pal\", package = \"calxgloss-pal\" }}\n\n[lib]\nname = \"{}_lib\"\npath = \"src/lib.rs\"\n",
+            "[package]\nname = \"{}_verify\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\npal = {{ path = \"../pal\", package = \"calxgloss-verify-pal\" }}\n\n[lib]\nname = \"{}_lib\"\npath = \"src/lib.rs\"\n",
             sanitize_crate_name(dll),
             sanitize_identifier(function),
         );
@@ -263,7 +263,7 @@ include!("stub_content.rs");
         let project_dir = self.create_scratch_dir(dll, function);
 
         let cargo_toml = format!(
-            "[package]\nname = \"{}_verify\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\npal = {{ path = \"../pal\", package = \"calxgloss-pal\" }}\nserde_json = \"1\"\n\n[lib]\nname = \"{}_lib\"\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"{}_runner\"\npath = \"src/main.rs\"\n",
+            "[package]\nname = \"{}_verify\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\npal = {{ path = \"../pal\", package = \"calxgloss-verify-pal\" }}\nserde_json = \"1\"\n\n[lib]\nname = \"{}_lib\"\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"{}_runner\"\npath = \"src/main.rs\"\n",
             sanitize_crate_name(dll),
             sanitize_identifier(function),
             sanitize_identifier(function),
