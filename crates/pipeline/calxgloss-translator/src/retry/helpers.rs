@@ -311,6 +311,46 @@ pub fn extract_memory_hints(
         .collect()
 }
 
+/// Extract concurrency findings for a function from the persisted
+/// detection result.
+///
+/// Reads the per-binary result produced by the `calxgloss-sync` engine
+/// from `re/analysis/sync/{dll}.json` and keeps the findings made for
+/// the target function — the lock pairings, atomic calls, and thread
+/// spawns whose calls live in `function`'s decompiled body.
+///
+/// Returns an empty vector when no workspace is configured, no result
+/// is persisted for `dll` (the scan has not run), or the document is
+/// corrupt: missing concurrency context degrades the prompt, it never
+/// fails it.
+pub fn extract_concurrency_hints(
+    workspace: Option<&std::path::Path>,
+    dll: &str,
+    function: &str,
+) -> Vec<calxgloss_prompts::ConcurrencyInfo> {
+    let Some(workspace) = workspace else {
+        return Vec::new();
+    };
+
+    let persistor = calxgloss_sync::persist::SyncPersistor::new(workspace);
+    let result = match persistor.load(dll) {
+        Ok(result) => result,
+        Err(e) => {
+            debug!(
+                dll,
+                error = %e,
+                "No usable concurrency result; continuing without concurrency context"
+            );
+            return Vec::new();
+        }
+    };
+
+    result
+        .for_function(function)
+        .map(calxgloss_prompts::ConcurrencyInfo::from)
+        .collect()
+}
+
 // ============================================================
 // Tier 4 — Shim layer and PAL trait extraction
 // ============================================================
@@ -1289,5 +1329,141 @@ mod tests {
         assert_eq!(kinds, vec!["allocation", "handle"]);
         assert_eq!(found[0].suggestion, "stack allocation");
         assert_eq!(found[1].suggestion, "RAII guard struct with Drop impl");
+    }
+
+    // ---- concurrency hints ----
+
+    fn mutex_hint(function: &str, suggestion: &str) -> calxgloss_sync::types::ConcurrencyHint {
+        calxgloss_sync::types::ConcurrencyHint {
+            function: function.to_string(),
+            sync_type: calxgloss_sync::types::SyncType::StdMutex,
+            acquire: "EnterCriticalSection".into(),
+            release: "LeaveCriticalSection".into(),
+            suggestion: suggestion.to_string(),
+            confidence: calxgloss_sync::types::Confidence::new(70),
+            evidence: "EnterCriticalSection(&local_20); LeaveCriticalSection(&local_20);".into(),
+        }
+    }
+
+    fn atomic_record(function: &str) -> calxgloss_sync::types::AtomicOperation {
+        calxgloss_sync::types::AtomicOperation {
+            function: function.to_string(),
+            operation: "InterlockedIncrement".into(),
+            suggestion: "std::sync::atomic::AtomicU32".into(),
+            confidence: calxgloss_sync::types::Confidence::new(70),
+            evidence: "uVar1 = InterlockedIncrement(&local_28);".into(),
+        }
+    }
+
+    fn thread_record(function: &str) -> calxgloss_sync::types::ThreadSpawn {
+        calxgloss_sync::types::ThreadSpawn {
+            function: function.to_string(),
+            spawn: "CreateThread".into(),
+            join: Some("WaitForSingleObject".into()),
+            suggestion: "std::thread::spawn".into(),
+            confidence: calxgloss_sync::types::Confidence::new(70),
+            evidence: "hThread = CreateThread(...); WaitForSingleObject(hThread, ...);".into(),
+        }
+    }
+
+    fn persist_sync_findings(dir: &TempDir, findings: Vec<calxgloss_sync::types::SyncFinding>) {
+        let mut result = calxgloss_sync::types::SyncResult::new(ScanMetadata::new("eqmain.dll"));
+        result.findings = findings;
+        calxgloss_sync::persist::SyncPersistor::new(dir.path())
+            .save(&result)
+            .expect("the concurrency result should be saved");
+    }
+
+    #[test]
+    fn no_workspace_configured_yields_no_concurrency_findings() {
+        assert!(
+            extract_concurrency_hints(None, "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "no workspace means no concurrency context"
+        );
+    }
+
+    #[test]
+    fn a_missing_cache_yields_no_concurrency_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        assert!(
+            extract_concurrency_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "a scan that has not run yet just means no concurrency context"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_cache_degrades_to_no_concurrency_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        let path = dir
+            .path()
+            .join("re")
+            .join("analysis")
+            .join("sync")
+            .join("eqmain.dll.json");
+        std::fs::create_dir_all(
+            path.parent()
+                .expect("the document path should have a parent"),
+        )
+        .expect("the cache directory should be creatable");
+        std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
+
+        assert!(
+            extract_concurrency_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty()
+        );
+    }
+
+    #[test]
+    fn concurrency_findings_of_other_functions_are_dropped() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_sync_findings(
+            &dir,
+            vec![
+                calxgloss_sync::types::SyncFinding::Mutex(mutex_hint(
+                    "FUN_18003ab00",
+                    "std::sync::Mutex<T>",
+                )),
+                calxgloss_sync::types::SyncFinding::Mutex(mutex_hint(
+                    "FUN_zzz",
+                    "std::sync::Mutex<T>",
+                )),
+            ],
+        );
+
+        let found = extract_concurrency_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        assert_eq!(found.len(), 1, "only the target function's finding");
+        assert_eq!(found[0].function, "FUN_18003ab00");
+        assert_eq!(found[0].kind, "mutex");
+        assert_eq!(found[0].suggestion, "std::sync::Mutex<T>");
+        assert_eq!(found[0].confidence, 70);
+        assert_eq!(
+            found[0].evidence,
+            "EnterCriticalSection(&local_20); LeaveCriticalSection(&local_20);"
+        );
+    }
+
+    #[test]
+    fn every_concurrency_finding_of_the_function_lands_in_the_prompt() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_sync_findings(
+            &dir,
+            vec![
+                calxgloss_sync::types::SyncFinding::Mutex(mutex_hint(
+                    "FUN_18003ab00",
+                    "std::sync::Mutex<T>",
+                )),
+                calxgloss_sync::types::SyncFinding::Atomic(atomic_record("FUN_18003ab00")),
+                calxgloss_sync::types::SyncFinding::Thread(thread_record("FUN_18003ab00")),
+                calxgloss_sync::types::SyncFinding::Atomic(atomic_record("FUN_zzz")),
+            ],
+        );
+
+        let found = extract_concurrency_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        let kinds: Vec<&str> = found.iter().map(|f| f.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["mutex", "atomic", "thread"]);
+        assert_eq!(found[0].suggestion, "std::sync::Mutex<T>");
+        assert_eq!(found[1].suggestion, "std::sync::atomic::AtomicU32");
+        assert_eq!(found[2].suggestion, "std::thread::spawn");
     }
 }
