@@ -58,15 +58,7 @@ impl ReviewDashboard {
             }
 
             // Count statuses
-            match unit.status {
-                ReviewStatus::Queued => counts.queued += 1,
-                ReviewStatus::PendingReview => counts.pending_review += 1,
-                ReviewStatus::InProgress => counts.in_progress += 1,
-                ReviewStatus::Accepted => counts.accepted += 1,
-                ReviewStatus::SendBack => counts.send_back += 1,
-                ReviewStatus::PatchRequested => counts.patch_requested += 1,
-                ReviewStatus::Blocked => counts.blocked += 1,
-            }
+            *counts.tally_mut(&unit.status) += 1;
 
             // Add node to dependency graph with the correct processing level
             graph.nodes.push(super::graph::DependencyNode::with_level(
@@ -400,18 +392,10 @@ impl ReviewDashboard {
 /// stays in sync with the queue after [`ReviewDashboard::auto_block_units`]
 /// rewrites a status.
 fn move_count_to_blocked(counts: &mut StatusCounts, old_status: &ReviewStatus) {
-    match old_status {
-        ReviewStatus::Queued => counts.queued = counts.queued.saturating_sub(1),
-        ReviewStatus::PendingReview => {
-            counts.pending_review = counts.pending_review.saturating_sub(1)
-        }
-        ReviewStatus::InProgress => counts.in_progress = counts.in_progress.saturating_sub(1),
-        ReviewStatus::Accepted => counts.accepted = counts.accepted.saturating_sub(1),
-        ReviewStatus::SendBack => counts.send_back = counts.send_back.saturating_sub(1),
-        ReviewStatus::PatchRequested => {
-            counts.patch_requested = counts.patch_requested.saturating_sub(1)
-        }
-        ReviewStatus::Blocked => {}
+    if matches!(old_status, ReviewStatus::Blocked) {
+        return;
     }
+    let tally = counts.tally_mut(old_status);
+    *tally = tally.saturating_sub(1);
     counts.blocked += 1;
 }

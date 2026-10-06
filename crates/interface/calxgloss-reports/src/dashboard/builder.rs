@@ -256,7 +256,7 @@ impl<'a> DashboardBuilder<'a> {
             .filter(|u| u.kind == WorkKind::DllClassification)
             .map(|u| {
                 let dll = u.id.strip_prefix("classify/").unwrap_or(&u.id);
-                (trim_dll_suffix(dll).to_string(), u.id.clone())
+                (classify_dll_key(dll).to_string(), u.id.clone())
             })
             .collect();
 
@@ -617,6 +617,22 @@ fn trim_dll_suffix(name: &str) -> &str {
     name.strip_suffix(".dll").unwrap_or(name)
 }
 
+/// Normalizes a classification unit's dll segment to the extension-free dll
+/// name a function unit's `dll` matches: record-derived ids are
+/// `classify/{dll}` and branch-derived ids carry an attempt
+/// (`classify/{dll}/vN`, the shape `parse_branch_name` documents).
+fn classify_dll_key(dll: &str) -> &str {
+    trim_dll_suffix(strip_attempt_suffix(dll))
+}
+
+/// Strips a trailing `/v{N}` attempt suffix from a unit id segment.
+fn strip_attempt_suffix(name: &str) -> &str {
+    match name.rsplit_once("/v") {
+        Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => base,
+        _ => name,
+    }
+}
+
 #[derive(Debug)]
 struct PatchRecordEntry {
     key: String,
@@ -766,5 +782,14 @@ mod tests {
     fn trim_dll_suffix_matches_branch_and_record_spellings() {
         assert_eq!(trim_dll_suffix("d3d9.dll"), "d3d9");
         assert_eq!(trim_dll_suffix("d3d9"), "d3d9");
+    }
+
+    #[test]
+    fn classify_dll_key_normalizes_record_and_branch_id_shapes() {
+        // Record-derived ids carry the extension, branch-derived ids an
+        // attempt; both must key to the same extension-free dll name.
+        assert_eq!(classify_dll_key("d3d9.dll"), "d3d9");
+        assert_eq!(classify_dll_key("game_logic"), "game_logic");
+        assert_eq!(classify_dll_key("game_logic.dll/v1"), "game_logic");
     }
 }
