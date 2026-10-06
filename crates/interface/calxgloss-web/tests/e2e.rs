@@ -702,7 +702,7 @@ async fn test_actions_router_dashboard() {
 }
 
 /// Verify that a send-back verdict survives a dashboard rebuild (issue #9):
-/// POST /send-back writes a rejection record, and a dashboard rebuilt from
+/// POST /send-back writes a send-back record, and a dashboard rebuilt from
 /// disk reports the unit as `send_back` — not `queued`/`pending_review` —
 /// so the review state machine (SendBack → Blocked cascade → re-review)
 /// has a failing root to cascade from.

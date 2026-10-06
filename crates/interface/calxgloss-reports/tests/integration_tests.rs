@@ -135,7 +135,7 @@ fn send_back_verdict_survives_rebuild() {
 
     let branch = GitBranch::new("game_logic", "DrawSprite", 1).expect("branch name");
     git.reject_branch(&branch, "wrong blend mode mapping")
-        .expect("write rejection record");
+        .expect("write send-back record");
 
     // The verdict must hold across rebuilds, not just the build that saw
     // the action — the builder reads `re/rejections/`, not in-memory state.
@@ -199,7 +199,7 @@ fn failure_record_without_patch_request_reports_pending_review() {
 }
 
 #[test]
-fn merged_branch_with_rejection_reports_accepted() {
+fn merged_branch_with_send_back_reports_accepted() {
     let dir = temp_workspace();
     let git = GitManager::open(dir.path()).expect("open repo");
     commit_on_branch(&git, "game_logic", "DrawSprite", 1);
@@ -207,7 +207,7 @@ fn merged_branch_with_rejection_reports_accepted() {
     let branch = GitBranch::new("game_logic", "DrawSprite", 1).expect("branch name");
     git.merge_to_main(&branch).expect("merge to main");
     git.reject_branch(&branch, "stale rejection")
-        .expect("write rejection record");
+        .expect("write send-back record");
 
     // Branch state stays authoritative for acceptance: a merged branch is
     // Accepted whichever records sit beside it.
@@ -216,25 +216,25 @@ fn merged_branch_with_rejection_reports_accepted() {
     assert_eq!(
         unit.status,
         ReviewStatus::Accepted,
-        "a merged branch reports Accepted despite a rejection record"
+        "a merged branch reports Accepted despite a send-back record"
     );
 }
 
 #[test]
-fn rejection_is_scoped_to_its_attempt() {
+fn send_back_is_scoped_to_its_attempt() {
     let dir = temp_workspace();
     let git = GitManager::open(dir.path()).expect("open repo");
     commit_on_branch(&git, "game_logic", "DrawSprite", 1);
     let branch_v1 = GitBranch::new("game_logic", "DrawSprite", 1).expect("branch name");
     git.reject_branch(&branch_v1, "wrong blend mode mapping")
-        .expect("write rejection record");
+        .expect("write send-back record");
     commit_on_branch(&git, "game_logic", "DrawSprite", 2);
 
     let dashboard = build(&git);
     assert_eq!(
         find_unit(&dashboard, "game_logic/DrawSprite/v1").status,
         ReviewStatus::SendBack,
-        "the rejected attempt keeps its verdict"
+        "the sent-back attempt keeps its verdict"
     );
     assert_eq!(
         find_unit(&dashboard, "game_logic/DrawSprite/v2").status,
