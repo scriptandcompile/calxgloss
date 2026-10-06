@@ -102,13 +102,17 @@ on body-fetch failure, only a failed listing aborts, per-detector name sets
 swappable whole); `calxgloss memory --dll <dll>` scan+save wired to the engine
 and `--show` printing the cached document (target-dir-exempt);
 `calxgloss-memory` re-exported from the meta-crate; 5 scan-to-disk integration
-tests; clippy + fmt clean.
+tests; `ensure_memory_detection(dll)` pre-analysis at the top of `batch_translate`
+and `batch_translate_from_callgraph` (`exists()` cache check → skip, else
+`MemoryEngine::scan` + save to `re/analysis/memory/{dll}.json`; missing workspace,
+unreachable Ghidra server, or a failed save only log a warning and the batch
+proceeds; 5 unit tests, with a canned in-test GhidraMCP server driving the
+scan-to-save and failed-save paths); clippy + fmt clean.
 
 Remaining:
 
 - `extract_memory_hints()` in `calxgloss-translator/src/retry/helpers.rs` +
   prompt section (`MemoryHint` → prompt struct in `calxgloss-prompts`)
-- `ensure_memory_detection(dll)` pre-analysis in batch translation
 
 Dependencies: soft on P2 (done).
 
