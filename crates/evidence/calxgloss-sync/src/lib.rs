@@ -44,6 +44,7 @@ pub mod atomic;
 pub mod engine;
 pub mod error;
 pub mod mutex;
+pub mod persist;
 pub mod threading;
 pub mod types;
 
