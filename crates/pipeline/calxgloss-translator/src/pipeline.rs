@@ -38,6 +38,8 @@ use calxgloss_analysis::FaultLogger;
 use calxgloss_callback::engine::CallbackEngine;
 use calxgloss_callback::persist::CallbackPersistor;
 use calxgloss_callgraph::{ContextEnricher, FunctionContext, NodeCategory};
+use calxgloss_controlflow::engine::ControlFlowEngine;
+use calxgloss_controlflow::persist::ControlFlowPersistor;
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_llm::{
     LlmClient, LlmMessage, context::ContextWindowDetector, hallucination::HallucinationDetector,
@@ -522,12 +524,18 @@ impl TranslationPipeline {
                     &function_info.dll,
                     function,
                 );
+                let control_flow_findings = crate::retry::helpers::extract_control_flow_hints(
+                    self.workspace.as_deref(),
+                    &function_info.dll,
+                    function,
+                );
                 let data = calxgloss_prompts::ModuleContextPromptData::from_request_with_context(
                     &request,
                     call_graph_neighbors,
                     neighboring_functions,
                     data_structures,
                     enriched_context.clone(),
+                    control_flow_findings,
                 );
                 calxgloss_prompts::build_module_context_prompt(&data)?
             }
@@ -559,6 +567,11 @@ impl TranslationPipeline {
                 let pal_traits =
                     crate::retry::helpers::extract_pal_traits(&function_info.windows_apis);
 
+                let control_flow_findings = crate::retry::helpers::extract_control_flow_hints(
+                    self.workspace.as_deref(),
+                    &function_info.dll,
+                    function,
+                );
                 let data = calxgloss_prompts::FullModulePromptData::from_request_with_full_context(
                     &request,
                     call_graph_neighbors,
@@ -567,6 +580,7 @@ impl TranslationPipeline {
                     shim_layers,
                     pal_traits,
                     enriched_context.clone(),
+                    control_flow_findings,
                 );
                 calxgloss_prompts::build_full_module_prompt(&data)?
             }
@@ -1646,6 +1660,74 @@ impl TranslationPipeline {
         }
     }
 
+    /// Detect control-flow patterns across the binary before a batch
+    /// starts, unless a detection result is already cached.
+    ///
+    /// The scan's findings — switch-shaped if-else chains, self-recursion,
+    /// and state-machine patterns — are filed at
+    /// `re/analysis/controlflow/{dll}.json` for the prompt path to read (see
+    /// [`extract_control_flow_hints`](crate::retry::helpers::extract_control_flow_hints));
+    /// running the detection scan once up front means every function in
+    /// the batch can see control-flow context instead of none. The persisted
+    /// file is the cache: when a result is already saved for `dll`, the scan
+    /// is skipped entirely.
+    ///
+    /// Returns whether a result is available afterwards. A missing workspace,
+    /// an unreachable Ghidra server, or a failed save only log a warning and
+    /// return `false` — prompts without control-flow context are degraded,
+    /// not fatal, and the batch proceeds either way.
+    pub async fn ensure_controlflow_detection(&self, dll: &str) -> bool {
+        let Some(workspace) = self.workspace.as_deref() else {
+            debug!(
+                dll,
+                "No workspace configured; skipping control-flow detection"
+            );
+            return false;
+        };
+
+        let persistor = ControlFlowPersistor::new(workspace);
+        if persistor.exists(dll) {
+            debug!(
+                dll,
+                path = %persistor.path_for(dll).display(),
+                "Control-flow result already cached; skipping scan"
+            );
+            return true;
+        }
+
+        info!(
+            dll,
+            "Detecting control-flow patterns before batch translation"
+        );
+        let engine = ControlFlowEngine::new(&self.ghidra);
+        match engine.scan(dll).await {
+            Ok(result) => {
+                if let Err(e) = persistor.save(&result) {
+                    warn!(
+                        dll,
+                        error = %e,
+                        "Failed to persist control-flow result; continuing without control-flow context"
+                    );
+                    return false;
+                }
+                info!(
+                    dll,
+                    findings = result.findings.len(),
+                    "Control-flow detection complete"
+                );
+                true
+            }
+            Err(e) => {
+                warn!(
+                    dll,
+                    error = %e,
+                    "Control-flow detection failed; continuing without control-flow context"
+                );
+                false
+            }
+        }
+    }
+
     /// Translate multiple functions from a single DLL, one at a time.
     ///
     /// For each function, this runs the full translation pipeline with retry
@@ -1662,8 +1744,9 @@ impl TranslationPipeline {
     /// [`ensure_type_inference`](Self::ensure_type_inference),
     /// [`ensure_algorithm_recognition`](Self::ensure_algorithm_recognition),
     /// [`ensure_memory_detection`](Self::ensure_memory_detection), and
-    /// [`ensure_sync_detection`](Self::ensure_sync_detection), and
-    /// [`ensure_callback_detection`](Self::ensure_callback_detection).
+    /// [`ensure_sync_detection`](Self::ensure_sync_detection),
+    /// [`ensure_callback_detection`](Self::ensure_callback_detection), and
+    /// [`ensure_controlflow_detection`](Self::ensure_controlflow_detection).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
     /// invoked **immediately after each function completes** (before moving on
@@ -1797,6 +1880,7 @@ impl TranslationPipeline {
         self.ensure_memory_detection(dll).await;
         self.ensure_sync_detection(dll).await;
         self.ensure_callback_detection(dll).await;
+        self.ensure_controlflow_detection(dll).await;
 
         let mut batch_result = batch::BatchTranslationResult::new(dll.to_string());
 
@@ -1915,8 +1999,9 @@ impl TranslationPipeline {
     /// [`ensure_type_inference`](Self::ensure_type_inference),
     /// [`ensure_algorithm_recognition`](Self::ensure_algorithm_recognition),
     /// [`ensure_memory_detection`](Self::ensure_memory_detection), and
-    /// [`ensure_sync_detection`](Self::ensure_sync_detection), and
-    /// [`ensure_callback_detection`](Self::ensure_callback_detection).
+    /// [`ensure_sync_detection`](Self::ensure_sync_detection),
+    /// [`ensure_callback_detection`](Self::ensure_callback_detection), and
+    /// [`ensure_controlflow_detection`](Self::ensure_controlflow_detection).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
     /// invoked **immediately after each function completes** (before moving on
@@ -2006,6 +2091,7 @@ impl TranslationPipeline {
         self.ensure_memory_detection(&graph.dll).await;
         self.ensure_sync_detection(&graph.dll).await;
         self.ensure_callback_detection(&graph.dll).await;
+        self.ensure_controlflow_detection(&graph.dll).await;
 
         // Build a priority-ordered plan
         let orderer = calxgloss_callgraph::TranslationOrderer::new();
@@ -2237,6 +2323,8 @@ mod tests {
     use calxgloss_algorithm::types::AlgorithmRecognitionResult;
     use calxgloss_callback::persist::CallbackPersistor;
     use calxgloss_callback::types::CallbackResult;
+    use calxgloss_controlflow::persist::ControlFlowPersistor;
+    use calxgloss_controlflow::types::ControlFlowResult;
     use calxgloss_memory::persist::MemoryPersistor;
     use calxgloss_memory::types::MemoryResult;
     use calxgloss_sync::persist::SyncPersistor;
@@ -2606,5 +2694,73 @@ mod tests {
     async fn no_workspace_skips_the_callback_scan() {
         let pipeline = pipeline_over(None);
         assert!(!pipeline.ensure_callback_detection("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn a_cached_controlflow_result_is_reused_without_rescanning() {
+        let dir = TempDir::new().unwrap();
+        ControlFlowPersistor::new(dir.path())
+            .save(&ControlFlowResult::new(ScanMetadata::new("eqmain.dll")))
+            .unwrap();
+
+        // The Ghidra server is unreachable, so `true` can only come from the cache.
+        let pipeline = pipeline_over(Some(dir.path()));
+        assert!(pipeline.ensure_controlflow_detection("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn a_controlflow_cache_miss_scans_and_saves_the_result() {
+        let dir = TempDir::new().unwrap();
+        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
+        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+
+        assert!(pipeline.ensure_controlflow_detection("eqmain.dll").await);
+
+        let persistor = ControlFlowPersistor::new(dir.path());
+        assert!(
+            persistor.exists("eqmain.dll"),
+            "a cache miss should leave a saved document behind"
+        );
+        assert_eq!(
+            persistor.path_for("eqmain.dll"),
+            dir.path()
+                .join("re")
+                .join("analysis")
+                .join("controlflow")
+                .join("eqmain.dll.json"),
+            "the document should be filed under re/analysis/controlflow"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_controlflow_scan_degrades_instead_of_failing() {
+        let dir = TempDir::new().unwrap();
+        let pipeline = pipeline_over(Some(dir.path()));
+
+        assert!(!pipeline.ensure_controlflow_detection("eqmain.dll").await);
+        assert!(
+            !ControlFlowPersistor::new(dir.path()).exists("eqmain.dll"),
+            "a failed scan persists nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_controlflow_save_degrades_instead_of_failing() {
+        let dir = TempDir::new().unwrap();
+        // `re/analysis` as a plain file makes the save's directory
+        // creation fail even though the scan itself succeeds.
+        std::fs::create_dir_all(dir.path().join("re")).unwrap();
+        std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
+
+        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
+        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+
+        assert!(!pipeline.ensure_controlflow_detection("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn no_workspace_skips_the_controlflow_scan() {
+        let pipeline = pipeline_over(None);
+        assert!(!pipeline.ensure_controlflow_detection("eqmain.dll").await);
     }
 }

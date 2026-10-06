@@ -392,6 +392,47 @@ pub fn extract_callback_hints(
         .collect()
 }
 
+/// Extract control-flow findings for a function from the cached control-flow
+/// detection result.
+///
+/// Reads the per-binary result produced by the `calxgloss-controlflow`
+/// engine from `re/analysis/controlflow/{dll}.json` and keeps the findings
+/// made for the target function — the switch-shaped if-else chains,
+/// self-recursion, and state-machine patterns whose code lives in
+/// `function`'s decompiled body.
+///
+/// Returns an empty vector when no workspace is configured, no result
+/// is persisted for `dll` (the scan has not run), or the document is
+/// corrupt: missing control-flow context degrades the prompt, it never
+/// fails it.
+pub fn extract_control_flow_hints(
+    workspace: Option<&std::path::Path>,
+    dll: &str,
+    function: &str,
+) -> Vec<calxgloss_prompts::ControlFlowInfo> {
+    let Some(workspace) = workspace else {
+        return Vec::new();
+    };
+
+    let persistor = calxgloss_controlflow::persist::ControlFlowPersistor::new(workspace);
+    let result = match persistor.load(dll) {
+        Ok(result) => result,
+        Err(e) => {
+            debug!(
+                dll,
+                error = %e,
+                "No usable control-flow result; continuing without control-flow context"
+            );
+            return Vec::new();
+        }
+    };
+
+    result
+        .for_function(function)
+        .map(calxgloss_prompts::ControlFlowInfo::from)
+        .collect()
+}
+
 // ============================================================
 // Tier 4 — Shim layer and PAL trait extraction
 // ============================================================
@@ -779,12 +820,15 @@ pub async fn build_escalated_prompt(
                 extract_neighboring_context(ghidra, &translation.call_graph).await;
             let data_structures = extract_data_structures(workspace, dll, function);
 
+            let control_flow_findings = extract_control_flow_hints(workspace, dll, function);
+
             let data = calxgloss_prompts::ModuleContextPromptData::from_request_with_context(
                 &request,
                 call_graph_neighbors,
                 neighboring_functions,
                 data_structures,
                 translation.call_graph_context.clone(),
+                control_flow_findings,
             );
             calxgloss_prompts::build_module_context_prompt(&data).map_err(|e| e.to_string())
         }
@@ -822,6 +866,8 @@ pub async fn build_escalated_prompt(
             let shim_layers = extract_shim_layers(workspace, dll);
             let pal_traits = Vec::<PalTraitDef>::new();
 
+            let control_flow_findings = extract_control_flow_hints(workspace, dll, function);
+
             let data = calxgloss_prompts::FullModulePromptData::from_request_with_full_context(
                 &request,
                 call_graph_neighbors,
@@ -830,6 +876,7 @@ pub async fn build_escalated_prompt(
                 shim_layers,
                 pal_traits,
                 translation.call_graph_context.clone(),
+                control_flow_findings,
             );
             calxgloss_prompts::build_full_module_prompt(&data).map_err(|e| e.to_string())
         }
@@ -1633,5 +1680,149 @@ mod tests {
         assert_eq!(found[0].suggestion, "Vec<Box<dyn Fn(i32)>>");
         assert_eq!(found[1].suggestion, "Box<dyn Fn(i32)>");
         assert_eq!(found[2].suggestion, "[fn(...); 5]");
+    }
+
+    // ---- control-flow hint extraction ---------------------------------
+
+    fn switch_hint(function: &str) -> calxgloss_controlflow::types::ControlFlowFinding {
+        calxgloss_controlflow::types::ControlFlowFinding::Switch(
+            calxgloss_controlflow::types::SwitchChain {
+                function: function.into(),
+                variable: "local_4".into(),
+                cases: vec!["1".into(), "2".into(), "0x10".into()],
+                has_default: true,
+                suggestion: "match local_4 { /* 3 arms */ } + _".into(),
+                confidence: calxgloss_controlflow::types::Confidence::new(70),
+                evidence: "if (local_4 == 1) ... else if (local_4 == 0x10) + default".into(),
+            },
+        )
+    }
+
+    fn recursion_hint(function: &str) -> calxgloss_controlflow::types::ControlFlowFinding {
+        calxgloss_controlflow::types::ControlFlowFinding::Recursion(
+            calxgloss_controlflow::types::SelfRecursion {
+                function: function.into(),
+                is_tail_call: true,
+                self_calls: 1,
+                suggestion: "replace with loop { ... } (tail call)".into(),
+                confidence: calxgloss_controlflow::types::Confidence::new(80),
+                evidence: "FUN_18003ab00() calls itself 1x (tail call)".into(),
+            },
+        )
+    }
+
+    fn state_machine_hint(function: &str) -> calxgloss_controlflow::types::ControlFlowFinding {
+        calxgloss_controlflow::types::ControlFlowFinding::StateMachine(
+            calxgloss_controlflow::types::StateMachine {
+                function: function.into(),
+                state_var: "state".into(),
+                states: vec![
+                    "STATE_IDLE".into(),
+                    "STATE_RUNNING".into(),
+                    "STATE_DONE".into(),
+                ],
+                transitions: vec!["STATE_DONE".into()],
+                idle_state: Some("STATE_IDLE".into()),
+                suggestion: "enum State + match state { /* 3 states */ }".into(),
+                confidence: calxgloss_controlflow::types::Confidence::new(70),
+                evidence: "state variable state with 3 states idle: STATE_IDLE".into(),
+            },
+        )
+    }
+
+    fn persist_controlflow_findings(
+        dir: &TempDir,
+        findings: Vec<calxgloss_controlflow::types::ControlFlowFinding>,
+    ) {
+        let mut result =
+            calxgloss_controlflow::types::ControlFlowResult::new(ScanMetadata::new("eqmain.dll"));
+        result.findings = findings;
+        calxgloss_controlflow::persist::ControlFlowPersistor::new(dir.path())
+            .save(&result)
+            .expect("the control-flow result should be saved");
+    }
+
+    #[test]
+    fn no_workspace_configured_yields_no_control_flow_findings() {
+        assert!(
+            extract_control_flow_hints(None, "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "no workspace means no control-flow context"
+        );
+    }
+
+    #[test]
+    fn a_missing_cache_yields_no_control_flow_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        assert!(
+            extract_control_flow_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "a scan that has not run yet just means no control-flow context"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_cache_degrades_to_no_control_flow_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        let path = dir
+            .path()
+            .join("re")
+            .join("analysis")
+            .join("controlflow")
+            .join("eqmain.dll.json");
+        std::fs::create_dir_all(
+            path.parent()
+                .expect("the document path should have a parent"),
+        )
+        .expect("the cache directory should be creatable");
+        std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
+
+        assert!(
+            extract_control_flow_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty()
+        );
+    }
+
+    #[test]
+    fn control_flow_findings_of_other_functions_are_dropped() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_controlflow_findings(
+            &dir,
+            vec![switch_hint("FUN_18003ab00"), switch_hint("FUN_zzz")],
+        );
+
+        let found = extract_control_flow_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        assert_eq!(found.len(), 1, "only the target function's finding");
+        assert_eq!(found[0].function, "FUN_18003ab00");
+        assert_eq!(found[0].kind, "switch");
+        assert_eq!(found[0].suggestion, "match local_4 { /* 3 arms */ } + _");
+        assert_eq!(found[0].confidence, 70);
+        assert_eq!(
+            found[0].evidence,
+            "if (local_4 == 1) ... else if (local_4 == 0x10) + default"
+        );
+    }
+
+    #[test]
+    fn every_control_flow_finding_of_the_function_lands_in_the_prompt() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_controlflow_findings(
+            &dir,
+            vec![
+                switch_hint("FUN_18003ab00"),
+                recursion_hint("FUN_18003ab00"),
+                state_machine_hint("FUN_18003ab00"),
+                switch_hint("FUN_zzz"),
+            ],
+        );
+
+        let found = extract_control_flow_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        let kinds: Vec<&str> = found.iter().map(|f| f.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["switch", "recursion", "state_machine"]);
+        assert_eq!(found[0].suggestion, "match local_4 { /* 3 arms */ } + _");
+        assert_eq!(found[1].suggestion, "replace with loop { ... } (tail call)");
+        assert_eq!(
+            found[2].suggestion,
+            "enum State + match state { /* 3 states */ }"
+        );
     }
 }
