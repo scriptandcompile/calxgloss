@@ -137,6 +137,20 @@ pub use calxgloss_memory::types::{
 };
 
 // ============================================================
+// calxgloss-sync — concurrency & synchronization detection
+// ============================================================
+
+// The crate's `Result` alias is deliberately not re-exported:
+// `SyncResult` already names the per-binary document, and a second
+// alias spelled like it would read as the same thing. The crate's
+// `ScanMetadata` is the shared one from calxgloss-types, already
+// named here.
+pub use calxgloss_sync::SyncError;
+pub use calxgloss_sync::types::{
+    AtomicOperation, ConcurrencyHint, SyncFinding, SyncResult, SyncType, ThreadSpawn,
+};
+
+// ============================================================
 // calxgloss-typeinfer — type inference and propagation
 // ============================================================
 

@@ -11,6 +11,7 @@ pub mod init;
 pub mod live;
 pub mod memory;
 pub mod serve;
+pub mod sync;
 pub mod translate;
 pub mod typeinfer;
 pub mod typesdb;

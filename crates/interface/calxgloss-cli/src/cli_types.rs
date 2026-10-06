@@ -329,6 +329,35 @@ pub(super) enum Command {
         show: bool,
     },
 
+    /// Detect concurrency constructs (mutex/lock pairings, atomic
+    /// operations, thread spawns) for a binary.
+    ///
+    /// The concurrency findings are persisted per binary to
+    /// `re/analysis/sync/<dll>.json` in the workspace — the same file
+    /// batch translation will read as prompt context. `--show` prints a
+    /// cached result without connecting to Ghidra.
+    ///
+    /// # Arguments
+    ///
+    /// * `--dll` — Binary to scan, e.g. `eqmain.dll`. Names the
+    ///   persisted file.
+    /// * `--show` — Print a summary of the cached result.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss sync --dll eqmain.dll --show
+    /// ```
+    Sync {
+        /// Binary to scan, e.g. `eqmain.dll`
+        #[arg(long, required = true)]
+        dll: String,
+
+        /// Show the cached result instead of running the scan
+        #[arg(long)]
+        show: bool,
+    },
+
     /// Show the configuration in force and where each value came from
     ///
     /// Secrets are reported as `<set>` rather than printed, so this output is
