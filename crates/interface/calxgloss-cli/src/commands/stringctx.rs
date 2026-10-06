@@ -12,6 +12,8 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use calxgloss_ghidra::{GhidraClient, GhidraConfig};
+use calxgloss_stringctx::engine::StringContextEngine;
 use calxgloss_stringctx::persist::StringContextPersistor;
 use calxgloss_stringctx::types::StringContextResult;
 use chrono::DateTime;
@@ -29,7 +31,7 @@ pub async fn handle_stringctx(
     dll: &str,
     workspace: &Path,
     show: bool,
-    _settings: &Settings,
+    settings: &Settings,
 ) -> Result<()> {
     let persistor = StringContextPersistor::new(workspace);
 
@@ -46,12 +48,26 @@ pub async fn handle_stringctx(
 
     info!(dll, workspace = %workspace.display(), "Mapping program strings to functions");
 
-    // The scan engine lands with the scan wiring; until then the manual
-    // entry point only reads cached documents.
-    anyhow::bail!(
-        "String context scanning is not wired up yet; \
-         `calxgloss stringctx --dll {dll} --show` prints a cached result"
-    );
+    let ghidra_url = &settings.ghidra_url.value;
+    let mut config = GhidraConfig::new(ghidra_url)
+        .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
+    if let Some(key) = &settings.ghidra_api_key {
+        config = config.with_api_key(key.value.clone());
+    }
+    let ghidra = GhidraClient::from_config(config)
+        .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))?;
+
+    let engine = StringContextEngine::new(&ghidra);
+    let result = engine
+        .scan(dll)
+        .await
+        .with_context(|| format!("String context scan failed for {dll}"))?;
+    persistor
+        .save(&result)
+        .with_context(|| format!("Failed to save the string context result for {dll}"))?;
+
+    print_string_context_report(&result, &persistor.path_for(dll));
+    Ok(())
 }
 
 /// Print a summary of a string-context result: where it is filed, when it
