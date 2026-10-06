@@ -510,7 +510,7 @@ impl std::fmt::Display for ProgressEvent {
             } => {
                 write!(
                     f,
-                    "Behavior divergence detected for {function} ({dll}) attempt #{attempt} [{strategy}]: {baseline_passed}/{baseline_total} baseline tests pass, {edge_tests_passed}/{edge_tests_total} edge-case tests pass ({} failing, confidence {}/10)",
+                    "Behavior divergence detected for {function} ({dll}) attempt #{attempt} [{strategy}]: {baseline_passed}/{baseline_total} baseline tests pass, {edge_tests_passed}/{edge_tests_total} edge-case tests pass ({} failing, fault confidence {}/10)",
                     failing_edge_cases.len(),
                     fault_confidence
                 )

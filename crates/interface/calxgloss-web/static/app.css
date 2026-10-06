@@ -1596,8 +1596,8 @@ svg {
 }
 
 .pipeline-dll-status.complete {
-    background: var(--status-merged-bg);
-    color: var(--status-merged-fg);
+    background: var(--status-accepted-bg);
+    color: var(--status-accepted-fg);
 }
 
 .pipeline-dll-status.pending {

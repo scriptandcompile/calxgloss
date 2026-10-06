@@ -111,7 +111,7 @@ impl BaselineRunner {
                 dll_path = %dll_path.display(),
                 "Original DLL not found — returning failed test results"
             );
-            return self.create_stub_failures(dll, function, tests);
+            return self.create_placeholder_failures(dll, function, tests);
         }
 
         let image = PeImage::parse(dll_path)
@@ -146,8 +146,8 @@ impl BaselineRunner {
         Ok(results)
     }
 
-    /// Create stub failure results when the DLL is not available.
-    fn create_stub_failures(
+    /// Create placeholder failure results when the DLL is not available.
+    fn create_placeholder_failures(
         &self,
         dll: &str,
         _function: &str,
