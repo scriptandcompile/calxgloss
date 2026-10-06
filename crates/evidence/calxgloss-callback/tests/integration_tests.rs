@@ -48,8 +48,9 @@ fn function(name: &str, signature: &str, body: &str) -> DecompiledFunction {
 
 /// A canned program implementing [`ScanSource`]: one function whose
 /// body carries a cast-dereference call through `handlers`, a bare
-/// indexed call through `dispatch`, and a `register_callback` call,
-/// and one plain function that finds nothing.
+/// indexed call through `dispatch`, a `register_callback` call, and a
+/// bounds-checked switch-table dispatch, and one plain function that
+/// finds nothing.
 #[derive(Clone, Default)]
 struct FakeProgram {
     listing: Vec<FunctionSummary>,
@@ -88,7 +89,10 @@ fn program() -> FakeProgram {
             "undefined FUN_18003ab00(void)",
             "  (*(int (**)(int))handlers[uVar1])(param_1);\n\
              \x20 dispatch[uVar2](param_2);\n\
-             \x20 register_callback(my_handler);\n",
+             \x20 register_callback(my_handler);\n\
+             \x20 if (uVar3 < 6) {\n\
+             \x20   (*(code *)(&switchdataD_1800412a0)[uVar3])();\n\
+             \x20 }\n",
         ),
     );
     program.bodies.insert(
@@ -156,6 +160,7 @@ async fn the_persisted_document_keeps_findings_in_scan_order() {
             ("FUN_18003ab00", "fp_array"),
             ("FUN_18003ab00", "fp_array"),
             ("FUN_18003ab00", "registration"),
+            ("FUN_18003ab00", "jump_table"),
         ]
     );
 }
@@ -179,7 +184,7 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     // The pipeline asks what was found for the function it is about to
     // translate; the plain function carries nothing.
     let findings: Vec<&CallbackFinding> = loaded.for_function("FUN_18003ab00").collect();
-    assert_eq!(findings.len(), 3);
+    assert_eq!(findings.len(), 4);
     assert!(loaded.for_function("FUN_18003e750").next().is_none());
     assert!(loaded.for_function("FUN_180099999").next().is_none());
 
@@ -209,6 +214,20 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     assert_eq!(record.callback, "my_handler");
     assert_eq!(record.suggestion, "Box<dyn Fn(...)>");
     assert!(record.evidence.contains("register_callback(my_handler);"));
+
+    let CallbackFinding::JumpTable(record) = findings[3] else {
+        unreachable!("the switch-table dispatch reads as a jump-table finding");
+    };
+    assert_eq!(record.table, "switchdataD_1800412a0");
+    assert_eq!(record.index, "uVar3");
+    assert_eq!(record.target_count, Some(6));
+    assert_eq!(record.suggestion, "match index { /* 6 arms */ }");
+    assert_eq!(record.confidence.value(), 70);
+    assert!(
+        record
+            .evidence
+            .contains("(*(code *)(&switchdataD_1800412a0)[uVar3])();")
+    );
 }
 
 // ------------------------------------------------------------

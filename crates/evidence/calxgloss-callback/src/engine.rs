@@ -17,6 +17,7 @@
 use crate::callback_reg::CallbackRegDetector;
 use crate::error::Result;
 use crate::fp_array::FpArrayDetector;
+use crate::jump_table::JumpTableDetector;
 use crate::types::{CallbackFinding, CallbackResult, ScanMetadata};
 use calxgloss_ghidra::{DecompiledFunction, FunctionSummary, GhidraClient};
 use std::time::Instant;
@@ -55,14 +56,16 @@ impl ScanSource for GhidraClient {
 /// whole orchestration over canned bodies; [`new`](Self::new) builds
 /// one over a live [`GhidraClient`]. Each detector carries no state
 /// and starts configured with its standard name set —
-/// [`with_fp_array`](Self::with_fp_array) and
-/// [`with_registration`](Self::with_registration) swap a detector's
-/// set whole — so one instance of each serves the whole scan.
+/// [`with_fp_array`](Self::with_fp_array),
+/// [`with_registration`](Self::with_registration) and
+/// [`with_jump_table`](Self::with_jump_table) swap a detector's set
+/// whole — so one instance of each serves the whole scan.
 #[derive(Debug, Clone)]
 pub struct CallbackEngine<S = GhidraClient> {
     source: S,
     fp_array: FpArrayDetector,
     registration: CallbackRegDetector,
+    jump_table: JumpTableDetector,
 }
 
 impl CallbackEngine<GhidraClient> {
@@ -73,6 +76,7 @@ impl CallbackEngine<GhidraClient> {
             source: client.clone(),
             fp_array: FpArrayDetector::with_default_names(),
             registration: CallbackRegDetector::with_default_names(),
+            jump_table: JumpTableDetector::with_default_prefixes(),
         }
     }
 }
@@ -85,6 +89,7 @@ impl<S> CallbackEngine<S> {
             source,
             fp_array: FpArrayDetector::with_default_names(),
             registration: CallbackRegDetector::with_default_names(),
+            jump_table: JumpTableDetector::with_default_prefixes(),
         }
     }
 
@@ -99,6 +104,13 @@ impl<S> CallbackEngine<S> {
     /// instead of the standard one.
     pub fn with_registration(mut self, detector: CallbackRegDetector) -> Self {
         self.registration = detector;
+        self
+    }
+
+    /// Read jump-table dispatches against `detector`'s prefix set
+    /// instead of the standard one.
+    pub fn with_jump_table(mut self, detector: JumpTableDetector) -> Self {
+        self.jump_table = detector;
         self
     }
 
@@ -163,6 +175,12 @@ impl<S> CallbackEngine<S> {
                     .detect(&decompiled)
                     .into_iter()
                     .map(CallbackFinding::Registration),
+            );
+            findings.extend(
+                self.jump_table
+                    .detect(&decompiled)
+                    .into_iter()
+                    .map(CallbackFinding::JumpTable),
             );
         }
 
@@ -273,13 +291,14 @@ mod tests {
     }
 
     /// A body carrying a cast-dereference call through `handlers`, a
-    /// bare indexed call through `dispatch`, and a
-    /// `register_callback` call — one finding family per detector —
-    /// all in one function.
+    /// bare indexed call through `dispatch`, a `register_callback`
+    /// call, and a switch-table dispatch — one finding family per
+    /// detector — all in one function.
     const EVERY_SHAPE_BODY: &str = "\
   (*(int (**)(int))handlers[uVar1])(param_1);
   dispatch[uVar2](param_2);
-  register_callback(my_handler);";
+  register_callback(my_handler);
+  (*(code *)(&switchD_1800412a0)[uVar3])();";
 
     /// The canned program: one function whose body carries every
     /// shape, and one plain function that finds nothing.
@@ -327,7 +346,7 @@ mod tests {
         assert!(result.metadata.scanned_at > 0);
 
         let findings: Vec<&CallbackFinding> = result.for_function("FUN_18003ab00").collect();
-        assert_eq!(findings.len(), 3);
+        assert_eq!(findings.len(), 4);
 
         let CallbackFinding::FpArray(record) = findings[0] else {
             unreachable!("the cast-dereference call reads as an fp-array finding");
@@ -350,6 +369,13 @@ mod tests {
         assert_eq!(record.registration, "register_callback");
         assert_eq!(record.callback, "my_handler");
         assert_eq!(record.suggestion, "Box<dyn Fn(...)>");
+
+        let CallbackFinding::JumpTable(record) = findings[3] else {
+            unreachable!("the switch-table dispatch reads as a jump-table finding");
+        };
+        assert_eq!(record.table, "switchD_1800412a0");
+        assert_eq!(record.index, "uVar3");
+        assert_eq!(record.suggestion, "match index { ... }");
 
         assert!(result.for_function("FUN_18003e750").next().is_none());
     }
@@ -382,9 +408,11 @@ mod tests {
                 ("FUN_18003e750", "fp_array"),
                 ("FUN_18003e750", "fp_array"),
                 ("FUN_18003e750", "registration"),
+                ("FUN_18003e750", "jump_table"),
                 ("FUN_18003ab00", "fp_array"),
                 ("FUN_18003ab00", "fp_array"),
                 ("FUN_18003ab00", "registration"),
+                ("FUN_18003ab00", "jump_table"),
             ]
         );
     }
@@ -462,18 +490,20 @@ mod tests {
                 "undefined FUN_1800412a0(void)",
                 "\
   (*(code *)msg_table[uVar1])(param_1);
-  HookMessage(wnd_proc);",
+  HookMessage(wnd_proc);
+  (*(&tbl_events[uVar2]))(param_2);",
             ),
         );
 
         let engine = CallbackEngine::with_source(program)
             .with_fp_array(FpArrayDetector::with_names(["msg_table"]))
-            .with_registration(CallbackRegDetector::with_names(["HookMessage"]));
+            .with_registration(CallbackRegDetector::with_names(["HookMessage"]))
+            .with_jump_table(JumpTableDetector::with_prefixes(["tbl_"]));
         let result = engine.scan("eqmain.dll").await.expect("scan");
 
         assert_eq!(
             kinds(&result, "FUN_1800412a0"),
-            ["fp_array", "registration"]
+            ["fp_array", "registration", "jump_table"]
         );
         let findings: Vec<&CallbackFinding> = result.for_function("FUN_1800412a0").collect();
         let CallbackFinding::FpArray(record) = findings[0] else {
@@ -486,6 +516,11 @@ mod tests {
         };
         assert_eq!(record.registration, "HookMessage");
         assert_eq!(record.callback, "wnd_proc");
+        let CallbackFinding::JumpTable(record) = findings[2] else {
+            unreachable!("the configured table prefix reads as a jump-table finding");
+        };
+        assert_eq!(record.table, "tbl_events");
+        assert_eq!(record.index, "uVar2");
     }
 
     #[tokio::test]

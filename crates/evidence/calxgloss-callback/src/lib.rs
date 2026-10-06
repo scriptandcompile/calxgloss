@@ -39,9 +39,11 @@
 //!   the per-binary detection results under `re/analysis/callback/`.
 //! - [`error`] - [`CallbackError`] and the crate-wide [`Result`] alias.
 
+pub mod callback_reg;
 pub mod engine;
 pub mod error;
 pub mod fp_array;
+pub mod jump_table;
 pub mod persist;
 pub mod types;
 
