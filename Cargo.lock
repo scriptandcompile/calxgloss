@@ -326,6 +326,7 @@ version = "0.2.0"
 dependencies = [
  "calxgloss-algorithm",
  "calxgloss-analysis",
+ "calxgloss-apidetect",
  "calxgloss-callback",
  "calxgloss-callgraph",
  "calxgloss-config",
@@ -384,6 +385,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "calxgloss-apidetect"
+version = "0.2.0"
+dependencies = [
+ "calxgloss-callgraph",
+ "calxgloss-ghidra",
+ "calxgloss-prompts",
+ "calxgloss-types",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "calxgloss-callback"
 version = "0.2.0"
 dependencies = [
@@ -421,6 +438,7 @@ dependencies = [
  "calxgloss",
  "calxgloss-algorithm",
  "calxgloss-analysis",
+ "calxgloss-apidetect",
  "calxgloss-callback",
  "calxgloss-config",
  "calxgloss-controlflow",
@@ -627,6 +645,7 @@ dependencies = [
  "askama",
  "calxgloss-algorithm",
  "calxgloss-analysis",
+ "calxgloss-apidetect",
  "calxgloss-callback",
  "calxgloss-callgraph",
  "calxgloss-controlflow",
