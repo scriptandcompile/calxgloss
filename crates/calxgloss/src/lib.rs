@@ -167,6 +167,22 @@ pub use calxgloss_sync::types::{
 };
 
 // ============================================================
+// calxgloss-apidetect — library & API identification
+// ============================================================
+
+// The crate's `Result` alias is deliberately not re-exported:
+// `ApiDetectionResult` already names the per-binary document, and a second
+// alias spelled like it would read as the same thing. The crate's
+// `ScanMetadata` is the shared one from calxgloss-types, already
+// named here. `ApiSignature` is also not re-exported: it clashes with the
+// leaf_detector::ApiSignature already named here — reach it as
+// `calxgloss_apidetect::types::ApiSignature` if needed.
+pub use calxgloss_apidetect::api_summary::ApiSummaryDetector;
+pub use calxgloss_apidetect::import_table::ImportTableScanner;
+pub use calxgloss_apidetect::lib_mapping::MappingDatabase;
+pub use calxgloss_apidetect::{ApiDetectionResult, ApiError, ApiFinding, ApiUsage};
+
+// ============================================================
 // calxgloss-callback — callback & function-pointer table detection
 // ============================================================
 

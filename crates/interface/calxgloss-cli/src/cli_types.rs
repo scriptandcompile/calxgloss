@@ -459,6 +459,41 @@ pub(super) enum Command {
         show: bool,
     },
 
+    /// Identify the libraries and APIs of a binary
+    ///
+    /// Reads the binary's import table and identifies the libraries it
+    /// imports — DirectX 9, SDL2, Win32, POSIX, PNG, zlib, stdio, the
+    /// C++ STL — mapping each identified API to the Rust crate that
+    /// stands in for it, and records the APIs each function reaches
+    /// through the call graph.
+    ///
+    /// The API findings are persisted per binary to
+    /// `re/analysis/apidetect/<dll>.json` in the workspace — the same
+    /// file batch translation will read as prompt context. `--show`
+    /// prints a cached result without connecting to Ghidra.
+    ///
+    /// # Arguments
+    ///
+    /// * `--dll` — Binary to scan, e.g. `eqmain.dll`. Names the
+    ///   persisted file.
+    /// * `--show` — Print a summary of the cached result.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss apidetect --dll eqmain.dll --show
+    /// ```
+    #[command(name = "apidetect")]
+    ApiDetect {
+        /// Binary to scan, e.g. `eqmain.dll`
+        #[arg(long, required = true)]
+        dll: String,
+
+        /// Show the cached result instead of running the scan
+        #[arg(long)]
+        show: bool,
+    },
+
     /// Show the configuration in force and where each value came from
     ///
     /// Secrets are reported as `<set>` rather than printed, so this output is

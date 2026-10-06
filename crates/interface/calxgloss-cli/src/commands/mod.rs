@@ -1,6 +1,7 @@
 //! Command handlers for the CLI.
 
 pub mod algorithm;
+pub mod apidetect;
 pub mod auto;
 pub mod auto_shim;
 pub mod batch_translate;

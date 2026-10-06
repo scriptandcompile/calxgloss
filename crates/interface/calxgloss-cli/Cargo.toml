@@ -20,6 +20,7 @@ calxgloss-sync = { path = "../../evidence/calxgloss-sync" }
 calxgloss-stringctx = { path = "../../evidence/calxgloss-stringctx" }
 calxgloss-callback = { path = "../../evidence/calxgloss-callback" }
 calxgloss-controlflow = { path = "../../evidence/calxgloss-controlflow" }
+calxgloss-apidetect = { path = "../../evidence/calxgloss-apidetect" }
 calxgloss-verify = { path = "../../pipeline/calxgloss-verify" }
 calxgloss-git = { path = "../../pipeline/calxgloss-git" }
 calxgloss-reports = { path = "../calxgloss-reports" }

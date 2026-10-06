@@ -17,6 +17,7 @@
 //! - `memory` — Detect memory lifecycles (allocation/release pairs, handle lifetimes, reference counting) for the open binary and cache the result
 //! - `sync` — Detect concurrency constructs (mutex pairings, atomic operations, thread spawns) for the open binary and cache the result
 //! - `stringctx` — Map program strings to functions (classification, format-string types) for the open binary and cache the result
+//! - `apidetect` — Identify the libraries and APIs of the open binary (import table, per-function API summaries) and cache the result
 //! - `verify` — Verify a previously translated function
 //! - `config` — Show the configuration in force and where each value came from
 //! - `dashboard` — Show a structured terminal review dashboard
@@ -54,6 +55,7 @@ use utils::*;
 
 // Re-export handler functions for match arm access
 use commands::algorithm::handle_algorithm;
+use commands::apidetect::handle_apidetect;
 use commands::auto::handle_auto;
 use commands::auto_shim::handle_auto_shim;
 use commands::batch_translate::handle_batch_translate;
@@ -127,7 +129,8 @@ fn main() -> Result<()> {
 
     // target_dir is required for all commands that do real work.
     // `config`, `gc`, `typesdb`, `typeinfer`, `algorithm`, `memory`, `sync`,
-    // `callback`, `controlflow`, and `stringctx` don't need it — the analysis
+    // `callback`, `controlflow`, `stringctx`, and `apidetect` don't need it —
+    // the analysis
     // commands read the program open
     // in Ghidra and write to the workspace — so we check here and fail
     // fast with a helpful message.
@@ -142,7 +145,8 @@ fn main() -> Result<()> {
             | Command::Sync { .. }
             | Command::Callback { .. }
             | Command::ControlFlow { .. }
-            | Command::StringCtx { .. } => {}
+            | Command::StringCtx { .. }
+            | Command::ApiDetect { .. } => {}
             _ if settings.target_dir.is_none() => {
                 anyhow::bail!(
                     "target_dir is required.\n\nSet it via:\n  --target-dir <path>\n  [target_dir] in calxgloss.toml\n  CALXGLOSS_TARGET_DIR env var"
@@ -283,6 +287,14 @@ fn main() -> Result<()> {
                 .build()
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_stringctx(&dll, &workspace, show, &settings))
+        }
+        Command::ApiDetect { dll, show } => {
+            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_apidetect(&dll, &workspace, show, &settings))
         }
         Command::Verify {
             dll,
