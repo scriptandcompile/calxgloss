@@ -11,7 +11,10 @@
 //! Each allocator name is an [`AllocatorSignature`]: the callee
 //! spelling as the decompiler writes it and the [`AllocationType`] it
 //! stands for. [`default_allocators`] and [`default_deallocators`]
-//! carry the standard name sets, and
+//! carry the standard name sets, covering both spellings Ghidra has
+//! written the C++ operators in — the demangled dot form
+//! (`operator.new`) and the 6.x decompiler's underscore form
+//! (`operator_new`) — and
 //! [`AllocatorTracker::with_default_names`] builds a tracker that
 //! scans against them.
 //!
@@ -305,9 +308,12 @@ struct CallSite<'a> {
 /// demangled spelling whole: a `.` followed by an identifier byte
 /// continues the name — Ghidra writes `operator new` as
 /// `operator.new` — and a trailing `[]` belongs to the name too, the
-/// array spelling `operator.new[]`. A call whose `(` never closes —
-/// a truncated decompile — yields nothing, and nested calls are each
-/// visited, so `malloc(strlen(name))` yields both sites.
+/// array spelling `operator.new[]`. (The 6.x decompiler's underscore
+/// form `operator_new[]` is a plain identifier plus the same bracket
+/// suffix, so it needs no further special handling.) A call whose
+/// `(` never closes — a truncated decompile — yields nothing, and
+/// nested calls are each visited, so `malloc(strlen(name))` yields
+/// both sites.
 fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
     let bytes = body.as_bytes();
     let mut calls = Vec::new();
@@ -721,11 +727,18 @@ fn plain_variable(arg: &str) -> Option<&str> {
 
 /// The standard allocator names: the spellings a scan recognizes as
 /// allocations out of the box — the C trio `malloc`, `calloc`, and
-/// `realloc`, and the C++ `operator.new` and `operator.new[]` as
-/// Ghidra writes demangled `operator new`. Each name carries the
-/// family it stands for, so a recognized call knows whether it
-/// obtained a raw block, a zero-filled block, a resized block, object
-/// storage, or array storage.
+/// `realloc`, and both renderings of the C++ `operator new` pair.
+/// Ghidra has written demangled `operator new` two ways: the demangled
+/// dot form `operator.new`/`operator.new[]` and, in the live 6.x
+/// decompiler, the underscore form `operator_new`/`operator_new[]`
+/// (`local_220 = operator_new(0x660);`) — the default set carries both
+/// spellings rather than normalizing `.`/`_` in the matcher, so each
+/// name stays exactly a callee spelling the scan matches whole and a
+/// per-scan override through [`with_names`](AllocatorTracker::with_names)
+/// can still name one spelling alone. Each name carries the family it
+/// stands for, so a recognized call knows whether it obtained a raw
+/// block, a zero-filled block, a resized block, object storage, or
+/// array storage.
 pub fn default_allocators() -> Vec<AllocatorSignature> {
     vec![
         AllocatorSignature::new("malloc", AllocationType::Malloc),
@@ -733,18 +746,26 @@ pub fn default_allocators() -> Vec<AllocatorSignature> {
         AllocatorSignature::new("realloc", AllocationType::Realloc),
         AllocatorSignature::new("operator.new", AllocationType::New),
         AllocatorSignature::new("operator.new[]", AllocationType::NewArray),
+        AllocatorSignature::new("operator_new", AllocationType::New),
+        AllocatorSignature::new("operator_new[]", AllocationType::NewArray),
     ]
 }
 
 /// The standard deallocator names: the spellings a scan recognizes as
 /// releases — `free`, which closes every C allocation including the
-/// block `realloc` replaces, and Ghidra's demangled `operator.delete`
-/// and `operator.delete[]`, which close C++ object and array storage.
+/// block `realloc` replaces, and both renderings of `operator delete`:
+/// the demangled dot form `operator.delete`/`operator.delete[]` and
+/// the 6.x decompiler's underscore form
+/// `operator_delete`/`operator_delete[]`, which close C++ object and
+/// array storage. As in [`default_allocators`], both spellings are
+/// carried whole rather than normalized in the matcher.
 pub fn default_deallocators() -> Vec<String> {
     vec![
         "free".into(),
         "operator.delete".into(),
         "operator.delete[]".into(),
+        "operator_delete".into(),
+        "operator_delete[]".into(),
     ]
 }
 
@@ -848,6 +869,8 @@ mod tests {
                 ("realloc", AllocationType::Realloc),
                 ("operator.new", AllocationType::New),
                 ("operator.new[]", AllocationType::NewArray),
+                ("operator_new", AllocationType::New),
+                ("operator_new[]", AllocationType::NewArray),
             ]
         );
     }
@@ -856,7 +879,13 @@ mod tests {
     fn the_standard_deallocators_name_free_and_the_delete_pair() {
         assert_eq!(
             default_deallocators(),
-            ["free", "operator.delete", "operator.delete[]"]
+            [
+                "free",
+                "operator.delete",
+                "operator.delete[]",
+                "operator_delete",
+                "operator_delete[]",
+            ]
         );
     }
 
@@ -947,6 +976,55 @@ undefined FUN_18003ab00(void) {
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].allocation_type, AllocationType::NewArray);
         assert_eq!(hints[0].suggestion, "Vec<T>");
+    }
+
+    #[test]
+    fn an_underscore_spelled_operator_new_pair_pairs_like_the_dot_form() {
+        // The live 6.x decompiler writes the C++ operators with
+        // underscores (`local_220 = operator_new(0x660);`); the
+        // underscore spelling is a plain identifier to the scan and
+        // pairs exactly as the demangled dot form does.
+        let hints = pairs(
+            "\
+  local_220 = operator_new(0x660);
+  operator_delete(local_220);",
+        );
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].allocation_type, AllocationType::New);
+        assert_eq!(hints[0].suggestion, "stack allocation");
+        assert_eq!(
+            hints[0].evidence,
+            "local_220 = operator_new(0x660); operator_delete(local_220);"
+        );
+    }
+
+    #[test]
+    fn an_underscore_spelled_operator_new_array_pair_reads_as_a_sequence() {
+        // The array spelling carries its brackets the same way in
+        // either form: `operator_new[]` is one callee and its storage
+        // reads as what a growable sequence stands in for.
+        let hints = pairs(
+            "\
+  puVar2 = (ulonglong *)operator_new[](0x40);
+  operator_delete[](puVar2);",
+        );
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].allocation_type, AllocationType::NewArray);
+        assert_eq!(hints[0].suggestion, "Vec<T>");
+    }
+
+    #[test]
+    fn an_underscore_spelled_name_inside_a_longer_name_matches_nothing() {
+        // Whole names still: a Ghidra body calling the new handler is
+        // not calling `operator_new`.
+        assert!(
+            pairs(
+                "\
+  pvVar1 = operator_new_handler(0x10);
+  operator_delete_wrapper(pvVar1);"
+            )
+            .is_empty()
+        );
     }
 
     #[test]

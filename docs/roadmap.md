@@ -115,7 +115,15 @@ template renders a MEMORY LIFECYCLE section beside RECOGNIZED ALGORITHMS
 (`MemoryInfo` prompt data in `calxgloss-prompts`, `From<&MemoryFinding>`
 conversion on the finding in the memory crate per the typesdb/typeinfer/
 algorithm convention; 2 template unit tests, 1 conversion unit test, 1
-fixture-document-to-prompt integration test); clippy + fmt clean.
+fixture-document-to-prompt integration test); **follow-up (issue #6)**:
+`default_allocators()`/`default_deallocators()` now carry both spellings
+Ghidra has written the C++ operators in — the demangled dot form
+(`operator.new`/`operator.delete`) and the live 6.x decompiler's
+underscore form (`operator_new`/`operator_delete`, array `[]` variants
+included) — after the live eqmain scan's whole-name matching paired
+nothing at the plainly visible `operator_new` sites; 3 new unit tests plus
+extended coverage of the two standard-set tests;
+clippy + fmt clean.
 
 Dependencies: soft on P2 (done).
 
