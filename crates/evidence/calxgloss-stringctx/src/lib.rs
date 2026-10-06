@@ -29,11 +29,14 @@
 pub mod classify;
 pub mod error;
 pub mod format_str;
+pub mod persist;
 pub mod types;
 
 pub use classify::{CategoryPatterns, StringClassifyEngine};
 pub use error::{Result, StringCtxError};
 pub use format_str::{FormatStringEngine, extract_format_hints};
+pub use persist::StringContextPersistor;
 pub use types::{
-    ClassifiedString, FormatHint, FormatStringUse, StringClassification, StringSource,
+    ClassifiedString, FormatHint, FormatStringUse, StringClassification, StringContextResult,
+    StringFinding, StringSource,
 };

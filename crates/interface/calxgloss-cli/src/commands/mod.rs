@@ -13,6 +13,7 @@ pub mod init;
 pub mod live;
 pub mod memory;
 pub mod serve;
+pub mod stringctx;
 pub mod sync;
 pub mod translate;
 pub mod typeinfer;

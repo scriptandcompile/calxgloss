@@ -17,6 +17,7 @@ calxgloss-typeinfer = { path = "../../evidence/calxgloss-typeinfer" }
 calxgloss-algorithm = { path = "../../evidence/calxgloss-algorithm" }
 calxgloss-memory = { path = "../../evidence/calxgloss-memory" }
 calxgloss-sync = { path = "../../evidence/calxgloss-sync" }
+calxgloss-stringctx = { path = "../../evidence/calxgloss-stringctx" }
 calxgloss-callback = { path = "../../evidence/calxgloss-callback" }
 calxgloss-controlflow = { path = "../../evidence/calxgloss-controlflow" }
 calxgloss-verify = { path = "../../pipeline/calxgloss-verify" }

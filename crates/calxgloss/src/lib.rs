@@ -141,13 +141,14 @@ pub use calxgloss_memory::types::{
 // ============================================================
 
 // The crate's `Result` alias is deliberately not re-exported:
-// `StringContextResult` will name the per-binary document, and a second
+// `StringContextResult` already names the per-binary document, and a second
 // alias spelled like it would read as the same thing. The crate's
 // `ScanMetadata` is the shared one from calxgloss-types, already
 // named here.
 pub use calxgloss_stringctx::{
     ClassifiedString, FormatHint, FormatStringEngine, FormatStringUse, StringClassification,
-    StringClassifyEngine, StringCtxError, StringSource,
+    StringClassifyEngine, StringContextPersistor, StringContextResult, StringCtxError,
+    StringFinding, StringSource,
 };
 
 // ============================================================

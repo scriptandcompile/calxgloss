@@ -425,6 +425,40 @@ pub(super) enum Command {
         show: bool,
     },
 
+    /// Map program strings to the functions that use them
+    ///
+    /// Classifies the binary's strings into their roles — error
+    /// messages, file paths, resource names, debug logs, format strings
+    /// — and ties each to the functions that reference it, inferring the
+    /// Rust argument types format-string calls carry.
+    ///
+    /// The string-context findings are persisted per binary to
+    /// `re/analysis/stringctx/<dll>.json` in the workspace — the same
+    /// file batch translation will read as prompt context. `--show`
+    /// prints a cached result without connecting to Ghidra.
+    ///
+    /// # Arguments
+    ///
+    /// * `--dll` — Binary to scan, e.g. `eqmain.dll`. Names the
+    ///   persisted file.
+    /// * `--show` — Print a summary of the cached result.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss stringctx --dll eqmain.dll --show
+    /// ```
+    #[command(name = "stringctx")]
+    StringCtx {
+        /// Binary to scan, e.g. `eqmain.dll`
+        #[arg(long, required = true)]
+        dll: String,
+
+        /// Show the cached result instead of running the scan
+        #[arg(long)]
+        show: bool,
+    },
+
     /// Show the configuration in force and where each value came from
     ///
     /// Secrets are reported as `<set>` rather than printed, so this output is
