@@ -222,6 +222,23 @@ impl CallbackFinding {
     }
 }
 
+/// Render a finding as prompt data: the function it is about, the kind
+/// of pattern the detector read, the Rust callback pattern the finding
+/// suggests, and the confidence and evidence behind the claim — so the
+/// escalate prompt shows the hypothesis and how strongly it was made,
+/// whichever detector produced it.
+impl From<&CallbackFinding> for calxgloss_prompts::CallbackInfo {
+    fn from(finding: &CallbackFinding) -> Self {
+        Self {
+            function: finding.function().to_string(),
+            kind: finding.kind().to_string(),
+            suggestion: finding.suggestion().to_string(),
+            confidence: finding.confidence().value(),
+            evidence: finding.evidence().to_string(),
+        }
+    }
+}
+
 // ============================================================
 // Persisted result
 // ============================================================
@@ -447,6 +464,27 @@ mod tests {
                 "DAT_1400a1b60[uVar2]"
             ]
         );
+    }
+
+    #[test]
+    fn every_finding_variant_renders_as_prompt_data() {
+        let fp_array = CallbackFinding::FpArray(fp_array_call());
+        let info = calxgloss_prompts::CallbackInfo::from(&fp_array);
+        assert_eq!(info.function, "FUN_18003ab00");
+        assert_eq!(info.kind, "fp_array");
+        assert_eq!(info.suggestion, "Vec<Box<dyn Fn(...)>>");
+        assert_eq!(info.confidence, 70);
+        assert_eq!(info.evidence, "(*(int (**)(int))handlers[uVar1])(param_1);");
+
+        let registration = CallbackFinding::Registration(registration());
+        let info = calxgloss_prompts::CallbackInfo::from(&registration);
+        assert_eq!(info.kind, "registration");
+        assert_eq!(info.suggestion, "Box<dyn Fn(...)>");
+
+        let jump_table = CallbackFinding::JumpTable(jump_table());
+        let info = calxgloss_prompts::CallbackInfo::from(&jump_table);
+        assert_eq!(info.kind, "jump_table");
+        assert_eq!(info.suggestion, "[fn(...); 5]");
     }
 
     #[test]

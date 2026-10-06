@@ -180,6 +180,27 @@ pub struct ConcurrencyInfo {
     pub evidence: String,
 }
 
+/// A callback or function-pointer-table finding about one function,
+/// made by the `calxgloss-callback` detectors.
+///
+/// The escalate prompt shows these alongside the other analysis findings
+/// so the LLM expresses the callback boundary with a Rust `dyn Fn`
+/// pattern instead of transliterating the raw table indexing or
+/// registration call.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CallbackInfo {
+    /// The function the finding is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The kind of finding, e.g. `fp_array`, `registration`, `jump_table`.
+    pub kind: String,
+    /// The Rust pattern the finding suggests, e.g. `Vec<Box<dyn Fn(...)>>`.
+    pub suggestion: String,
+    /// Confidence that the finding is right, 0–100.
+    pub confidence: u8,
+    /// The decompiled lines that support the finding.
+    pub evidence: String,
+}
+
 /// A formatted test result for template rendering.
 ///
 /// Carries the test case data alongside the pass/fail outcome observed
@@ -463,6 +484,9 @@ pub struct EscalateTemplate {
     /// Concurrency findings about this function made by the analysis
     /// pipeline.
     pub concurrency_findings: Vec<ConcurrencyInfo>,
+    /// Callback and function-pointer-table findings about this function
+    /// made by the analysis pipeline.
+    pub callback_findings: Vec<CallbackInfo>,
     /// Previous attempt failures to reference in the prompt.
     pub failure_history: Vec<FailureHint>,
     /// Enriched call graph context with caller/callee/leaf-API details.
@@ -484,6 +508,7 @@ impl EscalateTemplate {
         recognized_algorithms: Vec<AlgorithmInfo>,
         memory_findings: Vec<MemoryInfo>,
         concurrency_findings: Vec<ConcurrencyInfo>,
+        callback_findings: Vec<CallbackInfo>,
     ) -> Self {
         Self {
             function_name,
@@ -497,6 +522,7 @@ impl EscalateTemplate {
             recognized_algorithms,
             memory_findings,
             concurrency_findings,
+            callback_findings,
             failure_history: Vec::new(),
             call_graph_context: Vec::new(),
         }
@@ -516,6 +542,7 @@ impl EscalateTemplate {
         recognized_algorithms: Vec<AlgorithmInfo>,
         memory_findings: Vec<MemoryInfo>,
         concurrency_findings: Vec<ConcurrencyInfo>,
+        callback_findings: Vec<CallbackInfo>,
         failure_history: Vec<FailureHint>,
     ) -> Self {
         Self {
@@ -530,6 +557,7 @@ impl EscalateTemplate {
             recognized_algorithms,
             memory_findings,
             concurrency_findings,
+            callback_findings,
             failure_history,
             call_graph_context: Vec::new(),
         }
@@ -549,6 +577,7 @@ impl EscalateTemplate {
         recognized_algorithms: Vec<AlgorithmInfo>,
         memory_findings: Vec<MemoryInfo>,
         concurrency_findings: Vec<ConcurrencyInfo>,
+        callback_findings: Vec<CallbackInfo>,
         failure_history: Vec<FailureHint>,
         call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
     ) -> Self {
@@ -564,6 +593,7 @@ impl EscalateTemplate {
             recognized_algorithms,
             memory_findings,
             concurrency_findings,
+            callback_findings,
             failure_history,
             call_graph_context,
         }

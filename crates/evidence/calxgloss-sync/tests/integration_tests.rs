@@ -247,6 +247,7 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
         findings,
         Vec::new(),
         Vec::new(),
+        Vec::new(),
     )
     .expect("the escalate prompt should render");
 

@@ -351,6 +351,47 @@ pub fn extract_concurrency_hints(
         .collect()
 }
 
+/// Extract callback findings for a function from the persisted
+/// detection result.
+///
+/// Reads the per-binary result produced by the `calxgloss-callback`
+/// engine from `re/analysis/callback/{dll}.json` and keeps the findings
+/// made for the target function — the function-pointer array calls,
+/// callback registrations, and jump-table dispatches whose calls live
+/// in `function`'s decompiled body.
+///
+/// Returns an empty vector when no workspace is configured, no result
+/// is persisted for `dll` (the scan has not run), or the document is
+/// corrupt: missing callback context degrades the prompt, it never
+/// fails it.
+pub fn extract_callback_hints(
+    workspace: Option<&std::path::Path>,
+    dll: &str,
+    function: &str,
+) -> Vec<calxgloss_prompts::CallbackInfo> {
+    let Some(workspace) = workspace else {
+        return Vec::new();
+    };
+
+    let persistor = calxgloss_callback::persist::CallbackPersistor::new(workspace);
+    let result = match persistor.load(dll) {
+        Ok(result) => result,
+        Err(e) => {
+            debug!(
+                dll,
+                error = %e,
+                "No usable callback result; continuing without callback context"
+            );
+            return Vec::new();
+        }
+    };
+
+    result
+        .for_function(function)
+        .map(calxgloss_prompts::CallbackInfo::from)
+        .collect()
+}
+
 // ============================================================
 // Tier 4 — Shim layer and PAL trait extraction
 // ============================================================
@@ -1465,5 +1506,132 @@ mod tests {
         assert_eq!(found[0].suggestion, "std::sync::Mutex<T>");
         assert_eq!(found[1].suggestion, "std::sync::atomic::AtomicU32");
         assert_eq!(found[2].suggestion, "std::thread::spawn");
+    }
+
+    fn fp_array_hint(function: &str) -> calxgloss_callback::types::CallbackFinding {
+        calxgloss_callback::types::CallbackFinding::FpArray(
+            calxgloss_callback::types::FpArrayCall {
+                function: function.to_string(),
+                table: "handlers".into(),
+                suggestion: "Vec<Box<dyn Fn(i32)>>".into(),
+                confidence: calxgloss_callback::types::Confidence::new(70),
+                evidence: "handlers[uVar1](param_1);".into(),
+            },
+        )
+    }
+
+    fn registration_hint(function: &str) -> calxgloss_callback::types::CallbackFinding {
+        calxgloss_callback::types::CallbackFinding::Registration(
+            calxgloss_callback::types::CallbackRegistration {
+                function: function.to_string(),
+                registration: "register_callback".into(),
+                callback: "my_handler".into(),
+                suggestion: "Box<dyn Fn(i32)>".into(),
+                confidence: calxgloss_callback::types::Confidence::new(70),
+                evidence: "register_callback(my_handler);".into(),
+            },
+        )
+    }
+
+    fn jump_table_hint(function: &str) -> calxgloss_callback::types::CallbackFinding {
+        calxgloss_callback::types::CallbackFinding::JumpTable(
+            calxgloss_callback::types::JumpTable {
+                function: function.to_string(),
+                table: "DAT_1400a1b60".into(),
+                index: "uVar2".into(),
+                target_count: Some(5),
+                suggestion: "[fn(...); 5]".into(),
+                confidence: calxgloss_callback::types::Confidence::new(70),
+                evidence: "if (uVar2 < 5) { (*DAT_1400a1b60[uVar2])(); }".into(),
+            },
+        )
+    }
+
+    fn persist_callback_findings(
+        dir: &TempDir,
+        findings: Vec<calxgloss_callback::types::CallbackFinding>,
+    ) {
+        let mut result =
+            calxgloss_callback::types::CallbackResult::new(ScanMetadata::new("eqmain.dll"));
+        result.findings = findings;
+        calxgloss_callback::persist::CallbackPersistor::new(dir.path())
+            .save(&result)
+            .expect("the callback result should be saved");
+    }
+
+    #[test]
+    fn no_workspace_configured_yields_no_callback_findings() {
+        assert!(
+            extract_callback_hints(None, "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "no workspace means no callback context"
+        );
+    }
+
+    #[test]
+    fn a_missing_cache_yields_no_callback_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        assert!(
+            extract_callback_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "a scan that has not run yet just means no callback context"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_cache_degrades_to_no_callback_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        let path = dir
+            .path()
+            .join("re")
+            .join("analysis")
+            .join("callback")
+            .join("eqmain.dll.json");
+        std::fs::create_dir_all(
+            path.parent()
+                .expect("the document path should have a parent"),
+        )
+        .expect("the cache directory should be creatable");
+        std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
+
+        assert!(extract_callback_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty());
+    }
+
+    #[test]
+    fn callback_findings_of_other_functions_are_dropped() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_callback_findings(
+            &dir,
+            vec![fp_array_hint("FUN_18003ab00"), fp_array_hint("FUN_zzz")],
+        );
+
+        let found = extract_callback_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        assert_eq!(found.len(), 1, "only the target function's finding");
+        assert_eq!(found[0].function, "FUN_18003ab00");
+        assert_eq!(found[0].kind, "fp_array");
+        assert_eq!(found[0].suggestion, "Vec<Box<dyn Fn(i32)>>");
+        assert_eq!(found[0].confidence, 70);
+        assert_eq!(found[0].evidence, "handlers[uVar1](param_1);");
+    }
+
+    #[test]
+    fn every_callback_finding_of_the_function_lands_in_the_prompt() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_callback_findings(
+            &dir,
+            vec![
+                fp_array_hint("FUN_18003ab00"),
+                registration_hint("FUN_18003ab00"),
+                jump_table_hint("FUN_18003ab00"),
+                registration_hint("FUN_zzz"),
+            ],
+        );
+
+        let found = extract_callback_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        let kinds: Vec<&str> = found.iter().map(|f| f.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["fp_array", "registration", "jump_table"]);
+        assert_eq!(found[0].suggestion, "Vec<Box<dyn Fn(i32)>>");
+        assert_eq!(found[1].suggestion, "Box<dyn Fn(i32)>");
+        assert_eq!(found[2].suggestion, "[fn(...); 5]");
     }
 }

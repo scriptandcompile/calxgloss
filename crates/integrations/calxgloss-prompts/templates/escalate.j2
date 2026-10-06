@@ -192,6 +192,24 @@ No concurrency context available.
 
 ---
 
+## ADDITIONAL CONTEXT — CALLBACKS
+
+{% if !callback_findings.is_empty() %}
+The following callback and function-pointer patterns were recognized in this
+function by static analysis. Where a finding is credible, express the callback
+boundary with the suggested Rust pattern instead of transliterating the raw
+table indexing or registration call:
+
+{% for finding in callback_findings %}
+- **{{ finding.suggestion|safe }}** ({{ finding.kind }} pattern, confidence {{ finding.confidence }})
+  Evidence: `{{ finding.evidence|safe }}`
+{% endfor %}
+{% else %}
+No callback context available.
+{% endif %}
+
+---
+
 ## TRANSLATION REQUIREMENTS
 
 1. **Output ONLY the corrected Rust code** — no explanations, no markdown fences, no code blocks.

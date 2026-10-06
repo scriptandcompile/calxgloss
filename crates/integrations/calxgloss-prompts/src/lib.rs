@@ -54,11 +54,11 @@ pub use context::{
 };
 pub use error::PromptError;
 pub use templates::{
-    AlgorithmInfo, BoundaryValue, CallGraphNeighbor, ConcurrencyInfo, EdgeCaseTemplate,
-    EdgeCaseTest, EscalateTemplate, FixTemplate, FormattedTestResult, FullModuleTemplate,
-    MemoryInfo, MinimalTemplate, ModuleContextTemplate, NeighborFunction, PalTraitDef,
-    PalTraitMethod, ShimCode, SignatureTemplate, StructField, StructuredData, TestCaseFormatted,
-    TranslateTemplate, TypeInfo, WithTestsTemplate,
+    AlgorithmInfo, BoundaryValue, CallGraphNeighbor, CallbackInfo, ConcurrencyInfo,
+    EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate, FixTemplate, FormattedTestResult,
+    FullModuleTemplate, MemoryInfo, MinimalTemplate, ModuleContextTemplate, NeighborFunction,
+    PalTraitDef, PalTraitMethod, ShimCode, SignatureTemplate, StructField, StructuredData,
+    TestCaseFormatted, TranslateTemplate, TypeInfo, WithTestsTemplate,
 };
 
 // Re-export types used by template constructors
@@ -615,6 +615,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -668,6 +669,7 @@ mod tests {
             findings,
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -695,6 +697,60 @@ mod tests {
 
         assert!(prompt.contains("CONCURRENCY"));
         assert!(prompt.contains("No concurrency context available."));
+    }
+
+    #[test]
+    fn test_escalate_template_with_callback_findings() {
+        let findings = vec![CallbackInfo {
+            function: "FUN_18003ab00".to_string(),
+            kind: "fp_array".to_string(),
+            suggestion: "Vec<Box<dyn Fn(i32)>>".to_string(),
+            confidence: 70,
+            evidence: "handlers[uVar2](iVar3);".to_string(),
+        }];
+
+        let prompt = build_escalate_prompt_with_context(
+            "FUN_18003ab00".to_string(),
+            "eqmain.dll".to_string(),
+            "fn fun_18003ab00() { /* raw table indexing */ }".to_string(),
+            "Wrong result".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            findings,
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(prompt.contains("CALLBACKS"));
+        assert!(prompt.contains("Vec<Box<dyn Fn(i32)>>"));
+        assert!(prompt.contains("fp_array pattern"));
+        assert!(prompt.contains("confidence 70"));
+        assert!(prompt.contains("handlers[uVar2](iVar3);"));
+    }
+
+    #[test]
+    fn test_escalate_template_without_callback_findings_says_so() {
+        let prompt = build_escalate_prompt(
+            "DrawSprite".to_string(),
+            "game_logic.dll".to_string(),
+            "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
+            "Wrong result".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(prompt.contains("CALLBACKS"));
+        assert!(prompt.contains("No callback context available."));
     }
 
     #[test]

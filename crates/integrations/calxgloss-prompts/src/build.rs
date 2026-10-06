@@ -99,6 +99,7 @@ pub fn build_escalate_prompt(
         Vec::new(),
         Vec::new(),
         Vec::new(),
+        Vec::new(),
         failure_history,
         Vec::new(),
     )
@@ -110,9 +111,9 @@ pub fn build_escalate_prompt(
 /// Used when previous attempts failed with compile_fix or test_fix strategies.
 /// Adds call graph neighbors, neighboring functions, data structures,
 /// type information, recognized algorithms, memory lifecycle findings,
-/// concurrency findings, and enriched call graph context (caller/callee
-/// details and leaf API suggestions) to help the LLM understand the broader
-/// context.
+/// concurrency findings, callback findings, and enriched call graph context
+/// (caller/callee details and leaf API suggestions) to help the LLM understand
+/// the broader context.
 #[allow(clippy::too_many_arguments)]
 pub fn build_escalate_prompt_with_context(
     function_name: String,
@@ -126,6 +127,7 @@ pub fn build_escalate_prompt_with_context(
     recognized_algorithms: Vec<super::templates::AlgorithmInfo>,
     memory_findings: Vec<super::templates::MemoryInfo>,
     concurrency_findings: Vec<super::templates::ConcurrencyInfo>,
+    callback_findings: Vec<super::templates::CallbackInfo>,
     failure_history: Vec<calxgloss_types::FailureHint>,
     call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
 ) -> Result<String, PromptError> {
@@ -141,6 +143,7 @@ pub fn build_escalate_prompt_with_context(
         recognized_algorithms,
         memory_findings,
         concurrency_findings,
+        callback_findings,
         failure_history,
         call_graph_context,
     );
