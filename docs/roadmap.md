@@ -148,8 +148,9 @@ atomics (`InterlockedIncrement`/`Decrement` → `AtomicU32`,
 `__atomic_fetch_add`/`__sync_fetch_and_add` → `AtomicU64` as a documented
 default; one finding per call site); threading (`CreateThread`/
 `std::thread::spawn` bind the handle by return value, `pthread_create` by first
-argument; joined by `WaitForSingleObject`/`pthread_join` → `std::thread::spawn`
-at 70, unjoined → `tokio::spawn` at 60); 103 unit tests;
+argument; joined by `WaitForSingleObject`/`pthread_join`/the demangled
+`std::thread::JoinHandle::join` → `std::thread::spawn` at 70, unjoined →
+`tokio::spawn` at 60); 104 unit tests;
 `calxgloss sync --dll <dll>` scan+save wired to the engine and `--show`
 printing the cached document (target-dir-exempt); `calxgloss-sync` re-exported
 from the meta-crate; 6 scan-to-disk integration tests;

@@ -3,7 +3,8 @@
 //! This module provides [`ThreadingDetector`], which carries the
 //! spawn and join names a scan reads decompiled bodies against —
 //! `CreateThread` and `std::thread::spawn` waited on by
-//! `WaitForSingleObject`, `pthread_create` joined by `pthread_join` —
+//! `WaitForSingleObject` and the demangled `std::thread::JoinHandle::join`,
+//! `pthread_create` joined by `pthread_join` —
 //! and reads each spawn site as the Rust spawning pattern standing in
 //! for it.
 //!
@@ -642,10 +643,16 @@ pub fn default_spawns() -> Vec<ThreadSpawnSignature> {
 
 /// The standard join names: the spellings a scan recognizes as waits
 /// for a spawned thread — `WaitForSingleObject`, which waits on the
-/// Win32 thread handle, and `pthread_join`, which joins the POSIX
-/// thread. Both name the handle through their first argument.
+/// Win32 thread handle, `pthread_join`, which joins the POSIX thread,
+/// and the demangled `std::thread::JoinHandle::join`, which joins a
+/// Rust stdlib spawn the way the decompiler writes it. All three name
+/// the handle through their first argument.
 pub fn default_joins() -> Vec<String> {
-    vec!["WaitForSingleObject".into(), "pthread_join".into()]
+    vec![
+        "WaitForSingleObject".into(),
+        "pthread_join".into(),
+        "std::thread::JoinHandle::join".into(),
+    ]
 }
 
 // ============================================================
@@ -747,8 +754,38 @@ mod tests {
     }
 
     #[test]
-    fn the_standard_joins_name_the_two_wait_spellings() {
-        assert_eq!(default_joins(), ["WaitForSingleObject", "pthread_join"]);
+    fn the_standard_joins_name_the_three_wait_spellings() {
+        assert_eq!(
+            default_joins(),
+            [
+                "WaitForSingleObject",
+                "pthread_join",
+                "std::thread::JoinHandle::join"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_joined_std_thread_spawn_reads_as_a_scoped_thread() {
+        // The Rust stdlib spawn joined through its demangled
+        // `JoinHandle::join` stays `std::thread::spawn`: the join the
+        // body already performs is the `JoinHandle` the translation keeps.
+        let spawns = detect(
+            "\
+undefined FUN_18003ab00(void) {
+  local_8 = std::thread::spawn(worker);
+  std::thread::JoinHandle::join(&local_8);
+  return;
+}",
+        );
+        assert_eq!(spawns.len(), 1);
+        assert_eq!(spawns[0].spawn, "std::thread::spawn");
+        assert_eq!(
+            spawns[0].join.as_deref(),
+            Some("std::thread::JoinHandle::join")
+        );
+        assert_eq!(spawns[0].suggestion, "std::thread::spawn");
+        assert_eq!(spawns[0].confidence, JOINED_CONFIDENCE);
     }
 
     #[test]
