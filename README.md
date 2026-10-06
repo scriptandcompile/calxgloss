@@ -15,7 +15,7 @@ Calxgloss reverse engineers project executables and DLLs, transforming disassemb
 3. **Test-driven decompilation** — tests capture original behavior; Rust code must pass those tests
 4. **Incremental restitching** — swap in Rust implementations one at a time, verifying each swap
 5. **LLM-first, discard-when-wrong** — the LLM is the primary engine. Use it aggressively and freely. Throwing away incorrect LLM output is cheap when hosted locally; the cost of not using it is far higher
-6. **Source-control backed reversibility** — every unit of work is a branch and a commit. The system is always restorable, diffable, and reviewable. No state is lost.
+6. **Source-control backed reversibility** — every unit of work lands as a commit on its function's attempt branch. The system is always restorable, diffable, and reviewable. No state is lost.
 7. **Human-in-the-loop review** — a web UI provides structured review of every unit of work, its justification, and its dependency relationships
 
 ## Architecture
@@ -50,7 +50,7 @@ Calxgloss reverse engineers project executables and DLLs, transforming disassemb
 
   Foundation: calxgloss-types (shared types) · calxgloss-config (layered settings) ·
   calxgloss-testgen (FFI bindings & baseline tests) · calxgloss-verify (compile & test) ·
-  calxgloss-git (branch per unit) · calxgloss-reports (terminal output)
+  calxgloss-git (branch per function attempt) · calxgloss-reports (terminal output)
 ```
 
 ## Quick Start
