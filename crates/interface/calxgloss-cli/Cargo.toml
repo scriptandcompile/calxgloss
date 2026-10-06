@@ -18,6 +18,7 @@ calxgloss-algorithm = { path = "../../evidence/calxgloss-algorithm" }
 calxgloss-memory = { path = "../../evidence/calxgloss-memory" }
 calxgloss-sync = { path = "../../evidence/calxgloss-sync" }
 calxgloss-callback = { path = "../../evidence/calxgloss-callback" }
+calxgloss-controlflow = { path = "../../evidence/calxgloss-controlflow" }
 calxgloss-verify = { path = "../../pipeline/calxgloss-verify" }
 calxgloss-git = { path = "../../pipeline/calxgloss-git" }
 calxgloss-reports = { path = "../calxgloss-reports" }

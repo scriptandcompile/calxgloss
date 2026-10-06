@@ -6,6 +6,7 @@ pub mod auto_shim;
 pub mod batch_translate;
 pub mod callback;
 pub mod classify;
+pub mod controlflow;
 pub mod dashboard;
 pub mod gc;
 pub mod init;

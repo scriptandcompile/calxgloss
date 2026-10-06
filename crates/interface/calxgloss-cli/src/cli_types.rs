@@ -391,6 +391,40 @@ pub(super) enum Command {
         show: bool,
     },
 
+    /// Detect control-flow patterns in the open binary
+    ///
+    /// Finds the structural patterns ChatGPT most often flattens:
+    /// switch-shaped if/else-if chains, self-recursive functions, and
+    /// state-machine patterns (named-constant chains with transition
+    /// assignments).
+    ///
+    /// The control-flow findings are persisted per binary to
+    /// `re/analysis/controlflow/<dll>.json` in the workspace — the same
+    /// file batch translation will read as prompt context. `--show`
+    /// prints a cached result without connecting to Ghidra.
+    ///
+    /// # Arguments
+    ///
+    /// * `--dll` — Binary to scan, e.g. `eqmain.dll`. Names the
+    ///   persisted file.
+    /// * `--show` — Print a summary of the cached result.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss controlflow --dll eqmain.dll --show
+    /// ```
+    #[command(name = "controlflow")]
+    ControlFlow {
+        /// Binary to scan, e.g. `eqmain.dll`
+        #[arg(long, required = true)]
+        dll: String,
+
+        /// Show the cached result instead of running the scan
+        #[arg(long)]
+        show: bool,
+    },
+
     /// Show the configuration in force and where each value came from
     ///
     /// Secrets are reported as `<set>` rather than printed, so this output is

@@ -165,6 +165,20 @@ pub use calxgloss_callback::types::{
 };
 
 // ============================================================
+// calxgloss-controlflow — control-flow pattern recognition
+// ============================================================
+
+// The crate's `Result` alias is deliberately not re-exported:
+// `ControlFlowResult` already names the per-binary document, and a second
+// alias spelled like it would read as the same thing. The crate's
+// `ScanMetadata` is the shared one from calxgloss-types, already
+// named here.
+pub use calxgloss_controlflow::ControlFlowError;
+pub use calxgloss_controlflow::types::{
+    ControlFlowFinding, ControlFlowResult, SelfRecursion, StateMachine, SwitchChain,
+};
+
+// ============================================================
 // calxgloss-typeinfer — type inference and propagation
 // ============================================================
 

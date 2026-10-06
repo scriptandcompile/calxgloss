@@ -58,6 +58,7 @@ use commands::auto_shim::handle_auto_shim;
 use commands::batch_translate::handle_batch_translate;
 use commands::callback::handle_callback;
 use commands::classify::handle_classify;
+use commands::controlflow::handle_controlflow;
 use commands::dashboard::{
     handle_dashboard, handle_dashboard_accept, handle_dashboard_accept_all,
     handle_dashboard_reject, handle_dashboard_view,
@@ -123,8 +124,8 @@ fn main() -> Result<()> {
     let settings = Settings::resolve(&layers, flags, &loaded);
 
     // target_dir is required for all commands that do real work.
-    // `config`, `gc`, `typesdb`, `typeinfer`, `algorithm`, `memory`, and
-    // `sync` don't need it — the analysis commands read the program open
+    // `config`, `gc`, `typesdb`, `typeinfer`, `algorithm`, `memory`, `sync`,
+    // `callback`, and `controlflow` don't need it — the analysis commands read the program open
     // in Ghidra and write to the workspace — so we check here and fail
     // fast with a helpful message.
     if let Some(ref target) = cli.command {
@@ -136,7 +137,8 @@ fn main() -> Result<()> {
             | Command::Algorithm { .. }
             | Command::Memory { .. }
             | Command::Sync { .. }
-            | Command::Callback { .. } => {}
+            | Command::Callback { .. }
+            | Command::ControlFlow { .. } => {}
             _ if settings.target_dir.is_none() => {
                 anyhow::bail!(
                     "target_dir is required.\n\nSet it via:\n  --target-dir <path>\n  [target_dir] in calxgloss.toml\n  CALXGLOSS_TARGET_DIR env var"
@@ -261,6 +263,14 @@ fn main() -> Result<()> {
                 .build()
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_callback(&dll, &workspace, show, &settings))
+        }
+        Command::ControlFlow { dll, show } => {
+            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_controlflow(&dll, &workspace, show, &settings))
         }
         Command::Verify {
             dll,

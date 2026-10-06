@@ -44,7 +44,7 @@ are indicative targets, not exact requirements.
 | P4 | Memory Lifecycle / RAII | `calxgloss-memory` | 3–4 wk | ✅ Phases 0–4 done (2026-10-05) | Phase 5 future items | — |
 | P5 | Concurrency & Synchronization | `calxgloss-sync` | 2–3 wk | ✅ Phases 0–4 done (2026-10-06) | Phase 5 future items | [#11](https://github.com/scriptandcompile/calxgloss/issues/11) |
 | P6 | Callback / Function Pointer Tables | `calxgloss-callback` | 2–3 wk | ✅ Phases 0–4 done (2026-10-06) | Phase 5 future items | [#12](https://github.com/scriptandcompile/calxgloss/issues/12) |
-| P7 | Control Flow Pattern Recognition | `calxgloss-controlflow` | 2–4 wk | ⬜ not started | spec + crate | [#13](https://github.com/scriptandcompile/calxgloss/issues/13) |
+| P7 | Control Flow Pattern Recognition | `calxgloss-controlflow` | 2–4 wk | ✅ Phases 0–4 done (2026-10-06) | Phase 5 future items | [#13](https://github.com/scriptandcompile/calxgloss/issues/13) |
 | P8 | String & Configuration Context | `calxgloss-stringctx` | 1–2 wk | ⬜ not started | tickets [#26](https://github.com/scriptandcompile/calxgloss/issues/26)–[#31](https://github.com/scriptandcompile/calxgloss/issues/31) | [#15](https://github.com/scriptandcompile/calxgloss/issues/15) |
 | P9 | Library & API Identification | `calxgloss-apidetect` | 1–2 wk | ⬜ not started | spec + crate | [#17](https://github.com/scriptandcompile/calxgloss/issues/17) |
 | P10 | Constants & Enum Recovery | `calxgloss-consts` | 2–3 wk | ⬜ not started | spec + crate | [#14](https://github.com/scriptandcompile/calxgloss/issues/14) |
