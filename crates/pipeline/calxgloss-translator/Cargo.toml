@@ -22,6 +22,7 @@ calxgloss-algorithm = { path = "../../evidence/calxgloss-algorithm" }
 calxgloss-memory = { path = "../../evidence/calxgloss-memory" }
 calxgloss-sync = { path = "../../evidence/calxgloss-sync" }
 calxgloss-callback = { path = "../../evidence/calxgloss-callback" }
+calxgloss-stringctx = { path = "../../evidence/calxgloss-stringctx" }
 calxgloss-controlflow = { path = "../../evidence/calxgloss-controlflow" }
 tokio = { workspace = true }
 anyhow = { workspace = true }

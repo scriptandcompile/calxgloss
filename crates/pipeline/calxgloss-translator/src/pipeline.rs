@@ -48,6 +48,8 @@ use calxgloss_memory::engine::MemoryEngine;
 use calxgloss_memory::persist::MemoryPersistor;
 use calxgloss_pal::ApiMappings;
 use calxgloss_prompts::build_translate_prompt;
+use calxgloss_stringctx::engine::StringContextEngine;
+use calxgloss_stringctx::persist::StringContextPersistor;
 use calxgloss_sync::engine::SyncEngine;
 use calxgloss_sync::persist::SyncPersistor;
 use calxgloss_testgen::TestGenerator;
@@ -1728,6 +1730,69 @@ impl TranslationPipeline {
         }
     }
 
+    /// Map the binary's strings to its functions before a batch starts,
+    /// unless a string-context result is already cached.
+    ///
+    /// The scan's findings — classified strings, their functions, and
+    /// format-string calls with the argument types they imply — are filed
+    /// at `re/analysis/stringctx/{dll}.json` for the prompt path to read
+    /// (see
+    /// [`extract_string_context`](crate::retry::helpers::extract_string_context));
+    /// running the scan once up front means every function in the batch
+    /// can see string context instead of none. The persisted file is the
+    /// cache: when a result is already saved for `dll`, the scan is
+    /// skipped entirely.
+    ///
+    /// Returns whether a result is available afterwards. A missing workspace,
+    /// an unreachable Ghidra server, or a failed save only log a warning and
+    /// return `false` — prompts without string context are degraded, not
+    /// fatal, and the batch proceeds either way.
+    pub async fn ensure_string_context(&self, dll: &str) -> bool {
+        let Some(workspace) = self.workspace.as_deref() else {
+            debug!(dll, "No workspace configured; skipping string context scan");
+            return false;
+        };
+
+        let persistor = StringContextPersistor::new(workspace);
+        if persistor.exists(dll) {
+            debug!(
+                dll,
+                path = %persistor.path_for(dll).display(),
+                "String context result already cached; skipping scan"
+            );
+            return true;
+        }
+
+        info!(dll, "Mapping program strings before batch translation");
+        let engine = StringContextEngine::new(&self.ghidra);
+        match engine.scan(dll).await {
+            Ok(result) => {
+                if let Err(e) = persistor.save(&result) {
+                    warn!(
+                        dll,
+                        error = %e,
+                        "Failed to persist string context result; continuing without string context"
+                    );
+                    return false;
+                }
+                info!(
+                    dll,
+                    findings = result.findings.len(),
+                    "String context scan complete"
+                );
+                true
+            }
+            Err(e) => {
+                warn!(
+                    dll,
+                    error = %e,
+                    "String context scan failed; continuing without string context"
+                );
+                false
+            }
+        }
+    }
+
     /// Translate multiple functions from a single DLL, one at a time.
     ///
     /// For each function, this runs the full translation pipeline with retry
@@ -1745,8 +1810,9 @@ impl TranslationPipeline {
     /// [`ensure_algorithm_recognition`](Self::ensure_algorithm_recognition),
     /// [`ensure_memory_detection`](Self::ensure_memory_detection), and
     /// [`ensure_sync_detection`](Self::ensure_sync_detection),
-    /// [`ensure_callback_detection`](Self::ensure_callback_detection), and
-    /// [`ensure_controlflow_detection`](Self::ensure_controlflow_detection).
+    /// [`ensure_callback_detection`](Self::ensure_callback_detection),
+    /// [`ensure_controlflow_detection`](Self::ensure_controlflow_detection),
+    /// and [`ensure_string_context`](Self::ensure_string_context).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
     /// invoked **immediately after each function completes** (before moving on
@@ -1881,6 +1947,7 @@ impl TranslationPipeline {
         self.ensure_sync_detection(dll).await;
         self.ensure_callback_detection(dll).await;
         self.ensure_controlflow_detection(dll).await;
+        self.ensure_string_context(dll).await;
 
         let mut batch_result = batch::BatchTranslationResult::new(dll.to_string());
 
@@ -2000,8 +2067,9 @@ impl TranslationPipeline {
     /// [`ensure_algorithm_recognition`](Self::ensure_algorithm_recognition),
     /// [`ensure_memory_detection`](Self::ensure_memory_detection), and
     /// [`ensure_sync_detection`](Self::ensure_sync_detection),
-    /// [`ensure_callback_detection`](Self::ensure_callback_detection), and
-    /// [`ensure_controlflow_detection`](Self::ensure_controlflow_detection).
+    /// [`ensure_callback_detection`](Self::ensure_callback_detection),
+    /// [`ensure_controlflow_detection`](Self::ensure_controlflow_detection),
+    /// and [`ensure_string_context`](Self::ensure_string_context).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
     /// invoked **immediately after each function completes** (before moving on
@@ -2092,6 +2160,7 @@ impl TranslationPipeline {
         self.ensure_sync_detection(&graph.dll).await;
         self.ensure_callback_detection(&graph.dll).await;
         self.ensure_controlflow_detection(&graph.dll).await;
+        self.ensure_string_context(&graph.dll).await;
 
         // Build a priority-ordered plan
         let orderer = calxgloss_callgraph::TranslationOrderer::new();
@@ -2327,6 +2396,8 @@ mod tests {
     use calxgloss_controlflow::types::ControlFlowResult;
     use calxgloss_memory::persist::MemoryPersistor;
     use calxgloss_memory::types::MemoryResult;
+    use calxgloss_stringctx::persist::StringContextPersistor;
+    use calxgloss_stringctx::types::StringContextResult;
     use calxgloss_sync::persist::SyncPersistor;
     use calxgloss_sync::types::SyncResult;
     use calxgloss_typeinfer::persist::TypeInferPersistor;
@@ -2450,10 +2521,12 @@ mod tests {
         }
     }
 
-    /// A stand-in GhidraMCP server answering the three endpoints a memory
-    /// scan touches — the function listing, the name search that resolves
-    /// it, and the decompile by address — with one canned `malloc`/`free`
-    /// function, so the scan-to-save path runs without a real Ghidra.
+    /// A stand-in GhidraMCP server answering the endpoints the pre-batch
+    /// scans touch — the function listing, the name search that resolves
+    /// it, the decompile by address, and the string listing and xref
+    /// lookup a string-context scan adds — with one canned `malloc`/`free`
+    /// function and one string it references, so the scan-to-save path
+    /// runs without a real Ghidra.
     /// Returns the base URL to point a client at.
     async fn fake_ghidra() -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -2478,6 +2551,10 @@ mod tests {
                     } else if path.starts_with("/decompile_function") {
                         "undefined FUN_18003e750(void)\n{\n  void *pv = malloc(0x10);\n  free(pv);\n}\n"
                             .to_string()
+                    } else if path.starts_with("/list_strings") {
+                        "180128d18: \"Journal.txt\"".to_string()
+                    } else if path.starts_with("/get_xrefs_to") {
+                        "From 18003e750 in FUN_18003e750 [DATA]".to_string()
                     } else {
                         "Error 404: No context found for request".to_string()
                     };
@@ -2762,5 +2839,80 @@ mod tests {
     async fn no_workspace_skips_the_controlflow_scan() {
         let pipeline = pipeline_over(None);
         assert!(!pipeline.ensure_controlflow_detection("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn a_cached_string_context_is_reused_without_rescanning() {
+        let dir = TempDir::new().unwrap();
+        StringContextPersistor::new(dir.path())
+            .save(&StringContextResult::new(ScanMetadata::new("eqmain.dll")))
+            .unwrap();
+
+        // The Ghidra server is unreachable, so `true` can only come from the cache.
+        let pipeline = pipeline_over(Some(dir.path()));
+        assert!(pipeline.ensure_string_context("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn a_string_context_cache_miss_scans_and_saves_the_result() {
+        let dir = TempDir::new().unwrap();
+        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
+        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+
+        assert!(pipeline.ensure_string_context("eqmain.dll").await);
+
+        let persistor = StringContextPersistor::new(dir.path());
+        assert!(
+            persistor.exists("eqmain.dll"),
+            "a cache miss should leave a saved document behind"
+        );
+        assert_eq!(
+            persistor.path_for("eqmain.dll"),
+            dir.path()
+                .join("re")
+                .join("analysis")
+                .join("stringctx")
+                .join("eqmain.dll.json"),
+            "the document should be filed under re/analysis/stringctx"
+        );
+        let saved = persistor.load("eqmain.dll").expect("saved document");
+        assert_eq!(
+            saved.findings.len(),
+            1,
+            "the canned string reaches the function through the xref fallback"
+        );
+        assert_eq!(saved.findings[0].function(), "FUN_18003e750");
+    }
+
+    #[tokio::test]
+    async fn a_failed_string_context_scan_degrades_instead_of_failing() {
+        let dir = TempDir::new().unwrap();
+        let pipeline = pipeline_over(Some(dir.path()));
+
+        assert!(!pipeline.ensure_string_context("eqmain.dll").await);
+        assert!(
+            !StringContextPersistor::new(dir.path()).exists("eqmain.dll"),
+            "a failed scan persists nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_string_context_save_degrades_instead_of_failing() {
+        let dir = TempDir::new().unwrap();
+        // `re/analysis` as a plain file makes the save's directory
+        // creation fail even though the scan itself succeeds.
+        std::fs::create_dir_all(dir.path().join("re")).unwrap();
+        std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
+
+        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
+        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+
+        assert!(!pipeline.ensure_string_context("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn no_workspace_skips_the_string_context_scan() {
+        let pipeline = pipeline_over(None);
+        assert!(!pipeline.ensure_string_context("eqmain.dll").await);
     }
 }
