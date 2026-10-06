@@ -56,6 +56,7 @@ use commands::algorithm::handle_algorithm;
 use commands::auto::handle_auto;
 use commands::auto_shim::handle_auto_shim;
 use commands::batch_translate::handle_batch_translate;
+use commands::callback::handle_callback;
 use commands::classify::handle_classify;
 use commands::dashboard::{
     handle_dashboard, handle_dashboard_accept, handle_dashboard_accept_all,
@@ -134,7 +135,8 @@ fn main() -> Result<()> {
             | Command::Typeinfer { .. }
             | Command::Algorithm { .. }
             | Command::Memory { .. }
-            | Command::Sync { .. } => {}
+            | Command::Sync { .. }
+            | Command::Callback { .. } => {}
             _ if settings.target_dir.is_none() => {
                 anyhow::bail!(
                     "target_dir is required.\n\nSet it via:\n  --target-dir <path>\n  [target_dir] in calxgloss.toml\n  CALXGLOSS_TARGET_DIR env var"
@@ -251,6 +253,14 @@ fn main() -> Result<()> {
                 .build()
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_sync(&dll, &workspace, show, &settings))
+        }
+        Command::Callback { dll, show } => {
+            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_callback(&dll, &workspace, show, &settings))
         }
         Command::Verify {
             dll,

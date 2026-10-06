@@ -326,6 +326,7 @@ version = "0.2.0"
 dependencies = [
  "calxgloss-algorithm",
  "calxgloss-analysis",
+ "calxgloss-callback",
  "calxgloss-callgraph",
  "calxgloss-config",
  "calxgloss-ghidra",
@@ -381,6 +382,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "calxgloss-callback"
+version = "0.2.0"
+dependencies = [
+ "calxgloss-ghidra",
+ "calxgloss-prompts",
+ "calxgloss-types",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "calxgloss-callgraph"
 version = "0.2.0"
 dependencies = [
@@ -403,6 +420,7 @@ dependencies = [
  "calxgloss",
  "calxgloss-algorithm",
  "calxgloss-analysis",
+ "calxgloss-callback",
  "calxgloss-config",
  "calxgloss-ghidra",
  "calxgloss-git",

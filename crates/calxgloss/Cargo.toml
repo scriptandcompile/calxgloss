@@ -19,6 +19,7 @@ calxgloss-typeinfer = { path = "../evidence/calxgloss-typeinfer" }
 calxgloss-algorithm = { path = "../evidence/calxgloss-algorithm" }
 calxgloss-memory = { path = "../evidence/calxgloss-memory" }
 calxgloss-sync = { path = "../evidence/calxgloss-sync" }
+calxgloss-callback = { path = "../evidence/calxgloss-callback" }
 calxgloss-testgen = { path = "../pipeline/calxgloss-testgen" }
 calxgloss-translator = { path = "../pipeline/calxgloss-translator" }
 calxgloss-verify = { path = "../pipeline/calxgloss-verify" }

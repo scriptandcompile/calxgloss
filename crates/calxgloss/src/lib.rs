@@ -151,6 +151,20 @@ pub use calxgloss_sync::types::{
 };
 
 // ============================================================
+// calxgloss-callback — callback & function-pointer table detection
+// ============================================================
+
+// The crate's `Result` alias is deliberately not re-exported:
+// `CallbackResult` already names the per-binary document, and a second
+// alias spelled like it would read as the same thing. The crate's
+// `ScanMetadata` is the shared one from calxgloss-types, already
+// named here.
+pub use calxgloss_callback::CallbackError;
+pub use calxgloss_callback::types::{
+    CallbackFinding, CallbackRegistration, CallbackResult, FpArrayCall, JumpTable,
+};
+
+// ============================================================
 // calxgloss-typeinfer — type inference and propagation
 // ============================================================
 

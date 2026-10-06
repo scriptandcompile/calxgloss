@@ -4,6 +4,7 @@ pub mod algorithm;
 pub mod auto;
 pub mod auto_shim;
 pub mod batch_translate;
+pub mod callback;
 pub mod classify;
 pub mod dashboard;
 pub mod gc;
