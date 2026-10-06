@@ -12,7 +12,8 @@
 //! - [`FullModulePromptData`] — Tier 4: full module with shim layer + PAL traits
 
 use super::templates::{
-    CallGraphNeighbor, FormattedTestResult, NeighborFunction, PalTraitDef, ShimCode, StructuredData,
+    CallGraphNeighbor, ControlFlowInfo, FormattedTestResult, NeighborFunction, PalTraitDef,
+    ShimCode, StructuredData,
 };
 use calxgloss_callgraph::FunctionContext;
 use calxgloss_types::{ApiCategory, TestCase, TranslationRequest};
@@ -177,6 +178,9 @@ pub struct ModuleContextPromptData {
     /// When present, the prompt includes caller/callee details and leaf API
     /// suggestions alongside the simpler neighbor list.
     pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
+    /// Control-flow findings about the target function made by the
+    /// `calxgloss-controlflow` detectors.
+    pub control_flow_findings: Vec<ControlFlowInfo>,
 }
 
 impl ModuleContextPromptData {
@@ -209,6 +213,7 @@ impl ModuleContextPromptData {
             neighboring_functions: Vec::new(),
             data_structures: Vec::new(),
             call_graph_context: Vec::new(),
+            control_flow_findings: Vec::new(),
         }
     }
 
@@ -224,6 +229,7 @@ impl ModuleContextPromptData {
         neighboring_functions: Vec<NeighborFunction>,
         data_structures: Vec<StructuredData>,
         call_graph_context: Vec<FunctionContext>,
+        control_flow_findings: Vec<ControlFlowInfo>,
     ) -> Self {
         let test_results: Vec<FormattedTestResult> = req
             .baseline_tests
@@ -247,6 +253,7 @@ impl ModuleContextPromptData {
             neighboring_functions,
             data_structures,
             call_graph_context,
+            control_flow_findings,
         }
     }
 }
@@ -270,6 +277,9 @@ pub struct ComplexityPromptData {
     pub neighboring_functions: Vec<super::templates::NeighborFunction>,
     pub data_structures: Vec<super::templates::StructuredData>,
     pub type_info: Vec<super::templates::TypeInfo>,
+    /// Control-flow findings about the target function made by the
+    /// `calxgloss-controlflow` detectors.
+    pub control_flow_findings: Vec<ControlFlowInfo>,
 }
 
 impl ComplexityPromptData {
@@ -300,6 +310,7 @@ impl ComplexityPromptData {
             neighboring_functions: Vec::new(),
             data_structures: Vec::new(),
             type_info: Vec::new(),
+            control_flow_findings: Vec::new(),
         }
     }
 
@@ -348,6 +359,9 @@ pub struct FullModulePromptData {
     /// When present, the prompt includes caller/callee details and leaf API
     /// suggestions alongside the simpler neighbor list.
     pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
+    /// Control-flow findings about the target function made by the
+    /// `calxgloss-controlflow` detectors.
+    pub control_flow_findings: Vec<ControlFlowInfo>,
 }
 
 impl FullModulePromptData {
@@ -382,6 +396,7 @@ impl FullModulePromptData {
             shim_layers: Vec::new(),
             pal_traits: Vec::new(),
             call_graph_context: Vec::new(),
+            control_flow_findings: Vec::new(),
         }
     }
 
@@ -400,6 +415,7 @@ impl FullModulePromptData {
         shim_layers: Vec<ShimCode>,
         pal_traits: Vec<PalTraitDef>,
         call_graph_context: Vec<FunctionContext>,
+        control_flow_findings: Vec<ControlFlowInfo>,
     ) -> Self {
         let test_results: Vec<FormattedTestResult> = req
             .baseline_tests
@@ -425,6 +441,7 @@ impl FullModulePromptData {
             shim_layers,
             pal_traits,
             call_graph_context,
+            control_flow_findings,
         }
     }
 }

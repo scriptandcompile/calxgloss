@@ -100,6 +100,7 @@ pub fn build_escalate_prompt(
         Vec::new(),
         Vec::new(),
         Vec::new(),
+        Vec::new(),
         failure_history,
         Vec::new(),
     )
@@ -111,9 +112,9 @@ pub fn build_escalate_prompt(
 /// Used when previous attempts failed with compile_fix or test_fix strategies.
 /// Adds call graph neighbors, neighboring functions, data structures,
 /// type information, recognized algorithms, memory lifecycle findings,
-/// concurrency findings, callback findings, and enriched call graph context
-/// (caller/callee details and leaf API suggestions) to help the LLM understand
-/// the broader context.
+/// concurrency findings, callback findings, control-flow findings, and
+/// enriched call graph context (caller/callee details and leaf API
+/// suggestions) to help the LLM understand the broader context.
 #[allow(clippy::too_many_arguments)]
 pub fn build_escalate_prompt_with_context(
     function_name: String,
@@ -128,6 +129,7 @@ pub fn build_escalate_prompt_with_context(
     memory_findings: Vec<super::templates::MemoryInfo>,
     concurrency_findings: Vec<super::templates::ConcurrencyInfo>,
     callback_findings: Vec<super::templates::CallbackInfo>,
+    control_flow_findings: Vec<super::templates::ControlFlowInfo>,
     failure_history: Vec<calxgloss_types::FailureHint>,
     call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
 ) -> Result<String, PromptError> {
@@ -144,6 +146,7 @@ pub fn build_escalate_prompt_with_context(
         memory_findings,
         concurrency_findings,
         callback_findings,
+        control_flow_findings,
         failure_history,
         call_graph_context,
     );
@@ -354,6 +357,7 @@ pub fn build_complexity_prompt(
             if !api_category_mappings.is_empty() {
                 template.api_category_mappings = api_category_mappings;
             }
+            template.control_flow_findings = data.control_flow_findings.clone();
             template
                 .render()
                 .map_err(|e| PromptError::Render(e.to_string()))?
@@ -365,6 +369,7 @@ pub fn build_complexity_prompt(
             if !api_category_mappings.is_empty() {
                 template.api_category_mappings = api_category_mappings;
             }
+            template.control_flow_findings = data.control_flow_findings.clone();
             template
                 .render()
                 .map_err(|e| PromptError::Render(e.to_string()))?

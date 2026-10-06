@@ -55,10 +55,10 @@ pub use context::{
 pub use error::PromptError;
 pub use templates::{
     AlgorithmInfo, BoundaryValue, CallGraphNeighbor, CallbackInfo, ConcurrencyInfo,
-    EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate, FixTemplate, FormattedTestResult,
-    FullModuleTemplate, MemoryInfo, MinimalTemplate, ModuleContextTemplate, NeighborFunction,
-    PalTraitDef, PalTraitMethod, ShimCode, SignatureTemplate, StructField, StructuredData,
-    TestCaseFormatted, TranslateTemplate, TypeInfo, WithTestsTemplate,
+    ControlFlowInfo, EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate, FixTemplate,
+    FormattedTestResult, FullModuleTemplate, MemoryInfo, MinimalTemplate, ModuleContextTemplate,
+    NeighborFunction, PalTraitDef, PalTraitMethod, ShimCode, SignatureTemplate, StructField,
+    StructuredData, TestCaseFormatted, TranslateTemplate, TypeInfo, WithTestsTemplate,
 };
 
 // Re-export types used by template constructors
@@ -268,6 +268,7 @@ mod tests {
             neighboring_functions: Vec::new(),
             data_structures: Vec::new(),
             type_info: Vec::new(),
+            control_flow_findings: Vec::new(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Minimal, &data).unwrap();
@@ -295,6 +296,7 @@ mod tests {
             neighboring_functions: Vec::new(),
             data_structures: Vec::new(),
             type_info: Vec::new(),
+            control_flow_findings: Vec::new(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Standard, &data).unwrap();
@@ -329,6 +331,7 @@ mod tests {
             neighboring_functions: Vec::new(),
             data_structures: Vec::new(),
             type_info: Vec::new(),
+            control_flow_findings: Vec::new(),
         };
 
         let categories = data.api_categories();
@@ -363,6 +366,7 @@ mod tests {
             neighboring_functions: Vec::new(),
             data_structures: Vec::new(),
             type_info: Vec::new(),
+            control_flow_findings: Vec::new(),
         };
 
         let categories = data.api_categories();
@@ -385,6 +389,7 @@ mod tests {
             neighboring_functions: Vec::new(),
             data_structures: Vec::new(),
             type_info: Vec::new(),
+            control_flow_findings: Vec::new(),
         };
 
         let categories = data.api_categories();
@@ -410,6 +415,7 @@ mod tests {
             neighboring_functions: Vec::new(),
             data_structures: Vec::new(),
             type_info: Vec::new(),
+            control_flow_findings: Vec::new(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Standard, &data).unwrap();
@@ -439,6 +445,7 @@ mod tests {
             neighboring_functions: Vec::new(),
             data_structures: Vec::new(),
             type_info: Vec::new(),
+            control_flow_findings: Vec::new(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Minimal, &data).unwrap();
@@ -478,6 +485,7 @@ mod tests {
             neighboring_functions: Vec::new(),
             data_structures: Vec::new(),
             type_info: Vec::new(),
+            control_flow_findings: Vec::new(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Rich, &data).unwrap();
@@ -506,6 +514,7 @@ mod tests {
             neighboring_functions: Vec::new(),
             data_structures: Vec::new(),
             type_info: Vec::new(),
+            control_flow_findings: Vec::new(),
         };
 
         let prompt = build_complexity_prompt(&FunctionComplexity::Standard, &data).unwrap();
@@ -616,6 +625,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -667,6 +677,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             findings,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -724,6 +735,7 @@ mod tests {
             findings,
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -732,6 +744,264 @@ mod tests {
         assert!(prompt.contains("fp_array pattern"));
         assert!(prompt.contains("confidence 70"));
         assert!(prompt.contains("handlers[uVar2](iVar3);"));
+    }
+
+    #[test]
+    fn test_escalate_template_with_control_flow_findings() {
+        let findings = vec![ControlFlowInfo {
+            function: "FUN_18003ab00".to_string(),
+            kind: "switch".to_string(),
+            suggestion: "replace the if-else chain with match command { /* 5 arms */ }".to_string(),
+            confidence: 70,
+            evidence: "if (command == 1) ... else if (command == 5)".to_string(),
+        }];
+
+        let prompt = build_escalate_prompt_with_context(
+            "FUN_18003ab00".to_string(),
+            "eqmain.dll".to_string(),
+            "fn fun_18003ab00() { /* if-else ladder */ }".to_string(),
+            "Wrong result".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            findings,
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(prompt.contains("CONTROL FLOW"));
+        assert!(prompt.contains("match command { /* 5 arms */ }"));
+        assert!(prompt.contains("switch construct"));
+        assert!(prompt.contains("confidence 70"));
+        assert!(prompt.contains("if (command == 1) ... else if (command == 5)"));
+    }
+
+    #[test]
+    fn test_escalate_template_without_control_flow_findings_says_so() {
+        let prompt = build_escalate_prompt(
+            "DrawSprite".to_string(),
+            "game_logic.dll".to_string(),
+            "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
+            "Wrong result".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(prompt.contains("CONTROL FLOW"));
+        assert!(prompt.contains("No control-flow context available."));
+    }
+
+    fn control_flow_fixture() -> ControlFlowInfo {
+        ControlFlowInfo {
+            function: "FUN_18003ab00".to_string(),
+            kind: "state_machine".to_string(),
+            suggestion: "enum State + match state { /* 3 states */ }".to_string(),
+            confidence: 70,
+            evidence: "state variable state with 3 states idle: STATE_IDLE".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_module_context_template_renders_control_flow_section() {
+        let req = sample_request();
+        let data = ModuleContextPromptData::from_request_with_context(
+            &req,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![control_flow_fixture()],
+        );
+
+        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+
+        assert!(prompt.contains("CONTROL FLOW PATTERNS"));
+        assert!(prompt.contains("enum State + match state { /* 3 states */ }"));
+        assert!(prompt.contains("state_machine construct"));
+        assert!(prompt.contains("confidence 70"));
+        assert!(prompt.contains("idle: STATE_IDLE"));
+    }
+
+    #[test]
+    fn test_module_context_template_without_control_flow_findings_says_so() {
+        let req = sample_request();
+        let data = ModuleContextPromptData::from_request(&req);
+
+        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+
+        assert!(prompt.contains("CONTROL FLOW PATTERNS"));
+        assert!(prompt.contains("No control-flow context available."));
+    }
+
+    #[test]
+    fn test_full_module_template_renders_control_flow_section() {
+        let req = sample_request();
+        let data = FullModulePromptData::from_request_with_full_context(
+            &req,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![control_flow_fixture()],
+        );
+
+        let prompt = build_full_module_prompt(&data).expect("the prompt should render");
+
+        assert!(prompt.contains("CONTROL FLOW PATTERNS"));
+        assert!(prompt.contains("enum State + match state { /* 3 states */ }"));
+        assert!(prompt.contains("state_machine construct"));
+        assert!(prompt.contains("confidence 70"));
+    }
+
+    #[test]
+    fn test_full_module_template_without_control_flow_findings_says_so() {
+        let req = sample_request();
+        let data = FullModulePromptData::from_request(&req);
+
+        let prompt = build_full_module_prompt(&data).expect("the prompt should render");
+
+        assert!(prompt.contains("CONTROL FLOW PATTERNS"));
+        assert!(prompt.contains("No control-flow context available."));
+    }
+
+    #[test]
+    fn test_rich_template_renders_control_flow_section() {
+        let data = ComplexityPromptData {
+            function_name: "FUN_18003ab00".to_string(),
+            dll_name: "eqmain.dll".to_string(),
+            address: 0x3000,
+            disassembly: "mov eax, 0\nret".to_string(),
+            decompiler_output: "undefined FUN_18003ab00(void) { }".to_string(),
+            windows_apis: Vec::new(),
+            test_cases: Vec::new(),
+            api_category_mappings: Vec::new(),
+            call_graph_neighbors: Vec::new(),
+            neighboring_functions: Vec::new(),
+            data_structures: Vec::new(),
+            type_info: Vec::new(),
+            control_flow_findings: vec![control_flow_fixture()],
+        };
+
+        let prompt = build_complexity_prompt(&FunctionComplexity::Rich, &data)
+            .expect("the rich prompt should render");
+
+        assert!(prompt.contains("CONTROL FLOW PATTERNS"));
+        assert!(prompt.contains("enum State + match state { /* 3 states */ }"));
+        assert!(prompt.contains("state_machine construct"));
+        assert!(prompt.contains("confidence 70"));
+    }
+
+    #[test]
+    fn test_rich_template_without_control_flow_findings_says_so() {
+        let data = ComplexityPromptData {
+            function_name: "SimpleFunc".to_string(),
+            dll_name: "test.dll".to_string(),
+            address: 0x3000,
+            disassembly: "mov eax, 0\nret".to_string(),
+            decompiler_output: "int SimpleFunc() { return 0; }".to_string(),
+            windows_apis: Vec::new(),
+            test_cases: Vec::new(),
+            api_category_mappings: Vec::new(),
+            call_graph_neighbors: Vec::new(),
+            neighboring_functions: Vec::new(),
+            data_structures: Vec::new(),
+            type_info: Vec::new(),
+            control_flow_findings: Vec::new(),
+        };
+
+        let prompt = build_complexity_prompt(&FunctionComplexity::Rich, &data)
+            .expect("the rich prompt should render");
+
+        assert!(prompt.contains("CONTROL FLOW PATTERNS"));
+        assert!(prompt.contains("No control-flow context available."));
+    }
+
+    #[test]
+    fn test_detailed_template_renders_control_flow_section() {
+        let data = ComplexityPromptData {
+            function_name: "FUN_18003ab00".to_string(),
+            dll_name: "eqmain.dll".to_string(),
+            address: 0x4000,
+            disassembly: "mov eax, 0\nret".to_string(),
+            decompiler_output: "undefined FUN_18003ab00(void) { }".to_string(),
+            windows_apis: Vec::new(),
+            test_cases: Vec::new(),
+            api_category_mappings: Vec::new(),
+            call_graph_neighbors: Vec::new(),
+            neighboring_functions: Vec::new(),
+            data_structures: Vec::new(),
+            type_info: Vec::new(),
+            control_flow_findings: vec![control_flow_fixture()],
+        };
+
+        let prompt = build_complexity_prompt(&FunctionComplexity::Detailed, &data)
+            .expect("the detailed prompt should render");
+
+        assert!(prompt.contains("CONTROL FLOW PATTERNS"));
+        assert!(prompt.contains("enum State + match state { /* 3 states */ }"));
+        assert!(prompt.contains("state_machine construct"));
+        assert!(prompt.contains("confidence 70"));
+    }
+
+    #[test]
+    fn test_detailed_template_without_control_flow_findings_says_so() {
+        let data = ComplexityPromptData {
+            function_name: "SimpleFunc".to_string(),
+            dll_name: "test.dll".to_string(),
+            address: 0x4000,
+            disassembly: "mov eax, 0\nret".to_string(),
+            decompiler_output: "int SimpleFunc() { return 0; }".to_string(),
+            windows_apis: Vec::new(),
+            test_cases: Vec::new(),
+            api_category_mappings: Vec::new(),
+            call_graph_neighbors: Vec::new(),
+            neighboring_functions: Vec::new(),
+            data_structures: Vec::new(),
+            type_info: Vec::new(),
+            control_flow_findings: Vec::new(),
+        };
+
+        let prompt = build_complexity_prompt(&FunctionComplexity::Detailed, &data)
+            .expect("the detailed prompt should render");
+
+        assert!(prompt.contains("CONTROL FLOW PATTERNS"));
+        assert!(prompt.contains("No control-flow context available."));
+    }
+
+    #[test]
+    fn test_minimal_and_standard_templates_stay_clean_of_control_flow() {
+        let data = ComplexityPromptData {
+            function_name: "SimpleFunc".to_string(),
+            dll_name: "test.dll".to_string(),
+            address: 0x1000,
+            disassembly: "mov eax, 0\nret".to_string(),
+            decompiler_output: "int SimpleFunc() { return 0; }".to_string(),
+            windows_apis: Vec::new(),
+            test_cases: Vec::new(),
+            api_category_mappings: Vec::new(),
+            call_graph_neighbors: Vec::new(),
+            neighboring_functions: Vec::new(),
+            data_structures: Vec::new(),
+            type_info: Vec::new(),
+            control_flow_findings: vec![control_flow_fixture()],
+        };
+
+        for tier in [FunctionComplexity::Minimal, FunctionComplexity::Standard] {
+            let prompt = build_complexity_prompt(&tier, &data).expect("the prompt should render");
+            assert!(!prompt.contains("CONTROL FLOW"));
+        }
     }
 
     #[test]

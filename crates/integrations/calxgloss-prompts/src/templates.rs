@@ -201,6 +201,27 @@ pub struct CallbackInfo {
     pub evidence: String,
 }
 
+/// A control-flow finding about one function, made by the
+/// `calxgloss-controlflow` detectors.
+///
+/// The escalate and context-tier prompts show these alongside the other
+/// analysis findings so the LLM expresses switch chains, recursion, and
+/// state machines with Rust `match`/`loop`/`enum` patterns instead of
+/// transliterating the raw conditional chain or recursive call.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ControlFlowInfo {
+    /// The function the finding is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The kind of finding, e.g. `switch`, `recursion`, `state_machine`.
+    pub kind: String,
+    /// The Rust pattern the finding suggests, e.g. `match local_4 { ... }`.
+    pub suggestion: String,
+    /// Confidence that the finding is right, 0–100.
+    pub confidence: u8,
+    /// The decompiled lines that support the finding.
+    pub evidence: String,
+}
+
 /// A formatted test result for template rendering.
 ///
 /// Carries the test case data alongside the pass/fail outcome observed
@@ -487,6 +508,9 @@ pub struct EscalateTemplate {
     /// Callback and function-pointer-table findings about this function
     /// made by the analysis pipeline.
     pub callback_findings: Vec<CallbackInfo>,
+    /// Control-flow findings about this function made by the analysis
+    /// pipeline.
+    pub control_flow_findings: Vec<ControlFlowInfo>,
     /// Previous attempt failures to reference in the prompt.
     pub failure_history: Vec<FailureHint>,
     /// Enriched call graph context with caller/callee/leaf-API details.
@@ -509,6 +533,7 @@ impl EscalateTemplate {
         memory_findings: Vec<MemoryInfo>,
         concurrency_findings: Vec<ConcurrencyInfo>,
         callback_findings: Vec<CallbackInfo>,
+        control_flow_findings: Vec<ControlFlowInfo>,
     ) -> Self {
         Self {
             function_name,
@@ -523,6 +548,7 @@ impl EscalateTemplate {
             memory_findings,
             concurrency_findings,
             callback_findings,
+            control_flow_findings,
             failure_history: Vec::new(),
             call_graph_context: Vec::new(),
         }
@@ -543,6 +569,7 @@ impl EscalateTemplate {
         memory_findings: Vec<MemoryInfo>,
         concurrency_findings: Vec<ConcurrencyInfo>,
         callback_findings: Vec<CallbackInfo>,
+        control_flow_findings: Vec<ControlFlowInfo>,
         failure_history: Vec<FailureHint>,
     ) -> Self {
         Self {
@@ -558,6 +585,7 @@ impl EscalateTemplate {
             memory_findings,
             concurrency_findings,
             callback_findings,
+            control_flow_findings,
             failure_history,
             call_graph_context: Vec::new(),
         }
@@ -578,6 +606,7 @@ impl EscalateTemplate {
         memory_findings: Vec<MemoryInfo>,
         concurrency_findings: Vec<ConcurrencyInfo>,
         callback_findings: Vec<CallbackInfo>,
+        control_flow_findings: Vec<ControlFlowInfo>,
         failure_history: Vec<FailureHint>,
         call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
     ) -> Self {
@@ -594,6 +623,7 @@ impl EscalateTemplate {
             memory_findings,
             concurrency_findings,
             callback_findings,
+            control_flow_findings,
             failure_history,
             call_graph_context,
         }
@@ -692,6 +722,9 @@ pub struct RichTemplate {
     pub test_cases: Vec<TestCaseFormatted>,
     /// API-category-specific mapping rows.
     pub api_category_mappings: Vec<ApiCategoryMapping>,
+    /// Control-flow findings about this function made by the analysis
+    /// pipeline.
+    pub control_flow_findings: Vec<ControlFlowInfo>,
 }
 
 impl RichTemplate {
@@ -720,6 +753,7 @@ impl RichTemplate {
             no_windows_apis: req.windows_apis.is_empty(),
             test_cases,
             api_category_mappings: Vec::new(),
+            control_flow_findings: Vec::new(),
         }
     }
 }
@@ -760,6 +794,9 @@ pub struct DetailedTemplate {
     pub data_structures: Vec<StructuredData>,
     /// Type information inferred by Ghidra.
     pub type_info: Vec<TypeInfo>,
+    /// Control-flow findings about this function made by the analysis
+    /// pipeline.
+    pub control_flow_findings: Vec<ControlFlowInfo>,
 }
 
 impl DetailedTemplate {
@@ -792,6 +829,7 @@ impl DetailedTemplate {
             neighboring_functions: Vec::new(),
             data_structures: Vec::new(),
             type_info: Vec::new(),
+            control_flow_findings: Vec::new(),
         }
     }
 }
@@ -919,6 +957,9 @@ pub struct ModuleContextTemplate {
     pub data_structures: Vec<StructuredData>,
     /// Enriched call graph context with caller/callee/leaf-API details.
     pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
+    /// Control-flow findings about this function made by the analysis
+    /// pipeline.
+    pub control_flow_findings: Vec<ControlFlowInfo>,
 }
 
 impl ModuleContextTemplate {
@@ -937,6 +978,7 @@ impl ModuleContextTemplate {
             neighboring_functions: data.neighboring_functions.clone(),
             data_structures: data.data_structures.clone(),
             call_graph_context: data.call_graph_context.clone(),
+            control_flow_findings: data.control_flow_findings.clone(),
         }
     }
 }
@@ -1032,6 +1074,9 @@ pub struct FullModuleTemplate {
     pub pal_traits: Vec<PalTraitDef>,
     /// Enriched call graph context with caller/callee/leaf-API details.
     pub call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
+    /// Control-flow findings about this function made by the analysis
+    /// pipeline.
+    pub control_flow_findings: Vec<ControlFlowInfo>,
 }
 
 impl FullModuleTemplate {
@@ -1052,6 +1097,7 @@ impl FullModuleTemplate {
             shim_layers: data.shim_layers.clone(),
             pal_traits: data.pal_traits.clone(),
             call_graph_context: data.call_graph_context.clone(),
+            control_flow_findings: data.control_flow_findings.clone(),
         }
     }
 }
