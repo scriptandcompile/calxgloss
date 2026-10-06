@@ -1,4 +1,4 @@
-//! Jump-table dispatch detection (P6 ticket #21).
+//! Jump-table dispatch detection.
 //!
 //! This module provides [`JumpTableDetector`], which carries the
 //! data-symbol prefixes that mark an unnamed dispatch table — Ghidra's
@@ -31,17 +31,6 @@ use calxgloss_ghidra::DecompiledFunction;
 // ============================================================
 // Detector
 // ============================================================
-
-/// Ghidra's spellings for the unnamed data symbols that back jump
-/// tables: `DAT_` for unnamed globals, `LAB_` for unnamed labels, and
-/// the `switchD`/`switchdataD` families for compiler-generated switch
-/// address tables.
-pub fn default_table_prefixes() -> Vec<String> {
-    ["DAT_", "LAB_", "switchD", "switchdataD"]
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect()
-}
 
 /// Jump-table dispatch detection over decompiled functions.
 ///
@@ -105,7 +94,7 @@ impl JumpTableDetector {
     /// [`MIN_TARGETS`] entries is a branch, not a dispatch, and passes
     /// unrecorded. A sized table reads at [`JUMP_TABLE_CONFIDENCE`]
     /// with an exact-size suggestion; an unsized one still reports, at
-    /// [`PATTERN_CONFIDENCE`], because the indexed code call itself is
+    /// [`UNSIZED_TABLE_CONFIDENCE`], because the indexed code call itself is
     /// the evidence.
     pub fn detect(&self, func: &DecompiledFunction) -> Vec<JumpTable> {
         let mut tables = Vec::new();
@@ -143,25 +132,38 @@ impl JumpTableDetector {
             return Some((symbol, index?));
         }
         let bytes = line.as_bytes();
-        for i in 0..bytes.len() {
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if bytes[i] == b'"' || bytes[i] == b'\'' {
+                // A dispatch shape inside a string literal is prose,
+                // not a call.
+                i = skip_string(line, i);
+                continue;
+            }
             if bytes[i] != b'(' {
+                i += 1;
                 continue;
             }
             // A call through a computed callee: the `(` follows a `)`.
             let before = line[..i].trim_end();
             if before.as_bytes().last().copied() != Some(b')') {
+                i += 1;
                 continue;
             }
             let Some(callee) = callee_expr(line, before.len() - 1) else {
+                i += 1;
                 continue;
             };
             if !callee.trim_start().starts_with('*') {
+                i += 1;
                 continue;
             }
             let Some(symbol) = self.prefixed_symbol(callee) else {
+                i += 1;
                 continue;
             };
             let Some(index) = index_expr(callee) else {
+                i += 1;
                 continue;
             };
             return Some((symbol, index));
@@ -207,7 +209,7 @@ const JUMP_TABLE_CONFIDENCE: u8 = 70;
 /// Confidence of a dispatch seen without a visible bound: the indexed
 /// code call is the whole evidence, and the table's extent — and
 /// whether it is a dispatch at all — is inferred.
-const PATTERN_CONFIDENCE: u8 = 60;
+const UNSIZED_TABLE_CONFIDENCE: u8 = 60;
 
 /// A table this small is a branch, not a dispatch.
 const MIN_TARGETS: usize = 3;
@@ -293,7 +295,10 @@ fn target_count(body: &str, symbol: &str, index: &str) -> Option<usize> {
         .collect();
     labels.sort();
     labels.dedup();
-    if labels.len() >= MIN_TARGETS {
+    if !labels.is_empty() {
+        // The labels are the ground truth for a switch's arms: even
+        // when fewer than the threshold are visible, reporting the
+        // count lets the caller's threshold skip a small switch.
         return Some(labels.len());
     }
     // Bounds check: `idx < N` → N, `idx <= N` → N + 1 (mirrored forms
@@ -431,7 +436,7 @@ fn build_table(
         confidence: if count.is_some() {
             JUMP_TABLE_CONFIDENCE
         } else {
-            PATTERN_CONFIDENCE
+            UNSIZED_TABLE_CONFIDENCE
         }
         .into(),
         evidence: call_line.to_string(),
@@ -524,6 +529,23 @@ fn matching_paren_back(line: &str, close: usize) -> Option<usize> {
         i += 1;
     }
     None
+}
+
+// ============================================================
+// The standard prefix set
+// ============================================================
+
+/// Ghidra's spellings for the unnamed data symbols that back jump
+/// tables: `DAT_` for unnamed globals, `LAB_` for unnamed labels, and
+/// the `switchD`/`switchdataD` families for compiler-generated switch
+/// address tables. These are the decompiler's own mintings, not
+/// project names: a binary whose tables carry names configures them
+/// through [`JumpTableDetector::with_prefixes`].
+pub fn default_table_prefixes() -> Vec<String> {
+    ["DAT_", "LAB_", "switchD", "switchdataD"]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect()
 }
 
 // ============================================================
@@ -634,6 +656,30 @@ mod tests {
         assert!(
             detect("  if (index < 2) {\n    (*(code *)(&switchD_1)[index])();\n  }\n").is_empty()
         );
+    }
+
+    #[test]
+    fn a_switch_with_too_few_visible_arms_reports_nothing() {
+        // Two visible `caseD` arms and no bounds check: below the
+        // target threshold, so nothing is reported even though the
+        // dispatch shape itself matches.
+        assert!(
+            detect(
+                "\
+  (*(code *)(&switchD_1800a3270)[uVar2])();
+  switchD_1800a3270_caseD_0:
+  switchD_1800a3270_caseD_1:
+"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_symbol_inside_a_string_literal_invents_no_table() {
+        // The scan reads code, not prose: a full dispatch shape inside
+        // a string literal is not a dispatch.
+        assert!(detect("  printf(\"(*(&DAT_1800a3270)[uVar2])();\");\n").is_empty());
     }
 
     #[test]

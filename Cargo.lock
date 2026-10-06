@@ -388,7 +388,6 @@ dependencies = [
  "calxgloss-ghidra",
  "calxgloss-prompts",
  "calxgloss-types",
- "regex",
  "serde",
  "serde_json",
  "tempfile",

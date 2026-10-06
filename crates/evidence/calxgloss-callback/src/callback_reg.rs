@@ -219,7 +219,7 @@ fn bound_callback(args: &str) -> Option<String> {
     top_level_args(args)
         .into_iter()
         .filter_map(strip_to_identifier)
-        .find(|name| !is_decompiler_minted(name))
+        .find(|name| !is_decompiler_minted(name) && name != "NULL")
 }
 
 /// The argument list split at top-level commas — commas inside
@@ -543,10 +543,29 @@ mod tests {
                 "\
   register_callback((callback_t *)0x0);
   set_callback(local_10);
-  register_handler(get_default());",
+  register_handler(get_default());
+  set_on_message(NULL);",
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn nested_calls_do_not_disturb_detection() {
+        // A nested call in the argument list, and a registration
+        // nested inside another call, both still bind the handler.
+        let records = detect(
+            "\
+  register_callback(my_handler, setup(1, 2));
+  atexit(register_handler(thunk));",
+        );
+        assert_eq!(
+            records.len(),
+            2,
+            "both registrations read through the nesting"
+        );
+        assert_eq!(records[0].callback, "my_handler");
+        assert_eq!(records[1].callback, "thunk");
     }
 
     #[test]
