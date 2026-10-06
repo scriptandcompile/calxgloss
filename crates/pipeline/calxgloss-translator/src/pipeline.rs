@@ -2103,12 +2103,7 @@ mod tests {
     }
 
     fn pipeline_over(workspace: Option<&std::path::Path>) -> TranslationPipeline {
-        let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").expect("llm config");
-        let pipeline = TranslationPipeline::new(unreachable_ghidra(), llm, ApiMappings::default());
-        match workspace {
-            Some(dir) => pipeline.with_workspace(dir.to_path_buf()),
-            None => pipeline,
-        }
+        pipeline_with(unreachable_ghidra(), workspace)
     }
 
     #[tokio::test]
@@ -2284,13 +2279,13 @@ mod tests {
             persistor.exists("eqmain.dll"),
             "a cache miss should leave a saved document behind"
         );
-        assert!(
+        assert_eq!(
+            persistor.path_for("eqmain.dll"),
             dir.path()
                 .join("re")
                 .join("analysis")
                 .join("memory")
-                .join("eqmain.dll.json")
-                .is_file(),
+                .join("eqmain.dll.json"),
             "the document should be filed under re/analysis/memory"
         );
     }
