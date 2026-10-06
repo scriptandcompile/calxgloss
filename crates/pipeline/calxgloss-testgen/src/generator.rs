@@ -86,7 +86,12 @@ impl TestGenerator {
     /// # Returns
     ///
     /// A [`FfiBinding`] containing the generated FFI code and parsed type information.
-    pub fn generate_ffi_binding(&self, dll: &str, function: &str, signature: &str) -> Result<FfiBinding> {
+    pub fn generate_ffi_binding(
+        &self,
+        dll: &str,
+        function: &str,
+        signature: &str,
+    ) -> Result<FfiBinding> {
         debug!(dll, function, signature, "Generating FFI binding");
         let binding = generate_ffi_binding(dll, function, signature)?;
         info!(dll, function, "Generated FFI binding");

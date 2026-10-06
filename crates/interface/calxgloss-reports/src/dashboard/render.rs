@@ -245,7 +245,7 @@ pub fn render_dashboard(dashboard: &ReviewDashboard, follow: bool) {
                 _ => "—".to_string(),
             };
             let confidence = unit
-                .confidence
+                .unit_confidence
                 .map(|c| format!("({:.0}%)", c * 100.0))
                 .unwrap_or_else(|| "no confidence".to_string());
 
@@ -369,7 +369,7 @@ pub fn render_unit_view(data: &UnitViewData) {
         ));
         println_content(format!(
             "    Confidence: {:.0}%",
-            unit.confidence.unwrap_or(0.0) * 100.0
+            unit.unit_confidence.unwrap_or(0.0) * 100.0
         ));
         if let Some(ref model) = unit.llm_model {
             println_content(format!("    LLM Model:  {}", model));

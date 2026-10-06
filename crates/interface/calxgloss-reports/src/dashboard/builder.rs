@@ -8,9 +8,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use calxgloss_git::GitManager;
-use calxgloss_types::dashboard::{
-    ReviewDashboard, ReviewStatus, Staleness, UnitOfWork, WorkKind,
-};
+use calxgloss_types::dashboard::{ReviewDashboard, ReviewStatus, Staleness, UnitOfWork, WorkKind};
 use chrono::Utc;
 
 /// Parses a git branch name like `re/game_logic/DrawSpritev1` or
@@ -95,7 +93,7 @@ struct PatchData {
     baseline_tests_total: Option<usize>,
     verification_tests_passed: Option<usize>,
     verification_tests_total: Option<usize>,
-    confidence: Option<f32>,
+    unit_confidence: Option<f32>,
     context_tier: Option<usize>,
 }
 
@@ -185,7 +183,7 @@ impl<'a> DashboardBuilder<'a> {
                     attempt: 1,
                     status: ReviewStatus::Accepted,
                     accepted: true,
-                    confidence: Some(0.95),
+                    unit_confidence: Some(0.95),
                     baseline_tests_passed: None,
                     baseline_tests_total: None,
                     verification_tests_passed: None,
@@ -486,7 +484,7 @@ impl<'a> DashboardBuilder<'a> {
             attempt: latest_attempt,
             status: ReviewStatus::Queued,
             accepted: false,
-            confidence: patch_data.map(|_| patch_info.unwrap_or(0.5)),
+            unit_confidence: patch_data.map(|_| patch_info.unwrap_or(0.5)),
             baseline_tests_passed: None,
             baseline_tests_total: None,
             verification_tests_passed: None,

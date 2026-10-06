@@ -265,7 +265,7 @@ pub enum ProgressEvent {
         /// Labels of the failing edge-case tests.
         failing_edge_cases: Vec<String>,
         /// Confidence score for the divergence diagnosis (0–10).
-        confidence: u8,
+        fault_confidence: u8,
     },
     /// The local LLM model is overloaded or has timed out.
     ///
@@ -506,13 +506,13 @@ impl std::fmt::Display for ProgressEvent {
                 edge_tests_passed,
                 edge_tests_total,
                 failing_edge_cases,
-                confidence,
+                fault_confidence,
             } => {
                 write!(
                     f,
                     "Behavior divergence detected for {function} ({dll}) attempt #{attempt} [{strategy}]: {baseline_passed}/{baseline_total} baseline tests pass, {edge_tests_passed}/{edge_tests_total} edge-case tests pass ({} failing, confidence {}/10)",
                     failing_edge_cases.len(),
-                    confidence
+                    fault_confidence
                 )
             }
             ProgressEvent::ResourceExhaustionDetected {

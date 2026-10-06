@@ -537,7 +537,8 @@ pub async fn try_translate_with_retry(
                 };
 
             if let Some(ref signal) = divergence_signal {
-                let confidence = BehaviorDivergenceDetector::new().divergence_confidence(signal);
+                let fault_confidence =
+                    BehaviorDivergenceDetector::new().divergence_confidence(signal);
                 let failing_labels: Vec<String> = signal
                     .failing_edge_cases
                     .iter()
@@ -555,7 +556,7 @@ pub async fn try_translate_with_retry(
                         edge_tests_passed: signal.edge_tests_passed,
                         edge_tests_total: signal.edge_tests_total,
                         failing_edge_cases: failing_labels.clone(),
-                        confidence,
+                        fault_confidence,
                     });
                 }
                 if let Some(logger) = ctx.fault_logger {
@@ -569,7 +570,7 @@ pub async fn try_translate_with_retry(
                         signal.edge_tests_passed,
                         signal.edge_tests_total,
                         failing_labels.clone(),
-                        confidence,
+                        fault_confidence,
                     );
                     logger.record(event);
                 }
@@ -1155,7 +1156,7 @@ pub async fn try_translate_with_retry(
 
         // Emit divergence signal if detected.
         if let Some(ref signal) = divergence_signal {
-            let confidence = divergence_detector.divergence_confidence(signal);
+            let fault_confidence = divergence_detector.divergence_confidence(signal);
             let failing_labels: Vec<String> = signal
                 .failing_edge_cases
                 .iter()
@@ -1173,7 +1174,7 @@ pub async fn try_translate_with_retry(
                     edge_tests_passed: signal.edge_tests_passed,
                     edge_tests_total: signal.edge_tests_total,
                     failing_edge_cases: failing_labels.clone(),
-                    confidence,
+                    fault_confidence,
                 });
             }
             // Persist the fault event for post-hoc analysis.
@@ -1188,7 +1189,7 @@ pub async fn try_translate_with_retry(
                     signal.edge_tests_passed,
                     signal.edge_tests_total,
                     failing_labels.clone(),
-                    confidence,
+                    fault_confidence,
                 );
                 logger.record(event);
             }

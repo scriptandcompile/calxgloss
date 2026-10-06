@@ -575,13 +575,8 @@ impl Analyzer {
         workspace: &std::path::Path,
         cache_dir: Option<&std::path::Path>,
     ) -> anyhow::Result<calxgloss_callgraph::CallGraph> {
-        crate::callgraph::build_enriched_call_graph(
-            &self.ghidra,
-            dll_name,
-            workspace,
-            cache_dir,
-        )
-        .await
+        crate::callgraph::build_enriched_call_graph(&self.ghidra, dll_name, workspace, cache_dir)
+            .await
     }
 
     /// Generate shim layer suggestions for all crate-replacement DLLs.

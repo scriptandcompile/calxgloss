@@ -1240,7 +1240,7 @@
     }
 
     function renderDetailOverview(u) {
-        const conf = fmtConfidence(u.confidence);
+        const conf = fmtConfidence(u.unit_confidence);
         const bp = u.baseline_tests_passed ?? 0;
         const bt = u.baseline_tests_total ?? 0;
         const vp = u.verification_tests_passed ?? 0;
@@ -1278,7 +1278,7 @@
                     <span class="detail-row-label">Confidence</span>
                     <span class="detail-row-value">${conf.text}</span>
                 </div>
-                ${u.confidence != null ? `
+                ${u.unit_confidence != null ? `
                     <div class="confidence-bar-container">
                         <div class="confidence-bar ${conf.cls}" style="width:${conf.pct}%"></div>
                     </div>

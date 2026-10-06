@@ -280,7 +280,10 @@ mod tests {
 
     #[test]
     fn test_context_tier_escalation() {
-        assert_eq!(ContextTier::Signature.escalate(), Some(ContextTier::Disassembly));
+        assert_eq!(
+            ContextTier::Signature.escalate(),
+            Some(ContextTier::Disassembly)
+        );
         assert_eq!(
             ContextTier::Disassembly.escalate(),
             Some(ContextTier::WithTests)

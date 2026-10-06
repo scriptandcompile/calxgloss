@@ -544,7 +544,7 @@ impl FaultEvent {
     /// * `edge_passed` — Number of edge-case tests that passed.
     /// * `edge_total` — Total number of edge-case tests.
     /// * `failing_labels` — Labels of the edge-case tests that failed.
-    /// * `confidence` — Confidence score for the diagnosis (0–10).
+    /// * `fault_confidence` — Confidence score for the diagnosis (0–10).
     #[allow(clippy::too_many_arguments)]
     pub fn behavior_divergence(
         dll: &str,
@@ -556,9 +556,9 @@ impl FaultEvent {
         edge_passed: usize,
         edge_total: usize,
         failing_labels: Vec<String>,
-        confidence: u8,
+        fault_confidence: u8,
     ) -> Self {
-        let severity = if confidence >= 7 {
+        let severity = if fault_confidence >= 7 {
             FaultSeverity::Warning
         } else {
             FaultSeverity::Error
@@ -576,7 +576,7 @@ impl FaultEvent {
                 baseline_passed,
                 baseline_total,
                 failing_labels.len(),
-                confidence
+                fault_confidence
             ),
             recovery: format!(
                 "Enrich the test suite with {} new baseline test(s). \
@@ -593,7 +593,7 @@ impl FaultEvent {
                 "edge_passed": edge_passed,
                 "edge_total": edge_total,
                 "failing_edge_cases": failing_labels,
-                "confidence": confidence,
+                "fault_confidence": fault_confidence,
             })),
         }
     }
@@ -879,7 +879,7 @@ mod tests {
         assert_eq!(deserialized.dll, "test.dll");
         assert_eq!(deserialized.attempt, 3);
         let meta = deserialized.metadata.unwrap();
-        assert_eq!(meta["confidence"], 9);
+        assert_eq!(meta["fault_confidence"], 9);
         assert_eq!(meta["failing_edge_cases"].as_array().unwrap().len(), 3);
     }
 }

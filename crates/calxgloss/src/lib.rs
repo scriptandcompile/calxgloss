@@ -171,8 +171,7 @@ pub use calxgloss_algorithm::error::{AlgorithmError, Result as AlgorithmResult};
 pub use calxgloss_algorithm::persist::AlgorithmPersistor;
 pub use calxgloss_algorithm::string_hints::{StringHintEngine, StringSignature};
 pub use calxgloss_algorithm::types::{
-    AlgorithmCategory, AlgorithmHint, AlgorithmPattern, AlgorithmRecognitionResult,
-    DetectionMethod,
+    AlgorithmCategory, AlgorithmHint, AlgorithmPattern, AlgorithmRecognitionResult, DetectionMethod,
 };
 
 // ============================================================

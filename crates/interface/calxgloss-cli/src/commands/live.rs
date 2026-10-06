@@ -133,7 +133,7 @@ pub async fn handle_live(
         settings,
         true,          // continue mode — don't stop after classification, translate all
         Some(&events), // pass event emitter for live progress streaming
-        workspace,      // resolved workspace (same value used by serve task)
+        workspace,     // resolved workspace (same value used by serve task)
         no_callgraph,
         callgraph_cache,
         callgraph_verbose,

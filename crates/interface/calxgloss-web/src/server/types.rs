@@ -66,8 +66,8 @@ pub struct UnitResponseInner {
     pub status: String,
     /// Whether this unit has been accepted and merged to main.
     pub accepted: bool,
-    /// Translation confidence score (0.0 to 1.0).
-    pub confidence: Option<f32>,
+    /// Unit confidence score (0.0 to 1.0).
+    pub unit_confidence: Option<f32>,
     /// Number of baseline tests that passed.
     pub baseline_tests_passed: Option<usize>,
     /// Total number of baseline tests.
