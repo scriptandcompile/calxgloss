@@ -593,6 +593,7 @@ dependencies = [
  "askama",
  "calxgloss-algorithm",
  "calxgloss-analysis",
+ "calxgloss-callback",
  "calxgloss-callgraph",
  "calxgloss-ghidra",
  "calxgloss-llm",
