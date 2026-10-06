@@ -22,6 +22,7 @@ calxgloss-stringctx = { path = "../../evidence/calxgloss-stringctx" }
 calxgloss-callback = { path = "../../evidence/calxgloss-callback" }
 calxgloss-controlflow = { path = "../../evidence/calxgloss-controlflow" }
 calxgloss-apidetect = { path = "../../evidence/calxgloss-apidetect" }
+calxgloss-serialize = { path = "../../evidence/calxgloss-serialize" }
 calxgloss-verify = { path = "../../pipeline/calxgloss-verify" }
 calxgloss-git = { path = "../../pipeline/calxgloss-git" }
 calxgloss-reports = { path = "../calxgloss-reports" }

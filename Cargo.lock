@@ -339,6 +339,7 @@ dependencies = [
  "calxgloss-pal",
  "calxgloss-prompts",
  "calxgloss-reports",
+ "calxgloss-serialize",
  "calxgloss-stringctx",
  "calxgloss-sync",
  "calxgloss-testgen",
@@ -450,6 +451,7 @@ dependencies = [
  "calxgloss-memory",
  "calxgloss-pal",
  "calxgloss-reports",
+ "calxgloss-serialize",
  "calxgloss-stringctx",
  "calxgloss-sync",
  "calxgloss-testgen",
@@ -604,6 +606,22 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "calxgloss-serialize"
+version = "0.2.0"
+dependencies = [
+ "calxgloss-ghidra",
+ "calxgloss-prompts",
+ "calxgloss-types",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

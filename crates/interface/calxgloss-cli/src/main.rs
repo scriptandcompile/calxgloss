@@ -71,6 +71,7 @@ use commands::gc::handle_gc;
 use commands::init::handle_init;
 use commands::live::handle_live;
 use commands::memory::handle_memory;
+use commands::serialize::handle_serialize;
 use commands::serve::handle_serve;
 use commands::stringctx::handle_stringctx;
 use commands::sync::handle_sync;
@@ -130,8 +131,8 @@ fn main() -> Result<()> {
 
     // target_dir is required for all commands that do real work.
     // `config`, `gc`, `typesdb`, `typeinfer`, `algorithm`, `memory`, `sync`,
-    // `consts`, `callback`, `controlflow`, `stringctx`, and `apidetect` don't need it —
-    // the analysis
+    // `consts`, `callback`, `controlflow`, `stringctx`, `apidetect`, and
+    // `serialize` don't need it — the analysis
     // commands read the program open
     // in Ghidra and write to the workspace — so we check here and fail
     // fast with a helpful message.
@@ -148,7 +149,8 @@ fn main() -> Result<()> {
             | Command::Callback { .. }
             | Command::ControlFlow { .. }
             | Command::StringCtx { .. }
-            | Command::ApiDetect { .. } => {}
+            | Command::ApiDetect { .. }
+            | Command::Serialize { .. } => {}
             _ if settings.target_dir.is_none() => {
                 anyhow::bail!(
                     "target_dir is required.\n\nSet it via:\n  --target-dir <path>\n  [target_dir] in calxgloss.toml\n  CALXGLOSS_TARGET_DIR env var"
@@ -305,6 +307,14 @@ fn main() -> Result<()> {
                 .build()
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_apidetect(&dll, &workspace, show, &settings))
+        }
+        Command::Serialize { dll, show } => {
+            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_serialize(&dll, &workspace, show, &settings))
         }
         Command::Verify {
             dll,

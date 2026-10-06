@@ -225,6 +225,18 @@ pub use calxgloss_controlflow::types::{
 };
 
 // ============================================================
+// calxgloss-serialize — endianness & serialization detection
+// ============================================================
+
+// The crate's `Result` alias is deliberately not re-exported:
+// `SerializeResult` already names the per-binary document, and a second
+// alias spelled like it would read as the same thing. The crate's
+// `ScanMetadata` is the shared one from calxgloss-types, already
+// named here.
+pub use calxgloss_serialize::SerializeError;
+pub use calxgloss_serialize::types::{ByteSwapOperation, SerializeFinding, SerializeResult};
+
+// ============================================================
 // calxgloss-typeinfer — type inference and propagation
 // ============================================================
 

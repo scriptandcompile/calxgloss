@@ -14,6 +14,7 @@ pub mod gc;
 pub mod init;
 pub mod live;
 pub mod memory;
+pub mod serialize;
 pub mod serve;
 pub mod stringctx;
 pub mod sync;
