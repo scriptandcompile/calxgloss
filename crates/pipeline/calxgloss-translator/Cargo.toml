@@ -19,6 +19,7 @@ calxgloss-verify = { path = "../calxgloss-verify" }
 calxgloss-typesdb = { path = "../../evidence/calxgloss-typesdb" }
 calxgloss-typeinfer = { path = "../../evidence/calxgloss-typeinfer" }
 calxgloss-algorithm = { path = "../../evidence/calxgloss-algorithm" }
+calxgloss-memory = { path = "../../evidence/calxgloss-memory" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }

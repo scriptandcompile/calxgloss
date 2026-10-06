@@ -40,6 +40,8 @@ use calxgloss_ghidra::GhidraClient;
 use calxgloss_llm::{
     LlmClient, LlmMessage, context::ContextWindowDetector, hallucination::HallucinationDetector,
 };
+use calxgloss_memory::engine::MemoryEngine;
+use calxgloss_memory::persist::MemoryPersistor;
 use calxgloss_pal::ApiMappings;
 use calxgloss_prompts::build_translate_prompt;
 use calxgloss_testgen::TestGenerator;
@@ -1445,6 +1447,69 @@ impl TranslationPipeline {
         }
     }
 
+    /// Detect memory lifecycles across the binary before a batch starts,
+    /// unless a detection result is already cached.
+    ///
+    /// The scan's findings — allocation pairs, handle lifetimes, and
+    /// reference counts — are filed at `re/analysis/memory/{dll}.json` for
+    /// the prompt path to read; running the detection scan once up front
+    /// means every function in the batch can see memory context instead of
+    /// none. The persisted file is the cache: when a result is already
+    /// saved for `dll`, the scan is skipped entirely.
+    ///
+    /// Returns whether a result is available afterwards. A missing workspace,
+    /// an unreachable Ghidra server, or a failed save only log a warning and
+    /// return `false` — prompts without memory context are degraded, not
+    /// fatal, and the batch proceeds either way.
+    pub async fn ensure_memory_detection(&self, dll: &str) -> bool {
+        let Some(workspace) = self.workspace.as_deref() else {
+            debug!(
+                dll,
+                "No workspace configured; skipping memory lifecycle detection"
+            );
+            return false;
+        };
+
+        let persistor = MemoryPersistor::new(workspace);
+        if persistor.exists(dll) {
+            debug!(
+                dll,
+                path = %persistor.path_for(dll).display(),
+                "Memory lifecycle result already cached; skipping scan"
+            );
+            return true;
+        }
+
+        info!(dll, "Detecting memory lifecycles before batch translation");
+        let engine = MemoryEngine::new(&self.ghidra);
+        match engine.scan(dll).await {
+            Ok(result) => {
+                if let Err(e) = persistor.save(&result) {
+                    warn!(
+                        dll,
+                        error = %e,
+                        "Failed to persist memory lifecycle result; continuing without memory context"
+                    );
+                    return false;
+                }
+                info!(
+                    dll,
+                    findings = result.findings.len(),
+                    "Memory lifecycle detection complete"
+                );
+                true
+            }
+            Err(e) => {
+                warn!(
+                    dll,
+                    error = %e,
+                    "Memory lifecycle detection failed; continuing without memory context"
+                );
+                false
+            }
+        }
+    }
+
     /// Translate multiple functions from a single DLL, one at a time.
     ///
     /// For each function, this runs the full translation pipeline with retry
@@ -1453,12 +1518,13 @@ impl TranslationPipeline {
     /// Functions are processed sequentially in the order provided.
     ///
     /// Before the first function, the per-binary type database, type inference
-    /// result, and algorithm recognition result are recovered (or loaded from
-    /// their caches) so higher context tiers have data structure, parameter
-    /// type, and algorithm context — see
+    /// result, algorithm recognition result, and memory lifecycle result are
+    /// recovered (or loaded from their caches) so higher context tiers have
+    /// data structure, parameter type, algorithm, and memory context — see
     /// [`ensure_type_database`](Self::ensure_type_database),
-    /// [`ensure_type_inference`](Self::ensure_type_inference), and
-    /// [`ensure_algorithm_recognition`](Self::ensure_algorithm_recognition).
+    /// [`ensure_type_inference`](Self::ensure_type_inference),
+    /// [`ensure_algorithm_recognition`](Self::ensure_algorithm_recognition),
+    /// and [`ensure_memory_detection`](Self::ensure_memory_detection).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
     /// invoked **immediately after each function completes** (before moving on
@@ -1589,6 +1655,7 @@ impl TranslationPipeline {
         self.ensure_type_database(dll).await;
         self.ensure_type_inference(dll).await;
         self.ensure_algorithm_recognition(dll).await;
+        self.ensure_memory_detection(dll).await;
 
         let mut batch_result = batch::BatchTranslationResult::new(dll.to_string());
 
@@ -1699,12 +1766,13 @@ impl TranslationPipeline {
     /// callee code when generating shim layers or caller wrappers.
     ///
     /// Before the first function, the per-binary type database, type inference
-    /// result, and algorithm recognition result are recovered (or loaded from
-    /// their caches) so higher context tiers have data structure, parameter
-    /// type, and algorithm context — see
+    /// result, algorithm recognition result, and memory lifecycle result are
+    /// recovered (or loaded from their caches) so higher context tiers have
+    /// data structure, parameter type, algorithm, and memory context — see
     /// [`ensure_type_database`](Self::ensure_type_database),
-    /// [`ensure_type_inference`](Self::ensure_type_inference), and
-    /// [`ensure_algorithm_recognition`](Self::ensure_algorithm_recognition).
+    /// [`ensure_type_inference`](Self::ensure_type_inference),
+    /// [`ensure_algorithm_recognition`](Self::ensure_algorithm_recognition),
+    /// and [`ensure_memory_detection`](Self::ensure_memory_detection).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
     /// invoked **immediately after each function completes** (before moving on
@@ -1791,6 +1859,7 @@ impl TranslationPipeline {
         self.ensure_type_database(&graph.dll).await;
         self.ensure_type_inference(&graph.dll).await;
         self.ensure_algorithm_recognition(&graph.dll).await;
+        self.ensure_memory_detection(&graph.dll).await;
 
         // Build a priority-ordered plan
         let orderer = calxgloss_callgraph::TranslationOrderer::new();
@@ -2020,6 +2089,8 @@ mod tests {
     use super::*;
     use calxgloss_algorithm::persist::AlgorithmPersistor;
     use calxgloss_algorithm::types::AlgorithmRecognitionResult;
+    use calxgloss_memory::persist::MemoryPersistor;
+    use calxgloss_memory::types::MemoryResult;
     use calxgloss_typeinfer::persist::TypeInferPersistor;
     use calxgloss_typeinfer::types::TypeInferenceResult;
     use calxgloss_typesdb::types::{ScanMetadata, TypeDatabase};
@@ -2130,5 +2201,129 @@ mod tests {
     async fn no_workspace_skips_the_algorithm_scan() {
         let pipeline = pipeline_over(None);
         assert!(!pipeline.ensure_algorithm_recognition("eqmain.dll").await);
+    }
+
+    /// A pipeline over a caller-supplied Ghidra client, workspace included
+    /// when there is one.
+    fn pipeline_with(
+        ghidra: GhidraClient,
+        workspace: Option<&std::path::Path>,
+    ) -> TranslationPipeline {
+        let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").expect("llm config");
+        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+        match workspace {
+            Some(dir) => pipeline.with_workspace(dir.to_path_buf()),
+            None => pipeline,
+        }
+    }
+
+    /// A stand-in GhidraMCP server answering the three endpoints a memory
+    /// scan touches — the function listing, the name search that resolves
+    /// it, and the decompile by address — with one canned `malloc`/`free`
+    /// function, so the scan-to-save path runs without a real Ghidra.
+    /// Returns the base URL to point a client at.
+    async fn fake_ghidra() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake server should bind");
+        let addr = listener.local_addr().expect("fake server address");
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut request = [0u8; 2048];
+                    let read = stream.read(&mut request).await.unwrap_or(0);
+                    let path = String::from_utf8_lossy(&request[..read])
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or_default()
+                        .to_string();
+                    let body = if path.starts_with("/list_functions")
+                        || path.starts_with("/search_functions")
+                    {
+                        "FUN_18003e750 at 18003e750".to_string()
+                    } else if path.starts_with("/decompile_function") {
+                        "undefined FUN_18003e750(void)\n{\n  void *pv = malloc(0x10);\n  free(pv);\n}\n"
+                            .to_string()
+                    } else {
+                        "Error 404: No context found for request".to_string()
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn a_cached_memory_result_is_reused_without_rescanning() {
+        let dir = TempDir::new().unwrap();
+        MemoryPersistor::new(dir.path())
+            .save(&MemoryResult::new(ScanMetadata::new("eqmain.dll")))
+            .unwrap();
+
+        // The Ghidra server is unreachable, so `true` can only come from the cache.
+        let pipeline = pipeline_over(Some(dir.path()));
+        assert!(pipeline.ensure_memory_detection("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn a_cache_miss_scans_and_saves_the_result() {
+        let dir = TempDir::new().unwrap();
+        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
+        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+
+        assert!(pipeline.ensure_memory_detection("eqmain.dll").await);
+
+        let persistor = MemoryPersistor::new(dir.path());
+        assert!(
+            persistor.exists("eqmain.dll"),
+            "a cache miss should leave a saved document behind"
+        );
+        assert!(
+            dir.path()
+                .join("re")
+                .join("analysis")
+                .join("memory")
+                .join("eqmain.dll.json")
+                .is_file(),
+            "the document should be filed under re/analysis/memory"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_memory_scan_degrades_instead_of_failing() {
+        let dir = TempDir::new().unwrap();
+        let pipeline = pipeline_over(Some(dir.path()));
+
+        assert!(!pipeline.ensure_memory_detection("eqmain.dll").await);
+        assert!(
+            !MemoryPersistor::new(dir.path()).exists("eqmain.dll"),
+            "a failed scan persists nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_memory_save_degrades_instead_of_failing() {
+        let dir = TempDir::new().unwrap();
+        // `re/analysis` as a plain file makes the save's directory
+        // creation fail even though the scan itself succeeds.
+        std::fs::create_dir_all(dir.path().join("re")).unwrap();
+        std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
+
+        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
+        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+
+        assert!(!pipeline.ensure_memory_detection("eqmain.dll").await);
+    }
+
+    #[tokio::test]
+    async fn no_workspace_skips_the_memory_scan() {
+        let pipeline = pipeline_over(None);
+        assert!(!pipeline.ensure_memory_detection("eqmain.dll").await);
     }
 }
