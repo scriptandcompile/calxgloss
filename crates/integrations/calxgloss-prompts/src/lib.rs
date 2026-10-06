@@ -54,7 +54,7 @@ pub use context::{
 };
 pub use error::PromptError;
 pub use templates::{
-    AlgorithmInfo, BoundaryValue, CallGraphNeighbor, CallbackInfo, ConcurrencyInfo,
+    AlgorithmInfo, ApiInfo, BoundaryValue, CallGraphNeighbor, CallbackInfo, ConcurrencyInfo,
     ControlFlowInfo, EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate, FixTemplate,
     FormattedTestResult, FullModuleTemplate, MemoryInfo, MinimalTemplate, ModuleContextTemplate,
     NeighborFunction, PalTraitDef, PalTraitMethod, ShimCode, SignatureTemplate, StringContextInfo,
@@ -627,6 +627,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -678,6 +679,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             findings,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -739,6 +741,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -773,6 +776,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             findings,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -841,6 +845,7 @@ mod tests {
             findings,
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -851,6 +856,79 @@ mod tests {
         assert!(prompt.contains("format_string string"));
         assert!(prompt.contains("confidence 70"));
         assert!(prompt.contains("sprintf(local_10, \"%s: %d hits\", pcVar2, uVar3);"));
+    }
+
+    #[test]
+    fn test_escalate_template_with_api_findings() {
+        let findings = vec![
+            ApiInfo {
+                function: String::new(),
+                api: "inflate".to_string(),
+                library: "zlib".to_string(),
+                suggestion: "flate2".to_string(),
+                kind: "import".to_string(),
+                confidence: 90,
+                evidence: "inflate".to_string(),
+            },
+            ApiInfo {
+                function: "FUN_18003ab00".to_string(),
+                api: "CreateFileA".to_string(),
+                library: "Win32".to_string(),
+                suggestion: "windows / std::fs".to_string(),
+                kind: "transitive".to_string(),
+                confidence: 60,
+                evidence: "FUN_18003ab00 → FUN_18003c000 → CreateFileA".to_string(),
+            },
+        ];
+
+        let prompt = build_escalate_prompt_with_context(
+            "FUN_18003ab00".to_string(),
+            "eqmain.dll".to_string(),
+            "fn fun_18003ab00() { /* raw imports */ }".to_string(),
+            "Wrong result".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            findings,
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(prompt.contains("LIBRARIES AND APIS"));
+        assert!(prompt.contains("flate2"));
+        assert!(prompt.contains("zlib import"));
+        assert!(prompt.contains("confidence 90"));
+        assert!(prompt.contains("windows / std::fs"));
+        assert!(prompt.contains("Win32 transitive"));
+        assert!(prompt.contains("Reached by: `FUN_18003ab00`"));
+        assert!(prompt.contains("FUN_18003ab00 → FUN_18003c000 → CreateFileA"));
+    }
+
+    #[test]
+    fn test_escalate_template_without_api_findings_says_so() {
+        let prompt = build_escalate_prompt(
+            "DrawSprite".to_string(),
+            "game_logic.dll".to_string(),
+            "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
+            "Wrong result".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(prompt.contains("LIBRARIES AND APIS"));
+        assert!(prompt.contains("No library/API context available."));
     }
 
     #[test]

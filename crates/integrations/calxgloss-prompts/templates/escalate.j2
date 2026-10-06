@@ -247,6 +247,26 @@ No string context available.
 
 ---
 
+## ADDITIONAL CONTEXT — LIBRARIES AND APIS
+
+{% if !api_findings.is_empty() %}
+The following library APIs were identified by static analysis — from the
+binary's import table and from the call paths reaching them out of this
+function. Where a finding is credible, call the API through the suggested
+Rust crate instead of transliterating the raw import or declaring it as an
+`extern "C"` stub:
+
+{% for finding in api_findings %}
+- **{{ finding.suggestion|safe }}** for `{{ finding.api }}` ({{ finding.library }} {{ finding.kind }}, confidence {{ finding.confidence }})
+{% if !finding.function.is_empty() %}  Reached by: `{{ finding.function }}`
+{% endif %}  Evidence: `{{ finding.evidence|safe }}`
+{% endfor %}
+{% else %}
+No library/API context available.
+{% endif %}
+
+---
+
 ## TRANSLATION REQUIREMENTS
 
 1. **Output ONLY the corrected Rust code** — no explanations, no markdown fences, no code blocks.

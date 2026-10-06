@@ -243,6 +243,34 @@ pub struct StringContextInfo {
     pub evidence: String,
 }
 
+/// A library/API finding about one function or about the binary, made by
+/// the `calxgloss-apidetect` engines.
+///
+/// The escalate prompt shows these alongside the other analysis findings
+/// so the LLM calls the API through the suggested Rust crate instead of
+/// transliterating the raw import or declaring it as an `extern "C"`
+/// stub. The kind names how the API was reached — `import` for a
+/// binary-level import-table entry, `direct` or `transitive` for a
+/// function-level call-graph usage.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ApiInfo {
+    /// The function the finding is about, e.g. `FUN_18003ab00`; empty
+    /// for a binary-level import entry.
+    pub function: String,
+    /// The API the finding names, e.g. `inflate`.
+    pub api: String,
+    /// The library the API belongs to, e.g. `zlib`.
+    pub library: String,
+    /// The Rust crate standing in for the API, e.g. `flate2`.
+    pub suggestion: String,
+    /// The kind of finding, e.g. `import`, `direct`, `transitive`.
+    pub kind: String,
+    /// Confidence that the finding is right, 0–100.
+    pub confidence: u8,
+    /// The call path or import entry that supports the finding.
+    pub evidence: String,
+}
+
 /// A formatted test result for template rendering.
 ///
 /// Carries the test case data alongside the pass/fail outcome observed
@@ -535,6 +563,9 @@ pub struct EscalateTemplate {
     /// String-context findings about this function made by the analysis
     /// pipeline.
     pub string_findings: Vec<StringContextInfo>,
+    /// Library/API findings about this function and its binary made by
+    /// the analysis pipeline.
+    pub api_findings: Vec<ApiInfo>,
     /// Previous attempt failures to reference in the prompt.
     pub failure_history: Vec<FailureHint>,
     /// Enriched call graph context with caller/callee/leaf-API details.
@@ -559,6 +590,7 @@ impl EscalateTemplate {
         callback_findings: Vec<CallbackInfo>,
         control_flow_findings: Vec<ControlFlowInfo>,
         string_findings: Vec<StringContextInfo>,
+        api_findings: Vec<ApiInfo>,
     ) -> Self {
         Self {
             function_name,
@@ -575,6 +607,7 @@ impl EscalateTemplate {
             callback_findings,
             control_flow_findings,
             string_findings,
+            api_findings,
             failure_history: Vec::new(),
             call_graph_context: Vec::new(),
         }
@@ -597,6 +630,7 @@ impl EscalateTemplate {
         callback_findings: Vec<CallbackInfo>,
         control_flow_findings: Vec<ControlFlowInfo>,
         string_findings: Vec<StringContextInfo>,
+        api_findings: Vec<ApiInfo>,
         failure_history: Vec<FailureHint>,
     ) -> Self {
         Self {
@@ -614,6 +648,7 @@ impl EscalateTemplate {
             callback_findings,
             control_flow_findings,
             string_findings,
+            api_findings,
             failure_history,
             call_graph_context: Vec::new(),
         }
@@ -636,6 +671,7 @@ impl EscalateTemplate {
         callback_findings: Vec<CallbackInfo>,
         control_flow_findings: Vec<ControlFlowInfo>,
         string_findings: Vec<StringContextInfo>,
+        api_findings: Vec<ApiInfo>,
         failure_history: Vec<FailureHint>,
         call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
     ) -> Self {
@@ -654,6 +690,7 @@ impl EscalateTemplate {
             callback_findings,
             control_flow_findings,
             string_findings,
+            api_findings,
             failure_history,
             call_graph_context,
         }
