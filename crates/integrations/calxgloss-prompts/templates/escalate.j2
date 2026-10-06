@@ -228,6 +228,25 @@ No control-flow context available.
 
 ---
 
+## ADDITIONAL CONTEXT — STRINGS
+
+{% if !string_findings.is_empty() %}
+The following strings were mapped to this function by static analysis —
+classified into their role, and for format-string calls the Rust argument
+types the specifiers imply. Where a finding is credible, name the string's
+role in the translation instead of transliterating the raw literal or
+`DAT_` reference:
+
+{% for finding in string_findings %}
+- **{{ finding.suggestion|safe }}** ({{ finding.kind }} string, confidence {{ finding.confidence }})
+  Evidence: `{{ finding.evidence|safe }}`
+{% endfor %}
+{% else %}
+No string context available.
+{% endif %}
+
+---
+
 ## TRANSLATION REQUIREMENTS
 
 1. **Output ONLY the corrected Rust code** — no explanations, no markdown fences, no code blocks.

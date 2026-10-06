@@ -57,8 +57,8 @@ pub use templates::{
     AlgorithmInfo, BoundaryValue, CallGraphNeighbor, CallbackInfo, ConcurrencyInfo,
     ControlFlowInfo, EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate, FixTemplate,
     FormattedTestResult, FullModuleTemplate, MemoryInfo, MinimalTemplate, ModuleContextTemplate,
-    NeighborFunction, PalTraitDef, PalTraitMethod, ShimCode, SignatureTemplate, StructField,
-    StructuredData, TestCaseFormatted, TranslateTemplate, TypeInfo, WithTestsTemplate,
+    NeighborFunction, PalTraitDef, PalTraitMethod, ShimCode, SignatureTemplate, StringContextInfo,
+    StructField, StructuredData, TestCaseFormatted, TranslateTemplate, TypeInfo, WithTestsTemplate,
 };
 
 // Re-export types used by template constructors
@@ -626,6 +626,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -677,6 +678,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             findings,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -736,6 +738,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -772,6 +775,7 @@ mod tests {
             findings,
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -799,6 +803,73 @@ mod tests {
 
         assert!(prompt.contains("CONTROL FLOW"));
         assert!(prompt.contains("No control-flow context available."));
+    }
+
+    #[test]
+    fn test_escalate_template_with_string_findings() {
+        let findings = vec![
+            StringContextInfo {
+                function: "FUN_18003ab00".to_string(),
+                kind: "file_path".to_string(),
+                suggestion: "config file path".to_string(),
+                confidence: 70,
+                evidence: "lFile = CreateFileA(\"Journal.txt\",...);".to_string(),
+            },
+            StringContextInfo {
+                function: "FUN_18003ab00".to_string(),
+                kind: "format_string".to_string(),
+                suggestion: "(*const i8, i32)".to_string(),
+                confidence: 70,
+                evidence: "sprintf(local_10, \"%s: %d hits\", pcVar2, uVar3);".to_string(),
+            },
+        ];
+
+        let prompt = build_escalate_prompt_with_context(
+            "FUN_18003ab00".to_string(),
+            "eqmain.dll".to_string(),
+            "fn fun_18003ab00() { /* raw literals */ }".to_string(),
+            "Wrong result".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            findings,
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(prompt.contains("STRINGS"));
+        assert!(prompt.contains("config file path"));
+        assert!(prompt.contains("file_path string"));
+        assert!(prompt.contains("(*const i8, i32)"));
+        assert!(prompt.contains("format_string string"));
+        assert!(prompt.contains("confidence 70"));
+        assert!(prompt.contains("sprintf(local_10, \"%s: %d hits\", pcVar2, uVar3);"));
+    }
+
+    #[test]
+    fn test_escalate_template_without_string_findings_says_so() {
+        let prompt = build_escalate_prompt(
+            "DrawSprite".to_string(),
+            "game_logic.dll".to_string(),
+            "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
+            "Wrong result".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(prompt.contains("STRINGS"));
+        assert!(prompt.contains("No string context available."));
     }
 
     fn control_flow_fixture() -> ControlFlowInfo {

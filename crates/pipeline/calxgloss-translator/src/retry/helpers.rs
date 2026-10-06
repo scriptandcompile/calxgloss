@@ -433,6 +433,47 @@ pub fn extract_control_flow_hints(
         .collect()
 }
 
+/// Extract string-context findings for a function from the persisted
+/// scan result.
+///
+/// Reads the per-binary result produced by the `calxgloss-stringctx`
+/// engine from `re/analysis/stringctx/{dll}.json` and keeps the findings
+/// made for the target function — the classified strings the function
+/// references and the format-string calls it makes, with the argument
+/// types those calls imply.
+///
+/// Returns an empty vector when no workspace is configured, no result
+/// is persisted for `dll` (the scan has not run), or the document is
+/// corrupt: missing string context degrades the prompt, it never fails
+/// it.
+pub fn extract_string_context(
+    workspace: Option<&std::path::Path>,
+    dll: &str,
+    function: &str,
+) -> Vec<calxgloss_prompts::StringContextInfo> {
+    let Some(workspace) = workspace else {
+        return Vec::new();
+    };
+
+    let persistor = calxgloss_stringctx::persist::StringContextPersistor::new(workspace);
+    let result = match persistor.load(dll) {
+        Ok(result) => result,
+        Err(e) => {
+            debug!(
+                dll,
+                error = %e,
+                "No usable string context result; continuing without string context"
+            );
+            return Vec::new();
+        }
+    };
+
+    result
+        .for_function(function)
+        .map(calxgloss_prompts::StringContextInfo::from)
+        .collect()
+}
+
 // ============================================================
 // Tier 4 — Shim layer and PAL trait extraction
 // ============================================================

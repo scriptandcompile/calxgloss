@@ -291,3 +291,56 @@ async fn results_for_two_binaries_stay_independent() {
     assert_eq!(persistor.load("eqgame.dll").unwrap(), eqgame);
     assert!(!persistor.exists("other.dll"));
 }
+
+// ------------------------------------------------------------
+// Prompt consumption
+// ------------------------------------------------------------
+
+#[tokio::test]
+async fn the_loaded_findings_render_into_the_escalate_prompt() {
+    // The pipeline's path: load the persisted document, keep the
+    // target function's findings, convert them to prompt data, and
+    // render the escalate prompt around them.
+    let workspace = TempDir::new().unwrap();
+    let result = StringContextEngine::with_source(program())
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = StringContextPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let findings: Vec<calxgloss_prompts::StringContextInfo> = loaded
+        .for_function("FUN_18003ab00")
+        .map(calxgloss_prompts::StringContextInfo::from)
+        .collect();
+    assert_eq!(findings.len(), 3, "the target function's three findings");
+
+    let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
+        "FUN_18003ab00".into(),
+        "eqmain.dll".into(),
+        "fn fun_18003ab00() { /* raw literals */ }".into(),
+        "Wrong result".into(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        findings,
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("the escalate prompt should render");
+
+    assert!(prompt.contains("STRINGS"));
+    assert!(prompt.contains("file or registry path"));
+    assert!(prompt.contains("file_path string, confidence 70"));
+    assert!(prompt.contains("(*const i8, i32)"));
+    assert!(prompt.contains("format_string string, confidence 70"));
+    assert!(prompt.contains("CreateFileA"));
+    assert!(prompt.contains("sprintf"));
+}

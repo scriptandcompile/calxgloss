@@ -258,6 +258,31 @@ impl StringFinding {
 }
 
 // ============================================================
+// Prompt conversions
+// ============================================================
+
+/// Render a finding as prompt data: the function it is about, the role
+/// the string plays — its classification category, or `format_string` —
+/// the Rust reading the finding suggests, and the confidence and
+/// evidence behind the claim, so the escalate prompt shows the
+/// hypothesis and how strongly it was made, whichever engine produced
+/// it.
+impl From<&StringFinding> for calxgloss_prompts::StringContextInfo {
+    fn from(finding: &StringFinding) -> Self {
+        Self {
+            function: finding.function().to_string(),
+            kind: match finding {
+                StringFinding::Classified(record) => record.classification.to_string(),
+                StringFinding::FormatString(_) => "format_string".to_string(),
+            },
+            suggestion: finding.suggestion(),
+            confidence: finding.confidence().value(),
+            evidence: finding.evidence().to_string(),
+        }
+    }
+}
+
+// ============================================================
 // Persisted result
 // ============================================================
 

@@ -222,6 +222,27 @@ pub struct ControlFlowInfo {
     pub evidence: String,
 }
 
+/// A string-context finding about one function, made by the
+/// `calxgloss-stringctx` engines.
+///
+/// The escalate prompt shows these alongside the other analysis findings
+/// so the LLM names the string's role — a file path, an error message, a
+/// format string with typed arguments — instead of transliterating the
+/// raw literal or `DAT_` reference.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StringContextInfo {
+    /// The function the finding is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The kind of finding, e.g. `file_path`, `format_string`.
+    pub kind: String,
+    /// The Rust pattern the finding suggests, e.g. `Path::new("Journal.txt")`.
+    pub suggestion: String,
+    /// Confidence that the finding is right, 0–100.
+    pub confidence: u8,
+    /// The decompiled line or xref that supports the finding.
+    pub evidence: String,
+}
+
 /// A formatted test result for template rendering.
 ///
 /// Carries the test case data alongside the pass/fail outcome observed
@@ -511,6 +532,9 @@ pub struct EscalateTemplate {
     /// Control-flow findings about this function made by the analysis
     /// pipeline.
     pub control_flow_findings: Vec<ControlFlowInfo>,
+    /// String-context findings about this function made by the analysis
+    /// pipeline.
+    pub string_findings: Vec<StringContextInfo>,
     /// Previous attempt failures to reference in the prompt.
     pub failure_history: Vec<FailureHint>,
     /// Enriched call graph context with caller/callee/leaf-API details.
@@ -534,6 +558,7 @@ impl EscalateTemplate {
         concurrency_findings: Vec<ConcurrencyInfo>,
         callback_findings: Vec<CallbackInfo>,
         control_flow_findings: Vec<ControlFlowInfo>,
+        string_findings: Vec<StringContextInfo>,
     ) -> Self {
         Self {
             function_name,
@@ -549,6 +574,7 @@ impl EscalateTemplate {
             concurrency_findings,
             callback_findings,
             control_flow_findings,
+            string_findings,
             failure_history: Vec::new(),
             call_graph_context: Vec::new(),
         }
@@ -570,6 +596,7 @@ impl EscalateTemplate {
         concurrency_findings: Vec<ConcurrencyInfo>,
         callback_findings: Vec<CallbackInfo>,
         control_flow_findings: Vec<ControlFlowInfo>,
+        string_findings: Vec<StringContextInfo>,
         failure_history: Vec<FailureHint>,
     ) -> Self {
         Self {
@@ -586,6 +613,7 @@ impl EscalateTemplate {
             concurrency_findings,
             callback_findings,
             control_flow_findings,
+            string_findings,
             failure_history,
             call_graph_context: Vec::new(),
         }
@@ -607,6 +635,7 @@ impl EscalateTemplate {
         concurrency_findings: Vec<ConcurrencyInfo>,
         callback_findings: Vec<CallbackInfo>,
         control_flow_findings: Vec<ControlFlowInfo>,
+        string_findings: Vec<StringContextInfo>,
         failure_history: Vec<FailureHint>,
         call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
     ) -> Self {
@@ -624,6 +653,7 @@ impl EscalateTemplate {
             concurrency_findings,
             callback_findings,
             control_flow_findings,
+            string_findings,
             failure_history,
             call_graph_context,
         }

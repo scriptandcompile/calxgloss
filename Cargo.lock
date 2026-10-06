@@ -635,6 +635,7 @@ dependencies = [
  "calxgloss-memory",
  "calxgloss-pal",
  "calxgloss-prompts",
+ "calxgloss-stringctx",
  "calxgloss-sync",
  "calxgloss-testgen",
  "calxgloss-typeinfer",
