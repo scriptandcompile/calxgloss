@@ -14,7 +14,6 @@
         accepted: "#4ade80",
         sendback: "#f87171",
         blocked: "#fb923c",
-        merged: "#a78bfa",
     };
 
     const STATUS_LABELS = {
@@ -24,7 +23,6 @@
         accepted: "Accepted",
         sendback: "Send Back",
         blocked: "Blocked",
-        merged: "Merged",
     };
 
     const KIND_LABELS = {
@@ -990,7 +988,6 @@
             { cls: "accepted", label: "Accepted", value: counts.accepted },
             { cls: "sendback", label: "Send Back", value: counts.send_back },
             { cls: "blocked", label: "Blocked", value: counts.blocked },
-            { cls: "merged", label: "Merged", value: counts.merged },
         ];
 
         container.innerHTML = cards
@@ -1054,9 +1051,7 @@
         const count = document.getElementById("queue-count");
         if (!list || !empty || !count) return;
 
-        const active = dashboard.review_queue.filter(u =>
-            !u.accepted && u.status !== "merged"
-        );
+        const active = dashboard.review_queue.filter(u => !u.accepted);
 
         count.textContent = active.length;
 
@@ -1106,7 +1101,7 @@
         const empty = document.getElementById("full-queue-empty");
         if (!list || !empty) return;
 
-        let units = dashboard.review_queue.filter(u => !u.accepted && u.status !== "merged");
+        let units = dashboard.review_queue.filter(u => !u.accepted);
 
         // Apply status filter
         const filter = State.statusFilter;
@@ -1373,7 +1368,7 @@
     }
 
     function renderDetailActions(u) {
-        const disabled = u.accepted || u.status === "merged";
+        const disabled = u.accepted;
 
         return `
             <div class="detail-actions">
@@ -1839,9 +1834,7 @@
             if (State.currentView === "graph") return; // handled above
             if (e.key === "n" && State.selectedUnitId && !e.target.matches("textarea, input")) {
                 if (State.dashboard) {
-                    const units = State.dashboard.review_queue.filter(u =>
-                        !u.accepted && u.status !== "merged"
-                    );
+                    const units = State.dashboard.review_queue.filter(u => !u.accepted);
                     const idx = units.findIndex(u => u.id === State.selectedUnitId);
                     if (idx >= 0 && idx < units.length - 1) {
                         const next = units[idx + 1];
@@ -1853,9 +1846,7 @@
             }
             if (e.key === "p" && State.selectedUnitId && !e.target.matches("textarea, input")) {
                 if (State.dashboard) {
-                    const units = State.dashboard.review_queue.filter(u =>
-                        !u.accepted && u.status !== "merged"
-                    );
+                    const units = State.dashboard.review_queue.filter(u => !u.accepted);
                     const idx = units.findIndex(u => u.id === State.selectedUnitId);
                     if (idx > 0) {
                         const prev = units[idx - 1];

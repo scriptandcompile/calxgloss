@@ -85,10 +85,7 @@ pub async fn api_get_dashboard(
             if match_unit(unit) {
                 let old =
                     std::mem::replace(&mut unit.status, calxgloss_types::ReviewStatus::InProgress);
-                if !matches!(
-                    old,
-                    calxgloss_types::ReviewStatus::Accepted | calxgloss_types::ReviewStatus::Merged
-                ) {
+                if !matches!(old, calxgloss_types::ReviewStatus::Accepted) {
                     unit.updated_at = chrono::Utc::now();
                 }
                 let key = format!("{}/{}", unit.dll, unit.function.as_deref().unwrap_or(""));

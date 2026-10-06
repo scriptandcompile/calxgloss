@@ -11,7 +11,6 @@ pub struct StatusCounts {
     pub accepted: usize,
     pub send_back: usize,
     pub patch_requested: usize,
-    pub merged: usize,
     pub blocked: usize,
 }
 
@@ -24,7 +23,6 @@ impl StatusCounts {
             + self.accepted
             + self.send_back
             + self.patch_requested
-            + self.merged
             + self.blocked
     }
 }
@@ -33,14 +31,13 @@ impl std::fmt::Display for StatusCounts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "queued: {}, pending: {}, in_progress: {}, accepted: {}, send_back: {}, patch: {}, merged: {}, blocked: {}",
+            "queued: {}, pending: {}, in_progress: {}, accepted: {}, send_back: {}, patch: {}, blocked: {}",
             self.queued,
             self.pending_review,
             self.in_progress,
             self.accepted,
             self.send_back,
             self.patch_requested,
-            self.merged,
             self.blocked,
         )
     }

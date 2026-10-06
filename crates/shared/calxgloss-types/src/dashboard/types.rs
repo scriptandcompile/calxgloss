@@ -139,14 +139,12 @@ pub enum ReviewStatus {
     PendingReview,
     /// A human is currently reviewing this unit.
     InProgress,
-    /// The unit has been accepted and merged to main.
+    /// The unit has been accepted and merged to the main branch.
     Accepted,
     /// The unit was sent back to the LLM with reviewer comments.
     SendBack,
     /// A patch was requested for a specific issue.
     PatchRequested,
-    /// The unit has been accepted and merged to the main branch.
-    Merged,
     /// The unit is blocked because one or more dependencies are not in a passing state.
     Blocked,
 }
@@ -160,7 +158,6 @@ impl std::fmt::Display for ReviewStatus {
             ReviewStatus::Accepted => write!(f, "accepted"),
             ReviewStatus::SendBack => write!(f, "send_back"),
             ReviewStatus::PatchRequested => write!(f, "patch_requested"),
-            ReviewStatus::Merged => write!(f, "merged"),
             ReviewStatus::Blocked => write!(f, "blocked"),
         }
     }

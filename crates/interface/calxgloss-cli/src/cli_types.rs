@@ -659,11 +659,11 @@ pub(super) enum DashboardSubcommand {
     /// the acceptance record.
     ///
     /// Only units with status `Queued` or `PendingReview` are accepted.
-    /// Already-accepted, merged, or rejected units are skipped silently.
+    /// Already-accepted or rejected units are skipped silently.
     ///
     /// # Arguments
     ///
-    /// * `--all` — Accept **all** non-merged `re/*` branches (including
+    /// * `--all` — Accept **all** not-yet-accepted `re/*` branches (including
     ///   `Blocked` and `SendBack` units) instead of only queued/pending.
     ///
     /// # Examples
@@ -673,7 +673,7 @@ pub(super) enum DashboardSubcommand {
     /// calxgloss dashboard accept-all --all
     /// ```
     AcceptAll {
-        /// Accept every unmerged translation branch, including blocked and
+        /// Accept every not-yet-accepted translation branch, including blocked and
         /// send-back units.
         #[arg(long, short)]
         all: bool,

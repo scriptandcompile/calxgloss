@@ -440,7 +440,7 @@ async fn test_dashboard_endpoint() {
         .as_object()
         .expect("status_counts is object");
     assert!(counts["accepted"].as_u64().unwrap_or(0) >= 2); // classifications accepted
-    assert!(counts["merged"].as_u64().unwrap_or(0) >= 3); // DrawPrimitive v1 + UpdateScene + shim
+    assert!(counts["accepted"].as_u64().unwrap_or(0) >= 5); // + DrawPrimitive v1 + UpdateScene + shim (merged branches count as accepted)
 }
 
 /// Verify that a single unit detail endpoint returns expected fields.

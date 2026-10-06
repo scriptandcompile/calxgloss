@@ -16,18 +16,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Context tier selection
 
-- **`ContextTier` enum** (`calxgloss-types::context_tier`) — five tiers (`Stub`, `Disassembly`, `WithTests`, `ModuleContext`, `FullModule`) defining the context scope sent to the LLM per function. Each tier is a superset of the previous.
+- **`ContextTier` enum** (`calxgloss-types::context_tier`) — five tiers (`Signature`, `Disassembly`, `WithTests`, `ModuleContext`, `FullModule`) defining the context scope sent to the LLM per function. Each tier is a superset of the previous.
 - **`select_context_tier()`** — selects the starting tier from function complexity classification and API call count. Historical success rate tracking is reserved for a follow-up.
 - **`SuccessRate` struct** — tracks past success/failure counts for tier selection optimization.
 - **`ProgressEvent::ContextTierSelected`** — emitted after complexity analysis with the selected tier label, complexity classification, and API call count.
 - **`Translation.context_tier`** — new field recording which tier was used for each translation, enabling token usage tracking and future tier optimization.
-- **Tier 0 stub prompt** — minimal context prompt that sends only the function name, inferred C signature, and call graph neighbors (no disassembly, no decompiler output). Reduces token usage for trivially simple functions.
-  - `StubPromptData` struct with `from_function_info()` constructor
-  - `StubTemplate` Askama template struct
-  - `build_stub_prompt()` convenience function
+- **Tier 0 signature prompt** — minimal context prompt that sends only the function name, inferred C signature, and call graph neighbors (no disassembly, no decompiler output). Reduces token usage for trivially simple functions.
+  - `SignaturePromptData` struct with `from_function_info()` constructor
+  - `SignatureTemplate` Askama template struct
+  - `build_signature_prompt()` convenience function
   - `extract_signature_from_decompiler()` helper that parses the first non-blank line of Ghidra decompiler output as the C signature
-  - Template `stub_translate.j2` renders the minimal prompt format
-  - `TranslationPipeline::translate()` routes to stub prompt when `ContextTier::Stub` is selected
+  - Template `signature_translate.j2` renders the minimal prompt format
+  - `TranslationPipeline::translate()` routes to signature prompt when `ContextTier::Signature` is selected
 - **Tier 1 disassembly prompt** — sends full disassembly, Ghidra pseudo-C decompiler output, tagged Windows API calls, and call graph neighbors (no baseline tests, which are reserved for Tier 2). Reduces token usage over the full complexity prompt while preserving ground truth for accurate translation.
   - `DisassemblyPromptData` struct with `from_function_info()` and `from_request()` constructors
   - `DisassemblyTemplate` Askama template struct
@@ -161,6 +161,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`UnitOfWork.prompt_tier` → `UnitOfWork.context_tier`** (`calxgloss-types::dashboard`) — the field records the context tier, not a separate "prompt tier" concept.
 - **FFI stub → FFI binding** (`calxgloss-testgen`) — the generated `extern "C"` block *calls* the original DLL, it does not stub it; the glossary reserves "stub" for mocks returning default values. `FfiStub` → `FfiBinding`, `FfiStubBuilder` → `FfiBindingBuilder`, `generate_ffi_stub` → `generate_ffi_binding` (free function and `TestGenerator` method), `TestContext.ffi_stub` → `ffi_binding`.
 - **`WorkUnitKind` → `WorkKind`, `WorkUnitLevel` → `WorkLevel`** (`calxgloss-types::dashboard`) — a unit of work is one function or struct definition delivered as one commit; the enum's classification/shim/PAL/test/integration/fix kinds are work but not units, so the type no longer claims they are. "work unit" also left the docs — the glossary avoids it in favour of "unit of work".
+- **Dropped `ReviewStatus::Merged`** (`calxgloss-types::dashboard`) — Accept is the review verdict; merging the branch into `main` is its git effect, not a second verdict. A merged branch now reports `Accepted`, `StatusCounts.merged` is gone, and the web dashboard's Merged card/filter/CSS went with it. `MergeResult::Merged` in `calxgloss-git` stays — that one *is* the git effect.
 
 #### Workspace layout
 

@@ -66,7 +66,6 @@ fn status_symbol(status: &ReviewStatus) -> &str {
         ReviewStatus::Accepted => " ✓",
         ReviewStatus::SendBack => " ✗",
         ReviewStatus::PatchRequested => " ⚑",
-        ReviewStatus::Merged => " ◆",
         ReviewStatus::Blocked => " ✖",
     }
 }
@@ -92,7 +91,6 @@ fn format_status_display(status: &ReviewStatus) -> String {
         ReviewStatus::Accepted => "accepted",
         ReviewStatus::SendBack => "send_back",
         ReviewStatus::PatchRequested => "patch",
-        ReviewStatus::Merged => "merged",
         ReviewStatus::Blocked => "blocked",
     };
     format!("{} {}", symbol, text)
@@ -271,7 +269,7 @@ pub fn render_dashboard(dashboard: &ReviewDashboard, follow: bool) {
 fn render_status_summary(counts: &StatusCounts) {
     let total = counts.total();
     let parts = [
-        green_bold(&format!("OK {}", counts.accepted + counts.merged)),
+        green_bold(&format!("OK {}", counts.accepted)),
         yellow_bold(&format!(
             "Pending {}",
             counts.pending_review + counts.patch_requested
@@ -545,7 +543,6 @@ mod tests {
         assert_eq!(status_symbol(&ReviewStatus::PendingReview), " ◉");
         assert_eq!(status_symbol(&ReviewStatus::Accepted), " ✓");
         assert_eq!(status_symbol(&ReviewStatus::SendBack), " ✗");
-        assert_eq!(status_symbol(&ReviewStatus::Merged), " ◆");
     }
 
     #[test]

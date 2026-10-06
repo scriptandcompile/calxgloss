@@ -45,7 +45,7 @@ impl ReviewDashboard {
         let mut counts = StatusCounts::default();
 
         for unit in units {
-            let is_accepted = matches!(unit.status, ReviewStatus::Accepted | ReviewStatus::Merged);
+            let is_accepted = matches!(unit.status, ReviewStatus::Accepted);
             let is_pending = matches!(
                 unit.status,
                 ReviewStatus::PendingReview | ReviewStatus::SendBack | ReviewStatus::PatchRequested
@@ -65,7 +65,6 @@ impl ReviewDashboard {
                 ReviewStatus::Accepted => counts.accepted += 1,
                 ReviewStatus::SendBack => counts.send_back += 1,
                 ReviewStatus::PatchRequested => counts.patch_requested += 1,
-                ReviewStatus::Merged => counts.merged += 1,
                 ReviewStatus::Blocked => counts.blocked += 1,
             }
 
@@ -212,8 +211,8 @@ impl ReviewDashboard {
     /// 1. C is failing → mark B as [`Blocked`]
     /// 2. B is now failing (blocked) → mark A as [`Blocked`]
     ///
-    /// Units already in a terminal status (`Accepted`, `Merged`, `Blocked`) are
-    /// left unchanged — the method is idempotent.
+    /// Units already in a terminal status (`Accepted`, `Blocked`) are left
+    /// unchanged — the method is idempotent.
     ///
     /// # Returns
     ///
@@ -283,7 +282,6 @@ impl ReviewDashboard {
                 unit.status,
                 ReviewStatus::Blocked
                     | ReviewStatus::Accepted
-                    | ReviewStatus::Merged
                     | ReviewStatus::SendBack
                     | ReviewStatus::PatchRequested
             ) {
@@ -304,7 +302,6 @@ impl ReviewDashboard {
                 unit.status,
                 ReviewStatus::Blocked
                     | ReviewStatus::Accepted
-                    | ReviewStatus::Merged
                     | ReviewStatus::SendBack
                     | ReviewStatus::PatchRequested
             ) {

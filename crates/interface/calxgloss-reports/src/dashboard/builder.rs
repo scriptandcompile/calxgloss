@@ -161,7 +161,7 @@ impl<'a> DashboardBuilder<'a> {
             let merged = self.is_branch_merged(key);
 
             unit.status = if merged {
-                ReviewStatus::Merged
+                ReviewStatus::Accepted
             } else if has_patch {
                 ReviewStatus::PendingReview
             } else {

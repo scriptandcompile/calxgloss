@@ -176,7 +176,6 @@ fn review_status_display() {
     assert_eq!(ReviewStatus::Accepted.to_string(), "accepted");
     assert_eq!(ReviewStatus::SendBack.to_string(), "send_back");
     assert_eq!(ReviewStatus::PatchRequested.to_string(), "patch_requested");
-    assert_eq!(ReviewStatus::Merged.to_string(), "merged");
     assert_eq!(ReviewStatus::Blocked.to_string(), "blocked");
 }
 
@@ -212,7 +211,6 @@ fn status_counts_display() {
         accepted: 5,
         send_back: 1,
         patch_requested: 0,
-        merged: 4,
         blocked: 1,
     };
     let display = format!("{}", counts);
@@ -220,7 +218,7 @@ fn status_counts_display() {
     assert!(display.contains("pending: 2"));
     assert!(display.contains("in_progress: 0"));
     assert!(display.contains("accepted: 5"));
-    assert_eq!(counts.total(), 16);
+    assert_eq!(counts.total(), 12);
 }
 
 #[test]
@@ -232,8 +230,7 @@ fn status_counts_serialization() {
         accepted: 3,
         send_back: 4,
         patch_requested: 5,
-        merged: 6,
-        blocked: 7,
+        blocked: 6,
     };
     let json = serde_json::to_string(&counts).unwrap();
     let deserialized: StatusCounts = serde_json::from_str(&json).unwrap();
@@ -243,8 +240,7 @@ fn status_counts_serialization() {
     assert_eq!(deserialized.accepted, 3);
     assert_eq!(deserialized.send_back, 4);
     assert_eq!(deserialized.patch_requested, 5);
-    assert_eq!(deserialized.merged, 6);
-    assert_eq!(deserialized.blocked, 7);
+    assert_eq!(deserialized.blocked, 6);
 }
 
 #[test]
@@ -256,7 +252,6 @@ fn review_status_serialization() {
         ReviewStatus::Accepted,
         ReviewStatus::SendBack,
         ReviewStatus::PatchRequested,
-        ReviewStatus::Merged,
         ReviewStatus::Blocked,
     ];
     for status in &statuses {

@@ -38,7 +38,6 @@
     --status-accepted: var(--accent-green);
     --status-sendback: var(--accent-red);
     --status-blocked: var(--accent-orange);
-    --status-merged: var(--accent-purple);
 
     --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", "Consolas", monospace;
     --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -267,7 +266,6 @@ svg {
 .status-card.accepted .status-card-value { color: var(--status-accepted); }
 .status-card.sendback .status-card-value { color: var(--status-sendback); }
 .status-card.blocked .status-card-value { color: var(--status-blocked); }
-.status-card.merged .status-card-value { color: var(--status-merged); }
 
 /* ─── Dashboard Columns ─────────────────────────────────────────────── */
 .dashboard-columns {
@@ -369,7 +367,6 @@ svg {
 .queue-item-icon.blocked { background: var(--status-blocked); }
 .queue-item-icon.sendback { background: var(--status-sendback); }
 .queue-item-icon.accepted { background: var(--status-accepted); }
-.queue-item-icon.merged { background: var(--status-merged); }
 
 .queue-item-info {
     flex: 1;
@@ -516,7 +513,6 @@ svg {
 .qi-status.blocked { background: var(--accent-orange); color: var(--text-inverse); }
 .qi-status.sendback { background: var(--accent-red); color: var(--text-inverse); }
 .qi-status.accepted { background: var(--accent-green); color: var(--text-inverse); }
-.qi-status.merged { background: var(--accent-purple); color: var(--text-inverse); }
 
 /* ─── Graph View ────────────────────────────────────────────────────── */
 .graph-container {
@@ -755,7 +751,6 @@ svg {
 .detail-status-badge.blocked { background: var(--accent-orange); color: var(--text-inverse); }
 .detail-status-badge.sendback { background: var(--accent-red); color: var(--text-inverse); }
 .detail-status-badge.accepted { background: var(--accent-green); color: var(--text-inverse); }
-.detail-status-badge.merged { background: var(--accent-purple); color: var(--text-inverse); }
 
 .detail-panel-body {
     flex: 1;

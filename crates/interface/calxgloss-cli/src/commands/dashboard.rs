@@ -285,12 +285,11 @@ pub async fn handle_dashboard_accept_all(all_flag: bool) -> Result<()> {
 
     // Determine which units to accept
     let to_accept: Vec<&UnitOfWork> = if all_flag {
-        // Accept every non-merged branch in the dashboard
+        // Accept every not-yet-accepted branch in the dashboard
         dashboard
             .review_queue
             .iter()
             .filter(|u| !matches!(u.status, ReviewStatus::Accepted))
-            .filter(|u| !matches!(u.status, ReviewStatus::Merged))
             .collect()
     } else {
         // Accept only queued and pending-review units, in dependency order
