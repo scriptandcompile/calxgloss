@@ -55,7 +55,7 @@ pub use context::{
 pub use error::PromptError;
 pub use templates::{
     AlgorithmInfo, ApiInfo, BoundaryValue, CallGraphNeighbor, CallbackInfo, ConcurrencyInfo,
-    ControlFlowInfo, EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate, FixTemplate,
+    ConstInfo, ControlFlowInfo, EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate, FixTemplate,
     FormattedTestResult, FullModuleTemplate, MemoryInfo, MinimalTemplate, ModuleContextTemplate,
     NeighborFunction, PalTraitDef, PalTraitMethod, ShimCode, SignatureTemplate, StringContextInfo,
     StructField, StructuredData, TestCaseFormatted, TranslateTemplate, TypeInfo, WithTestsTemplate,
@@ -628,6 +628,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -679,6 +680,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             findings,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -742,6 +744,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -776,6 +779,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             findings,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -846,6 +850,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -899,6 +904,7 @@ mod tests {
             findings,
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -929,6 +935,85 @@ mod tests {
 
         assert!(prompt.contains("LIBRARIES AND APIS"));
         assert!(prompt.contains("No library/API context available."));
+    }
+
+    #[test]
+    fn test_escalate_template_with_const_findings() {
+        let findings = vec![
+            ConstInfo {
+                function: "FUN_18003ab00".to_string(),
+                kind: "bitflag_group".to_string(),
+                suggestion: "bitflags! struct Flags: u32".to_string(),
+                confidence: 70,
+                evidence: "if ((uVar1 & 0x10) != 0) { ... } uVar1 = uVar1 | 0x20;".to_string(),
+            },
+            ConstInfo {
+                function: "FUN_18003ab00".to_string(),
+                kind: "enum_candidate".to_string(),
+                suggestion: "enum State { /* variants for 0..=3 */ }".to_string(),
+                confidence: 70,
+                evidence: "switch(local_4) case 0x0: case 0x1: case 0x2: case 0x3:".to_string(),
+            },
+            ConstInfo {
+                function: "FUN_18003ab00".to_string(),
+                kind: "named_constant".to_string(),
+                suggestion: "const VALUE_0x400: u32 = 0x400;".to_string(),
+                confidence: 60,
+                evidence: "0x400 in FUN_18003ab00, FUN_18003e750".to_string(),
+            },
+        ];
+
+        let prompt = build_escalate_prompt_with_context(
+            "FUN_18003ab00".to_string(),
+            "eqmain.dll".to_string(),
+            "fn fun_18003ab00() { /* bare literals */ }".to_string(),
+            "Wrong result".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            findings,
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(prompt.contains("CONSTANTS"));
+        assert!(prompt.contains("bitflags! struct Flags: u32"));
+        assert!(prompt.contains("bitflag_group"));
+        assert!(prompt.contains("enum State { /* variants for 0..=3 */ }"));
+        assert!(prompt.contains("enum_candidate"));
+        assert!(prompt.contains("const VALUE_0x400: u32 = 0x400;"));
+        assert!(prompt.contains("named_constant"));
+        assert!(prompt.contains("confidence 70"));
+        assert!(prompt.contains("confidence 60"));
+        assert!(prompt.contains("if ((uVar1 & 0x10) != 0) { ... } uVar1 = uVar1 | 0x20;"));
+    }
+
+    #[test]
+    fn test_escalate_template_without_const_findings_says_so() {
+        let prompt = build_escalate_prompt(
+            "DrawSprite".to_string(),
+            "game_logic.dll".to_string(),
+            "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
+            "Wrong result".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(prompt.contains("CONSTANTS"));
+        assert!(prompt.contains("No constant context available."));
     }
 
     #[test]

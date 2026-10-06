@@ -271,6 +271,29 @@ pub struct ApiInfo {
     pub evidence: String,
 }
 
+/// A constant or enum finding about one function, made by the
+/// `calxgloss-consts` detectors.
+///
+/// The escalate prompt shows these alongside the other analysis findings
+/// so the LLM expresses flag bits, enumerated dispatch, and repeated
+/// magic numbers with a bitflags struct, an `enum`, or a named `const`
+/// instead of scattering bare integer literals. The kind names the
+/// finding family — `bitflag_group`, `enum_candidate`, `named_constant`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ConstInfo {
+    /// The function the finding is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The kind of finding, e.g. `bitflag_group`, `enum_candidate`,
+    /// `named_constant`.
+    pub kind: String,
+    /// The Rust shape the finding suggests, e.g. a `bitflags!` struct.
+    pub suggestion: String,
+    /// Confidence that the finding is right, 0–100.
+    pub confidence: u8,
+    /// The decompiled lines that support the finding.
+    pub evidence: String,
+}
+
 /// A formatted test result for template rendering.
 ///
 /// Carries the test case data alongside the pass/fail outcome observed
@@ -566,6 +589,9 @@ pub struct EscalateTemplate {
     /// Library/API findings about this function and its binary made by
     /// the analysis pipeline.
     pub api_findings: Vec<ApiInfo>,
+    /// Constant and enum findings about this function made by the
+    /// analysis pipeline.
+    pub const_findings: Vec<ConstInfo>,
     /// Previous attempt failures to reference in the prompt.
     pub failure_history: Vec<FailureHint>,
     /// Enriched call graph context with caller/callee/leaf-API details.
@@ -591,6 +617,7 @@ impl EscalateTemplate {
         control_flow_findings: Vec<ControlFlowInfo>,
         string_findings: Vec<StringContextInfo>,
         api_findings: Vec<ApiInfo>,
+        const_findings: Vec<ConstInfo>,
     ) -> Self {
         Self {
             function_name,
@@ -608,6 +635,7 @@ impl EscalateTemplate {
             control_flow_findings,
             string_findings,
             api_findings,
+            const_findings,
             failure_history: Vec::new(),
             call_graph_context: Vec::new(),
         }
@@ -631,6 +659,7 @@ impl EscalateTemplate {
         control_flow_findings: Vec<ControlFlowInfo>,
         string_findings: Vec<StringContextInfo>,
         api_findings: Vec<ApiInfo>,
+        const_findings: Vec<ConstInfo>,
         failure_history: Vec<FailureHint>,
     ) -> Self {
         Self {
@@ -649,6 +678,7 @@ impl EscalateTemplate {
             control_flow_findings,
             string_findings,
             api_findings,
+            const_findings,
             failure_history,
             call_graph_context: Vec::new(),
         }
@@ -672,6 +702,7 @@ impl EscalateTemplate {
         control_flow_findings: Vec<ControlFlowInfo>,
         string_findings: Vec<StringContextInfo>,
         api_findings: Vec<ApiInfo>,
+        const_findings: Vec<ConstInfo>,
         failure_history: Vec<FailureHint>,
         call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
     ) -> Self {
@@ -691,6 +722,7 @@ impl EscalateTemplate {
             control_flow_findings,
             string_findings,
             api_findings,
+            const_findings,
             failure_history,
             call_graph_context,
         }
