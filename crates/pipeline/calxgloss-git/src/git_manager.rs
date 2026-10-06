@@ -48,6 +48,14 @@ pub struct PatchRecord {
     pub compilation_errors: Vec<String>,
     pub test_failures: Vec<String>,
     pub commit_hash: String,
+    /// The reviewer's stated issue, set only on patch *request* records —
+    /// written by the review UI's request-patch action to say what to fix.
+    /// Pipeline failure records ([`GitManager::store_failure`]) and
+    /// successful retry records leave this `None`, which is how the
+    /// dashboard builder tells a requested patch (`PatchRequested`) from an
+    /// attempt that merely failed (`PendingReview`).
+    #[serde(default)]
+    pub patch_request: Option<String>,
 }
 
 /// Manages all Git operations for the translation pipeline.
@@ -708,6 +716,7 @@ impl GitManager {
             compilation_errors: compilation_errors.to_vec(),
             test_failures: test_failures.to_vec(),
             commit_hash: commit_hash.to_string(),
+            patch_request: None,
         };
 
         let json = serde_json::to_string_pretty(&record).map_err(TypesError::Serialization)?;

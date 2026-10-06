@@ -66,6 +66,13 @@ fn persist_action_state(
         .map_err(|e| TypesError::InvalidBranchName(format!("Failed to create actions dir: {e}")))?;
 
     let action_file = actions_dir.join(format!("{}.json", record.unit_id));
+    // unit_id carries slashes (`{dll}/{function}/v{attempt}`), so the joined
+    // path nests under actions_dir — create those parents before writing.
+    if let Some(parent) = action_file.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            TypesError::InvalidBranchName(format!("Failed to create action dir: {e}"))
+        })?;
+    }
     let json = serde_json::to_string_pretty(record).map_err(TypesError::Serialization)?;
     std::fs::write(&action_file, json).map_err(|e| {
         TypesError::InvalidBranchName(format!("Failed to write action record: {e}"))

@@ -1,8 +1,12 @@
 //! Dashboard builder — assembles [`ReviewDashboard`] from git + file artifacts.
 //!
 //! This module contains the [`DashboardBuilder`] which walks a Git repository's
-//! branches, patch records, and baseline files to construct a complete review
-//! dashboard.
+//! branches, patch records, rejection records, and baseline files to construct
+//! a complete review dashboard. Branch state is authoritative for acceptance
+//! (a branch merged into `main` is `Accepted`); the failing verdicts are
+//! durable through their records — a rejection record makes a unit `SendBack`
+//! and a patch-request record makes it `PatchRequested`, both surviving a
+//! rebuild so `auto_block_units` has failing roots to cascade `Blocked` from.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -139,6 +143,9 @@ impl<'a> DashboardBuilder<'a> {
         // 2. Scan patch records for per-attempt data
         let patch_records = self.read_all_patch_records()?;
 
+        // 2b. Scan rejection records for send-back verdicts
+        let rejected_keys = self.read_all_rejection_records()?;
+
         // 3. Read baseline data
         let baselines = self.read_all_baselines()?;
 
@@ -155,11 +162,23 @@ impl<'a> DashboardBuilder<'a> {
             let has_patch = patch_records
                 .iter()
                 .any(|pr| pr.key == *key && pr.attempt <= *latest_attempt);
+            let patch_requested = patch_records
+                .iter()
+                .any(|pr| pr.key == *key && pr.patch_request.is_some());
+            let rejected = rejected_keys.contains(key.as_str());
 
             let merged = self.is_branch_merged(key);
 
+            // Branch state is authoritative for acceptance; failing verdicts
+            // come from the durable records — a rejection at this attempt
+            // outranks a patch request (send-back then re-patched lands the
+            // request on the *next* attempt's key, never this one).
             unit.status = if merged {
                 ReviewStatus::Accepted
+            } else if rejected {
+                ReviewStatus::SendBack
+            } else if patch_requested {
+                ReviewStatus::PatchRequested
             } else if has_patch {
                 ReviewStatus::PendingReview
             } else {
@@ -242,6 +261,9 @@ impl<'a> DashboardBuilder<'a> {
         Ok(dashboard)
     }
 
+    /// Reads every patch record under `re/patches/{dll}/{function}/v{N}.json`
+    /// (written by `GitManager::store_failure` for failures and by the review
+    /// UI's request-patch action for patch requests).
     fn read_all_patch_records(&self) -> Result<Vec<PatchRecordEntry>, anyhow::Error> {
         let mut records = Vec::new();
         let patches_dir = self.repo_path.join("re").join("patches");
@@ -257,42 +279,114 @@ impl<'a> DashboardBuilder<'a> {
                 .trim_end_matches(".dll")
                 .to_string();
 
-            let func_dir = dll_dir.path();
-            if !func_dir.is_dir() {
+            let dll_path = dll_dir.path();
+            if !dll_path.is_dir() {
                 continue;
             }
 
-            for entry in std::fs::read_dir(&func_dir)? {
-                let entry = entry?;
-                let file_name = entry.file_name().to_string_lossy().to_string();
-                if !file_name.ends_with(".json") {
+            for func_dir in std::fs::read_dir(&dll_path)? {
+                let func_dir = func_dir?;
+                let function_path = func_dir.path();
+                if !function_path.is_dir() {
                     continue;
                 }
 
-                let attempt = file_name
-                    .strip_prefix("v")
-                    .and_then(|s| s.trim_end_matches(".json").parse().ok())
-                    .unwrap_or(0);
+                for entry in std::fs::read_dir(&function_path)? {
+                    let entry = entry?;
+                    let file_name = entry.file_name().to_string_lossy().to_string();
+                    if !file_name.ends_with(".json") {
+                        continue;
+                    }
 
-                let content = std::fs::read_to_string(entry.path())?;
-                let patch: calxgloss_git::PatchRecord = match serde_json::from_str(&content) {
-                    Ok(p) => p,
-                    Err(_) => continue,
-                };
+                    let attempt = file_name
+                        .strip_prefix("v")
+                        .and_then(|s| s.trim_end_matches(".json").parse().ok())
+                        .unwrap_or(0);
 
-                records.push(PatchRecordEntry {
-                    key: format!("{}/{}/v{}", dll, patch.function, attempt),
-                    dll: patch.dll.clone(),
-                    function: patch.function.clone(),
-                    attempt,
-                    compilation_errors: patch.compilation_errors.len(),
-                    test_failures: patch.test_failures.len(),
-                    committed_at: patch.committed_at.clone(),
-                });
+                    let content = std::fs::read_to_string(entry.path())?;
+                    let patch: calxgloss_git::PatchRecord = match serde_json::from_str(&content) {
+                        Ok(p) => p,
+                        Err(_) => continue,
+                    };
+
+                    records.push(PatchRecordEntry {
+                        key: format!("{}/{}/v{}", dll, patch.function, attempt),
+                        dll: patch.dll.clone(),
+                        function: patch.function.clone(),
+                        attempt,
+                        compilation_errors: patch.compilation_errors.len(),
+                        test_failures: patch.test_failures.len(),
+                        committed_at: patch.committed_at.clone(),
+                        patch_request: patch.patch_request,
+                    });
+                }
             }
         }
 
         Ok(records)
+    }
+
+    /// Reads every rejection record under
+    /// `re/rejections/{dll}/{function}/v{N}.json` (written by
+    /// `GitManager::reject_branch`), returning the unit keys
+    /// (`{dll}/{function}/v{attempt}`) whose attempt a reviewer sent back.
+    ///
+    /// Without this read the `SendBack` verdict is invisible after a rebuild
+    /// — branch state alone cannot tell a sent-back branch from a queued one,
+    /// and `auto_block_units` would have no failing roots to cascade from.
+    fn read_all_rejection_records(
+        &self,
+    ) -> Result<std::collections::HashSet<String>, anyhow::Error> {
+        let mut keys = std::collections::HashSet::new();
+        let rejections_dir = self.repo_path.join("re").join("rejections");
+        if !rejections_dir.exists() {
+            return Ok(keys);
+        }
+
+        for dll_dir in std::fs::read_dir(&rejections_dir)? {
+            let dll_dir = dll_dir?;
+            let dll = dll_dir
+                .file_name()
+                .to_string_lossy()
+                .trim_end_matches(".dll")
+                .to_string();
+
+            let dll_path = dll_dir.path();
+            if !dll_path.is_dir() {
+                continue;
+            }
+
+            for func_dir in std::fs::read_dir(&dll_path)? {
+                let func_dir = func_dir?;
+                let function_path = func_dir.path();
+                if !function_path.is_dir() {
+                    continue;
+                }
+
+                for entry in std::fs::read_dir(&function_path)? {
+                    let entry = entry?;
+                    let file_name = entry.file_name().to_string_lossy().to_string();
+                    if !file_name.ends_with(".json") {
+                        continue;
+                    }
+
+                    let attempt = file_name
+                        .strip_prefix("v")
+                        .and_then(|s| s.trim_end_matches(".json").parse().ok())
+                        .unwrap_or(0);
+
+                    let content = std::fs::read_to_string(entry.path())?;
+                    let record: RejectionRecord = match serde_json::from_str(&content) {
+                        Ok(r) => r,
+                        Err(_) => continue,
+                    };
+
+                    keys.insert(format!("{}/{}/v{}", dll, record.function, attempt));
+                }
+            }
+        }
+
+        Ok(keys)
     }
 
     fn read_all_baselines(&self) -> Result<HashMap<String, BaselineData>, anyhow::Error> {
@@ -530,6 +624,7 @@ fn parse_branch_name_for_key(key: &str, default_attempt: u32) -> BranchParts {
 }
 
 #[derive(Debug)]
+// dll/function stay for record identity when rendering attempt history downstream.
 #[allow(dead_code)]
 struct PatchRecordEntry {
     key: String,
@@ -539,6 +634,18 @@ struct PatchRecordEntry {
     compilation_errors: usize,
     test_failures: usize,
     committed_at: String,
+    /// The reviewer's stated issue when this record is a patch *request*
+    /// (written by the review UI's request-patch action); `None` on plain
+    /// pipeline failure records and successful retry records.
+    patch_request: Option<String>,
+}
+
+/// The fields the builder needs from a rejection record
+/// (`re/rejections/{dll}/{function}/v{N}.json`, written by
+/// `GitManager::reject_branch`); the attempt comes from the file name.
+#[derive(Debug, serde::Deserialize)]
+struct RejectionRecord {
+    function: String,
 }
 
 #[derive(Debug)]

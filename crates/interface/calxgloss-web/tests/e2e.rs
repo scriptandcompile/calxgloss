@@ -701,6 +701,50 @@ async fn test_actions_router_dashboard() {
     assert_eq!(body["success"], true);
 }
 
+/// Verify that a send-back verdict survives a dashboard rebuild (issue #9):
+/// POST /send-back writes a rejection record, and a dashboard rebuilt from
+/// disk reports the unit as `send_back` — not `queued`/`pending_review` —
+/// so the review state machine (SendBack → Blocked cascade → re-review)
+/// has a failing root to cascade from.
+#[tokio::test]
+async fn test_send_back_verdict_survives_rebuild() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let actions = ActionsState::new(fixture.repo_path());
+    let router = build_router_with_actions(state.clone(), actions);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let unit_id = "game_logic/DrawPrimitive/v2";
+    let encoded_id = urlencoding::encode(unit_id);
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!(
+            "http://127.0.0.1:{}/api/units/{}/send-back",
+            fixture.port(),
+            encoded_id
+        ))
+        .json(&serde_json::json!({"reason": "shader constant mapping wrong"}))
+        .send()
+        .await
+        .expect("send-back request succeeds");
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("send-back body is JSON");
+    assert_eq!(body["action"], "send_back");
+
+    // Rebuild the dashboard from disk — the verdict must survive the rebuild.
+    let dashboard = build_dashboard(&fixture.repo_path()).expect("rebuild dashboard");
+    let unit = dashboard
+        .review_queue
+        .iter()
+        .find(|u| u.id == unit_id)
+        .expect("sent-back unit still in review queue");
+    assert_eq!(unit.status, calxgloss_types::ReviewStatus::SendBack);
+    assert!(dashboard.status_counts.send_back >= 1);
+}
+
 /// Test that the static file fallback serves CSS and JS correctly.
 #[tokio::test]
 async fn test_static_files_served() {

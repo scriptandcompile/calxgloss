@@ -2,7 +2,7 @@
 name = "calxgloss-testgen"
 version.workspace = true
 edition.workspace = true
-description = "FFI stub generation, test input generation, and baseline test execution"
+description = "FFI binding generation, test input generation, and baseline test execution"
 license.workspace = true
 repository.workspace = true
 
