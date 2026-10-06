@@ -6,7 +6,7 @@
 //! - [`build_translate_prompt`] — standard translation prompt
 //! - [`build_escalate_prompt`] — escalate with additional context
 //! - [`build_edge_case_prompt`] — fix boundary-value failures
-//! - [`build_stub_prompt`] — Tier 0 stub generation
+//! - [`build_signature_prompt`] — Tier 0 signature-prompt generation
 //! - [`build_disassembly_prompt`] — Tier 1 disassembly-only prompt
 //! - [`build_with_tests_prompt`] — Tier 2 full context with tests
 //! - [`build_module_context_prompt`] — Tier 3 module context with neighbors
@@ -18,12 +18,12 @@ use calxgloss_types::{FunctionComplexity, TranslationRequest};
 
 use super::context::{
     ComplexityPromptData, DisassemblyPromptData, FullModulePromptData, ModuleContextPromptData,
-    StubPromptData, WithTestsPromptData,
+    SignaturePromptData, WithTestsPromptData,
 };
 use super::error::PromptError;
 use super::templates::{
     BoundaryValue, CallGraphNeighbor, EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate,
-    FullModuleTemplate, MinimalTemplate, ModuleContextTemplate, RichTemplate, StubTemplate,
+    FullModuleTemplate, MinimalTemplate, ModuleContextTemplate, RichTemplate, SignatureTemplate,
     TranslateTemplate, WithTestsTemplate,
 };
 
@@ -175,16 +175,16 @@ pub fn build_edge_case_prompt(
 }
 
 // ============================================================
-// Stub prompt builder (Tier 0)
+// Signature prompt builder (Tier 0)
 // ============================================================
 
-/// Builds a Tier 0 stub prompt for function stub generation.
+/// Builds a Tier 0 signature prompt (name, signature, call graph neighbors).
 ///
 /// Contains only the function name, signature, and call graph neighbors.
 /// Used when the function's disassembly is too large or irrelevant
-/// for the initial stub generation phase.
-pub fn build_stub_prompt(data: &StubPromptData) -> Result<String, PromptError> {
-    let template = StubTemplate::from_data(data);
+/// for the initial signature-only phase.
+pub fn build_signature_prompt(data: &SignaturePromptData) -> Result<String, PromptError> {
+    let template = SignatureTemplate::from_data(data);
 
     template
         .render()

@@ -10,7 +10,7 @@
 //! - [`EdgeCaseTemplate`] — Boundary-value test failure fix
 //! - [`RichTemplate`] — Complex functions (101-300 instructions)
 //! - [`DetailedTemplate`] — Very complex functions (>300 instructions)
-//! - [`StubTemplate`] — Tier 0: function stub only
+//! - [`SignatureTemplate`] — Tier 0: name and signature only
 //! - [`WithTestsTemplate`] — Tier 2: disassembly + decompiler + tests
 //! - [`ModuleContextTemplate`] — Tier 3: module context with neighbors + data structures
 //! - [`FullModuleTemplate`] — Tier 4: full module with shim layer + PAL traits
@@ -707,15 +707,15 @@ impl DetailedTemplate {
 }
 
 // ============================================================
-// Stub template — Tier 0: function name, signature, call graph
+// Signature template — Tier 0: function name, signature, call graph
 // ============================================================
 
-/// Template for Tier 0 translation prompts (function stub only).
+/// Template for Tier 0 translation prompts (name and signature only).
 ///
 /// Contains only the function name, signature, and call graph neighbors.
 #[derive(Template)]
-#[template(path = "stub_translate.j2")]
-pub struct StubTemplate {
+#[template(path = "signature_translate.j2")]
+pub struct SignatureTemplate {
     /// The function name to translate.
     pub function_name: String,
     /// The DLL containing the function.
@@ -728,10 +728,10 @@ pub struct StubTemplate {
     pub call_graph_neighbors: Vec<CallGraphNeighbor>,
 }
 
-impl StubTemplate {
-    /// Create a new stub template from tier-0 data.
-    pub fn from_data(data: &super::context::StubPromptData) -> Self {
-        StubTemplate {
+impl SignatureTemplate {
+    /// Create a new signature template from tier-0 data.
+    pub fn from_data(data: &super::context::SignaturePromptData) -> Self {
+        SignatureTemplate {
             function_name: data.function_name.clone(),
             dll_name: data.dll_name.clone(),
             address_hex: data.address_hex.clone(),

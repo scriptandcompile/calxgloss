@@ -559,8 +559,8 @@ pub async fn build_escalated_prompt(
     let function = &translation.function;
 
     match tier {
-        ContextTier::Stub => {
-            // Tier 0: stub prompt — only function name, signature, call graph
+        ContextTier::Signature => {
+            // Tier 0: signature prompt — only function name, signature, call graph
             let neighbors = translation
                 .call_graph
                 .iter()
@@ -571,14 +571,14 @@ pub async fn build_escalated_prompt(
                     role: String::new(),
                 })
                 .collect();
-            let data = calxgloss_prompts::StubPromptData {
+            let data = calxgloss_prompts::SignaturePromptData {
                 function_name: function.clone(),
                 dll_name: dll.clone(),
                 address_hex: format!("{:#x}", translation.function_address.unwrap_or(0)),
                 signature: String::new(),
                 call_graph_neighbors: neighbors,
             };
-            calxgloss_prompts::build_stub_prompt(&data).map_err(|e| e.to_string())
+            calxgloss_prompts::build_signature_prompt(&data).map_err(|e| e.to_string())
         }
         ContextTier::Disassembly => {
             // Tier 1: disassembly + decompiler + type info

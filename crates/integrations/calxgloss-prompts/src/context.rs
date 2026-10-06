@@ -4,7 +4,7 @@
 //! functions (`build_*`). Each struct corresponds to a specific translation
 //! tier:
 //!
-//! - [`StubPromptData`] — Tier 0: function stub only (name, signature, call graph)
+//! - [`SignaturePromptData`] — Tier 0: name and signature only (plus call graph)
 //! - [`DisassemblyPromptData`] — Tier 1: disassembly + decompiler output
 //! - [`WithTestsPromptData`] — Tier 2: full context with baseline test results
 //! - [`ModuleContextPromptData`] — Tier 3: module context with neighbors + data structures
@@ -19,12 +19,12 @@ use calxgloss_types::{ApiCategory, TestCase, TranslationRequest};
 use serde::Serialize;
 
 // ============================================================
-// Tier 0 — Stub prompt data
+// Tier 0 — Signature prompt data
 // ============================================================
 
-/// Prompt data for a Tier 0 (stub-only) translation request.
+/// Prompt data for a Tier 0 (name-and-signature-only) translation request.
 #[derive(Debug, Clone, Serialize)]
-pub struct StubPromptData {
+pub struct SignaturePromptData {
     pub function_name: String,
     pub dll_name: String,
     pub address_hex: String,
@@ -32,7 +32,7 @@ pub struct StubPromptData {
     pub call_graph_neighbors: Vec<CallGraphNeighbor>,
 }
 
-impl StubPromptData {
+impl SignaturePromptData {
     pub fn from_function_info(info: &calxgloss_types::FunctionInfo) -> Self {
         Self {
             function_name: info.name.clone(),

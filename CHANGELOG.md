@@ -155,6 +155,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+#### Vocabulary debt (issue #8)
+
+- **`ContextTier::Stub` → `ContextTier::Signature`** (`calxgloss-types`) — the bottom prompt tier sends name + signature only; "stub" is reserved by the pipeline glossary for mocks that return default values without the real action. The label is now `signature`, and the Tier-0 prompt machinery in `calxgloss-prompts` follows: `StubPromptData` → `SignaturePromptData`, `StubTemplate` → `SignatureTemplate`, `build_stub_prompt` → `build_signature_prompt`, template `stub_translate.j2` → `signature_translate.j2`.
+- **`UnitOfWork.prompt_tier` → `UnitOfWork.context_tier`** (`calxgloss-types::dashboard`) — the field records the context tier, not a separate "prompt tier" concept.
+
 #### Workspace layout
 
 - **Reorganized `crates/` into the 5-context layout from `GLOSSARY-MAP.md`** — workspace crates moved from the flat `crates/calxgloss-*` into per-context directories: `crates/pipeline/` (translator, verify, testgen, git), `crates/evidence/` (analysis, callgraph, typeinfer, typesdb, algorithm, memory), `crates/integrations/` (ghidra, llm, prompts, pal), `crates/interface/` (cli, web, reports), and `crates/shared/` (types, config). The meta-lib stays at `crates/calxgloss`; workspace members are now per-context globs. The pipeline context's `GLOSSARY.md` moved from `docs/contexts/pipeline/` to `crates/pipeline/GLOSSARY.md` (the other four glossaries are still pending) with `GLOSSARY-MAP.md` links updated. The `calxgloss` meta-crate was reconciled to re-export every library crate except `calxgloss-web` — `callgraph`, `typeinfer`, `algorithm`, and `config` added (the generic `load`/`PROJECT_FILE`/`EXAMPLE` surface as `load_config`/`CONFIG_PROJECT_FILE`/`CONFIG_EXAMPLE`; the evidence crates' per-crate `ScanMetadata` stay unexported in favor of `calxgloss-types::scan::ScanMetadata`).

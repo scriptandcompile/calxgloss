@@ -78,8 +78,8 @@ pub struct UnitResponseInner {
     pub verification_tests_total: Option<usize>,
     /// LLM model used for translation.
     pub llm_model: Option<String>,
-    /// Prompt tier used (0-4).
-    pub prompt_tier: Option<usize>,
+    /// Context tier used for the translation (0–4).
+    pub context_tier: Option<usize>,
     /// List of branch names this unit depends on.
     pub dependencies: Vec<String>,
     /// When this unit was created (RFC 3339).

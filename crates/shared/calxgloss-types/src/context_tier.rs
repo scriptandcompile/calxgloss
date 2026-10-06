@@ -9,7 +9,7 @@
 //!
 //! | Tier | Name | Context Sent |
 //! |------|------|-------------|
-//! | 0 | `Stub` | Function name, signature, call graph neighbors |
+//! | 0 | `Signature` | Function name, signature, call graph neighbors |
 //! | 1 | `Disassembly` | Full disassembly + Ghidra pseudo-C + type info |
 //! | 2 | `WithTests` | Tier 1 + baseline test results + failing test cases |
 //! | 3 | `ModuleContext` | Tier 2 + neighboring functions + shared data structures |
@@ -36,9 +36,11 @@ use serde::{Deserialize, Serialize};
 ///
 /// # Tier descriptions
 ///
-/// - **Stub** — Only the function name, signature, and call graph neighbors.
-///   Suitable for trivial functions where the LLM can reason from the
-///   decompiler's pseudo-C alone.
+/// - **Signature** — Only the function name, signature, and call graph
+///   neighbors. Suitable for trivial functions where the LLM can reason from
+///   the decompiler's pseudo-C alone. Named for what it sends, not for a
+///   stub: in this codebase a stub is a mock that returns default values
+///   without the real action (see the pipeline glossary).
 /// - **Disassembly** — Full disassembly, decompiler output, and type
 ///   information. The LLM gets the raw instructions plus Ghidra's
 ///   type-inferred signature.
@@ -53,8 +55,8 @@ use serde::{Deserialize, Serialize};
 ///   DirectX → wgpu) and need the full translation-layer context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ContextTier {
-    /// Tier 0 — Function stub only.
-    Stub,
+    /// Tier 0 — Name and signature only.
+    Signature,
     /// Tier 1 — Disassembly + decompiler + type info.
     Disassembly,
     /// Tier 2 — Tier 1 + baseline tests.
@@ -69,7 +71,7 @@ impl ContextTier {
     /// Returns the tier number (0–4).
     pub fn number(self) -> u32 {
         match self {
-            Self::Stub => 0,
+            Self::Signature => 0,
             Self::Disassembly => 1,
             Self::WithTests => 2,
             Self::ModuleContext => 3,
@@ -80,7 +82,7 @@ impl ContextTier {
     /// Returns the tier label for logging and display.
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Stub => "stub",
+            Self::Signature => "signature",
             Self::Disassembly => "disassembly",
             Self::WithTests => "with_tests",
             Self::ModuleContext => "module_context",
@@ -91,7 +93,7 @@ impl ContextTier {
     /// Returns the human-readable tier description.
     pub fn description(&self) -> &'static str {
         match self {
-            Self::Stub => "Function name, signature, call graph neighbors",
+            Self::Signature => "Function name, signature, call graph neighbors",
             Self::Disassembly => "Full disassembly + Ghidra pseudo-C + type info",
             Self::WithTests => "Tier 1 + baseline test results + failing test cases",
             Self::ModuleContext => "Tier 2 + neighboring functions + shared data structures",
@@ -102,7 +104,7 @@ impl ContextTier {
     /// Escalate to the next tier. Returns `None` if already at the maximum tier.
     pub fn escalate(self) -> Option<Self> {
         match self {
-            Self::Stub => Some(Self::Disassembly),
+            Self::Signature => Some(Self::Disassembly),
             Self::Disassembly => Some(Self::WithTests),
             Self::WithTests => Some(Self::ModuleContext),
             Self::ModuleContext => Some(Self::FullModule),
@@ -186,7 +188,7 @@ pub fn select_context_tier(
 ) -> ContextTier {
     // Map complexity to a base tier index
     let base_tier = match complexity {
-        crate::FunctionComplexity::Minimal => 0,  // Stub
+        crate::FunctionComplexity::Minimal => 0,  // Signature
         crate::FunctionComplexity::Standard => 1, // Disassembly
         crate::FunctionComplexity::Rich => 2,     // WithTests
         crate::FunctionComplexity::Detailed => 3, // ModuleContext
@@ -217,7 +219,7 @@ pub fn select_context_tier(
 
     // Clamp to valid range and return
     match tier {
-        0 => ContextTier::Stub,
+        0 => ContextTier::Signature,
         1 => ContextTier::Disassembly,
         2 => ContextTier::WithTests,
         3 => ContextTier::ModuleContext,
@@ -260,7 +262,7 @@ mod tests {
 
     #[test]
     fn test_context_tier_numbers() {
-        assert_eq!(ContextTier::Stub.number(), 0);
+        assert_eq!(ContextTier::Signature.number(), 0);
         assert_eq!(ContextTier::Disassembly.number(), 1);
         assert_eq!(ContextTier::WithTests.number(), 2);
         assert_eq!(ContextTier::ModuleContext.number(), 3);
@@ -269,7 +271,7 @@ mod tests {
 
     #[test]
     fn test_context_tier_labels() {
-        assert_eq!(ContextTier::Stub.label(), "stub");
+        assert_eq!(ContextTier::Signature.label(), "signature");
         assert_eq!(ContextTier::Disassembly.label(), "disassembly");
         assert_eq!(ContextTier::WithTests.label(), "with_tests");
         assert_eq!(ContextTier::ModuleContext.label(), "module_context");
@@ -278,7 +280,7 @@ mod tests {
 
     #[test]
     fn test_context_tier_escalation() {
-        assert_eq!(ContextTier::Stub.escalate(), Some(ContextTier::Disassembly));
+        assert_eq!(ContextTier::Signature.escalate(), Some(ContextTier::Disassembly));
         assert_eq!(
             ContextTier::Disassembly.escalate(),
             Some(ContextTier::WithTests)
@@ -347,7 +349,7 @@ mod tests {
     fn test_select_tier_minimal_no_apis_no_history() {
         let rate = SuccessRate::new(0, 0);
         let tier = select_context_tier(&FunctionComplexity::Minimal, 0, rate);
-        assert_eq!(tier, ContextTier::Stub);
+        assert_eq!(tier, ContextTier::Signature);
     }
 
     #[test]
@@ -394,7 +396,7 @@ mod tests {
         let rate = SuccessRate::new(8, 10); // 80% pass rate
         let tier = select_context_tier(&FunctionComplexity::Standard, 0, rate);
         // Standard base = 1, high rate drops to 0
-        assert_eq!(tier, ContextTier::Stub);
+        assert_eq!(tier, ContextTier::Signature);
     }
 
     #[test]

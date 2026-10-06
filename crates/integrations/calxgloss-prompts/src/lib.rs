@@ -7,11 +7,11 @@
 //!
 //! # Architecture
 //!
-//! - [`context`] — Data structs (`StubPromptData`, `ComplexityPromptData`, etc.)
+//! - [`context`] — Data structs (`SignaturePromptData`, `ComplexityPromptData`, etc.)
 //! - [`templates`] — Askama template structs (`MinimalTemplate`, `TranslateTemplate`, etc.)
 //! - [`build_translate_prompt`] — Builds a standard translation prompt
 //! - [`build_complexity_prompt`] — Selects template by complexity
-//! - [`build_stub_prompt`] — Builds a Tier 0 (stub-only) prompt
+//! - [`build_signature_prompt`] — Builds a Tier 0 (name-and-signature-only) prompt
 //! - [`build_disassembly_prompt`] — Builds a Tier 1 (disassembly + decompiler) prompt
 //! - [`build_with_tests_prompt`] — Builds a Tier 2 (disassembly + decompiler + tests) prompt
 //! - [`ComplexityPromptData::api_categories`] — Extracts API categories
@@ -45,19 +45,19 @@ pub mod templates;
 pub use build::{
     build_complexity_prompt, build_disassembly_prompt, build_edge_case_prompt,
     build_escalate_prompt, build_escalate_prompt_with_context, build_full_module_prompt,
-    build_module_context_prompt, build_stub_prompt, build_translate_prompt,
+    build_module_context_prompt, build_signature_prompt, build_translate_prompt,
     build_with_tests_prompt, extract_signature_from_decompiler,
 };
 pub use context::{
     ComplexityPromptData, DisassemblyPromptData, FullModulePromptData, ModuleContextPromptData,
-    StubPromptData, WithTestsPromptData,
+    SignaturePromptData, WithTestsPromptData,
 };
 pub use error::PromptError;
 pub use templates::{
     AlgorithmInfo, BoundaryValue, CallGraphNeighbor, EdgeCaseTemplate, EdgeCaseTest,
     EscalateTemplate, FixTemplate, FormattedTestResult, FullModuleTemplate, MinimalTemplate,
     ModuleContextTemplate, NeighborFunction, PalTraitDef, PalTraitMethod, ShimCode, StructField,
-    StructuredData, StubTemplate, TestCaseFormatted, TranslateTemplate, TypeInfo,
+    StructuredData, SignatureTemplate, TestCaseFormatted, TranslateTemplate, TypeInfo,
     WithTestsTemplate,
 };
 
@@ -649,8 +649,8 @@ mod tests {
     }
 
     #[test]
-    fn test_build_stub_prompt_basic() {
-        let data = StubPromptData {
+    fn test_build_signature_prompt_basic() {
+        let data = SignaturePromptData {
             function_name: "SimpleFunc".to_string(),
             dll_name: "test.dll".to_string(),
             address_hex: "0x1000".to_string(),
@@ -658,7 +658,7 @@ mod tests {
             call_graph_neighbors: Vec::new(),
         };
 
-        let prompt = build_stub_prompt(&data).unwrap();
+        let prompt = build_signature_prompt(&data).unwrap();
 
         assert!(prompt.contains("SimpleFunc"));
         assert!(prompt.contains("test.dll"));
@@ -671,8 +671,8 @@ mod tests {
     }
 
     #[test]
-    fn test_build_stub_prompt_with_neighbors() {
-        let data = StubPromptData {
+    fn test_build_signature_prompt_with_neighbors() {
+        let data = SignaturePromptData {
             function_name: "DrawSprite".to_string(),
             dll_name: "game_logic.dll".to_string(),
             address_hex: "0x5000".to_string(),
@@ -694,7 +694,7 @@ mod tests {
             ],
         };
 
-        let prompt = build_stub_prompt(&data).unwrap();
+        let prompt = build_signature_prompt(&data).unwrap();
 
         assert!(prompt.contains("DrawSprite"));
         assert!(prompt.contains("CALL GRAPH NEIGHBORS"));
@@ -707,8 +707,8 @@ mod tests {
     }
 
     #[test]
-    fn test_build_stub_prompt_no_neighbors_section() {
-        let data = StubPromptData {
+    fn test_build_signature_prompt_no_neighbors_section() {
+        let data = SignaturePromptData {
             function_name: "Standalone".to_string(),
             dll_name: "utils.dll".to_string(),
             address_hex: "0x0".to_string(),
@@ -716,7 +716,7 @@ mod tests {
             call_graph_neighbors: Vec::new(),
         };
 
-        let prompt = build_stub_prompt(&data).unwrap();
+        let prompt = build_signature_prompt(&data).unwrap();
 
         assert!(prompt.contains("Standalone"));
         assert!(prompt.contains("void __stdcall Standalone()"));

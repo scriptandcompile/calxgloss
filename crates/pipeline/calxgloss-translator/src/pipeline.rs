@@ -485,10 +485,10 @@ impl TranslationPipeline {
         });
 
         let prompt = match tier {
-            ContextTier::Stub => {
+            ContextTier::Signature => {
                 let stub_data =
-                    calxgloss_prompts::StubPromptData::from_function_info(&function_info);
-                calxgloss_prompts::build_stub_prompt(&stub_data)?
+                    calxgloss_prompts::SignaturePromptData::from_function_info(&function_info);
+                calxgloss_prompts::build_signature_prompt(&stub_data)?
             }
             ContextTier::Disassembly => {
                 let data =

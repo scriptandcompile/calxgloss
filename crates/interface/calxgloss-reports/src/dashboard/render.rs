@@ -376,8 +376,8 @@ pub fn render_unit_view(data: &UnitViewData) {
         if let Some(ref model) = unit.llm_model {
             println_content(format!("    LLM Model:  {}", model));
         }
-        if let Some(tier) = unit.prompt_tier {
-            println_content(format!("    Prompt Tier: {}", tier));
+        if let Some(tier) = unit.context_tier {
+            println_content(format!("    Context Tier: {}", tier));
         }
         if !unit.dependencies.is_empty() {
             println_content(format!(

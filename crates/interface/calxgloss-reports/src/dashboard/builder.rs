@@ -96,7 +96,7 @@ struct PatchData {
     verification_tests_passed: Option<usize>,
     verification_tests_total: Option<usize>,
     confidence: Option<f32>,
-    prompt_tier: Option<usize>,
+    context_tier: Option<usize>,
 }
 
 /// Assembles a [`ReviewDashboard`] from the state of a Git repository.
@@ -191,7 +191,7 @@ impl<'a> DashboardBuilder<'a> {
                     verification_tests_passed: None,
                     verification_tests_total: None,
                     llm_model: Some("classificator".to_string()),
-                    prompt_tier: Some(0),
+                    context_tier: Some(0),
                     dependencies: vec![],
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
@@ -492,7 +492,7 @@ impl<'a> DashboardBuilder<'a> {
             verification_tests_passed: None,
             verification_tests_total: None,
             llm_model: None,
-            prompt_tier: None,
+            context_tier: None,
             dependencies: vec![],
             created_at: now,
             updated_at,
