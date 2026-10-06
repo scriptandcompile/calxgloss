@@ -29,12 +29,16 @@
 pub mod classify;
 pub mod error;
 pub mod format_str;
+pub mod hybrid_mapper;
 pub mod persist;
 pub mod types;
 
 pub use classify::{CategoryPatterns, StringClassifyEngine};
 pub use error::{Result, StringCtxError};
 pub use format_str::{FormatStringEngine, extract_format_hints};
+pub use hybrid_mapper::{
+    BODY_CONFIDENCE, FormatCall, HybridXrefMapper, MappedString, XREF_CONFIDENCE,
+};
 pub use persist::StringContextPersistor;
 pub use types::{
     ClassifiedString, FormatHint, FormatStringUse, StringClassification, StringContextResult,
