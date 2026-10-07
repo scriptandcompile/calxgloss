@@ -287,6 +287,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `decompile_function_by_name()` no longer POSTs to the dropped `/decompile` endpoint; it resolves the name via `search_functions` and decompiles by address, preferring an exact name match.
   - **Multi-program support** — new `open_programs()` and `switch_program()` methods (and the `OpenProgram` model type) expose the 6.x bridge's ability to hold several programs open and move which one queries run against. `ProgramInfo` gained a `program` field.
 
+### Fixed
+
+#### `calxgloss-ghidra`
+- **Wrapped decompiler signatures parse** — `parse_decompiled` treated the first non-blank, non-comment line of a decompile response as the whole signature, so Ghidra's wrapped signatures — a return type like `undefined8 *` alone on its own line, often after a leading `/* WARNING: ... */` comment — failed to parse and every engine that scans all functions (callback, sync, typeinfer, algorithm, callgraph) silently skipped those functions: ~41 of eqmain.dll's 4,358. It now joins candidate lines until the accumulated signature contains the parameter list's `(` or the body's `{`, then parses as before. Regression test pins the `GET /decompile_function?address=0x1800042e0` response shape. Fixes #54.
+
 ### Refactored
 
 #### `calxgloss-cli`

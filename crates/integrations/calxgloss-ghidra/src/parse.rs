@@ -394,23 +394,35 @@ fn unescape(text: &str) -> String {
 ///   return param_1 + ((longlong)param_2 + 4) * 8;
 /// }
 /// ```
-/// The signature is the first non-blank line and the pseudo-C follows. The two
+/// The signature is the first non-blank, non-comment line — joined with the
+/// lines below it if Ghidra wrapped it — and the pseudo-C follows. The two
 /// are separated at the `{` that opens the body, which is usually on its own
 /// line but can share the signature's.
+///
+/// A long signature comes back wrapped, with the return type alone above the
+/// name (often after a leading `/* WARNING: ... */` comment), so candidate
+/// lines are joined until the declarator's `(` or the body's `{` shows up.
 pub fn parse_decompiled(text: &str) -> Option<DecompiledFunction> {
-    let line = text
+    let mut signature = String::new();
+    for line in text
         .lines()
         .map(str::trim)
-        .find(|l| !l.is_empty() && !l.starts_with("/*") && !l.starts_with("//"))?;
-    if !line.contains('(') {
-        return None;
+        .filter(|l| !l.is_empty() && !l.starts_with("/*") && !l.starts_with("//"))
+    {
+        if !signature.is_empty() {
+            signature.push(' ');
+        }
+        signature.push_str(line);
+        if signature.contains('(') || signature.contains('{') {
+            break;
+        }
     }
 
     // A body brace on the signature line is not part of the declarator, and
     // leaving it there would make the signature unparseable as a C declaration.
-    let signature = match line.find('{') {
-        Some(idx) => line[..idx].trim_end(),
-        None => line,
+    let signature = match signature.find('{') {
+        Some(idx) => signature[..idx].trim_end().to_string(),
+        None => signature,
     };
     if !signature.contains('(') {
         return None;
@@ -427,7 +439,7 @@ pub fn parse_decompiled(text: &str) -> Option<DecompiledFunction> {
 
     Some(DecompiledFunction {
         name,
-        signature: signature.to_string(),
+        signature,
         body: text.trim().to_string(),
     })
 }
@@ -835,6 +847,22 @@ mod tests {
             "longlong FUN_18008ed50(longlong param_1,int param_2)"
         );
         assert!(f.body.contains("return param_1"));
+    }
+
+    #[test]
+    fn test_parses_a_signature_ghidra_wrapped_onto_multiple_lines() {
+        // `GET /decompile_function?address=0x1800042e0` — Ghidra wraps long
+        // signatures, and the leading WARNING comment leaves the return type
+        // alone on its own line above the name.
+        let body = "/* WARNING: Function: __security_check_cookie replaced with injection: security_check_cookie */\n\nundefined8 *\nFUN_1800042e0(undefined8 *param_1,undefined8 param_2)\n\n{\n  return *param_1;\n}\n";
+        let f = parse_decompiled(body).expect("should parse");
+        assert_eq!(f.name, "FUN_1800042e0");
+        assert_eq!(
+            f.signature,
+            "undefined8 * FUN_1800042e0(undefined8 *param_1,undefined8 param_2)"
+        );
+        assert_eq!(f.parameter_names(), vec!["param_1", "param_2"]);
+        assert!(f.body.contains("return *param_1"));
     }
 
     #[test]
