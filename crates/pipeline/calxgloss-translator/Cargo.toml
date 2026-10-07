@@ -26,6 +26,7 @@ calxgloss-stringctx = { path = "../../evidence/calxgloss-stringctx" }
 calxgloss-controlflow = { path = "../../evidence/calxgloss-controlflow" }
 calxgloss-apidetect = { path = "../../evidence/calxgloss-apidetect" }
 calxgloss-consts = { path = "../../evidence/calxgloss-consts" }
+calxgloss-serialize = { path = "../../evidence/calxgloss-serialize" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
