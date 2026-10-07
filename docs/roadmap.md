@@ -48,7 +48,7 @@ are indicative targets, not exact requirements.
 | P8 | String & Configuration Context | `calxgloss-stringctx` | 1–2 wk | ✅ Phases 0–4 done (2026-10-06) | Phase 5 future items | [#15](https://github.com/scriptandcompile/calxgloss/issues/15) |
 | P9 | Library & API Identification | `calxgloss-apidetect` | 1–2 wk | ✅ Phases 0–4 done (2026-10-06) | Phase 5 future items | [#17](https://github.com/scriptandcompile/calxgloss/issues/17) |
 | P10 | Constants & Enum Recovery | `calxgloss-consts` | 2–3 wk | ✅ Phases 0–4 done (2026-10-06) | Phase 5 future items | [#14](https://github.com/scriptandcompile/calxgloss/issues/14) |
-| P11 | Endianness & Serialization | `calxgloss-serialize` | 1–2 wk | ⬜ not started | spec + crate | [#16](https://github.com/scriptandcompile/calxgloss/issues/16) |
+| P11 | Endianness & Serialization | `calxgloss-serialize` | 1–2 wk | ✅ Phases 0–4 done (2026-10-06) | Phase 5 future items | [#16](https://github.com/scriptandcompile/calxgloss/issues/16) |
 | W0 | Web UI Foundation & Phase Progress | `calxgloss-web` | 2–3 wk | ⬜ not started | spec (independent of P-tracks) | — |
 | W1 | Web UI Status & Visibility | `calxgloss-web` | 1–2 wk | ⬜ not started | after W0 Phases 0–1 | — |
 | W2 | Web UI Process Control | `calxgloss-web` + types/translator | 3–4 wk | ⬜ not started | after W0 Phase 1 | — |
