@@ -104,6 +104,7 @@ pub fn build_escalate_prompt(
         Vec::new(),
         Vec::new(),
         Vec::new(),
+        Vec::new(),
         failure_history,
         Vec::new(),
     )
@@ -116,8 +117,8 @@ pub fn build_escalate_prompt(
 /// Adds call graph neighbors, neighboring functions, data structures,
 /// type information, recognized algorithms, memory lifecycle findings,
 /// concurrency findings, callback findings, control-flow findings, string
-/// context findings, library/API findings, constant/enum findings, and
-/// enriched call graph context (caller/callee
+/// context findings, library/API findings, constant/enum findings,
+/// serialization findings, and enriched call graph context (caller/callee
 /// details and leaf API suggestions) to help the LLM understand the
 /// broader context.
 #[allow(clippy::too_many_arguments)]
@@ -138,6 +139,7 @@ pub fn build_escalate_prompt_with_context(
     string_findings: Vec<super::templates::StringContextInfo>,
     api_findings: Vec<super::templates::ApiInfo>,
     const_findings: Vec<super::templates::ConstInfo>,
+    serialization_findings: Vec<super::templates::SerializationInfo>,
     failure_history: Vec<calxgloss_types::FailureHint>,
     call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
 ) -> Result<String, PromptError> {
@@ -158,6 +160,7 @@ pub fn build_escalate_prompt_with_context(
         string_findings,
         api_findings,
         const_findings,
+        serialization_findings,
         failure_history,
         call_graph_context,
     );

@@ -433,6 +433,47 @@ pub fn extract_constant_hints(
         .collect()
 }
 
+/// Extract serialization findings for a function from the persisted
+/// detection result.
+///
+/// Reads the per-binary result produced by the `calxgloss-serialize`
+/// engine from `re/analysis/serialize/{dll}.json` and keeps the
+/// findings made for the target function — the byte-swap calls,
+/// bit-packing chains, and file-format signature comparisons whose
+/// expressions live in `function`'s decompiled body.
+///
+/// Returns an empty vector when no workspace is configured, no result
+/// is persisted for `dll` (the scan has not run), or the document is
+/// corrupt: missing serialization context degrades the prompt, it
+/// never fails it.
+pub fn extract_serialization_hints(
+    workspace: Option<&std::path::Path>,
+    dll: &str,
+    function: &str,
+) -> Vec<calxgloss_prompts::SerializationInfo> {
+    let Some(workspace) = workspace else {
+        return Vec::new();
+    };
+
+    let persistor = calxgloss_serialize::persist::SerializePersistor::new(workspace);
+    let result = match persistor.load(dll) {
+        Ok(result) => result,
+        Err(e) => {
+            debug!(
+                dll,
+                error = %e,
+                "No usable serialization result; continuing without serialization context"
+            );
+            return Vec::new();
+        }
+    };
+
+    result
+        .for_function(function)
+        .map(calxgloss_prompts::SerializationInfo::from)
+        .collect()
+}
+
 /// Extract callback findings for a function from the persisted
 /// detection result.
 ///
@@ -2070,6 +2111,143 @@ mod tests {
         );
         assert_eq!(found[2].suggestion, "const VALUE_0x400: u32 = 0x400;");
         assert_eq!(found[2].confidence, 60);
+    }
+
+    // ---- serialization hint extraction --------------------------------
+
+    fn swap_record(function: &str) -> calxgloss_serialize::types::SerializeFinding {
+        calxgloss_serialize::types::SerializeFinding::ByteSwap(
+            calxgloss_serialize::types::ByteSwapOperation {
+                function: function.into(),
+                operation: "ntohl".into(),
+                width: 32,
+                suggestion: "byteorder::BE::read_u32".into(),
+                confidence: calxgloss_serialize::types::Confidence::new(70),
+                evidence: "uVar1 = ntohl(local_18);".into(),
+            },
+        )
+    }
+
+    fn pack_record(function: &str) -> calxgloss_serialize::types::SerializeFinding {
+        calxgloss_serialize::types::SerializeFinding::BitPack(
+            calxgloss_serialize::types::BitPackRecord {
+                function: function.into(),
+                pattern: calxgloss_serialize::types::BitPackPattern::ShiftOrPack,
+                widths: vec![8, 8, 8, 8],
+                suggestion: "bitvec or named-field masking/shifting".into(),
+                confidence: calxgloss_serialize::types::Confidence::new(60),
+                evidence:
+                    "uVar1 = (uVar2 << 0x18) | ((uint)uVar3 << 0x10) | (uVar4 << 8) | (uint)uVar5;"
+                        .into(),
+            },
+        )
+    }
+
+    fn magic_record(function: &str) -> calxgloss_serialize::types::SerializeFinding {
+        calxgloss_serialize::types::SerializeFinding::Magic(
+            calxgloss_serialize::types::MagicFormat {
+                function: function.into(),
+                magic: 0x8950_4E47,
+                format: "PNG".into(),
+                suggestion: "png::Decoder".into(),
+                confidence: calxgloss_serialize::types::Confidence::new(80),
+                evidence: "if (uVar1 == 0x89504e47) {".into(),
+            },
+        )
+    }
+
+    fn persist_serialize_findings(
+        dir: &TempDir,
+        findings: Vec<calxgloss_serialize::types::SerializeFinding>,
+    ) {
+        let mut result =
+            calxgloss_serialize::types::SerializeResult::new(ScanMetadata::new("eqmain.dll"));
+        result.findings = findings;
+        calxgloss_serialize::persist::SerializePersistor::new(dir.path())
+            .save(&result)
+            .expect("the serialization result should be saved");
+    }
+
+    #[test]
+    fn no_workspace_configured_yields_no_serialization_findings() {
+        assert!(
+            extract_serialization_hints(None, "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "no workspace means no serialization context"
+        );
+    }
+
+    #[test]
+    fn a_missing_cache_yields_no_serialization_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        assert!(
+            extract_serialization_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "a scan that has not run yet just means no serialization context"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_cache_degrades_to_no_serialization_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        let path = dir
+            .path()
+            .join("re")
+            .join("analysis")
+            .join("serialize")
+            .join("eqmain.dll.json");
+        std::fs::create_dir_all(
+            path.parent()
+                .expect("the document path should have a parent"),
+        )
+        .expect("the cache directory should be creatable");
+        std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
+
+        assert!(
+            extract_serialization_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty()
+        );
+    }
+
+    #[test]
+    fn serialization_findings_of_other_functions_are_dropped() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_serialize_findings(
+            &dir,
+            vec![swap_record("FUN_18003ab00"), swap_record("FUN_zzz")],
+        );
+
+        let found = extract_serialization_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        assert_eq!(found.len(), 1, "only the target function's finding");
+        assert_eq!(found[0].function, "FUN_18003ab00");
+        assert_eq!(found[0].kind, "byteswap");
+        assert_eq!(found[0].suggestion, "byteorder::BE::read_u32");
+        assert_eq!(found[0].confidence, 70);
+        assert_eq!(found[0].evidence, "uVar1 = ntohl(local_18);");
+    }
+
+    #[test]
+    fn every_serialization_finding_of_the_function_lands_in_the_prompt() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_serialize_findings(
+            &dir,
+            vec![
+                swap_record("FUN_18003ab00"),
+                pack_record("FUN_18003ab00"),
+                magic_record("FUN_18003ab00"),
+                swap_record("FUN_zzz"),
+            ],
+        );
+
+        let found = extract_serialization_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        let kinds: Vec<&str> = found.iter().map(|f| f.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["byteswap", "bitpack", "magic"]);
+        assert_eq!(found[0].suggestion, "byteorder::BE::read_u32");
+        assert_eq!(
+            found[1].suggestion,
+            "bitvec or named-field masking/shifting"
+        );
+        assert_eq!(found[2].suggestion, "png::Decoder");
+        assert_eq!(found[2].confidence, 80);
     }
 
     // ---- control-flow hint extraction ---------------------------------

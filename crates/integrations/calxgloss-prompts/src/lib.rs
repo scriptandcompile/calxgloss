@@ -57,8 +57,9 @@ pub use templates::{
     AlgorithmInfo, ApiInfo, BoundaryValue, CallGraphNeighbor, CallbackInfo, ConcurrencyInfo,
     ConstInfo, ControlFlowInfo, EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate, FixTemplate,
     FormattedTestResult, FullModuleTemplate, MemoryInfo, MinimalTemplate, ModuleContextTemplate,
-    NeighborFunction, PalTraitDef, PalTraitMethod, ShimCode, SignatureTemplate, StringContextInfo,
-    StructField, StructuredData, TestCaseFormatted, TranslateTemplate, TypeInfo, WithTestsTemplate,
+    NeighborFunction, PalTraitDef, PalTraitMethod, SerializationInfo, ShimCode, SignatureTemplate,
+    StringContextInfo, StructField, StructuredData, TestCaseFormatted, TranslateTemplate, TypeInfo,
+    WithTestsTemplate,
 };
 
 // Re-export types used by template constructors
@@ -629,6 +630,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -680,6 +682,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             findings,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -745,6 +748,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -779,6 +783,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             findings,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -851,6 +856,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -902,6 +908,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             findings,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -980,6 +987,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             findings,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
         )

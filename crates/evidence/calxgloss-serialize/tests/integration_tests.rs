@@ -202,6 +202,104 @@ async fn a_three_kind_document_survives_the_round_trip() {
 }
 
 #[tokio::test]
+async fn a_loaded_result_renders_into_the_escalate_prompt() {
+    // The whole escalate path, no Ghidra server needed: the fixture
+    // document on disk answers the per-function lookup, the findings
+    // render into `SerializationInfo` prompt data, and the rendered
+    // escalate prompt carries the SERIALIZATION section with each
+    // finding's suggestion, kind, confidence, and evidence.
+    let workspace = TempDir::new().unwrap();
+    let mut mixed = FakeProgram::empty();
+    mixed.listing = vec![summary("FUN_18003ab00")];
+    mixed.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  uVar1 = ntohl(local_18);\n\
+             \x20 uVar2 = (uVar3 << 0x18) | ((uint)uVar4 << 0x10) | (uVar5 << 8) | (uint)uVar6;\n\
+             \x20 if (uVar7 == 0x89504e47) {\n",
+        ),
+    );
+    let result = SerializeEngine::with_source(mixed)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = SerializePersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let findings: Vec<calxgloss_prompts::SerializationInfo> = loaded
+        .for_function("FUN_18003ab00")
+        .map(calxgloss_prompts::SerializationInfo::from)
+        .collect();
+    assert_eq!(findings.len(), 3, "the target function's three findings");
+
+    let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
+        "FUN_18003ab00".into(),
+        "eqmain.dll".into(),
+        "fn fun_18003ab00() { /* manual shifts and masks */ }".into(),
+        "Wrong result".into(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        findings,
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("the escalate prompt should render");
+
+    assert!(prompt.contains("SERIALIZATION"));
+    assert!(prompt.contains("byteorder::BE::read_u32"));
+    assert!(prompt.contains("byteswap pattern, confidence 70"));
+    assert!(prompt.contains("bitvec or named-field masking/shifting"));
+    assert!(prompt.contains("bitpack pattern, confidence 60"));
+    assert!(prompt.contains("png::Decoder"));
+    assert!(prompt.contains("magic pattern, confidence 80"));
+    assert!(prompt.contains("uVar1 = ntohl(local_18);"));
+}
+
+#[tokio::test]
+async fn the_serialization_sentinel_renders_when_there_are_no_findings() {
+    // A function the scan said nothing about still gets the section —
+    // with the explicit sentinel, so the LLM knows the absence is a
+    // scanned absence, not a missing step.
+    let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
+        "FUN_18003e750".into(),
+        "eqmain.dll".into(),
+        "fn fun_18003e750() {} ".into(),
+        "Wrong result".into(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("the escalate prompt should render");
+
+    assert!(prompt.contains("No serialization context available."));
+}
+
+#[tokio::test]
 async fn a_loaded_result_answers_the_pipeline_lookups() {
     let workspace = TempDir::new().unwrap();
     let result = SerializeEngine::with_source(program())

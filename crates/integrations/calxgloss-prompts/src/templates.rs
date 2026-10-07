@@ -180,6 +180,27 @@ pub struct ConcurrencyInfo {
     pub evidence: String,
 }
 
+/// A serialization finding about the target function, made by the
+/// analysis pipeline.
+///
+/// One finding whichever detector made it — the kind names the detector
+/// behind the claim (`byteswap`, `bitpack`, `magic`) so the prompt can
+/// weigh the hypothesis beside the evidence without knowing the record
+/// shape that produced it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SerializationInfo {
+    /// The function the finding is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The kind of finding, e.g. `byteswap`, `bitpack`, `magic`.
+    pub kind: String,
+    /// The Rust pattern the finding suggests, e.g. `byteorder::BE::read_u32`.
+    pub suggestion: String,
+    /// Confidence that the finding is right, 0–100.
+    pub confidence: u8,
+    /// The decompiled lines that support the finding.
+    pub evidence: String,
+}
+
 /// A callback or function-pointer-table finding about one function,
 /// made by the `calxgloss-callback` detectors.
 ///
@@ -592,6 +613,9 @@ pub struct EscalateTemplate {
     /// Constant and enum findings about this function made by the
     /// analysis pipeline.
     pub const_findings: Vec<ConstInfo>,
+    /// Endianness and serialization findings about this function made
+    /// by the analysis pipeline.
+    pub serialization_findings: Vec<SerializationInfo>,
     /// Previous attempt failures to reference in the prompt.
     pub failure_history: Vec<FailureHint>,
     /// Enriched call graph context with caller/callee/leaf-API details.
@@ -618,6 +642,7 @@ impl EscalateTemplate {
         string_findings: Vec<StringContextInfo>,
         api_findings: Vec<ApiInfo>,
         const_findings: Vec<ConstInfo>,
+        serialization_findings: Vec<SerializationInfo>,
     ) -> Self {
         Self {
             function_name,
@@ -636,6 +661,7 @@ impl EscalateTemplate {
             string_findings,
             api_findings,
             const_findings,
+            serialization_findings,
             failure_history: Vec::new(),
             call_graph_context: Vec::new(),
         }
@@ -660,6 +686,7 @@ impl EscalateTemplate {
         string_findings: Vec<StringContextInfo>,
         api_findings: Vec<ApiInfo>,
         const_findings: Vec<ConstInfo>,
+        serialization_findings: Vec<SerializationInfo>,
         failure_history: Vec<FailureHint>,
     ) -> Self {
         Self {
@@ -679,6 +706,7 @@ impl EscalateTemplate {
             string_findings,
             api_findings,
             const_findings,
+            serialization_findings,
             failure_history,
             call_graph_context: Vec::new(),
         }
@@ -703,6 +731,7 @@ impl EscalateTemplate {
         string_findings: Vec<StringContextInfo>,
         api_findings: Vec<ApiInfo>,
         const_findings: Vec<ConstInfo>,
+        serialization_findings: Vec<SerializationInfo>,
         failure_history: Vec<FailureHint>,
         call_graph_context: Vec<calxgloss_callgraph::FunctionContext>,
     ) -> Self {
@@ -723,6 +752,7 @@ impl EscalateTemplate {
             string_findings,
             api_findings,
             const_findings,
+            serialization_findings,
             failure_history,
             call_graph_context,
         }

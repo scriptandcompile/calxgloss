@@ -98,6 +98,11 @@ async fn build_escalate_prompt_inner(
         &ctx.dll_name,
         &ctx.function_name,
     );
+    let serialization_findings = super::helpers::extract_serialization_hints(
+        ctx.workspace.as_deref(),
+        &ctx.dll_name,
+        &ctx.function_name,
+    );
 
     // Clone for the error fallback (original is moved into build_escalate_prompt)
     let rust_code_for_error = ctx.original_rust_code.clone();
@@ -119,6 +124,7 @@ async fn build_escalate_prompt_inner(
         string_findings,
         api_findings,
         const_findings,
+        serialization_findings,
         history,
         ctx.call_graph_context,
     )

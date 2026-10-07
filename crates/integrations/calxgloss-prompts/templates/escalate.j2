@@ -192,6 +192,25 @@ No concurrency context available.
 
 ---
 
+## ADDITIONAL CONTEXT — SERIALIZATION
+
+{% if !serialization_findings.is_empty() %}
+The following endianness and serialization patterns were recognized in this
+function by static analysis — byte-swap calls, hand-rolled bit-packing chains,
+and file-format signature comparisons. Where a finding is credible, express
+the format with the suggested Rust type or crate instead of transliterating
+the manual swaps, shifts, and masks:
+
+{% for finding in serialization_findings %}
+- **{{ finding.suggestion|safe }}** ({{ finding.kind }} pattern, confidence {{ finding.confidence }})
+  Evidence: `{{ finding.evidence|safe }}`
+{% endfor %}
+{% else %}
+No serialization context available.
+{% endif %}
+
+---
+
 ## ADDITIONAL CONTEXT — CONSTANTS
 
 {% if !const_findings.is_empty() %}

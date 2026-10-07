@@ -250,6 +250,27 @@ impl SerializeFinding {
 }
 
 // ============================================================
+// Prompt conversions
+// ============================================================
+
+/// Render a finding as prompt data: the function it is about, the kind
+/// of serialization pattern the detector read, the Rust pattern the
+/// finding suggests, and the confidence and evidence behind the claim —
+/// so the escalate prompt shows the hypothesis and how strongly it was
+/// made, whichever detector produced it.
+impl From<&SerializeFinding> for calxgloss_prompts::SerializationInfo {
+    fn from(finding: &SerializeFinding) -> Self {
+        Self {
+            function: finding.function().to_string(),
+            kind: finding.kind().to_string(),
+            suggestion: finding.suggestion().to_string(),
+            confidence: finding.confidence().value(),
+            evidence: finding.evidence().to_string(),
+        }
+    }
+}
+
+// ============================================================
 // Persisted result
 // ============================================================
 
@@ -558,5 +579,31 @@ mod tests {
         assert_eq!(found, vec![&other]);
         assert!(result.for_function("FUN_180099999").next().is_none());
         assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn a_finding_renders_into_prompt_data_whichever_kind_it_is() {
+        // The prompt conversion reaches through the union, so every kind
+        // carries its label, suggestion, confidence, and evidence whole
+        // into `SerializationInfo`.
+        let swap = SerializeFinding::ByteSwap(byte_swap());
+        let info = calxgloss_prompts::SerializationInfo::from(&swap);
+        assert_eq!(info.function, "FUN_18003ab00");
+        assert_eq!(info.kind, "byteswap");
+        assert_eq!(info.suggestion, "byteorder::BE::read_u32");
+        assert_eq!(info.confidence, 70);
+        assert_eq!(info.evidence, "uVar1 = ntohl(local_18);");
+
+        let pack = SerializeFinding::BitPack(bit_pack());
+        let info = calxgloss_prompts::SerializationInfo::from(&pack);
+        assert_eq!(info.kind, "bitpack");
+        assert_eq!(info.suggestion, "bitvec or named-field masking/shifting");
+        assert_eq!(info.confidence, 60);
+
+        let magic = SerializeFinding::Magic(magic_format());
+        let info = calxgloss_prompts::SerializationInfo::from(&magic);
+        assert_eq!(info.kind, "magic");
+        assert_eq!(info.suggestion, "png::Decoder");
+        assert_eq!(info.confidence, 80);
     }
 }
