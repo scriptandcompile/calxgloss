@@ -70,12 +70,7 @@ impl SerializeEngine<GhidraClient> {
     /// An engine over a live GhidraMCP client, scanning with the
     /// detectors' standard name sets.
     pub fn new(client: &GhidraClient) -> SerializeEngine<GhidraClient> {
-        SerializeEngine {
-            source: client.clone(),
-            byteswap: ByteSwapDetector::with_default_names(),
-            bitpack: BitPackDetector::new(),
-            magic: MagicByteDetector::with_default_signatures(),
-        }
+        Self::with_source(client.clone())
     }
 }
 

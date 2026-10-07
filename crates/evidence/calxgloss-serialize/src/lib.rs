@@ -43,6 +43,7 @@ pub mod engine;
 pub mod error;
 pub mod magic_bytes;
 pub mod persist;
+mod scan;
 pub mod types;
 
 pub use error::{Result, SerializeError};

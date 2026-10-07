@@ -14,9 +14,9 @@
 //! masks carve out and suggesting the typed Rust stand-in — `bitvec`,
 //! or named-field masking and shifting on a plain integer.
 
+use crate::scan::literal_after_ws;
 use crate::types::{BitPackPattern, BitPackRecord};
 use calxgloss_ghidra::DecompiledFunction;
-use regex::Regex;
 
 // ============================================================
 // Detector
@@ -54,9 +54,6 @@ impl BitPackDetector {
     /// the masks' set bits. Findings come back in body order, so two
     /// scans of one body diff cleanly.
     pub fn detect(&self, func: &DecompiledFunction) -> Vec<BitPackRecord> {
-        let shifts = shift_re();
-        let unpack = unpack_re();
-
         let mut records = Vec::new();
         let mut unpack_lines: Vec<String> = Vec::new();
         let mut unpack_widths: Vec<u32> = Vec::new();
@@ -66,16 +63,14 @@ impl BitPackDetector {
             if line.is_empty() {
                 continue;
             }
+            let chars: Vec<char> = line.chars().collect();
 
             // A pack expression: left shifts joined by `|`, with an
             // unshifted operand counting as the bottom field — one
             // explicit shift plus that field is already a two-field
             // pack. `||` is a boolean or, not a bit join, so a line
             // carrying one is not a pack chain.
-            let mut amounts: Vec<u32> = shifts
-                .captures_iter(line)
-                .filter_map(|cap| cap.get(1).and_then(|m| parse_int_literal(m.as_str())))
-                .collect();
+            let mut amounts: Vec<u32> = shift_amounts(&chars);
             if !amounts.is_empty() && line.contains('|') && !line.contains("||") {
                 records.push(BitPackRecord {
                     function: func.name.clone(),
@@ -91,13 +86,9 @@ impl BitPackDetector {
             // An unpack extraction: `(w >> N) & mask`. One extraction
             // is a lone field read; two or more across the body are
             // the chain that says the word is a packed format.
-            if let Some(cap) = unpack.captures(line) {
-                let shift = cap.get(1).and_then(|m| parse_int_literal(m.as_str()));
-                let mask = cap.get(2).and_then(|m| parse_int_literal(m.as_str()));
-                if let (Some(_), Some(mask)) = (shift, mask) {
-                    unpack_lines.push(line.to_string());
-                    unpack_widths.push(mask.count_ones());
-                }
+            if let Some(mask) = unpack_extraction(&chars) {
+                unpack_lines.push(line.to_string());
+                unpack_widths.push(mask.count_ones());
             }
         }
 
@@ -132,27 +123,63 @@ const BITPACK_CONFIDENCE: u8 = 60;
 /// get one.
 const BITPACK_SUGGESTION: &str = "bitvec or named-field masking/shifting";
 
-/// `<< N` — a left shift by a decimal or hex literal, the amount the
-/// pack expression parks each field at.
-fn shift_re() -> Regex {
-    Regex::new(r"<<\s*(0[xX][0-9a-fA-F]+|[0-9]+)").expect("valid regex")
-}
-
-/// `(w >> N) & mask` — a right shift into the low bits followed by a
-/// mask, the extraction that pulls one packed field back out.
-fn unpack_re() -> Regex {
-    Regex::new(r">>\s*(0[xX][0-9a-fA-F]+|[0-9]+)\)\s*&\s*(0[xX][0-9a-fA-F]+|[0-9]+)")
-        .expect("valid regex")
-}
-
-/// Parse a decimal or `0x`-prefixed integer literal as written by the
-/// decompiler.
-fn parse_int_literal(text: &str) -> Option<u32> {
-    if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-        u32::from_str_radix(hex, 16).ok()
-    } else {
-        text.parse().ok()
+/// The shift amounts of a `<< N` pack expression: every left shift by
+/// a decimal or hex literal, the amount the expression parks each
+/// field at.
+fn shift_amounts(line: &[char]) -> Vec<u32> {
+    let mut amounts = Vec::new();
+    let mut i = 0;
+    while i + 1 < line.len() {
+        if line[i] == '<' && line[i + 1] == '<' {
+            if let Some((amount, _)) = literal_after_ws(line, i + 2)
+                && let Ok(amount) = u32::try_from(amount)
+            {
+                amounts.push(amount);
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
     }
+    amounts
+}
+
+/// The mask of a `(w >> N) & mask` extraction: a right shift by a
+/// literal followed by an `&` and a literal — the extraction that
+/// pulls one packed field back out. `&&` is a boolean and, not a
+/// mask, so it does not count.
+fn unpack_extraction(line: &[char]) -> Option<u64> {
+    let mut i = 0;
+    while i + 1 < line.len() {
+        if line[i] == '>' && line[i + 1] == '>' {
+            if let Some((_, end)) = literal_after_ws(line, i + 2) {
+                let mut j = end;
+                while j < line.len() && line[j].is_whitespace() {
+                    j += 1;
+                }
+                // The extraction is usually parenthesised — `(w >> N)
+                // & mask` — so a closing paren may sit between the
+                // shift and the mask.
+                if j < line.len() && line[j] == ')' {
+                    j += 1;
+                    while j < line.len() && line[j].is_whitespace() {
+                        j += 1;
+                    }
+                }
+                if j < line.len()
+                    && line[j] == '&'
+                    && line.get(j + 1) != Some(&'&')
+                    && let Some((mask, _)) = literal_after_ws(line, j + 1)
+                {
+                    return Some(mask);
+                }
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    None
 }
 
 /// The field widths a pack expression carves, from its shift amounts:

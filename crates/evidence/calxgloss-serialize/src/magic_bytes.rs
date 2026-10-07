@@ -24,7 +24,6 @@
 
 use crate::types::MagicFormat;
 use calxgloss_ghidra::DecompiledFunction;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 // ============================================================
@@ -148,7 +147,6 @@ impl MagicByteDetector {
     /// in body order, signatures in table order within one line, so
     /// two scans of one body diff cleanly.
     pub fn detect(&self, func: &DecompiledFunction) -> Vec<MagicFormat> {
-        let literals = literal_re();
         let mut records = Vec::new();
 
         for line in func.body.lines() {
@@ -158,10 +156,8 @@ impl MagicByteDetector {
             if line.is_empty() || !(line.contains("==") || line.contains("!=")) {
                 continue;
             }
-            let values: Vec<u64> = literals
-                .captures_iter(line)
-                .filter_map(|cap| parse_int_literal(cap.get(1).map(|m| m.as_str()).unwrap_or("")))
-                .collect();
+            let chars: Vec<char> = line.chars().collect();
+            let values = crate::scan::all_literals(&chars);
             for signature in &self.signatures {
                 if values.contains(&signature.magic) {
                     records.push(MagicFormat {
@@ -190,22 +186,6 @@ impl MagicByteDetector {
 /// the shape-read bit packs, and above the swap calls, whose names a
 /// binary could carry without any format being parsed at all.
 const MAGIC_CONFIDENCE: u8 = 80;
-
-/// A decimal or `0x`-prefixed integer literal — the constants the
-/// decompiler writes its comparisons with.
-fn literal_re() -> Regex {
-    Regex::new(r"\b(0[xX][0-9a-fA-F]+|[0-9]+)\b").expect("valid regex")
-}
-
-/// Parse a decimal or `0x`-prefixed integer literal as written by the
-/// decompiler.
-fn parse_int_literal(text: &str) -> Option<u64> {
-    if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-        u64::from_str_radix(hex, 16).ok()
-    } else {
-        text.parse().ok()
-    }
-}
 
 // ============================================================
 // Tests
