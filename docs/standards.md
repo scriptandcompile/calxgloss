@@ -106,6 +106,28 @@ Every library crate follows the same shape:
 - New detectors/engines get unit tests in the same commit and an integration
   test that runs them over a canned program.
 
+## Changelog
+
+`CHANGELOG.md` records features and bug fixes, not the development log:
+
+- Describe what the change does for a user of the project — the capability
+  added or the behavior repaired — not how it was implemented. Do not
+  enumerate the structs, functions, templates, or fields a feature happened
+  to introduce; name an identifier only when it is itself user-facing (a CLI
+  command or flag, a config key, a persisted file path, a public concept like
+  a context tier).
+- Never mention the project's own test suite: no test counts, no "N unit
+  tests / integration tests / live tests" tails, no entries for test-only
+  changes. Testing *features* (baseline tests, the WithTests tier, test
+  generation) are product behavior and do get entries.
+- One bullet per feature, not per commit: group the pieces of one feature
+  into a single entry, and merge repeated boilerplate across features (e.g.
+  one entry covering all the evidence pre-analysis scans).
+- Chores stay out: clippy fixes, formatting passes, and dependency tweaks get
+  no entry; module splits get at most one summary line under `Refactored`.
+- Bug fixes state the symptom and the fix, and keep the issue reference
+  (`Fixes #54.`).
+
 ## Process
 
 - Commit messages are lowercase imperative, scoped to the change:
@@ -113,8 +135,9 @@ Every library crate follows the same shape:
   `record <feature> in changelog and checklist`. One commit per tracer-bullet
   step.
 - Every user-visible change gets a `CHANGELOG.md` entry (Keep a Changelog
-  format, under `[Unreleased] → Added/Changed/Fixed`) **and** a checkbox tick
-  in `docs/roadmap.md`'s checklist, in the same commit.
+  format, under `[Unreleased] → Added/Changed/Fixed`, written to the
+  Changelog standard above) **and** a checkbox tick in `docs/roadmap.md`'s
+  checklist, in the same commit.
 - New crates get a scaffold commit (manifest + lib.rs + error.rs) before
   feature commits land on top.
 - After big code changes, refresh the graft graph (`graft build`).
