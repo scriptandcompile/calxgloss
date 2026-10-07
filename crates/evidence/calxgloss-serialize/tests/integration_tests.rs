@@ -158,10 +158,10 @@ async fn the_persisted_document_keeps_findings_in_scan_order() {
 // ------------------------------------------------------------
 
 #[tokio::test]
-async fn a_mixed_kind_document_survives_the_round_trip() {
-    // One canned scan, two kinds: the swap call and the pack chain in
-    // one body reach disk interleaved in scan order and read back
-    // with their record shapes intact.
+async fn a_three_kind_document_survives_the_round_trip() {
+    // One canned scan, three kinds: the swap call, the pack chain, and
+    // the signature comparison in one body reach disk interleaved in
+    // scan order and read back with their record shapes intact.
     let workspace = TempDir::new().unwrap();
     let mut mixed = FakeProgram::empty();
     mixed.listing = vec![summary("FUN_18003ab00")];
@@ -171,7 +171,8 @@ async fn a_mixed_kind_document_survives_the_round_trip() {
             "FUN_18003ab00",
             "undefined FUN_18003ab00(void)",
             "  uVar1 = ntohl(local_18);\n\
-             \x20 uVar2 = (uVar3 << 0x18) | ((uint)uVar4 << 0x10) | (uVar5 << 8) | (uint)uVar6;\n",
+             \x20 uVar2 = (uVar3 << 0x18) | ((uint)uVar4 << 0x10) | (uVar5 << 8) | (uint)uVar6;\n\
+             \x20 if (uVar7 == 0x89504e47) {\n",
         ),
     );
     let result = SerializeEngine::with_source(mixed)
@@ -184,13 +185,20 @@ async fn a_mixed_kind_document_survives_the_round_trip() {
     let loaded = persistor.load("eqmain.dll").expect("load");
     assert_eq!(loaded, result);
     let kinds: Vec<&str> = loaded.findings.iter().map(|f| f.kind()).collect();
-    assert_eq!(kinds, vec!["byteswap", "bitpack"]);
+    assert_eq!(kinds, vec!["byteswap", "bitpack", "magic"]);
 
     let SerializeFinding::BitPack(record) = &loaded.findings[1] else {
         unreachable!("the pack chain reads as a bitpack finding");
     };
     assert_eq!(record.pattern.to_string(), "shift_or_pack");
     assert_eq!(record.widths, [8, 8, 8, 8]);
+
+    let SerializeFinding::Magic(record) = &loaded.findings[2] else {
+        unreachable!("the signature comparison reads as a magic finding");
+    };
+    assert_eq!(record.format, "PNG");
+    assert_eq!(record.magic, 0x8950_4E47);
+    assert_eq!(record.suggestion, "png::Decoder");
 }
 
 #[tokio::test]

@@ -1,10 +1,10 @@
 //! Serialization scan orchestration.
 //!
 //! [`SerializeEngine`] runs the serialization detectors — byte-swap
-//! call matching, and the bit-pack and magic-byte detectors as they
-//! land — over every function of one open Ghidra program and assembles
-//! their findings into a single [`SerializeResult`] with its scan
-//! provenance.
+//! call matching, bit-pack shape reading, and magic-byte comparison
+//! matching — over every function of one open Ghidra program and
+//! assembles their findings into a single [`SerializeResult`] with its
+//! scan provenance.
 //!
 //! The detectors are pure text analysis over one decompiled body, so
 //! the engine fetches each function's pseudo-C exactly once and reads
@@ -17,6 +17,7 @@
 use crate::bitpack::BitPackDetector;
 use crate::byteswap::ByteSwapDetector;
 use crate::error::Result;
+use crate::magic_bytes::MagicByteDetector;
 use crate::types::{ScanMetadata, SerializeFinding, SerializeResult};
 use calxgloss_ghidra::{DecompiledFunction, FunctionSummary, GhidraClient};
 use std::time::Instant;
@@ -62,6 +63,7 @@ pub struct SerializeEngine<S = GhidraClient> {
     source: S,
     byteswap: ByteSwapDetector,
     bitpack: BitPackDetector,
+    magic: MagicByteDetector,
 }
 
 impl SerializeEngine<GhidraClient> {
@@ -72,6 +74,7 @@ impl SerializeEngine<GhidraClient> {
             source: client.clone(),
             byteswap: ByteSwapDetector::with_default_names(),
             bitpack: BitPackDetector::new(),
+            magic: MagicByteDetector::with_default_signatures(),
         }
     }
 }
@@ -84,6 +87,7 @@ impl<S> SerializeEngine<S> {
             source,
             byteswap: ByteSwapDetector::with_default_names(),
             bitpack: BitPackDetector::new(),
+            magic: MagicByteDetector::with_default_signatures(),
         }
     }
 
@@ -98,6 +102,13 @@ impl<S> SerializeEngine<S> {
     /// standard shape reading.
     pub fn with_bitpack(mut self, detector: BitPackDetector) -> Self {
         self.bitpack = detector;
+        self
+    }
+
+    /// Read format-signature comparisons against `detector`'s
+    /// signature table instead of the standard one.
+    pub fn with_magic(mut self, detector: MagicByteDetector) -> Self {
+        self.magic = detector;
         self
     }
 
@@ -162,6 +173,12 @@ impl<S> SerializeEngine<S> {
                     .detect(&decompiled)
                     .into_iter()
                     .map(SerializeFinding::BitPack),
+            );
+            findings.extend(
+                self.magic
+                    .detect(&decompiled)
+                    .into_iter()
+                    .map(SerializeFinding::Magic),
             );
         }
 
@@ -338,10 +355,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn one_scan_interleaves_byteswap_and_bitpack_findings_in_scan_order() {
-        // A function whose body carries a swap call and a pack chain:
-        // the swap leads (detector order), the pack follows, and the
-        // plain function stays empty.
+    async fn one_scan_interleaves_all_three_kinds_in_scan_order() {
+        // A function whose body carries a swap call, a pack chain, and
+        // a signature comparison: the findings come back in detector
+        // order — swap, pack, magic — and the plain function stays
+        // empty.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
         program.bodies.insert(
@@ -350,6 +368,7 @@ mod tests {
                 "FUN_18003ab00",
                 "undefined FUN_18003ab00(void)",
                 "\
+  if (uVar6 == 0x89504e47) {
   uVar1 = ntohl(local_18);
   uVar2 = (uVar3 << 0x18) | ((uint)uVar4 << 0x10) | (uVar5 << 8) | (uint)uVar6;
 ",
@@ -372,7 +391,11 @@ mod tests {
             .collect();
         assert_eq!(
             order,
-            vec![("FUN_18003ab00", "byteswap"), ("FUN_18003ab00", "bitpack")]
+            vec![
+                ("FUN_18003ab00", "byteswap"),
+                ("FUN_18003ab00", "bitpack"),
+                ("FUN_18003ab00", "magic"),
+            ]
         );
 
         let findings: Vec<&SerializeFinding> = result.for_function("FUN_18003ab00").collect();
@@ -381,6 +404,12 @@ mod tests {
         };
         assert_eq!(record.widths, [8, 8, 8, 8]);
         assert_eq!(record.suggestion, "bitvec or named-field masking/shifting");
+
+        let SerializeFinding::Magic(record) = findings[2] else {
+            unreachable!("the signature comparison reads as a magic finding");
+        };
+        assert_eq!(record.format, "PNG");
+        assert_eq!(record.suggestion, "png::Decoder");
     }
 
     #[tokio::test]
@@ -506,6 +535,39 @@ mod tests {
         };
         assert_eq!(record.operation, "my_swap");
         assert_eq!(record.suggestion, "byteorder::BE::read_u32");
+    }
+
+    #[tokio::test]
+    async fn a_custom_signature_table_reaches_the_scan() {
+        // Swapping the signature table whole reaches the scan: the
+        // configured custom magic reads in the body, and the standard
+        // signatures the table replaced read nothing.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_1800412a0")];
+        program.bodies.insert(
+            "FUN_1800412a0".into(),
+            function(
+                "FUN_1800412a0",
+                "undefined FUN_1800412a0(void)",
+                "\
+  if (uVar1 == 0x43414c58) {
+  if (uVar2 == 0x89504e47) {",
+            ),
+        );
+
+        let engine =
+            SerializeEngine::with_source(program).with_magic(MagicByteDetector::with_signatures([
+                crate::magic_bytes::MagicSignature::new("CALX", 0x4341_4C58, "calx::Header"),
+            ]));
+        let result = engine.scan("eqmain.dll").await.expect("scan");
+
+        let findings: Vec<&SerializeFinding> = result.for_function("FUN_1800412a0").collect();
+        assert_eq!(findings.len(), 1);
+        let SerializeFinding::Magic(record) = findings[0] else {
+            unreachable!("the signature comparison reads as a magic finding");
+        };
+        assert_eq!(record.format, "CALX");
+        assert_eq!(record.suggestion, "calx::Header");
     }
 
     #[tokio::test]

@@ -267,9 +267,9 @@ mod tests {
 
     #[test]
     fn a_mixed_kind_document_survives_the_round_trip() {
-        // Byteswap and bitpack findings interleaved in scan order:
-        // the union carries both kinds through save and load without
-        // losing the record shape behind each tag.
+        // Byteswap, bitpack, and magic findings interleaved in scan
+        // order: the union carries every kind through save and load
+        // without losing the record shape behind each tag.
         let dir = tempfile::tempdir().unwrap();
         let persistor = SerializePersistor::new(dir.path());
 
@@ -294,13 +294,24 @@ mod tests {
                 confidence: Confidence::new(60),
                 evidence: "uVar1 = (uVar2 << 0x18) | (uVar3 << 0x10);".to_string(),
             }));
+        result
+            .findings
+            .push(SerializeFinding::Magic(crate::types::MagicFormat {
+                function: "ReadHeader".to_string(),
+                magic: 0x8950_4E47,
+                format: "PNG".to_string(),
+                suggestion: "png::Decoder".to_string(),
+                confidence: Confidence::new(80),
+                evidence: "if (uVar1 == 0x89504e47) {".to_string(),
+            }));
         persistor.save(&result).unwrap();
 
         let loaded = persistor.load("eqmain.dll").unwrap();
         assert_eq!(loaded, result);
-        assert_eq!(loaded.findings.len(), 2);
+        assert_eq!(loaded.findings.len(), 3);
         assert_eq!(loaded.findings[0].kind(), "byteswap");
         assert_eq!(loaded.findings[1].kind(), "bitpack");
+        assert_eq!(loaded.findings[2].kind(), "magic");
     }
 
     #[test]

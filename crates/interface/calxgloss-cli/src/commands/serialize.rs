@@ -97,7 +97,7 @@ fn print_serialization_report(result: &SerializeResult, path: &Path) {
     println!();
 
     // Findings, broken down by the record kind the union carries.
-    let kind_breakdown: Vec<String> = ["byteswap", "bitpack"]
+    let kind_breakdown: Vec<String> = ["byteswap", "bitpack", "magic"]
         .into_iter()
         .map(|kind| {
             (

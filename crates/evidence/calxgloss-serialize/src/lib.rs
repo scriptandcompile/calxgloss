@@ -24,6 +24,10 @@
 //! - [`bitpack`] - Bit-packing pattern detection: `BitPackDetector`
 //!   reads shift-and-or pack chains and shift-then-mask unpack chains
 //!   and suggests `bitvec` or named-field masking and shifting.
+//! - [`magic_bytes`] - Magic-byte detection: `MagicByteDetector`
+//!   recognizes comparisons against the PNG, gzip, and ZIP file-format
+//!   signatures and suggests the matching decoder — `png::Decoder`,
+//!   `flate2::read::GzDecoder`, `zip::ZipArchive`.
 //! - [`engine`] - Scan orchestration: `SerializeEngine` runs the
 //!   detectors over one open Ghidra program through a `ScanSource`
 //!   (function listing + decompile-by-name), one sequential pass that
@@ -32,14 +36,12 @@
 //! - [`persist`] - JSON persistence: `SerializePersistor` saves and
 //!   loads the per-binary detection results under `re/analysis/serialize/`.
 //! - [`error`] - [`SerializeError`] and the crate-wide [`Result`] alias.
-//!
-//! The magic-byte detector lands alongside these as the phase
-//! progresses.
 
 pub mod bitpack;
 pub mod byteswap;
 pub mod engine;
 pub mod error;
+pub mod magic_bytes;
 pub mod persist;
 pub mod types;
 

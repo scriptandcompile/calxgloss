@@ -235,7 +235,8 @@ pub use calxgloss_controlflow::types::{
 // named here.
 pub use calxgloss_serialize::SerializeError;
 pub use calxgloss_serialize::types::{
-    BitPackPattern, BitPackRecord, ByteSwapOperation, SerializeFinding, SerializeResult,
+    BitPackPattern, BitPackRecord, ByteSwapOperation, MagicFormat, SerializeFinding,
+    SerializeResult,
 };
 
 // ============================================================

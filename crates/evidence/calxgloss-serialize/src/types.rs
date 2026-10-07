@@ -10,6 +10,9 @@
 //!   pack or unpack chain the function carries, the field widths its
 //!   shifts and masks carve, and the typed-field suggestion they read
 //!   like.
+//! - `MagicFormat`: the format-sniffing record — the file-format
+//!   signature the function compares buffer content against, the
+//!   format it names, and the decoder crate suggested for it.
 //! - `SerializeFinding`: the union over the record kinds — one finding
 //!   whichever detector made it — serde-tagged by `kind`.
 //! - `SerializeResult`, `ScanMetadata`: the persisted per-binary result
@@ -119,6 +122,42 @@ pub struct BitPackRecord {
 }
 
 // ============================================================
+// Magic-byte records
+// ============================================================
+
+/// One format-sniffing observation about one function, with the
+/// evidence behind it.
+///
+/// A record says the function compares loaded buffer content against
+/// the [`magic`](Self::magic) bytes of a known file format —
+/// [`format`](Self::format), e.g. `PNG` — sniffing for a format it
+/// then parses by hand. The sniff reads like
+/// [`suggestion`](Self::suggestion): the decoder type from the crate
+/// that format has — `png::Decoder`, `flate2::read::GzDecoder`,
+/// `zip::ZipArchive` — which replaces the sniff *and* the hand-rolled
+/// parse that follows it. The comparison line is kept as
+/// [`evidence`](Self::evidence) so a reviewer (or a translation
+/// prompt) can check the reasoning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MagicFormat {
+    /// The function the record is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The signature bytes matched, spelled as the comparison spells
+    /// them, e.g. `0x8950_4E47` for PNG.
+    pub magic: u64,
+    /// The format the signature names, e.g. `PNG`.
+    pub format: String,
+    /// The Rust type the sniff suggests, e.g. `png::Decoder`.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+    /// The decompiled line that supports the record — the signature
+    /// comparison — kept so a reviewer (or a translation prompt) can
+    /// check the reasoning.
+    pub evidence: String,
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -141,6 +180,9 @@ pub enum SerializeFinding {
     /// A hand-rolled pack or unpack chain moving fields through a word.
     #[serde(rename = "bitpack")]
     BitPack(BitPackRecord),
+    /// A comparison against a known file-format signature.
+    #[serde(rename = "magic")]
+    Magic(MagicFormat),
 }
 
 impl SerializeFinding {
@@ -149,6 +191,7 @@ impl SerializeFinding {
         match self {
             SerializeFinding::ByteSwap(record) => &record.function,
             SerializeFinding::BitPack(record) => &record.function,
+            SerializeFinding::Magic(record) => &record.function,
         }
     }
 
@@ -157,6 +200,7 @@ impl SerializeFinding {
         match self {
             SerializeFinding::ByteSwap(record) => &record.suggestion,
             SerializeFinding::BitPack(record) => &record.suggestion,
+            SerializeFinding::Magic(record) => &record.suggestion,
         }
     }
 
@@ -165,6 +209,7 @@ impl SerializeFinding {
         match self {
             SerializeFinding::ByteSwap(record) => record.confidence,
             SerializeFinding::BitPack(record) => record.confidence,
+            SerializeFinding::Magic(record) => record.confidence,
         }
     }
 
@@ -173,26 +218,32 @@ impl SerializeFinding {
         match self {
             SerializeFinding::ByteSwap(record) => &record.evidence,
             SerializeFinding::BitPack(record) => &record.evidence,
+            SerializeFinding::Magic(record) => &record.evidence,
         }
     }
 
-    /// The serde `kind` tag — `byteswap` or `bitpack` — naming the
-    /// detector behind the finding.
+    /// The serde `kind` tag — `byteswap`, `bitpack`, or `magic` —
+    /// naming the detector behind the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             SerializeFinding::ByteSwap(_) => "byteswap",
             SerializeFinding::BitPack(_) => "bitpack",
+            SerializeFinding::Magic(_) => "magic",
         }
     }
 
     /// What the finding names, spelled for a report row: the swap call
-    /// spelling, or the packing shape and the field widths it carves.
+    /// spelling, the packing shape and the field widths it carves, or
+    /// the format and the signature bytes that name it.
     pub fn target(&self) -> String {
         match self {
             SerializeFinding::ByteSwap(record) => record.operation.clone(),
             SerializeFinding::BitPack(record) => {
                 let widths: Vec<String> = record.widths.iter().map(|w| w.to_string()).collect();
                 format!("{} {}", record.pattern, widths.join("+"))
+            }
+            SerializeFinding::Magic(record) => {
+                format!("{} {:#x}", record.format, record.magic)
             }
         }
     }
@@ -375,11 +426,73 @@ mod tests {
         assert_eq!(back, finding);
     }
 
+    fn magic_format() -> MagicFormat {
+        MagicFormat {
+            function: "FUN_18003ab00".into(),
+            magic: 0x8950_4E47,
+            format: "PNG".into(),
+            suggestion: "png::Decoder".into(),
+            confidence: Confidence::new(80),
+            evidence: "if (uVar1 == 0x89504e47) {".into(),
+        }
+    }
+
+    #[test]
+    fn a_magic_format_record_serde_round_trips() {
+        let record = magic_format();
+        let json = serde_json::to_string(&record).unwrap();
+        // The magic bytes serialize as a plain number, matching the
+        // workspace's serde convention.
+        assert!(json.contains("\"format\":\"PNG\""));
+        assert!(json.contains("\"magic\":2303741511"));
+        assert!(json.contains("\"confidence\":80"));
+        let back: MagicFormat = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn a_magic_format_record_names_the_function_the_bytes_the_format_and_the_crate() {
+        let json = serde_json::to_value(magic_format()).unwrap();
+        assert_eq!(json["function"], "FUN_18003ab00");
+        assert_eq!(json["magic"], 0x8950_4E47u64);
+        assert_eq!(json["format"], "PNG");
+        assert_eq!(json["suggestion"], "png::Decoder");
+        assert_eq!(json["confidence"], 80);
+    }
+
+    #[test]
+    fn a_gzip_magic_format_record_reads_back_from_json() {
+        let json = r#"{
+            "function": "FUN_18003e750",
+            "magic": 35615,
+            "format": "gzip",
+            "suggestion": "flate2::read::GzDecoder",
+            "confidence": 80,
+            "evidence": "if (*(ushort *)pvVar2 == 0x8b1f) {"
+        }"#;
+        let back: MagicFormat = serde_json::from_str(json).unwrap();
+        assert_eq!(back.format, "gzip");
+        assert_eq!(back.magic, 0x8B1F);
+        assert_eq!(back.suggestion, "flate2::read::GzDecoder");
+    }
+
+    #[test]
+    fn a_magic_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = SerializeFinding::Magic(magic_format());
+        let json = serde_json::to_string(&finding).expect("magic finding should serialize");
+        assert!(json.contains("\"kind\":\"magic\""));
+        assert!(json.contains("\"format\":\"PNG\""));
+        let back: SerializeFinding =
+            serde_json::from_str(&json).expect("magic finding should read back");
+        assert_eq!(back, finding);
+    }
+
     #[test]
     fn the_union_accessors_reach_through_every_variant() {
         let findings = [
             SerializeFinding::ByteSwap(byte_swap()),
             SerializeFinding::BitPack(bit_pack()),
+            SerializeFinding::Magic(magic_format()),
         ];
         for finding in &findings {
             assert_eq!(finding.function(), "FUN_18003ab00");
@@ -388,10 +501,14 @@ mod tests {
         }
         assert_eq!(findings[0].confidence(), Confidence::new(70));
         assert_eq!(findings[1].confidence(), Confidence::new(60));
+        assert_eq!(findings[2].confidence(), Confidence::new(80));
         let kinds: Vec<&str> = findings.iter().map(|f| f.kind()).collect();
-        assert_eq!(kinds, vec!["byteswap", "bitpack"]);
+        assert_eq!(kinds, vec!["byteswap", "bitpack", "magic"]);
         let targets: Vec<String> = findings.iter().map(|f| f.target()).collect();
-        assert_eq!(targets, vec!["ntohl", "shift_or_pack 8+8+8+8"]);
+        assert_eq!(
+            targets,
+            vec!["ntohl", "shift_or_pack 8+8+8+8", "PNG 0x89504e47"]
+        );
     }
 
     #[test]
