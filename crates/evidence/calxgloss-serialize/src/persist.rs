@@ -164,14 +164,13 @@ mod tests {
 
         assert_eq!(loaded.metadata.binary, "eqmain.dll");
         assert_eq!(loaded.findings.len(), 1);
-        // Exhaustive while the union carries one variant; the arm list
-        // grows with the bitpack and magic kinds.
         match &loaded.findings[0] {
             SerializeFinding::ByteSwap(f) => {
                 assert_eq!(f.function, "ReadHeader");
                 assert_eq!(f.operation, "ntohl");
                 assert_eq!(f.width, 32);
             }
+            other => panic!("expected a byteswap finding, got {other:?}"),
         }
     }
 
@@ -264,6 +263,44 @@ mod tests {
             matches!(err, SerializeError::Json(_)),
             "expected Json, got {err:?}"
         );
+    }
+
+    #[test]
+    fn a_mixed_kind_document_survives_the_round_trip() {
+        // Byteswap and bitpack findings interleaved in scan order:
+        // the union carries both kinds through save and load without
+        // losing the record shape behind each tag.
+        let dir = tempfile::tempdir().unwrap();
+        let persistor = SerializePersistor::new(dir.path());
+
+        let mut result = SerializeResult::new(ScanMetadata::new("eqmain.dll"));
+        result
+            .findings
+            .push(SerializeFinding::ByteSwap(ByteSwapOperation {
+                function: "ReadHeader".to_string(),
+                operation: "ntohl".to_string(),
+                width: 32,
+                suggestion: "byteorder::BE::read_u32".to_string(),
+                confidence: Confidence::new(70),
+                evidence: "uVar1 = ntohl(local_18);".to_string(),
+            }));
+        result
+            .findings
+            .push(SerializeFinding::BitPack(crate::types::BitPackRecord {
+                function: "ReadHeader".to_string(),
+                pattern: crate::types::BitPackPattern::ShiftOrPack,
+                widths: vec![8, 8, 8, 8],
+                suggestion: "bitvec or named-field masking/shifting".to_string(),
+                confidence: Confidence::new(60),
+                evidence: "uVar1 = (uVar2 << 0x18) | (uVar3 << 0x10);".to_string(),
+            }));
+        persistor.save(&result).unwrap();
+
+        let loaded = persistor.load("eqmain.dll").unwrap();
+        assert_eq!(loaded, result);
+        assert_eq!(loaded.findings.len(), 2);
+        assert_eq!(loaded.findings[0].kind(), "byteswap");
+        assert_eq!(loaded.findings[1].kind(), "bitpack");
     }
 
     #[test]

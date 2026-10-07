@@ -14,6 +14,7 @@
 //! read disjoint body shapes — and keeping the pass sequential keeps
 //! the persisted finding list in a stable, diffable order.
 
+use crate::bitpack::BitPackDetector;
 use crate::byteswap::ByteSwapDetector;
 use crate::error::Result;
 use crate::types::{ScanMetadata, SerializeFinding, SerializeResult};
@@ -60,6 +61,7 @@ impl ScanSource for GhidraClient {
 pub struct SerializeEngine<S = GhidraClient> {
     source: S,
     byteswap: ByteSwapDetector,
+    bitpack: BitPackDetector,
 }
 
 impl SerializeEngine<GhidraClient> {
@@ -69,6 +71,7 @@ impl SerializeEngine<GhidraClient> {
         SerializeEngine {
             source: client.clone(),
             byteswap: ByteSwapDetector::with_default_names(),
+            bitpack: BitPackDetector::new(),
         }
     }
 }
@@ -80,6 +83,7 @@ impl<S> SerializeEngine<S> {
         SerializeEngine {
             source,
             byteswap: ByteSwapDetector::with_default_names(),
+            bitpack: BitPackDetector::new(),
         }
     }
 
@@ -87,6 +91,13 @@ impl<S> SerializeEngine<S> {
     /// the standard one.
     pub fn with_byteswap(mut self, detector: ByteSwapDetector) -> Self {
         self.byteswap = detector;
+        self
+    }
+
+    /// Read bit-packing chains against `detector` instead of the
+    /// standard shape reading.
+    pub fn with_bitpack(mut self, detector: BitPackDetector) -> Self {
+        self.bitpack = detector;
         self
     }
 
@@ -145,6 +156,12 @@ impl<S> SerializeEngine<S> {
                     .detect(&decompiled)
                     .into_iter()
                     .map(SerializeFinding::ByteSwap),
+            );
+            findings.extend(
+                self.bitpack
+                    .detect(&decompiled)
+                    .into_iter()
+                    .map(SerializeFinding::BitPack),
             );
         }
 
@@ -304,16 +321,66 @@ mod tests {
         let findings: Vec<&SerializeFinding> = result.for_function("FUN_18003ab00").collect();
         assert_eq!(findings.len(), 2);
 
-        let SerializeFinding::ByteSwap(record) = findings[0];
+        let SerializeFinding::ByteSwap(record) = findings[0] else {
+            unreachable!("the swap call reads as a byteswap finding");
+        };
         assert_eq!(record.operation, "ntohl");
         assert_eq!(record.width, 32);
         assert_eq!(record.suggestion, "byteorder::BE::read_u32");
         assert_eq!(record.evidence, "uVar1 = ntohl(local_18);");
 
-        let SerializeFinding::ByteSwap(record) = findings[1];
+        let SerializeFinding::ByteSwap(record) = findings[1] else {
+            unreachable!("the second swap call reads as a byteswap finding");
+        };
         assert_eq!(record.evidence, "uVar3 = ntohl(local_20);");
 
         assert!(result.for_function("FUN_18003e750").next().is_none());
+    }
+
+    #[tokio::test]
+    async fn one_scan_interleaves_byteswap_and_bitpack_findings_in_scan_order() {
+        // A function whose body carries a swap call and a pack chain:
+        // the swap leads (detector order), the pack follows, and the
+        // plain function stays empty.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "\
+  uVar1 = ntohl(local_18);
+  uVar2 = (uVar3 << 0x18) | ((uint)uVar4 << 0x10) | (uVar5 << 8) | (uint)uVar6;
+",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  return;\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let order: Vec<(&str, &str)> = result
+            .findings
+            .iter()
+            .map(|finding| (finding.function(), finding.kind()))
+            .collect();
+        assert_eq!(
+            order,
+            vec![("FUN_18003ab00", "byteswap"), ("FUN_18003ab00", "bitpack")]
+        );
+
+        let findings: Vec<&SerializeFinding> = result.for_function("FUN_18003ab00").collect();
+        let SerializeFinding::BitPack(record) = findings[1] else {
+            unreachable!("the pack chain reads as a bitpack finding");
+        };
+        assert_eq!(record.widths, [8, 8, 8, 8]);
+        assert_eq!(record.suggestion, "bitvec or named-field masking/shifting");
     }
 
     #[tokio::test]
@@ -434,7 +501,9 @@ mod tests {
 
         let findings: Vec<&SerializeFinding> = result.for_function("FUN_1800412a0").collect();
         assert_eq!(findings.len(), 1);
-        let SerializeFinding::ByteSwap(record) = findings[0];
+        let SerializeFinding::ByteSwap(record) = findings[0] else {
+            unreachable!("the swap call reads as a byteswap finding");
+        };
         assert_eq!(record.operation, "my_swap");
         assert_eq!(record.suggestion, "byteorder::BE::read_u32");
     }

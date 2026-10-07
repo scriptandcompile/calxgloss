@@ -234,7 +234,9 @@ pub use calxgloss_controlflow::types::{
 // `ScanMetadata` is the shared one from calxgloss-types, already
 // named here.
 pub use calxgloss_serialize::SerializeError;
-pub use calxgloss_serialize::types::{ByteSwapOperation, SerializeFinding, SerializeResult};
+pub use calxgloss_serialize::types::{
+    BitPackPattern, BitPackRecord, ByteSwapOperation, SerializeFinding, SerializeResult,
+};
 
 // ============================================================
 // calxgloss-typeinfer — type inference and propagation

@@ -6,6 +6,10 @@
 //! - `ByteSwapOperation`: the per-function byte-swap record — the
 //!   recognized swap call the function makes, the width it swaps, and
 //!   the `byteorder` reader the call reads like.
+//! - `BitPackRecord`, `BitPackPattern`: the bit-packing record — the
+//!   pack or unpack chain the function carries, the field widths its
+//!   shifts and masks carve, and the typed-field suggestion they read
+//!   like.
 //! - `SerializeFinding`: the union over the record kinds — one finding
 //!   whichever detector made it — serde-tagged by `kind`.
 //! - `SerializeResult`, `ScanMetadata`: the persisted per-binary result
@@ -56,6 +60,65 @@ pub struct ByteSwapOperation {
 }
 
 // ============================================================
+// Bit-packing records
+// ============================================================
+
+/// The bit-packing shape a finding was read from.
+///
+/// The shape says which direction the code moves bits: a
+/// `shift_or_pack` builds a word out of fields — `(a << 0x18) |
+/// (b << 0x10) | ...` — and a `shift_mask_unpack` takes a word apart —
+/// `(w >> 0x18) & 0xff` — the two halves of a hand-rolled format's
+/// read and write. Both read like the same Rust suggestion: `bitvec`,
+/// or named-field masking and shifting on a plain integer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BitPackPattern {
+    /// Fields shifted to their offsets and ORed into a word.
+    ShiftOrPack,
+    /// A word shifted right and masked to pull a field out.
+    ShiftMaskUnpack,
+}
+
+calxgloss_types::display_serde_label!(BitPackPattern {
+    ShiftOrPack => "shift_or_pack",
+    ShiftMaskUnpack => "shift_mask_unpack",
+});
+
+/// One bit-packing observation about one function, with the evidence
+/// behind it.
+///
+/// A record says the function packs or unpacks a word through the
+/// [`pattern`](Self::pattern) shape — a shift-and-or chain or a run of
+/// shift-then-mask extractions — carving out fields of the
+/// [`widths`](Self::widths) its shifts and masks imply, in bit order
+/// from the top of the word down. The shape reads like
+/// [`suggestion`](Self::suggestion): a typed field view — `bitvec`, or
+/// named-field masking and shifting — instead of the hand-rolled
+/// shifts. The matched expression (or, for an unpack chain, the
+/// extractions joined) is kept as [`evidence`](Self::evidence) so a
+/// reviewer (or a translation prompt) can check the reasoning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BitPackRecord {
+    /// The function the record is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The packing shape the record was read from.
+    pub pattern: BitPackPattern,
+    /// The field widths the shifts and masks carve out, in bits, from
+    /// the top of the word down.
+    pub widths: Vec<u32>,
+    /// The Rust pattern the chain suggests, e.g. `bitvec or
+    /// named-field masking/shifting`.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+    /// The decompiled line or lines that support the record — the
+    /// pack expression, or the unpack extractions joined — kept so a
+    /// reviewer (or a translation prompt) can check the reasoning.
+    pub evidence: String,
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -75,6 +138,9 @@ pub enum SerializeFinding {
     /// A byte reordering through a recognized swap call.
     #[serde(rename = "byteswap")]
     ByteSwap(ByteSwapOperation),
+    /// A hand-rolled pack or unpack chain moving fields through a word.
+    #[serde(rename = "bitpack")]
+    BitPack(BitPackRecord),
 }
 
 impl SerializeFinding {
@@ -82,6 +148,7 @@ impl SerializeFinding {
     pub fn function(&self) -> &str {
         match self {
             SerializeFinding::ByteSwap(record) => &record.function,
+            SerializeFinding::BitPack(record) => &record.function,
         }
     }
 
@@ -89,6 +156,7 @@ impl SerializeFinding {
     pub fn suggestion(&self) -> &str {
         match self {
             SerializeFinding::ByteSwap(record) => &record.suggestion,
+            SerializeFinding::BitPack(record) => &record.suggestion,
         }
     }
 
@@ -96,6 +164,7 @@ impl SerializeFinding {
     pub fn confidence(&self) -> Confidence {
         match self {
             SerializeFinding::ByteSwap(record) => record.confidence,
+            SerializeFinding::BitPack(record) => record.confidence,
         }
     }
 
@@ -103,22 +172,28 @@ impl SerializeFinding {
     pub fn evidence(&self) -> &str {
         match self {
             SerializeFinding::ByteSwap(record) => &record.evidence,
+            SerializeFinding::BitPack(record) => &record.evidence,
         }
     }
 
-    /// The serde `kind` tag — `byteswap` — naming the detector behind
-    /// the finding.
+    /// The serde `kind` tag — `byteswap` or `bitpack` — naming the
+    /// detector behind the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             SerializeFinding::ByteSwap(_) => "byteswap",
+            SerializeFinding::BitPack(_) => "bitpack",
         }
     }
 
     /// What the finding names, spelled for a report row: the swap call
-    /// spelling.
+    /// spelling, or the packing shape and the field widths it carves.
     pub fn target(&self) -> String {
         match self {
             SerializeFinding::ByteSwap(record) => record.operation.clone(),
+            SerializeFinding::BitPack(record) => {
+                let widths: Vec<String> = record.widths.iter().map(|w| w.to_string()).collect();
+                format!("{} {}", record.pattern, widths.join("+"))
+            }
         }
     }
 }
@@ -238,15 +313,85 @@ mod tests {
         assert_eq!(back, finding);
     }
 
+    fn bit_pack() -> BitPackRecord {
+        BitPackRecord {
+            function: "FUN_18003ab00".into(),
+            pattern: BitPackPattern::ShiftOrPack,
+            widths: vec![8, 8, 8, 8],
+            suggestion: "bitvec or named-field masking/shifting".into(),
+            confidence: Confidence::new(60),
+            evidence:
+                "uVar1 = (uVar2 << 0x18) | ((uint)uVar3 << 0x10) | (uVar4 << 8) | (uint)uVar5;"
+                    .into(),
+        }
+    }
+
     #[test]
-    fn the_union_accessors_reach_through_the_variant() {
-        let finding = SerializeFinding::ByteSwap(byte_swap());
-        assert_eq!(finding.function(), "FUN_18003ab00");
-        assert_eq!(finding.confidence(), Confidence::new(70));
-        assert_eq!(finding.suggestion(), "byteorder::BE::read_u32");
-        assert_eq!(finding.evidence(), "uVar1 = ntohl(local_18);");
-        assert_eq!(finding.kind(), "byteswap");
-        assert_eq!(finding.target(), "ntohl");
+    fn a_bit_pack_record_serde_round_trips() {
+        let record = bit_pack();
+        let json = serde_json::to_string(&record).unwrap();
+        // The pattern serializes snake_case and the widths as a plain
+        // array, matching the workspace's serde convention.
+        assert!(json.contains("\"pattern\":\"shift_or_pack\""));
+        assert!(json.contains("\"widths\":[8,8,8,8]"));
+        assert!(json.contains("\"confidence\":60"));
+        let back: BitPackRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn a_bit_pack_record_names_the_function_the_pattern_the_widths_and_the_pattern_suggestion() {
+        let json = serde_json::to_value(bit_pack()).unwrap();
+        assert_eq!(json["function"], "FUN_18003ab00");
+        assert_eq!(json["pattern"], "shift_or_pack");
+        assert_eq!(json["widths"], serde_json::json!([8, 8, 8, 8]));
+        assert_eq!(json["suggestion"], "bitvec or named-field masking/shifting");
+        assert_eq!(json["confidence"], 60);
+    }
+
+    #[test]
+    fn an_unpack_bit_pack_record_reads_back_from_json() {
+        let json = r#"{
+            "function": "FUN_18003e750",
+            "pattern": "shift_mask_unpack",
+            "widths": [8, 8, 8],
+            "suggestion": "bitvec or named-field masking/shifting",
+            "confidence": 60,
+            "evidence": "iVar2 = (uVar1 >> 0x18) & 0xff; iVar3 = (uVar1 >> 0x10) & 0xff;"
+        }"#;
+        let back: BitPackRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(back.pattern, BitPackPattern::ShiftMaskUnpack);
+        assert_eq!(back.widths, [8, 8, 8]);
+    }
+
+    #[test]
+    fn a_bitpack_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = SerializeFinding::BitPack(bit_pack());
+        let json = serde_json::to_string(&finding).expect("bitpack finding should serialize");
+        assert!(json.contains("\"kind\":\"bitpack\""));
+        assert!(json.contains("\"pattern\":\"shift_or_pack\""));
+        let back: SerializeFinding =
+            serde_json::from_str(&json).expect("bitpack finding should read back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
+    fn the_union_accessors_reach_through_every_variant() {
+        let findings = [
+            SerializeFinding::ByteSwap(byte_swap()),
+            SerializeFinding::BitPack(bit_pack()),
+        ];
+        for finding in &findings {
+            assert_eq!(finding.function(), "FUN_18003ab00");
+            assert!(!finding.suggestion().is_empty());
+            assert!(!finding.evidence().is_empty());
+        }
+        assert_eq!(findings[0].confidence(), Confidence::new(70));
+        assert_eq!(findings[1].confidence(), Confidence::new(60));
+        let kinds: Vec<&str> = findings.iter().map(|f| f.kind()).collect();
+        assert_eq!(kinds, vec!["byteswap", "bitpack"]);
+        let targets: Vec<String> = findings.iter().map(|f| f.target()).collect();
+        assert_eq!(targets, vec!["ntohl", "shift_or_pack 8+8+8+8"]);
     }
 
     #[test]

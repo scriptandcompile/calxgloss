@@ -21,6 +21,9 @@
 //!   recognizes `ntohs`/`ntohl`/`htons`/`htonl`, `bswap32`, and the
 //!   `__builtin_bswap16/32/64` spellings and suggests the matching
 //!   `byteorder` reader.
+//! - [`bitpack`] - Bit-packing pattern detection: `BitPackDetector`
+//!   reads shift-and-or pack chains and shift-then-mask unpack chains
+//!   and suggests `bitvec` or named-field masking and shifting.
 //! - [`engine`] - Scan orchestration: `SerializeEngine` runs the
 //!   detectors over one open Ghidra program through a `ScanSource`
 //!   (function listing + decompile-by-name), one sequential pass that
@@ -30,9 +33,10 @@
 //!   loads the per-binary detection results under `re/analysis/serialize/`.
 //! - [`error`] - [`SerializeError`] and the crate-wide [`Result`] alias.
 //!
-//! The bit-pack and magic-byte detectors land alongside these as the
-//! phase progresses.
+//! The magic-byte detector lands alongside these as the phase
+//! progresses.
 
+pub mod bitpack;
 pub mod byteswap;
 pub mod engine;
 pub mod error;

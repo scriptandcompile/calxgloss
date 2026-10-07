@@ -158,6 +158,42 @@ async fn the_persisted_document_keeps_findings_in_scan_order() {
 // ------------------------------------------------------------
 
 #[tokio::test]
+async fn a_mixed_kind_document_survives_the_round_trip() {
+    // One canned scan, two kinds: the swap call and the pack chain in
+    // one body reach disk interleaved in scan order and read back
+    // with their record shapes intact.
+    let workspace = TempDir::new().unwrap();
+    let mut mixed = FakeProgram::empty();
+    mixed.listing = vec![summary("FUN_18003ab00")];
+    mixed.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  uVar1 = ntohl(local_18);\n\
+             \x20 uVar2 = (uVar3 << 0x18) | ((uint)uVar4 << 0x10) | (uVar5 << 8) | (uint)uVar6;\n",
+        ),
+    );
+    let result = SerializeEngine::with_source(mixed)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = SerializePersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    assert_eq!(loaded, result);
+    let kinds: Vec<&str> = loaded.findings.iter().map(|f| f.kind()).collect();
+    assert_eq!(kinds, vec!["byteswap", "bitpack"]);
+
+    let SerializeFinding::BitPack(record) = &loaded.findings[1] else {
+        unreachable!("the pack chain reads as a bitpack finding");
+    };
+    assert_eq!(record.pattern.to_string(), "shift_or_pack");
+    assert_eq!(record.widths, [8, 8, 8, 8]);
+}
+
+#[tokio::test]
 async fn a_loaded_result_answers_the_pipeline_lookups() {
     let workspace = TempDir::new().unwrap();
     let result = SerializeEngine::with_source(program())
@@ -178,13 +214,17 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
 
     // Each record keeps the detector's detail and evidence through the
     // round trip, so a prompt sees the call that produced it.
-    let SerializeFinding::ByteSwap(record) = findings[0];
+    let SerializeFinding::ByteSwap(record) = findings[0] else {
+        unreachable!("the swap call reads as a byteswap finding");
+    };
     assert_eq!(record.operation, "ntohl");
     assert_eq!(record.width, 32);
     assert_eq!(record.suggestion, "byteorder::BE::read_u32");
     assert_eq!(record.evidence, "uVar1 = ntohl(local_18);");
 
-    let SerializeFinding::ByteSwap(record) = findings[1];
+    let SerializeFinding::ByteSwap(record) = findings[1] else {
+        unreachable!("the second swap call reads as a byteswap finding");
+    };
     assert_eq!(record.operation, "htons");
     assert_eq!(record.width, 16);
     assert_eq!(record.suggestion, "byteorder::BE::read_u16");
