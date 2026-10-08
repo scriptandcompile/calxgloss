@@ -277,6 +277,68 @@ svg {
     color: var(--text-muted);
 }
 
+/* ─── Server Control Panel (issue #60) ──────────────────────────────── */
+.server-control-panel {
+    margin: 0 0 24px;
+    padding: 14px 16px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+}
+
+.server-control-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+
+.server-control-header h2 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0;
+    color: var(--text-primary);
+}
+
+.server-control-hint {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.server-control-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.server-control-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.server-control-group label {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.server-control-group select {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    padding: 5px 8px;
+    font-size: 12px;
+}
+
+.server-control-group select:focus {
+    outline: none;
+    border-color: var(--accent-blue);
+}
+
 /* ─── Dashboard Columns ─────────────────────────────────────────────── */
 .dashboard-columns {
     display: grid;

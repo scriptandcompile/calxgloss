@@ -676,6 +676,38 @@ impl TranslationEvents {
     }
 }
 
+/// A shared stop signal for graceful shutdown of a live run.
+///
+/// Set by the web server's shutdown/restart endpoints and observed by the
+/// translation pipeline **at unit boundaries** — the unit in flight is
+/// allowed to complete (and persist its result) before the run stops.
+///
+/// `StopSignal` is cloneable — each clone shares the same underlying flag,
+/// so the web server and the pipeline can hold separate clones of one
+/// signal.
+#[derive(Debug, Clone, Default)]
+pub struct StopSignal {
+    stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl StopSignal {
+    /// Create a new, not-yet-stopped signal.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Request the stop. Idempotent — repeated calls are harmless.
+    pub fn stop(&self) {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether a stop has been requested.
+    pub fn is_stopped(&self) -> bool {
+        self.stopped.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -959,5 +991,20 @@ mod tests {
                 "{event:?} must not derive a phase"
             );
         }
+    }
+
+    /// A fresh signal is not stopped; `stop` flips it for every clone, and
+    /// repeated stops are harmless.
+    #[test]
+    fn stop_signal_is_shared_across_clones_and_idempotent() {
+        let signal = StopSignal::new();
+        let clone = signal.clone();
+        assert!(!signal.is_stopped());
+
+        clone.stop();
+        assert!(signal.is_stopped(), "clones share the same flag");
+
+        signal.stop();
+        assert!(signal.is_stopped(), "stop is idempotent");
     }
 }

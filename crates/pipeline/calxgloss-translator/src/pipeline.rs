@@ -62,7 +62,7 @@ use calxgloss_testgen::TestGenerator;
 use calxgloss_typeinfer::engine::TypeInferEngine;
 use calxgloss_typeinfer::persist::TypeInferPersistor;
 use calxgloss_types::{
-    ContextTier, Export, FunctionInfo, ProgressEvent, TestCase, TranslationEvents,
+    ContextTier, Export, FunctionInfo, ProgressEvent, StopSignal, TestCase, TranslationEvents,
     TranslationRequest,
 };
 use calxgloss_typesdb::engine::TypesDBEngine;
@@ -178,6 +178,13 @@ pub struct TranslationPipeline {
     /// instead of the default `{workspace}/re/analysis/` path. This allows
     /// users to customize the cache location via the `--callgraph-cache` CLI flag.
     callgraph_cache_dir: Option<std::path::PathBuf>,
+
+    /// Shared stop signal for graceful shutdown of a live run.
+    ///
+    /// When set and stopped, the batch loops break at the next **unit
+    /// boundary** — the unit in flight completes and persists before the
+    /// run stops. Set by the web server's shutdown/restart endpoints.
+    stop: Option<StopSignal>,
 }
 
 impl TranslationPipeline {
@@ -206,6 +213,7 @@ impl TranslationPipeline {
             callgraph_verbose: false,
             call_graph: None,
             callgraph_cache_dir: None,
+            stop: None,
         }
     }
 
@@ -246,6 +254,22 @@ impl TranslationPipeline {
     pub fn with_events(mut self, events: TranslationEvents) -> Self {
         self.events = Some(events);
         self
+    }
+
+    /// Attach a shared stop signal for graceful shutdown of a live run.
+    ///
+    /// When the signal is stopped (e.g. by the web server's shutdown
+    /// endpoint), the batch loops break at the next **unit boundary**: the
+    /// unit in flight completes and its result is persisted before the run
+    /// stops.
+    pub fn with_stop_signal(mut self, stop: StopSignal) -> Self {
+        self.stop = Some(stop);
+        self
+    }
+
+    /// Whether an attached stop signal has been requested.
+    fn stop_requested(&self) -> bool {
+        self.stop.as_ref().is_some_and(|s| s.is_stopped())
     }
 
     /// Emit a progress event if an event emitter was attached.
@@ -2163,6 +2187,15 @@ impl TranslationPipeline {
         let mut batch_result = batch::BatchTranslationResult::new(dll.to_string());
 
         for (idx, function) in functions.iter().enumerate() {
+            if self.stop_requested() {
+                info!(
+                    dll,
+                    remaining = functions.len() - idx,
+                    "Stop signal received — ending batch at unit boundary"
+                );
+                break;
+            }
+
             info!(
                 dll,
                 function,
@@ -2391,6 +2424,15 @@ impl TranslationPipeline {
 
         for (idx, plan_func) in plan.iter().enumerate() {
             use calxgloss_callgraph::TranslationPriority;
+
+            if self.stop_requested() {
+                info!(
+                    dll,
+                    remaining = plan.len() - idx,
+                    "Stop signal received — ending call-graph batch at unit boundary"
+                );
+                break;
+            }
 
             // Handle root functions (entry points) — generate stubs instead of translating
             if matches!(plan_func.priority, TranslationPriority::Root) {
@@ -2636,6 +2678,43 @@ mod tests {
 
     fn pipeline_over(workspace: Option<&std::path::Path>) -> TranslationPipeline {
         pipeline_with(unreachable_ghidra(), workspace)
+    }
+
+    /// A stopped `StopSignal` ends `batch_translate` at the next unit
+    /// boundary: the unit in flight completes (its callback runs, so the
+    /// result is persisted by the caller) and no further unit starts.
+    #[tokio::test]
+    async fn batch_translate_breaks_at_unit_boundary_when_stop_is_requested() {
+        let dir = TempDir::new().unwrap();
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        let stop = StopSignal::new();
+        let stop_cb = stop.clone();
+        let pipeline = pipeline_over(Some(dir.path())).with_stop_signal(stop);
+
+        let mut completed = 0;
+        let result = pipeline
+            .batch_translate(
+                "game_logic.dll",
+                &["DrawPrimitive".to_string(), "UpdateScene".to_string()],
+                &retry::RetryConfig::default(),
+                &verifier,
+                Some(&mut |_dll, _function, _func_result| {
+                    completed += 1;
+                    // Stop requested right after the first unit completes.
+                    stop_cb.stop();
+                    true
+                }),
+            )
+            .await
+            .expect("batch over unreachable ghidra still reports per-function failures");
+
+        assert_eq!(completed, 1, "only the first unit should have run");
+        assert_eq!(
+            result.results.len(),
+            1,
+            "the second unit must not start after the stop signal"
+        );
     }
 
     #[tokio::test]

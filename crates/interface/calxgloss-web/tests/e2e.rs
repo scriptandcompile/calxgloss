@@ -507,6 +507,381 @@ async fn test_server_status_live_router_idle() {
     assert_eq!(body["ws_connections"], 0);
 }
 
+// ─────────────────────────────────────────────────────────────
+// Server lifecycle endpoint tests (issue #60)
+// ─────────────────────────────────────────────────────────────
+
+/// Spawn a server whose accept loop watches the state's shutdown flag,
+/// exactly like `serve`/`serve_with_listener` do — so the shutdown/restart
+/// endpoints visibly stop it.
+async fn spawn_server_with_shutdown(
+    state: &ServerState,
+    router: axum::Router,
+    port: u16,
+) -> tokio::task::JoinHandle<()> {
+    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
+        .await
+        .expect("bind listener");
+    let shutdown = state.shutdown_signal();
+    tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(shutdown)
+            .await
+            .expect("server runs to completion");
+    })
+}
+
+/// `POST /api/server/shutdown` on the live router with a canned in-flight
+/// unit: the response documents the graceful stop, the shared stop signal
+/// is set (the pipeline's side of the contract — it breaks at the next
+/// unit boundary), and the accept loop stops taking new connections.
+#[tokio::test]
+async fn test_server_shutdown_live_router_stops_pipeline_and_server() {
+    let fixture = TestFixture::new();
+    let stop = calxgloss_types::StopSignal::new();
+    let state = ServerState::new(fixture.repo_path()).with_stop_signal(stop.clone());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state.clone(), manager, progress);
+    let server = spawn_server_with_shutdown(&state, router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // A unit in flight (fed exactly how live mode feeds ProgressState).
+    events.emit(ProgressEvent::TranslationStarted {
+        dll: "game_logic".into(),
+        function: "DrawPrimitive".into(),
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!stop.is_stopped(), "no stop before the request");
+
+    let resp = reqwest::Client::new()
+        .post(format!(
+            "http://127.0.0.1:{}/api/server/shutdown",
+            fixture.port()
+        ))
+        .send()
+        .await
+        .expect("shutdown request succeeds");
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    assert_eq!(body["status"], "shutting_down");
+    assert_eq!(body["restart_required"], false);
+    assert!(
+        body["message"].as_str().is_some_and(|m| !m.is_empty()),
+        "shutdown must carry an operator-facing message"
+    );
+
+    // The pipeline's side: the shared stop signal is set, so the batch loop
+    // ends at the next unit boundary after the in-flight unit completes.
+    assert!(stop.is_stopped(), "the shared stop signal must be set");
+
+    // The server's side: the accept loop exits gracefully — subsequent
+    // connections are refused.
+    server
+        .await
+        .expect("server task exits after graceful shutdown");
+    let after = reqwest::get(format!(
+        "http://127.0.0.1:{}/api/server/status",
+        fixture.port()
+    ))
+    .await;
+    assert!(after.is_err(), "server must stop accepting requests");
+}
+
+/// `POST /api/server/restart` returns the manual-restart signal and stops
+/// the process — no forking, the operator restarts the command.
+#[tokio::test]
+async fn test_server_restart_returns_manual_restart_signal() {
+    let fixture = TestFixture::new();
+    let stop = calxgloss_types::StopSignal::new();
+    let state = ServerState::new(fixture.repo_path()).with_stop_signal(stop.clone());
+    let router = build_router(state.clone());
+    let server = spawn_server_with_shutdown(&state, router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!(
+            "http://127.0.0.1:{}/api/server/restart",
+            fixture.port()
+        ))
+        .send()
+        .await
+        .expect("restart request succeeds");
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    assert_eq!(body["status"], "stopping");
+    assert_eq!(
+        body["restart_required"], true,
+        "restart must signal manual restart"
+    );
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.to_lowercase().contains("restart"),
+        "message must tell the operator how to restart, got: {message}"
+    );
+    assert!(
+        stop.is_stopped(),
+        "the pipeline must be paused at a boundary"
+    );
+
+    server
+        .await
+        .expect("server task exits after graceful shutdown");
+}
+
+/// `PATCH /api/server/log-level`: an invalid level name is rejected with
+/// 400, a valid name becomes the level reported by `/api/server/status`
+/// for this process only, and a server without a reloadable filter honestly
+/// reports 503 instead of pretending to change verbosity.
+#[tokio::test]
+async fn test_server_log_level_patch_validates_and_updates() {
+    let fixture = TestFixture::new();
+    // Reload handle without installing the layer globally — the endpoint
+    // only needs the handle to reload the filter.
+    let (_filter, handle) =
+        tracing_subscriber::reload::Layer::new(tracing_subscriber::EnvFilter::new("warn"));
+    let state = ServerState::new(fixture.repo_path())
+        .with_log_level("warn")
+        .with_log_filter(calxgloss_web::LogLevelControl::new(handle));
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let client = reqwest::Client::new();
+    let url = format!("http://127.0.0.1:{}/api/server/log-level", fixture.port());
+
+    // Invalid names → 4xx, and the active level is unchanged.
+    for bad in ["verbose", "everything", ""] {
+        let resp = client
+            .patch(&url)
+            .json(&serde_json::json!({ "level": bad }))
+            .send()
+            .await
+            .expect("patch request succeeds");
+        assert!(
+            resp.status().is_client_error(),
+            "invalid level '{bad}' must be rejected with 4xx, got {}",
+            resp.status()
+        );
+    }
+
+    // Valid name (case-insensitive) → 200 with the normalized level…
+    let resp = client
+        .patch(&url)
+        .json(&serde_json::json!({ "level": "DEBUG" }))
+        .send()
+        .await
+        .expect("patch request succeeds");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    assert_eq!(body["level"], "debug");
+
+    // …and the status endpoint now reports it.
+    let resp = reqwest::get(format!(
+        "http://127.0.0.1:{}/api/server/status",
+        fixture.port()
+    ))
+    .await
+    .expect("status request succeeds");
+    let body: serde_json::Value = resp.json().await.expect("status body is JSON");
+    assert_eq!(body["log_level"], "debug");
+
+    // A server with no reloadable filter attached must not pretend.
+    let bare_fixture = TestFixture::new();
+    let bare_port = TestFixture::find_free_port();
+    let bare_router = build_router(ServerState::new(bare_fixture.repo_path()));
+    let _bare_server = spawn_server(bare_router, bare_port).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let resp = client
+        .patch(format!(
+            "http://127.0.0.1:{}/api/server/log-level",
+            bare_port
+        ))
+        .json(&serde_json::json!({ "level": "debug" }))
+        .send()
+        .await
+        .expect("patch request succeeds");
+    assert_eq!(
+        resp.status(),
+        503,
+        "no filter attached must report 503, not a silent success"
+    );
+}
+
+/// Counts global-subscriber events whose message is the test's probe
+/// marker, to prove a `PATCH /api/server/log-level` change actually alters
+/// the running process's verbosity — not just the reported string.
+struct ProbeCountingLayer(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for ProbeCountingLayer {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        struct MessageVisitor {
+            message: String,
+        }
+        impl tracing::field::Visit for MessageVisitor {
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                if field.name() == "message" {
+                    self.message = value.to_string();
+                }
+            }
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.message = format!("{value:?}");
+                }
+            }
+        }
+
+        let mut visitor = MessageVisitor {
+            message: String::new(),
+        };
+        event.record(&mut visitor);
+        if visitor.message == "log-level-probe" {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
+/// With the CLI-style reloadable filter installed, a valid PATCH changes
+/// the verbosity of the running process: a `debug!` record invisible before
+/// the change is emitted after it.
+#[tokio::test]
+async fn test_log_level_patch_changes_running_filter() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tracing_subscriber::layer::SubscriberExt;
+
+    // The reloadable EnvFilter the CLI's logging init installs, plus a
+    // counting layer to observe what the filter lets through.
+    let (filter, handle) =
+        tracing_subscriber::reload::Layer::new(tracing_subscriber::EnvFilter::new("warn"));
+    let seen = Arc::new(AtomicUsize::new(0));
+    let subscriber = tracing_subscriber::registry()
+        .with(filter)
+        .with(ProbeCountingLayer(seen.clone()));
+    tracing::subscriber::set_global_default(subscriber).expect("install global subscriber");
+
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path())
+        .with_log_level("warn")
+        .with_log_filter(calxgloss_web::LogLevelControl::new(handle));
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    tracing::debug!("log-level-probe");
+    assert_eq!(
+        seen.load(Ordering::SeqCst),
+        0,
+        "debug records must be filtered out at warn"
+    );
+
+    let resp = reqwest::Client::new()
+        .patch(format!(
+            "http://127.0.0.1:{}/api/server/log-level",
+            fixture.port()
+        ))
+        .json(&serde_json::json!({ "level": "debug" }))
+        .send()
+        .await
+        .expect("patch request succeeds");
+    assert_eq!(resp.status(), 200);
+
+    tracing::debug!("log-level-probe");
+    assert_eq!(
+        seen.load(Ordering::SeqCst),
+        1,
+        "the running process must emit debug records after the change"
+    );
+}
+
+/// The lifecycle endpoints are registered in **all three** routers —
+/// plain `serve`, actions, and live.
+#[tokio::test]
+async fn test_lifecycle_endpoints_registered_in_all_routers() {
+    // Reload layers kept alive for the test's duration — a reload handle
+    // errors once its layer is dropped.
+    let (layer_a, handle_a) =
+        tracing_subscriber::reload::Layer::new(tracing_subscriber::EnvFilter::new("info"));
+    let (layer_b, handle_b) =
+        tracing_subscriber::reload::Layer::new(tracing_subscriber::EnvFilter::new("info"));
+    let (layer_c, handle_c) =
+        tracing_subscriber::reload::Layer::new(tracing_subscriber::EnvFilter::new("info"));
+    let _layers = [layer_a, layer_b, layer_c];
+
+    let routers: Vec<(&str, axum::Router)> = vec![
+        ("plain", {
+            let fixture = TestFixture::new();
+            build_router(
+                ServerState::new(fixture.repo_path())
+                    .with_log_filter(calxgloss_web::LogLevelControl::new(handle_a)),
+            )
+        }),
+        ("actions", {
+            let fixture = TestFixture::new();
+            let actions = ActionsState::new(fixture.repo_path());
+            build_router_with_actions(
+                ServerState::new(fixture.repo_path())
+                    .with_log_filter(calxgloss_web::LogLevelControl::new(handle_b)),
+                actions,
+            )
+        }),
+        ("live", {
+            let fixture = TestFixture::new();
+            let (manager, _tx) = SessionManager::new();
+            build_router_with_ws(
+                ServerState::new(fixture.repo_path())
+                    .with_log_filter(calxgloss_web::LogLevelControl::new(handle_c)),
+                manager,
+                ProgressState::new(),
+            )
+        }),
+    ];
+
+    for (name, router) in routers {
+        let port = TestFixture::find_free_port();
+        let _server = spawn_server(router, port).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let client = reqwest::Client::new();
+
+        let resp = client
+            .patch(format!("http://127.0.0.1:{port}/api/server/log-level"))
+            .json(&serde_json::json!({ "level": "info" }))
+            .send()
+            .await
+            .expect("log-level patch reaches the router");
+        assert_eq!(
+            resp.status(),
+            200,
+            "log-level must be registered in the {name} router"
+        );
+
+        for path in ["/api/server/shutdown", "/api/server/restart"] {
+            let resp = client
+                .post(format!("http://127.0.0.1:{port}{path}"))
+                .send()
+                .await
+                .expect("lifecycle post reaches the router");
+            assert_eq!(
+                resp.status(),
+                200,
+                "{path} must be registered in the {name} router"
+            );
+        }
+    }
+}
+
 /// Verify that the dashboard endpoint returns valid JSON with
 /// the expected units, status counts, and dependency graph.
 #[tokio::test]
@@ -1528,6 +1903,99 @@ async fn test_headless_server_status_card() {
         text_of("server-status-pipeline"),
         "no pipeline",
         "plain serve status card should report 'no pipeline'"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for the dashboard server control panel (issue #60):
+/// the panel must render with shutdown/restart buttons and a log-level
+/// selector populated with the levels the server accepts.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_server_control_panel() {
+    use headless_chrome::{Browser, LaunchOptionsBuilder};
+
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let browser = Browser::new(
+        LaunchOptionsBuilder::default()
+            .headless(true)
+            .args(vec![
+                std::ffi::OsStr::new("--no-sandbox"),
+                std::ffi::OsStr::new("--disable-gpu"),
+                std::ffi::OsStr::new("--disable-dev-shm-usage"),
+            ])
+            .build()
+            .expect("build chrome launch options"),
+    )
+    .expect("launch headless chrome");
+
+    let tab = browser.new_tab().expect("open new tab");
+    tab.navigate_to(&format!("http://127.0.0.1:{}", fixture.port()))
+        .expect("navigate to server root");
+    tab.wait_until_navigated().expect("wait for navigation");
+    tab.enable_runtime().expect("enable runtime");
+
+    // The panel renders asynchronously once the dashboard fetches settle;
+    // poll until it appears (up to ~5 seconds).
+    let mut rendered = false;
+    for _ in 0..25 {
+        let found = tab
+            .evaluate("!!document.getElementById('server-control-panel')", false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if found {
+            rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(rendered, "dashboard should render the server control panel");
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .expect("evaluate panel expression")
+            .value
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+
+    assert!(
+        eval_bool("!!document.getElementById('server-shutdown-btn')"),
+        "control panel should have a shutdown button"
+    );
+    assert!(
+        eval_bool("!!document.getElementById('server-restart-btn')"),
+        "control panel should have a restart button"
+    );
+
+    // The log-level select must offer the levels the server accepts.
+    assert!(
+        eval_bool(
+            "['off','error','warn','info','debug','trace'].every(\
+                l => [...document.getElementById('server-loglevel-select').options]\
+                    .some(o => o.value === l))"
+        ),
+        "log-level select should offer off/error/warn/info/debug/trace"
+    );
+    // And pre-select the level the server reports.
+    assert!(
+        eval_bool(
+            "document.getElementById('server-loglevel-select').value === \
+                document.getElementById('server-status-loglevel').textContent"
+        ),
+        "log-level select should pre-select the current server log level"
     );
 
     tab.close_target().ok();

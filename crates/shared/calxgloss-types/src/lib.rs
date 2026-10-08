@@ -61,7 +61,7 @@ pub use fault::{
 pub use function::{ApiCategory, FunctionInfo, NodeCategory, WindowsApiCall};
 pub use git::{GitBranch, GitCommit};
 pub use persist::{JsonStore, PersistError, analysis_dir, load_json, save_json};
-pub use progress::{PhaseRecord, ProgressEvent, TranslationEvents, TranslationPhase};
+pub use progress::{PhaseRecord, ProgressEvent, StopSignal, TranslationEvents, TranslationPhase};
 pub use scan::ScanMetadata;
 pub use shim::{
     ComplexityScore, ReturnMapping, ShimApiMapping, ShimLayer, ShimMappingTestResult,

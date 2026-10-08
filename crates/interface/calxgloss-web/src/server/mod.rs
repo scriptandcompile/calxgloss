@@ -5,11 +5,13 @@
 mod actions;
 mod events;
 mod handlers;
+mod lifecycle;
 mod metrics;
 mod types;
 
 pub use self::actions::*;
 pub use self::handlers::*;
+pub use self::lifecycle::{LifecycleError, LogLevelControl};
 pub use self::types::*;
 pub use events::{EventsBridge, SessionManager, WebSocketHandler};
 
@@ -18,10 +20,10 @@ use axum::{
     extract::FromRef,
     extract::{DefaultBodyLimit, WebSocketUpgrade},
     middleware,
-    routing::{get, post},
+    routing::{get, patch, post},
 };
 use calxgloss_reports::dashboard::DashboardBuilder;
-use calxgloss_types::{PhaseRecord, ProgressEvent, ReviewDashboard, TranslationPhase};
+use calxgloss_types::{PhaseRecord, ProgressEvent, ReviewDashboard, StopSignal, TranslationPhase};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -33,12 +35,22 @@ pub struct ServerState {
     repo_path: PathBuf,
     /// When the server state was created — the reference point for uptime.
     started_at: std::time::Instant,
-    /// Active tracing log level, reported by `/api/server/status`.
-    log_level: String,
+    /// Active tracing log level, reported by `/api/server/status` and
+    /// updated by `PATCH /api/server/log-level` (process-lifetime only).
+    log_level: Arc<std::sync::RwLock<String>>,
+    /// Reload handle for the process's tracing `EnvFilter` — `None` when
+    /// the server was built without the CLI's logging init (e.g. tests),
+    /// in which case a level change only updates the reported value.
+    log_filter: Option<LogLevelControl>,
     /// Host name of the machine, resolved once at startup.
     host: String,
     /// Cross-platform process metrics (memory/CPU/open file handles).
     metrics: Arc<metrics::ProcessMetrics>,
+    /// Shared stop signal — the live pipeline observes it at unit
+    /// boundaries when the shutdown/restart endpoints fire.
+    stop_signal: StopSignal,
+    /// Graceful-shutdown trigger watched by `serve`/`serve_with_listener`.
+    shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
 }
 
 impl ServerState {
@@ -49,9 +61,12 @@ impl ServerState {
             // Default matches what the CLI's `init_logging` installs with no
             // verbosity flags; the CLI always overrides via `with_log_level`
             // so this reports the level that is actually active.
-            log_level: "warn".to_string(),
+            log_level: Arc::new(std::sync::RwLock::new("warn".to_string())),
+            log_filter: None,
             host: metrics::host_name(),
             metrics: Arc::new(metrics::ProcessMetrics::for_current_process()),
+            stop_signal: StopSignal::new(),
+            shutdown_tx: Arc::new(tokio::sync::watch::channel(false).0),
         }
     }
     pub fn repo_path(&self) -> &Path {
@@ -61,7 +76,23 @@ impl ServerState {
     /// Override the log level reported by `/api/server/status` so it matches
     /// the level the CLI's logging init actually installed.
     pub fn with_log_level(mut self, level: impl Into<String>) -> Self {
-        self.log_level = level.into();
+        self.log_level = Arc::new(std::sync::RwLock::new(level.into()));
+        self
+    }
+
+    /// Share the reloadable tracing filter installed by the CLI's logging
+    /// init, so `PATCH /api/server/log-level` can change the verbosity of
+    /// the running process.
+    pub fn with_log_filter(mut self, filter: LogLevelControl) -> Self {
+        self.log_filter = Some(filter);
+        self
+    }
+
+    /// Attach the [`StopSignal`] the live pipeline shares with this server,
+    /// so the shutdown/restart endpoints can pause the run at a unit
+    /// boundary.
+    pub fn with_stop_signal(mut self, stop: StopSignal) -> Self {
+        self.stop_signal = stop;
         self
     }
 
@@ -81,8 +112,65 @@ impl ServerState {
     }
 
     /// Active tracing log level.
-    pub fn log_level(&self) -> &str {
-        &self.log_level
+    pub fn log_level(&self) -> String {
+        self.log_level
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Validate a level name and apply it to the running process.
+    ///
+    /// Requires the reloadable filter handle shared in via
+    /// [`ServerState::with_log_filter`]; without one the process's verbosity
+    /// cannot change, and the endpoint reports 503 rather than pretending.
+    /// Nothing persists — the next process start re-reads the CLI verbosity
+    /// flags.
+    ///
+    /// Returns the normalized level name now active.
+    pub fn set_log_level(&self, level: &str) -> Result<String, ServerError> {
+        let normalized = LogLevelControl::validate(level).ok_or_else(|| {
+            ServerError::bad_request(&format!(
+                "invalid log level '{level}'; valid levels: {}",
+                self::lifecycle::VALID_LOG_LEVELS.join(", ")
+            ))
+        })?;
+        let filter = self.log_filter.as_ref().ok_or_else(|| {
+            ServerError::unavailable("this server has no reloadable log filter attached")
+        })?;
+        filter
+            .apply(&normalized)
+            .map_err(|e| ServerError::Internal(e.to_string()))?;
+        *self.log_level.write().unwrap_or_else(|e| e.into_inner()) = normalized.clone();
+        Ok(normalized)
+    }
+
+    /// Clone of the stop signal shared with the live pipeline.
+    pub fn stop_signal(&self) -> StopSignal {
+        self.stop_signal.clone()
+    }
+
+    /// Request graceful shutdown: stop accepting new requests and let
+    /// in-flight ones finish.
+    pub fn request_shutdown(&self) {
+        // The receiver may already be gone (server not started yet) —
+        // nothing to do in that case.
+        self.shutdown_tx.send_replace(true);
+    }
+
+    /// Future that resolves once graceful shutdown has been requested —
+    /// pass it to `axum::serve(...).with_graceful_shutdown(...)`.
+    pub fn shutdown_signal(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let mut rx = self.shutdown_tx.subscribe();
+        async move {
+            // Resolve when the flag flips to true; if the sender is dropped
+            // the server state is gone, so resolve rather than hang.
+            while !*rx.borrow_and_update() {
+                if rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -416,7 +504,8 @@ pub fn build_dashboard(repo_path: &Path) -> Result<ReviewDashboard, anyhow::Erro
 
 /// Routes shared by **every** router — plain `serve`, `serve` with review
 /// actions, and `live`. An endpoint that reads live translation state must
-/// not be added here; it belongs in [`live_only_routes`].
+/// not be added here; it belongs in [`live_only_routes`]. Server management
+/// (`/api/server/*`) is registered here so it is available in every mode.
 fn shared_routes() -> Router<CombinedState> {
     Router::new()
         .route("/", get(handlers::serve_index))
@@ -437,6 +526,12 @@ fn shared_routes() -> Router<CombinedState> {
         .route("/api/gc/archive", post(handlers::api_archive_gc))
         .route("/health", get(handlers::api_health))
         .route("/api/server/status", get(handlers::api_server_status))
+        .route("/api/server/shutdown", post(handlers::api_server_shutdown))
+        .route("/api/server/restart", post(handlers::api_server_restart))
+        .route(
+            "/api/server/log-level",
+            patch(handlers::api_server_log_level),
+        )
         .fallback_service(axum::routing::get(handlers::static_fallback))
 }
 
@@ -573,7 +668,13 @@ pub async fn serve(
         let _ = tx.send(Ok(local_addr));
     }
 
-    axum::serve(listener, build_router(state)).await?;
+    // `POST /api/server/shutdown` (and `/restart`) flip the state's shutdown
+    // flag; axum then stops accepting new connections and lets in-flight
+    // requests finish before `serve` returns.
+    let shutdown = state.shutdown_signal();
+    axum::serve(listener, build_router(state))
+        .with_graceful_shutdown(shutdown)
+        .await?;
     Ok(())
 }
 
@@ -583,10 +684,16 @@ pub async fn serve(
 /// Used internally by `handle_live` to bind outside of `serve()` so that
 /// bind failures can be reported through the ready channel. The caller
 /// builds the router (with or without WebSocket support) before passing it in.
+///
+/// `shutdown` resolves when a graceful shutdown should begin — pass
+/// [`ServerState::shutdown_signal`] so the shutdown/restart endpoints work.
 pub async fn serve_with_listener(
     listener: tokio::net::TcpListener,
     router: Router,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<(), anyhow::Error> {
-    axum::serve(listener, router).await?;
+    axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown)
+        .await?;
     Ok(())
 }

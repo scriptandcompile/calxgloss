@@ -76,10 +76,10 @@ impl SessionManager {
     pub async fn register_client(&self) -> (WebSocketHandler, mpsc::Sender<ProgressEvent>) {
         let (tx, rx) = mpsc::channel::<ProgressEvent>(128);
         let _ = self.commands.send(WsCommand::Register(tx.clone())).await;
-        debug!(
-            "WS client registered, total clients: {}",
-            self.client_count()
-        );
+        // Async-safe count — `client_count()` blocks and must never run on a
+        // runtime thread (it would panic under a DEBUG-enabled filter).
+        let total = self.clients.lock().await.len();
+        debug!("WS client registered, total clients: {total}");
         (WebSocketHandler::new(rx), tx)
     }
 

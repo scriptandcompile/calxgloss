@@ -10,7 +10,8 @@ use tracing::info;
 
 use super::super::PatchRequest;
 use super::super::{
-    ActionResponse, CombinedState, HealthResponse, PipelineStatus, SendBackRequest, ServerError,
+    ActionResponse, CombinedState, HealthResponse, LifecycleStatus, LogLevelRequest,
+    LogLevelResponse, PipelineStatus, SendBackRequest, ServerError, ServerLifecycleResponse,
     ServerState, ServerStatus, UnitResponse, UnitResponseInner,
 };
 
@@ -521,12 +522,77 @@ pub async fn api_server_status(State(combined): State<CombinedState>) -> Json<Se
         uptime_secs: server.uptime().as_secs(),
         version: ServerState::version().to_string(),
         host: server.host().to_string(),
-        log_level: server.log_level().to_string(),
+        log_level: server.log_level(),
         memory_mb: sample.memory_mb,
         cpu_percent: sample.cpu_percent,
         ws_connections,
         open_file_handles: sample.open_file_handles,
     })
+}
+
+// ─── POST /api/server/shutdown ───────────────────────────────────────
+
+/// Graceful shutdown (issue #60): stops accepting new requests (in-flight
+/// ones finish), and — when a live pipeline is attached — pauses the run at
+/// the current **unit boundary** via the shared stop signal. The unit in
+/// flight completes and its result is saved (each unit is persisted and
+/// committed as it finishes), then the process exits.
+///
+/// Registered in **all** routers; on plain `serve` there is no pipeline to
+/// pause, so only the server stops.
+pub async fn api_server_shutdown(
+    State(combined): State<CombinedState>,
+) -> Json<ServerLifecycleResponse> {
+    info!("graceful shutdown requested via API");
+    combined.server.stop_signal().stop();
+    combined.server.request_shutdown();
+    Json(ServerLifecycleResponse {
+        status: LifecycleStatus::ShuttingDown,
+        message: "Pipeline will stop at the current unit boundary; the server is shutting down."
+            .to_string(),
+        restart_required: false,
+    })
+}
+
+// ─── POST /api/server/restart ────────────────────────────────────────
+
+/// Restart, MVP form (issue #60): saves state the same way shutdown does
+/// (current unit completes and persists), stops the process, and returns a
+/// clear **manual restart** signal. The web server does not own the
+/// pipeline process, so zero-downtime forking is deliberately not attempted
+/// — the operator restarts the command themselves.
+///
+/// Registered in **all** routers.
+pub async fn api_server_restart(
+    State(combined): State<CombinedState>,
+) -> Json<ServerLifecycleResponse> {
+    info!("restart requested via API — stopping process, manual restart required");
+    combined.server.stop_signal().stop();
+    combined.server.request_shutdown();
+    Json(ServerLifecycleResponse {
+        status: LifecycleStatus::Stopping,
+        message: "Server stopped. Restart manually with the same command (e.g. `calxgloss live` \
+                  or `calxgloss serve`) — saved state is picked up automatically."
+            .to_string(),
+        restart_required: true,
+    })
+}
+
+// ─── PATCH /api/server/log-level ─────────────────────────────────────
+
+/// Runtime log-level change (issue #60): validates the level name and
+/// reloads the process's tracing `EnvFilter`. The change is scoped to the
+/// running process — nothing persists, and the next start re-reads the CLI
+/// verbosity flags. Invalid names are rejected with 400.
+///
+/// Registered in **all** routers.
+pub async fn api_server_log_level(
+    State(combined): State<CombinedState>,
+    Json(req): Json<LogLevelRequest>,
+) -> Result<Json<LogLevelResponse>, ServerError> {
+    let level = combined.server.set_log_level(&req.level)?;
+    info!(%level, "log level changed at runtime (process-lifetime only)");
+    Ok(Json(LogLevelResponse { level }))
 }
 
 /// Serve the frontend index page.

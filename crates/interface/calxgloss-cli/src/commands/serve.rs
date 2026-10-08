@@ -3,13 +3,18 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use calxgloss_web::{ServerState, serve};
+use calxgloss_web::{LogLevelControl, ServerState, serve};
 use tracing::info;
 
 use crate::utils::*;
 
 /// Handle the `serve` subcommand: start the web review UI HTTP server.
-pub async fn handle_serve(workspace: PathBuf, port: u16, log_level: &'static str) -> Result<()> {
+pub async fn handle_serve(
+    workspace: PathBuf,
+    port: u16,
+    log_level: &'static str,
+    log_filter: LogLevelControl,
+) -> Result<()> {
     info!(repo = ?workspace, port, "Starting web review UI server");
 
     if !workspace.exists() {
@@ -47,7 +52,9 @@ pub async fn handle_serve(workspace: PathBuf, port: u16, log_level: &'static str
     println_content("  Press Ctrl+C to stop");
     println!();
 
-    let server_state = ServerState::new(workspace).with_log_level(log_level);
+    let server_state = ServerState::new(workspace)
+        .with_log_level(log_level)
+        .with_log_filter(log_filter);
     println_content("Endpoints:");
     println_content("    GET  /                  Dashboard frontend");
     println_content("    GET  /api/dashboard     Full review dashboard JSON");
@@ -59,6 +66,9 @@ pub async fn handle_serve(workspace: PathBuf, port: u16, log_level: &'static str
     println_content("    POST /api/units/:id/send-back Send back with comments");
     println_content("    POST /api/units/:id/patch     Request patch (retry translation)");
     println_content("    GET  /api/server/status Server status (uptime, memory, CPU, connections)");
+    println_content("    POST /api/server/shutdown Graceful shutdown (pause pipeline, save, exit)");
+    println_content("    POST /api/server/restart  Stop process — restart the command manually");
+    println_content("    PATCH /api/server/log-level Change log verbosity (this process only)");
     println_content("    GET  /health            Health probe (workspace, uptime, version)");
     println!();
     hsep_bold();

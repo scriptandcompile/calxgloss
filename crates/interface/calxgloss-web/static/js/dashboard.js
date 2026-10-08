@@ -46,7 +46,12 @@ export async function loadDashboard() {
         renderStaleBranchesCard();
 
         // Server status card (uptime, version, resources — non-critical)
-        renderServerStatusCard();
+        const serverStatus = await renderServerStatusCard();
+
+        // Server control panel (shutdown / restart / log level — issue #60)
+        if (serverStatus) {
+            renderServerControlPanel(serverStatus);
+        }
     } catch (err) {
         showToast(`Failed to load dashboard: ${err.message}`, "error");
     }
@@ -78,12 +83,13 @@ export function renderStatusCards(dashboard) {
 
 /* Server status card — uptime, version, host, log level, memory/CPU,
    WebSocket connections, open file handles, and pipeline state, all from
-   GET /api/server/status (issue #59). */
+   GET /api/server/status (issue #59). Returns the status so the control
+   panel can share it, or null when the fetch fails. */
 export async function renderServerStatusCard() {
     try {
         const status = await API.serverStatus();
         const container = document.getElementById("status-cards");
-        if (!container) return;
+        if (!container) return null;
 
         const pipelineLabels = { unavailable: "no pipeline", idle: "idle", running: "running" };
         const card = document.createElement("div");
@@ -105,9 +111,108 @@ export async function renderServerStatusCard() {
             </div>
         `;
         container.appendChild(card);
+        return status;
     } catch {
         // Silently fail — server status card is non-critical
+        return null;
     }
+}
+
+/* Server control panel — graceful shutdown, manual restart, and runtime log
+   level changes (issue #60). Rendered once below the status cards; on later
+   dashboard refreshes the log-level select is re-synced to the server. */
+const LOG_LEVELS = ["off", "error", "warn", "info", "debug", "trace"];
+
+export function renderServerControlPanel(status) {
+    const cards = document.getElementById("status-cards");
+    if (!cards) return;
+
+    const existing = document.getElementById("server-control-panel");
+    if (existing) {
+        const select = document.getElementById("server-loglevel-select");
+        if (select && !select.dataset.busy) select.value = status.log_level;
+        return;
+    }
+
+    const panel = document.createElement("div");
+    panel.id = "server-control-panel";
+    panel.className = "server-control-panel";
+    panel.innerHTML = `
+        <div class="server-control-header">
+            <h2>🖥 Server Control</h2>
+            <span class="server-control-hint">Log-level changes apply to this process only</span>
+        </div>
+        <div class="server-control-actions">
+            <div class="server-control-group">
+                <label for="server-loglevel-select">Log level</label>
+                <select id="server-loglevel-select">
+                    ${LOG_LEVELS.map(l =>
+                        `<option value="${l}"${l === status.log_level ? " selected" : ""}>${l}</option>`
+                    ).join("")}
+                </select>
+                <button id="server-loglevel-apply" class="btn btn-sm">Apply</button>
+            </div>
+            <div class="server-control-group">
+                <button id="server-restart-btn" class="btn btn-sm btn-warning">Restart</button>
+                <button id="server-shutdown-btn" class="btn btn-sm btn-danger">Shut down</button>
+            </div>
+        </div>
+    `;
+    cards.after(panel);
+
+    const shutdownBtn = document.getElementById("server-shutdown-btn");
+    const restartBtn = document.getElementById("server-restart-btn");
+    const select = document.getElementById("server-loglevel-select");
+    const applyBtn = document.getElementById("server-loglevel-apply");
+
+    shutdownBtn.addEventListener("click", async () => {
+        if (!confirm("Shut down the server? A running pipeline will finish the current unit and save it first.")) {
+            return;
+        }
+        shutdownBtn.disabled = true;
+        restartBtn.disabled = true;
+        try {
+            const res = await API.shutdownServer();
+            showToast(res.message, "info", 8000);
+        } catch (err) {
+            showToast(`Shutdown failed: ${err.message}`, "error");
+            shutdownBtn.disabled = false;
+            restartBtn.disabled = false;
+        }
+    });
+
+    restartBtn.addEventListener("click", async () => {
+        if (!confirm("Restart the server? It will stop after the current unit is saved — restart the command manually.")) {
+            return;
+        }
+        shutdownBtn.disabled = true;
+        restartBtn.disabled = true;
+        try {
+            const res = await API.restartServer();
+            showToast(res.message, "warning", 10000);
+        } catch (err) {
+            showToast(`Restart request failed: ${err.message}`, "error");
+            shutdownBtn.disabled = false;
+            restartBtn.disabled = false;
+        }
+    });
+
+    applyBtn.addEventListener("click", async () => {
+        applyBtn.disabled = true;
+        select.dataset.busy = "1";
+        try {
+            const res = await API.setLogLevel(select.value);
+            select.value = res.level;
+            const levelSpan = document.getElementById("server-status-loglevel");
+            if (levelSpan) levelSpan.textContent = res.level;
+            showToast(`Log level set to ${res.level} (this process only)`, "success");
+        } catch (err) {
+            showToast(`Log level change failed: ${err.message}`, "error");
+        } finally {
+            delete select.dataset.busy;
+            applyBtn.disabled = false;
+        }
+    });
 }
 
 export async function renderStaleBranchesCard() {

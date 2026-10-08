@@ -46,6 +46,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use calxgloss_config::{FileConfig, GhidraSection, Layers, LlmSection, load};
+use calxgloss_web::LogLevelControl;
 use clap::Parser;
 use tracing::{debug, error, info};
 
@@ -83,8 +84,9 @@ use commands::verify::handle_verify;
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Initialize logging
-    init_logging(cli.verbose, &cli.log_format);
+    // Initialize logging — the returned handle controls the reloadable
+    // EnvFilter, shared into server state for `PATCH /api/server/log-level`.
+    let log_filter = LogLevelControl::new(init_logging(cli.verbose, &cli.log_format));
 
     // Effective tracing level, shared with serve/live so the server status
     // endpoint reports what logging init actually installed.
@@ -417,6 +419,7 @@ fn main() -> Result<()> {
                     no_callgraph,
                     callgraph_cache,
                     callgraph_verbose,
+                    None, // no stop signal — plain auto runs to completion
                 ))
         }
         Command::AutoShim { dll, skip_git } => {
@@ -450,7 +453,7 @@ fn main() -> Result<()> {
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_serve(workspace, port, log_level))
+                .block_on(handle_serve(workspace, port, log_level, log_filter))
         }
         Command::Live {
             target,
@@ -484,6 +487,7 @@ fn main() -> Result<()> {
                     callgraph_cache,
                     callgraph_verbose,
                     log_level,
+                    log_filter,
                 ))
         }
     };

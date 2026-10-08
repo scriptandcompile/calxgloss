@@ -3,8 +3,10 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use calxgloss::TranslationEvents;
-use calxgloss_web::{ServerState, SessionManager, build_router_with_ws, serve_with_listener};
+use calxgloss::{StopSignal, TranslationEvents};
+use calxgloss_web::{
+    LogLevelControl, ServerState, SessionManager, build_router_with_ws, serve_with_listener,
+};
 use tracing::{debug, error, info};
 
 use crate::Settings;
@@ -26,6 +28,7 @@ pub async fn handle_live(
     callgraph_cache: Option<PathBuf>,
     callgraph_verbose: bool,
     log_level: &'static str,
+    log_filter: LogLevelControl,
 ) -> Result<()> {
     info!(
         port,
@@ -70,8 +73,13 @@ pub async fn handle_live(
     // Progress state for live dashboard updates.
     let progress = calxgloss_web::ProgressState::new();
 
+    // Shared stop signal — the shutdown/restart endpoints flip it, and the
+    // pipeline observes it at unit boundaries.
+    let stop_signal = StopSignal::new();
+
     let serve_workspace = workspace.clone();
     let serve_progress = progress.clone();
+    let serve_stop = stop_signal.clone();
 
     let serve_handle = tokio::spawn(async move {
         let workspace = serve_workspace;
@@ -90,16 +98,24 @@ pub async fn handle_live(
             .unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], port)));
         let _ = ready_tx.send(Ok(local_addr));
 
-        let server_state = ServerState::new(workspace).with_log_level(log_level);
+        let server_state = ServerState::new(workspace)
+            .with_log_level(log_level)
+            .with_log_filter(log_filter)
+            .with_stop_signal(serve_stop);
 
         // Build the router with WebSocket support so the frontend can stream
         // progress events over the upgrade endpoint.
         let event_rx = events_clone.subscribe();
         let manager = SessionManager::new_with_broadcast(event_rx);
         let router = build_router_with_ws(server_state.clone(), manager, serve_progress);
-        let _ = serve_with_listener(listener, router).await.map_err(|e| {
-            error!("Review UI server error: {e}");
-        });
+        // Watch the state's shutdown flag so `POST /api/server/shutdown`
+        // (and `/restart`) stops the accept loop gracefully.
+        let shutdown = server_state.shutdown_signal();
+        let _ = serve_with_listener(listener, router, shutdown)
+            .await
+            .map_err(|e| {
+                error!("Review UI server error: {e}");
+            });
     });
 
     // Wait briefly for the server to signal readiness — fail fast if it
@@ -138,6 +154,7 @@ pub async fn handle_live(
         no_callgraph,
         callgraph_cache,
         callgraph_verbose,
+        Some(&stop_signal), // shutdown/restart endpoints pause at unit boundaries
     )
     .await;
 
@@ -151,8 +168,13 @@ pub async fn handle_live(
         Ok(()) => {
             println!();
             hsep_bold();
-            println_content("  Auto pipeline finished.");
-            println_content("  Review UI stopped.");
+            if stop_signal.is_stopped() {
+                println_content("  Stopped gracefully — current unit completed and saved.");
+                println_content("  Restart with the same command to continue the run.");
+            } else {
+                println_content("  Auto pipeline finished.");
+                println_content("  Review UI stopped.");
+            }
             hsep_bold();
             println!();
             Ok(())

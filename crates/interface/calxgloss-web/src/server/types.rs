@@ -379,6 +379,9 @@ pub enum ServerError {
 
     #[error("Bad request: {0}")]
     BadRequest(String),
+
+    #[error("Service unavailable: {0}")]
+    ServiceUnavailable(String),
 }
 
 // ─── Ghidra context types ──────────────────────────────────────────────
@@ -490,6 +493,10 @@ impl ServerError {
     pub fn bad_request(msg: &str) -> Self {
         Self::BadRequest(msg.to_string())
     }
+
+    pub fn unavailable(msg: &str) -> Self {
+        Self::ServiceUnavailable(msg.to_string())
+    }
 }
 
 impl axum::response::IntoResponse for ServerError {
@@ -498,6 +505,7 @@ impl axum::response::IntoResponse for ServerError {
             ServerError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
             ServerError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
             ServerError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
+            ServerError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg),
         };
 
         let body = serde_json::to_string(&serde_json::json!({
@@ -682,6 +690,48 @@ pub struct HealthResponse {
     pub uptime_secs: u64,
     /// Calxgloss version the server binary was built with.
     pub version: String,
+}
+
+/// Request body of `PATCH /api/server/log-level`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogLevelRequest {
+    /// Desired tracing level: off, error, warn, info, debug, or trace.
+    /// Anything else is rejected with 400.
+    pub level: String,
+}
+
+/// Response body of `PATCH /api/server/log-level` — the normalized level
+/// now active for this process. The change is process-lifetime only: it
+/// never persists across restarts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LogLevelResponse {
+    /// The log level now active.
+    pub level: String,
+}
+
+/// Lifecycle state the server entered after a shutdown or restart request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LifecycleStatus {
+    /// Graceful shutdown in progress: the server stops accepting requests
+    /// and a live pipeline pauses at the current unit boundary.
+    ShuttingDown,
+    /// Process is stopping after a restart request — the operator must
+    /// restart it manually.
+    Stopping,
+}
+
+/// Response body of the `POST /api/server/shutdown` and
+/// `POST /api/server/restart` lifecycle endpoints.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServerLifecycleResponse {
+    /// Lifecycle state the server entered.
+    pub status: LifecycleStatus,
+    /// Human-readable instruction for the operator.
+    pub message: String,
+    /// True for restart: the process stops and the operator must restart
+    /// it manually — the web server does not own the pipeline process.
+    pub restart_required: bool,
 }
 
 #[cfg(test)]

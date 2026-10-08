@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use calxgloss::DllCategory;
 use calxgloss::ProgressEvent;
+use calxgloss::StopSignal;
 use calxgloss::TranslationEvents;
 use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use calxgloss_git::BranchCreationPolicy;
@@ -40,6 +41,7 @@ pub async fn run_translation_for_dll(
     no_callgraph: bool,
     callgraph_cache: Option<PathBuf>,
     callgraph_verbose: bool,
+    stop: Option<&StopSignal>,
 ) -> Result<()> {
     // The workspace — git, src/, scratch all live here.
 
@@ -124,6 +126,9 @@ pub async fn run_translation_for_dll(
     }
     if let Some(events) = events {
         pipeline = pipeline.with_events(events.clone());
+    }
+    if let Some(stop) = stop {
+        pipeline = pipeline.with_stop_signal(stop.clone());
     }
     pipeline = pipeline.with_workspace(workspace);
 
@@ -313,6 +318,7 @@ pub async fn handle_auto(
     no_callgraph: bool,
     callgraph_cache: Option<PathBuf>,
     callgraph_verbose: bool,
+    stop: Option<&StopSignal>,
 ) -> Result<()> {
     info!("Auto mode: detecting project state");
 
@@ -445,6 +451,12 @@ pub async fn handle_auto(
         println!();
 
         for dll in &classified {
+            if stop.is_some_and(|s| s.is_stopped()) {
+                println!();
+                println_content("Stop requested — skipping remaining binaries.");
+                println_content("Work completed so far is saved; restart to continue.");
+                break;
+            }
             println!(
                 "  {} Translating functions from {}…",
                 cyan_bold("→"),
@@ -460,6 +472,7 @@ pub async fn handle_auto(
                 no_callgraph,
                 callgraph_cache.clone(),
                 callgraph_verbose,
+                stop,
             )
             .await?;
         }
@@ -505,6 +518,7 @@ pub async fn handle_auto(
             no_callgraph,
             callgraph_cache,
             callgraph_verbose,
+            stop,
         )
         .await?;
     }

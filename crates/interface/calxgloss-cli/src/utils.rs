@@ -68,31 +68,40 @@ pub(super) fn log_level_for_verbosity(verbosity: u8) -> &'static str {
 }
 
 /// Initialize tracing with the given verbosity level and format.
-pub(super) fn init_logging(verbosity: u8, format: &str) {
+///
+/// The `EnvFilter` is installed inside a `reload` layer so the web server's
+/// `PATCH /api/server/log-level` endpoint can change verbosity while the
+/// process runs; the returned handle is the control side of that layer and
+/// is shared into server state by `serve`/`live`.
+pub(super) fn init_logging(
+    verbosity: u8,
+    format: &str,
+) -> tracing_subscriber::reload::Handle<tracing_subscriber::EnvFilter, tracing_subscriber::Registry>
+{
     let level = log_level_for_verbosity(verbosity);
+    let (filter, handle) =
+        tracing_subscriber::reload::Layer::new(tracing_subscriber::EnvFilter::new(level));
 
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
     match format {
         "json" => {
-            tracing_subscriber::fmt()
-                .json()
-                .with_env_filter(level)
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(tracing_subscriber::fmt::layer().json())
                 .init();
         }
-        "text" => {
-            tracing_subscriber::fmt()
-                .with_target(false)
-                .with_env_filter(level)
-                .init();
-        }
+        // Text (and anything unrecognized) gets the human-readable layer.
         _ => {
-            tracing_subscriber::fmt()
-                .with_target(false)
-                .with_env_filter(level)
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(tracing_subscriber::fmt::layer().with_target(false))
                 .init();
         }
     };
 
     debug!("Logging initialized: level={}, format={}", level, format);
+    handle
 }
 
 // ============================================================

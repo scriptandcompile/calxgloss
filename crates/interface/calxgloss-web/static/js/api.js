@@ -22,6 +22,19 @@ export const API = {
         return res.json();
     },
 
+    async patch(path, body) {
+        const res = await fetch(path, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: body ? JSON.stringify(body) : undefined,
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ message: res.statusText }));
+            throw new Error(err.message || `API ${res.status}`);
+        }
+        return res.json();
+    },
+
     async dashboard() { return API.get("/api/dashboard"); },
     async unit(id) { return API.get(`/api/units/${encodeURIComponent(id)}`); },
     async unitDiff(id) { return API.get(`/api/units/${encodeURIComponent(id)}/diff`); },
@@ -34,6 +47,9 @@ export const API = {
     async graph() { return API.get("/api/graph"); },
     async health() { return API.get("/health"); },
     async serverStatus() { return API.get("/api/server/status"); },
+    async shutdownServer() { return API.post("/api/server/shutdown"); },
+    async restartServer() { return API.post("/api/server/restart"); },
+    async setLogLevel(level) { return API.patch("/api/server/log-level", { level }); },
     async pipeline() { return API.get("/api/pipeline"); },
     async gcCandidates(days) { return API.get(`/api/gc/candidates?days=${days}`); },
     async gcArchive(branches) { return API.post("/api/gc/archive", branches.length > 0 ? { branches } : {}); },

@@ -231,7 +231,7 @@ show pipeline position, context tiers, faults/recovery, token cost, or any
 process control (archive §12 "Current State Summary").
 
 - Phase 0 — server management endpoints: `/api/server/status` (done), enhanced
-  `/health` (done), shutdown/restart, `PATCH /api/server/log-level`. **Router note:**
+  `/health` (done), shutdown/restart (done), `PATCH /api/server/log-level` (done). **Router note:**
   `/api/pipeline` and `/api/progress` exist only in the WS router
   (`calxgloss live`); every new endpoint must state which router(s) it
   registers in.
