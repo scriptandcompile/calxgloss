@@ -14,6 +14,7 @@
         </div>
         <nav id="nav-tabs">
             <button class="nav-tab active" data-view="dashboard">Dashboard</button>
+            <button class="nav-tab" data-view="live">Live</button>
             <button class="nav-tab" data-view="queue">Review Queue</button>
             <button class="nav-tab" data-view="graph">Dependency Graph</button>
             <button class="nav-tab" data-view="gc">Branch Cleanup</button>
@@ -66,6 +67,18 @@
                     </div>
                     <div id="activity-list" class="activity-list"></div>
                 </div>
+            </div>
+        </section>
+
+        <!-- Live translation view (in-flight units, issue #65) -->
+        <section id="view-live" class="view">
+            <div class="view-header">
+                <h2>Live Translation</h2>
+                <span id="live-summary" class="badge"></span>
+            </div>
+            <div id="live-units" class="live-units"></div>
+            <div id="live-empty" class="empty-state" style="display:none">
+                <p id="live-empty-message"></p>
             </div>
         </section>
 

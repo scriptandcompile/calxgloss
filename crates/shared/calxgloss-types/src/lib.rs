@@ -20,6 +20,9 @@
 //! - [`persist`] — Shared JSON persistence plumbing (`JsonStore`, `save_json`/`load_json`)
 //! - [`pipeline_phase`] — Pipeline phase progress records (`PipelinePhase`,
 //!   `PhaseProgress`, `BinaryProgress`) for the whole-effort dashboard
+//! - [`live_translation`] — Live translation records (`LiveTranslationState`,
+//!   `LiveUnitProgress`, `PassStatus`) for what the pipeline is doing to each
+//!   in-flight unit right now
 //! - [`error`] — Unified error type (`TypesError`)
 
 pub mod complexity;
@@ -33,6 +36,7 @@ pub mod experiment_log;
 pub mod fault;
 pub mod function;
 pub mod git;
+pub mod live_translation;
 pub mod persist;
 pub mod pipeline_phase;
 pub mod progress;
@@ -63,6 +67,9 @@ pub use fault::{
 };
 pub use function::{ApiCategory, FunctionInfo, NodeCategory, WindowsApiCall};
 pub use git::{GitBranch, GitCommit};
+pub use live_translation::{
+    LiveTranslationState, LiveUnitProgress, PassState, PassStatus, derive_unit_confidence,
+};
 pub use persist::{JsonStore, PersistError, analysis_dir, load_json, save_json};
 pub use pipeline_phase::{BinaryProgress, PhaseProgress, PhaseState, PipelinePhase};
 pub use progress::{PhaseRecord, ProgressEvent, StopSignal, TranslationEvents, TranslationPhase};

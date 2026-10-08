@@ -2042,6 +2042,214 @@ async fn test_progress_reports_phase_history() {
     );
 }
 
+/// Issue #65: `/api/progress/enhanced` serves the live view's per-unit records
+/// from the same canned event stream `/api/progress` reads — phase and elapsed
+/// time plus context tier, retry strategy, attempt, baseline/verification pass
+/// status, and derived unit confidence. Covers the three evidence shapes the
+/// live view must tell apart: a unit with full evidence still in flight, a
+/// completed unit with no test evidence reported, and a failed unit whose
+/// verified attempt did not compile (confidence 0.0, not absent).
+#[tokio::test]
+async fn test_progress_enhanced_reports_live_records() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state.clone(), manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    for event in [
+        // DrawPrimitive: full evidence, still in flight.
+        ProgressEvent::TranslationStarted {
+            dll: "game_logic".into(),
+            function: "DrawPrimitive".into(),
+        },
+        ProgressEvent::TestsGenerated {
+            dll: "game_logic".into(),
+            function: "DrawPrimitive".into(),
+            test_count: 5,
+        },
+        ProgressEvent::ContextTierSelected {
+            dll: "game_logic".into(),
+            function: "DrawPrimitive".into(),
+            tier: "T2".into(),
+            tier_label: "with_tests".into(),
+            complexity: "Medium".into(),
+            api_call_count: 3,
+        },
+        ProgressEvent::LlmCallStart {
+            dll: "game_logic".into(),
+            function: "DrawPrimitive".into(),
+            attempt: 2,
+            strategy: "decompose".into(),
+        },
+        ProgressEvent::TranslationAttemptCompleted {
+            dll: "game_logic".into(),
+            function: "DrawPrimitive".into(),
+            attempt: 2,
+            success: false,
+            compiled: true,
+            tests_passed: 4,
+            tests_total: 5,
+            compilation_errors: vec![],
+            failed_tests: vec![],
+            strategy: "decompose".into(),
+            tokens_used: None,
+        },
+        ProgressEvent::BehaviorDivergenceDetected {
+            dll: "game_logic".into(),
+            function: "DrawPrimitive".into(),
+            attempt: 2,
+            strategy: "decompose".into(),
+            baseline_passed: 4,
+            baseline_total: 5,
+            edge_tests_passed: 2,
+            edge_tests_total: 3,
+            failing_edge_cases: vec!["null_handle".into()],
+            fault_confidence: 8,
+        },
+        // Update: completed without any test evidence reported — every
+        // unmeasured field must stay absent, not become a fabricated zero.
+        ProgressEvent::TranslationStarted {
+            dll: "game_logic".into(),
+            function: "Update".into(),
+        },
+        ProgressEvent::TranslationCompleted {
+            dll: "game_logic".into(),
+            function: "Update".into(),
+            total_attempts: 1,
+            success_strategy: Some("direct".into()),
+        },
+        // FailedUnit: a verified attempt that did not compile — confidence is
+        // a real 0.0, not absent.
+        ProgressEvent::TranslationStarted {
+            dll: "kernel32".into(),
+            function: "FailedUnit".into(),
+        },
+        ProgressEvent::LlmCallStart {
+            dll: "kernel32".into(),
+            function: "FailedUnit".into(),
+            attempt: 1,
+            strategy: "direct".into(),
+        },
+        ProgressEvent::TranslationAttemptCompleted {
+            dll: "kernel32".into(),
+            function: "FailedUnit".into(),
+            attempt: 1,
+            success: false,
+            compiled: false,
+            tests_passed: 0,
+            tests_total: 3,
+            compilation_errors: vec!["unresolved symbol".into()],
+            failed_tests: vec![],
+            strategy: "direct".into(),
+            tokens_used: None,
+        },
+        ProgressEvent::TranslationFailed {
+            dll: "kernel32".into(),
+            function: "FailedUnit".into(),
+            total_attempts: 1,
+        },
+    ] {
+        events.emit(event);
+    }
+    // The callback spawns a task per event; give them time to land.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let resp = reqwest::get(format!(
+        "http://127.0.0.1:{}/api/progress/enhanced",
+        fixture.port()
+    ))
+    .await
+    .expect("enhanced progress request succeeds");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+
+    assert_eq!(body["count"].as_u64(), Some(3));
+    assert_eq!(body["in_flight"].as_u64(), Some(1));
+
+    // Sorted by (dll, function) so the live view doesn't shuffle rows.
+    let units = body["units"].as_array().expect("units is an array");
+    let keys: Vec<(&str, &str)> = units
+        .iter()
+        .map(|u| {
+            (
+                u["dll"].as_str().unwrap_or_default(),
+                u["function"].as_str().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        keys,
+        vec![
+            ("game_logic", "DrawPrimitive"),
+            ("game_logic", "Update"),
+            ("kernel32", "FailedUnit"),
+        ]
+    );
+
+    let unit = |function: &str| -> serde_json::Value {
+        units
+            .iter()
+            .find(|u| u["function"] == function)
+            .cloned()
+            .unwrap_or_else(|| panic!("{function} unit present"))
+    };
+
+    let draw = unit("DrawPrimitive");
+    assert_eq!(draw["phase"].as_str(), Some("testing"));
+    assert!(draw["elapsed_secs"].as_f64().unwrap_or(-1.0) >= 0.0);
+    assert_eq!(draw["attempt"].as_u64(), Some(2));
+    assert_eq!(draw["retry_strategy"].as_str(), Some("decompose"));
+    assert_eq!(draw["context_tier"].as_str(), Some("T2"));
+    assert_eq!(draw["tier_label"].as_str(), Some("with_tests"));
+    assert_eq!(draw["baseline"]["state"].as_str(), Some("failed"));
+    assert_eq!(draw["baseline"]["passed"].as_u64(), Some(4));
+    assert_eq!(draw["baseline"]["total"].as_u64(), Some(5));
+    assert_eq!(draw["verification"]["state"].as_str(), Some("failed"));
+    assert_eq!(draw["verification"]["passed"].as_u64(), Some(2));
+    assert_eq!(draw["verification"]["total"].as_u64(), Some(3));
+    assert_eq!(draw["compiled"].as_bool(), Some(true));
+    assert_eq!(draw["unit_confidence"].as_f64(), Some(0.8));
+    assert_eq!(draw["finished"].as_bool(), Some(false));
+    assert!(
+        draw.get("succeeded").is_none(),
+        "an in-flight unit never looks succeeded or failed: {draw}"
+    );
+
+    let update = unit("Update");
+    assert_eq!(update["phase"].as_str(), Some("review"));
+    assert_eq!(update["finished"].as_bool(), Some(true));
+    assert_eq!(update["succeeded"].as_bool(), Some(true));
+    assert_eq!(update["baseline"]["state"].as_str(), Some("not_run"));
+    assert_eq!(update["verification"]["state"].as_str(), Some("not_run"));
+    for key in [
+        "retry_strategy",
+        "context_tier",
+        "compiled",
+        "unit_confidence",
+    ] {
+        assert!(
+            update.get(key).is_none(),
+            "{key} was never reported for Update: {update}"
+        );
+    }
+
+    let failed = unit("FailedUnit");
+    assert_eq!(failed["finished"].as_bool(), Some(true));
+    assert_eq!(failed["succeeded"].as_bool(), Some(false));
+    assert_eq!(failed["compiled"].as_bool(), Some(false));
+    assert_eq!(
+        failed["unit_confidence"].as_f64(),
+        Some(0.0),
+        "a verified attempt that did not compile has confidence 0.0"
+    );
+    assert_eq!(failed["baseline"]["state"].as_str(), Some("failed"));
+}
+
 /// Route-table contract: endpoints that read live translation state are
 /// registered **only** in the WebSocket (live) router. On the plain serve
 /// router and the actions router they must fall through to the static 404,
@@ -2063,7 +2271,11 @@ async fn test_live_only_endpoints_absent_from_non_live_routers() {
 
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        for path in ["/api/progress", "/api/events/upgrade"] {
+        for path in [
+            "/api/progress",
+            "/api/progress/enhanced",
+            "/api/events/upgrade",
+        ] {
             let resp = reqwest::get(format!("http://127.0.0.1:{}{}", fixture.port(), path))
                 .await
                 .expect("request reaches server");
@@ -3489,6 +3701,248 @@ async fn test_headless_pipeline_estimate_and_queue_effort() {
     assert!(
         effort_rendered,
         "queue effort column should show an estimate for the unit, got: {effort_text:?}"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for the live translation view (issue #65): in live
+/// mode the Live tab must render one progress bar per in-flight unit, labeled
+/// with its current phase and the evidence the live stream reported — tier,
+/// strategy, attempt, baseline/verification status, confidence — and must
+/// update the row when a later event lands over the WebSocket.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_live_view_renders_and_updates() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // One unit mid-flight with tier, strategy, and pending baseline evidence.
+    for event in [
+        ProgressEvent::TranslationStarted {
+            dll: "game_logic".into(),
+            function: "DrawPrimitive".into(),
+        },
+        ProgressEvent::TestsGenerated {
+            dll: "game_logic".into(),
+            function: "DrawPrimitive".into(),
+            test_count: 3,
+        },
+        ProgressEvent::ContextTierSelected {
+            dll: "game_logic".into(),
+            function: "DrawPrimitive".into(),
+            tier: "T2".into(),
+            tier_label: "with_tests".into(),
+            complexity: "Medium".into(),
+            api_call_count: 3,
+        },
+        ProgressEvent::LlmCallStart {
+            dll: "game_logic".into(),
+            function: "DrawPrimitive".into(),
+            attempt: 2,
+            strategy: "decompose".into(),
+        },
+    ] {
+        events.emit(event);
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+    let eval_len = |expr: &str| -> i64 {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_i64())
+            .unwrap_or(-1)
+    };
+    let eval_text = |expr: &str| -> String {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default()
+    };
+
+    // Switch to the Live tab.
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"live\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click live tab");
+
+    // The row renders asynchronously once the enhanced-progress fetch settles;
+    // poll until the unit appears (up to ~5 seconds).
+    let mut rendered = false;
+    for _ in 0..25 {
+        if eval_len(
+            "document.querySelectorAll('#live-units .live-unit[data-function=\"DrawPrimitive\"]').length",
+        ) == 1
+        {
+            rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        rendered,
+        "live view should render one row for the in-flight unit, rows: {}",
+        eval_len("document.querySelectorAll('#live-units .live-unit').length")
+    );
+
+    // The row carries the phase label and the evidence the stream reported.
+    let row = "#live-units .live-unit[data-function=\"DrawPrimitive\"]";
+    let row_text = |suffix: &str| -> String {
+        eval_text(&format!("document.querySelector('{row}')?{suffix} || ''"))
+    };
+    assert_eq!(
+        row_text(".querySelector('.live-phase')?.textContent"),
+        "LLM Call",
+        "phase label should read LLM Call"
+    );
+    let meta = row_text(".querySelector('.live-unit-meta')?.textContent");
+    assert!(meta.contains("T2"), "tier visible, got: {meta}");
+    assert!(meta.contains("decompose"), "strategy visible, got: {meta}");
+    assert!(meta.contains("attempt: 2"), "attempt visible, got: {meta}");
+    assert!(
+        meta.contains("baseline: 3 queued"),
+        "pending baseline shown as queued, not 0 passed, got: {meta}"
+    );
+    assert!(
+        meta.contains("verification: not run"),
+        "unmeasured verification says not run, got: {meta}"
+    );
+    assert!(
+        meta.contains("confidence: —"),
+        "unverified unit has no confidence, got: {meta}"
+    );
+    // The elapsed clock is live, not a frozen placeholder.
+    let elapsed = row_text(".querySelector('.live-elapsed')?.textContent");
+    assert!(
+        elapsed.ends_with('s') && elapsed != "s",
+        "elapsed clock rendered, got: {elapsed}"
+    );
+
+    // A later event over the WebSocket must update the same row: the attempt
+    // verifies (confidence 100%) and the unit completes (phase Review).
+    events.emit(ProgressEvent::TranslationAttemptCompleted {
+        dll: "game_logic".into(),
+        function: "DrawPrimitive".into(),
+        attempt: 2,
+        success: true,
+        compiled: true,
+        tests_passed: 3,
+        tests_total: 3,
+        compilation_errors: vec![],
+        failed_tests: vec![],
+        strategy: "decompose".into(),
+        tokens_used: None,
+    });
+    events.emit(ProgressEvent::TranslationCompleted {
+        dll: "game_logic".into(),
+        function: "DrawPrimitive".into(),
+        total_attempts: 2,
+        success_strategy: Some("decompose".into()),
+    });
+
+    let mut updated = false;
+    for _ in 0..25 {
+        if eval_bool(&format!(
+            "(() => {{ const r = document.querySelector('{row}'); \
+                return !!r && r.classList.contains('finished-ok') && \
+                    r.querySelector('.live-phase')?.textContent === 'Review'; }})()"
+        )) {
+            updated = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(updated, "row should update to Review/finished over the WS");
+    let meta = row_text(".querySelector('.live-unit-meta')?.textContent");
+    assert!(
+        meta.contains("baseline: 3/3 ✓"),
+        "verified baseline visible after update, got: {meta}"
+    );
+    assert!(
+        meta.contains("confidence: 100%"),
+        "confidence appears once an attempt verifies, got: {meta}"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser honesty test for the live translation view (issue #65):
+/// outside `calxgloss live` the enhanced endpoint is not routed, so the Live
+/// tab must say the live view needs a running pipeline — never render an
+/// empty list that masquerades as an idle run.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_live_view_honest_without_live_mode() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"live\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click live tab");
+
+    // The honest empty state must appear (poll up to ~5 seconds).
+    let mut announced = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "(() => { const e = document.getElementById('live-empty'); \
+                return !!e && e.style.display !== 'none' && \
+                    e.textContent.includes('calxgloss live'); })()",
+        ) {
+            announced = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        announced,
+        "plain serve must announce that the live view needs calxgloss live"
+    );
+    assert!(
+        !eval_bool("document.querySelector('#live-units .live-unit') !== null"),
+        "no fabricated unit rows outside live mode"
     );
 
     tab.close_target().ok();

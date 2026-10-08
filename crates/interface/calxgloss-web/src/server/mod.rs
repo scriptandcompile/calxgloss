@@ -272,6 +272,25 @@ pub struct ProgressEntry {
     /// terminal event (`TranslationCompleted` / `TranslationFailed` /
     /// `FunctionCompleted`) says so, so an unfinished unit never looks failed.
     pub succeeded: Option<bool>,
+    /// Context tier the current attempt runs at — `None` until a
+    /// `ContextTierSelected` event names one (re-emitted on tier escalation).
+    pub context_tier: Option<String>,
+    /// Human-readable tier label from the same event.
+    pub tier_label: Option<String>,
+    /// Baseline tests that passed in the latest verified attempt — `None` until
+    /// a `TranslationAttemptCompleted` reports a run.
+    pub baseline_tests_passed: Option<usize>,
+    /// Baseline tests for the unit — from `TestsGenerated`, then from the
+    /// verified attempt's own count, whichever landed last.
+    pub baseline_tests_total: Option<usize>,
+    /// Edge-case (verification) tests that passed — `None` until the
+    /// behavior-divergence detector runs them.
+    pub verification_tests_passed: Option<usize>,
+    /// Edge-case (verification) tests the detector ran.
+    pub verification_tests_total: Option<usize>,
+    /// Whether the latest verified attempt compiled — `None` until an attempt
+    /// has been verified.
+    pub compiled: Option<bool>,
     pub last_event_at: std::time::Instant,
 }
 
@@ -365,34 +384,43 @@ impl ProgressState {
         };
         let key = format!("{dll}/{function}");
 
-        // A started unit begins in the phase its first event derives.
-        if let ProgressEvent::TranslationStarted { dll, function } = event {
-            // TranslationStarted always derives GhidraFetch (unit-tested);
+        // The unit's record begins with the first event that names it. That is
+        // normally `TranslationStarted`, but the event callback spawns one task
+        // per event and they race for the write lock, so any unit-scoped event
+        // may legitimately arrive first — dropping it (as `get_mut` did) loses
+        // real evidence, so create the record instead. `TranslationStarted`
+        // then finds the record already there and never clobbers it.
+        let entry = entries.entry(key).or_insert_with(|| {
+            // A started unit begins in the phase its first event derives.
+            // `TranslationStarted` always derives GhidraFetch (unit-tested);
             // fall back to it rather than panic if that ever changes.
             let phase =
                 TranslationPhase::from_event(event).unwrap_or(TranslationPhase::GhidraFetch);
-            entries.insert(
-                key,
-                ProgressEntry {
-                    dll: dll.clone(),
-                    function: function.clone(),
-                    attempt: 1,
-                    strategy: String::new(),
-                    started_at: std::time::Instant::now(),
+            ProgressEntry {
+                dll: dll.to_string(),
+                function: function.to_string(),
+                attempt: 1,
+                strategy: String::new(),
+                started_at: std::time::Instant::now(),
+                phase,
+                phase_history: vec![PhaseRecord {
                     phase,
-                    phase_history: vec![PhaseRecord {
-                        phase,
-                        elapsed_secs: 0.0,
-                    }],
-                    finished: false,
-                    succeeded: None,
-                    last_event_at: std::time::Instant::now(),
-                },
-            );
-            return;
-        }
+                    elapsed_secs: 0.0,
+                }],
+                finished: false,
+                succeeded: None,
+                context_tier: None,
+                tier_label: None,
+                baseline_tests_passed: None,
+                baseline_tests_total: None,
+                verification_tests_passed: None,
+                verification_tests_total: None,
+                compiled: None,
+                last_event_at: std::time::Instant::now(),
+            }
+        });
 
-        if let Some(entry) = entries.get_mut(&key) {
+        {
             entry.last_event_at = std::time::Instant::now();
 
             // Record the phase the event moves the unit into; re-entering the
@@ -415,6 +443,44 @@ impl ProgressState {
                 } => {
                     entry.attempt = *attempt;
                     entry.strategy = strategy.clone();
+                }
+                // The tier the current attempt runs at; re-emitted on tier
+                // escalation, so the latest one wins.
+                ProgressEvent::ContextTierSelected {
+                    tier, tier_label, ..
+                } => {
+                    entry.context_tier = Some(tier.clone());
+                    entry.tier_label = Some(tier_label.clone());
+                }
+                // Baseline tests exist once they are generated; the verified
+                // attempt then reports how many of them passed.
+                ProgressEvent::TestsGenerated { test_count, .. } => {
+                    entry.baseline_tests_total = Some(*test_count);
+                }
+                ProgressEvent::TranslationAttemptCompleted {
+                    compiled,
+                    tests_passed,
+                    tests_total,
+                    ..
+                } => {
+                    entry.compiled = Some(*compiled);
+                    entry.baseline_tests_passed = Some(*tests_passed);
+                    entry.baseline_tests_total = Some(*tests_total);
+                }
+                // The behavior-divergence detector re-runs the baseline plus
+                // generated edge-case tests; its counts are the only live
+                // source for the verification class.
+                ProgressEvent::BehaviorDivergenceDetected {
+                    baseline_passed,
+                    baseline_total,
+                    edge_tests_passed,
+                    edge_tests_total,
+                    ..
+                } => {
+                    entry.baseline_tests_passed = Some(*baseline_passed);
+                    entry.baseline_tests_total = Some(*baseline_total);
+                    entry.verification_tests_passed = Some(*edge_tests_passed);
+                    entry.verification_tests_total = Some(*edge_tests_total);
                 }
                 ProgressEvent::TranslationCompleted { .. } => {
                     entry.finished = true;
@@ -559,6 +625,10 @@ fn shared_routes() -> Router<CombinedState> {
 fn live_only_routes() -> Router<CombinedState> {
     Router::new()
         .route("/api/progress", get(handlers::api_get_progress))
+        .route(
+            "/api/progress/enhanced",
+            get(handlers::api_get_progress_enhanced),
+        )
         .route("/api/events/upgrade", get(api_events_upgrade_ws))
 }
 
@@ -615,15 +685,20 @@ pub fn build_router_with_ws(
 ) -> Router {
     // Wire the session manager's callback so that every translation
     // progress event also updates the in-memory ProgressState.
+    //
+    // Events are handed to one consumer task over a channel rather than
+    // spawning a task per event: per-event tasks raced for the state lock
+    // and applied events out of order, so a unit's final state depended on
+    // task scheduling instead of event order.
     let progress_clone = progress.clone();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<calxgloss_types::ProgressEvent>();
+    tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            progress_clone.on_event(&event).await;
+        }
+    });
     manager.set_event_callback(move |event| {
-        // Run the async update on a blocking thread since on_event
-        // uses tokio::sync::RwLock (non-blocking).
-        let p = progress_clone.clone();
-        let evt = event.clone();
-        tokio::spawn(async move {
-            p.on_event(&evt).await;
-        });
+        let _ = tx.send(event.clone());
     });
 
     assemble(CombinedState {

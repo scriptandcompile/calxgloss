@@ -55,17 +55,18 @@ verified still open in the code (2026-10-08); no effort estimates yet.
 
 ## W0 — Web UI Foundation & Phase Progress (`calxgloss-web`)
 
-Independent; first web track. Phases 0–2 are done (server management
+Independent; first web track. Phases 0–3 are done (server management
 endpoints, pipeline phase bar, per-binary rows, in-flight unit phases, unit
-process detail — shipped under epic #55, see `CHANGELOG.md`). Remaining:
+process detail, live translation view — shipped under epic #55, see
+`CHANGELOG.md`). Remaining:
 
 - Phase 2 (tail) — WS phase events (push per-unit phase history over the
   WebSocket).
-- Phase 3 — live translation view (`/api/progress/enhanced`, `LiveView`).
 - Phase 4 — dashboard enhancements.
 
-**Router note:** `/api/progress` and the WS upgrade exist only in the WS
-router (`calxgloss live`); `/api/pipeline` is shared — it serves an honest
+**Router note:** `/api/progress`, `/api/progress/enhanced`, and the WS
+upgrade exist only in the WS router (`calxgloss live`); `/api/pipeline` is
+shared — it serves an honest
 empty payload on plain `serve` (issue #61). Every new endpoint must state
 which router(s) it registers in.
 

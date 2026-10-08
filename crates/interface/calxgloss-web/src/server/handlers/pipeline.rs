@@ -7,7 +7,8 @@ use super::super::{
 
 use axum::{Json, extract::State};
 use calxgloss_types::{
-    BinaryProgress, PhaseProgress, PhaseState, PipelinePhase, TokenUsageLog, TranslationPhase,
+    BinaryProgress, LiveTranslationState, LiveUnitProgress, PassStatus, PhaseProgress, PhaseState,
+    PipelinePhase, TokenUsageLog, TranslationPhase, derive_unit_confidence,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -40,6 +41,71 @@ pub async fn api_get_progress(State(combined): State<CombinedState>) -> Json<Pro
 
     let count = in_progress.len();
     Json(ProgressResponse { in_progress, count })
+}
+
+/// Handle GET /api/progress/enhanced — the live view's per-unit records.
+///
+/// Where `/api/progress` answers "which units are in flight and what phase are
+/// they in", this answers what the live view needs to show the pipeline
+/// working: per-unit phase and elapsed time plus context tier, retry strategy,
+/// attempt, baseline/verification pass status, and unit confidence. The records
+/// are the shared [`LiveTranslationState`] ones, so W2/W3 can consume them
+/// without depending on the web crate.
+///
+/// Registered in the **live router only** (see [`super::super::live_only_routes`]):
+/// outside `calxgloss live` there is no live translation state, and an empty
+/// payload here would be indistinguishable from an idle run.
+pub async fn api_get_progress_enhanced(
+    State(combined): State<CombinedState>,
+) -> Json<LiveTranslationState> {
+    let progress = match &combined.progress {
+        Some(p) => p,
+        None => return LiveTranslationState::empty().into(),
+    };
+
+    let entries = progress.read().await.snapshot().await;
+    let mut units: Vec<LiveUnitProgress> = entries
+        .values()
+        .map(|e| {
+            let elapsed = e.started_at.elapsed().as_secs_f64();
+            let baseline =
+                PassStatus::from_optional_counts(e.baseline_tests_passed, e.baseline_tests_total);
+            let verification = PassStatus::from_optional_counts(
+                e.verification_tests_passed,
+                e.verification_tests_total,
+            );
+            LiveUnitProgress {
+                dll: e.dll.clone(),
+                function: e.function.clone(),
+                phase: e.phase,
+                phase_history: e.phase_history.clone(),
+                elapsed_secs: (elapsed * 1000.0).round() / 1000.0,
+                attempt: e.attempt,
+                // An entry starts with an empty strategy; no strategy named yet
+                // means none to report, not a blank one.
+                retry_strategy: (!e.strategy.is_empty()).then(|| e.strategy.clone()),
+                context_tier: e.context_tier.clone(),
+                tier_label: e.tier_label.clone(),
+                baseline: baseline.clone(),
+                verification,
+                compiled: e.compiled,
+                unit_confidence: derive_unit_confidence(e.compiled, &baseline),
+                finished: e.finished,
+                succeeded: e.succeeded,
+            }
+        })
+        .collect();
+
+    // Stable order so the live view doesn't shuffle rows between refreshes.
+    units.sort_by(|a, b| a.dll.cmp(&b.dll).then_with(|| a.function.cmp(&b.function)));
+
+    let count = units.len();
+    let in_flight = units.iter().filter(|u| !u.finished).count();
+    Json(LiveTranslationState {
+        units,
+        count,
+        in_flight,
+    })
 }
 
 /// Handle GET /api/pipeline — return overall pipeline progress.

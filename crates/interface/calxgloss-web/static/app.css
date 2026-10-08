@@ -2256,3 +2256,111 @@ svg {
 .status-card.stale_branches .status-card-label {
     color: var(--accent-red);
 }
+
+/* ─── Live Translation View (issue #65) ─────────────────────────────── */
+
+.live-units {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: calc(100vh - var(--topbar-h) - 140px);
+    overflow-y: auto;
+}
+
+.live-unit {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 10px 14px;
+}
+
+.live-unit.in-flight {
+    border-color: var(--accent-cyan);
+}
+
+.live-unit.finished-ok {
+    border-color: var(--accent-green-dim);
+}
+
+.live-unit.finished-fail {
+    border-color: var(--accent-red-dim);
+}
+
+.live-unit-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.live-unit-name {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.live-unit-bar {
+    height: 6px;
+    margin: 8px 0;
+    background: var(--bg-inset, rgba(255, 255, 255, 0.06));
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.live-unit-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    background: var(--accent-cyan);
+    transition: width 0.4s ease;
+}
+
+.live-unit-bar-fill.phase-review { background: var(--accent-green); }
+.live-unit-bar-fill.phase-testing { background: var(--accent-yellow); }
+.live-unit-bar-fill.phase-compiling { background: var(--accent-orange); }
+.live-unit-bar-fill.phase-llm_call { background: var(--accent-purple); }
+
+.live-unit-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.live-chip {
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-secondary);
+}
+
+.live-phase {
+    background: var(--accent-blue-dim);
+    color: var(--accent-blue);
+}
+
+.live-elapsed {
+    color: var(--text-muted);
+}
+
+.pass-chip.state-passed {
+    background: var(--accent-green-dim);
+    color: var(--accent-green);
+}
+
+.pass-chip.state-failed {
+    background: var(--accent-red-dim);
+    color: var(--accent-red);
+}
+
+.pass-chip.state-pending {
+    background: var(--accent-yellow-dim);
+    color: var(--accent-yellow);
+}
+
+.pass-chip.state-not_run {
+    color: var(--text-muted);
+}
+
+.live-confidence {
+    color: var(--text-primary);
+}

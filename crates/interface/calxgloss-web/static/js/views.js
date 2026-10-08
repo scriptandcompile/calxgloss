@@ -5,6 +5,7 @@
 import { State } from "./state.js";
 import { renderFullQueue } from "./queue.js";
 import { loadGcCandidates } from "./gc.js";
+import { startLiveView, stopLiveView } from "./live.js";
 
 export function switchView(viewName) {
     State.currentView = viewName;
@@ -36,5 +37,12 @@ export function switchView(viewName) {
     // Load GC candidates when switching to the GC view
     if (viewName === "gc") {
         loadGcCandidates();
+    }
+
+    // Live view: fetch on entry, tick elapsed clocks while visible.
+    if (viewName === "live") {
+        startLiveView();
+    } else {
+        stopLiveView();
     }
 }

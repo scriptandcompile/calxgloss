@@ -26,6 +26,7 @@ import { GraphRenderer } from "./js/graph.js";
 import { WSManager } from "./js/ws.js";
 import { addLlmLogEntry, clearLlmLog } from "./js/llm-log.js";
 import { loadGcCandidates, archiveSelectedGc } from "./js/gc.js";
+import { loadLiveProgress } from "./js/live.js";
 import { showToast } from "./js/ui.js";
 
 // ─── Event Handlers ─────────────────────────────────────────────────────
@@ -251,6 +252,11 @@ function handleWSMessage(event) {
 
     // Silently refresh dashboard data on any progress event
     loadDashboard();
+
+    // And the live view's per-unit records while that tab is open.
+    if (State.currentView === "live") {
+        loadLiveProgress();
+    }
 }
 
 // ─── Zoom indicator display ─────────────────────────────────────────────

@@ -51,6 +51,7 @@ export const API = {
     async restartServer() { return API.post("/api/server/restart"); },
     async setLogLevel(level) { return API.patch("/api/server/log-level", { level }); },
     async pipeline() { return API.get("/api/pipeline"); },
+    async liveProgress() { return API.get("/api/progress/enhanced"); },
     async gcCandidates(days) { return API.get(`/api/gc/candidates?days=${days}`); },
     async gcArchive(branches) { return API.post("/api/gc/archive", branches.length > 0 ? { branches } : {}); },
 };
