@@ -380,6 +380,9 @@ pub enum ServerError {
     #[error("Bad request: {0}")]
     BadRequest(String),
 
+    /// The endpoint is reachable but the server cannot perform the action —
+    /// e.g. `PATCH /api/server/log-level` on a server started without a
+    /// reloadable log filter.
     #[error("Service unavailable: {0}")]
     ServiceUnavailable(String),
 }
@@ -494,8 +497,18 @@ impl ServerError {
         Self::BadRequest(msg.to_string())
     }
 
+    /// Build a 503 — the action is valid but this server cannot perform it.
     pub fn unavailable(msg: &str) -> Self {
         Self::ServiceUnavailable(msg.to_string())
+    }
+}
+
+impl From<super::lifecycle::LifecycleError> for ServerError {
+    /// A failed filter reload means the process's logging setup is broken,
+    /// which the operator cannot fix by changing the request — an internal
+    /// error carrying the reload failure.
+    fn from(err: super::lifecycle::LifecycleError) -> Self {
+        ServerError::Internal(err.to_string())
     }
 }
 

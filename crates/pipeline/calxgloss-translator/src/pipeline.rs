@@ -2685,7 +2685,7 @@ mod tests {
     /// result is persisted by the caller) and no further unit starts.
     #[tokio::test]
     async fn batch_translate_breaks_at_unit_boundary_when_stop_is_requested() {
-        let dir = TempDir::new().unwrap();
+        let dir = TempDir::new().expect("temp workspace");
         let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
 
         let stop = StopSignal::new();

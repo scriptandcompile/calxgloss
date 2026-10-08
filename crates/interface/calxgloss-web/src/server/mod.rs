@@ -11,7 +11,7 @@ mod types;
 
 pub use self::actions::*;
 pub use self::handlers::*;
-pub use self::lifecycle::{LifecycleError, LogLevelControl};
+pub use self::lifecycle::{LifecycleError, LogLevel, LogLevelControl};
 pub use self::types::*;
 pub use events::{EventsBridge, SessionManager, WebSocketHandler};
 
@@ -129,20 +129,19 @@ impl ServerState {
     ///
     /// Returns the normalized level name now active.
     pub fn set_log_level(&self, level: &str) -> Result<String, ServerError> {
-        let normalized = LogLevelControl::validate(level).ok_or_else(|| {
+        let normalized = LogLevel::parse(level).ok_or_else(|| {
             ServerError::bad_request(&format!(
                 "invalid log level '{level}'; valid levels: {}",
-                self::lifecycle::VALID_LOG_LEVELS.join(", ")
+                LogLevel::names().join(", ")
             ))
         })?;
         let filter = self.log_filter.as_ref().ok_or_else(|| {
             ServerError::unavailable("this server has no reloadable log filter attached")
         })?;
-        filter
-            .apply(&normalized)
-            .map_err(|e| ServerError::Internal(e.to_string()))?;
-        *self.log_level.write().unwrap_or_else(|e| e.into_inner()) = normalized.clone();
-        Ok(normalized)
+        filter.apply(normalized)?;
+        let name = normalized.as_str().to_string();
+        *self.log_level.write().unwrap_or_else(|e| e.into_inner()) = name.clone();
+        Ok(name)
     }
 
     /// Clone of the stop signal shared with the live pipeline.

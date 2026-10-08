@@ -532,6 +532,22 @@ pub async fn api_server_status(State(combined): State<CombinedState>) -> Json<Se
 
 // ─── POST /api/server/shutdown ───────────────────────────────────────
 
+/// The action both lifecycle endpoints share (issue #60): pause a live run at
+/// its unit boundary through the shared stop signal, then stop the accept
+/// loop. On plain `serve` there is no pipeline attached, so only the server
+/// stops.
+fn stop_pipeline_and_server(state: &ServerState) {
+    state.stop_signal().stop();
+    state.request_shutdown();
+}
+
+/// Whether this router is serving a live run (`calxgloss live`) rather than
+/// a plain review server — decides how the operator-facing message should
+/// describe what is stopping.
+fn is_live_router(combined: &CombinedState) -> bool {
+    combined.manager.is_some()
+}
+
 /// Graceful shutdown (issue #60): stops accepting new requests (in-flight
 /// ones finish), and — when a live pipeline is attached — pauses the run at
 /// the current **unit boundary** via the shared stop signal. The unit in
@@ -544,12 +560,16 @@ pub async fn api_server_shutdown(
     State(combined): State<CombinedState>,
 ) -> Json<ServerLifecycleResponse> {
     info!("graceful shutdown requested via API");
-    combined.server.stop_signal().stop();
-    combined.server.request_shutdown();
+    let live = is_live_router(&combined);
+    stop_pipeline_and_server(&combined.server);
     Json(ServerLifecycleResponse {
         status: LifecycleStatus::ShuttingDown,
-        message: "Pipeline will stop at the current unit boundary; the server is shutting down."
-            .to_string(),
+        message: if live {
+            "Pipeline will stop at the current unit boundary; the server is shutting down."
+                .to_string()
+        } else {
+            "Server is shutting down.".to_string()
+        },
         restart_required: false,
     })
 }
@@ -567,13 +587,18 @@ pub async fn api_server_restart(
     State(combined): State<CombinedState>,
 ) -> Json<ServerLifecycleResponse> {
     info!("restart requested via API — stopping process, manual restart required");
-    combined.server.stop_signal().stop();
-    combined.server.request_shutdown();
+    let live = is_live_router(&combined);
+    stop_pipeline_and_server(&combined.server);
     Json(ServerLifecycleResponse {
         status: LifecycleStatus::Stopping,
-        message: "Server stopped. Restart manually with the same command (e.g. `calxgloss live` \
-                  or `calxgloss serve`) — saved state is picked up automatically."
-            .to_string(),
+        message: if live {
+            "Server stopped. Restart manually with the same command (`calxgloss live`) — the run \
+             picks up from the state saved so far."
+                .to_string()
+        } else {
+            "Server stopped. Restart manually with the same command (`calxgloss serve`)."
+                .to_string()
+        },
         restart_required: true,
     })
 }

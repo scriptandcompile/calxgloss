@@ -10,7 +10,7 @@ use calxgloss_git::{GitManager, InitConfig};
 use calxgloss_types::{GitBranch, ProgressEvent, TranslationEvents};
 use calxgloss_web::{
     ActionsState, ProgressState, ServerState, SessionManager, build_dashboard, build_router,
-    build_router_with_actions, build_router_with_ws,
+    build_router_with_actions, build_router_with_ws, serve_with_listener,
 };
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -523,9 +523,10 @@ async fn spawn_server_with_shutdown(
         .await
         .expect("bind listener");
     let shutdown = state.shutdown_signal();
+    // Same wiring `calxgloss live` uses, so the test exercises the
+    // production graceful-shutdown path rather than a hand-rolled one.
     tokio::spawn(async move {
-        axum::serve(listener, router)
-            .with_graceful_shutdown(shutdown)
+        serve_with_listener(listener, router, shutdown)
             .await
             .expect("server runs to completion");
     })
@@ -535,6 +536,13 @@ async fn spawn_server_with_shutdown(
 /// unit: the response documents the graceful stop, the shared stop signal
 /// is set (the pipeline's side of the contract — it breaks at the next
 /// unit boundary), and the accept loop stops taking new connections.
+///
+/// The unit in flight is *not* aborted by the stop: it is still recorded as
+/// in flight when the request lands, and the completion event the pipeline
+/// emits when that unit finishes is still recorded afterwards. Persisting
+/// that finished unit is the pipeline's own contract, covered by
+/// `batch_translate_breaks_at_unit_boundary_when_stop_is_requested` in
+/// `calxgloss-translator`.
 #[tokio::test]
 async fn test_server_shutdown_live_router_stops_pipeline_and_server() {
     let fixture = TestFixture::new();
@@ -543,7 +551,7 @@ async fn test_server_shutdown_live_router_stops_pipeline_and_server() {
     let events = TranslationEvents::new(128);
     let manager = SessionManager::new_with_broadcast(events.subscribe());
     let progress = ProgressState::new();
-    let router = build_router_with_ws(state.clone(), manager, progress);
+    let router = build_router_with_ws(state.clone(), manager, progress.clone());
     let server = spawn_server_with_shutdown(&state, router, fixture.port()).await;
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -554,6 +562,10 @@ async fn test_server_shutdown_live_router_stops_pipeline_and_server() {
         function: "DrawPrimitive".into(),
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        progress.in_flight_count().await == 1,
+        "a unit must be in flight before the request"
+    );
     assert!(!stop.is_stopped(), "no stop before the request");
 
     let resp = reqwest::Client::new()
@@ -577,6 +589,32 @@ async fn test_server_shutdown_live_router_stops_pipeline_and_server() {
     // The pipeline's side: the shared stop signal is set, so the batch loop
     // ends at the next unit boundary after the in-flight unit completes.
     assert!(stop.is_stopped(), "the shared stop signal must be set");
+
+    // The in-flight unit is not cancelled by the stop — it is still there,
+    // unfinished, and the completion the pipeline emits at the boundary is
+    // still recorded (that is the state the shutdown is meant to save).
+    assert_eq!(
+        progress.in_flight_count().await,
+        1,
+        "the in-flight unit must survive the stop request"
+    );
+    events.emit(ProgressEvent::TranslationCompleted {
+        dll: "game_logic".into(),
+        function: "DrawPrimitive".into(),
+        total_attempts: 1,
+        success_strategy: Some("direct".into()),
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let snapshot = progress.snapshot().await;
+    let entry = snapshot
+        .get("game_logic/DrawPrimitive")
+        .expect("the in-flight unit is tracked");
+    assert!(entry.finished, "the unit completes and is recorded");
+    assert_eq!(
+        progress.in_flight_count().await,
+        0,
+        "nothing is left running once the boundary unit is done"
+    );
 
     // The server's side: the accept loop exits gracefully — subsequent
     // connections are refused.
@@ -761,7 +799,11 @@ async fn test_log_level_patch_changes_running_filter() {
     use tracing_subscriber::layer::SubscriberExt;
 
     // The reloadable EnvFilter the CLI's logging init installs, plus a
-    // counting layer to observe what the filter lets through.
+    // counting layer to observe what the filter lets through. `reload::Layer`
+    // is not `Clone`, so this subscriber cannot be re-installed per probe with
+    // `with_default` — it goes global instead. Nothing else in this binary
+    // asserts on log output, and the counting layer ignores every record but
+    // the probe marker, so the install stays contained.
     let (filter, handle) =
         tracing_subscriber::reload::Layer::new(tracing_subscriber::EnvFilter::new("warn"));
     let seen = Arc::new(AtomicUsize::new(0));
@@ -1717,6 +1759,47 @@ async fn test_build_dashboard_api() {
 // Headless browser test (requires Chromium/Chrome installed)
 // ─────────────────────────────────────────────────────────────
 
+/// Launch headless Chrome with the flags that work inside containers/CI.
+///
+/// Chrome's CDP calls are **blocking**, so every browser test must run on a
+/// multi-thread runtime (`#[tokio::test(flavor = "multi_thread")]`): on the
+/// default current-thread runtime the blocking calls starve the axum server
+/// task spawned by the same test, the page is never served, and navigation
+/// times out with "The event waited for never came".
+fn launch_headless_browser() -> headless_chrome::Browser {
+    use headless_chrome::{Browser, LaunchOptionsBuilder};
+
+    Browser::new(
+        LaunchOptionsBuilder::default()
+            .headless(true)
+            .args(vec![
+                std::ffi::OsStr::new("--no-sandbox"),
+                std::ffi::OsStr::new("--disable-gpu"),
+                std::ffi::OsStr::new("--disable-dev-shm-usage"),
+            ])
+            .build()
+            .expect("build chrome launch options"),
+    )
+    .expect("launch headless chrome")
+}
+
+/// Open a tab on the fixture's server and wait for the page to load.
+///
+/// `navigate_to` waits for Chrome's `networkAlmostIdle` lifecycle event, which
+/// only arrives once the dashboard's own fetches settle — generous by design so
+/// a slow machine still passes.
+fn open_dashboard_tab(
+    browser: &headless_chrome::Browser,
+    port: u16,
+) -> std::sync::Arc<headless_chrome::Tab> {
+    let tab = browser.new_tab().expect("open new tab");
+    tab.navigate_to(&format!("http://127.0.0.1:{port}"))
+        .expect("navigate to server root");
+    tab.wait_until_navigated().expect("wait for navigation");
+    tab.enable_runtime().expect("enable runtime");
+    tab
+}
+
 /// Test that a headless browser can navigate to the server and
 /// verify the HTML page loads without JavaScript errors.
 ///
@@ -1727,11 +1810,9 @@ async fn test_build_dashboard_api() {
 /// Chromium/Chrome to be installed on the test machine.
 ///
 /// Run with: `cargo test --features server --test e2e headless -- --ignored`
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_browser_page_loads() {
-    use headless_chrome::{Browser, LaunchOptionsBuilder};
-
     let fixture = TestFixture::new();
     let state = ServerState::new(fixture.repo_path());
     let router = build_router(state);
@@ -1739,27 +1820,9 @@ async fn test_headless_browser_page_loads() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let browser = Browser::new(
-        LaunchOptionsBuilder::default()
-            .headless(true)
-            .args(vec![
-                std::ffi::OsStr::new("--no-sandbox"),
-                std::ffi::OsStr::new("--disable-gpu"),
-                std::ffi::OsStr::new("--disable-dev-shm-usage"),
-            ])
-            .build()
-            .unwrap(),
-    )
-    .expect("launch headless chrome");
-
-    let tab = browser.new_tab().expect("open new tab");
-
-    // Navigate to the server's root (HTML page).
-    tab.navigate_to(&format!("http://127.0.0.1:{}", fixture.port()))
-        .expect("navigate to server root");
-
-    // Wait for the page to fully load.
-    tab.wait_until_navigated().expect("wait for navigation");
+    let browser = launch_headless_browser();
+    // Navigate to the server's root (HTML page) and wait for it to load.
+    let tab = open_dashboard_tab(&browser, fixture.port());
 
     // Verify the page title contains Calxgloss.
     let title = tab.get_title().expect("get page title");
@@ -1782,14 +1845,13 @@ async fn test_headless_browser_page_loads() {
         "Page should contain frontend references or title"
     );
 
-    // Enable runtime for JS evaluation.
-    tab.enable_runtime().expect("enable runtime");
-
     // Verify the dependency graph endpoint is reachable via fetch.
+    // `awaitPromise` must be true here — the expression evaluates to a
+    // Promise, and without awaiting it the value is the promise object itself.
     let graph_result = tab
         .evaluate(
             "fetch('/api/graph').then(r => r.ok).catch(() => false)",
-            false,
+            true,
         )
         .expect("evaluate fetch graph");
     let is_graph_ok: bool = graph_result
@@ -1805,7 +1867,7 @@ async fn test_headless_browser_page_loads() {
     let dashboard_result = tab
         .evaluate(
             "fetch('/api/dashboard').then(r => r.ok).catch(() => false)",
-            false,
+            true,
         )
         .expect("evaluate fetch dashboard");
     let is_dashboard_ok: bool = dashboard_result
@@ -1826,11 +1888,9 @@ async fn test_headless_browser_page_loads() {
 /// version, uptime, and the pipeline state.
 ///
 /// Run with: `cargo test --features server --test e2e headless -- --ignored`
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_server_status_card() {
-    use headless_chrome::{Browser, LaunchOptionsBuilder};
-
     let fixture = TestFixture::new();
     let state = ServerState::new(fixture.repo_path());
     let router = build_router(state);
@@ -1838,24 +1898,8 @@ async fn test_headless_server_status_card() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let browser = Browser::new(
-        LaunchOptionsBuilder::default()
-            .headless(true)
-            .args(vec![
-                std::ffi::OsStr::new("--no-sandbox"),
-                std::ffi::OsStr::new("--disable-gpu"),
-                std::ffi::OsStr::new("--disable-dev-shm-usage"),
-            ])
-            .build()
-            .expect("build chrome launch options"),
-    )
-    .expect("launch headless chrome");
-
-    let tab = browser.new_tab().expect("open new tab");
-    tab.navigate_to(&format!("http://127.0.0.1:{}", fixture.port()))
-        .expect("navigate to server root");
-    tab.wait_until_navigated().expect("wait for navigation");
-    tab.enable_runtime().expect("enable runtime");
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
 
     // The card renders asynchronously once the dashboard fetches settle;
     // poll until it appears (up to ~5 seconds).
@@ -1914,11 +1958,9 @@ async fn test_headless_server_status_card() {
 /// selector populated with the levels the server accepts.
 ///
 /// Run with: `cargo test --features server --test e2e headless -- --ignored`
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires Chromium/Chrome installed; run with --ignored"]
 async fn test_headless_server_control_panel() {
-    use headless_chrome::{Browser, LaunchOptionsBuilder};
-
     let fixture = TestFixture::new();
     let state = ServerState::new(fixture.repo_path());
     let router = build_router(state);
@@ -1926,24 +1968,8 @@ async fn test_headless_server_control_panel() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let browser = Browser::new(
-        LaunchOptionsBuilder::default()
-            .headless(true)
-            .args(vec![
-                std::ffi::OsStr::new("--no-sandbox"),
-                std::ffi::OsStr::new("--disable-gpu"),
-                std::ffi::OsStr::new("--disable-dev-shm-usage"),
-            ])
-            .build()
-            .expect("build chrome launch options"),
-    )
-    .expect("launch headless chrome");
-
-    let tab = browser.new_tab().expect("open new tab");
-    tab.navigate_to(&format!("http://127.0.0.1:{}", fixture.port()))
-        .expect("navigate to server root");
-    tab.wait_until_navigated().expect("wait for navigation");
-    tab.enable_runtime().expect("enable runtime");
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
 
     // The panel renders asynchronously once the dashboard fetches settle;
     // poll until it appears (up to ~5 seconds).
