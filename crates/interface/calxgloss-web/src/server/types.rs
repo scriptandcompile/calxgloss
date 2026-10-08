@@ -1,7 +1,10 @@
 //! Response types for the review dashboard API.
 
 use axum::http::StatusCode;
-use calxgloss_types::{PhaseRecord, ReviewDashboard, ReviewStatus, TranslationPhase};
+use calxgloss_types::{
+    BinaryProgress, PhaseProgress, PhaseRecord, PipelinePhase, ReviewDashboard, ReviewStatus,
+    TranslationPhase,
+};
 use serde::{Deserialize, Serialize};
 
 /// Wrapper for successful API responses carrying the full dashboard.
@@ -631,6 +634,12 @@ pub struct PipelineProgressResponse {
     pub currently_translating: Vec<String>,
     /// Per-DLL progress information.
     pub dlls: Vec<PipelineDllProgress>,
+    /// Progress through the master-plan phases (issue #61), in bar order:
+    /// Phases 1–7 with Phase 2.5 (PAL Design) between 2 and 3. Phases with
+    /// no backing data source report `NoDataSource`, never fabricated counts.
+    pub phases: Vec<PhaseProgress>,
+    /// Per-binary progress through the pipeline, sorted by name.
+    pub binaries: Vec<BinaryProgress>,
 }
 
 impl PipelineProgressResponse {
@@ -641,6 +650,19 @@ impl PipelineProgressResponse {
             batch_complete_count: 0,
             currently_translating: Vec::new(),
             dlls: Vec::new(),
+            // Honest empty payload: every phase is reported, no-data-source
+            // phases stay NoDataSource, the rest start NotStarted.
+            phases: PipelinePhase::ALL
+                .iter()
+                .map(|&phase| {
+                    if phase.is_no_data_source() {
+                        PhaseProgress::no_data_source(phase)
+                    } else {
+                        PhaseProgress::not_started(phase, Some(total_dlls))
+                    }
+                })
+                .collect(),
+            binaries: Vec::new(),
         }
     }
 }

@@ -268,6 +268,10 @@ pub struct ProgressEntry {
     /// Set once a terminal event (completed / failed / function-completed)
     /// has been observed for this unit.
     pub finished: bool,
+    /// Whether the unit's translation ultimately succeeded — `None` until a
+    /// terminal event (`TranslationCompleted` / `TranslationFailed` /
+    /// `FunctionCompleted`) says so, so an unfinished unit never looks failed.
+    pub succeeded: Option<bool>,
     pub last_event_at: std::time::Instant,
 }
 
@@ -381,6 +385,7 @@ impl ProgressState {
                         elapsed_secs: 0.0,
                     }],
                     finished: false,
+                    succeeded: None,
                     last_event_at: std::time::Instant::now(),
                 },
             );
@@ -411,14 +416,19 @@ impl ProgressState {
                     entry.attempt = *attempt;
                     entry.strategy = strategy.clone();
                 }
-                ProgressEvent::TranslationCompleted { .. }
-                | ProgressEvent::TranslationFailed { .. } => {
+                ProgressEvent::TranslationCompleted { .. } => {
                     entry.finished = true;
+                    entry.succeeded = Some(true);
+                }
+                ProgressEvent::TranslationFailed { .. } => {
+                    entry.finished = true;
+                    entry.succeeded = Some(false);
                 }
                 ProgressEvent::FunctionCompleted { success, .. } => {
                     // Batch-level completion marks the unit as done; the
                     // strategy field records the outcome for the dashboard.
                     entry.finished = true;
+                    entry.succeeded = Some(*success);
                     entry.strategy = if *success {
                         "batch_ok".to_string()
                     } else {
@@ -503,12 +513,17 @@ pub fn build_dashboard(repo_path: &Path) -> Result<ReviewDashboard, anyhow::Erro
 
 /// Routes shared by **every** router — plain `serve`, `serve` with review
 /// actions, and `live`. An endpoint that reads live translation state must
-/// not be added here; it belongs in [`live_only_routes`]. Server management
-/// (`/api/server/*`) is registered here so it is available in every mode.
+/// not be added here unless it degrades to an honest empty payload when no
+/// live state is attached; `/api/pipeline` is the one such case (issue #61 —
+/// the dashboard phase bar renders in every mode). Endpoints that cannot
+/// answer honestly without live state belong in [`live_only_routes`]. Server
+/// management (`/api/server/*`) is registered here so it is available in
+/// every mode.
 fn shared_routes() -> Router<CombinedState> {
     Router::new()
         .route("/", get(handlers::serve_index))
         .route("/api/dashboard", get(handlers::api_get_dashboard))
+        .route("/api/pipeline", get(handlers::api_get_pipeline))
         .route("/api/units/{id}", get(handlers::api_get_unit))
         .route("/api/units/{id}/diff", get(handlers::api_get_unit_diff))
         .route("/api/units/{id}/ghidra", get(handlers::api_get_unit_ghidra))
@@ -535,13 +550,14 @@ fn shared_routes() -> Router<CombinedState> {
 }
 
 /// Routes registered **only** in the live (`calxgloss live`) router — these
-/// read live translation state that plain `serve` does not own, so on the
-/// other routers they must fall through to the static 404 rather than answer
-/// with fabricated empty data. Every W0–W4 endpoint reporting pipeline
-/// progress or in-flight status belongs here.
+/// read live translation state that plain `serve` does not own and cannot
+/// report honestly without it, so on the other routers they must fall
+/// through to the static 404 rather than answer with fabricated empty data.
+/// Every W0–W4 endpoint reporting in-flight status belongs here;
+/// `/api/pipeline` moved to [`shared_routes`] because it degrades to an
+/// honest empty payload instead.
 fn live_only_routes() -> Router<CombinedState> {
     Router::new()
-        .route("/api/pipeline", get(handlers::api_get_pipeline))
         .route("/api/progress", get(handlers::api_get_progress))
         .route("/api/events/upgrade", get(api_events_upgrade_ws))
 }

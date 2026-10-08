@@ -575,7 +575,7 @@ impl std::fmt::Display for ProgressEvent {
 /// **derived from [`ProgressEvent`] variants** via
 /// [`TranslationPhase::from_event`] — there is no separate phase event
 /// vocabulary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TranslationPhase {
     /// Fetching function metadata (disassembly, decompiler output) from Ghidra.

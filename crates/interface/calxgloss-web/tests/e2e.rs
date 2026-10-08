@@ -1201,7 +1201,9 @@ async fn test_next_unit_endpoint() {
 }
 
 /// Test that the pipeline progress endpoint returns empty data
-/// when no translation is running.
+/// when no translation is running — including the honest phase records
+/// (issue #61): all 8 phases present, Restitching/Documentation always
+/// `no_data_source` with no fabricated counts.
 #[tokio::test]
 async fn test_pipeline_empty_progress() {
     let fixture = TestFixture::new();
@@ -1220,6 +1222,379 @@ async fn test_pipeline_empty_progress() {
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.expect("pipeline body is JSON");
     assert_eq!(body["total_dlls"].as_u64().unwrap_or(0), 0);
+
+    let phases = body["phases"].as_array().expect("phases array is present");
+    assert_eq!(phases.len(), 8, "all 8 pipeline phases are reported");
+    let states: Vec<&str> = phases
+        .iter()
+        .map(|p| p["state"].as_str().unwrap_or("?"))
+        .collect();
+    assert_eq!(
+        states,
+        [
+            "not_started",
+            "not_started",
+            "not_started",
+            "not_started",
+            "not_started",
+            "not_started",
+            "no_data_source",
+            "no_data_source"
+        ]
+    );
+    // NoDataSource phases must never carry fabricated counts.
+    for p in &phases[6..8] {
+        assert!(
+            p.get("completed").is_none(),
+            "no-data-source phase has no count: {p}"
+        );
+        assert!(
+            p.get("total").is_none(),
+            "no-data-source phase has no total: {p}"
+        );
+    }
+    assert!(
+        body["binaries"]
+            .as_array()
+            .expect("binaries array")
+            .is_empty()
+    );
+}
+
+/// Issue #61: feed canned `ProgressEvent`s through the live event channel
+/// and assert `/api/pipeline` derives honest per-phase and per-binary
+/// progress — including Phase 2.5 (PAL Design) and the two NoDataSource
+/// phases (Restitching, Documentation).
+#[tokio::test]
+async fn test_pipeline_phases_from_canned_events() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Two binaries classified; d3d9 via the PAL strategy.
+    events.emit(ProgressEvent::ClassificationComplete {
+        dll: "dinput8.dll".into(),
+        category: "WindowsOs".into(),
+        strategy: "ReverseEngineer".into(),
+        crate_replacement: None,
+        exported_symbols: 10,
+        imported_symbols: 4,
+    });
+    events.emit(ProgressEvent::ClassificationComplete {
+        dll: "d3d9.dll".into(),
+        category: "WindowsOs".into(),
+        strategy: "PalMapping".into(),
+        crate_replacement: None,
+        exported_symbols: 25,
+        imported_symbols: 6,
+    });
+
+    // game_logic.dll: one unit runs the full flow to review...
+    events.emit(ProgressEvent::TranslationStarted {
+        dll: "game_logic.dll".into(),
+        function: "DrawPrimitive".into(),
+    });
+    events.emit(ProgressEvent::ApiTaggingComplete {
+        dll: "game_logic.dll".into(),
+        function: "DrawPrimitive".into(),
+        tagged_apis: 3,
+    });
+    events.emit(ProgressEvent::TestsGenerated {
+        dll: "game_logic.dll".into(),
+        function: "DrawPrimitive".into(),
+        test_count: 3,
+    });
+    events.emit(ProgressEvent::LlmCallComplete {
+        dll: "game_logic.dll".into(),
+        function: "DrawPrimitive".into(),
+        attempt: 1,
+        code_length: 1200,
+        tokens_used: Some(4000),
+    });
+    events.emit(ProgressEvent::TranslationAttemptCompleted {
+        dll: "game_logic.dll".into(),
+        function: "DrawPrimitive".into(),
+        attempt: 1,
+        success: true,
+        compiled: true,
+        tests_passed: 3,
+        tests_total: 3,
+        strategy: "direct".into(),
+        tokens_used: Some(4000),
+        compilation_errors: vec![],
+        failed_tests: vec![],
+    });
+    events.emit(ProgressEvent::TranslationCompleted {
+        dll: "game_logic.dll".into(),
+        function: "DrawPrimitive".into(),
+        total_attempts: 1,
+        success_strategy: Some("direct".into()),
+    });
+    // ...and one fails at the compile step.
+    events.emit(ProgressEvent::TranslationStarted {
+        dll: "game_logic.dll".into(),
+        function: "UpdateScene".into(),
+    });
+    events.emit(ProgressEvent::TestsGenerated {
+        dll: "game_logic.dll".into(),
+        function: "UpdateScene".into(),
+        test_count: 2,
+    });
+    events.emit(ProgressEvent::LlmCallComplete {
+        dll: "game_logic.dll".into(),
+        function: "UpdateScene".into(),
+        attempt: 3,
+        code_length: 900,
+        tokens_used: Some(1000),
+    });
+    events.emit(ProgressEvent::FunctionCompleted {
+        dll: "game_logic.dll".into(),
+        function: "UpdateScene".into(),
+        success: false,
+        attempts: 3,
+        branch: None,
+    });
+
+    // Batch summary for game_logic — the authoritative counts when present.
+    events.emit(ProgressEvent::BatchSummary {
+        dll: "game_logic.dll".into(),
+        total_functions: 5,
+        success_count: 2,
+        failure_count: 1,
+        total_attempts: 4,
+        total_tokens: 5000,
+    });
+
+    // dinput8.dll: translation in progress, stopped after test generation.
+    events.emit(ProgressEvent::TranslationStarted {
+        dll: "dinput8.dll".into(),
+        function: "GetDeviceState".into(),
+    });
+    events.emit(ProgressEvent::TestsGenerated {
+        dll: "dinput8.dll".into(),
+        function: "GetDeviceState".into(),
+        test_count: 2,
+    });
+
+    // Give the event-forwarding task time to drain the channel.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/pipeline", fixture.port()))
+        .await
+        .expect("pipeline request succeeds");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("pipeline body is JSON");
+
+    // ── Aggregate counts (game_logic entered the pipeline unclassified) ──
+    assert_eq!(body["total_dlls"], 3);
+    assert_eq!(body["classified_count"], 2);
+    assert_eq!(body["batch_complete_count"], 1);
+    let translating: Vec<&str> = body["currently_translating"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d.as_str().unwrap())
+        .collect();
+    assert!(
+        translating.contains(&"dinput8.dll"),
+        "dinput8 is mid-translation"
+    );
+    assert!(
+        !translating.contains(&"game_logic.dll"),
+        "game_logic's units all finished"
+    );
+
+    // ── Phase states ─────────────────────────────────────────────────
+    let phase = |name: &str| -> serde_json::Value {
+        body["phases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["phase"].as_str().unwrap_or("") == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("phase {name} missing from {:?}", body["phases"]))
+    };
+
+    // Ingestion: 2 of 3 binaries classified.
+    let p = phase("project_ingestion");
+    assert_eq!(p["state"], "in_progress");
+    assert_eq!(p["completed"], 2);
+    assert_eq!(p["total"], 3);
+
+    // Disassembly & tagging: game_logic and dinput8 have tagged functions, d3d9 none.
+    let p = phase("disassembly_tagging");
+    assert_eq!(p["state"], "in_progress");
+    assert_eq!(p["completed"], 2);
+    assert_eq!(p["total"], 3);
+
+    // PAL Design (Phase 2.5): d3d9 is the only PAL binary, batch not done.
+    let p = phase("pal_design");
+    assert_eq!(p["state"], "not_started");
+    assert_eq!(p["completed"], 0);
+    assert_eq!(p["total"], 1);
+
+    // Test generation: game_logic and dinput8 generated tests.
+    let p = phase("test_generation");
+    assert_eq!(p["state"], "in_progress");
+    assert_eq!(p["completed"], 2);
+    assert_eq!(p["total"], 3);
+
+    // Code generation: only game_logic got past the LLM into compile/test.
+    let p = phase("rust_code_generation");
+    assert_eq!(p["state"], "in_progress");
+    assert_eq!(p["completed"], 1);
+    assert_eq!(p["total"], 3);
+
+    // Verification: only game_logic reached review.
+    let p = phase("behavior_verification");
+    assert_eq!(p["state"], "in_progress");
+    assert_eq!(p["completed"], 1);
+    assert_eq!(p["total"], 3);
+
+    // Restitching & Documentation: never fabricated, always no_data_source.
+    let p = phase("restitching");
+    assert_eq!(p["state"], "no_data_source");
+    assert!(p.get("completed").is_none());
+    assert!(p.get("total").is_none());
+    let p = phase("documentation");
+    assert_eq!(p["state"], "no_data_source");
+
+    // ── Per-binary progress (sorted by name) ─────────────────────────
+    let binaries = body["binaries"].as_array().unwrap();
+    assert_eq!(binaries.len(), 3);
+    let names: Vec<&str> = binaries
+        .iter()
+        .map(|b| b["dll"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["d3d9.dll", "dinput8.dll", "game_logic.dll"]);
+
+    // d3d9: classified via PAL, nothing translated yet — no fabricated totals.
+    let b = &binaries[0];
+    assert_eq!(b["strategy"], "PalMapping");
+    assert!(
+        b.get("functions_total").is_none(),
+        "no batch summary, no total: {b}"
+    );
+    assert_eq!(b["functions_translated"], 0);
+    assert_eq!(b["functions_in_progress"], 0);
+    assert!(
+        b.get("tokens_used").is_none(),
+        "unknown tokens stay unknown: {b}"
+    );
+
+    // dinput8: one unit in flight after test generation.
+    let b = &binaries[1];
+    assert_eq!(b["category"], "WindowsOs");
+    assert!(b.get("functions_total").is_none());
+    assert_eq!(b["functions_in_progress"], 1);
+    assert_eq!(b["functions_translated"], 0);
+    assert_eq!(b["functions_failed"], 0);
+    assert!(b.get("tokens_used").is_none());
+
+    // game_logic: batch summary is the authoritative source.
+    let b = &binaries[2];
+    assert_eq!(b["functions_total"], 5);
+    assert_eq!(b["functions_translated"], 2);
+    assert_eq!(b["functions_failed"], 1);
+    assert_eq!(b["functions_in_progress"], 0);
+    assert_eq!(b["tokens_used"], 5000);
+}
+
+/// Issue #61: the plain serve and actions routers serve `/api/pipeline`
+/// with an honest empty payload (all phases NotStarted / NoDataSource)
+/// instead of a 404, so the dashboard phase bar renders everywhere.
+#[tokio::test]
+async fn test_pipeline_honest_empty_payload_on_non_live_routers() {
+    for kind in ["serve", "actions"] {
+        let fixture = TestFixture::new();
+        let state = ServerState::new(fixture.repo_path());
+        let router = if kind == "serve" {
+            build_router(state)
+        } else {
+            build_router_with_actions(state, ActionsState::new(fixture.repo_path()))
+        };
+        let _server = spawn_server(router, fixture.port()).await;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let resp = reqwest::get(format!("http://127.0.0.1:{}/api/pipeline", fixture.port()))
+            .await
+            .expect("pipeline request reaches server");
+        assert_eq!(resp.status(), 200, "{kind} router serves /api/pipeline");
+        let body: serde_json::Value = resp.json().await.expect("pipeline body is JSON");
+        assert_eq!(body["total_dlls"], 0);
+        let phases = body["phases"].as_array().unwrap();
+        assert_eq!(phases.len(), 8);
+        assert_eq!(phases[6]["phase"], "restitching");
+        assert_eq!(phases[6]["state"], "no_data_source");
+        assert_eq!(phases[7]["phase"], "documentation");
+        assert_eq!(phases[7]["state"], "no_data_source");
+    }
+}
+
+/// Issue #61 honesty rule: a batch summary whose functions all failed means
+/// the pipeline *ran* the build phases over the binary, but verification
+/// succeeded for nothing — Behavior Verification must not report Complete.
+#[tokio::test]
+async fn test_pipeline_all_failed_batch_not_verification_complete() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    events.emit(ProgressEvent::BatchSummary {
+        dll: "broken.dll".into(),
+        total_functions: 1,
+        success_count: 0,
+        failure_count: 1,
+        total_attempts: 3,
+        total_tokens: 800,
+    });
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/pipeline", fixture.port()))
+        .await
+        .expect("pipeline request succeeds");
+    let body: serde_json::Value = resp.json().await.expect("pipeline body is JSON");
+
+    let phase = |name: &str| -> serde_json::Value {
+        body["phases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["phase"].as_str().unwrap_or("") == name)
+            .cloned()
+            .unwrap()
+    };
+
+    // The batch ran the build phases over the binary...
+    assert_eq!(phase("disassembly_tagging")["state"], "complete");
+    assert_eq!(phase("test_generation")["state"], "complete");
+    assert_eq!(phase("rust_code_generation")["state"], "complete");
+    // ...but nothing verified successfully, so verification is not complete.
+    let p = phase("behavior_verification");
+    assert_eq!(p["state"], "not_started");
+    assert_eq!(p["completed"], 0);
+    assert_eq!(p["total"], 1);
+
+    // The binary record keeps the failure counts honest.
+    let b = &body["binaries"].as_array().unwrap()[0];
+    assert_eq!(b["dll"], "broken.dll");
+    assert_eq!(b["functions_translated"], 0);
+    assert_eq!(b["functions_failed"], 1);
+    assert_eq!(b["tokens_used"], 800);
 }
 
 /// Test that the progress endpoint returns empty data when idle.
@@ -1420,7 +1795,10 @@ async fn test_progress_reports_phase_history() {
 /// Route-table contract: endpoints that read live translation state are
 /// registered **only** in the WebSocket (live) router. On the plain serve
 /// router and the actions router they must fall through to the static 404,
-/// never answer with fabricated empty data.
+/// never answer with fabricated empty data. (`/api/pipeline` is no longer
+/// on this list — issue #61 moved it to the shared routes, where it serves
+/// an honest empty payload; see
+/// `test_pipeline_honest_empty_payload_on_non_live_routers`.)
 #[tokio::test]
 async fn test_live_only_endpoints_absent_from_non_live_routers() {
     for kind in ["serve", "actions"] {
@@ -1435,7 +1813,7 @@ async fn test_live_only_endpoints_absent_from_non_live_routers() {
 
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        for path in ["/api/pipeline", "/api/progress", "/api/events/upgrade"] {
+        for path in ["/api/progress", "/api/events/upgrade"] {
             let resp = reqwest::get(format!("http://127.0.0.1:{}{}", fixture.port(), path))
                 .await
                 .expect("request reaches server");
@@ -2023,6 +2401,115 @@ async fn test_headless_server_control_panel() {
         ),
         "log-level select should pre-select the current server log level"
     );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for the dashboard pipeline phase bar (issue #61):
+/// in live mode the bar must render one segment per master-plan phase —
+/// 8 total, including Phase 2.5 (PAL Design) — and Restitching and
+/// Documentation must render as no-data-source, never as zero progress.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_pipeline_phase_bar_live() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // A little live data so the pipeline panel is visible.
+    events.emit(ProgressEvent::ClassificationComplete {
+        dll: "d3d9.dll".into(),
+        category: "WindowsOs".into(),
+        strategy: "PalMapping".into(),
+        crate_replacement: None,
+        exported_symbols: 25,
+        imported_symbols: 6,
+    });
+    events.emit(ProgressEvent::TranslationStarted {
+        dll: "game_logic.dll".into(),
+        function: "DrawPrimitive".into(),
+    });
+    events.emit(ProgressEvent::TestsGenerated {
+        dll: "game_logic.dll".into(),
+        function: "DrawPrimitive".into(),
+        test_count: 3,
+    });
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+    let eval_len = |expr: &str| -> i64 {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_i64())
+            .unwrap_or(-1)
+    };
+
+    // The bar renders asynchronously once the pipeline fetch settles;
+    // poll until all 8 segments appear (up to ~5 seconds).
+    let mut rendered = false;
+    for _ in 0..25 {
+        if eval_len("document.querySelectorAll('#pipeline-phase-bar .phase-segment').length") == 8 {
+            rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(rendered, "phase bar should render 8 segments in live mode");
+
+    // Segments appear in bar order, Phase 1 → 7 with 2.5 between 2 and 3.
+    let phases_json = tab
+        .evaluate(
+            "JSON.stringify([...document.querySelectorAll('#pipeline-phase-bar .phase-segment')]\
+                .map(s => s.dataset.phase))",
+            false,
+        )
+        .expect("evaluate phase segment list")
+        .value
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default();
+    assert_eq!(
+        phases_json,
+        r#"["project_ingestion","disassembly_tagging","pal_design","test_generation","rust_code_generation","behavior_verification","restitching","documentation"]"#
+    );
+
+    // Phase 2.5 (PAL Design) is present as its own segment.
+    assert!(
+        eval_bool(
+            "!!document.querySelector('#pipeline-phase-bar .phase-segment[data-phase=\"pal_design\"]')"
+        ),
+        "PAL Design must be its own segment"
+    );
+
+    // Restitching & Documentation render honestly as no-data-source.
+    for phase in ["restitching", "documentation"] {
+        assert!(
+            eval_bool(&format!(
+                "document.querySelector('#pipeline-phase-bar .phase-segment[data-phase=\"{phase}\"]')\
+                    ?.classList.contains('state-no_data_source') === true"
+            )),
+            "{phase} segment must render as no-data-source, not zero progress"
+        );
+    }
 
     tab.close_target().ok();
     drop(browser);

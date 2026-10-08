@@ -9,6 +9,7 @@ import { KIND_LABELS, STATUS_LABELS } from "./constants.js";
 import { fmtTime, fmtUptime, escapeHtml } from "./utils.js";
 import { showToast } from "./ui.js";
 import { renderFullQueue } from "./queue.js";
+import { renderPipelinePhaseBar } from "./phase-bar.js";
 import { switchView } from "./views.js";
 
 export async function loadDashboard() {
@@ -323,6 +324,10 @@ export function renderPipelineProgress(data) {
     const dllsContainer = document.getElementById("pipeline-dlls");
 
     if (!panel || !summary || !dllsContainer) return;
+
+    // The phase bar renders from the honest phase records regardless of
+    // whether any binaries have been discovered yet (issue #61).
+    renderPipelinePhaseBar(data.phases);
 
     const total = data.total_dlls || 0;
     const classified = data.classified_count || 0;

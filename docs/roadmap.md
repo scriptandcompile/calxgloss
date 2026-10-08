@@ -232,14 +232,17 @@ process control (archive §12 "Current State Summary").
 
 - Phase 0 — server management endpoints: `/api/server/status` (done), enhanced
   `/health` (done), shutdown/restart (done), `PATCH /api/server/log-level` (done). **Router note:**
-  `/api/pipeline` and `/api/progress` exist only in the WS router
-  (`calxgloss live`); every new endpoint must state which router(s) it
-  registers in.
+  `/api/progress` and the WS upgrade exist only in the WS router
+  (`calxgloss live`); `/api/pipeline` is shared — it serves an honest empty
+  payload on plain `serve` (issue #61). Every new endpoint must state which
+  router(s) it registers in.
 - Phase 1 — pipeline progress dashboard: per-phase progress for all 7 phases
-  (+ Phase 2.5 PAL). **Prerequisite:** Phases 6 (Restitching) and 7
-  (Documentation) have no backing data source — define what they report (or
-  mark "not started") first; per-function duration recording must be added
-  before time estimates work.
+  (+ Phase 2.5 PAL) (done — `PipelinePhase`/`PhaseProgress`/`BinaryProgress`
+  in `calxgloss-types`, `/api/pipeline` derivation, `PipelinePhaseBar`).
+  **Prerequisite resolved:** Phases 6 (Restitching) and 7 (Documentation)
+  have no backing data source and report `NoDataSource`, never fabricated
+  progress; per-function duration recording must be added before time
+  estimates work.
 - Phase 2 — in-flight status: `TranslationPhase` enum + per-unit phase history
   in live progress (done); WS phase events, context-tier/fault/token/retry
   display in unit detail.

@@ -1698,6 +1698,85 @@ svg {
     transition: width 0.3s ease;
 }
 
+/* ─── Pipeline Phase Bar (issue #61) ──────────────────────────────── */
+
+.pipeline-phase-bar {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 12px;
+}
+
+.phase-segment {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    font-size: 11px;
+}
+
+.phase-segment-name {
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.phase-segment-state {
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.phase-segment-count {
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.phase-segment.state-not_started {
+    opacity: 0.6;
+}
+
+.phase-segment.state-in_progress {
+    border-color: var(--accent-blue);
+    animation: pulse 2s ease-in-out infinite;
+}
+
+.phase-segment.state-in_progress .phase-segment-state {
+    color: var(--accent-blue);
+}
+
+.phase-segment.state-complete {
+    border-color: var(--accent-green);
+}
+
+.phase-segment.state-complete .phase-segment-state {
+    color: var(--accent-green);
+}
+
+/* No backing data source — rendered distinctly, never as zero progress. */
+.phase-segment.state-no_data_source {
+    border-style: dashed;
+    background: repeating-linear-gradient(
+        -45deg,
+        var(--bg-tertiary),
+        var(--bg-tertiary) 6px,
+        var(--bg-secondary) 6px,
+        var(--bg-secondary) 12px
+    );
+}
+
+.phase-segment.state-no_data_source .phase-segment-state {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
 @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.7; }
