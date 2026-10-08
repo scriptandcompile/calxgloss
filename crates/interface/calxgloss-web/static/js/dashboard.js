@@ -18,6 +18,7 @@ export async function loadDashboard() {
         const res = await API.dashboard();
         State.dashboard = res.dashboard;
         State.units = State.dashboard.review_queue;
+        State.queueEffort = res.queue_effort || {};
 
         renderStatusCards(State.dashboard);
         renderQueueList(State.dashboard, State.selectedUnitId);
@@ -343,9 +344,27 @@ export function renderPipelineProgress(data) {
     panel.style.display = "block";
     summary.textContent = `${classified} classified, ${batchDone} translated, ${translating.length} translating`;
 
+    // Time remaining estimate (issue #64) — only shown when the token-usage
+    // log has measured attempt durations and work remains.
+    renderPipelineTimeEstimate(data.time_estimate);
+
     // One row per target binary (issue #63): strategy, function counts,
     // tokens, success rate, shim/PAL status, placeholder quick actions.
     renderPipelineBinaryRows(data.binaries);
+}
+
+function renderPipelineTimeEstimate(estimate) {
+    const el = document.getElementById("pipeline-time-estimate");
+    if (!el) return;
+    if (!estimate || estimate.remaining_units == null || estimate.estimated_secs == null) {
+        el.style.display = "none";
+        el.textContent = "";
+        return;
+    }
+    el.style.display = "block";
+    el.textContent =
+        `≈ ${fmtUptime(estimate.estimated_secs)} remaining ` +
+        `(${estimate.remaining_units} functions × ~${fmtUptime(Math.round(estimate.avg_attempt_secs))}/attempt)`;
 }
 
 // Map API graph node to frontend format (handles old and new API formats)

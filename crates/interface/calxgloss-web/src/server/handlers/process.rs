@@ -234,7 +234,7 @@ fn build_strategy_section(entries: &[TokenUsageEntry]) -> Vec<StrategyRecord> {
 
 /// Reads and parses a JSON artifact, degrading to the type's default value
 /// when the file is missing or corrupt.
-fn load_json_or_default<T>(path: &Path) -> T
+pub(crate) fn load_json_or_default<T>(path: &Path) -> T
 where
     T: serde::de::DeserializeOwned + Default,
 {
@@ -242,6 +242,59 @@ where
         .ok()
         .and_then(|content| serde_json::from_str(&content).ok())
         .unwrap_or_default()
+}
+
+// ─── Queue effort estimates (issue #64) ──────────────────────────────
+
+/// Path of the token-usage log artifact inside the repo — the single place
+/// the layout is spelled out, shared by every handler that reads it.
+pub(crate) fn token_usage_log_path(repo_path: &Path) -> std::path::PathBuf {
+    repo_path
+        .join("re")
+        .join("analysis")
+        .join("token_usage.json")
+}
+
+/// Estimates the effort per queued unit from the token-usage log's recorded
+/// attempt durations: unit_id → average seconds per attempt.
+///
+/// Only function-level units get estimates. A unit with its own measured
+/// attempts uses their average; a unit without its own history falls back
+/// to the global average across all measured attempts. When the log has no
+/// durations at all the map is empty, so the frontend renders `—` instead
+/// of a fabricated number.
+pub(crate) fn build_queue_effort(
+    repo_path: &Path,
+    queue: &[calxgloss_types::UnitOfWork],
+) -> std::collections::HashMap<String, u64> {
+    let log = load_json_or_default::<TokenUsageLog>(&token_usage_log_path(repo_path));
+    let global_avg = match log.average_attempt_duration_secs() {
+        Some(avg) => avg,
+        None => return std::collections::HashMap::new(),
+    };
+
+    let mut effort = std::collections::HashMap::new();
+    for unit in queue {
+        if unit.kind != calxgloss_types::WorkKind::FunctionTranslation {
+            continue;
+        }
+        let function = match unit.function.as_deref() {
+            Some(f) if !f.is_empty() => f,
+            _ => continue,
+        };
+        let durations: Vec<u64> = log
+            .entries
+            .iter()
+            .filter(|e| dll_matches(&e.dll, &unit.dll) && e.function == function)
+            .filter_map(|e| e.duration_secs)
+            .collect();
+        let avg = match durations.len() {
+            0 => global_avg,
+            n => durations.iter().sum::<u64>() as f64 / n as f64,
+        };
+        effort.insert(unit.id.clone(), avg.round() as u64);
+    }
+    effort
 }
 
 /// Returns entries sorted by attempt number (stable, so entries with the

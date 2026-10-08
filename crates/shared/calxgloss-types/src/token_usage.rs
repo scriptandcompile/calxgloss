@@ -12,6 +12,8 @@
 //! - Number of tokens consumed by that attempt
 //! - Whether the attempt ultimately succeeded
 //! - A timestamp for when the entry was recorded
+//! - The wall-clock duration of the attempt, in whole seconds (issue #64;
+//!   absent on entries written by older versions)
 //!
 //! These entries are collected into a [`TokenUsageLog`] which can compute
 //! aggregate statistics (total tokens, per-DLL breakdown, etc.).
@@ -69,6 +71,12 @@ pub struct TokenUsageEntry {
     /// tracking is not enabled.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub context_tier: String,
+
+    /// Wall-clock duration of the attempt in whole seconds, recorded by the
+    /// retry loop (issue #64).  `None` on entries written before durations
+    /// were tracked, so time estimates only ever average real measurements.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_secs: Option<u64>,
 }
 
 impl TokenUsageEntry {
@@ -90,6 +98,7 @@ impl TokenUsageEntry {
             success,
             timestamp: current_timestamp(),
             context_tier: String::new(),
+            duration_secs: None,
         }
     }
 
@@ -112,7 +121,18 @@ impl TokenUsageEntry {
             success,
             timestamp: current_timestamp(),
             context_tier: context_tier.into(),
+            duration_secs: None,
         }
+    }
+
+    /// Attach a wall-clock attempt duration (whole seconds) to this entry.
+    ///
+    /// Recorded by the translator's retry loop around each attempt; entries
+    /// without it are treated as unmeasured by [`TokenUsageLog::
+    /// average_attempt_duration_secs`].
+    pub fn with_duration_secs(mut self, duration_secs: u64) -> Self {
+        self.duration_secs = Some(duration_secs);
+        self
     }
 }
 
@@ -210,6 +230,26 @@ impl TokenUsageLog {
             failed_tokens,
             by_dll,
         }
+    }
+
+    /// Mean wall-clock attempt duration, in seconds, across entries that
+    /// recorded one (issue #64).
+    ///
+    /// Returns `None` when no entry carries a duration — the honest answer
+    /// when nothing has been measured yet — so callers hide time estimates
+    /// rather than fabricating them. Entries written by older versions
+    /// (no `duration_secs`) are skipped, never counted as zero.
+    pub fn average_attempt_duration_secs(&self) -> Option<f64> {
+        let measured: Vec<u64> = self
+            .entries
+            .iter()
+            .filter_map(|e| e.duration_secs)
+            .collect();
+        if measured.is_empty() {
+            return None;
+        }
+        let total: u64 = measured.iter().sum();
+        Some(total as f64 / measured.len() as f64)
     }
 }
 
@@ -404,5 +444,79 @@ mod tests {
             TokenUsageEntry::new("game_logic.dll", "Entry", 1, "initial", 2048, true);
         let json = serde_json::to_string(&entry_no_tier).expect("should serialize");
         assert!(!json.contains("\"context_tier\""));
+    }
+
+    #[test]
+    fn test_entry_with_duration() {
+        let entry = TokenUsageEntry::new("game_logic.dll", "DrawSprite", 1, "initial", 4096, true)
+            .with_duration_secs(42);
+        assert_eq!(entry.duration_secs, Some(42));
+
+        // Duration survives a JSON round trip.
+        let json = serde_json::to_string(&entry).expect("should serialize");
+        let deserialized: TokenUsageEntry =
+            serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(deserialized.duration_secs, Some(42));
+    }
+
+    #[test]
+    fn test_entry_without_duration_omits_field_and_stays_compatible() {
+        // New entries without a duration omit the field from JSON…
+        let entry = TokenUsageEntry::new("game_logic.dll", "DrawSprite", 1, "initial", 2048, true);
+        assert_eq!(entry.duration_secs, None);
+        let json = serde_json::to_string(&entry).expect("should serialize");
+        assert!(!json.contains("\"duration_secs\""));
+
+        // …and logs written before durations existed still deserialize,
+        // with the field reading as unmeasured rather than zero.
+        let legacy = r#"{"dll":"game_logic.dll","function":"DrawSprite","attempt":1,
+            "strategy":"initial","tokens_used":2048,"success":true,"timestamp":1767225600}"#;
+        let legacy_entry: TokenUsageEntry =
+            serde_json::from_str(legacy).expect("legacy entry should deserialize");
+        assert_eq!(legacy_entry.duration_secs, None);
+    }
+
+    #[test]
+    fn test_average_attempt_duration_none_without_measurements() {
+        let log = TokenUsageLog::new();
+        assert_eq!(log.average_attempt_duration_secs(), None);
+
+        // Entries without durations never count as zero.
+        let mut log = TokenUsageLog::new();
+        log.add_entry(TokenUsageEntry::new(
+            "game_logic.dll",
+            "DrawSprite",
+            1,
+            "initial",
+            4096,
+            false,
+        ));
+        assert_eq!(log.average_attempt_duration_secs(), None);
+    }
+
+    #[test]
+    fn test_average_attempt_duration_averages_only_measured_entries() {
+        let mut log = TokenUsageLog::new();
+        log.add_entry(
+            TokenUsageEntry::new("game_logic.dll", "DrawSprite", 1, "initial", 4096, false)
+                .with_duration_secs(100),
+        );
+        log.add_entry(TokenUsageEntry::new(
+            "audio.dll",
+            "PlaySample",
+            1,
+            "initial",
+            2048,
+            true,
+        ));
+        log.add_entry(
+            TokenUsageEntry::new("game_logic.dll", "DrawSprite", 2, "compile_fix", 3072, true)
+                .with_duration_secs(200),
+        );
+
+        let avg = log
+            .average_attempt_duration_secs()
+            .expect("two measured entries should yield an average");
+        assert_eq!(avg, 150.0);
     }
 }

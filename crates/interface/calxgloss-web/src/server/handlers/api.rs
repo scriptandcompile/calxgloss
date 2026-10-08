@@ -153,10 +153,13 @@ pub async fn api_get_dashboard(
         pending_review: dashboard.status_counts.pending_review,
         blocked: dashboard.status_counts.blocked,
     };
+    let queue_effort =
+        super::process::build_queue_effort(server_state.repo_path(), &dashboard.review_queue);
     Ok(Json(super::super::DashboardResponse {
         success: true,
         dashboard,
         queue_metadata: Some(queue_metadata),
+        queue_effort,
     }))
 }
 

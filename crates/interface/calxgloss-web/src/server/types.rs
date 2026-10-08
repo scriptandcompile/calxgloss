@@ -15,6 +15,12 @@ pub struct DashboardResponse {
     /// Optional queue metadata computed at request time.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub queue_metadata: Option<QueueMetadata>,
+    /// Queue effort estimates (issue #64): unit_id → average seconds per
+    /// attempt from the token-usage log — the unit's own durations when it
+    /// has them, otherwise the global average. Empty (and omitted from the
+    /// payload) when the log carries no durations; the queue shows `—` then.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub queue_effort: std::collections::HashMap<String, u64>,
 }
 
 impl DashboardResponse {
@@ -23,6 +29,7 @@ impl DashboardResponse {
             success: true,
             dashboard,
             queue_metadata: None,
+            queue_effort: std::collections::HashMap::new(),
         }
     }
 }
@@ -785,6 +792,20 @@ pub struct CurrentDllStatus {
     pub completed_entries: usize,
 }
 
+/// Estimated wall-clock time remaining for the pipeline (issue #64),
+/// derived from per-attempt durations recorded in the token-usage log.
+/// Only present when at least one attempt has been measured and work
+/// remains — never fabricated.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PipelineTimeEstimate {
+    /// Average seconds per translation attempt across the whole log.
+    pub avg_attempt_secs: f64,
+    /// Functions still to translate (known totals minus done/failed).
+    pub remaining_units: usize,
+    /// `avg_attempt_secs × remaining_units`, in seconds.
+    pub estimated_secs: f64,
+}
+
 /// Overall pipeline progress response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineProgressResponse {
@@ -804,6 +825,10 @@ pub struct PipelineProgressResponse {
     pub phases: Vec<PhaseProgress>,
     /// Per-binary progress through the pipeline, sorted by name.
     pub binaries: Vec<BinaryProgress>,
+    /// Time remaining estimate (issue #64), `None` when no attempt has a
+    /// recorded duration or no work remains.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_estimate: Option<PipelineTimeEstimate>,
 }
 
 impl PipelineProgressResponse {
@@ -827,6 +852,7 @@ impl PipelineProgressResponse {
                 })
                 .collect(),
             binaries: Vec::new(),
+            time_estimate: None,
         }
     }
 }

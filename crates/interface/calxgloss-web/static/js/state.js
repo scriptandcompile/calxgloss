@@ -12,4 +12,5 @@ export const State = {
     statusFilter: "all",
     gcCandidates: [],
     gcSelectedBranches: new Set(),
+    queueEffort: {},
 };

@@ -579,6 +579,13 @@ svg {
     font-family: var(--font-mono);
 }
 
+.queue-item-full .qi-effort {
+    font-size: 12px;
+    color: var(--text-muted);
+    text-align: right;
+    font-family: var(--font-mono);
+}
+
 /* Status badges in full queue */
 .qi-status.queued { background: var(--accent-blue); color: var(--text-inverse); }
 .qi-status.pending_review { background: var(--accent-yellow); color: var(--text-inverse); }
@@ -1412,6 +1419,10 @@ svg {
     .queue-item-full .qi-dll {
         display: none;
     }
+
+    .queue-item-full .qi-effort {
+        display: none;
+    }
 }
 
 @media (max-width: 600px) {
@@ -1799,6 +1810,15 @@ svg {
     font-weight: 600;
     margin: 0;
     color: var(--text-primary);
+}
+
+/* Time-remaining estimate (issue #64) — shown only when the token-usage
+   log has measured attempt durations and work remains. */
+.pipeline-time-estimate {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+    font-family: var(--font-mono);
 }
 
 /* Per-binary rows (issue #63) — strategy, counts, cost, shim/PAL status,

@@ -2,12 +2,15 @@
 
 use super::super::{
     BatchInfo, ClassificationInfo, CombinedState, PipelineDllProgress, PipelineProgressResponse,
-    ProgressEntry, ProgressInfo, ProgressResponse,
+    PipelineTimeEstimate, ProgressEntry, ProgressInfo, ProgressResponse,
 };
 
 use axum::{Json, extract::State};
-use calxgloss_types::{BinaryProgress, PhaseProgress, PhaseState, PipelinePhase, TranslationPhase};
+use calxgloss_types::{
+    BinaryProgress, PhaseProgress, PhaseState, PipelinePhase, TokenUsageLog, TranslationPhase,
+};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 /// Handle GET /api/progress — return in-flight translation units.
 pub async fn api_get_progress(State(combined): State<CombinedState>) -> Json<ProgressResponse> {
@@ -146,6 +149,8 @@ pub async fn api_get_pipeline(
         &entries_snapshot,
     );
 
+    let time_estimate = compute_time_estimate(combined.server.repo_path(), &binaries);
+
     Json(PipelineProgressResponse {
         total_dlls,
         classified_count: classifications.len(),
@@ -154,6 +159,41 @@ pub async fn api_get_pipeline(
         dlls,
         phases,
         binaries,
+        time_estimate,
+    })
+}
+
+// ============================================================
+// Time estimate (issue #64)
+// ============================================================
+
+/// Derive the pipeline time estimate from the token-usage log's recorded
+/// attempt durations and the remaining work in `binaries`. Returns `None`
+/// when no attempt has a measured duration or no work remains — the
+/// estimate is never fabricated.
+fn compute_time_estimate(
+    repo_path: &Path,
+    binaries: &[BinaryProgress],
+) -> Option<PipelineTimeEstimate> {
+    let log = super::process::load_json_or_default::<TokenUsageLog>(
+        &super::process::token_usage_log_path(repo_path),
+    );
+    let avg_attempt_secs = log.average_attempt_duration_secs()?;
+    let remaining_units: usize = binaries
+        .iter()
+        .map(|b| {
+            b.functions_total
+                .map(|total| total.saturating_sub(b.functions_translated + b.functions_failed))
+                .unwrap_or(0)
+        })
+        .sum();
+    if remaining_units == 0 {
+        return None;
+    }
+    Some(PipelineTimeEstimate {
+        avg_attempt_secs,
+        remaining_units,
+        estimated_secs: avg_attempt_secs * remaining_units as f64,
     })
 }
 

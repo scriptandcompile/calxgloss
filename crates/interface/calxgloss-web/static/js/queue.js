@@ -5,7 +5,7 @@
 import { API } from "./api.js";
 import { State } from "./state.js";
 import { KIND_LABELS, STATUS_LABELS } from "./constants.js";
-import { fmtConfidence, escapeHtml } from "./utils.js";
+import { fmtConfidence, fmtUptime, escapeHtml } from "./utils.js";
 import { showToast, showModal } from "./ui.js";
 import { loadDashboard } from "./dashboard.js";
 
@@ -41,12 +41,18 @@ export function renderFullQueue(dashboard, selectedId = null) {
             ? `Classify ${u.dll}`
             : u.function ? `${u.dll} ${u.function}` : u.dll;
 
+        // Effort estimate from historical attempt durations (issue #64);
+        // "—" when the unit has no recorded history.
+        const effort = State.queueEffort[u.id];
+        const effortText = effort == null ? "—" : fmtUptime(effort);
+
         return `
             <div class="queue-item-full ${u.id === selectedId ? "selected" : ""}" data-unit-id="${u.id}">
                 <div class="queue-item-icon ${iconClass}"></div>
                 <div class="qi-name" title="${u.id}">${name}</div>
                 <div class="qi-status ${iconClass}">${STATUS_LABELS[u.status] || u.status}</div>
                 <div class="qi-attempt">v${u.attempt}</div>
+                <div class="qi-effort" title="Estimated time per attempt">${effortText}</div>
             </div>
         `;
     }).join("");

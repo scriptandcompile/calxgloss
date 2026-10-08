@@ -96,9 +96,12 @@ pub struct TranslationAttempt {
 }
 
 impl TranslationAttempt {
-    /// Whether this attempt was successful (all tests pass or no tests exist).
+    /// Whether this attempt was successful: it compiled and either all its
+    /// tests pass or it had no tests to run. A translation that fails to
+    /// compile is never successful, regardless of test counts — otherwise the
+    /// retry loop would treat broken code as done and never retry it.
     pub fn is_successful(&self) -> bool {
-        self.tests_passed == self.tests_total || self.tests_total == 0
+        self.compiled && (self.tests_passed == self.tests_total || self.tests_total == 0)
     }
 }
 

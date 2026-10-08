@@ -244,8 +244,10 @@ process control (archive §12 "Current State Summary").
   are W2 placeholders).
   **Prerequisite resolved:** Phases 6 (Restitching) and 7 (Documentation)
   have no backing data source and report `NoDataSource`, never fabricated
-  progress; per-function duration recording must be added before time
-  estimates work.
+  progress; per-function duration recording landed with
+  [#64](https://github.com/scriptandcompile/calxgloss/issues/64) —
+  `duration_secs` on token-usage entries, the pipeline time estimate, and
+  the queue effort column (done).
 - Phase 2 — in-flight status: `TranslationPhase` enum + per-unit phase history
   in live progress (done); context-tier/fault/token/retry display in unit
   detail (done — `process` object on `GET /api/units/{id}`, four detail

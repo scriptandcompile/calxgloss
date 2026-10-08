@@ -63,6 +63,10 @@ mod retry_loop;
 /// Persists the entry to `re/analysis/token_usage.json` via the
 /// [`TokenUsageLogger`](calxgloss_analysis::TokenUsageLogger).
 /// If the workspace path is `None`, the entry is silently discarded.
+/// `duration_secs` is the attempt's wall-clock duration, measured by the
+/// retry loop (issue #64); `None` leaves the entry unmeasured.
+// The parameters mirror `TokenUsageEntry`'s fields one-for-one; the retry
+// loop is the only caller and passes them positionally.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn log_token_usage(
     dll_name: &str,
@@ -73,6 +77,7 @@ pub(crate) fn log_token_usage(
     success: bool,
     workspace: Option<&std::path::Path>,
     context_tier: &str,
+    duration_secs: Option<u64>,
 ) {
     let Some(ws) = workspace else {
         return;
@@ -91,6 +96,10 @@ pub(crate) fn log_token_usage(
         success,
         context_tier,
     );
+    let entry = match duration_secs {
+        Some(secs) => entry.with_duration_secs(secs),
+        None => entry,
+    };
 
     let logger = calxgloss_analysis::TokenUsageLogger::new(ws);
     logger.record(entry);

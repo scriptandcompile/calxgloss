@@ -234,6 +234,10 @@ pub async fn try_translate_with_retry(
             "Retry attempt"
         );
 
+        // Wall-clock start of this attempt — recorded on its token-usage
+        // entry so the dashboard can estimate remaining time (issue #64).
+        let attempt_start = std::time::Instant::now();
+
         // If the tier was escalated in the previous iteration, build an
         // escalated prompt with additional Ghidra/workspace context for
         // the next attempt.  Otherwise fall through to the strategy-based
@@ -446,6 +450,7 @@ pub async fn try_translate_with_retry(
                     false,
                     ctx.workspace,
                     &tier_label,
+                    Some(attempt_start.elapsed().as_secs()),
                 );
                 continue;
             }
@@ -618,6 +623,7 @@ pub async fn try_translate_with_retry(
                     .unwrap_or(false),
                 ctx.workspace,
                 &tier_label,
+                Some(attempt_start.elapsed().as_secs()),
             );
 
             if !result.success {
@@ -1053,6 +1059,7 @@ pub async fn try_translate_with_retry(
                 false,
                 ctx.workspace,
                 current_tier.label(),
+                Some(attempt_start.elapsed().as_secs()),
             );
             continue;
         }
@@ -1242,6 +1249,7 @@ pub async fn try_translate_with_retry(
                 .unwrap_or(false),
             ctx.workspace,
             current_tier.label(),
+            Some(attempt_start.elapsed().as_secs()),
         );
 
         // Track failure history for informed prompting
@@ -1445,6 +1453,10 @@ mod tests {
         attempt.tests_passed = 0;
         attempt.tests_total = 0;
         assert!(attempt.is_successful());
+
+        // But code that doesn't compile is never successful, even with no tests.
+        attempt.compiled = false;
+        assert!(!attempt.is_successful());
     }
 
     #[test]
@@ -1640,5 +1652,103 @@ mod tests {
         assert!(prompt.contains("DrawSprite"));
         assert!(prompt.contains("PREVIOUS ATTEMPT HISTORY"));
         assert!(prompt.contains("Learn from past failures"));
+    }
+
+    // ─── Attempt-duration recording (issue #64) ──────────────────────
+
+    /// A fake LLM server that sleeps ~1.1s before answering with empty code
+    /// and a token count, so the retry loop's wall-clock measurement for the
+    /// attempt is guaranteed to be at least one second. Returns the base URL
+    /// to point an [`LlmClient`] at.
+    async fn fake_llm() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake LLM should bind");
+        let addr = listener.local_addr().expect("fake LLM address");
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut request = [0u8; 4096];
+                    let _ = stream.read(&mut request).await;
+                    // Make the attempt measurably slow so the recorded
+                    // duration is >= 1s rather than rounding to 0.
+                    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+                    let body = r#"{"choices":[{"message":{"role":"assistant","content":""}}],"usage":{"completion_tokens":123,"total_tokens":123}}"#;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn retry_loop_records_attempt_duration_in_token_usage_log() {
+        let ws = tempfile::TempDir::new().expect("temp workspace");
+
+        // Broken initial code → attempt 1 fails compile → retry loop runs.
+        let translation = Translation {
+            dll: "game_logic.dll".to_string(),
+            function: "DrawSprite".to_string(),
+            function_address: None,
+            rust_code: "fn draw_sprite(x: i32) -> i32 { let y: = ; x }".to_string(),
+            prompt_used: "prompt".to_string(),
+            model: "test-model".to_string(),
+            tokens_used: Some(10),
+            baseline_tests: Vec::new(),
+            call_graph: Vec::new(),
+            disassembly_hints: Vec::new(),
+            context_tier: calxgloss_types::ContextTier::Signature,
+            call_graph_context: Vec::new(),
+        };
+
+        let llm_base = fake_llm().await;
+        let llm = LlmClient::from_url(&llm_base, "test-model").expect("llm client");
+        let ghidra = GhidraClient::new("http://127.0.0.1:1").expect("ghidra client");
+        let verifier = Verifier::new(&ws.path().join("verify")).expect("verifier");
+        let config = RetryConfig {
+            max_attempts: 2,
+            strategy: RetryStrategy::CompileFix,
+            escalate_on_failure: false,
+        };
+
+        let ctx = RetryLoopCtx {
+            verifier: &verifier,
+            llm: &llm,
+            ghidra: &ghidra,
+            config: &config,
+            workspace: Some(ws.path()),
+            events: None,
+            resource_detector: None,
+            fault_logger: None,
+        };
+
+        let result = try_translate_with_retry(translation, &ctx).await;
+        assert!(
+            !result.success,
+            "the canned LLM returns empty code; attempts={:?}",
+            result.attempts
+        );
+
+        let log = calxgloss_analysis::TokenUsageLogger::new(ws.path())
+            .load()
+            .expect("token usage log should exist");
+
+        let entry = log
+            .entries
+            .iter()
+            .find(|e| e.attempt == 2)
+            .expect("attempt 2 should be logged");
+        assert_eq!(entry.strategy, "compile_fix");
+        assert_eq!(entry.tokens_used, 123);
+        assert!(
+            entry.duration_secs.is_some_and(|d| d >= 1),
+            "attempt duration should be recorded and >= 1s, got {:?}",
+            entry.duration_secs
+        );
     }
 }

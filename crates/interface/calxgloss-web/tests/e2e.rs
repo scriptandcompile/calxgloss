@@ -1506,6 +1506,256 @@ async fn test_pipeline_phases_from_canned_events() {
     assert_eq!(b["tokens_used"], 5000);
 }
 
+// ─────────────────────────────────────────────────────────────
+// Pipeline time estimate + queue effort (issue #64)
+// ─────────────────────────────────────────────────────────────
+
+/// Writes a token-usage log to the fixture's `re/analysis/` directory.
+/// When `with_durations` is false the entries omit `duration_secs`, exactly
+/// like logs written before issue #64, so the average stays unknown.
+fn write_token_usage_log(fixture: &TestFixture, with_durations: bool) {
+    let analysis_dir = fixture.repo_path().join("re").join("analysis");
+    std::fs::create_dir_all(&analysis_dir).expect("create analysis dir");
+
+    let mut entries = Vec::new();
+    for (attempt, tokens) in [(1usize, 4096usize), (2, 3072)] {
+        let mut entry = serde_json::json!({
+            "timestamp": 1767225600 + attempt as u64 * 300,
+            "dll": "game_logic.dll",
+            "function": "DrawPrimitive",
+            "attempt": attempt,
+            "strategy": if attempt == 1 { "initial" } else { "compile_fix" },
+            "tokens_used": tokens,
+            "success": attempt == 2
+        });
+        if with_durations {
+            entry["duration_secs"] = serde_json::json!(100 * attempt as u64);
+        }
+        entries.push(entry);
+    }
+    let log = serde_json::json!({ "entries": entries });
+    std::fs::write(
+        analysis_dir.join("token_usage.json"),
+        serde_json::to_string_pretty(&log).expect("serialize token log"),
+    )
+    .expect("write token log");
+}
+
+/// Emits the minimal live events that give one binary a known function
+/// total with work remaining (5 total, 2 translated, 1 failed → 2 remain).
+fn emit_canned_batch_summary(events: &TranslationEvents) {
+    events.emit(ProgressEvent::BatchSummary {
+        dll: "game_logic.dll".into(),
+        total_functions: 5,
+        success_count: 2,
+        failure_count: 1,
+        total_attempts: 4,
+        total_tokens: 5000,
+    });
+}
+
+/// Issue #64: when the token-usage log carries measured attempt durations
+/// and work remains, `/api/pipeline` reports a time estimate derived from
+/// the average duration × remaining functions.
+#[tokio::test]
+async fn test_pipeline_time_estimate_present_with_durations() {
+    let fixture = TestFixture::new();
+    write_token_usage_log(&fixture, true);
+
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    emit_canned_batch_summary(&events);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/pipeline", fixture.port()))
+        .await
+        .expect("pipeline request succeeds");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("pipeline body is JSON");
+
+    let est = &body["time_estimate"];
+    assert!(
+        !est.is_null(),
+        "estimate should be present with durations: {body}"
+    );
+    // Average of 100s and 200s = 150s; remaining = 5 − 2 − 1 = 2.
+    assert_eq!(est["avg_attempt_secs"], 150.0);
+    assert_eq!(est["remaining_units"], 2);
+    assert_eq!(est["estimated_secs"], 300.0);
+}
+
+/// Issue #64: when no attempt has a recorded duration (a pre-#64 log),
+/// `/api/pipeline` omits the estimate entirely rather than fabricating one.
+#[tokio::test]
+async fn test_pipeline_time_estimate_absent_without_durations() {
+    let fixture = TestFixture::new();
+    write_token_usage_log(&fixture, false);
+
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    emit_canned_batch_summary(&events);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/pipeline", fixture.port()))
+        .await
+        .expect("pipeline request succeeds");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("pipeline body is JSON");
+
+    assert!(
+        body.get("time_estimate").is_none(),
+        "no durations → no estimate: {body}"
+    );
+}
+
+/// Issue #64: `/api/dashboard` carries a `queue_effort` map giving each
+/// function-level queued unit its estimated per-attempt seconds, taken from
+/// that unit's own recorded durations.
+#[tokio::test]
+async fn test_dashboard_queue_effort_from_durations() {
+    let fixture = TestFixture::new();
+    write_canned_run_telemetry_with_durations(&fixture);
+
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/dashboard", fixture.port()))
+        .await
+        .expect("dashboard request succeeds");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+
+    let effort = &body["queue_effort"];
+    assert!(effort.is_object(), "queue_effort should be a map: {body}");
+
+    // The dashboard's game_logic/DrawPrimitive unit has its own measured
+    // attempts (100s and 200s) → average 150s.
+    let unit_id = "game_logic/DrawPrimitive/v2";
+    assert_eq!(
+        effort.get(unit_id),
+        Some(&serde_json::json!(150)),
+        "unit with its own durations uses their average: {effort}"
+    );
+}
+
+/// Issue #64: a queued unit with no recorded attempts of its own falls back
+/// to the global average across all measured attempts in the log.
+#[tokio::test]
+async fn test_dashboard_queue_effort_falls_back_to_global_average() {
+    let fixture = TestFixture::new();
+
+    // Durations recorded only for UpdateScene — a function the queued
+    // DrawPrimitive/v2 unit is not, so the unit has no own history.
+    let analysis_dir = fixture.repo_path().join("re").join("analysis");
+    std::fs::create_dir_all(&analysis_dir).expect("create analysis dir");
+    let token_log = serde_json::json!({
+        "entries": [
+            {
+                "timestamp": 1767225600,
+                "dll": "game_logic.dll",
+                "function": "UpdateScene",
+                "attempt": 1,
+                "strategy": "initial",
+                "tokens_used": 4096,
+                "success": true,
+                "duration_secs": 300
+            },
+            {
+                "timestamp": 1767225900,
+                "dll": "game_logic.dll",
+                "function": "UpdateScene",
+                "attempt": 2,
+                "strategy": "compile_fix",
+                "tokens_used": 3072,
+                "success": true,
+                "duration_secs": 500
+            }
+        ]
+    });
+    std::fs::write(
+        analysis_dir.join("token_usage.json"),
+        serde_json::to_string_pretty(&token_log).expect("serialize token log"),
+    )
+    .expect("write token log");
+
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/dashboard", fixture.port()))
+        .await
+        .expect("dashboard request succeeds");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+
+    let effort = &body["queue_effort"];
+    assert!(effort.is_object(), "queue_effort should be a map: {body}");
+
+    // No own durations → global average of 300s and 500s = 400s.
+    let unit_id = "game_logic/DrawPrimitive/v2";
+    assert_eq!(
+        effort.get(unit_id),
+        Some(&serde_json::json!(400)),
+        "unit without own durations falls back to the global average: {effort}"
+    );
+}
+
+/// Like `write_canned_run_telemetry` but the token-usage entries carry
+/// durations (100s and 200s for DrawPrimitive's two attempts).
+fn write_canned_run_telemetry_with_durations(fixture: &TestFixture) {
+    let analysis_dir = fixture.repo_path().join("re").join("analysis");
+    std::fs::create_dir_all(&analysis_dir).expect("create analysis dir");
+
+    let token_log = serde_json::json!({
+        "entries": [
+            {
+                "timestamp": 1767225600,
+                "dll": "game_logic.dll",
+                "function": "DrawPrimitive",
+                "attempt": 1,
+                "strategy": "initial",
+                "context_tier": "disassembly",
+                "tokens_used": 4096,
+                "success": false,
+                "duration_secs": 100
+            },
+            {
+                "timestamp": 1767225900,
+                "dll": "game_logic.dll",
+                "function": "DrawPrimitive",
+                "attempt": 2,
+                "strategy": "compile_fix",
+                "context_tier": "with_tests",
+                "tokens_used": 3072,
+                "success": true,
+                "duration_secs": 200
+            }
+        ]
+    });
+    std::fs::write(
+        analysis_dir.join("token_usage.json"),
+        serde_json::to_string_pretty(&token_log).expect("serialize token log"),
+    )
+    .expect("write token log");
+}
+
 /// Issue #61: the plain serve and actions routers serve `/api/pipeline`
 /// with an honest empty payload (all phases NotStarted / NoDataSource)
 /// instead of a 404, so the dashboard phase bar renders everywhere.
@@ -3147,6 +3397,98 @@ async fn test_headless_unit_process_sections() {
     assert!(
         strategy_text.contains("initial") && strategy_text.contains("compile_fix"),
         "strategy section should list both strategies, got: {strategy_text}"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for issue #64: with measured attempt durations in
+/// the token-usage log, the pipeline panel must show a time estimate and the
+/// review queue must render a per-unit effort column.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_pipeline_estimate_and_queue_effort() {
+    let fixture = TestFixture::new();
+    write_token_usage_log(&fixture, true);
+
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    emit_canned_batch_summary(&events);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+    let eval_text = |expr: &str| -> String {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default()
+    };
+
+    // The pipeline panel renders asynchronously; poll until the time
+    // estimate is visible (up to ~5 seconds).
+    let mut estimate_visible = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "document.getElementById('pipeline-time-estimate')?.style.display !== 'none' \
+                && document.getElementById('pipeline-time-estimate')?.textContent.includes('remaining')",
+        ) {
+            estimate_visible = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        estimate_visible,
+        "pipeline time estimate should be visible when durations exist"
+    );
+
+    // Switch to the queue view so the full queue list renders.
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click queue tab");
+
+    // The DrawPrimitive unit has its own measured attempts → its effort
+    // column shows a real duration, not the em-dash placeholder.
+    let mut effort_rendered = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "(() => { const el = document.querySelector('#full-queue-list \
+                [data-unit-id=\"game_logic/DrawPrimitive/v2\"] .qi-effort'); \
+                return !!el && el.textContent !== '—'; })()",
+        ) {
+            effort_rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let effort_text = eval_text(
+        "document.querySelector('#full-queue-list \
+            [data-unit-id=\"game_logic/DrawPrimitive/v2\"] .qi-effort')?.textContent || ''",
+    );
+    assert!(
+        effort_rendered,
+        "queue effort column should show an estimate for the unit, got: {effort_text:?}"
     );
 
     tab.close_target().ok();
