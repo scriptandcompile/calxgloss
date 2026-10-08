@@ -680,6 +680,37 @@ async fn test_progress_empty() {
     assert_eq!(body["count"].as_u64().unwrap_or(0), 0);
 }
 
+/// Route-table contract: endpoints that read live translation state are
+/// registered **only** in the WebSocket (live) router. On the plain serve
+/// router and the actions router they must fall through to the static 404,
+/// never answer with fabricated empty data.
+#[tokio::test]
+async fn test_live_only_endpoints_absent_from_non_live_routers() {
+    for kind in ["serve", "actions"] {
+        let fixture = TestFixture::new();
+        let state = ServerState::new(fixture.repo_path());
+        let router = if kind == "serve" {
+            build_router(state)
+        } else {
+            build_router_with_actions(state, ActionsState::new(fixture.repo_path()))
+        };
+        let _server = spawn_server(router, fixture.port()).await;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        for path in ["/api/pipeline", "/api/progress", "/api/events/upgrade"] {
+            let resp = reqwest::get(format!("http://127.0.0.1:{}{}", fixture.port(), path))
+                .await
+                .expect("request reaches server");
+            assert_eq!(
+                resp.status(),
+                404,
+                "{path} must not be routed on the {kind} router"
+            );
+        }
+    }
+}
+
 /// Integration test verifying that the full router with actions
 /// can serve the dashboard.
 #[tokio::test]

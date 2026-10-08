@@ -384,71 +384,93 @@ pub fn build_dashboard(repo_path: &Path) -> Result<ReviewDashboard, anyhow::Erro
     Ok(dashboard)
 }
 
-/// Build the axum router with all API endpoints.
+// ============================================================
+// Route table
+// ============================================================
+
+/// Routes shared by **every** router — plain `serve`, `serve` with review
+/// actions, and `live`. An endpoint that reads live translation state must
+/// not be added here; it belongs in [`live_only_routes`].
+fn shared_routes() -> Router<CombinedState> {
+    Router::new()
+        .route("/", get(handlers::serve_index))
+        .route("/api/dashboard", get(handlers::api_get_dashboard))
+        .route("/api/units/{id}", get(handlers::api_get_unit))
+        .route("/api/units/{id}/diff", get(handlers::api_get_unit_diff))
+        .route("/api/units/{id}/ghidra", get(handlers::api_get_unit_ghidra))
+        .route("/api/units/{id}/accept", post(handlers::api_accept_unit))
+        .route(
+            "/api/units/{id}/send-back",
+            post(handlers::api_send_back_unit),
+        )
+        .route("/api/units/{id}/patch", post(handlers::api_request_patch))
+        .route("/api/queue", get(handlers::api_get_queue))
+        .route("/api/queue/next", get(handlers::api_get_next_unit))
+        .route("/api/graph", get(handlers::api_get_dependency_graph))
+        .route("/api/gc/candidates", get(handlers::api_get_gc_candidates))
+        .route("/api/gc/archive", post(handlers::api_archive_gc))
+        .route("/health", get(handlers::api_health))
+        .fallback_service(axum::routing::get(handlers::static_fallback))
+}
+
+/// Routes registered **only** in the live (`calxgloss live`) router — these
+/// read live translation state that plain `serve` does not own, so on the
+/// other routers they must fall through to the static 404 rather than answer
+/// with fabricated empty data. Every W0–W4 endpoint reporting pipeline
+/// progress or in-flight status belongs here.
+fn live_only_routes() -> Router<CombinedState> {
+    Router::new()
+        .route("/api/pipeline", get(handlers::api_get_pipeline))
+        .route("/api/progress", get(handlers::api_get_progress))
+        .route("/api/events/upgrade", get(api_events_upgrade_ws))
+}
+
+/// Apply the middleware layers every router shares.
+fn with_common_layers(router: Router) -> Router {
+    router
+        .layer(middleware::from_fn(handlers::trace_middleware))
+        .layer(DefaultBodyLimit::max(16 * 1024))
+}
+
+/// Assemble a router from the shared route table, wired to the given
+/// combined state. The live-only table is registered exactly when the state
+/// carries a [`SessionManager`] — the same dependency the live handlers
+/// read — so a live route can never be registered on a router that lacks
+/// the live state it needs.
+fn assemble(state: CombinedState) -> Router {
+    let mut routes = shared_routes();
+    if state.manager.is_some() {
+        routes = routes.merge(live_only_routes());
+    }
+    with_common_layers(routes.with_state(state))
+}
+
+/// Build the axum router for plain `calxgloss serve` — the shared review
+/// surface, without the live-pipeline endpoints.
 pub fn build_router(state: ServerState) -> Router {
-    Router::new()
-        .route("/", get(handlers::serve_index))
-        .route("/api/dashboard", get(handlers::api_get_dashboard))
-        .route("/api/units/{id}", get(handlers::api_get_unit))
-        .route("/api/units/{id}/diff", get(handlers::api_get_unit_diff))
-        .route("/api/units/{id}/ghidra", get(handlers::api_get_unit_ghidra))
-        .route("/api/units/{id}/accept", post(handlers::api_accept_unit))
-        .route(
-            "/api/units/{id}/send-back",
-            post(handlers::api_send_back_unit),
-        )
-        .route("/api/units/{id}/patch", post(handlers::api_request_patch))
-        .route("/api/queue", get(handlers::api_get_queue))
-        .route("/api/queue/next", get(handlers::api_get_next_unit))
-        .route("/api/graph", get(handlers::api_get_dependency_graph))
-        .route("/api/gc/candidates", get(handlers::api_get_gc_candidates))
-        .route("/api/gc/archive", post(handlers::api_archive_gc))
-        .route("/health", get(handlers::api_health))
-        .fallback_service(axum::routing::get(handlers::static_fallback))
-        .layer(middleware::from_fn(handlers::trace_middleware))
-        .layer(DefaultBodyLimit::max(16 * 1024))
-        .with_state(CombinedState {
-            server: state,
-            manager: None,
-            bridge: None,
-            actions: None,
-            progress: None,
-        })
+    assemble(CombinedState {
+        server: state,
+        manager: None,
+        bridge: None,
+        actions: None,
+        progress: None,
+    })
 }
 
-/// Build a router with WebSocket support and review-actions backend.
+/// Build the router for `calxgloss serve` with the review-actions backend
+/// wired in — still no live-pipeline endpoints.
 pub fn build_router_with_actions(state: ServerState, actions: ActionsState) -> Router {
-    Router::new()
-        .route("/", get(handlers::serve_index))
-        .route("/api/dashboard", get(handlers::api_get_dashboard))
-        .route("/api/units/{id}", get(handlers::api_get_unit))
-        .route("/api/units/{id}/diff", get(handlers::api_get_unit_diff))
-        .route("/api/units/{id}/ghidra", get(handlers::api_get_unit_ghidra))
-        .route("/api/units/{id}/accept", post(handlers::api_accept_unit))
-        .route(
-            "/api/units/{id}/send-back",
-            post(handlers::api_send_back_unit),
-        )
-        .route("/api/units/{id}/patch", post(handlers::api_request_patch))
-        .route("/api/queue", get(handlers::api_get_queue))
-        .route("/api/queue/next", get(handlers::api_get_next_unit))
-        .route("/api/graph", get(handlers::api_get_dependency_graph))
-        .route("/api/gc/candidates", get(handlers::api_get_gc_candidates))
-        .route("/api/gc/archive", post(handlers::api_archive_gc))
-        .route("/health", get(handlers::api_health))
-        .fallback_service(axum::routing::get(handlers::static_fallback))
-        .layer(middleware::from_fn(handlers::trace_middleware))
-        .layer(DefaultBodyLimit::max(16 * 1024))
-        .with_state(CombinedState {
-            server: state,
-            manager: None,
-            bridge: None,
-            actions: Some(actions),
-            progress: None,
-        })
+    assemble(CombinedState {
+        server: state,
+        manager: None,
+        bridge: None,
+        actions: Some(actions),
+        progress: None,
+    })
 }
 
-/// Build a router with WebSocket support.
+/// Build the router for `calxgloss live`: the shared surface plus the
+/// live-only pipeline-progress and WebSocket endpoints.
 pub fn build_router_with_ws(
     state: ServerState,
     manager: SessionManager,
@@ -467,37 +489,13 @@ pub fn build_router_with_ws(
         });
     });
 
-    Router::new()
-        .route("/api/dashboard", get(handlers::api_get_dashboard))
-        .route("/api/pipeline", get(handlers::api_get_pipeline))
-        .route("/api/units/{id}", get(handlers::api_get_unit))
-        .route("/api/units/{id}/diff", get(handlers::api_get_unit_diff))
-        .route("/api/units/{id}/ghidra", get(handlers::api_get_unit_ghidra))
-        .route("/api/units/{id}/accept", post(handlers::api_accept_unit))
-        .route(
-            "/api/units/{id}/send-back",
-            post(handlers::api_send_back_unit),
-        )
-        .route("/api/units/{id}/patch", post(handlers::api_request_patch))
-        .route("/api/queue", get(handlers::api_get_queue))
-        .route("/api/queue/next", get(handlers::api_get_next_unit))
-        .route("/api/graph", get(handlers::api_get_dependency_graph))
-        .route("/api/progress", get(handlers::api_get_progress))
-        .route("/api/gc/candidates", get(handlers::api_get_gc_candidates))
-        .route("/api/gc/archive", post(handlers::api_archive_gc))
-        .route("/health", get(handlers::api_health))
-        .route("/", get(handlers::serve_index))
-        .fallback_service(axum::routing::get(handlers::static_fallback))
-        .route("/api/events/upgrade", get(api_events_upgrade_ws))
-        .layer(middleware::from_fn(handlers::trace_middleware))
-        .layer(DefaultBodyLimit::max(16 * 1024))
-        .with_state(CombinedState {
-            server: state,
-            manager: Some(manager),
-            bridge: None,
-            actions: None,
-            progress: Some(Arc::new(RwLock::new(progress))),
-        })
+    assemble(CombinedState {
+        server: state,
+        manager: Some(manager),
+        bridge: None,
+        actions: None,
+        progress: Some(Arc::new(RwLock::new(progress))),
+    })
 }
 
 /// WebSocket upgrade handler for live progress events.
