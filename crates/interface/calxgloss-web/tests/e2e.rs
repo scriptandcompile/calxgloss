@@ -2156,7 +2156,7 @@ async fn test_progress_enhanced_reports_live_records() {
     ] {
         events.emit(event);
     }
-    // The callback spawns a task per event; give them time to land.
+    // Events flow through one ordered consumer task; give it time to land.
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     let resp = reqwest::get(format!(

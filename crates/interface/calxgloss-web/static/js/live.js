@@ -48,8 +48,12 @@ export async function loadLiveProgress() {
     } catch (err) {
         lastState = null;
         list.innerHTML = "";
-        showEmpty("The live view needs a running pipeline — start " +
-            "`calxgloss live` to watch units translate here.");
+        if (String(err.message || err).includes("404")) {
+            showEmpty("The live view needs a running pipeline — start " +
+                "`calxgloss live` to watch units translate here.");
+        } else {
+            showEmpty("Live progress is unavailable right now — the request failed.");
+        }
     }
 }
 
