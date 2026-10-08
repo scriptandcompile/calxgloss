@@ -86,6 +86,10 @@ fn main() -> Result<()> {
     // Initialize logging
     init_logging(cli.verbose, &cli.log_format);
 
+    // Effective tracing level, shared with serve/live so the server status
+    // endpoint reports what logging init actually installed.
+    let log_level = log_level_for_verbosity(cli.verbose);
+
     info!(
         version = env!("CARGO_PKG_VERSION"),
         target = ?std::env::args().next(),
@@ -446,7 +450,7 @@ fn main() -> Result<()> {
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_serve(workspace, port))
+                .block_on(handle_serve(workspace, port, log_level))
         }
         Command::Live {
             target,
@@ -479,6 +483,7 @@ fn main() -> Result<()> {
                     no_callgraph,
                     callgraph_cache,
                     callgraph_verbose,
+                    log_level,
                 ))
         }
     };

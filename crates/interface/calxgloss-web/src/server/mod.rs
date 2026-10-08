@@ -5,6 +5,7 @@
 mod actions;
 mod events;
 mod handlers;
+mod metrics;
 mod types;
 
 pub use self::actions::*;
@@ -30,14 +31,58 @@ use tracing::info;
 #[derive(Clone)]
 pub struct ServerState {
     repo_path: PathBuf,
+    /// When the server state was created — the reference point for uptime.
+    started_at: std::time::Instant,
+    /// Active tracing log level, reported by `/api/server/status`.
+    log_level: String,
+    /// Host name of the machine, resolved once at startup.
+    host: String,
+    /// Cross-platform process metrics (memory/CPU/open file handles).
+    metrics: Arc<metrics::ProcessMetrics>,
 }
 
 impl ServerState {
     pub fn new(repo_path: PathBuf) -> Self {
-        Self { repo_path }
+        Self {
+            repo_path,
+            started_at: std::time::Instant::now(),
+            // Default matches what the CLI's `init_logging` installs with no
+            // verbosity flags; the CLI always overrides via `with_log_level`
+            // so this reports the level that is actually active.
+            log_level: "warn".to_string(),
+            host: metrics::host_name(),
+            metrics: Arc::new(metrics::ProcessMetrics::for_current_process()),
+        }
     }
     pub fn repo_path(&self) -> &Path {
         &self.repo_path
+    }
+
+    /// Override the log level reported by `/api/server/status` so it matches
+    /// the level the CLI's logging init actually installed.
+    pub fn with_log_level(mut self, level: impl Into<String>) -> Self {
+        self.log_level = level.into();
+        self
+    }
+
+    /// Time elapsed since this state (and therefore the server) was created.
+    pub fn uptime(&self) -> std::time::Duration {
+        self.started_at.elapsed()
+    }
+
+    /// Calxgloss version the server binary was built with.
+    pub fn version() -> &'static str {
+        env!("CARGO_PKG_VERSION")
+    }
+
+    /// Host name of the machine running the server.
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
+    /// Active tracing log level.
+    pub fn log_level(&self) -> &str {
+        &self.log_level
     }
 }
 
@@ -338,6 +383,19 @@ impl ProgressState {
         self.entries.read().await.len()
     }
 
+    /// Returns the number of units still in flight (not yet finished).
+    ///
+    /// Finished units stay in the map for the dashboard's benefit, so the
+    /// server status endpoint counts only the unfinished ones.
+    pub async fn in_flight_count(&self) -> usize {
+        self.entries
+            .read()
+            .await
+            .values()
+            .filter(|entry| !entry.finished)
+            .count()
+    }
+
     /// Returns whether there are any currently in-flight units.
     pub async fn is_empty(&self) -> bool {
         self.entries.read().await.is_empty()
@@ -378,6 +436,7 @@ fn shared_routes() -> Router<CombinedState> {
         .route("/api/gc/candidates", get(handlers::api_get_gc_candidates))
         .route("/api/gc/archive", post(handlers::api_archive_gc))
         .route("/health", get(handlers::api_health))
+        .route("/api/server/status", get(handlers::api_server_status))
         .fallback_service(axum::routing::get(handlers::static_fallback))
 }
 

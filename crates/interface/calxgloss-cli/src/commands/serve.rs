@@ -9,7 +9,7 @@ use tracing::info;
 use crate::utils::*;
 
 /// Handle the `serve` subcommand: start the web review UI HTTP server.
-pub async fn handle_serve(workspace: PathBuf, port: u16) -> Result<()> {
+pub async fn handle_serve(workspace: PathBuf, port: u16, log_level: &'static str) -> Result<()> {
     info!(repo = ?workspace, port, "Starting web review UI server");
 
     if !workspace.exists() {
@@ -47,7 +47,7 @@ pub async fn handle_serve(workspace: PathBuf, port: u16) -> Result<()> {
     println_content("  Press Ctrl+C to stop");
     println!();
 
-    let server_state = ServerState::new(workspace);
+    let server_state = ServerState::new(workspace).with_log_level(log_level);
     println_content("Endpoints:");
     println_content("    GET  /                  Dashboard frontend");
     println_content("    GET  /api/dashboard     Full review dashboard JSON");
@@ -58,6 +58,8 @@ pub async fn handle_serve(workspace: PathBuf, port: u16) -> Result<()> {
     println_content("    POST /api/units/:id/accept    Accept (merge to main)");
     println_content("    POST /api/units/:id/send-back Send back with comments");
     println_content("    POST /api/units/:id/patch     Request patch (retry translation)");
+    println_content("    GET  /api/server/status Server status (uptime, memory, CPU, connections)");
+    println_content("    GET  /health            Health probe (workspace, uptime, version)");
     println!();
     hsep_bold();
     println!();

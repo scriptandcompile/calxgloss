@@ -6,7 +6,7 @@
 import { API } from "./api.js";
 import { State } from "./state.js";
 import { KIND_LABELS, STATUS_LABELS } from "./constants.js";
-import { fmtTime, escapeHtml } from "./utils.js";
+import { fmtTime, fmtUptime, escapeHtml } from "./utils.js";
 import { showToast } from "./ui.js";
 import { renderFullQueue } from "./queue.js";
 import { switchView } from "./views.js";
@@ -44,6 +44,9 @@ export async function loadDashboard() {
 
         // Load stale branches card (non-critical, runs in background)
         renderStaleBranchesCard();
+
+        // Server status card (uptime, version, resources — non-critical)
+        renderServerStatusCard();
     } catch (err) {
         showToast(`Failed to load dashboard: ${err.message}`, "error");
     }
@@ -71,6 +74,40 @@ export function renderStatusCards(dashboard) {
                 <div class="status-card-value">${c.value}</div>
             </div>
         `).join("");
+}
+
+/* Server status card — uptime, version, host, log level, memory/CPU,
+   WebSocket connections, open file handles, and pipeline state, all from
+   GET /api/server/status (issue #59). */
+export async function renderServerStatusCard() {
+    try {
+        const status = await API.serverStatus();
+        const container = document.getElementById("status-cards");
+        if (!container) return;
+
+        const pipelineLabels = { unavailable: "no pipeline", idle: "idle", running: "running" };
+        const card = document.createElement("div");
+        card.id = "server-status-card";
+        card.className = "status-card server";
+        card.title = `Pipeline: ${status.pipeline_status} · Host: ${status.host} · Log level: ${status.log_level}`;
+        card.innerHTML = `
+            <div class="status-card-label">Server</div>
+            <div class="status-card-value" id="server-status-uptime">${fmtUptime(status.uptime_secs)}</div>
+            <div class="server-status-meta">
+                <span id="server-status-version">v${escapeHtml(status.version)}</span>
+                <span id="server-status-pipeline">${escapeHtml(pipelineLabels[status.pipeline_status] || status.pipeline_status)}</span>
+                <span id="server-status-host">${escapeHtml(status.host)}</span>
+                <span id="server-status-loglevel">${escapeHtml(status.log_level)}</span>
+                <span id="server-status-mem">${status.memory_mb} MB</span>
+                <span id="server-status-cpu">${status.cpu_percent}%</span>
+                <span id="server-status-ws">${status.ws_connections} WS</span>
+                <span id="server-status-fd">${status.open_file_handles} FD</span>
+            </div>
+        `;
+        container.appendChild(card);
+    } catch {
+        // Silently fail — server status card is non-critical
+    }
 }
 
 export async function renderStaleBranchesCard() {

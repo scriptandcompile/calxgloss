@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Server status & enhanced health probe** — `GET /api/server/status` reports how the server itself is doing: pipeline state (no pipeline / idle / running), uptime, version, host, log level, memory and CPU usage, live WebSocket connection count, and open file handles — gathered cross-platform on Windows/macOS/Linux, and available in both `serve` and `live`. The `/health` probe now also reports workspace accessibility, uptime, and version, and the dashboard gained a server status card rendering these values.
 - **In-flight translation phases** — during a live run every translating unit reports the pipeline step it is in (Ghidra fetch, API tagging, baseline-test generation, context-tier selection, LLM call, compiling, testing, review). `/api/progress` now carries the current phase, the phase history in event order (context-tier escalations stay visible), and elapsed time per unit.
 
 ### Refactored

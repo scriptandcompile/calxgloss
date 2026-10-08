@@ -267,6 +267,16 @@ svg {
 .status-card.sendback .status-card-value { color: var(--status-sendback); }
 .status-card.blocked .status-card-value { color: var(--status-blocked); }
 
+.status-card.server .status-card-value { color: var(--text-primary); }
+.server-status-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px 8px;
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
 /* ─── Dashboard Columns ─────────────────────────────────────────────── */
 .dashboard-columns {
     display: grid;

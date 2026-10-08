@@ -33,6 +33,7 @@ export const API = {
     async nextUnit() { return API.get("/api/queue/next"); },
     async graph() { return API.get("/api/graph"); },
     async health() { return API.get("/health"); },
+    async serverStatus() { return API.get("/api/server/status"); },
     async pipeline() { return API.get("/api/pipeline"); },
     async gcCandidates(days) { return API.get(`/api/gc/candidates?days=${days}`); },
     async gcArchive(branches) { return API.post("/api/gc/archive", branches.length > 0 ? { branches } : {}); },

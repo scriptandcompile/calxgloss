@@ -10,7 +10,8 @@ use tracing::info;
 
 use super::super::PatchRequest;
 use super::super::{
-    ActionResponse, SendBackRequest, ServerError, ServerState, UnitResponse, UnitResponseInner,
+    ActionResponse, CombinedState, HealthResponse, PipelineStatus, SendBackRequest, ServerError,
+    ServerState, ServerStatus, UnitResponse, UnitResponseInner,
 };
 
 /// Optional JSON body extractor — returns None when no body is present.
@@ -240,9 +241,7 @@ pub async fn api_get_unit(
         .find(|u| u.id == unit_id)
         .ok_or_else(|| ServerError::not_found("Unit not found"))?;
 
-    let state = ServerState {
-        repo_path: combined.server.repo_path.to_path_buf(),
-    };
+    let state = combined.server.clone();
 
     let diff_summary = super::diff::compute_diff_summary(&state, unit);
     let attempt_history = super::ghidra::load_attempt_history(state.repo_path(), &unit_id);
@@ -476,15 +475,58 @@ pub async fn api_get_dependency_graph(
 
 // ─── GET /health ─────────────────────────────────────────────────────
 
-/// Health check endpoint.
+/// Health check endpoint — one endpoint, enhanced in place (issue #59):
+/// liveness plus workspace accessibility, uptime, and version. There is
+/// deliberately no second health alias.
 pub async fn api_health(
     State(state): State<ServerState>,
-) -> Result<Json<serde_json::Value>, ServerError> {
-    let repo_accessible = state.repo_path().exists();
-    Ok(Json(serde_json::json!({
-        "status": "ok",
-        "repo_accessible": repo_accessible,
-    })))
+) -> Result<Json<HealthResponse>, ServerError> {
+    Ok(Json(HealthResponse {
+        status: "ok".to_string(),
+        repo_accessible: state.repo_path().exists(),
+        uptime_secs: state.uptime().as_secs(),
+        version: ServerState::version().to_string(),
+    }))
+}
+
+// ─── GET /api/server/status ──────────────────────────────────────────
+
+/// Server status endpoint: pipeline state, uptime, version, host, log level,
+/// memory/CPU usage, live WebSocket connection count, and open file handles.
+///
+/// Registered in **all** routers. Routers without live state report
+/// [`PipelineStatus::Unavailable`] and zero connections rather than
+/// fabricating live data.
+pub async fn api_server_status(State(combined): State<CombinedState>) -> Json<ServerStatus> {
+    let server = &combined.server;
+
+    let pipeline_status = match &combined.progress {
+        None => PipelineStatus::Unavailable,
+        Some(progress) => {
+            if progress.read().await.in_flight_count().await > 0 {
+                PipelineStatus::Running
+            } else {
+                PipelineStatus::Idle
+            }
+        }
+    };
+    let ws_connections = match &combined.manager {
+        Some(manager) => manager.connection_count().await,
+        None => 0,
+    };
+    let sample = server.metrics.sample();
+
+    Json(ServerStatus {
+        pipeline_status,
+        uptime_secs: server.uptime().as_secs(),
+        version: ServerState::version().to_string(),
+        host: server.host().to_string(),
+        log_level: server.log_level().to_string(),
+        memory_mb: sample.memory_mb,
+        cpu_percent: sample.cpu_percent,
+        ws_connections,
+        open_file_handles: sample.open_file_handles,
+    })
 }
 
 /// Serve the frontend index page.

@@ -230,8 +230,8 @@ Dependency Graph, Branch Cleanup, LLM I/O Log) — a review gate that doesn't
 show pipeline position, context tiers, faults/recovery, token cost, or any
 process control (archive §12 "Current State Summary").
 
-- Phase 0 — server management endpoints: `/api/server/status`, enhanced
-  `/health`, shutdown/restart, `PATCH /api/server/log-level`. **Router note:**
+- Phase 0 — server management endpoints: `/api/server/status` (done), enhanced
+  `/health` (done), shutdown/restart, `PATCH /api/server/log-level`. **Router note:**
   `/api/pipeline` and `/api/progress` exist only in the WS router
   (`calxgloss live`); every new endpoint must state which router(s) it
   registers in.

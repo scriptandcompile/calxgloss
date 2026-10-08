@@ -55,14 +55,21 @@ pub(super) fn parse_retry_strategy(s: &str) -> Result<RetryStrategy> {
     })
 }
 
-/// Initialize tracing with the given verbosity level and format.
-pub(super) fn init_logging(verbosity: u8, format: &str) {
-    let level = match verbosity {
+/// Map the CLI verbosity flag to the effective tracing level string.
+/// Shared by `init_logging` and the serve/live commands so the server
+/// status endpoint reports the level that is actually active.
+pub(super) fn log_level_for_verbosity(verbosity: u8) -> &'static str {
+    match verbosity {
         0 => "warn",
         1 => "info",
         2 => "debug",
         _ => "trace",
-    };
+    }
+}
+
+/// Initialize tracing with the given verbosity level and format.
+pub(super) fn init_logging(verbosity: u8, format: &str) {
+    let level = log_level_for_verbosity(verbosity);
 
     match format {
         "json" => {

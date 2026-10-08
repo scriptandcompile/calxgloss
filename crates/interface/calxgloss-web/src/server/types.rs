@@ -623,3 +623,153 @@ impl PipelineProgressResponse {
         }
     }
 }
+
+// ============================================================
+// Server management (issue #59)
+// ============================================================
+
+/// State of the live translation pipeline as seen by the web server.
+///
+/// The web server only observes the pipeline when it was built with live
+/// state (`calxgloss live`); on plain `serve` routers the pipeline is
+/// [`PipelineStatus::Unavailable`] rather than a fabricated "idle".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PipelineStatus {
+    /// No live translation state is attached to this server (plain `serve`).
+    Unavailable,
+    /// A live pipeline is attached but no units are currently in flight.
+    Idle,
+    /// One or more units are currently being translated.
+    Running,
+}
+
+/// Snapshot of the server's own health and resource usage, served by
+/// `GET /api/server/status`. Process metrics are gathered cross-platform
+/// (Windows/macOS/Linux) via the `sysinfo` backends.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServerStatus {
+    /// Whether a live translation pipeline is attached and translating.
+    pub pipeline_status: PipelineStatus,
+    /// Seconds since the server state was created (process uptime).
+    pub uptime_secs: u64,
+    /// Calxgloss version the server binary was built with.
+    pub version: String,
+    /// Host name of the machine running the server.
+    pub host: String,
+    /// Active tracing log level (e.g. "warn", "info", "debug").
+    pub log_level: String,
+    /// Resident set size of the server process, in megabytes.
+    pub memory_mb: f64,
+    /// CPU usage of the server process, as a percentage of one core.
+    pub cpu_percent: f64,
+    /// Number of live WebSocket sessions currently connected.
+    pub ws_connections: usize,
+    /// Number of open file handles held by the server process.
+    pub open_file_handles: u64,
+}
+
+/// Response body of the enhanced `GET /health` probe: port reachability
+/// plus workspace accessibility, uptime, and version. One health endpoint
+/// only — there is deliberately no second alias.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HealthResponse {
+    /// Always "ok" when the server answered (mirrors the liveness contract).
+    pub status: String,
+    /// Whether the served workspace directory is accessible from the process.
+    pub repo_accessible: bool,
+    /// Seconds since the server state was created (process uptime).
+    pub uptime_secs: u64,
+    /// Calxgloss version the server binary was built with.
+    pub version: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_server_status() -> ServerStatus {
+        ServerStatus {
+            pipeline_status: PipelineStatus::Running,
+            uptime_secs: 3_600,
+            version: "0.3.0".into(),
+            host: "workstation".into(),
+            log_level: "info".into(),
+            memory_mb: 128.5,
+            cpu_percent: 42.5,
+            ws_connections: 3,
+            open_file_handles: 27,
+        }
+    }
+
+    /// `ServerStatus` must round-trip through JSON with every field present
+    /// under its documented snake_case name.
+    #[test]
+    fn server_status_serde_round_trip_covers_every_field() {
+        let status = sample_server_status();
+        let json = serde_json::to_value(&status).expect("ServerStatus serializes");
+
+        assert_eq!(json["pipeline_status"], "running");
+        assert_eq!(json["uptime_secs"], 3_600);
+        assert_eq!(json["version"], "0.3.0");
+        assert_eq!(json["host"], "workstation");
+        assert_eq!(json["log_level"], "info");
+        assert_eq!(json["memory_mb"], 128.5);
+        assert_eq!(json["cpu_percent"], 42.5);
+        assert_eq!(json["ws_connections"], 3);
+        assert_eq!(json["open_file_handles"], 27);
+        assert_eq!(
+            json.as_object().expect("object").len(),
+            9,
+            "exactly the nine documented fields"
+        );
+
+        let back: ServerStatus = serde_json::from_value(json).expect("ServerStatus deserializes");
+        assert_eq!(back, status);
+    }
+
+    /// The pipeline status enum serializes to its three documented states.
+    #[test]
+    fn pipeline_status_serializes_to_documented_states() {
+        assert_eq!(
+            serde_json::to_value(PipelineStatus::Unavailable).expect("serializes"),
+            "unavailable"
+        );
+        assert_eq!(
+            serde_json::to_value(PipelineStatus::Idle).expect("serializes"),
+            "idle"
+        );
+        assert_eq!(
+            serde_json::to_value(PipelineStatus::Running).expect("serializes"),
+            "running"
+        );
+        let back: PipelineStatus =
+            serde_json::from_str("\"idle\"").expect("deserializes from state name");
+        assert_eq!(back, PipelineStatus::Idle);
+    }
+
+    /// `HealthResponse` must round-trip through JSON with every field present.
+    #[test]
+    fn health_response_serde_round_trip_covers_every_field() {
+        let health = HealthResponse {
+            status: "ok".into(),
+            repo_accessible: true,
+            uptime_secs: 42,
+            version: "0.3.0".into(),
+        };
+        let json = serde_json::to_value(&health).expect("HealthResponse serializes");
+
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["repo_accessible"], true);
+        assert_eq!(json["uptime_secs"], 42);
+        assert_eq!(json["version"], "0.3.0");
+        assert_eq!(
+            json.as_object().expect("object").len(),
+            4,
+            "exactly the four documented fields"
+        );
+
+        let back: HealthResponse = serde_json::from_value(json).expect("deserializes");
+        assert_eq!(back, health);
+    }
+}

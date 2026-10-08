@@ -359,6 +359,152 @@ async fn test_health_endpoint() {
     let body: serde_json::Value = resp.json().await.expect("health body is JSON");
     assert_eq!(body["status"], "ok");
     assert_eq!(body["repo_accessible"], true);
+    // Enhanced health (issue #59): uptime and version, same single endpoint.
+    assert!(
+        body["uptime_secs"].as_u64().is_some(),
+        "health must report uptime_secs"
+    );
+    assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+}
+
+/// The enhanced `/health` is registered in **all** routers — assert the
+/// live (WebSocket) router answers it with the same JSON contract.
+#[tokio::test]
+async fn test_health_endpoint_live_router() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let (manager, _event_tx) = SessionManager::new();
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/health", fixture.port()))
+        .await
+        .expect("health request succeeds");
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("health body is JSON");
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["repo_accessible"], true);
+    assert!(body["uptime_secs"].as_u64().is_some());
+    assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+}
+
+// ─────────────────────────────────────────────────────────────
+// Server status endpoint tests (issue #59)
+// ─────────────────────────────────────────────────────────────
+
+/// `GET /api/server/status` on the plain serve router: every documented
+/// field is present, and with no live state attached the pipeline status
+/// is honestly "unavailable" with zero WebSocket connections.
+#[tokio::test]
+async fn test_server_status_plain_router() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path()).with_log_level("debug");
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resp = reqwest::get(format!(
+        "http://127.0.0.1:{}/api/server/status",
+        fixture.port()
+    ))
+    .await
+    .expect("server status request succeeds");
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("status body is JSON");
+
+    assert_eq!(body["pipeline_status"], "unavailable");
+    assert_eq!(body["ws_connections"], 0);
+    assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(body["log_level"], "debug");
+    assert!(
+        body["host"].as_str().is_some_and(|h| !h.is_empty()),
+        "host must be a non-empty string"
+    );
+    assert!(body["uptime_secs"].as_u64().is_some());
+    assert!(
+        body["memory_mb"].as_f64().unwrap_or(0.0) > 0.0,
+        "memory_mb should be positive for the running server"
+    );
+    assert!(body["cpu_percent"].as_f64().unwrap_or(-1.0) >= 0.0);
+    assert!(
+        body["open_file_handles"].as_u64().unwrap_or(0) > 0,
+        "the server process always has open file handles"
+    );
+}
+
+/// `GET /api/server/status` on the live router: a fed `TranslationStarted`
+/// event flips the pipeline status to "running", and a registered WebSocket
+/// session is reflected in the connection count.
+#[tokio::test]
+async fn test_server_status_live_router() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager.clone(), progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // A live WebSocket session (registered through the same path the upgrade
+    // handler uses) and an in-flight unit.
+    let (_handler, _sender) = manager.register_client().await;
+    events.emit(ProgressEvent::TranslationStarted {
+        dll: "game_logic".into(),
+        function: "DrawPrimitive".into(),
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let resp = reqwest::get(format!(
+        "http://127.0.0.1:{}/api/server/status",
+        fixture.port()
+    ))
+    .await
+    .expect("server status request succeeds");
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("status body is JSON");
+
+    assert_eq!(body["pipeline_status"], "running");
+    assert_eq!(
+        body["ws_connections"].as_u64(),
+        Some(1),
+        "the live session must be counted"
+    );
+    assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+}
+
+/// With a live pipeline attached but nothing in flight, the status endpoint
+/// reports "idle" — distinct from plain serve's "unavailable".
+#[tokio::test]
+async fn test_server_status_live_router_idle() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let (manager, _event_tx) = SessionManager::new();
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resp = reqwest::get(format!(
+        "http://127.0.0.1:{}/api/server/status",
+        fixture.port()
+    ))
+    .await
+    .expect("server status request succeeds");
+
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("status body is JSON");
+    assert_eq!(body["pipeline_status"], "idle");
+    assert_eq!(body["ws_connections"], 0);
 }
 
 /// Verify that the dashboard endpoint returns valid JSON with
@@ -904,6 +1050,28 @@ async fn test_actions_router_dashboard() {
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
     assert_eq!(body["success"], true);
+
+    // Server management endpoints register in all three routers — the
+    // actions router must serve the status endpoint too.
+    let status_resp = reqwest::get(format!(
+        "http://127.0.0.1:{}/api/server/status",
+        fixture.port()
+    ))
+    .await
+    .expect("server status request succeeds");
+    assert_eq!(status_resp.status(), 200);
+    let status_body: serde_json::Value = status_resp.json().await.expect("status is JSON");
+    assert_eq!(status_body["pipeline_status"], "unavailable");
+
+    // The enhanced /health also registers here (issue #59: all three routers).
+    let health_resp = reqwest::get(format!("http://127.0.0.1:{}/health", fixture.port()))
+        .await
+        .expect("health request succeeds");
+    assert_eq!(health_resp.status(), 200);
+    let health_body: serde_json::Value = health_resp.json().await.expect("health is JSON");
+    assert_eq!(health_body["status"], "ok");
+    assert!(health_body["uptime_secs"].as_u64().is_some());
+    assert_eq!(health_body["version"], env!("CARGO_PKG_VERSION"));
 }
 
 /// Verify that a send-back verdict survives a dashboard rebuild (issue #9):
@@ -1272,6 +1440,94 @@ async fn test_headless_browser_page_loads() {
     assert!(
         is_dashboard_ok,
         "Dashboard API should be reachable from browser"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for the dashboard server status card (issue #59):
+/// the card must render the values served by `GET /api/server/status` —
+/// version, uptime, and the pipeline state.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_server_status_card() {
+    use headless_chrome::{Browser, LaunchOptionsBuilder};
+
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let browser = Browser::new(
+        LaunchOptionsBuilder::default()
+            .headless(true)
+            .args(vec![
+                std::ffi::OsStr::new("--no-sandbox"),
+                std::ffi::OsStr::new("--disable-gpu"),
+                std::ffi::OsStr::new("--disable-dev-shm-usage"),
+            ])
+            .build()
+            .expect("build chrome launch options"),
+    )
+    .expect("launch headless chrome");
+
+    let tab = browser.new_tab().expect("open new tab");
+    tab.navigate_to(&format!("http://127.0.0.1:{}", fixture.port()))
+        .expect("navigate to server root");
+    tab.wait_until_navigated().expect("wait for navigation");
+    tab.enable_runtime().expect("enable runtime");
+
+    // The card renders asynchronously once the dashboard fetches settle;
+    // poll until it appears (up to ~5 seconds).
+    let mut rendered = false;
+    for _ in 0..25 {
+        let found = tab
+            .evaluate("!!document.getElementById('server-status-card')", false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if found {
+            rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(rendered, "dashboard should render the server status card");
+
+    let text_of = |id: &str| -> String {
+        tab.evaluate(
+            &format!("document.getElementById('{id}')?.textContent || ''",),
+            false,
+        )
+        .expect("evaluate card text")
+        .value
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default()
+    };
+
+    let version_text = text_of("server-status-version");
+    assert!(
+        version_text.contains(env!("CARGO_PKG_VERSION")),
+        "status card should show the server version, got: {version_text}"
+    );
+
+    let uptime_text = text_of("server-status-uptime");
+    assert!(
+        !uptime_text.is_empty() && uptime_text != "—",
+        "status card should show a non-empty uptime, got: {uptime_text}"
+    );
+
+    // Plain serve has no live pipeline — the card must say so honestly.
+    assert_eq!(
+        text_of("server-status-pipeline"),
+        "no pipeline",
+        "plain serve status card should report 'no pipeline'"
     );
 
     tab.close_target().ok();

@@ -87,6 +87,16 @@ impl SessionManager {
         let clients = self.clients.blocking_lock();
         clients.len()
     }
+
+    /// Number of live WebSocket sessions, pruning senders whose client has
+    /// disconnected. Async-safe for use from request handlers (unlike
+    /// [`SessionManager::client_count`], which must never run on a runtime
+    /// thread because it blocks).
+    pub async fn connection_count(&self) -> usize {
+        let mut clients = self.clients.lock().await;
+        clients.retain(|tx| !tx.is_closed());
+        clients.len()
+    }
 }
 
 async fn broadcast_loop(

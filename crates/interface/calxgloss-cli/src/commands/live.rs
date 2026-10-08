@@ -25,6 +25,7 @@ pub async fn handle_live(
     no_callgraph: bool,
     callgraph_cache: Option<PathBuf>,
     callgraph_verbose: bool,
+    log_level: &'static str,
 ) -> Result<()> {
     info!(
         port,
@@ -89,7 +90,7 @@ pub async fn handle_live(
             .unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], port)));
         let _ = ready_tx.send(Ok(local_addr));
 
-        let server_state = ServerState::new(workspace);
+        let server_state = ServerState::new(workspace).with_log_level(log_level);
 
         // Build the router with WebSocket support so the frontend can stream
         // progress events over the upgrade endpoint.
