@@ -6,6 +6,7 @@ import { State } from "./state.js";
 import { renderFullQueue } from "./queue.js";
 import { loadGcCandidates } from "./gc.js";
 import { startLiveView, stopLiveView } from "./live.js";
+import { loadPipelineProgress } from "./dashboard.js";
 
 export function switchView(viewName) {
     State.currentView = viewName;
@@ -44,5 +45,10 @@ export function switchView(viewName) {
         startLiveView();
     } else {
         stopLiveView();
+    }
+
+    // Pipeline view: refresh the overview on entry (issue #66).
+    if (viewName === "pipeline") {
+        loadPipelineProgress();
     }
 }

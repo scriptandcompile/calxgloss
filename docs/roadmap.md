@@ -27,7 +27,7 @@ targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| W0 | Web UI Foundation & Phase Progress | `calxgloss-web` | 2–3 wk | 🔶 in progress (Phases 0–2 done) | `/implement` from [#55](https://github.com/scriptandcompile/calxgloss/issues/55) | [#55](https://github.com/scriptandcompile/calxgloss/issues/55) |
+| W0 | Web UI Foundation & Phase Progress | `calxgloss-web` | 2–3 wk | 🔶 in progress (Phases 0–4 done; Phase 2 tail remains) | `/implement` from [#55](https://github.com/scriptandcompile/calxgloss/issues/55) | [#55](https://github.com/scriptandcompile/calxgloss/issues/55) |
 | W1 | Web UI Status & Visibility | `calxgloss-web` | 1–2 wk | ⬜ not started | after W0 Phases 0–1 | — |
 | W2 | Web UI Process Control | `calxgloss-web` + types/translator | 3–4 wk | ⬜ not started | after W0 Phase 1 | — |
 | W3 | Web UI Historical & Analytical Views | `calxgloss-web` | 2–3 wk | ⬜ not started | after W0 Phases 1–2 | — |
@@ -55,14 +55,13 @@ verified still open in the code (2026-10-08); no effort estimates yet.
 
 ## W0 — Web UI Foundation & Phase Progress (`calxgloss-web`)
 
-Independent; first web track. Phases 0–3 are done (server management
+Independent; first web track. Phases 0–4 are done (server management
 endpoints, pipeline phase bar, per-binary rows, in-flight unit phases, unit
-process detail, live translation view — shipped under epic #55, see
-`CHANGELOG.md`). Remaining:
+process detail, live translation view, dashboard enhancements — shipped
+under epic #55, see `CHANGELOG.md`). Remaining:
 
 - Phase 2 (tail) — WS phase events (push per-unit phase history over the
   WebSocket).
-- Phase 4 — dashboard enhancements.
 
 **Router note:** `/api/progress`, `/api/progress/enhanced`, and the WS
 upgrade exist only in the WS router (`calxgloss live`); `/api/pipeline` is

@@ -1006,6 +1006,113 @@ async fn test_dashboard_endpoint() {
     assert!(counts["accepted"].as_u64().unwrap_or(0) >= 5); // + DrawPrimitive v1 + UpdateScene + shim (merged branches count as accepted)
 }
 
+// ── Test: Dashboard summary data (issue #66) ───────────────────────────
+
+#[tokio::test]
+async fn test_dashboard_binary_categories() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/dashboard", fixture.port()))
+        .await
+        .expect("dashboard request succeeds");
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+
+    // The fixture classifies game_logic.json as ProjectSpecific and
+    // d3d9.json as MicrosoftSdk; every category is listed, even at zero.
+    let count = |name: &str| {
+        json["binary_categories"]
+            .as_array()
+            .expect("binary_categories is an array")
+            .iter()
+            .find(|c| c["category"] == name)
+            .map(|c| c["count"].as_u64())
+    };
+    assert_eq!(count("ProjectSpecific"), Some(Some(1)));
+    assert_eq!(count("MicrosoftSdk"), Some(Some(1)));
+    assert_eq!(count("WindowsOs"), Some(Some(0)));
+    assert_eq!(count("KnownThirdParty"), Some(Some(0)));
+    assert_eq!(count("UnknownThirdParty"), Some(Some(0)));
+    assert_eq!(count("RuntimeLibrary"), Some(Some(0)));
+}
+
+#[tokio::test]
+async fn test_dashboard_quality_summary() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/dashboard", fixture.port()))
+        .await
+        .expect("dashboard request succeeds");
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+
+    // Fixture unit confidences: 0.5, 0.5 (DrawPrimitive v1/v2), 0.95, 0.95
+    // (classify) → average 0.725. No unit carries baseline or verification
+    // test data in the dashboard payload → both rates are null, not
+    // fabricated zeros. (The weighted pass-rate math itself is covered by
+    // the summary module's unit tests.)
+    let qs = &json["quality_summary"];
+    let avg = qs["avg_unit_confidence"]
+        .as_f64()
+        .expect("avg_unit_confidence is a number");
+    assert!(
+        (avg - 0.725).abs() < 0.01,
+        "avg_unit_confidence should be ~0.725, got {}",
+        avg
+    );
+    assert!(
+        qs["baseline_pass_rate"].is_null(),
+        "baseline_pass_rate should be null when no unit has baseline data"
+    );
+    assert!(
+        qs["verification_pass_rate"].is_null(),
+        "verification_pass_rate should be null when no unit has verification data"
+    );
+}
+
+#[tokio::test]
+async fn test_dashboard_token_usage_summary() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // No token log yet → token_usage is null, not zeros.
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/dashboard", fixture.port()))
+        .await
+        .expect("dashboard request succeeds");
+    let json: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+    assert!(
+        json["token_usage"].is_null(),
+        "token_usage should be null when no log exists"
+    );
+
+    // write_token_usage_log: attempt 1 failed (4096 tokens), attempt 2
+    // succeeded (3072 tokens) → total 7168 across 2 calls.
+    write_token_usage_log(&fixture, false);
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/dashboard", fixture.port()))
+        .await
+        .expect("dashboard request succeeds");
+    let json: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+    let tu = &json["token_usage"];
+    assert_eq!(tu["total_tokens"].as_u64(), Some(7168));
+    assert_eq!(tu["successful_tokens"].as_u64(), Some(3072));
+    assert_eq!(tu["failed_tokens"].as_u64(), Some(4096));
+    assert_eq!(tu["calls"].as_u64(), Some(2));
+}
+
 /// Verify that a single unit detail endpoint returns expected fields.
 #[tokio::test]
 async fn test_unit_detail_endpoint() {
@@ -3943,6 +4050,186 @@ async fn test_headless_live_view_honest_without_live_mode() {
     assert!(
         !eval_bool("document.querySelector('#live-units .live-unit') !== null"),
         "no fabricated unit rows outside live mode"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for issue #66: the dashboard must render category
+/// cards sourced from the classification data, a quality summary computed
+/// from the dashboard units, and a token budget visual driven by the
+/// token-usage log and a user-set budget.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_dashboard_summary_sections() {
+    let fixture = TestFixture::new();
+    write_token_usage_log(&fixture, false);
+
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+    let eval_text = |expr: &str| -> String {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default()
+    };
+
+    // Category cards: one per DllCategory, with the fixture's counts.
+    let mut cards_rendered = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "(() => { const cards = document.querySelectorAll('#category-cards .category-card'); \
+                if (cards.length !== 6) return false; \
+                const ps = document.querySelector('#category-cards [data-category=\"ProjectSpecific\"]'); \
+                const sdk = document.querySelector('#category-cards [data-category=\"MicrosoftSdk\"]'); \
+                return !!ps && !!sdk && ps.textContent.includes('1') && sdk.textContent.includes('1'); })()",
+        ) {
+            cards_rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        cards_rendered,
+        "category cards should render 6 categories with fixture counts"
+    );
+
+    // Quality summary: avg confidence 73% (0.725 rounded), and honest
+    // em-dashes for the baseline/verification rates with no data behind them.
+    let mut quality_rendered = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "(() => { const el = document.getElementById('quality-summary'); \
+                if (!el) return false; const t = el.textContent; \
+                return t.includes('73%') && t.includes('—'); })()",
+        ) {
+            quality_rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        quality_rendered,
+        "quality summary should show the 73% average confidence and em-dashes for the rates with no data behind them, got: {:?}",
+        eval_text("document.getElementById('quality-summary')?.textContent || ''")
+    );
+
+    // Token budget: consumed tokens come from the log; the budget itself is
+    // a user preference in localStorage. Set it, reload, and check the bar.
+    tab.evaluate(
+        "localStorage.setItem('calxgloss_token_budget', '10000') === undefined",
+        false,
+    )
+    .expect("set token budget");
+    tab.reload(false, None).expect("reload");
+    tab.wait_until_navigated().expect("wait for reload");
+
+    let mut budget_rendered = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "(() => { const el = document.getElementById('token-budget'); \
+                if (!el) return false; \
+                const tokens = el.querySelector('[data-total-tokens]'); \
+                if (!tokens || tokens.getAttribute('data-total-tokens') !== '7168') return false; \
+                const fill = el.querySelector('.token-budget-fill'); \
+                return !!fill && fill.style.width === '71.68%'; })()",
+        ) {
+            budget_rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        budget_rendered,
+        "token budget bar should show 7,168 consumed against the 10,000 budget (71.68%), got: {:?}",
+        eval_text("document.getElementById('token-budget')?.textContent || ''")
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for issue #66: the pipeline overview must be
+/// selectable as the landing view; the preference persists in localStorage
+/// and the next page load opens the pipeline view instead of the dashboard.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_landing_view_preference() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+
+    // The landing selector offers the pipeline view; pick it.
+    let has_option =
+        eval_bool("!!document.querySelector('#landing-view option[value=\"pipeline\"]')");
+    assert!(
+        has_option,
+        "landing view select should offer the pipeline view"
+    );
+    tab.evaluate(
+        "(() => { const sel = document.getElementById('landing-view'); \
+            sel.value = 'pipeline'; \
+            sel.dispatchEvent(new Event('change')); })()",
+        false,
+    )
+    .expect("select pipeline landing view");
+
+    // Reload: the pipeline view must be the active one, not the dashboard.
+    tab.reload(false, None).expect("reload");
+    tab.wait_until_navigated().expect("wait for reload");
+
+    let mut pipeline_active = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "document.getElementById('view-pipeline')?.classList.contains('view-active') === true \
+                && document.getElementById('view-dashboard')?.classList.contains('view-active') !== true",
+        ) {
+            pipeline_active = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        pipeline_active,
+        "pipeline view should be the landing view after the preference is saved"
+    );
+    assert!(
+        eval_bool("document.getElementById('landing-view')?.value === 'pipeline'"),
+        "landing select should reflect the saved preference"
     );
 
     tab.close_target().ok();

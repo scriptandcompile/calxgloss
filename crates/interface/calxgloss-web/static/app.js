@@ -268,10 +268,33 @@ function updateZoomIndicator(scale) {
     }
 }
 
+// ─── Landing view preference (issue #66) ────────────────────────────────
+
+const LANDING_VIEW_KEY = "calxgloss_landing_view";
+
+/* Applies the saved landing view (dashboard by default) and wires the
+   topbar select so the choice persists across reloads. */
+function setupLandingView() {
+    const select = document.getElementById("landing-view");
+    const saved = localStorage.getItem(LANDING_VIEW_KEY) || "dashboard";
+
+    if (select) {
+        select.value = saved;
+        select.addEventListener("change", () => {
+            localStorage.setItem(LANDING_VIEW_KEY, select.value);
+        });
+    }
+
+    if (saved !== "dashboard") {
+        switchView(saved);
+    }
+}
+
 // ─── Initialization ─────────────────────────────────────────────────────
 
 async function init() {
     setupEventListeners();
+    setupLandingView();
 
     // Initialize full-screen graph renderer
     State.graphRendererFull = new GraphRenderer(document.getElementById("graph-canvas-full"), {

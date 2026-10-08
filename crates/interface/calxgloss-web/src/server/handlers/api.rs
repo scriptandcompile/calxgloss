@@ -155,11 +155,26 @@ pub async fn api_get_dashboard(
     };
     let queue_effort =
         super::process::build_queue_effort(server_state.repo_path(), &dashboard.review_queue);
+
+    // Dashboard summary data (issue #66): category counts from the
+    // classification artifacts, quality metrics over every dashboard unit,
+    // and token totals from the usage log.
+    let quality_summary = {
+        let mut all_units = dashboard.review_queue.clone();
+        all_units.extend(dashboard.recent_activity.iter().cloned());
+        super::summary::compute_quality_summary(&all_units)
+    };
+    let binary_categories = super::summary::compute_binary_categories(server_state.repo_path());
+    let token_usage = super::summary::compute_token_usage(server_state.repo_path());
+
     Ok(Json(super::super::DashboardResponse {
         success: true,
         dashboard,
         queue_metadata: Some(queue_metadata),
         queue_effort,
+        binary_categories,
+        quality_summary,
+        token_usage,
     }))
 }
 

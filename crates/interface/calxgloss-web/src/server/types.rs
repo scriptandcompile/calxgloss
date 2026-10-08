@@ -21,6 +21,18 @@ pub struct DashboardResponse {
     /// payload) when the log carries no durations; the queue shows `—` then.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub queue_effort: std::collections::HashMap<String, u64>,
+    /// Binary counts per classification category (issue #66), sourced from
+    /// the `re/classify` artifacts. Always lists all six categories.
+    #[serde(default)]
+    pub binary_categories: Vec<CategoryCount>,
+    /// Aggregate quality metrics over the dashboard units (issue #66).
+    #[serde(default)]
+    pub quality_summary: QualitySummary,
+    /// Token consumption totals from the pipeline usage log (issue #66).
+    /// `None` when no usage has been recorded — the budget visual then
+    /// says so instead of showing a fabricated zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_usage: Option<TokenUsageSummary>,
 }
 
 impl DashboardResponse {
@@ -30,8 +42,48 @@ impl DashboardResponse {
             dashboard,
             queue_metadata: None,
             queue_effort: std::collections::HashMap::new(),
+            binary_categories: Vec::new(),
+            quality_summary: QualitySummary::default(),
+            token_usage: None,
         }
     }
+}
+
+/// Count of workspace binaries classified into one category (issue #66).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CategoryCount {
+    /// The category these binaries were classified into.
+    pub category: calxgloss_types::DllCategory,
+    /// How many classified binaries fall into this category.
+    pub count: usize,
+}
+
+/// Aggregate quality metrics over the dashboard units (issue #66). Each
+/// rate is `None` when no unit carries the underlying data, so the
+/// dashboard renders `—` rather than a fabricated zero.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct QualitySummary {
+    /// Mean of the units' `unit_confidence`; `None` when no unit reports one.
+    pub avg_unit_confidence: Option<f32>,
+    /// Baseline tests passed / total summed across all units; `None` when no
+    /// unit carries baseline counts.
+    pub baseline_pass_rate: Option<f32>,
+    /// Verification tests passed / total summed across all units; `None`
+    /// when no unit carries verification counts.
+    pub verification_pass_rate: Option<f32>,
+}
+
+/// Token consumption totals from the pipeline usage log (issue #66).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TokenUsageSummary {
+    /// Total tokens consumed across every logged call.
+    pub total_tokens: u64,
+    /// Tokens consumed by calls that succeeded.
+    pub successful_tokens: u64,
+    /// Tokens consumed by calls that failed.
+    pub failed_tokens: u64,
+    /// Number of logged calls.
+    pub calls: usize,
 }
 
 /// Wrapper for the dependency graph response.

@@ -5,7 +5,7 @@
 
 import { API } from "./api.js";
 import { State } from "./state.js";
-import { KIND_LABELS, STATUS_LABELS } from "./constants.js";
+import { CATEGORY_LABELS, KIND_LABELS, STATUS_LABELS } from "./constants.js";
 import { fmtTime, fmtUptime, escapeHtml } from "./utils.js";
 import { showToast } from "./ui.js";
 import { renderFullQueue } from "./queue.js";
@@ -23,6 +23,11 @@ export async function loadDashboard() {
         renderStatusCards(State.dashboard);
         renderQueueList(State.dashboard, State.selectedUnitId);
         renderActivity(State.dashboard.recent_activity);
+
+        // Dashboard summary sections (issue #66).
+        renderCategoryCards(res.binary_categories);
+        renderQualitySummary(res.quality_summary);
+        renderTokenBudget(res.token_usage);
 
         if (State.currentView === "queue") {
             renderFullQueue(State.dashboard, State.selectedUnitId);
@@ -82,6 +87,101 @@ export function renderStatusCards(dashboard) {
                 <div class="status-card-value">${c.value}</div>
             </div>
         `).join("");
+}
+
+/* Binary category cards (issue #66) — one per DllCategory, counts sourced
+   from the workspace classification artifacts. The server always sends all
+   six categories, so a zero is a real zero, not missing data. */
+export function renderCategoryCards(categories) {
+    const container = document.getElementById("category-cards");
+    if (!container) return;
+
+    container.innerHTML = (categories || [])
+        .map(c => `
+            <div class="category-card" data-category="${escapeHtml(c.category)}">
+                <div class="category-card-label">${escapeHtml(CATEGORY_LABELS[c.category] || c.category)}</div>
+                <div class="category-card-value">${c.count}</div>
+            </div>
+        `)
+        .join("");
+}
+
+/* Quality summary (issue #66) — aggregate metrics over the dashboard units.
+   A rate with no data behind it renders as an em-dash, never a zero. */
+export function renderQualitySummary(summary) {
+    const container = document.getElementById("quality-summary");
+    if (!container) return;
+
+    const pct = v => (v == null ? "—" : `${Math.round(v * 100)}%`);
+    const stats = [
+        { label: "Avg. unit confidence", value: pct(summary?.avg_unit_confidence) },
+        { label: "Baseline pass rate", value: pct(summary?.baseline_pass_rate) },
+        { label: "Verification pass rate", value: pct(summary?.verification_pass_rate) },
+    ];
+
+    container.innerHTML = stats
+        .map(s => `
+            <div class="quality-stat">
+                <div class="quality-stat-label">${s.label}</div>
+                <div class="quality-stat-value">${s.value}</div>
+            </div>
+        `)
+        .join("");
+}
+
+/* Token budget visual (issue #66) — consumption comes from the pipeline's
+   token-usage log; the budget itself is a local user preference. With no log
+   the panel says so rather than showing a fabricated zero. */
+const TOKEN_BUDGET_KEY = "calxgloss_token_budget";
+
+export function renderTokenBudget(usage) {
+    const container = document.getElementById("token-budget");
+    if (!container) return;
+
+    const budget = parseInt(localStorage.getItem(TOKEN_BUDGET_KEY) || "", 10) || 0;
+    const total = usage ? usage.total_tokens : null;
+    // The bar caps at 100% but the caption reports the true share, so an
+    // overrun is visible rather than understated.
+    const pct = usage && budget > 0 ? (total / budget) * 100 : null;
+
+    container.innerHTML = `
+        <div class="token-budget-row">
+            <span class="token-budget-usage" ${total != null ? `data-total-tokens="${total}"` : ""}>
+                ${total != null ? `${total.toLocaleString()} tokens used` : "No token usage recorded"}
+            </span>
+            ${usage ? `
+                <span class="token-budget-meta">
+                    ${usage.successful_tokens.toLocaleString()} on successful calls ·
+                    ${usage.failed_tokens.toLocaleString()} on failed calls ·
+                    ${usage.calls} calls
+                </span>
+            ` : ""}
+            <label class="token-budget-label" for="token-budget-input">
+                Budget
+                <input id="token-budget-input" type="number" min="0" step="1000"
+                       value="${budget || ""}" placeholder="no budget set">
+            </label>
+        </div>
+        <div class="token-budget-bar">
+            <div class="token-budget-fill" style="width:${pct != null ? `${Math.min(100, pct)}%` : "0%"}"></div>
+        </div>
+        <div class="token-budget-caption">
+            ${pct != null
+                ? `${pct.toLocaleString()}% of a ${budget.toLocaleString()} token budget`
+                : "Set a budget to see consumption against it"}
+        </div>
+    `;
+
+    const input = document.getElementById("token-budget-input");
+    input.addEventListener("change", () => {
+        const value = parseInt(input.value, 10);
+        if (value > 0) {
+            localStorage.setItem(TOKEN_BUDGET_KEY, String(value));
+        } else {
+            localStorage.removeItem(TOKEN_BUDGET_KEY);
+        }
+        renderTokenBudget(usage);
+    });
 }
 
 /* Server status card — uptime, version, host, log level, memory/CPU,
@@ -338,10 +438,14 @@ export function renderPipelineProgress(data) {
     // Show panel only if there's something to show
     if (total === 0) {
         panel.style.display = "none";
+        const empty = document.getElementById("pipeline-empty");
+        if (empty) empty.style.display = "";
         return;
     }
 
     panel.style.display = "block";
+    const empty = document.getElementById("pipeline-empty");
+    if (empty) empty.style.display = "none";
     summary.textContent = `${classified} classified, ${batchDone} translated, ${translating.length} translating`;
 
     // Time remaining estimate (issue #64) — only shown when the token-usage

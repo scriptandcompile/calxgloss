@@ -39,3 +39,14 @@ export const KIND_COLORS = {
     integration_step: "#fb923c",
     bug_fix: "#f87171",
 };
+
+// DllCategory display labels (issue #66) — keys match the serde variant
+// names the API sends in `binary_categories`.
+export const CATEGORY_LABELS = {
+    WindowsOs: "Windows OS",
+    MicrosoftSdk: "Microsoft SDK",
+    KnownThirdParty: "Known 3rd Party",
+    ProjectSpecific: "Project Specific",
+    UnknownThirdParty: "Unknown 3rd Party",
+    RuntimeLibrary: "Runtime Library",
+};

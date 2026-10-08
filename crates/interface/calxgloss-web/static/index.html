@@ -14,6 +14,7 @@
         </div>
         <nav id="nav-tabs">
             <button class="nav-tab active" data-view="dashboard">Dashboard</button>
+            <button class="nav-tab" data-view="pipeline">Pipeline</button>
             <button class="nav-tab" data-view="live">Live</button>
             <button class="nav-tab" data-view="queue">Review Queue</button>
             <button class="nav-tab" data-view="graph">Dependency Graph</button>
@@ -21,6 +22,11 @@
             <button class="nav-tab" data-view="llm-log">LLM I/O</button>
         </nav>
         <div class="topbar-right">
+            <label class="landing-label" for="landing-view" title="View shown when the dashboard loads">Landing</label>
+            <select id="landing-view" class="landing-select" aria-label="Default landing view">
+                <option value="dashboard">Dashboard</option>
+                <option value="pipeline">Pipeline</option>
+            </select>
             <span id="live-indicator" class="live-dot" title="Live updates active">●</span>
             <button id="btn-refresh" class="icon-btn" aria-label="Refresh data">
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
@@ -38,15 +44,28 @@
             <!-- Status cards row -->
             <div id="status-cards" class="status-cards"></div>
 
-            <!-- Pipeline progress panel -->
-            <div id="pipeline-panel" class="pipeline-panel" style="display:none">
-                <div class="pipeline-panel-header">
-                    <h2>⚡ Pipeline Progress</h2>
-                    <span id="pipeline-summary" class="badge"></span>
+            <!-- Binary category cards, sourced from the classification data (issue #66) -->
+            <div class="panel">
+                <div class="column-header">
+                    <h2>Binary Categories</h2>
                 </div>
-                <div id="pipeline-time-estimate" class="pipeline-time-estimate" style="display:none"></div>
-                <div id="pipeline-phase-bar" class="pipeline-phase-bar"></div>
-                <div id="pipeline-binaries" class="pipeline-binaries"></div>
+                <div id="category-cards" class="category-cards"></div>
+            </div>
+
+            <!-- Aggregate quality metrics (issue #66) -->
+            <div class="panel">
+                <div class="column-header">
+                    <h2>Quality Summary</h2>
+                </div>
+                <div id="quality-summary" class="quality-summary"></div>
+            </div>
+
+            <!-- Token budget visual: consumption vs a user-set budget (issue #66) -->
+            <div class="panel">
+                <div class="column-header">
+                    <h2>Token Budget</h2>
+                </div>
+                <div id="token-budget" class="token-budget"></div>
             </div>
 
             <!-- Two-column layout: queue + activity -->
@@ -67,6 +86,22 @@
                     </div>
                     <div id="activity-list" class="activity-list"></div>
                 </div>
+            </div>
+        </section>
+
+        <!-- Pipeline overview view (selectable landing view, issue #66) -->
+        <section id="view-pipeline" class="view">
+            <div id="pipeline-panel" class="pipeline-panel" style="display:none">
+                <div class="pipeline-panel-header">
+                    <h2>⚡ Pipeline Progress</h2>
+                    <span id="pipeline-summary" class="badge"></span>
+                </div>
+                <div id="pipeline-time-estimate" class="pipeline-time-estimate" style="display:none"></div>
+                <div id="pipeline-phase-bar" class="pipeline-phase-bar"></div>
+                <div id="pipeline-binaries" class="pipeline-binaries"></div>
+            </div>
+            <div id="pipeline-empty" class="empty-state">
+                <p>No pipeline activity yet — start a run with <code>calxgloss live</code> to see progress here.</p>
             </div>
         </section>
 
