@@ -7,7 +7,7 @@
 //! Run browser tests:   `cargo test --features server --test e2e headless -- --ignored`
 
 use calxgloss_git::{GitManager, InitConfig};
-use calxgloss_types::GitBranch;
+use calxgloss_types::{GitBranch, ProgressEvent, TranslationEvents};
 use calxgloss_web::{
     ActionsState, ProgressState, ServerState, SessionManager, build_dashboard, build_router,
     build_router_with_actions, build_router_with_ws,
@@ -678,6 +678,180 @@ async fn test_progress_empty() {
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.expect("progress body is JSON");
     assert_eq!(body["count"].as_u64().unwrap_or(0), 0);
+}
+
+/// Feed canned `ProgressEvent`s through the live wiring (broadcast channel →
+/// SessionManager callback → `ProgressState`) and assert `/api/progress`
+/// reports the current phase, the phase history in event order, and elapsed
+/// time per in-flight unit. The sequence includes a tier escalation:
+/// `ContextTierSelected` re-emitted after `LlmCallFailed`, which must show up
+/// as a second `context_tier` entry in the history.
+#[tokio::test]
+async fn test_progress_reports_phase_history() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state.clone(), manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let tier = |tier: &str| ProgressEvent::ContextTierSelected {
+        dll: "game_logic".into(),
+        function: "DrawPrimitive".into(),
+        tier: tier.into(),
+        tier_label: format!("{tier} label"),
+        complexity: "Medium".into(),
+        api_call_count: 3,
+    };
+    for event in [
+        ProgressEvent::TranslationStarted {
+            dll: "game_logic".into(),
+            function: "DrawPrimitive".into(),
+        },
+        ProgressEvent::GhidraFetchComplete {
+            dll: "game_logic".into(),
+            function: "DrawPrimitive".into(),
+            address: None,
+            disassembly_lines: 10,
+        },
+        ProgressEvent::ApiTaggingComplete {
+            dll: "game_logic".into(),
+            function: "DrawPrimitive".into(),
+            tagged_apis: 3,
+        },
+        ProgressEvent::TestsGenerated {
+            dll: "game_logic".into(),
+            function: "DrawPrimitive".into(),
+            test_count: 5,
+        },
+        tier("T1"),
+        ProgressEvent::LlmCallStart {
+            dll: "game_logic".into(),
+            function: "DrawPrimitive".into(),
+            attempt: 1,
+            strategy: "direct".into(),
+        },
+        ProgressEvent::LlmCallFailed {
+            dll: "game_logic".into(),
+            function: "DrawPrimitive".into(),
+            attempt: 1,
+            strategy: "direct".into(),
+            error: "context window exceeded".into(),
+        },
+        tier("T2"),
+        ProgressEvent::LlmCallStart {
+            dll: "game_logic".into(),
+            function: "DrawPrimitive".into(),
+            attempt: 2,
+            strategy: "decompose".into(),
+        },
+        ProgressEvent::LlmCallComplete {
+            dll: "game_logic".into(),
+            function: "DrawPrimitive".into(),
+            attempt: 2,
+            code_length: 120,
+            tokens_used: None,
+        },
+        ProgressEvent::TranslationAttemptCompleted {
+            dll: "game_logic".into(),
+            function: "DrawPrimitive".into(),
+            attempt: 2,
+            success: true,
+            compiled: true,
+            tests_passed: 5,
+            tests_total: 5,
+            compilation_errors: vec![],
+            failed_tests: vec![],
+            strategy: "decompose".into(),
+            tokens_used: None,
+        },
+        // A second unit that runs to completion: TranslationCompleted moves
+        // it to the review phase and marks it finished.
+        ProgressEvent::TranslationStarted {
+            dll: "game_logic".into(),
+            function: "Update".into(),
+        },
+        ProgressEvent::TranslationCompleted {
+            dll: "game_logic".into(),
+            function: "Update".into(),
+            total_attempts: 1,
+            success_strategy: Some("direct".into()),
+        },
+    ] {
+        events.emit(event);
+    }
+    // The callback spawns a task per event; give them time to land.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/progress", fixture.port()))
+        .await
+        .expect("progress request succeeds");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("progress body is JSON");
+
+    assert_eq!(body["count"].as_u64(), Some(2));
+    let units = body["in_progress"]
+        .as_array()
+        .expect("in_progress is an array");
+    let unit = units
+        .iter()
+        .find(|u| u["function"] == "DrawPrimitive")
+        .expect("DrawPrimitive unit present");
+    assert_eq!(unit["dll"].as_str(), Some("game_logic"));
+    assert_eq!(unit["attempt"].as_u64(), Some(2));
+    assert_eq!(unit["strategy"].as_str(), Some("decompose"));
+    // Current phase: the attempt completed, so the unit is testing.
+    assert_eq!(unit["phase"].as_str(), Some("testing"));
+    assert_eq!(unit["finished"].as_bool(), Some(false));
+    assert!(unit["elapsed_secs"].as_f64().unwrap_or(-1.0) >= 0.0);
+
+    // Phase history in event order, with the escalation visible.
+    let history: Vec<&str> = unit["phase_history"]
+        .as_array()
+        .expect("phase_history is an array")
+        .iter()
+        .map(|e| e["phase"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        history,
+        vec![
+            "ghidra_fetch",
+            "api_tagging",
+            "test_gen",
+            "context_tier",
+            "llm_call",
+            "context_tier",
+            "llm_call",
+            "compiling",
+            "testing",
+        ]
+    );
+    for entry in unit["phase_history"]
+        .as_array()
+        .expect("phase_history is an array")
+    {
+        assert!(entry["elapsed_secs"].as_f64().unwrap_or(-1.0) >= 0.0);
+    }
+
+    // The completed unit reports the review phase and the finished flag.
+    let done = units
+        .iter()
+        .find(|u| u["function"] == "Update")
+        .expect("Update unit present");
+    assert_eq!(done["phase"].as_str(), Some("review"));
+    assert_eq!(done["finished"].as_bool(), Some(true));
+    assert_eq!(
+        done["phase_history"]
+            .as_array()
+            .expect("phase_history is an array")
+            .iter()
+            .map(|e| e["phase"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        vec!["ghidra_fetch", "review"]
+    );
 }
 
 /// Route-table contract: endpoints that read live translation state are

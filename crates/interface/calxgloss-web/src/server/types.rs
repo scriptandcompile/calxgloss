@@ -1,7 +1,7 @@
 //! Response types for the review dashboard API.
 
 use axum::http::StatusCode;
-use calxgloss_types::{ReviewDashboard, ReviewStatus};
+use calxgloss_types::{PhaseRecord, ReviewDashboard, ReviewStatus, TranslationPhase};
 use serde::{Deserialize, Serialize};
 
 /// Wrapper for successful API responses carrying the full dashboard.
@@ -521,7 +521,13 @@ pub struct ProgressInfo {
     pub function: String,
     pub attempt: u32,
     pub strategy: String,
-    pub status: String,
+    /// The pipeline step this unit is currently in.
+    pub phase: TranslationPhase,
+    /// Phases entered, in event order (re-entered phases appear again).
+    pub phase_history: Vec<PhaseRecord>,
+    /// Whether a terminal event (completed / failed / function-completed)
+    /// has been observed — distinguishes finished units from in-flight ones.
+    pub finished: bool,
     pub elapsed_secs: f64,
 }
 

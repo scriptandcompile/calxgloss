@@ -2,7 +2,6 @@
 
 use super::super::{
     CombinedState, PipelineDllProgress, PipelineProgressResponse, ProgressInfo, ProgressResponse,
-    ProgressUnitStatus,
 };
 
 use axum::{Json, extract::State};
@@ -25,7 +24,9 @@ pub async fn api_get_progress(State(combined): State<CombinedState>) -> Json<Pro
                 function: e.function.clone(),
                 attempt: e.attempt,
                 strategy: e.strategy.clone(),
-                status: format!("{:?}", e.status).to_lowercase().replace('_', " "),
+                phase: e.phase,
+                phase_history: e.phase_history.clone(),
+                finished: e.finished,
                 elapsed_secs: (elapsed * 1000.0).round() / 1000.0,
             }
         })
@@ -83,10 +84,10 @@ pub async fn api_get_pipeline(
         v
     };
 
-    // Find DLLs currently being translated (have entries with non-Complete status)
+    // Find DLLs currently being translated (have entries not yet finished)
     let currently_translating: Vec<String> = entries_snapshot
         .values()
-        .filter(|e| !matches!(e.status, ProgressUnitStatus::Complete))
+        .filter(|e| !e.finished)
         .map(|e| e.dll.clone())
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
@@ -102,10 +103,7 @@ pub async fn api_get_pipeline(
         // Check if this DLL is currently being translated
         let current_translating = currently_translating.iter().find(|d| **d == *dll).map(|d| {
             let dll_entries: Vec<_> = entries_snapshot.values().filter(|e| e.dll == **d).collect();
-            let completed = dll_entries
-                .iter()
-                .filter(|e| matches!(e.status, ProgressUnitStatus::Complete))
-                .count();
+            let completed = dll_entries.iter().filter(|e| e.finished).count();
             super::super::CurrentDllStatus {
                 dll: d.clone(),
                 total_entries: dll_entries.len(),

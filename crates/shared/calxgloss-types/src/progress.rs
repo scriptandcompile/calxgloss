@@ -287,6 +287,40 @@ pub enum ProgressEvent {
     },
 }
 
+impl ProgressEvent {
+    /// The `(dll, function)` unit this event refers to, or `None` for
+    /// batch-level events (`ClassificationComplete`, `BatchSummary`) that
+    /// are not scoped to a single unit of work.
+    pub fn unit_key(&self) -> Option<(&str, &str)> {
+        match self {
+            ProgressEvent::TranslationStarted { dll, function }
+            | ProgressEvent::GhidraFetchComplete { dll, function, .. }
+            | ProgressEvent::ApiTaggingComplete { dll, function, .. }
+            | ProgressEvent::TestsGenerated { dll, function, .. }
+            | ProgressEvent::ContextTierSelected { dll, function, .. }
+            | ProgressEvent::LlmCallStart { dll, function, .. }
+            | ProgressEvent::LlmCallComplete { dll, function, .. }
+            | ProgressEvent::LlmRequest { dll, function, .. }
+            | ProgressEvent::LlmResponse { dll, function, .. }
+            | ProgressEvent::TranslationAttemptCompleted { dll, function, .. }
+            | ProgressEvent::TranslationFailed { dll, function, .. }
+            | ProgressEvent::TranslationCompleted { dll, function, .. }
+            | ProgressEvent::LlmCallInProgress { dll, function, .. }
+            | ProgressEvent::LlmCallFailed { dll, function, .. }
+            | ProgressEvent::FunctionCompleted { dll, function, .. }
+            | ProgressEvent::HallucinationDetected { dll, function, .. }
+            | ProgressEvent::InfiniteLoopDetected { dll, function, .. }
+            | ProgressEvent::BehaviorDivergenceDetected { dll, function, .. }
+            | ProgressEvent::ResourceExhaustionDetected { dll, function, .. } => {
+                Some((dll.as_str(), function.as_str()))
+            }
+            ProgressEvent::ClassificationComplete { .. } | ProgressEvent::BatchSummary { .. } => {
+                None
+            }
+        }
+    }
+}
+
 impl std::fmt::Display for ProgressEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -533,6 +567,75 @@ impl std::fmt::Display for ProgressEvent {
     }
 }
 
+/// The pipeline step a unit of work is currently in.
+///
+/// This is the shared vocabulary for in-flight status: the web UI labels
+/// each in-flight unit with its current phase, and later tracks (W2's
+/// `PipelineState`, W3's analytics) consume the same records. The phase is
+/// **derived from [`ProgressEvent`] variants** via
+/// [`TranslationPhase::from_event`] — there is no separate phase event
+/// vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranslationPhase {
+    /// Fetching function metadata (disassembly, decompiler output) from Ghidra.
+    GhidraFetch,
+    /// Tagging Windows API calls referenced by the function.
+    ApiTagging,
+    /// Generating baseline tests from observed behavior.
+    TestGen,
+    /// Selecting (or re-selecting on escalation) the context tier.
+    ContextTier,
+    /// Calling the LLM to generate or fix code.
+    LlmCall,
+    /// Compiling the generated code.
+    Compiling,
+    /// Running baseline/verification tests against the compiled code.
+    Testing,
+    /// Awaiting human review.
+    Review,
+}
+
+impl TranslationPhase {
+    /// Derive the phase a unit enters when `event` is emitted.
+    ///
+    /// Returns `None` for events that don't move a unit into a new phase —
+    /// lifecycle events (`TranslationFailed`, `FunctionCompleted`),
+    /// informational events (fault detectors, `LlmCallFailed`), and
+    /// batch/classification events.
+    ///
+    /// `ContextTierSelected` is re-emitted when the retry loop escalates the
+    /// tier; it derives `ContextTier` again so the escalation is visible in
+    /// the phase history.
+    pub fn from_event(event: &ProgressEvent) -> Option<Self> {
+        match event {
+            ProgressEvent::TranslationStarted { .. } => Some(TranslationPhase::GhidraFetch),
+            ProgressEvent::GhidraFetchComplete { .. } => Some(TranslationPhase::ApiTagging),
+            ProgressEvent::ApiTaggingComplete { .. } => Some(TranslationPhase::TestGen),
+            ProgressEvent::TestsGenerated { .. } => Some(TranslationPhase::ContextTier),
+            ProgressEvent::ContextTierSelected { .. } => Some(TranslationPhase::ContextTier),
+            ProgressEvent::LlmCallStart { .. }
+            | ProgressEvent::LlmRequest { .. }
+            | ProgressEvent::LlmCallInProgress { .. }
+            | ProgressEvent::LlmResponse { .. } => Some(TranslationPhase::LlmCall),
+            ProgressEvent::LlmCallComplete { .. } => Some(TranslationPhase::Compiling),
+            ProgressEvent::TranslationAttemptCompleted { .. } => Some(TranslationPhase::Testing),
+            ProgressEvent::TranslationCompleted { .. } => Some(TranslationPhase::Review),
+            _ => None,
+        }
+    }
+}
+
+/// One entry in a unit's phase history: the phase entered and how many
+/// seconds after the unit's translation started it was entered.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PhaseRecord {
+    /// The phase the unit entered.
+    pub phase: TranslationPhase,
+    /// Seconds since the unit's translation started when the phase was entered.
+    pub elapsed_secs: f64,
+}
+
 /// A broadcast channel for translation progress events.
 ///
 /// Create one per translation session. Call [`Self::emit`] to publish events,
@@ -570,5 +673,291 @@ impl TranslationEvents {
     /// Pass the receiver to the WebSocket server's broadcast task.
     pub fn subscribe(&self) -> broadcast::Receiver<ProgressEvent> {
         self.sender.subscribe()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn phase_of(event: ProgressEvent) -> Option<TranslationPhase> {
+        TranslationPhase::from_event(&event)
+    }
+
+    #[test]
+    fn unit_key_scopes_unit_events_and_skips_batch_events() {
+        let unit_event = ProgressEvent::LlmCallStart {
+            dll: "game_logic".into(),
+            function: "DrawPrimitive".into(),
+            attempt: 1,
+            strategy: "direct".into(),
+        };
+        assert_eq!(unit_event.unit_key(), Some(("game_logic", "DrawPrimitive")));
+        let batch_event = ProgressEvent::BatchSummary {
+            dll: "game_logic".into(),
+            total_functions: 4,
+            success_count: 3,
+            failure_count: 1,
+            total_attempts: 6,
+            total_tokens: 1000,
+        };
+        assert_eq!(batch_event.unit_key(), None);
+    }
+
+    #[test]
+    fn translation_phase_serde_round_trip() {
+        let phases = [
+            TranslationPhase::GhidraFetch,
+            TranslationPhase::ApiTagging,
+            TranslationPhase::TestGen,
+            TranslationPhase::ContextTier,
+            TranslationPhase::LlmCall,
+            TranslationPhase::Compiling,
+            TranslationPhase::Testing,
+            TranslationPhase::Review,
+        ];
+        for phase in phases {
+            let json = serde_json::to_string(&phase).expect("phase should serialize");
+            let back: TranslationPhase =
+                serde_json::from_str(&json).expect("phase should deserialize");
+            assert_eq!(back, phase, "round trip of {phase:?}");
+        }
+        assert_eq!(
+            serde_json::to_string(&TranslationPhase::LlmCall).expect("serialize"),
+            "\"llm_call\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TranslationPhase::GhidraFetch).expect("serialize"),
+            "\"ghidra_fetch\""
+        );
+    }
+
+    #[test]
+    fn phase_record_serde_round_trip() {
+        let record = PhaseRecord {
+            phase: TranslationPhase::Compiling,
+            elapsed_secs: 12.5,
+        };
+        let json = serde_json::to_string(&record).expect("record should serialize");
+        let back: PhaseRecord = serde_json::from_str(&json).expect("record should deserialize");
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn translation_phase_derived_from_full_event_flow() {
+        // The canonical single-unit event flow, in the order the pipeline
+        // emits it (pipeline.rs: started → fetch → tagging → tests → tier →
+        // llm → compile → test → completed).
+        let flow = vec![
+            ProgressEvent::TranslationStarted {
+                dll: "d".into(),
+                function: "f".into(),
+            },
+            ProgressEvent::GhidraFetchComplete {
+                dll: "d".into(),
+                function: "f".into(),
+                address: None,
+                disassembly_lines: 10,
+            },
+            ProgressEvent::ApiTaggingComplete {
+                dll: "d".into(),
+                function: "f".into(),
+                tagged_apis: 3,
+            },
+            ProgressEvent::TestsGenerated {
+                dll: "d".into(),
+                function: "f".into(),
+                test_count: 5,
+            },
+            ProgressEvent::ContextTierSelected {
+                dll: "d".into(),
+                function: "f".into(),
+                tier: "T1".into(),
+                tier_label: "Signature + imports".into(),
+                complexity: "Medium".into(),
+                api_call_count: 3,
+            },
+            ProgressEvent::LlmCallStart {
+                dll: "d".into(),
+                function: "f".into(),
+                attempt: 1,
+                strategy: "direct".into(),
+            },
+            ProgressEvent::LlmRequest {
+                dll: "d".into(),
+                function: "f".into(),
+                attempt: 1,
+                strategy: "direct".into(),
+                prompt: "…".into(),
+            },
+            ProgressEvent::LlmCallInProgress {
+                dll: "d".into(),
+                function: "f".into(),
+                attempt: 1,
+                strategy: "direct".into(),
+                elapsed_secs: 5,
+            },
+            ProgressEvent::LlmResponse {
+                dll: "d".into(),
+                function: "f".into(),
+                attempt: 1,
+                strategy: "direct".into(),
+                content: "fn f() {}".into(),
+                tokens_used: None,
+            },
+            ProgressEvent::LlmCallComplete {
+                dll: "d".into(),
+                function: "f".into(),
+                attempt: 1,
+                code_length: 12,
+                tokens_used: None,
+            },
+            ProgressEvent::TranslationAttemptCompleted {
+                dll: "d".into(),
+                function: "f".into(),
+                attempt: 1,
+                success: true,
+                compiled: true,
+                tests_passed: 5,
+                tests_total: 5,
+                compilation_errors: vec![],
+                failed_tests: vec![],
+                strategy: "direct".into(),
+                tokens_used: None,
+            },
+            ProgressEvent::TranslationCompleted {
+                dll: "d".into(),
+                function: "f".into(),
+                total_attempts: 1,
+                success_strategy: Some("direct".into()),
+            },
+        ];
+        let derived: Vec<Option<TranslationPhase>> =
+            flow.iter().map(TranslationPhase::from_event).collect();
+        assert_eq!(
+            derived,
+            vec![
+                Some(TranslationPhase::GhidraFetch),
+                Some(TranslationPhase::ApiTagging),
+                Some(TranslationPhase::TestGen),
+                Some(TranslationPhase::ContextTier),
+                Some(TranslationPhase::ContextTier),
+                Some(TranslationPhase::LlmCall),
+                Some(TranslationPhase::LlmCall),
+                Some(TranslationPhase::LlmCall),
+                Some(TranslationPhase::LlmCall),
+                Some(TranslationPhase::Compiling),
+                Some(TranslationPhase::Testing),
+                Some(TranslationPhase::Review),
+            ]
+        );
+    }
+
+    #[test]
+    fn context_tier_selected_reemitted_on_tier_escalation() {
+        // On retry failure the retry loop escalates the tier and re-emits
+        // ContextTierSelected — it must derive ContextTier again so the
+        // escalation is visible in the phase history.
+        let first = phase_of(ProgressEvent::ContextTierSelected {
+            dll: "d".into(),
+            function: "f".into(),
+            tier: "T1".into(),
+            tier_label: "Signature + imports".into(),
+            complexity: "Medium".into(),
+            api_call_count: 3,
+        });
+        let failed = phase_of(ProgressEvent::LlmCallFailed {
+            dll: "d".into(),
+            function: "f".into(),
+            attempt: 1,
+            strategy: "direct".into(),
+            error: "context window exceeded".into(),
+        });
+        let escalated = phase_of(ProgressEvent::ContextTierSelected {
+            dll: "d".into(),
+            function: "f".into(),
+            tier: "T2".into(),
+            tier_label: "Signature + callees".into(),
+            complexity: "Medium".into(),
+            api_call_count: 3,
+        });
+        assert_eq!(first, Some(TranslationPhase::ContextTier));
+        assert_eq!(failed, None);
+        assert_eq!(escalated, Some(TranslationPhase::ContextTier));
+    }
+
+    #[test]
+    fn lifecycle_and_informational_events_derive_no_phase() {
+        let events = vec![
+            ProgressEvent::LlmCallFailed {
+                dll: "d".into(),
+                function: "f".into(),
+                attempt: 1,
+                strategy: "direct".into(),
+                error: "timeout".into(),
+            },
+            ProgressEvent::TranslationFailed {
+                dll: "d".into(),
+                function: "f".into(),
+                total_attempts: 3,
+            },
+            ProgressEvent::FunctionCompleted {
+                dll: "d".into(),
+                function: "f".into(),
+                success: true,
+                attempts: 1,
+                branch: None,
+            },
+            ProgressEvent::HallucinationDetected {
+                dll: "d".into(),
+                function: "f".into(),
+                attempt: 1,
+                strategy: "direct".into(),
+                hallucinated_apis: vec!["FakeApi".into()],
+            },
+            ProgressEvent::InfiniteLoopDetected {
+                dll: "d".into(),
+                function: "f".into(),
+                streak: 3,
+                streak_start_attempt: 1,
+                streak_end_attempt: 3,
+                strategy: "direct".into(),
+            },
+            ProgressEvent::BehaviorDivergenceDetected {
+                dll: "d".into(),
+                function: "f".into(),
+                attempt: 1,
+                strategy: "direct".into(),
+                baseline_passed: 5,
+                baseline_total: 5,
+                edge_tests_passed: 1,
+                edge_tests_total: 2,
+                failing_edge_cases: vec!["edge_1".into()],
+                fault_confidence: 8,
+            },
+            ProgressEvent::ClassificationComplete {
+                dll: "d".into(),
+                category: "MicrosoftSdk".into(),
+                strategy: "crate_replacement".into(),
+                crate_replacement: None,
+                exported_symbols: 1,
+                imported_symbols: 2,
+            },
+            ProgressEvent::BatchSummary {
+                dll: "d".into(),
+                total_functions: 4,
+                success_count: 3,
+                failure_count: 1,
+                total_attempts: 6,
+                total_tokens: 1000,
+            },
+        ];
+        for event in events {
+            assert_eq!(
+                TranslationPhase::from_event(&event),
+                None,
+                "{event:?} must not derive a phase"
+            );
+        }
     }
 }

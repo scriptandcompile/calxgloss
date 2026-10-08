@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **In-flight translation phases** — during a live run every translating unit reports the pipeline step it is in (Ghidra fetch, API tagging, baseline-test generation, context-tier selection, LLM call, compiling, testing, review). `/api/progress` now carries the current phase, the phase history in event order (context-tier escalations stay visible), and elapsed time per unit.
+
 ### Refactored
 
 - **Web router table consolidation** — the review UI's plain-`serve` and live (`calxgloss live`) surfaces are now assembled from one shared route table plus a live-only table, so the two can't drift apart and live pipeline endpoints answer only in live mode.

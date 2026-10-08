@@ -20,8 +20,7 @@ use axum::{
     routing::{get, post},
 };
 use calxgloss_reports::dashboard::DashboardBuilder;
-use calxgloss_types::{ProgressEvent, ReviewDashboard};
-use serde::{Deserialize, Serialize};
+use calxgloss_types::{PhaseRecord, ProgressEvent, ReviewDashboard, TranslationPhase};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -127,18 +126,17 @@ pub struct ProgressEntry {
     pub attempt: u32,
     pub strategy: String,
     pub started_at: std::time::Instant,
-    pub status: ProgressUnitStatus,
+    /// The pipeline step this unit is currently in, derived from the latest
+    /// phase-bearing `ProgressEvent`.
+    pub phase: TranslationPhase,
+    /// Phases entered, in event order (the first entry is the starting phase).
+    /// Re-entering a phase (e.g. `ContextTier` on tier escalation) appends a
+    /// new entry, so the retry history stays visible.
+    pub phase_history: Vec<PhaseRecord>,
+    /// Set once a terminal event (completed / failed / function-completed)
+    /// has been observed for this unit.
+    pub finished: bool,
     pub last_event_at: std::time::Instant,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProgressUnitStatus {
-    Translating,
-    LlmCall,
-    Compiling,
-    Testing,
-    Complete,
 }
 
 impl ProgressState {
@@ -221,112 +219,82 @@ impl ProgressState {
 
     /// Handle translation-specific events (updates entries HashMap).
     async fn on_translation_event(&self, event: &ProgressEvent) {
-        use ProgressUnitStatus::*;
         let mut entries = self.entries.write().await;
 
-        match event {
-            ProgressEvent::TranslationStarted { dll, function } => {
-                let key = format!("{dll}/{function}");
-                entries.insert(
-                    key,
-                    ProgressEntry {
-                        dll: dll.clone(),
-                        function: function.clone(),
-                        attempt: 1,
-                        strategy: String::new(),
-                        started_at: std::time::Instant::now(),
-                        status: Translating,
-                        last_event_at: std::time::Instant::now(),
-                    },
-                );
-            }
-            ProgressEvent::GhidraFetchComplete { dll, function, .. } => {
-                if let Some(entry) = entries.get_mut(&format!("{dll}/{function}")) {
-                    entry.status = Translating;
-                    entry.last_event_at = std::time::Instant::now();
+        // Unit-scoped events carry the dll/function pair identifying the unit;
+        // batch-level events (ClassificationComplete, BatchSummary) are handled
+        // in `on_event` and never reach here.
+        let Some((dll, function)) = event.unit_key() else {
+            return;
+        };
+        let key = format!("{dll}/{function}");
+
+        // A started unit begins in the phase its first event derives.
+        if let ProgressEvent::TranslationStarted { dll, function } = event {
+            // TranslationStarted always derives GhidraFetch (unit-tested);
+            // fall back to it rather than panic if that ever changes.
+            let phase =
+                TranslationPhase::from_event(event).unwrap_or(TranslationPhase::GhidraFetch);
+            entries.insert(
+                key,
+                ProgressEntry {
+                    dll: dll.clone(),
+                    function: function.clone(),
+                    attempt: 1,
+                    strategy: String::new(),
+                    started_at: std::time::Instant::now(),
+                    phase,
+                    phase_history: vec![PhaseRecord {
+                        phase,
+                        elapsed_secs: 0.0,
+                    }],
+                    finished: false,
+                    last_event_at: std::time::Instant::now(),
+                },
+            );
+            return;
+        }
+
+        if let Some(entry) = entries.get_mut(&key) {
+            entry.last_event_at = std::time::Instant::now();
+
+            // Record the phase the event moves the unit into; re-entering the
+            // same phase (e.g. a second LLM call without tier escalation) is
+            // not a transition, but a re-derived *different* phase (e.g.
+            // ContextTier on tier escalation) appends to the history.
+            if let Some(phase) = TranslationPhase::from_event(event) {
+                if phase != entry.phase {
+                    entry.phase_history.push(PhaseRecord {
+                        phase,
+                        elapsed_secs: entry.started_at.elapsed().as_secs_f64(),
+                    });
                 }
+                entry.phase = phase;
             }
-            ProgressEvent::ApiTaggingComplete { dll, function, .. } => {
-                if let Some(entry) = entries.get_mut(&format!("{dll}/{function}")) {
-                    entry.status = Translating;
-                    entry.last_event_at = std::time::Instant::now();
-                }
-            }
-            ProgressEvent::TestsGenerated { dll, function, .. } => {
-                if let Some(entry) = entries.get_mut(&format!("{dll}/{function}")) {
-                    entry.status = Translating;
-                    entry.last_event_at = std::time::Instant::now();
-                }
-            }
-            ProgressEvent::LlmCallStart {
-                dll,
-                function,
-                attempt,
-                strategy,
-                ..
-            } => {
-                let key = format!("{dll}/{function}");
-                if let Some(entry) = entries.get_mut(&key) {
+
+            match event {
+                ProgressEvent::LlmCallStart {
+                    attempt, strategy, ..
+                } => {
                     entry.attempt = *attempt;
                     entry.strategy = strategy.clone();
-                    entry.status = LlmCall;
-                    entry.last_event_at = std::time::Instant::now();
                 }
-            }
-            ProgressEvent::LlmCallComplete { dll, function, .. } => {
-                if let Some(entry) = entries.get_mut(&format!("{dll}/{function}")) {
-                    entry.status = Compiling;
-                    entry.last_event_at = std::time::Instant::now();
+                ProgressEvent::TranslationCompleted { .. }
+                | ProgressEvent::TranslationFailed { .. } => {
+                    entry.finished = true;
                 }
-            }
-            ProgressEvent::LlmRequest { dll, function, .. }
-            | ProgressEvent::LlmResponse { dll, function, .. }
-            | ProgressEvent::LlmCallInProgress { dll, function, .. } => {
-                // Informational — status stays as LlmCall; update heartbeat
-                if let Some(entry) = entries.get_mut(&format!("{dll}/{function}")) {
-                    entry.last_event_at = std::time::Instant::now();
-                }
-            }
-            ProgressEvent::TranslationAttemptCompleted { dll, function, .. } => {
-                if let Some(entry) = entries.get_mut(&format!("{dll}/{function}")) {
-                    entry.status = Testing;
-                    entry.last_event_at = std::time::Instant::now();
-                }
-            }
-            ProgressEvent::TranslationCompleted { dll, function, .. } => {
-                if let Some(entry) = entries.get_mut(&format!("{dll}/{function}")) {
-                    entry.status = Complete;
-                    entry.last_event_at = std::time::Instant::now();
-                }
-            }
-            ProgressEvent::TranslationFailed { dll, function, .. } => {
-                if let Some(entry) = entries.get_mut(&format!("{dll}/{function}")) {
-                    entry.status = Complete;
-                    entry.last_event_at = std::time::Instant::now();
-                }
-            }
-            ProgressEvent::FunctionCompleted {
-                dll,
-                function,
-                success,
-                ..
-            } => {
-                if let Some(entry) = entries.get_mut(&format!("{dll}/{function}")) {
-                    // Batch-level completion marks the unit as done.
-                    entry.status = Complete;
-                    entry.last_event_at = std::time::Instant::now();
-                    // Optionally differentiate success/failure in the stored data
-                    // by updating the strategy field to reflect the outcome.
+                ProgressEvent::FunctionCompleted { success, .. } => {
+                    // Batch-level completion marks the unit as done; the
+                    // strategy field records the outcome for the dashboard.
+                    entry.finished = true;
                     entry.strategy = if *success {
                         "batch_ok".to_string()
                     } else {
                         "batch_failed".to_string()
                     };
                 }
+                _ => {}
             }
-            // ClassificationComplete and BatchSummary are handled in on_event
-            // directly; they should never reach here, but we need exhaustiveness.
-            _ => {}
         }
     }
 

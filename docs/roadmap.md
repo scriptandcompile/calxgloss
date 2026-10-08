@@ -240,8 +240,9 @@ process control (archive §12 "Current State Summary").
   (Documentation) have no backing data source — define what they report (or
   mark "not started") first; per-function duration recording must be added
   before time estimates work.
-- Phase 2 — in-flight status: `TranslationPhase` enum, WS phase events,
-  context-tier/fault/token/retry display in unit detail.
+- Phase 2 — in-flight status: `TranslationPhase` enum + per-unit phase history
+  in live progress (done); WS phase events, context-tier/fault/token/retry
+  display in unit detail.
 - Phase 3 — live translation view (`/api/progress/enhanced`, `LiveView`).
 - Phase 4 — dashboard enhancements.
 
