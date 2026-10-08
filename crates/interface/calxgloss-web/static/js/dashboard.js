@@ -10,6 +10,7 @@ import { fmtTime, fmtUptime, escapeHtml } from "./utils.js";
 import { showToast } from "./ui.js";
 import { renderFullQueue } from "./queue.js";
 import { renderPipelinePhaseBar } from "./phase-bar.js";
+import { renderPipelineBinaryRows } from "./binary-rows.js";
 import { switchView } from "./views.js";
 
 export async function loadDashboard() {
@@ -321,9 +322,8 @@ export async function loadPipelineProgress() {
 export function renderPipelineProgress(data) {
     const panel = document.getElementById("pipeline-panel");
     const summary = document.getElementById("pipeline-summary");
-    const dllsContainer = document.getElementById("pipeline-dlls");
 
-    if (!panel || !summary || !dllsContainer) return;
+    if (!panel || !summary) return;
 
     // The phase bar renders from the honest phase records regardless of
     // whether any binaries have been discovered yet (issue #61).
@@ -343,67 +343,9 @@ export function renderPipelineProgress(data) {
     panel.style.display = "block";
     summary.textContent = `${classified} classified, ${batchDone} translated, ${translating.length} translating`;
 
-    // Build DLL progress items
-    const dlls = data.dlls || [];
-    if (dlls.length === 0) {
-        dllsContainer.innerHTML = '<div class="empty-state" style="padding:12px">No DLLs discovered yet.</div>';
-        return;
-    }
-
-    dllsContainer.innerHTML = dlls.map(dll => {
-        const name = dll.dll || "unknown";
-        const hasClassification = !!dll.classification;
-        const hasBatch = !!dll.batch;
-        const isTranslating = !!dll.in_progress;
-
-        let statusClass = "pending";
-        let statusText = "Pending";
-
-        if (isTranslating) {
-            statusClass = "translating";
-            const progress = dll.in_progress;
-            const pct = progress.total_entries > 0
-                ? Math.round((progress.completed_entries / progress.total_entries) * 100)
-                : 0;
-            statusText = `<div class="pipeline-progress-bar"><div class="pipeline-progress-fill" style="width:${pct}%"></div></div>`;
-        } else if (hasBatch) {
-            statusClass = "complete";
-            const b = dll.batch;
-            statusText = `${b.success_count}/${b.total_functions} OK`;
-        } else if (hasClassification) {
-            statusClass = "classified";
-            statusText = dll.classification.category;
-        }
-
-        // Classification details
-        let meta = "";
-        if (dll.classification) {
-            const c = dll.classification;
-            let parts = [c.strategy];
-            if (c.exported_symbols > 0 || c.imported_symbols > 0) {
-                parts.push(`${c.exported_symbols}↑ ${c.imported_symbols}↓`);
-            }
-            if (c.crate_replacement) {
-                parts.push(`→ ${c.crate_replacement}`);
-            }
-            meta = parts.join(" · ");
-        } else if (dll.batch) {
-            const b = dll.batch;
-            if (b.failure_count > 0) {
-                meta = `${b.failure_count} failed · ${b.total_tokens} tokens`;
-            } else {
-                meta = `${b.total_tokens} tokens`;
-            }
-        }
-
-        return `
-            <div class="pipeline-dll-item">
-                <span class="pipeline-dll-name">${escapeHtml(name)}</span>
-                <span class="pipeline-dll-status ${statusClass}">${statusText}</span>
-                ${meta ? `<span class="pipeline-dll-meta">${escapeHtml(meta)}</span>` : ""}
-            </div>
-        `;
-    }).join("");
+    // One row per target binary (issue #63): strategy, function counts,
+    // tokens, success rate, shim/PAL status, placeholder quick actions.
+    renderPipelineBinaryRows(data.binaries);
 }
 
 // Map API graph node to frontend format (handles old and new API formats)

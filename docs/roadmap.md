@@ -238,7 +238,10 @@ process control (archive §12 "Current State Summary").
   router(s) it registers in.
 - Phase 1 — pipeline progress dashboard: per-phase progress for all 7 phases
   (+ Phase 2.5 PAL) (done — `PipelinePhase`/`PhaseProgress`/`BinaryProgress`
-  in `calxgloss-types`, `/api/pipeline` derivation, `PipelinePhaseBar`).
+  in `calxgloss-types`, `/api/pipeline` derivation, `PipelinePhaseBar`);
+  per-binary rows with strategy, function counts, tokens, success rate, and
+  shim/PAL status (done — issue #63, `binary-rows.js`; quick-action buttons
+  are W2 placeholders).
   **Prerequisite resolved:** Phases 6 (Restitching) and 7 (Documentation)
   have no backing data source and report `NoDataSource`, never fabricated
   progress; per-function duration recording must be added before time

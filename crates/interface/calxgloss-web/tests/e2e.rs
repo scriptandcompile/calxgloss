@@ -2787,6 +2787,258 @@ async fn test_headless_pipeline_phase_bar_live() {
     drop(browser);
 }
 
+/// Headless-browser test for the per-binary progress panel (issue #63):
+/// in live mode the pipeline panel must render one row per target binary
+/// with its classification strategy, function counts (total, translated,
+/// in-progress, queued, failed), token consumption, and success rate —
+/// unknown values as em-dashes, never fabricated zeros. The quick-action
+/// buttons must be placeholders that announce only: clicking one fires no
+/// state-changing request and touches no pipeline state.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_pipeline_binary_rows() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Four binaries, one per classification strategy plus an unclassified one:
+    // d3d9 via PAL mapping (classified only), dinput8 via crate replacement
+    // with one unit in flight, engine via full RE (classified only), and
+    // game_logic discovered unclassified with a batch summary as the
+    // authoritative count source: 2 of 5 translated, 1 failed, 5000 tokens
+    // → 2 queued, 67% success rate.
+    events.emit(ProgressEvent::ClassificationComplete {
+        dll: "d3d9.dll".into(),
+        category: "WindowsOs".into(),
+        strategy: "PalMapping".into(),
+        crate_replacement: None,
+        exported_symbols: 25,
+        imported_symbols: 6,
+    });
+    events.emit(ProgressEvent::ClassificationComplete {
+        dll: "dinput8.dll".into(),
+        category: "WindowsOs".into(),
+        strategy: "CrateReplacement".into(),
+        crate_replacement: Some("wgpu".into()),
+        exported_symbols: 10,
+        imported_symbols: 4,
+    });
+    events.emit(ProgressEvent::TranslationStarted {
+        dll: "dinput8.dll".into(),
+        function: "GetDeviceState".into(),
+    });
+    events.emit(ProgressEvent::ClassificationComplete {
+        dll: "engine.dll".into(),
+        category: "ProjectSpecific".into(),
+        strategy: "ReverseEngineer".into(),
+        crate_replacement: None,
+        exported_symbols: 40,
+        imported_symbols: 12,
+    });
+    events.emit(ProgressEvent::BatchSummary {
+        dll: "game_logic.dll".into(),
+        total_functions: 5,
+        success_count: 2,
+        failure_count: 1,
+        total_attempts: 4,
+        total_tokens: 5000,
+    });
+
+    // Give the event-forwarding task time to drain the channel.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+    let eval_len = |expr: &str| -> i64 {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_i64())
+            .unwrap_or(-1)
+    };
+    let eval_text = |expr: &str| -> String {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default()
+    };
+
+    // Rows render asynchronously once the pipeline fetch settles;
+    // poll until all four appear (up to ~5 seconds).
+    let mut rendered = false;
+    for _ in 0..25 {
+        if eval_len("document.querySelectorAll('#pipeline-binaries .pipeline-binary-row').length")
+            == 4
+        {
+            rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        rendered,
+        "pipeline panel should render one row per target binary"
+    );
+
+    // One row per discovered binary, keyed by name.
+    for dll in ["d3d9.dll", "dinput8.dll", "engine.dll", "game_logic.dll"] {
+        assert!(
+            eval_bool(&format!(
+                "!!document.querySelector('#pipeline-binaries [data-dll=\"{dll}\"]')"
+            )),
+            "row for {dll} should exist"
+        );
+    }
+
+    let cell_text = |dll: &str, selector: &str| -> String {
+        eval_text(&format!(
+            "document.querySelector('#pipeline-binaries [data-dll=\"{dll}\"] {selector}')?.textContent || ''"
+        ))
+    };
+
+    // ── game_logic: counts, tokens, and success rate from the canned batch ──
+    assert!(
+        cell_text("game_logic.dll", "[data-count=\"total\"]").contains('5'),
+        "total functions from the batch summary, got: {}",
+        cell_text("game_logic.dll", "[data-count=\"total\"]")
+    );
+    assert!(
+        cell_text("game_logic.dll", "[data-count=\"translated\"]").contains('2'),
+        "translated count, got: {}",
+        cell_text("game_logic.dll", "[data-count=\"translated\"]")
+    );
+    assert!(
+        cell_text("game_logic.dll", "[data-count=\"failed\"]").contains('1'),
+        "failed count, got: {}",
+        cell_text("game_logic.dll", "[data-count=\"failed\"]")
+    );
+    assert!(
+        cell_text("game_logic.dll", "[data-count=\"queued\"]").contains('2'),
+        "queued = 5 - 2 - 1, got: {}",
+        cell_text("game_logic.dll", "[data-count=\"queued\"]")
+    );
+    assert!(
+        cell_text("game_logic.dll", "[data-metric=\"tokens\"]").contains("5,000"),
+        "token consumption, got: {}",
+        cell_text("game_logic.dll", "[data-metric=\"tokens\"]")
+    );
+    assert!(
+        cell_text("game_logic.dll", "[data-metric=\"success-rate\"]").contains("67%"),
+        "success rate 2/3, got: {}",
+        cell_text("game_logic.dll", "[data-metric=\"success-rate\"]")
+    );
+
+    // ── dinput8: the in-flight unit counts as in progress ──────────────
+    assert!(
+        cell_text("dinput8.dll", "[data-count=\"in_progress\"]").contains('1'),
+        "in-flight unit counted, got: {}",
+        cell_text("dinput8.dll", "[data-count=\"in_progress\"]")
+    );
+
+    // ── Strategy labels and shim-layer / PAL trait status ─────────────
+    assert!(
+        cell_text("d3d9.dll", ".pipeline-binary-strategy").contains("PAL"),
+        "PAL mapping strategy label, got: {}",
+        cell_text("d3d9.dll", ".pipeline-binary-strategy")
+    );
+    assert!(
+        cell_text("d3d9.dll", ".pipeline-binary-shim").contains("PAL trait"),
+        "PAL trait status for a PAL-mapped binary, got: {}",
+        cell_text("d3d9.dll", ".pipeline-binary-shim")
+    );
+    assert!(
+        cell_text("dinput8.dll", ".pipeline-binary-shim").contains("wgpu"),
+        "shim status names the replacement crate, got: {}",
+        cell_text("dinput8.dll", ".pipeline-binary-shim")
+    );
+    assert!(
+        cell_text("engine.dll", ".pipeline-binary-strategy").contains("Reverse Engineer"),
+        "full RE strategy label, got: {}",
+        cell_text("engine.dll", ".pipeline-binary-strategy")
+    );
+
+    // ── Honesty: unknown totals, tokens, and rates are em-dashes ──────
+    for (dll, selector) in [
+        ("d3d9.dll", "[data-metric=\"tokens\"]"),
+        ("d3d9.dll", "[data-metric=\"success-rate\"]"),
+        ("d3d9.dll", "[data-count=\"total\"]"),
+    ] {
+        let text = cell_text(dll, selector);
+        assert!(
+            text.contains('—') && !text.contains('0'),
+            "{dll} {selector} must render unknown as —, not a fabricated zero, got: {text}"
+        );
+    }
+
+    // ── Quick-action buttons: placeholders that announce, never control ──
+    assert!(
+        eval_bool(
+            "[...document.querySelectorAll('#pipeline-binaries [data-dll=\"game_logic.dll\"] .pipeline-binary-actions button')].length === 3"
+        ),
+        "each row should offer Start Translation, Pause, and Configure"
+    );
+
+    // Instrument fetch so any state-changing request becomes observable.
+    tab.evaluate(
+        "window.__nonGetFetches = 0; const origFetch = window.fetch.bind(window); \
+             window.fetch = (...args) => { \
+                 const method = ((args[1] && args[1].method) || 'GET').toUpperCase(); \
+                 if (method !== 'GET') window.__nonGetFetches++; \
+                 return origFetch(...args); \
+             }; true",
+        false,
+    )
+    .expect("instrument fetch");
+
+    tab.evaluate(
+        "document.querySelector('#pipeline-binaries [data-dll=\"game_logic.dll\"] [data-action=\"start\"]').click() === undefined",
+        false,
+    )
+    .expect("click start-translation placeholder");
+
+    // The click announces the placeholder via a toast…
+    let mut announced = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "[...document.querySelectorAll('#toast-container .toast')].some(t => t.textContent.includes('W2'))",
+        ) {
+            announced = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        announced,
+        "placeholder button should announce that pipeline control arrives in W2"
+    );
+    // …and touches no pipeline state: no state-changing request was fired.
+    assert_eq!(
+        eval_len("window.__nonGetFetches"),
+        0,
+        "placeholder buttons must not touch pipeline state"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
 /// Headless-browser test for the unit process detail panel (issue #62):
 /// clicking a unit backed by canned token-usage and fault-log artifacts
 /// must render the four process sections — tier, faults, tokens, strategies.

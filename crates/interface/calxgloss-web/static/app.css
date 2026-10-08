@@ -1801,75 +1801,136 @@ svg {
     color: var(--text-primary);
 }
 
-.pipeline-dlls {
+/* Per-binary rows (issue #63) — strategy, counts, cost, shim/PAL status,
+   and placeholder quick actions. Uses the same accent vocabulary as the
+   phase bar; the old .pipeline-dll-* rules referenced undefined variables. */
+
+.pipeline-binaries {
     display: flex;
     flex-direction: column;
     gap: 6px;
 }
 
-.pipeline-dll-item {
+.pipeline-binary-row {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 10px;
     padding: 8px 12px;
     background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
     border-radius: 6px;
-    font-size: 13px;
+    font-size: 12px;
 }
 
-.pipeline-dll-name {
+.pipeline-binary-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 200px;
+}
+
+.pipeline-binary-name {
     font-weight: 600;
     color: var(--text-primary);
-    min-width: 160px;
 }
 
-.pipeline-dll-status {
+.pipeline-binary-status {
     padding: 2px 8px;
     border-radius: 4px;
     font-size: 11px;
     font-weight: 500;
 }
 
-.pipeline-dll-status.classified {
-    background: var(--status-accepted-bg);
-    color: var(--status-accepted-fg);
+.pipeline-binary-status.classified {
+    background: var(--accent-green-dim);
+    color: var(--status-accepted);
 }
 
-.pipeline-dll-status.translating {
-    background: var(--status-in-progress-bg);
-    color: var(--status-in-progress-fg);
+.pipeline-binary-status.translating {
+    background: var(--accent-cyan);
+    color: var(--bg-primary);
     animation: pulse 2s ease-in-out infinite;
 }
 
-.pipeline-dll-status.complete {
-    background: var(--status-accepted-bg);
-    color: var(--status-accepted-fg);
+.pipeline-binary-status.complete {
+    background: var(--accent-green-dim);
+    color: var(--status-accepted);
 }
 
-.pipeline-dll-status.pending {
-    background: var(--status-queued-bg);
-    color: var(--status-queued-fg);
+.pipeline-binary-status.pending {
+    background: var(--accent-blue);
+    color: var(--bg-primary);
 }
 
-.pipeline-dll-meta {
+.pipeline-binary-strategy {
     color: var(--text-secondary);
-    font-size: 11px;
+    min-width: 130px;
+}
+
+.pipeline-binary-counts {
+    display: flex;
+    gap: 8px;
+    font-variant-numeric: tabular-nums;
+}
+
+.pb-count {
+    color: var(--text-secondary);
+}
+
+.pb-count.ok {
+    color: var(--status-accepted);
+}
+
+.pb-count.fail {
+    color: var(--status-sendback);
+}
+
+.pipeline-binary-cost {
+    display: flex;
+    gap: 8px;
     margin-left: auto;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
 }
 
-.pipeline-progress-bar {
-    width: 80px;
-    height: 6px;
-    background: var(--bg-primary);
-    border-radius: 3px;
-    overflow: hidden;
+.pipeline-binary-shim {
+    padding: 2px 8px;
+    border: 1px dashed var(--border-color);
+    border-radius: 4px;
+    font-size: 11px;
+    color: var(--text-secondary);
 }
 
-.pipeline-progress-fill {
-    height: 100%;
-    background: var(--status-in-progress-fg);
-    border-radius: 3px;
-    transition: width 0.3s ease;
+.pipeline-binary-shim[data-shim="pal"] {
+    border-color: var(--accent-purple);
+    color: var(--accent-purple);
+}
+
+.pipeline-binary-shim[data-shim="shim"] {
+    border-color: var(--accent-orange);
+    color: var(--accent-orange);
+}
+
+.pipeline-binary-actions {
+    display: flex;
+    gap: 4px;
+}
+
+/* Placeholders only — visibly muted and labelled, real control arrives in W2. */
+.pipeline-action-btn {
+    padding: 3px 8px;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-size: 11px;
+    cursor: help;
+}
+
+.pipeline-action-btn:hover {
+    border-color: var(--accent-blue);
+    color: var(--text-secondary);
 }
 
 /* ─── Pipeline Phase Bar (issue #61) ──────────────────────────────── */
