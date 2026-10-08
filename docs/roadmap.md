@@ -296,6 +296,6 @@ Carried from the archive's Cross-Cutting Checklist (all still open):
 - `data_flow.md` updated to include all methodologies
 - All 8 web lifecycle endpoints + analytics + process-control endpoints
   (tracked by W0–W4)
-- `app.js` split into per-view ES modules; new views in `index.html` tabs;
+- `app.js` split into per-view ES modules (done); new views in `index.html` tabs;
   dark-theme CSS + vanilla-JS patterns for all new frontend code
 - Architecture diagrams in source docs match implementation

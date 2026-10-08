@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Refactored
 
 - **Web router table consolidation** — the review UI's plain-`serve` and live (`calxgloss live`) surfaces are now assembled from one shared route table plus a live-only table, so the two can't drift apart and live pipeline endpoints answer only in live mode.
+- **Frontend split into ES modules** — the review UI's monolithic ~2,250-line `app.js` is now one module per view plus shared fetch/format helpers, loaded natively by the browser with no build step.
 
 ## [0.2.0] — 2026-10-06
 

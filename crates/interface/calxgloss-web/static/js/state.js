@@ -1,0 +1,15 @@
+/* ==========================================================================
+   Shared application state — the single mutable store every view reads
+   ========================================================================== */
+
+export const State = {
+    dashboard: null,
+    currentView: "dashboard",
+    selectedUnitId: null,
+    units: [],
+    graphRendererFull: null,
+    wsManager: null,
+    statusFilter: "all",
+    gcCandidates: [],
+    gcSelectedBranches: new Set(),
+};

@@ -818,6 +818,26 @@ async fn test_static_files_served() {
         "JS content-type, got: {js_type}"
     );
 
+    // ES module files under js/ must be served too — the page loads
+    // them natively via `import`, so nested paths must resolve.
+    let module_resp = reqwest::get(format!(
+        "http://127.0.0.1:{}/js/dashboard.js",
+        fixture.port()
+    ))
+    .await
+    .expect("module request succeeds");
+
+    assert_eq!(module_resp.status(), 200);
+    let module_type = module_resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        module_type.contains("javascript"),
+        "module content-type, got: {module_type}"
+    );
+
     // Non-existent file should 404
     let notfound_resp = reqwest::get(format!(
         "http://127.0.0.1:{}/does-not-exist.css",
