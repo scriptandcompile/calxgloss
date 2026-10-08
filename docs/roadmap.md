@@ -244,8 +244,9 @@ process control (archive §12 "Current State Summary").
   progress; per-function duration recording must be added before time
   estimates work.
 - Phase 2 — in-flight status: `TranslationPhase` enum + per-unit phase history
-  in live progress (done); WS phase events, context-tier/fault/token/retry
-  display in unit detail.
+  in live progress (done); context-tier/fault/token/retry display in unit
+  detail (done — `process` object on `GET /api/units/{id}`, four detail
+  sections); WS phase events.
 - Phase 3 — live translation view (`/api/progress/enhanced`, `LiveView`).
 - Phase 4 — dashboard enhancements.
 

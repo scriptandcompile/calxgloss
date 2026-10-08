@@ -111,6 +111,32 @@ impl ContextTier {
             Self::FullModule => None, // already at max
         }
     }
+
+    /// Resolve a tier from its [`label`](Self::label) string (as stored in
+    /// token-usage entries). Returns `None` for unknown labels.
+    pub fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "signature" => Some(Self::Signature),
+            "disassembly" => Some(Self::Disassembly),
+            "with_tests" => Some(Self::WithTests),
+            "module_context" => Some(Self::ModuleContext),
+            "full_module" => Some(Self::FullModule),
+            _ => None,
+        }
+    }
+
+    /// Resolve a tier from its [`number`](Self::number) (0–4).
+    /// Returns `None` for out-of-range numbers.
+    pub fn from_number(number: u32) -> Option<Self> {
+        match number {
+            0 => Some(Self::Signature),
+            1 => Some(Self::Disassembly),
+            2 => Some(Self::WithTests),
+            3 => Some(Self::ModuleContext),
+            4 => Some(Self::FullModule),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for ContextTier {
@@ -276,6 +302,36 @@ mod tests {
         assert_eq!(ContextTier::WithTests.label(), "with_tests");
         assert_eq!(ContextTier::ModuleContext.label(), "module_context");
         assert_eq!(ContextTier::FullModule.label(), "full_module");
+    }
+
+    #[test]
+    fn test_context_tier_from_label_round_trips() {
+        for tier in [
+            ContextTier::Signature,
+            ContextTier::Disassembly,
+            ContextTier::WithTests,
+            ContextTier::ModuleContext,
+            ContextTier::FullModule,
+        ] {
+            assert_eq!(ContextTier::from_label(tier.label()), Some(tier));
+        }
+        assert_eq!(ContextTier::from_label("nonsense"), None);
+        assert_eq!(ContextTier::from_label(""), None);
+    }
+
+    #[test]
+    fn test_context_tier_from_number_round_trips() {
+        for tier in [
+            ContextTier::Signature,
+            ContextTier::Disassembly,
+            ContextTier::WithTests,
+            ContextTier::ModuleContext,
+            ContextTier::FullModule,
+        ] {
+            assert_eq!(ContextTier::from_number(tier.number()), Some(tier));
+        }
+        assert_eq!(ContextTier::from_number(5), None);
+        assert_eq!(ContextTier::from_number(u32::MAX), None);
     }
 
     #[test]

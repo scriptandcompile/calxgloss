@@ -248,6 +248,7 @@ pub async fn api_get_unit(
     let attempt_history = super::ghidra::load_attempt_history(state.repo_path(), &unit_id);
     let revision_count = super::ghidra::compute_revision_count(&state, unit);
     let queue_position = super::queue::compute_queue_position(&dashboard, unit);
+    let process = super::process::build_unit_process(state.repo_path(), unit);
 
     Ok(Json(UnitResponse {
         success: true,
@@ -276,6 +277,7 @@ pub async fn api_get_unit(
             attempt_history,
             revision_count,
             queue_position,
+            process,
         },
     }))
 }

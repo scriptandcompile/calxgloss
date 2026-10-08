@@ -277,6 +277,181 @@ function renderDetailOverview(u) {
                 </ul>
             </div>
         ` : ""}
+
+        ${renderProcessSections(u)}
+    `;
+}
+
+// ─── Process telemetry sections (issue #62) ──────────────────────────
+
+function renderProcessSections(u) {
+    const p = u.process;
+    if (!p) return "";
+
+    return `
+        ${renderProcessTier(p.tier)}
+        ${renderProcessFaults(p.faults)}
+        ${renderProcessTokens(p.tokens)}
+        ${renderProcessStrategies(p.strategies)}
+    `;
+}
+
+function renderProcessTier(tier) {
+    if (!tier) return "";
+
+    let body = "";
+    if (tier.tier != null) {
+        const escalatedTag = tier.escalated
+            ? `<span class="tier-escalated-tag">escalated</span>`
+            : "";
+        body += `
+            <div class="detail-row">
+                <span class="detail-row-label">Tier</span>
+                <span class="detail-row-value">T${tier.tier}${tier.label ? ` (${escapeHtml(tier.label)})` : ""} ${escalatedTag}</span>
+            </div>
+        `;
+        if (tier.description) {
+            body += `
+                <div class="tier-description">${escapeHtml(tier.description)}</div>
+            `;
+        }
+        if (tier.rationale) {
+            body += `
+                <div class="detail-row">
+                    <span class="detail-row-label">Complexity</span>
+                    <span class="detail-row-value">${escapeHtml(tier.rationale.complexity)}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-row-label">API calls</span>
+                    <span class="detail-row-value">${tier.rationale.api_call_count}</span>
+                </div>
+            `;
+        }
+    } else {
+        body += `<div class="process-empty">No tier telemetry recorded.</div>`;
+    }
+
+    if (tier.attempts && tier.attempts.length > 0) {
+        body += `
+            <div class="tier-attempt-list">
+                ${tier.attempts.map(a => `
+                    <div class="tier-attempt-item">
+                        <span class="tier-attempt-num">#${a.attempt}</span>
+                        <span class="tier-attempt-strategy">${escapeHtml(a.strategy)}</span>
+                        <span class="tier-attempt-tier">${a.tier ? escapeHtml(a.tier) : "\u2014"}</span>
+                    </div>
+                `).join("")}
+            </div>
+        `;
+    }
+
+    return `
+        <div class="detail-section" id="process-tier-section">
+            <div class="detail-section-title">Context Tier</div>
+            ${body}
+        </div>
+    `;
+}
+
+function renderProcessFaults(faults) {
+    if (!faults) return "";
+
+    const body = faults.length === 0
+        ? `<div class="process-empty">No faults recorded for this unit.</div>`
+        : `
+            <div class="fault-list">
+                ${faults.map(f => `
+                    <div class="fault-item severity-${escapeHtml(f.severity)}">
+                        <div class="fault-item-head">
+                            <span class="fault-category-tag">${escapeHtml(f.category)}</span>
+                            <span class="fault-severity-tag">${escapeHtml(f.severity)}</span>
+                            <span class="fault-attempt">attempt ${f.attempt} \u00b7 ${escapeHtml(f.strategy)}</span>
+                        </div>
+                        <div class="fault-description">${escapeHtml(f.description)}</div>
+                        ${f.recovery ? `<div class="fault-recovery">Recovery: ${escapeHtml(f.recovery)}</div>` : ""}
+                    </div>
+                `).join("")}
+            </div>
+        `;
+
+    return `
+        <div class="detail-section" id="process-faults-section">
+            <div class="detail-section-title">Fault History (${faults.length})</div>
+            ${body}
+        </div>
+    `;
+}
+
+function renderProcessTokens(tokens) {
+    if (!tokens) return "";
+
+    let body = `
+        <div class="token-stats">
+            <div class="token-stat">
+                <div class="token-stat-label">Total</div>
+                <div class="token-stat-value">${tokens.total_tokens.toLocaleString()}</div>
+            </div>
+            <div class="token-stat">
+                <div class="token-stat-label">Successful</div>
+                <div class="token-stat-value pass">${tokens.successful_tokens.toLocaleString()}</div>
+            </div>
+            <div class="token-stat">
+                <div class="token-stat-label">Failed</div>
+                <div class="token-stat-value ${tokens.failed_tokens > 0 ? "fail" : "none"}">${tokens.failed_tokens.toLocaleString()}</div>
+            </div>
+        </div>
+    `;
+
+    if (tokens.per_attempt && tokens.per_attempt.length > 0) {
+        body += `
+            <div class="token-attempt-list">
+                ${tokens.per_attempt.map(a => `
+                    <div class="token-attempt-item">
+                        <span class="token-attempt-icon">${a.success ? "\u2705" : "\u274c"}</span>
+                        <span class="token-attempt-num">#${a.attempt}</span>
+                        <span class="token-attempt-strategy">${escapeHtml(a.strategy)}</span>
+                        <span class="token-attempt-tier">${a.tier ? escapeHtml(a.tier) : "\u2014"}</span>
+                        <span class="token-attempt-count">${a.tokens_used.toLocaleString()} tok</span>
+                    </div>
+                `).join("")}
+            </div>
+        `;
+    }
+
+    return `
+        <div class="detail-section" id="process-tokens-section">
+            <div class="detail-section-title">Token Usage (${tokens.attempts} attempts)</div>
+            ${body}
+        </div>
+    `;
+}
+
+function renderProcessStrategies(strategies) {
+    if (!strategies) return "";
+
+    const body = strategies.length === 0
+        ? `<div class="process-empty">No retry strategies recorded for this unit.</div>`
+        : `
+            <div class="strategy-list">
+                ${strategies.map(s => {
+                    const pct = Math.round(s.success_rate * 100);
+                    const cls = s.success_rate >= 1 ? "pass" : s.success_rate > 0 ? "partial" : "fail";
+                    return `
+                        <div class="strategy-item">
+                            <span class="strategy-name">${escapeHtml(s.strategy)}</span>
+                            <span class="strategy-counts">${s.successes}/${s.attempts} succeeded</span>
+                            <span class="strategy-rate ${cls}">${pct}%</span>
+                        </div>
+                    `;
+                }).join("")}
+            </div>
+        `;
+
+    return `
+        <div class="detail-section" id="process-strategies-section">
+            <div class="detail-section-title">Retry Strategies (${strategies.length})</div>
+            ${body}
+        </div>
     `;
 }
 

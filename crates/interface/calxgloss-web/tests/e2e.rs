@@ -2079,6 +2079,278 @@ async fn test_unit_ghidra_missing_artifacts() {
     let body: serde_json::Value = resp.json().await.expect("ghidra body is JSON");
     assert_eq!(body["success"], true);
 }
+// ─────────────────────────────────────────────────────────────
+// Unit process detail tests (issue #62)
+// ─────────────────────────────────────────────────────────────
+
+/// Writes canned run-telemetry artifacts for game_logic/DrawPrimitive:
+/// a token-usage log (2 attempts, escalated tiers), a fault log (2 faults),
+/// and a Ghidra analysis artifact (for the tier rationale).
+fn write_canned_run_telemetry(fixture: &TestFixture) {
+    let analysis_dir = fixture.repo_path().join("re").join("analysis");
+    std::fs::create_dir_all(&analysis_dir).expect("create analysis dir");
+
+    let token_log = serde_json::json!({
+        "entries": [
+            {
+                "timestamp": 1767225600,
+                "dll": "game_logic.dll",
+                "function": "DrawPrimitive",
+                "attempt": 1,
+                "strategy": "initial",
+                "context_tier": "disassembly",
+                "tokens_used": 4096,
+                "success": false
+            },
+            {
+                "timestamp": 1767225900,
+                "dll": "game_logic.dll",
+                "function": "DrawPrimitive",
+                "attempt": 2,
+                "strategy": "compile_fix",
+                "context_tier": "with_tests",
+                "tokens_used": 3072,
+                "success": true
+            },
+            {
+                "timestamp": 1767226200,
+                "dll": "audio.dll",
+                "function": "PlaySample",
+                "attempt": 1,
+                "strategy": "initial",
+                "context_tier": "signature",
+                "tokens_used": 150,
+                "success": true
+            }
+        ]
+    });
+    std::fs::write(
+        analysis_dir.join("token_usage.json"),
+        serde_json::to_string_pretty(&token_log).expect("serialize token log"),
+    )
+    .expect("write token_usage.json");
+
+    let fault_log = serde_json::json!({
+        "entries": [
+            {
+                "timestamp": 1767225660,
+                "dll": "game_logic.dll",
+                "function": "DrawPrimitive",
+                "attempt": 1,
+                "strategy": "initial",
+                "category": "context_window_exceeded",
+                "severity": "warning",
+                "description": "Prompt exceeded context window",
+                "recovery": "escalate_context"
+            },
+            {
+                "timestamp": 1767225960,
+                "dll": "game_logic.dll",
+                "function": "DrawPrimitive",
+                "attempt": 2,
+                "strategy": "compile_fix",
+                "category": "hallucination",
+                "severity": "error",
+                "description": "Output referenced unknown symbol",
+                "recovery": "retry"
+            },
+            {
+                "timestamp": 1767226260,
+                "dll": "audio.dll",
+                "function": "PlaySample",
+                "attempt": 1,
+                "strategy": "initial",
+                "category": "slow_response",
+                "severity": "warning",
+                "description": "Response latency exceeded threshold",
+                "recovery": "retry"
+            }
+        ]
+    });
+    std::fs::write(
+        analysis_dir.join("fault_log.json"),
+        serde_json::to_string_pretty(&fault_log).expect("serialize fault log"),
+    )
+    .expect("write fault_log.json");
+
+    let dll_dir = analysis_dir.join("game_logic");
+    std::fs::create_dir_all(&dll_dir).expect("create dll dir");
+    let ghidra_artifact = serde_json::json!({
+        "name": "DrawPrimitive",
+        "address": 4198400,
+        "dll": "game_logic.dll",
+        "disassembly": "push rbp\nmov rbp, rsp\nmov rax, [rdi]\ncall DirectXDraw\ncall Present\nret\npop rbp\nret\nnop\nnop",
+        "decompiler_output": "void DrawPrimitive() { DirectXDraw(); Present(); }",
+        "windows_apis": [
+            { "name": "DirectXDraw", "category": "DirectX", "pal_mapping": "wgpu::Queue::submit" },
+            { "name": "Present", "category": "DirectX", "pal_mapping": "wgpu::Surface::present" }
+        ],
+        "call_graph": []
+    });
+    std::fs::write(
+        dll_dir.join("DrawPrimitive.json"),
+        serde_json::to_string_pretty(&ghidra_artifact).expect("serialize ghidra artifact"),
+    )
+    .expect("write DrawPrimitive.json");
+}
+
+/// Fetches the unit detail body for `unit_id` from a plain serve router.
+async fn fetch_unit_detail(fixture: &TestFixture, unit_id: &str) -> serde_json::Value {
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resp = reqwest::get(format!(
+        "http://127.0.0.1:{}/api/units/{}",
+        fixture.port(),
+        urlencoding::encode(unit_id)
+    ))
+    .await
+    .expect("unit detail request succeeds");
+
+    assert_eq!(resp.status(), 200);
+    resp.json().await.expect("unit detail body is JSON")
+}
+
+#[tokio::test]
+async fn test_unit_process_sections_from_canned_artifacts() {
+    let fixture = TestFixture::new();
+    write_canned_run_telemetry(&fixture);
+    let body = fetch_unit_detail(&fixture, "game_logic/DrawPrimitive/v2").await;
+
+    assert_eq!(body["success"], true);
+    let process = body["unit"]["process"]
+        .as_object()
+        .expect("unit detail should include a process object");
+
+    // --- Tier section: derived from the last token-usage attempt ---
+    let tier = &process["tier"];
+    assert_eq!(tier["tier"], 2, "tier number should be 2 (with_tests)");
+    assert_eq!(tier["label"], "with_tests");
+    assert!(tier["description"].is_string());
+    assert_eq!(
+        tier["escalated"], true,
+        "tier should be flagged as escalated"
+    );
+
+    // Rationale: recomputed from the Ghidra analysis artifact.
+    let rationale = &tier["rationale"];
+    assert_eq!(
+        rationale["api_call_count"], 2,
+        "api_call_count should count windows_apis entries"
+    );
+    assert_eq!(
+        rationale["complexity"], "standard",
+        "complexity should be detected from the disassembly artifact"
+    );
+
+    // Retry strategy history: one record per attempt.
+    let attempts = tier["attempts"].as_array().expect("attempts array");
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[0]["attempt"], 1);
+    assert_eq!(attempts[0]["strategy"], "initial");
+    assert_eq!(attempts[0]["tier"], "disassembly");
+    assert_eq!(attempts[1]["attempt"], 2);
+    assert_eq!(attempts[1]["strategy"], "compile_fix");
+    assert_eq!(attempts[1]["tier"], "with_tests");
+
+    // --- Fault section: only this unit's faults, in order ---
+    let faults = process["faults"].as_array().expect("faults array");
+    assert_eq!(faults.len(), 2, "should include only this unit's faults");
+    assert_eq!(faults[0]["attempt"], 1);
+    assert_eq!(faults[0]["category"], "context_window_exceeded");
+    assert_eq!(faults[0]["severity"], "warning");
+    assert_eq!(faults[0]["recovery"], "escalate_context");
+    assert_eq!(faults[1]["attempt"], 2);
+    assert_eq!(faults[1]["category"], "hallucination");
+    assert_eq!(faults[1]["severity"], "error");
+
+    // --- Token section: totals over this unit's attempts ---
+    let tokens = &process["tokens"];
+    assert_eq!(tokens["total_tokens"], 7168, "4096 + 3072");
+    assert_eq!(tokens["successful_tokens"], 3072);
+    assert_eq!(tokens["failed_tokens"], 4096);
+    assert_eq!(tokens["attempts"], 2);
+    let per_attempt = tokens["per_attempt"].as_array().expect("per_attempt array");
+    assert_eq!(per_attempt.len(), 2);
+    assert_eq!(per_attempt[0]["attempt"], 1);
+    assert_eq!(per_attempt[0]["strategy"], "initial");
+    assert_eq!(per_attempt[0]["tokens_used"], 4096);
+    assert_eq!(per_attempt[0]["success"], false);
+    assert_eq!(per_attempt[1]["attempt"], 2);
+    assert_eq!(per_attempt[1]["tokens_used"], 3072);
+    assert_eq!(per_attempt[1]["success"], true);
+
+    // --- Strategy section: per-strategy success rates ---
+    let strategies = process["strategies"].as_array().expect("strategies array");
+    assert_eq!(strategies.len(), 2);
+    assert_eq!(strategies[0]["strategy"], "initial");
+    assert_eq!(strategies[0]["attempts"], 1);
+    assert_eq!(strategies[0]["successes"], 0);
+    assert_eq!(strategies[0]["success_rate"], 0.0);
+    assert_eq!(strategies[1]["strategy"], "compile_fix");
+    assert_eq!(strategies[1]["attempts"], 1);
+    assert_eq!(strategies[1]["successes"], 1);
+    assert_eq!(strategies[1]["success_rate"], 1.0);
+}
+
+#[tokio::test]
+async fn test_unit_process_degrades_to_empty_sections() {
+    let fixture = TestFixture::new();
+    let body = fetch_unit_detail(&fixture, "game_logic/UpdateScene/v1").await;
+
+    // No telemetry artifacts exist for this unit — every section must be
+    // present but empty, and the response must still be a success.
+    assert_eq!(body["success"], true);
+    let process = body["unit"]["process"]
+        .as_object()
+        .expect("unit detail should include a process object");
+
+    let tier = &process["tier"];
+    assert!(
+        tier["tier"].is_null(),
+        "tier should be null when no telemetry exists"
+    );
+    assert_eq!(tier["attempts"].as_array().unwrap().len(), 0);
+    assert!(tier["rationale"].is_null(), "rationale should be null");
+    assert!(process["faults"].as_array().unwrap().is_empty());
+    assert_eq!(process["tokens"]["total_tokens"], 0);
+    assert!(
+        process["tokens"]["per_attempt"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(process["strategies"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_unit_process_corrupt_artifacts_degrade() {
+    let fixture = TestFixture::new();
+    let analysis_dir = fixture.repo_path().join("re").join("analysis");
+    std::fs::create_dir_all(&analysis_dir).expect("create analysis dir");
+    std::fs::write(analysis_dir.join("token_usage.json"), "{{{ not json")
+        .expect("write corrupt token log");
+    std::fs::write(analysis_dir.join("fault_log.json"), "garbage")
+        .expect("write corrupt fault log");
+    let dll_dir = analysis_dir.join("game_logic");
+    std::fs::create_dir_all(&dll_dir).expect("create dll dir");
+    std::fs::write(dll_dir.join("DrawPrimitive.json"), "also not json")
+        .expect("write corrupt ghidra artifact");
+
+    let body = fetch_unit_detail(&fixture, "game_logic/DrawPrimitive/v2").await;
+
+    assert_eq!(body["success"], true, "corrupt artifacts must not error");
+    let process = body["unit"]["process"]
+        .as_object()
+        .expect("unit detail should include a process object");
+    assert!(process["tier"]["tier"].is_null());
+    assert!(process["faults"].as_array().unwrap().is_empty());
+    assert_eq!(process["tokens"]["total_tokens"], 0);
+    assert!(process["strategies"].as_array().unwrap().is_empty());
+}
 
 /// Test that build_dashboard API (exposed at crate root) builds correctly from the fixture.
 #[tokio::test]
@@ -2510,6 +2782,120 @@ async fn test_headless_pipeline_phase_bar_live() {
             "{phase} segment must render as no-data-source, not zero progress"
         );
     }
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for the unit process detail panel (issue #62):
+/// clicking a unit backed by canned token-usage and fault-log artifacts
+/// must render the four process sections — tier, faults, tokens, strategies.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_unit_process_sections() {
+    let fixture = TestFixture::new();
+    write_canned_run_telemetry(&fixture);
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+    let eval_text = |expr: &str| -> String {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default()
+    };
+
+    // Switch to the queue view so the full queue list renders.
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click queue tab");
+
+    // Wait for the telemetry-backed unit to appear in the queue list.
+    let mut listed = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "!!document.querySelector('#full-queue-list [data-unit-id=\"game_logic/DrawPrimitive/v2\"]')",
+        ) {
+            listed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        listed,
+        "queue list should contain the DrawPrimitive v2 unit"
+    );
+
+    // Click the unit to render its inline detail panel.
+    tab.evaluate(
+        "document.querySelector('#full-queue-list [data-unit-id=\"game_logic/DrawPrimitive/v2\"]').click() === undefined",
+        false,
+    )
+    .expect("click queue item");
+
+    // The four process sections render asynchronously once the unit fetch
+    // settles; poll until all are present (up to ~5 seconds).
+    let all_sections = "!!document.getElementById('process-tier-section') && \
+         !!document.getElementById('process-faults-section') && \
+         !!document.getElementById('process-tokens-section') && \
+         !!document.getElementById('process-strategies-section')";
+    let mut rendered = false;
+    for _ in 0..25 {
+        if eval_bool(all_sections) {
+            rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        rendered,
+        "detail panel should render the four process sections"
+    );
+
+    // The tier section shows the escalated tier from the canned telemetry.
+    let tier_text = eval_text("document.getElementById('process-tier-section')?.textContent || ''");
+    assert!(
+        tier_text.contains("with_tests"),
+        "tier section should show the final tier label, got: {tier_text}"
+    );
+    assert!(
+        tier_text.contains("escalated"),
+        "tier section should flag escalation, got: {tier_text}"
+    );
+
+    // The fault section lists the canned fault categories.
+    let fault_text =
+        eval_text("document.getElementById('process-faults-section')?.textContent || ''");
+    assert!(
+        fault_text.contains("context_window_exceeded") && fault_text.contains("hallucination"),
+        "fault section should list both canned faults, got: {fault_text}"
+    );
+
+    // The strategy section shows the retry strategies used.
+    let strategy_text =
+        eval_text("document.getElementById('process-strategies-section')?.textContent || ''");
+    assert!(
+        strategy_text.contains("initial") && strategy_text.contains("compile_fix"),
+        "strategy section should list both strategies, got: {strategy_text}"
+    );
 
     tab.close_target().ok();
     drop(browser);

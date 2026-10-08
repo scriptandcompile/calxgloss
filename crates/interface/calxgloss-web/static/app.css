@@ -1079,6 +1079,180 @@ svg {
     color: var(--text-secondary);
 }
 
+/* ─── Process Telemetry (issue #62) ─────────────────────────────────── */
+.process-empty {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.tier-escalated-tag {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 10px;
+    background: var(--accent-yellow-dim);
+    color: var(--accent-yellow);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.tier-description {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin: 4px 0 8px;
+}
+
+.tier-attempt-list,
+.token-attempt-list,
+.fault-list,
+.strategy-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.tier-attempt-item,
+.token-attempt-item,
+.strategy-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
+    font-size: 12px;
+}
+
+.tier-attempt-num,
+.token-attempt-num {
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.tier-attempt-strategy,
+.token-attempt-strategy,
+.strategy-name {
+    font-weight: 500;
+}
+
+.tier-attempt-tier,
+.token-attempt-tier {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+
+.token-attempt-count {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+
+.fault-item {
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
+    border-left: 3px solid var(--text-muted);
+    font-size: 12px;
+}
+
+.fault-item.severity-warning { border-left-color: var(--accent-yellow); }
+.fault-item.severity-error { border-left-color: var(--accent-red); }
+.fault-item.severity-critical { border-left-color: var(--accent-red); }
+
+.fault-item-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.fault-category-tag {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.fault-severity-tag {
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    background: var(--bg-secondary);
+    color: var(--text-muted);
+}
+
+.fault-item.severity-warning .fault-severity-tag { color: var(--accent-yellow); }
+.fault-item.severity-error .fault-severity-tag,
+.fault-item.severity-critical .fault-severity-tag { color: var(--accent-red); }
+
+.fault-attempt {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.fault-description {
+    color: var(--text-secondary);
+}
+
+.fault-recovery {
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.token-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+}
+
+.token-stat {
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
+}
+
+.token-stat-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-bottom: 2px;
+}
+
+.token-stat-value {
+    font-size: 15px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+}
+
+.token-stat-value.pass { color: var(--accent-green); }
+.token-stat-value.fail { color: var(--accent-red); }
+.token-stat-value.none { color: var(--text-muted); }
+
+.strategy-counts {
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.strategy-rate {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-weight: 600;
+    font-size: 12px;
+}
+
+.strategy-rate.pass { color: var(--accent-green); }
+.strategy-rate.partial { color: var(--accent-yellow); }
+.strategy-rate.fail { color: var(--accent-red); }
+
 /* ─── Confidence Bar ─────────────────────────────────────────────────── */
 .confidence-bar-container {
     width: 100%;

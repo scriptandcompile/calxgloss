@@ -7,6 +7,7 @@ mod diff;
 mod gc;
 mod ghidra;
 mod pipeline;
+mod process;
 mod queue;
 mod r#static;
 

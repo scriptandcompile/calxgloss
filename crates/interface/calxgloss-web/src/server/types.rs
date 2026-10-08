@@ -2,8 +2,8 @@
 
 use axum::http::StatusCode;
 use calxgloss_types::{
-    BinaryProgress, PhaseProgress, PhaseRecord, PipelinePhase, ReviewDashboard, ReviewStatus,
-    TranslationPhase,
+    BinaryProgress, FaultCategory, FaultEvent, FaultSeverity, PhaseProgress, PhaseRecord,
+    PipelinePhase, ReviewDashboard, ReviewStatus, TokenUsageEntry, TranslationPhase,
 };
 use serde::{Deserialize, Serialize};
 
@@ -101,6 +101,170 @@ pub struct UnitResponseInner {
     pub revision_count: usize,
     /// Position of this unit in the dependency-ordered review queue.
     pub queue_position: QueuePosition,
+    /// Run-process telemetry: context tier, faults, tokens, retry strategies.
+    pub process: UnitProcess,
+}
+
+// ─── Unit process telemetry types (issue #62) ────────────────────────
+
+/// Run-process telemetry for a single unit, derived from the token-usage
+/// log, fault log, and Ghidra analysis artifacts already stored under
+/// `re/analysis/`. Missing or corrupt artifacts degrade to empty sections.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnitProcess {
+    /// Context tier the unit was translated at, with rationale and history.
+    pub tier: TierSection,
+    /// Faults detected for this unit, in chronological order.
+    pub faults: Vec<FaultRecord>,
+    /// Token usage totals and per-attempt breakdown.
+    pub tokens: TokenSection,
+    /// Retry strategies used for this unit with their success rates.
+    pub strategies: Vec<StrategyRecord>,
+}
+
+/// The context-tier section of the unit detail panel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TierSection {
+    /// Tier number (0–4), or `None` when no telemetry records a tier.
+    pub tier: Option<usize>,
+    /// Tier label (e.g., "with_tests").
+    pub label: Option<String>,
+    /// Human-readable description of what the tier sends to the LLM.
+    pub description: Option<String>,
+    /// Whether the pipeline escalated through more than one tier.
+    pub escalated: bool,
+    /// Why this tier was selected (complexity, API call count), if the
+    /// Ghidra analysis artifact is available.
+    pub rationale: Option<TierRationale>,
+    /// Per-attempt tier/strategy history from the token-usage log.
+    pub attempts: Vec<TierAttemptRecord>,
+}
+
+/// Why a function's context tier was selected, recomputed from the
+/// Ghidra analysis artifact.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TierRationale {
+    /// Detected function complexity label (e.g., "standard").
+    pub complexity: String,
+    /// Number of Windows API call sites identified by Ghidra.
+    pub api_call_count: usize,
+}
+
+/// One attempt's tier and retry strategy from the token-usage log.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TierAttemptRecord {
+    /// The 1-based attempt number.
+    pub attempt: u32,
+    /// Retry strategy label used for this attempt.
+    pub strategy: String,
+    /// Context tier label used for this attempt (empty when untracked).
+    pub tier: String,
+}
+
+/// A single fault detected for this unit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FaultRecord {
+    /// The attempt the fault was detected in.
+    pub attempt: u32,
+    /// Retry strategy active when the fault was detected.
+    pub strategy: String,
+    /// Fault category (shared `FaultCategory` vocabulary).
+    pub category: FaultCategory,
+    /// Fault severity ("warning", "error", "critical").
+    pub severity: FaultSeverity,
+    /// Human-readable description of what was detected.
+    pub description: String,
+    /// Recovery action taken or recommended.
+    pub recovery: String,
+    /// When the fault was detected (Unix seconds).
+    pub timestamp: u64,
+}
+
+/// Token usage totals for a unit across all its attempts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenSection {
+    /// Total tokens consumed by all attempts.
+    pub total_tokens: usize,
+    /// Tokens consumed by attempts that ultimately succeeded.
+    pub successful_tokens: usize,
+    /// Tokens consumed by attempts that failed.
+    pub failed_tokens: usize,
+    /// Number of recorded attempts.
+    pub attempts: usize,
+    /// Per-attempt breakdown, ordered by attempt number.
+    pub per_attempt: Vec<TokenAttemptRecord>,
+}
+
+/// Token usage for a single attempt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenAttemptRecord {
+    /// The 1-based attempt number.
+    pub attempt: u32,
+    /// Retry strategy label used for this attempt.
+    pub strategy: String,
+    /// Context tier label used for this attempt (empty when untracked).
+    pub tier: String,
+    /// Tokens consumed by this attempt.
+    pub tokens_used: usize,
+    /// Whether this attempt ultimately succeeded.
+    pub success: bool,
+    /// When the entry was recorded (Unix seconds).
+    pub timestamp: u64,
+}
+
+/// Aggregate performance of one retry strategy for this unit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyRecord {
+    /// Retry strategy label (e.g., "initial", "compile_fix").
+    pub strategy: String,
+    /// Number of attempts that used this strategy.
+    pub attempts: usize,
+    /// How many of those attempts succeeded.
+    pub successes: usize,
+    /// Successes divided by attempts (0.0–1.0).
+    pub success_rate: f64,
+}
+
+impl From<&FaultEvent> for FaultRecord {
+    /// Projects a shared fault-log event onto the unit detail wire format,
+    /// keeping the shared category/severity vocabulary unchanged.
+    fn from(event: &FaultEvent) -> Self {
+        Self {
+            attempt: event.attempt,
+            strategy: event.strategy.clone(),
+            category: event.category.clone(),
+            severity: event.severity.clone(),
+            description: event.description.clone(),
+            recovery: event.recovery.clone(),
+            timestamp: event.timestamp,
+        }
+    }
+}
+
+impl From<&TokenUsageEntry> for TierAttemptRecord {
+    /// Projects a token-usage entry onto the tier-history row (attempt,
+    /// strategy, tier label).
+    fn from(entry: &TokenUsageEntry) -> Self {
+        Self {
+            attempt: entry.attempt,
+            strategy: entry.strategy.clone(),
+            tier: entry.context_tier.clone(),
+        }
+    }
+}
+
+impl From<&TokenUsageEntry> for TokenAttemptRecord {
+    /// Projects a token-usage entry onto the per-attempt token row.
+    fn from(entry: &TokenUsageEntry) -> Self {
+        Self {
+            attempt: entry.attempt,
+            strategy: entry.strategy.clone(),
+            tier: entry.context_tier.clone(),
+            tokens_used: entry.tokens_used,
+            success: entry.success,
+            timestamp: entry.timestamp,
+        }
+    }
 }
 
 /// Summary of a git diff between a branch and main.
