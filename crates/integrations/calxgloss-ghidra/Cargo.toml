@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+calxgloss-types = { path = "../../shared/calxgloss-types" }
 reqwest = { workspace = true, features = ["json"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -212,6 +212,22 @@ pub enum ProgressEvent {
     /// Batch-level (no unit key): it marks the binary as being worked on
     /// before any unit event exists, and `BatchSummary` marks the pass done.
     BatchStarted { dll: String },
+    /// A batch-level analysis pass is walking its work list — the heartbeat
+    /// of the pre-translation passes (call-graph extraction, the evidence
+    /// scans) that grind function-by-function before any unit event exists.
+    ///
+    /// `pass` names the work ("type inference", "call graph", …) — a free
+    /// string, so a new evidence pass needs no new event variant. `index`
+    /// and `total` are the pass's own work list; `total` 0 means the pass
+    /// has no per-item granularity, and `function`/`index` stay empty.
+    BatchProgress {
+        dll: String,
+        pass: String,
+        #[serde(default)]
+        function: String,
+        index: usize,
+        total: usize,
+    },
     /// Batch translation for a DLL has completed (summary across all functions).
     BatchSummary {
         dll: String,
@@ -322,6 +338,7 @@ impl ProgressEvent {
             }
             ProgressEvent::ClassificationComplete { .. }
             | ProgressEvent::BatchStarted { .. }
+            | ProgressEvent::BatchProgress { .. }
             | ProgressEvent::BatchSummary { .. } => None,
         }
     }
@@ -498,6 +515,24 @@ impl std::fmt::Display for ProgressEvent {
             }
             ProgressEvent::BatchStarted { dll } => {
                 write!(f, "Batch started for {dll}")
+            }
+            ProgressEvent::BatchProgress {
+                dll,
+                pass,
+                function,
+                index,
+                total,
+            } => {
+                if *total > 0 {
+                    let item = if function.is_empty() {
+                        format!("{index} of {total}")
+                    } else {
+                        format!("{function} ({index} of {total})")
+                    };
+                    write!(f, "{pass} — {item} ({dll})")
+                } else {
+                    write!(f, "{pass} ({dll})")
+                }
             }
             ProgressEvent::BatchSummary {
                 dll,
@@ -761,6 +796,34 @@ mod tests {
         let json = serde_json::to_value(&event).expect("serializes");
         assert_eq!(json["event"], "batch_started");
         assert_eq!(json["dll"], "LaunchPad.exe");
+    }
+
+    #[test]
+    fn batch_progress_is_batch_scoped_tagged_and_phaseless() {
+        let event = ProgressEvent::BatchProgress {
+            dll: "LaunchPad.exe".into(),
+            pass: "type inference".into(),
+            function: "FUN_1929282".into(),
+            index: 1,
+            total: 22143,
+        };
+        assert_eq!(event.unit_key(), None, "batch-level, not unit-scoped");
+        assert!(
+            TranslationPhase::from_event(&event).is_none(),
+            "a batch pass names no unit phase"
+        );
+        let json = serde_json::to_value(&event).expect("serializes");
+        assert_eq!(json["event"], "batch_progress");
+        assert_eq!(json["pass"], "type inference");
+        assert_eq!(json["index"], 1);
+        assert_eq!(json["total"], 22143);
+        let shown = event.to_string();
+        assert!(
+            shown.contains("type inference")
+                && shown.contains("FUN_1929282")
+                && shown.contains("22143"),
+            "display names the pass, the item, and the position: {shown}"
+        );
     }
 
     #[test]

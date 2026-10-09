@@ -2089,6 +2089,27 @@ svg {
     color: var(--text-secondary);
 }
 
+/* The working pass's heartbeat spans every column — the fixed tracks
+   have no room for a function name plus a position, and only the one
+   processing row ever shows it. */
+.pipeline-binary-activity {
+    grid-column: 1 / -1;
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    border-top: 1px dashed var(--border-color);
+    margin-top: 6px;
+    padding-top: 6px;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.pba-item {
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+}
+
 .pipeline-binary-state[data-shim="pal"] {
     border-color: var(--accent-purple);
     color: var(--accent-purple);

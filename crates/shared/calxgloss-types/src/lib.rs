@@ -77,7 +77,9 @@ pub use live_translation::{
     LiveTranslationState, LiveUnitProgress, PassState, PassStatus, derive_unit_confidence,
 };
 pub use persist::{JsonStore, PersistError, analysis_dir, load_json, save_json};
-pub use pipeline_phase::{BinaryProgress, PhaseProgress, PhaseState, PipelinePhase};
+pub use pipeline_phase::{
+    BinaryActivity, BinaryProgress, PhaseProgress, PhaseState, PipelinePhase,
+};
 pub use progress::{PhaseRecord, ProgressEvent, StopSignal, TranslationEvents, TranslationPhase};
 pub use scan::ScanMetadata;
 pub use shim::{

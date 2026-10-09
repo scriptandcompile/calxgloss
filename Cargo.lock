@@ -517,6 +517,7 @@ dependencies = [
 name = "calxgloss-ghidra"
 version = "0.3.0"
 dependencies = [
+ "calxgloss-types",
  "reqwest",
  "serde",
  "serde_json",

@@ -1693,6 +1693,81 @@ async fn test_pipeline_restart_hydrates_rows_without_live_classification_events(
     );
 }
 
+/// The pre-translation passes (call-graph extraction, evidence scans) beat
+/// per function while they walk their work list; `/api/pipeline` surfaces
+/// the latest beat as `activity` on the processing binary's row — and a
+/// pass with no per-item granularity beats with just its name.
+#[tokio::test]
+async fn test_pipeline_batch_progress_heartbeat_surfaces_on_row() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    events.emit(ProgressEvent::BatchStarted {
+        dll: "LaunchPad.exe".into(),
+    });
+    events.emit(ProgressEvent::BatchProgress {
+        dll: "LaunchPad.exe".into(),
+        pass: "type inference".into(),
+        function: "FUN_1929282".into(),
+        index: 1,
+        total: 22143,
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let get_pipeline = || async {
+        let resp = reqwest::get(format!("http://127.0.0.1:{}/api/pipeline", fixture.port()))
+            .await
+            .expect("pipeline request succeeds");
+        assert_eq!(resp.status(), 200);
+        resp.json::<serde_json::Value>()
+            .await
+            .expect("pipeline body is JSON")
+    };
+
+    let body = get_pipeline().await;
+    let b = body["binaries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["dll"].as_str().unwrap_or("") == "LaunchPad.exe")
+        .expect("LaunchPad.exe row present");
+    assert_eq!(b["activity"]["pass"], "type inference");
+    assert_eq!(b["activity"]["function"], "FUN_1929282");
+    assert_eq!(b["activity"]["index"], 1);
+    assert_eq!(b["activity"]["total"], 22143);
+
+    // A pass with no per-item granularity: only the name is honest.
+    events.emit(ProgressEvent::BatchProgress {
+        dll: "LaunchPad.exe".into(),
+        pass: "type database".into(),
+        function: String::new(),
+        index: 0,
+        total: 0,
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let body = get_pipeline().await;
+    let b = body["binaries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["dll"].as_str().unwrap_or("") == "LaunchPad.exe")
+        .expect("LaunchPad.exe row present");
+    assert_eq!(b["activity"]["pass"], "type database", "latest beat wins");
+    assert!(
+        b["activity"].get("function").is_none() && b["activity"].get("total").is_none(),
+        "unknown position is omitted, never fabricated: {}",
+        b["activity"]
+    );
+}
+
 // ─────────────────────────────────────────────────────────────
 // Pipeline time estimate + queue effort (issue #64)
 // ─────────────────────────────────────────────────────────────

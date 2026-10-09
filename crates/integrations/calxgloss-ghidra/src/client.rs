@@ -7,7 +7,11 @@ use crate::model::{
     FunctionSummary, OpenProgram, Segment, StringLiteral, StructLayout, Symbol, Xref,
 };
 use crate::parse;
+use calxgloss_types::{ProgressEvent, TranslationEvents};
 use reqwest::Client;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{debug, info, instrument, trace, warn};
 use url::Url;
@@ -127,6 +131,31 @@ impl GhidraConfig {
 pub struct GhidraClient {
     config: GhidraConfig,
     http: Client,
+    /// Armed by `begin_pass` while an analysis pass walks the program;
+    /// clones share it so every handle to one client beats as one.
+    heartbeat: Arc<Mutex<Option<Arc<Heartbeat>>>>,
+}
+
+/// Minimum gap between heartbeat beats for one pass — a 20k-function scan
+/// must not flood the event channel.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Shared state for one analysis pass's progress heartbeat.
+///
+/// A pass (`begin_pass`) arms the client: while armed, every completed
+/// decompile counts as one work item and beats a `BatchProgress` event,
+/// throttled to [`HEARTBEAT_INTERVAL`]. `list_functions` during the pass
+/// records the work list — its size is the total, and its names resolve
+/// address-based decompiles to function names.
+#[derive(Debug)]
+struct Heartbeat {
+    dll: String,
+    pass: String,
+    events: TranslationEvents,
+    total: AtomicUsize,
+    index: AtomicUsize,
+    last_beat: Mutex<Option<std::time::Instant>>,
+    names: Mutex<HashMap<u64, String>>,
 }
 
 impl GhidraClient {
@@ -149,12 +178,99 @@ impl GhidraClient {
                 source,
             })?;
         info!(base_url = %config.base_url, "Created GhidraClient");
-        Ok(Self { config, http })
+        Ok(Self {
+            config,
+            http,
+            heartbeat: Arc::new(Mutex::new(None)),
+        })
     }
 
     /// The base URL of the server.
     pub fn base_url(&self) -> &Url {
         &self.config.base_url
+    }
+
+    // =========================================================
+    // Analysis-pass heartbeat
+    // =========================================================
+
+    /// Arm the heartbeat for one analysis pass over the open program.
+    ///
+    /// While armed, every completed decompile beats a
+    /// [`ProgressEvent::BatchProgress`] naming the pass and the function it
+    /// just pulled, so the dashboard can show per-function progress through
+    /// the pre-translation passes (call-graph extraction, the evidence
+    /// scans) that run before any unit event exists. One pass at a time —
+    /// a new `begin_pass` replaces any pass left armed by an error path
+    /// that skipped [`end_pass`](Self::end_pass).
+    pub fn begin_pass(&self, dll: &str, pass: &str, events: &TranslationEvents) {
+        *self.heartbeat.lock().expect("heartbeat lock") = Some(Arc::new(Heartbeat {
+            dll: dll.to_string(),
+            pass: pass.to_string(),
+            events: events.clone(),
+            total: AtomicUsize::new(0),
+            index: AtomicUsize::new(0),
+            last_beat: Mutex::new(None),
+            names: Mutex::new(HashMap::new()),
+        }));
+    }
+
+    /// Disarm the heartbeat — the pass is done, later queries are ordinary.
+    pub fn end_pass(&self) {
+        *self.heartbeat.lock().expect("heartbeat lock") = None;
+    }
+
+    /// Record the pass's work list: its size is the total, and its names
+    /// resolve address-based decompiles to function names.
+    fn note_worklist(&self, functions: &[FunctionSummary]) {
+        if let Some(hb) = self.active_heartbeat() {
+            *hb.names.lock().expect("names lock") = functions
+                .iter()
+                .map(|f| (f.address, f.name.clone()))
+                .collect();
+            hb.total.store(functions.len(), Ordering::Relaxed);
+        }
+    }
+
+    /// Count one completed decompile and beat if due: always for the first
+    /// and last item, otherwise at most once per [`HEARTBEAT_INTERVAL`].
+    fn tick(&self, address: u64) {
+        let Some(hb) = self.active_heartbeat() else {
+            return;
+        };
+        let index = hb.index.fetch_add(1, Ordering::Relaxed) + 1;
+        let total = hb.total.load(Ordering::Relaxed);
+        let now = std::time::Instant::now();
+        let due = index == 1
+            || (total > 0 && index == total)
+            || hb
+                .last_beat
+                .lock()
+                .expect("last_beat lock")
+                .map(|t| now.duration_since(t) >= HEARTBEAT_INTERVAL)
+                .unwrap_or(true);
+        if !due {
+            return;
+        }
+        *hb.last_beat.lock().expect("last_beat lock") = Some(now);
+        let function = hb
+            .names
+            .lock()
+            .expect("names lock")
+            .get(&address)
+            .cloned()
+            .unwrap_or_default();
+        hb.events.emit(ProgressEvent::BatchProgress {
+            dll: hb.dll.clone(),
+            pass: hb.pass.clone(),
+            function,
+            index,
+            total,
+        });
+    }
+
+    fn active_heartbeat(&self) -> Option<Arc<Heartbeat>> {
+        self.heartbeat.lock().expect("heartbeat lock").clone()
     }
 
     // =========================================================
@@ -275,6 +391,7 @@ impl GhidraClient {
     pub async fn list_functions(&self) -> Result<Vec<FunctionSummary>> {
         let body = self.get_text("list_functions", &[]).await?;
         let functions = parse::parse_function_listing(&body);
+        self.note_worklist(&functions);
         debug!(count = functions.len(), "Listed functions");
         Ok(functions)
     }
@@ -362,6 +479,9 @@ impl GhidraClient {
         let body = self
             .get_text("decompile_function", &[("address", Self::addr(address))])
             .await?;
+        // The round trip completed — one work item of any armed pass done,
+        // whether or not the body parses.
+        self.tick(address);
         parse::parse_decompiled(&body).ok_or_else(|| GhidraError::Malformed {
             kind: "decompiled output",
             detail: body.trim().to_string(),
@@ -940,6 +1060,62 @@ mod tests {
         // A VA below the image base is not addressable, and silently wrapping
         // would produce a plausible-looking but wrong RVA.
         assert_eq!(rva_from_va(0x180000000, 0x17ffffff), None);
+    }
+
+    #[test]
+    fn heartbeat_beats_per_decompile_only_while_a_pass_is_active() {
+        let client = GhidraClient::new("http://127.0.0.1:9").unwrap();
+        let events = calxgloss_types::TranslationEvents::new(64);
+        let mut rx = events.subscribe();
+
+        client.begin_pass("eqgame.exe", "type inference", &events);
+        client.note_worklist(&[
+            FunctionSummary {
+                name: "FUN_10".into(),
+                address: 0x10,
+            },
+            FunctionSummary {
+                name: "FUN_20".into(),
+                address: 0x20,
+            },
+        ]);
+        client.tick(0x10);
+        client.tick(0x20);
+        client.end_pass();
+        client.tick(0x30); // outside any pass — must not beat
+
+        let beats: Vec<calxgloss_types::ProgressEvent> =
+            std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert_eq!(beats.len(), 2, "one beat per decompile inside the pass");
+        match &beats[0] {
+            calxgloss_types::ProgressEvent::BatchProgress {
+                dll,
+                pass,
+                function,
+                index,
+                total,
+            } => {
+                assert_eq!(dll, "eqgame.exe");
+                assert_eq!(pass, "type inference");
+                assert_eq!(function, "FUN_10", "address resolved through the worklist");
+                assert_eq!(*index, 1);
+                assert_eq!(*total, 2);
+            }
+            other => panic!("expected BatchProgress, got {other:?}"),
+        }
+        match &beats[1] {
+            calxgloss_types::ProgressEvent::BatchProgress {
+                function,
+                index,
+                total,
+                ..
+            } => {
+                assert_eq!(function, "FUN_20");
+                assert_eq!(*index, 2);
+                assert_eq!(*total, 2);
+            }
+            other => panic!("expected BatchProgress, got {other:?}"),
+        }
     }
 
     #[test]

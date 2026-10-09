@@ -122,6 +122,24 @@ impl PhaseProgress {
     }
 }
 
+/// What the pass working on a binary is busy with right now — the latest
+/// `BatchProgress` heartbeat. Fields the pass doesn't know are `None`,
+/// never fabricated zeros.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BinaryActivity {
+    /// Name of the pass doing the work ("type inference", "call graph", …).
+    pub pass: String,
+    /// The work item being processed — `None` when the pass names no items.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub function: Option<String>,
+    /// 1-based position in the pass's work list — `None` when unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<usize>,
+    /// Size of the pass's work list — `None` when unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<usize>,
+}
+
 /// Progress for a single target binary (DLL/EXE) through the pipeline.
 ///
 /// Every field degrades honestly: classification fields are `None` until a
@@ -161,6 +179,11 @@ pub struct BinaryProgress {
     /// generation) where no unit-level progress exists yet.
     #[serde(default)]
     pub processing: bool,
+    /// The working pass's latest heartbeat — `None` unless a pass is
+    /// beating for this binary. Covers the analysis passes that run
+    /// function-by-function before any unit event exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<BinaryActivity>,
 }
 
 // ============================================================
@@ -267,6 +290,12 @@ mod tests {
             functions_failed: 1,
             tokens_used: Some(120_000),
             processing: true,
+            activity: Some(BinaryActivity {
+                pass: "type inference".into(),
+                function: Some("FUN_1929282".into()),
+                index: Some(1),
+                total: Some(22143),
+            }),
         };
         let json = serde_json::to_value(&full).expect("serializes");
         assert_eq!(json["dll"], "game_logic.dll");
@@ -274,6 +303,10 @@ mod tests {
         assert_eq!(json["functions_total"], 24);
         assert_eq!(json["tokens_used"], 120_000);
         assert_eq!(json["processing"], true);
+        assert_eq!(json["activity"]["pass"], "type inference");
+        assert_eq!(json["activity"]["function"], "FUN_1929282");
+        assert_eq!(json["activity"]["index"], 1);
+        assert_eq!(json["activity"]["total"], 22143);
         let back: BinaryProgress = serde_json::from_value(json).expect("deserializes");
         assert_eq!(back, full);
 
@@ -291,6 +324,7 @@ mod tests {
             functions_failed: 0,
             tokens_used: None,
             processing: false,
+            activity: None,
         };
         let json = serde_json::to_value(&bare).expect("serializes");
         assert_eq!(

@@ -492,11 +492,13 @@ impl TranslationPipeline {
                 .as_deref()
                 .unwrap_or_else(|| std::path::Path::new("."));
             let cache_dir = self.callgraph_cache_dir.as_deref();
-            match self
+            self.begin_scan_pass(&function_info.dll, "call graph");
+            let built = self
                 .analyzer
                 .build_call_graph(&function_info.dll, workspace, cache_dir)
-                .await
-            {
+                .await;
+            self.end_scan_pass();
+            match built {
                 Ok(call_graph) => {
                     if self.callgraph_verbose {
                         calxgloss_analysis::print_call_graph_stats(&call_graph);
@@ -1306,6 +1308,20 @@ impl TranslationPipeline {
     // Batch translation
     // =========================================================
 
+    /// Arm the Ghidra client's heartbeat for one analysis pass so the
+    /// dashboard can show which function the pass is on. Without an event
+    /// channel there is nothing to beat to — the scan runs unchanged.
+    fn begin_scan_pass(&self, dll: &str, pass: &str) {
+        if let Some(ref ev) = self.events {
+            self.ghidra.begin_pass(dll, pass, ev);
+        }
+    }
+
+    /// Disarm the heartbeat — the pass is done.
+    fn end_scan_pass(&self) {
+        self.ghidra.end_pass();
+    }
+
     /// Recover the per-binary type database before a batch starts, unless one
     /// is already cached.
     ///
@@ -1342,7 +1358,10 @@ impl TranslationPipeline {
 
         info!(dll, "Recovering type database before batch translation");
         let engine = TypesDBEngine::new(&self.ghidra);
-        match engine.scan(dll).await {
+        self.begin_scan_pass(dll, "type database");
+        let scan = engine.scan(dll).await;
+        self.end_scan_pass();
+        match scan {
             Ok(db) => {
                 if let Err(e) = persistor.save(&db) {
                     warn!(
@@ -1405,7 +1424,10 @@ impl TranslationPipeline {
 
         info!(dll, "Inferring parameter types before batch translation");
         let engine = TypeInferEngine::new(&self.ghidra);
-        match engine.scan(dll).await {
+        self.begin_scan_pass(dll, "type inference");
+        let scan = engine.scan(dll).await;
+        self.end_scan_pass();
+        match scan {
             Ok(result) => {
                 if let Err(e) = persistor.save(&result) {
                     warn!(
@@ -1469,7 +1491,10 @@ impl TranslationPipeline {
 
         info!(dll, "Recognizing algorithms before batch translation");
         let engine = AlgorithmEngine::new(&self.ghidra);
-        match engine.scan(dll).await {
+        self.begin_scan_pass(dll, "algorithm recognition");
+        let scan = engine.scan(dll).await;
+        self.end_scan_pass();
+        match scan {
             Ok(result) => {
                 if let Err(e) = persistor.save(&result) {
                     warn!(
@@ -1534,7 +1559,10 @@ impl TranslationPipeline {
 
         info!(dll, "Detecting memory lifecycles before batch translation");
         let engine = MemoryEngine::new(&self.ghidra);
-        match engine.scan(dll).await {
+        self.begin_scan_pass(dll, "memory detection");
+        let scan = engine.scan(dll).await;
+        self.end_scan_pass();
+        match scan {
             Ok(result) => {
                 if let Err(e) = persistor.save(&result) {
                     warn!(
@@ -1602,7 +1630,10 @@ impl TranslationPipeline {
             "Detecting concurrency constructs before batch translation"
         );
         let engine = SyncEngine::new(&self.ghidra);
-        match engine.scan(dll).await {
+        self.begin_scan_pass(dll, "sync detection");
+        let scan = engine.scan(dll).await;
+        self.end_scan_pass();
+        match scan {
             Ok(result) => {
                 if let Err(e) = persistor.save(&result) {
                     warn!(
@@ -1667,7 +1698,10 @@ impl TranslationPipeline {
             "Detecting constant structures before batch translation"
         );
         let engine = ConstEngine::new(&self.ghidra);
-        match engine.scan(dll).await {
+        self.begin_scan_pass(dll, "constant detection");
+        let scan = engine.scan(dll).await;
+        self.end_scan_pass();
+        match scan {
             Ok(result) => {
                 if let Err(e) = persistor.save(&result) {
                     warn!(
@@ -1729,7 +1763,10 @@ impl TranslationPipeline {
 
         info!(dll, "Detecting callback tables before batch translation");
         let engine = CallbackEngine::new(&self.ghidra);
-        match engine.scan(dll).await {
+        self.begin_scan_pass(dll, "callback detection");
+        let scan = engine.scan(dll).await;
+        self.end_scan_pass();
+        match scan {
             Ok(result) => {
                 if let Err(e) = persistor.save(&result) {
                     warn!(
@@ -1797,7 +1834,10 @@ impl TranslationPipeline {
             "Detecting control-flow patterns before batch translation"
         );
         let engine = ControlFlowEngine::new(&self.ghidra);
-        match engine.scan(dll).await {
+        self.begin_scan_pass(dll, "control flow detection");
+        let scan = engine.scan(dll).await;
+        self.end_scan_pass();
+        match scan {
             Ok(result) => {
                 if let Err(e) = persistor.save(&result) {
                     warn!(
@@ -1860,7 +1900,10 @@ impl TranslationPipeline {
 
         info!(dll, "Mapping program strings before batch translation");
         let engine = StringContextEngine::new(&self.ghidra);
-        match engine.scan(dll).await {
+        self.begin_scan_pass(dll, "string context");
+        let scan = engine.scan(dll).await;
+        self.end_scan_pass();
+        match scan {
             Ok(result) => {
                 if let Err(e) = persistor.save(&result) {
                     warn!(
@@ -1925,7 +1968,10 @@ impl TranslationPipeline {
             "Identifying libraries and APIs before batch translation"
         );
         let engine = ApiEngine::new(&self.ghidra);
-        match engine.scan(dll).await {
+        self.begin_scan_pass(dll, "API detection");
+        let scan = engine.scan(dll).await;
+        self.end_scan_pass();
+        match scan {
             Ok(result) => {
                 if let Err(e) = persistor.save(&result) {
                     warn!(
@@ -1994,7 +2040,10 @@ impl TranslationPipeline {
             "Detecting serialization patterns before batch translation"
         );
         let engine = SerializeEngine::new(&self.ghidra);
-        match engine.scan(dll).await {
+        self.begin_scan_pass(dll, "serialization detection");
+        let scan = engine.scan(dll).await;
+        self.end_scan_pass();
+        match scan {
             Ok(result) => {
                 if let Err(e) = persistor.save(&result) {
                     warn!(

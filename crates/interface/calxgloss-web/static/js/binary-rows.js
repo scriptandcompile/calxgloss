@@ -95,6 +95,17 @@ function successRate(b) {
     return Math.round(((b.functions_translated || 0) / attempts) * 100);
 }
 
+// The working pass's latest heartbeat: pass name, the item it is on, and
+// the position in its work list. Unknown parts are omitted, never faked.
+function activityLine(b) {
+    if (!b.activity) return "";
+    const a = b.activity;
+    const parts = [escapeHtml(a.pass)];
+    if (a.function) parts.push(`<span class="pba-item">${escapeHtml(a.function)}</span>`);
+    if (a.total != null) parts.push(`${fmtCount(a.index || 0)} of ${fmtCount(a.total)}`);
+    return `<div class="pipeline-binary-activity" title="Analysis pass in progress on this binary">${parts.join(" · ")}</div>`;
+}
+
 // Column header sharing the row's grid tracks, so every column lines up.
 function renderHeader() {
     return `
@@ -147,6 +158,7 @@ function renderRow(b) {
                     )
                     .join("")}
             </div>
+            ${activityLine(b)}
         </div>
     `;
 }

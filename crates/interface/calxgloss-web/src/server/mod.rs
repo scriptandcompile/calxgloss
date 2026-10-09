@@ -23,7 +23,9 @@ use axum::{
     routing::{get, patch, post},
 };
 use calxgloss_reports::dashboard::DashboardBuilder;
-use calxgloss_types::{PhaseRecord, ProgressEvent, ReviewDashboard, StopSignal, TranslationPhase};
+use calxgloss_types::{
+    BinaryActivity, PhaseRecord, ProgressEvent, ReviewDashboard, StopSignal, TranslationPhase,
+};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -255,6 +257,10 @@ pub struct ProgressState {
     /// `BatchStarted` replaces the old value if a pass ended without a
     /// summary (an error path).
     processing: Arc<RwLock<Option<String>>>,
+    /// The working pass's latest heartbeat — `(dll, activity)`. Set by
+    /// `BatchProgress`, cleared when a new `BatchStarted` replaces the
+    /// pass or that DLL's `BatchSummary` lands.
+    activity: Arc<RwLock<Option<(String, BinaryActivity)>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -307,6 +313,7 @@ impl ProgressState {
             classifications: Arc::new(RwLock::new(std::collections::HashMap::new())),
             batch_summaries: Arc::new(RwLock::new(std::collections::HashMap::new())),
             processing: Arc::new(RwLock::new(None)),
+            activity: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -357,8 +364,27 @@ impl ProgressState {
             }
             ProgressEvent::BatchStarted { dll } => {
                 // The live loop works one binary at a time; the newest
-                // started pass is the one in flight.
+                // started pass is the one in flight. Any heartbeat from the
+                // previous pass is stale the moment a new one begins.
                 *self.processing.write().await = Some(dll.clone());
+                *self.activity.write().await = None;
+            }
+            ProgressEvent::BatchProgress {
+                dll,
+                pass,
+                function,
+                index,
+                total,
+            } => {
+                // Latest beat wins — the heartbeat is a live position,
+                // not a log. Unknown position fields stay `None`.
+                let activity = BinaryActivity {
+                    pass: pass.clone(),
+                    function: (!function.is_empty()).then(|| function.clone()),
+                    index: (*index > 0).then_some(*index),
+                    total: (*total > 0).then_some(*total),
+                };
+                *self.activity.write().await = Some((dll.clone(), activity));
             }
             ProgressEvent::BatchSummary {
                 dll,
@@ -384,6 +410,10 @@ impl ProgressState {
                 let mut processing = self.processing.write().await;
                 if processing.as_deref() == Some(dll.as_str()) {
                     *processing = None;
+                }
+                let mut activity = self.activity.write().await;
+                if activity.as_ref().is_some_and(|(d, _)| d == dll) {
+                    *activity = None;
                 }
             }
         }
@@ -562,6 +592,12 @@ impl ProgressState {
     /// `BatchStarted` names it, that DLL's `BatchSummary` clears it.
     pub async fn processing_dll(&self) -> Option<String> {
         self.processing.read().await.clone()
+    }
+
+    /// The working pass's latest heartbeat — `(dll, activity)`, `None`
+    /// while no pass is beating.
+    pub async fn activity(&self) -> Option<(String, BinaryActivity)> {
+        self.activity.read().await.clone()
     }
 
     /// Returns the number of currently in-flight units.

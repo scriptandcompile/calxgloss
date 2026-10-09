@@ -130,6 +130,7 @@ pub async fn api_get_pipeline(
     let classifications_raw = progress.read().await.classifications().await;
     let batch_summaries_raw = progress.read().await.batch_summaries().await;
     let processing = progress.read().await.processing_dll().await;
+    let activity = progress.read().await.activity().await;
 
     // Convert to owned HashMaps for O(1) lookups by DLL name
     let mut classifications: HashMap<String, ClassificationInfo> = classifications_raw
@@ -170,6 +171,11 @@ pub async fn api_get_pipeline(
     // unit, classification, or summary event has named it yet — otherwise
     // a restarted run shows nothing until its first function event.
     if let Some(dll) = &processing {
+        dll_names.insert(dll.clone());
+    }
+    // A beating pass names its binary too — the beat can only be honest
+    // about a binary the table actually shows.
+    if let Some((dll, _)) = &activity {
         dll_names.insert(dll.clone());
     }
 
@@ -222,6 +228,7 @@ pub async fn api_get_pipeline(
         &batch_summaries,
         &entries_snapshot,
         processing.as_deref(),
+        activity.as_ref(),
     );
     let phases = derive_phases(
         total_dlls,
@@ -497,6 +504,7 @@ fn derive_binaries(
     batch_summaries: &HashMap<String, BatchInfo>,
     entries: &HashMap<String, ProgressEntry>,
     processing_dll: Option<&str>,
+    activity: Option<&(String, calxgloss_types::BinaryActivity)>,
 ) -> Vec<BinaryProgress> {
     dll_names
         .iter()
@@ -533,6 +541,7 @@ fn derive_binaries(
                 functions_failed,
                 tokens_used,
                 processing: processing_dll == Some(dll.as_str()),
+                activity: activity.filter(|(d, _)| d == dll).map(|(_, a)| a.clone()),
             }
         })
         .collect()
