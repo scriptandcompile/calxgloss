@@ -257,6 +257,10 @@ pub struct ProgressState {
     /// `BatchStarted` replaces the old value if a pass ended without a
     /// summary (an error path).
     processing: Arc<RwLock<Option<String>>>,
+    /// The run's ordered plan — `QueuePlanned` names the binaries the
+    /// live loop will process, in that order. Empty until a plan lands;
+    /// a later plan replaces the earlier one.
+    queue: Arc<RwLock<Vec<String>>>,
     /// The working pass's latest heartbeat — `(dll, activity)`. Set by
     /// `BatchProgress`, cleared when a new `BatchStarted` replaces the
     /// pass or that DLL's `BatchSummary` lands.
@@ -313,6 +317,7 @@ impl ProgressState {
             classifications: Arc::new(RwLock::new(std::collections::HashMap::new())),
             batch_summaries: Arc::new(RwLock::new(std::collections::HashMap::new())),
             processing: Arc::new(RwLock::new(None)),
+            queue: Arc::new(RwLock::new(Vec::new())),
             activity: Arc::new(RwLock::new(None)),
         }
     }
@@ -368,6 +373,11 @@ impl ProgressState {
                 // previous pass is stale the moment a new one begins.
                 *self.processing.write().await = Some(dll.clone());
                 *self.activity.write().await = None;
+            }
+            ProgressEvent::QueuePlanned { dlls } => {
+                // The plan is the run's intent, replaced wholesale if a
+                // later run plans differently.
+                *self.queue.write().await = dlls.clone();
             }
             ProgressEvent::BatchProgress {
                 dll,
@@ -592,6 +602,12 @@ impl ProgressState {
     /// `BatchStarted` names it, that DLL's `BatchSummary` clears it.
     pub async fn processing_dll(&self) -> Option<String> {
         self.processing.read().await.clone()
+    }
+
+    /// The run's ordered queue plan — the binaries the live loop will
+    /// process, in that order. Empty when no plan has been announced.
+    pub async fn queue(&self) -> Vec<String> {
+        self.queue.read().await.clone()
     }
 
     /// The working pass's latest heartbeat — `(dll, activity)`, `None`

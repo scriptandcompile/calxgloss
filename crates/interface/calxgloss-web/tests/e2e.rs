@@ -1768,6 +1768,59 @@ async fn test_pipeline_batch_progress_heartbeat_surfaces_on_row() {
     );
 }
 
+/// The auto loop processes binaries in a known order (EXEs first, then
+/// DLLs, each alphabetical); a `QueuePlanned` event names that plan, and
+/// the pipeline table must show rows in queue order — planned binaries
+/// first even before their pass starts, unplanned ones after, alphabetical.
+#[tokio::test]
+async fn test_pipeline_queue_plan_drives_row_order() {
+    let fixture = TestFixture::new();
+    // A disk-classified binary the queue plan does not name.
+    let classify = fixture.repo_path().join("re").join("classify");
+    std::fs::create_dir_all(&classify).expect("create classify dir");
+    std::fs::write(
+        classify.join("zzz.dll.json"),
+        r#"{"dll":"zzz.dll","category":"ProjectSpecific","strategy":"ReverseEngineer","exports_count":0,"imports_count":1,"crate_replacement":null}"#,
+    )
+    .expect("write classification artifact");
+
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    events.emit(ProgressEvent::QueuePlanned {
+        dlls: vec![
+            "LaunchPad.exe".into(),
+            "eqgame.exe".into(),
+            "eqmain.dll".into(),
+        ],
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/pipeline", fixture.port()))
+        .await
+        .expect("pipeline request succeeds");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("pipeline body is JSON");
+
+    let names: Vec<&str> = body["binaries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["dll"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(
+        names,
+        ["LaunchPad.exe", "eqgame.exe", "eqmain.dll", "zzz.dll"],
+        "queue order first (the plan alone makes rows), unplanned after alphabetical"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────
 // Pipeline time estimate + queue effort (issue #64)
 // ─────────────────────────────────────────────────────────────

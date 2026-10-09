@@ -212,6 +212,11 @@ pub enum ProgressEvent {
     /// Batch-level (no unit key): it marks the binary as being worked on
     /// before any unit event exists, and `BatchSummary` marks the pass done.
     BatchStarted { dll: String },
+    /// The live loop's ordered plan for this run — the binaries it will
+    /// process, in the exact order it will process them. Emitted once
+    /// before the first pass starts so the pipeline table can show the
+    /// queue, not just the current binary.
+    QueuePlanned { dlls: Vec<String> },
     /// A batch-level analysis pass is walking its work list — the heartbeat
     /// of the pre-translation passes (call-graph extraction, the evidence
     /// scans) that grind function-by-function before any unit event exists.
@@ -338,6 +343,7 @@ impl ProgressEvent {
             }
             ProgressEvent::ClassificationComplete { .. }
             | ProgressEvent::BatchStarted { .. }
+            | ProgressEvent::QueuePlanned { .. }
             | ProgressEvent::BatchProgress { .. }
             | ProgressEvent::BatchSummary { .. } => None,
         }
@@ -515,6 +521,14 @@ impl std::fmt::Display for ProgressEvent {
             }
             ProgressEvent::BatchStarted { dll } => {
                 write!(f, "Batch started for {dll}")
+            }
+            ProgressEvent::QueuePlanned { dlls } => {
+                let noun = if dlls.len() == 1 {
+                    "binary"
+                } else {
+                    "binaries"
+                };
+                write!(f, "Translation queue planned: {} {noun}", dlls.len())
             }
             ProgressEvent::BatchProgress {
                 dll,
@@ -796,6 +810,25 @@ mod tests {
         let json = serde_json::to_value(&event).expect("serializes");
         assert_eq!(json["event"], "batch_started");
         assert_eq!(json["dll"], "LaunchPad.exe");
+    }
+
+    #[test]
+    fn queue_planned_is_batch_scoped_tagged_and_phaseless() {
+        let event = ProgressEvent::QueuePlanned {
+            dlls: vec!["LaunchPad.exe".into(), "eqmain.dll".into()],
+        };
+        assert_eq!(event.unit_key(), None, "batch-level, not unit-scoped");
+        assert!(
+            TranslationPhase::from_event(&event).is_none(),
+            "a queue plan names no unit phase"
+        );
+        let json = serde_json::to_value(&event).expect("serializes");
+        assert_eq!(json["event"], "queue_planned");
+        assert_eq!(json["dlls"].as_array().expect("dlls array").len(), 2);
+        assert!(
+            event.to_string().contains("2"),
+            "display counts the queue: {event}"
+        );
     }
 
     #[test]

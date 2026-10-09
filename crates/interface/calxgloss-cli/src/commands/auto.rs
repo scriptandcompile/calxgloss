@@ -459,6 +459,15 @@ pub async fn handle_auto(
         );
         println!();
 
+        // Publish the plan before the first pass starts so the dashboard
+        // can show the whole queue — in this exact order — not just the
+        // binary currently in flight.
+        if let Some(ev) = events {
+            ev.emit(ProgressEvent::QueuePlanned {
+                dlls: classified.clone(),
+            });
+        }
+
         for dll in &classified {
             if stop.is_some_and(|s| s.is_stopped()) {
                 println!();

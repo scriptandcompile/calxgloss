@@ -131,6 +131,7 @@ pub async fn api_get_pipeline(
     let batch_summaries_raw = progress.read().await.batch_summaries().await;
     let processing = progress.read().await.processing_dll().await;
     let activity = progress.read().await.activity().await;
+    let queue = progress.read().await.queue().await;
 
     // Convert to owned HashMaps for O(1) lookups by DLL name
     let mut classifications: HashMap<String, ClassificationInfo> = classifications_raw
@@ -178,11 +179,22 @@ pub async fn api_get_pipeline(
     if let Some((dll, _)) = &activity {
         dll_names.insert(dll.clone());
     }
+    // The run's queue plan names every binary it will process — the
+    // table shows the whole plan, not just what has started.
+    dll_names.extend(queue.iter().cloned());
 
     let total_dlls = dll_names.len();
     let dll_names_vec: Vec<String> = {
         let mut v: Vec<String> = dll_names.into_iter().collect();
-        v.sort();
+        // Rows follow the run's queue plan — the order the live loop
+        // will process them — with unplanned binaries after, alphabetical.
+        let pos = |d: &String| queue.iter().position(|q| q == d);
+        v.sort_by(|a, b| match (pos(a), pos(b)) {
+            (Some(i), Some(j)) => i.cmp(&j),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.cmp(b),
+        });
         v
     };
 
