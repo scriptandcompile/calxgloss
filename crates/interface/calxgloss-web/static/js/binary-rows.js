@@ -44,7 +44,9 @@ const STRATEGIES = [
     {
         key: "ReverseEngineer",
         label: "Reverse Engineer",
-        shim: () => ({ kind: "none", text: "Full RE" }),
+        // Full RE is the strategy itself — the shim column repeats it as
+        // nothing, so it reports the neutral dash instead.
+        shim: () => ({ kind: "none", text: "—" }),
     },
 ];
 
@@ -65,10 +67,12 @@ function shimStatus(b) {
     return match ? match.shim(b) : { kind: "unknown", text: "—" };
 }
 
+// No "Classified" badge: the strategy column already states the
+// classification state (PAL Mapping / Crate Replacement / Reverse
+// Engineer / Unclassified), so a badge would only repeat it.
 function statusBadge(b) {
     if ((b.functions_in_progress || 0) > 0) return { cls: "translating", text: "Translating" };
     if (b.functions_total != null) return { cls: "complete", text: "Batch done" };
-    if (b.strategy || b.category) return { cls: "classified", text: "Classified" };
     return { cls: "pending", text: "In pipeline" };
 }
 
@@ -94,6 +98,24 @@ function successRate(b) {
     const attempts = (b.functions_translated || 0) + (b.functions_failed || 0);
     if (attempts === 0) return null;
     return Math.round(((b.functions_translated || 0) / attempts) * 100);
+}
+
+// Column header sharing the row's grid tracks, so every column lines up.
+function renderHeader() {
+    return `
+        <div class="pipeline-binary-row pipeline-binary-header" aria-hidden="true">
+            <div>Binary</div>
+            <div>Strategy</div>
+            <div class="pipeline-binary-counts">
+                <span>Total</span><span>Translated</span><span>In progress</span><span>Queued</span><span>Failed</span>
+            </div>
+            <div class="pipeline-binary-cost">
+                <span>Tokens</span><span>Success</span>
+            </div>
+            <div>Shim / PAL</div>
+            <div>Actions</div>
+        </div>
+    `;
 }
 
 function renderRow(b) {
@@ -161,5 +183,5 @@ export function renderPipelineBinaryRows(binaries) {
         return;
     }
 
-    container.innerHTML = binaries.map(renderRow).join("");
+    container.innerHTML = renderHeader() + binaries.map(renderRow).join("");
 }

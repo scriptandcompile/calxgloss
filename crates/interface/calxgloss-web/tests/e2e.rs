@@ -3453,8 +3453,9 @@ async fn test_headless_pipeline_binary_rows() {
     // poll until all four appear (up to ~5 seconds).
     let mut rendered = false;
     for _ in 0..25 {
-        if eval_len("document.querySelectorAll('#pipeline-binaries .pipeline-binary-row').length")
-            == 4
+        if eval_len(
+            "document.querySelectorAll('#pipeline-binaries .pipeline-binary-row[data-dll]').length",
+        ) == 4
         {
             rendered = true;
             break;
@@ -3541,6 +3542,23 @@ async fn test_headless_pipeline_binary_rows() {
         cell_text("engine.dll", ".pipeline-binary-strategy").contains("Reverse Engineer"),
         "full RE strategy label, got: {}",
         cell_text("engine.dll", ".pipeline-binary-strategy")
+    );
+    assert!(
+        cell_text("game_logic.dll", ".pipeline-binary-strategy").contains("Unclassified"),
+        "an unclassified binary reports Unclassified in the strategy column, got: {}",
+        cell_text("game_logic.dll", ".pipeline-binary-strategy")
+    );
+    assert_eq!(
+        cell_text("engine.dll", ".pipeline-binary-shim").trim(),
+        "—",
+        "a reverse-engineered binary repeats no strategy in the shim column, got: {}",
+        cell_text("engine.dll", ".pipeline-binary-shim")
+    );
+    assert!(
+        eval_bool(
+            "[...document.querySelectorAll('#pipeline-binaries .pipeline-binary-status')].every(e => !e.textContent.includes('Classified'))"
+        ),
+        "no Classified badge — the strategy column already carries the classification state"
     );
 
     // ── Honesty: unknown totals, tokens, and rates are em-dashes ──────
