@@ -507,6 +507,144 @@ async fn test_server_status_live_router_idle() {
     assert_eq!(body["ws_connections"], 0);
 }
 
+/// WS phase events (issue #55, W0 Phase 2 tail): after applying each
+/// unit-scoped progress event, the live router pushes a `unit_phase` record —
+/// the unit's full live state including phase history — over the WebSocket,
+/// so the live view updates rows from the pushed record instead of refetching
+/// `/api/progress/enhanced`. Raw pipeline events keep flowing unchanged.
+#[tokio::test]
+async fn test_ws_pushes_unit_phase_records() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!(
+        "ws://127.0.0.1:{}/api/events/upgrade",
+        fixture.port()
+    ))
+    .await
+    .expect("websocket upgrade succeeds");
+    // Let the Register command drain before any event is emitted.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Walk one unit through the pipeline: start, tests, tier, LLM call, done.
+    for event in [
+        ProgressEvent::TranslationStarted {
+            dll: "game_logic.dll".into(),
+            function: "DrawPrimitive".into(),
+        },
+        ProgressEvent::TestsGenerated {
+            dll: "game_logic.dll".into(),
+            function: "DrawPrimitive".into(),
+            test_count: 3,
+        },
+        ProgressEvent::ContextTierSelected {
+            dll: "game_logic.dll".into(),
+            function: "DrawPrimitive".into(),
+            tier: "T2".into(),
+            tier_label: "with_tests".into(),
+            complexity: "Medium".into(),
+            api_call_count: 3,
+        },
+        ProgressEvent::LlmCallStart {
+            dll: "game_logic.dll".into(),
+            function: "DrawPrimitive".into(),
+            attempt: 2,
+            strategy: "decompose".into(),
+        },
+        ProgressEvent::TranslationCompleted {
+            dll: "game_logic.dll".into(),
+            function: "DrawPrimitive".into(),
+            total_attempts: 2,
+            success_strategy: Some("decompose".into()),
+        },
+    ] {
+        events.emit(event);
+    }
+
+    // Collect wire messages: raw events keep their `event` tag; each applied
+    // unit event is followed by a `unit_phase` record.
+    let mut raw_events: Vec<String> = Vec::new();
+    let mut records: Vec<serde_json::Value> = Vec::new();
+    for _ in 0..40 {
+        if records.len() >= 5 {
+            break;
+        }
+        let msg = match tokio::time::timeout(Duration::from_millis(500), ws.next()).await {
+            Ok(Some(Ok(m))) => m,
+            _ => continue,
+        };
+        if let Message::Text(text) = msg {
+            let v: serde_json::Value =
+                serde_json::from_str(text.as_str()).expect("wire message is JSON");
+            match v["event"].as_str() {
+                Some("unit_phase") => records.push(v["unit"].clone()),
+                Some(name) => raw_events.push(name.to_string()),
+                None => {}
+            }
+        }
+    }
+
+    // Backward compatibility: the raw pipeline events still arrive tagged.
+    for expected in [
+        "translation_started",
+        "tests_generated",
+        "context_tier_selected",
+        "llm_call_start",
+        "translation_completed",
+    ] {
+        assert!(
+            raw_events.iter().any(|e| e == expected),
+            "raw event {expected} should still reach WS clients, got: {raw_events:?}"
+        );
+    }
+
+    // One record per applied unit event, in event order.
+    assert_eq!(
+        records.len(),
+        5,
+        "each unit-scoped event should push one unit_phase record"
+    );
+    let first = &records[0];
+    assert_eq!(first["dll"], "game_logic.dll");
+    assert_eq!(first["function"], "DrawPrimitive");
+    assert_eq!(first["phase"], "ghidra_fetch");
+    assert_eq!(first["finished"], false);
+    assert!(
+        first.get("succeeded").is_none(),
+        "an in-flight unit never looks succeeded or failed"
+    );
+
+    let last = &records[4];
+    assert_eq!(last["phase"], "review");
+    assert_eq!(last["finished"], true);
+    assert_eq!(last["succeeded"], true);
+    assert_eq!(last["attempt"], 2);
+    assert_eq!(last["retry_strategy"], "decompose");
+    assert_eq!(last["context_tier"], "T2");
+    assert_eq!(last["tier_label"], "with_tests");
+    let history: Vec<&str> = last["phase_history"]
+        .as_array()
+        .expect("phase history present")
+        .iter()
+        .map(|r| r["phase"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        history,
+        ["ghidra_fetch", "context_tier", "llm_call", "review"],
+        "phase history reaches the client in event order"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────
 // Server lifecycle endpoint tests (issue #60)
 // ─────────────────────────────────────────────────────────────

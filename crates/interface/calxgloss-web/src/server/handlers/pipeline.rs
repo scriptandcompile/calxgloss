@@ -64,37 +64,7 @@ pub async fn api_get_progress_enhanced(
     };
 
     let entries = progress.read().await.snapshot().await;
-    let mut units: Vec<LiveUnitProgress> = entries
-        .values()
-        .map(|e| {
-            let elapsed = e.started_at.elapsed().as_secs_f64();
-            let baseline =
-                PassStatus::from_optional_counts(e.baseline_tests_passed, e.baseline_tests_total);
-            let verification = PassStatus::from_optional_counts(
-                e.verification_tests_passed,
-                e.verification_tests_total,
-            );
-            LiveUnitProgress {
-                dll: e.dll.clone(),
-                function: e.function.clone(),
-                phase: e.phase,
-                phase_history: e.phase_history.clone(),
-                elapsed_secs: (elapsed * 1000.0).round() / 1000.0,
-                attempt: e.attempt,
-                // An entry starts with an empty strategy; no strategy named yet
-                // means none to report, not a blank one.
-                retry_strategy: (!e.strategy.is_empty()).then(|| e.strategy.clone()),
-                context_tier: e.context_tier.clone(),
-                tier_label: e.tier_label.clone(),
-                baseline: baseline.clone(),
-                verification,
-                compiled: e.compiled,
-                unit_confidence: derive_unit_confidence(e.compiled, &baseline),
-                finished: e.finished,
-                succeeded: e.succeeded,
-            }
-        })
-        .collect();
+    let mut units: Vec<LiveUnitProgress> = entries.values().map(live_unit_progress).collect();
 
     // Stable order so the live view doesn't shuffle rows between refreshes.
     units.sort_by(|a, b| a.dll.cmp(&b.dll).then_with(|| a.function.cmp(&b.function)));
@@ -106,6 +76,40 @@ pub async fn api_get_progress_enhanced(
         count,
         in_flight,
     })
+}
+
+/// Project one live [`ProgressEntry`] into the shared [`LiveUnitProgress`]
+/// record the live view consumes.
+///
+/// Shared by `GET /api/progress/enhanced` and the WebSocket `unit_phase` push
+/// so both surfaces report the same honest shape: unmeasured test classes stay
+/// [`PassState::NotRun`](calxgloss_types::PassState::NotRun), an unnamed retry
+/// strategy is `None` rather than a blank, and confidence is derived from
+/// evidence rather than guessed.
+pub(crate) fn live_unit_progress(e: &ProgressEntry) -> LiveUnitProgress {
+    let elapsed = e.started_at.elapsed().as_secs_f64();
+    let baseline = PassStatus::from_optional_counts(e.baseline_tests_passed, e.baseline_tests_total);
+    let verification =
+        PassStatus::from_optional_counts(e.verification_tests_passed, e.verification_tests_total);
+    LiveUnitProgress {
+        dll: e.dll.clone(),
+        function: e.function.clone(),
+        phase: e.phase,
+        phase_history: e.phase_history.clone(),
+        elapsed_secs: (elapsed * 1000.0).round() / 1000.0,
+        attempt: e.attempt,
+        // An entry starts with an empty strategy; no strategy named yet
+        // means none to report, not a blank one.
+        retry_strategy: (!e.strategy.is_empty()).then(|| e.strategy.clone()),
+        context_tier: e.context_tier.clone(),
+        tier_label: e.tier_label.clone(),
+        baseline: baseline.clone(),
+        verification,
+        compiled: e.compiled,
+        unit_confidence: derive_unit_confidence(e.compiled, &baseline),
+        finished: e.finished,
+        succeeded: e.succeeded,
+    }
 }
 
 /// Handle GET /api/pipeline — return overall pipeline progress.

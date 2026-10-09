@@ -1,10 +1,48 @@
 //! WebSocket connection management for live progress streaming.
 
 use axum::extract::ws::WebSocket;
-use calxgloss_types::ProgressEvent;
+use calxgloss_types::{LiveUnitProgress, ProgressEvent};
 use futures_util::{SinkExt, StreamExt};
+use serde::Serialize;
 use tokio::sync::{Mutex, broadcast, mpsc};
 use tracing::{debug, info, warn};
+
+/// One message on the WebSocket wire.
+///
+/// `Event` forwards a raw pipeline event verbatim; `UnitPhase` carries the
+/// unit's full live record (phase, phase history, tier, evidence) after the
+/// server has applied the event, so the live view updates rows from the
+/// pushed record instead of refetching `/api/progress/enhanced`. Untagged so
+/// both variants serialize exactly as their inner type — pipeline events keep
+/// their `event` tag, and the record envelope carries its own `"unit_phase"`
+/// tag on the same field, which is how clients tell them apart.
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum WsMessage {
+    /// Raw pipeline event, forwarded verbatim.
+    Event(ProgressEvent),
+    /// Per-unit live-progress record pushed after the event was applied.
+    UnitPhase(UnitPhaseMessage),
+}
+
+/// The `unit_phase` envelope: `{"event": "unit_phase", "unit": {...}}`.
+#[derive(Debug, Clone, Serialize)]
+pub struct UnitPhaseMessage {
+    /// Wire discriminator — same `event` field pipeline events are tagged by.
+    event: &'static str,
+    /// The unit's full live record, phase history included.
+    pub unit: LiveUnitProgress,
+}
+
+impl UnitPhaseMessage {
+    /// Wrap one live record for the wire.
+    pub fn new(unit: LiveUnitProgress) -> Self {
+        Self {
+            event: "unit_phase",
+            unit,
+        }
+    }
+}
 
 /// Callback type for intercepting progress events before forwarding to clients.
 type EventCallback =
@@ -12,13 +50,17 @@ type EventCallback =
 
 #[derive(Clone)]
 pub struct SessionManager {
-    clients: std::sync::Arc<Mutex<Vec<mpsc::Sender<ProgressEvent>>>>,
+    clients: std::sync::Arc<Mutex<Vec<mpsc::Sender<WsMessage>>>>,
     commands: mpsc::Sender<WsCommand>,
     callback: EventCallback,
 }
 
 enum WsCommand {
-    Register(mpsc::Sender<ProgressEvent>),
+    Register(mpsc::Sender<WsMessage>),
+    /// Inject a server-derived message (e.g. a `unit_phase` record) into the
+    /// broadcast, alongside the forwarded pipeline events. Boxed: a record is
+    /// far larger than a sender, and the command enum shouldn't pay for it.
+    Send(Box<WsMessage>),
 }
 
 impl SessionManager {
@@ -73,14 +115,23 @@ impl SessionManager {
         }
     }
 
-    pub async fn register_client(&self) -> (WebSocketHandler, mpsc::Sender<ProgressEvent>) {
-        let (tx, rx) = mpsc::channel::<ProgressEvent>(128);
+    pub async fn register_client(&self) -> (WebSocketHandler, mpsc::Sender<WsMessage>) {
+        let (tx, rx) = mpsc::channel::<WsMessage>(128);
         let _ = self.commands.send(WsCommand::Register(tx.clone())).await;
         // Async-safe count — `client_count()` blocks and must never run on a
         // runtime thread (it would panic under a DEBUG-enabled filter).
         let total = self.clients.lock().await.len();
         debug!("WS client registered, total clients: {total}");
         (WebSocketHandler::new(rx), tx)
+    }
+
+    /// Inject a server-derived message (e.g. a `unit_phase` record) to every
+    /// connected client, ordered with the forwarded pipeline events because
+    /// both flow through the same broadcast loop.
+    pub async fn push(&self, msg: WsMessage) {
+        if self.commands.send(WsCommand::Send(Box::new(msg))).await.is_err() {
+            debug!("Broadcast loop closed, dropping pushed WS message");
+        }
     }
 
     pub fn client_count(&self) -> usize {
@@ -100,7 +151,7 @@ impl SessionManager {
 }
 
 async fn broadcast_loop(
-    clients: std::sync::Arc<Mutex<Vec<mpsc::Sender<ProgressEvent>>>>,
+    clients: std::sync::Arc<Mutex<Vec<mpsc::Sender<WsMessage>>>>,
     mut events: mpsc::Receiver<ProgressEvent>,
     mut commands: mpsc::Receiver<WsCommand>,
 ) {
@@ -110,13 +161,21 @@ async fn broadcast_loop(
                 let mut clients = clients.lock().await;
                 clients.retain(|tx| !tx.is_closed());
                 for tx in clients.iter() {
-                    let _ = tx.send(event.clone()).await;
+                    let _ = tx.send(WsMessage::Event(event.clone())).await;
                 }
             }
             Some(cmd) = commands.recv() => match cmd {
                 WsCommand::Register(tx) => {
                     let mut clients = clients.lock().await;
                     clients.push(tx);
+                }
+                WsCommand::Send(msg) => {
+                    let msg = *msg;
+                    let mut clients = clients.lock().await;
+                    clients.retain(|tx| !tx.is_closed());
+                    for tx in clients.iter() {
+                        let _ = tx.send(msg.clone()).await;
+                    }
                 }
             },
             else => break,
@@ -128,7 +187,7 @@ async fn broadcast_loop(
 /// receiver. Used by `SessionManager::new_with_broadcast()` to connect
 /// a `TranslationEvents` channel directly to the WebSocket server.
 async fn broadcast_loop_from_broadcast(
-    clients: std::sync::Arc<Mutex<Vec<mpsc::Sender<ProgressEvent>>>>,
+    clients: std::sync::Arc<Mutex<Vec<mpsc::Sender<WsMessage>>>>,
     mut events: broadcast::Receiver<ProgressEvent>,
     mut commands: mpsc::Receiver<WsCommand>,
     callback: EventCallback,
@@ -154,7 +213,7 @@ async fn broadcast_loop_from_broadcast(
                         } else {
                             debug!("Forwarding event {} to {} clients", event, clients.len());
                             for tx in clients.iter() {
-                                let _ = tx.send(event.clone()).await;
+                                let _ = tx.send(WsMessage::Event(event.clone())).await;
                             }
                         }
                     }
@@ -172,6 +231,14 @@ async fn broadcast_loop_from_broadcast(
                     clients.push(tx);
                     debug!("Client registered, total: {}", clients.len());
                 }
+                WsCommand::Send(msg) => {
+                    let msg = *msg;
+                    let mut clients = clients.lock().await;
+                    clients.retain(|tx| !tx.is_closed());
+                    for tx in clients.iter() {
+                        let _ = tx.send(msg.clone()).await;
+                    }
+                }
             },
             else => break,
         }
@@ -179,11 +246,11 @@ async fn broadcast_loop_from_broadcast(
 }
 
 pub struct WebSocketHandler {
-    rx: mpsc::Receiver<ProgressEvent>,
+    rx: mpsc::Receiver<WsMessage>,
 }
 
 impl WebSocketHandler {
-    fn new(rx: mpsc::Receiver<ProgressEvent>) -> Self {
+    fn new(rx: mpsc::Receiver<WsMessage>) -> Self {
         Self { rx }
     }
 
@@ -192,11 +259,11 @@ impl WebSocketHandler {
         let mut rx = self.rx;
 
         let events_task = tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                let json = match serde_json::to_string(&event) {
+            while let Some(msg) = rx.recv().await {
+                let json = match serde_json::to_string(&msg) {
                     Ok(json) => json,
                     Err(e) => {
-                        warn!(error = %e, "Failed to serialize progress event");
+                        warn!(error = %e, "Failed to serialize WS message");
                         continue;
                     }
                 };

@@ -63,6 +63,8 @@ reqwest = { workspace = true, features = ["json", "stream"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tracing-subscriber = { workspace = true }
 urlencoding = "2"
+# WebSocket client for the live-push e2e tests (same version axum's ws feature uses).
+tokio-tungstenite = "0.29"
 # Headless Chrome — only needed for the E2E browser test.
 # The test is gated behind #[ignore] because Chrome must be
 # installed on the machine.  It is kept here so CI can run it.

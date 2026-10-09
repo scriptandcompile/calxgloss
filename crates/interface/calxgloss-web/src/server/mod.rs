@@ -13,7 +13,7 @@ pub use self::actions::*;
 pub use self::handlers::*;
 pub use self::lifecycle::{LifecycleError, LogLevel, LogLevelControl};
 pub use self::types::*;
-pub use events::{EventsBridge, SessionManager, WebSocketHandler};
+pub use events::{EventsBridge, SessionManager, UnitPhaseMessage, WebSocketHandler, WsMessage};
 
 use axum::{
     Router,
@@ -568,6 +568,15 @@ impl ProgressState {
         self.entries.read().await.clone()
     }
 
+    /// The current record for one unit, keyed by dll and function name.
+    pub async fn entry(&self, dll: &str, function: &str) -> Option<ProgressEntry> {
+        self.entries
+            .read()
+            .await
+            .get(&format!("{dll}/{function}"))
+            .cloned()
+    }
+
     /// Returns a snapshot of classification results as serializable info.
     pub async fn classifications(&self) -> Vec<super::ClassificationInfo> {
         let map = self.classifications.read().await;
@@ -766,10 +775,23 @@ pub fn build_router_with_ws(
     // and applied events out of order, so a unit's final state depended on
     // task scheduling instead of event order.
     let progress_clone = progress.clone();
+    let manager_clone = manager.clone();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<calxgloss_types::ProgressEvent>();
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
             progress_clone.on_event(&event).await;
+            // WS phase events (issue #55): once a unit-scoped event is
+            // applied, push that unit's full live record — current phase,
+            // phase history, tier, evidence — so the live view updates the
+            // row in place instead of refetching the enhanced endpoint.
+            if let Some((dll, function)) = event.unit_key()
+                && let Some(entry) = progress_clone.entry(dll, function).await
+            {
+                let record = handlers::live_unit_progress(&entry);
+                manager_clone
+                    .push(WsMessage::UnitPhase(UnitPhaseMessage::new(record)))
+                    .await;
+            }
         }
     });
     manager.set_event_callback(move |event| {
