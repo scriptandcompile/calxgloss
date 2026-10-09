@@ -386,8 +386,14 @@ async fn run_patch_retry(
         let modules_dir = repo_path.join("src").join("modules");
         std::fs::create_dir_all(&modules_dir).ok();
 
-        // Determine the source file name (e.g., game_logic.rs for game_logic.dll)
-        let src_file_name = dll.replace(".dll", "").replace(".DLL", "") + ".rs";
+        // Determine the source file name (e.g., game_logic.rs for game_logic.dll).
+        // Stem derivation is naming, not identity (issue #68): strip whatever
+        // extension the binary carries (.dll, .exe, …).
+        let src_file_name = std::path::Path::new(dll)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| dll.to_string())
+            + ".rs";
         let dest_path = modules_dir.join(&src_file_name);
 
         // Append the function to the existing module file

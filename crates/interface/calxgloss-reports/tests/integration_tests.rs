@@ -16,7 +16,9 @@
 //! of it.
 
 use calxgloss_git::{GitManager, InitConfig};
-use calxgloss_reports::dashboard::{DashboardBuilder, ReviewDashboard, ReviewStatus, UnitOfWork};
+use calxgloss_reports::dashboard::{
+    DashboardBuilder, ReviewDashboard, ReviewStatus, UnitOfWork, ViewTarget,
+};
 use calxgloss_types::GitBranch;
 
 /// A temp workspace with an initialized git repo (README on `main`).
@@ -303,6 +305,26 @@ fn foo_dll_and_foo_exe_coexist_as_distinct_units() {
         find_unit(&dashboard, "foo.exe/DrawSprite/v1").dll,
         "foo.exe"
     );
+
+    // Both units surface in the review queue side by side.
+    let queued: Vec<&str> = dashboard
+        .review_queue
+        .iter()
+        .filter(|u| u.dll == "foo.dll" || u.dll == "foo.exe")
+        .map(|u| u.id.as_str())
+        .collect();
+    assert!(
+        queued.contains(&"foo.dll/DrawSprite/v1") && queued.contains(&"foo.exe/DrawSprite/v1"),
+        "both units sit in the review queue: {queued:?}"
+    );
+
+    // The unit-detail seam parses both identities verbatim.
+    for dll in ["foo.dll", "foo.exe"] {
+        let target = ViewTarget::parse(&format!("{dll}/DrawSprite/v1"))
+            .expect("unit id parses as a view target");
+        assert_eq!(target.dll, dll);
+        assert_eq!(target.function, "DrawSprite");
+    }
 }
 
 #[test]
