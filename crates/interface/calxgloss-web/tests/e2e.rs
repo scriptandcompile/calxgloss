@@ -3522,43 +3522,39 @@ async fn test_headless_pipeline_binary_rows() {
         cell_text("dinput8.dll", "[data-count=\"in_progress\"]")
     );
 
-    // ── Strategy labels and shim-layer / PAL trait status ─────────────
+    // ── Classification state column ──────────────────────────────────
     assert!(
-        cell_text("d3d9.dll", ".pipeline-binary-strategy").contains("PAL"),
-        "PAL mapping strategy label, got: {}",
-        cell_text("d3d9.dll", ".pipeline-binary-strategy")
+        cell_text("d3d9.dll", ".pipeline-binary-state").contains("PAL trait"),
+        "PAL trait state for a PAL-mapped binary, got: {}",
+        cell_text("d3d9.dll", ".pipeline-binary-state")
     );
     assert!(
-        cell_text("d3d9.dll", ".pipeline-binary-shim").contains("PAL trait"),
-        "PAL trait status for a PAL-mapped binary, got: {}",
-        cell_text("d3d9.dll", ".pipeline-binary-shim")
-    );
-    assert!(
-        cell_text("dinput8.dll", ".pipeline-binary-shim").contains("wgpu"),
-        "shim status names the replacement crate, got: {}",
-        cell_text("dinput8.dll", ".pipeline-binary-shim")
-    );
-    assert!(
-        cell_text("engine.dll", ".pipeline-binary-strategy").contains("Reverse Engineer"),
-        "full RE strategy label, got: {}",
-        cell_text("engine.dll", ".pipeline-binary-strategy")
-    );
-    assert!(
-        cell_text("game_logic.dll", ".pipeline-binary-strategy").contains("Unclassified"),
-        "an unclassified binary reports Unclassified in the strategy column, got: {}",
-        cell_text("game_logic.dll", ".pipeline-binary-strategy")
+        cell_text("dinput8.dll", ".pipeline-binary-state").contains("wgpu"),
+        "shim state names the replacement crate, got: {}",
+        cell_text("dinput8.dll", ".pipeline-binary-state")
     );
     assert_eq!(
-        cell_text("engine.dll", ".pipeline-binary-shim").trim(),
-        "—",
-        "a reverse-engineered binary repeats no strategy in the shim column, got: {}",
-        cell_text("engine.dll", ".pipeline-binary-shim")
+        cell_text("engine.dll", ".pipeline-binary-state").trim(),
+        "Full RE",
+        "a reverse-engineered binary reports Full RE in the state column, got: {}",
+        cell_text("engine.dll", ".pipeline-binary-state")
+    );
+    assert!(
+        cell_text("game_logic.dll", ".pipeline-binary-state").contains("Unclassified"),
+        "an unclassified binary reports Unclassified in the state column, got: {}",
+        cell_text("game_logic.dll", ".pipeline-binary-state")
     );
     assert!(
         eval_bool(
             "[...document.querySelectorAll('#pipeline-binaries .pipeline-binary-status')].every(e => !e.textContent.includes('Classified'))"
         ),
-        "no Classified badge — the strategy column already carries the classification state"
+        "no Classified badge — the state column already carries the classification state"
+    );
+    assert!(
+        eval_bool(
+            "document.querySelectorAll('#pipeline-binaries .pipeline-binary-strategy').length === 0"
+        ),
+        "the redundant strategy column is gone"
     );
 
     // ── Honesty: unknown totals, tokens, and rates are em-dashes ──────

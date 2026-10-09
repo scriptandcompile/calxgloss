@@ -1979,12 +1979,12 @@ svg {
     overflow-x: auto;
 }
 
-/* Fixed column tracks — Binary | Strategy | counts (5) | cost (2) |
-   Shim/PAL | Actions — so columns line up across rows instead of
+/* Fixed column tracks — Binary | counts (5) | cost (2) |
+   Classification | Actions — so columns line up across rows instead of
    expanding and contracting with content. */
 .pipeline-binary-row {
     display: grid;
-    grid-template-columns: minmax(180px, 1.2fr) 150px auto auto 130px auto;
+    grid-template-columns: minmax(180px, 1.2fr) auto auto 130px auto;
     align-items: center;
     gap: 8px 12px;
     padding: 8px 12px;
@@ -2010,12 +2010,18 @@ svg {
     display: flex;
     align-items: center;
     gap: 8px;
-    min-width: 200px;
+    min-width: 0;
 }
 
 .pipeline-binary-name {
     font-weight: 600;
     color: var(--text-primary);
+    /* Long filenames ellipsize instead of squeezing the status badge
+       into the next column. */
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .pipeline-binary-status {
@@ -2023,6 +2029,8 @@ svg {
     border-radius: 4px;
     font-size: 11px;
     font-weight: 500;
+    flex: none;
+    white-space: nowrap;
 }
 
 .pipeline-binary-status.translating {
@@ -2039,11 +2047,6 @@ svg {
 .pipeline-binary-status.pending {
     background: var(--accent-blue);
     color: var(--bg-primary);
-}
-
-.pipeline-binary-strategy {
-    color: var(--text-secondary);
-    min-width: 130px;
 }
 
 .pipeline-binary-counts {
@@ -2073,7 +2076,7 @@ svg {
     font-variant-numeric: tabular-nums;
 }
 
-.pipeline-binary-shim {
+.pipeline-binary-state {
     padding: 2px 8px;
     border: 1px dashed var(--border-color);
     border-radius: 4px;
@@ -2081,12 +2084,12 @@ svg {
     color: var(--text-secondary);
 }
 
-.pipeline-binary-shim[data-shim="pal"] {
+.pipeline-binary-state[data-shim="pal"] {
     border-color: var(--accent-purple);
     color: var(--accent-purple);
 }
 
-.pipeline-binary-shim[data-shim="shim"] {
+.pipeline-binary-state[data-shim="shim"] {
     border-color: var(--accent-orange);
     color: var(--accent-orange);
 }

@@ -1,12 +1,13 @@
 /* ==========================================================================
    Per-binary pipeline rows — one row per target binary (issue #63)
 
-   Renders the `binaries` array served by GET /api/pipeline: classification
-   strategy, function counts (total / translated / in-progress / queued /
-   failed), token consumption, success rate, and shim-layer / PAL trait
-   status. The honesty rule carries over from the records themselves:
-   unknown totals, tokens, queued counts, and rates render as "—", never
-   as fabricated zeros.
+   Renders the `binaries` array served by GET /api/pipeline: function
+   counts (total / translated / in-progress / queued / failed), token
+   consumption, success rate, and the classification state (PAL trait /
+   Shim → crate / Full RE / Unclassified) in one column. The honesty
+   rule carries over from the records themselves: unknown totals,
+   tokens, queued counts, and rates render as "—", never as fabricated
+   zeros.
 
    The quick-action buttons (Start Translation, Pause, Configure) are
    placeholders that announce only — real pipeline control is W2's job
@@ -23,19 +24,17 @@ const ACTION_LABELS = {
 };
 
 // Classification strategies arrive as Debug-formatted strings (e.g.
-// "PalMapping"), so match on containment. One table drives both the
-// strategy label and the shim-layer / PAL trait status it implies:
-// crate replacement implies a shim layer, PAL mapping a PAL trait,
-// full RE neither. An unknown or missing strategy reports neither.
+// "PalMapping"), so match on containment. One table drives the state
+// column: crate replacement implies a shim layer, PAL mapping a PAL
+// trait, full RE neither shim nor PAL. The state column is the single
+// place the classification state appears — no separate strategy column.
 const STRATEGIES = [
     {
         key: "PalMapping",
-        label: "PAL Mapping",
         shim: () => ({ kind: "pal", text: "PAL trait" }),
     },
     {
         key: "CrateReplacement",
-        label: "Crate Replacement",
         shim: (b) => ({
             kind: "shim",
             text: b.crate_replacement ? `Shim → ${b.crate_replacement}` : "Shim layer",
@@ -43,10 +42,7 @@ const STRATEGIES = [
     },
     {
         key: "ReverseEngineer",
-        label: "Reverse Engineer",
-        // Full RE is the strategy itself — the shim column repeats it as
-        // nothing, so it reports the neutral dash instead.
-        shim: () => ({ kind: "none", text: "—" }),
+        shim: () => ({ kind: "none", text: "Full RE" }),
     },
 ];
 
@@ -55,21 +51,17 @@ function matchStrategy(strategy) {
     return STRATEGIES.find((s) => strategy.includes(s.key)) || null;
 }
 
-function strategyLabel(strategy) {
-    const match = matchStrategy(strategy);
-    if (match) return match.label;
-    // Unknown strategy strings render honestly as-is; none as "Unclassified".
-    return strategy || "Unclassified";
-}
-
+// Unclassified binaries report "Unclassified"; an unknown strategy
+// string renders honestly as-is rather than being guessed at.
 function shimStatus(b) {
     const match = matchStrategy(b.strategy);
-    return match ? match.shim(b) : { kind: "unknown", text: "—" };
+    if (match) return match.shim(b);
+    return { kind: "unknown", text: b.strategy || "Unclassified" };
 }
 
-// No "Classified" badge: the strategy column already states the
-// classification state (PAL Mapping / Crate Replacement / Reverse
-// Engineer / Unclassified), so a badge would only repeat it.
+// No "Classified" badge: the state column already states the
+// classification state (PAL trait / Shim → crate / Full RE /
+// Unclassified), so a badge would only repeat it.
 function statusBadge(b) {
     if ((b.functions_in_progress || 0) > 0) return { cls: "translating", text: "Translating" };
     if (b.functions_total != null) return { cls: "complete", text: "Batch done" };
@@ -105,14 +97,13 @@ function renderHeader() {
     return `
         <div class="pipeline-binary-row pipeline-binary-header" aria-hidden="true">
             <div>Binary</div>
-            <div>Strategy</div>
             <div class="pipeline-binary-counts">
                 <span>Total</span><span>Translated</span><span>In progress</span><span>Queued</span><span>Failed</span>
             </div>
             <div class="pipeline-binary-cost">
                 <span>Tokens</span><span>Success</span>
             </div>
-            <div>Shim / PAL</div>
+            <div>Classification</div>
             <div>Actions</div>
         </div>
     `;
@@ -131,7 +122,6 @@ function renderRow(b) {
                 <span class="pipeline-binary-name" title="${dll}">${dll}</span>
                 <span class="pipeline-binary-status ${status.cls}">${status.text}</span>
             </div>
-            <div class="pipeline-binary-strategy">${escapeHtml(strategyLabel(b.strategy))}</div>
             <div class="pipeline-binary-counts">
                 <span class="pb-count" data-count="total" title="Total functions">${fmtCount(b.functions_total)} total</span>
                 <span class="pb-count ok" data-count="translated" title="Functions translated">${b.functions_translated || 0} translated</span>
@@ -143,7 +133,7 @@ function renderRow(b) {
                 <span data-metric="tokens" title="Tokens consumed">${fmtTokens(b.tokens_used)} tokens</span>
                 <span data-metric="success-rate" title="Translated / (translated + failed)">${rate == null ? "—" : `${rate}% success`}</span>
             </div>
-            <div class="pipeline-binary-shim" data-shim="${shim.kind}" title="Shim layer / PAL trait status — implied by the classification strategy">${escapeHtml(shim.text)}</div>
+            <div class="pipeline-binary-state" data-shim="${shim.kind}" title="Classification state — PAL trait / shim layer / full RE / unclassified">${escapeHtml(shim.text)}</div>
             <div class="pipeline-binary-actions">
                 ${Object.entries(ACTION_LABELS)
                     .map(
