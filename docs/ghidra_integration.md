@@ -225,9 +225,9 @@ Safety:
 | Phase | Deliverable | Notes |
 |---|---|---|
 | **P0** | `check_connection` + `doctor` (checks only, no spawning) | Small; immediately useful; catches the 8080-is-my-AI class of error |
-| **P1** | Headless spawn/supervise + port discovery + ownership/shutdown | The launch recipe is proven by `docker/entrypoint.sh` |
+| **P1** | Headless spawn/supervise + port discovery + ownership/shutdown + program-selector params for multi-program safety (`GHIDRA_MCP_REQUIRE_PROGRAM_SELECTORS=1`) + preflight check that the current program matches the scan target | The launch recipe is proven by `docker/entrypoint.sh`. Selector/check pulled from P3 after the 2026-10-08 incident (risk 7) |
 | **P2** | Project bootstrap: create/open `.gpr`, `load_program` + `run_analysis` with progress | First analysis of a big DLL is minutes — progress events + resumable (project persists, later runs are fast) |
-| **P3** | Polish: pid-file reuse across runs, `--no-ghidra-autostart`, GUI-vs-headless probe branching, program-selector params for multi-program safety (`GHIDRA_MCP_REQUIRE_PROGRAM_SELECTORS=1`) | |
+| **P3** | Polish: pid-file reuse across runs, `--no-ghidra-autostart`, GUI-vs-headless probe branching | |
 | **P4** | Bootstrap (`doctor --fix`): plugin-first download of GhidraMCP + matching Ghidra release, sha256 verify, install, then run P0–P2 verification. JDK-21 prerequisite check gates it | Takes a bare machine to fully working; see §3.5 |
 
 ## 5. Risks / decisions
@@ -251,6 +251,13 @@ Safety:
 5. **Ownership** — killing a Ghidra GUI we didn't start is a hard no. Track
    ownership explicitly (`Owned` vs `Attached`).
 6. **Security env** — respect the bridge defaults: script execution endpoints
-   are off (`GHIDRA_MCP_ALLOW_SCRIPTS` unset), and consider
-   `GHIDRA_MCP_REQUIRE_PROGRAM_SELECTORS=1` once multiple programs load at once.
+   are off (`GHIDRA_MCP_ALLOW_SCRIPTS` unset);
+   `GHIDRA_MCP_REQUIRE_PROGRAM_SELECTORS=1` ships with P1 (risk 7).
+7. **Wrong-program scans run silently** (incident 2026-10-08) — with several
+   GUI CodeBrowser windows open, the bridge answered `list_functions` from one
+   program and `search_functions` from another: every scan skipped its whole
+   (wrong-program) listing with per-function warnings and would have persisted
+   an empty record as if the scan were clean. Mitigations: P1 program selectors
+   + preflight current-program check (this doc), and the skip-rate breaker in
+   the evidence engines (issue #71).
 

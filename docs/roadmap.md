@@ -111,6 +111,10 @@ the doc's P0–P4 phasing. Endpoint reference: `docs/ghidra_endpoint_map.md`.
 **Bridge decision (2026-10-03):** the Ghidra bridge is
 [bethington/ghidra-mcp](https://github.com/bethington/ghidra-mcp) v6.0.0,
 load port 8089 — see `docs/adr/0001-bethington-ghidra-mcp-bridge.md`.
+**Incident (2026-10-08):** multiple open CodeBrowser windows made the bridge
+answer listings and name searches from different programs; scans skipped
+everything and nearly persisted phantom-clean records. Program selectors +
+preflight program check moved into P1; see risk 7 and issue #71.
 
 ## P1.5 — typesdb Phase 5 (`calxgloss-typesdb`)
 
