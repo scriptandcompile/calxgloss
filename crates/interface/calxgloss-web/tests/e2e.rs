@@ -2995,6 +2995,10 @@ fn launch_headless_browser() -> headless_chrome::Browser {
                 std::ffi::OsStr::new("--no-sandbox"),
                 std::ffi::OsStr::new("--disable-gpu"),
                 std::ffi::OsStr::new("--disable-dev-shm-usage"),
+                // Wide viewport: narrow windows clamp the pipeline row's
+                // head track to its minimum and mask column-alignment
+                // bugs that only appear once tracks grow with content.
+                std::ffi::OsStr::new("--window-size=1400,900"),
             ])
             .build()
             .expect("build chrome launch options"),
@@ -3556,6 +3560,14 @@ async fn test_headless_pipeline_binary_rows() {
         ),
         "the redundant strategy column is gone"
     );
+    // Switch to the Pipeline view so the rows have real layout boxes —
+    // hidden elements report zero rects and would pass vacuously.
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"pipeline\"]').click()",
+        false,
+    )
+    .expect("switch to pipeline view");
+    tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(
         eval_bool(
             r#"(() => {
@@ -3569,6 +3581,7 @@ async fn test_headless_pipeline_binary_rows() {
                     const r = document.querySelector(`#pipeline-binaries .pipeline-binary-row[data-dll] ${sel}`);
                     if (!h || !r) return false;
                     const hb = h.getBoundingClientRect(), rb = r.getBoundingClientRect();
+                    if (hb.width < 100 || rb.width < 100) return false;
                     if (Math.abs(hb.left - rb.left) > 2 || Math.abs(hb.width - rb.width) > 2) return false;
                     if (n > 1) {
                         const hc = [...h.children].map(c => c.getBoundingClientRect());

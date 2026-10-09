@@ -1982,11 +1982,14 @@ svg {
 /* Fixed column tracks — Binary | counts (5) | cost (2) |
    Classification | Actions — so columns line up across rows instead of
    expanding and contracting with content. Tracks must be fixed (not
-   auto): each row is its own grid, and auto tracks would size to that
-   row's content, misaligning the header from the data rows. */
+   auto/fr): each row is its own grid, and content-sized tracks would
+   size to that row's content — the header's short "Actions" label
+   makes its head track wider than the data rows', shifting every
+   column. Only the trailing 1fr (identical container width in every
+   row) may flex. */
 .pipeline-binary-row {
     display: grid;
-    grid-template-columns: minmax(180px, 1.2fr) 440px 180px 130px auto;
+    grid-template-columns: 260px 440px 180px 130px 1fr;
     align-items: center;
     gap: 8px 12px;
     padding: 8px 12px;
