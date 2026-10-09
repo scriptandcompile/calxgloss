@@ -3,7 +3,7 @@ use crate::dashboard::review::ReviewDashboard;
 use crate::dashboard::status::StatusCounts;
 use crate::dashboard::types::{ReviewStatus, Staleness, WorkKind, WorkLevel};
 use crate::dashboard::work_unit::UnitOfWork;
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 use std::collections::HashMap;
 
 #[test]
@@ -271,6 +271,60 @@ fn work_kind_serialization() {
         let deserialized: WorkKind = serde_json::from_str(&json).unwrap();
         assert_eq!(&deserialized, kind);
     }
+}
+
+#[test]
+fn recent_activity_is_ordered_newest_first_and_deterministic() {
+    // The web Recent activity panel slices the top of this list; an
+    // unsorted list follows the builder's filesystem order and cycles
+    // between rebuilds. Newest first, id tie-break, whatever the input order.
+    // Fixed base so the 5-minute pair is an exact tie, not microsecond drift.
+    let base = Utc
+        .timestamp_opt(1_767_000_000, 0)
+        .single()
+        .expect("valid epoch");
+    fn accepted(id: &str, ts: chrono::DateTime<Utc>) -> UnitOfWork {
+        UnitOfWork {
+            id: id.into(),
+            name: id.into(),
+            kind: WorkKind::FunctionTranslation,
+            dll: "test.dll".into(),
+            function: Some("F".into()),
+            attempt: 1,
+            status: ReviewStatus::Accepted,
+            accepted: true,
+            unit_confidence: None,
+            baseline_tests_passed: None,
+            baseline_tests_total: None,
+            verification_tests_passed: None,
+            verification_tests_total: None,
+            llm_model: None,
+            context_tier: None,
+            dependencies: vec![],
+            created_at: ts,
+            updated_at: ts,
+            known_gaps: vec![],
+            stale: Staleness::Fresh,
+        }
+    }
+
+    let dashboard = ReviewDashboard::new(vec![
+        accepted("c.dll/F/v1", base - chrono::Duration::minutes(60)),
+        accepted("a.dll/F/v1", base - chrono::Duration::minutes(5)),
+        accepted("b.dll/F/v1", base - chrono::Duration::minutes(5)),
+        accepted("d.dll/F/v1", base - chrono::Duration::minutes(1)),
+    ]);
+
+    let ids: Vec<&str> = dashboard
+        .recent_activity
+        .iter()
+        .map(|u| u.id.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["d.dll/F/v1", "a.dll/F/v1", "b.dll/F/v1", "c.dll/F/v1"],
+        "recent activity is newest-first with a stable id tie-break"
+    );
 }
 
 #[test]

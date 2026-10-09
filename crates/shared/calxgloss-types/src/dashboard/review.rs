@@ -80,6 +80,15 @@ impl ReviewDashboard {
         // Sort queue by dependency order (fewer deps first)
         queue.sort_by_key(|a| a.dependencies.len());
 
+        // Recent activity: newest first, with an id tie-break so the order
+        // is stable across rebuilds — consumers slice the top of this list,
+        // and the builder's input order follows the filesystem.
+        recent.sort_by(|a, b| {
+            b.updated_at
+                .cmp(&a.updated_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+
         Self {
             dependency_graph: graph,
             review_queue: queue,

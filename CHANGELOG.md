@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Recent activity cycled and claimed "just now"** — the dashboard's Recent activity panel re-listed every accepted unit as freshly accepted on each refresh, in an order that shuffled between polls: the builder stamped units with the build clock instead of when the work happened, and the list was never sorted, so it followed filesystem order. Accepted units now carry their branch tip's commit time (classification units, their record file's mtime), and recent activity is ordered newest-first with a stable id tie-break.
 - **Live progress events applied out of order** — the live server spawned one task per progress event to update its in-memory progress state; the tasks raced for the state lock, so events could land out of order or be dropped entirely (a unit whose start event lost the race lost the attempt and strategy reported by later events). Events now flow through a single ordered consumer task, and any unit-scoped event may create the unit's record rather than be silently discarded (issue #65).
 
 - **Retry loop accepted non-compiling first attempts** — `TranslationAttempt::is_successful` ignored the `compiled` flag, so a first attempt that failed to compile (with no tests to run) counted as successful and no retry strategy ever ran; the CLI's per-function PASS/FAIL printed PASS for it too. Success now requires compilation plus all tests passing (issue #64).

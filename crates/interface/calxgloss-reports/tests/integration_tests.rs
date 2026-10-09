@@ -328,6 +328,51 @@ fn foo_dll_and_foo_exe_coexist_as_distinct_units() {
 }
 
 #[test]
+fn accepted_units_keep_stable_recent_activity_across_rebuilds() {
+    // The web Recent activity panel showed every accepted unit as "just
+    // now" and cycled its order between refreshes: the builder stamped
+    // `updated_at` with the build time and left the list in filesystem
+    // order. Timestamps must come from the work, not the build.
+    let dir = temp_workspace();
+    let git = GitManager::open(dir.path()).expect("open repo");
+    write_classification_record(&git, "game_logic.dll", "MicrosoftSdk", None);
+    commit_on_branch(&git, "game_logic.dll", "DrawSprite", 1);
+    let branch = GitBranch::new("game_logic.dll", "DrawSprite", 1).expect("branch name");
+    git.merge_to_main(&branch).expect("merge to main");
+
+    let first = build(&git);
+    let second = build(&git);
+
+    let ids = |d: &ReviewDashboard| -> Vec<String> {
+        d.recent_activity.iter().map(|u| u.id.clone()).collect()
+    };
+    assert_eq!(
+        ids(&first),
+        ids(&second),
+        "recent activity order is identical across rebuilds"
+    );
+
+    let unit = find_unit(&first, "game_logic.dll/DrawSprite/v1");
+    let rebuilt = find_unit(&second, "game_logic.dll/DrawSprite/v1");
+    assert_eq!(
+        unit.updated_at, rebuilt.updated_at,
+        "a merged unit's updated_at is its branch commit time, not the build time"
+    );
+
+    // The classification unit timestamps from its record file, not the build.
+    let classify = find_unit(&first, "classify/game_logic.dll");
+    let mtime = std::fs::metadata(dir.path().join("re/classify/game_logic.dll.json"))
+        .expect("classification record")
+        .modified()
+        .expect("record mtime");
+    assert_eq!(
+        classify.updated_at,
+        chrono::DateTime::<chrono::Utc>::from(mtime),
+        "the classify unit's updated_at is the record file's mtime"
+    );
+}
+
+#[test]
 fn sent_back_shim_blocks_dependent_function_unit() {
     let dir = temp_workspace();
     let git = GitManager::open(dir.path()).expect("open repo");

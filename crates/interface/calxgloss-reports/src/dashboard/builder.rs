@@ -226,8 +226,8 @@ impl<'a> DashboardBuilder<'a> {
                     llm_model: Some("classificator".to_string()),
                     context_tier: Some(0),
                     dependencies: vec![],
-                    created_at: Utc::now(),
-                    updated_at: Utc::now(),
+                    created_at: cls.classified_at,
+                    updated_at: cls.classified_at,
                     known_gaps: vec![],
                     stale: Staleness::Fresh,
                 };
@@ -430,6 +430,14 @@ impl<'a> DashboardBuilder<'a> {
             let file_name = entry.file_name().to_string_lossy().to_string();
             if file_name.ends_with(".json") {
                 let dll_name = file_name.trim_end_matches(".json").to_string();
+                // The record's mtime is when the classification happened;
+                // the build clock would make it "just now" on every refresh.
+                let classified_at = entry
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .map(chrono::DateTime::<chrono::Utc>::from)
+                    .unwrap_or_else(chrono::Utc::now);
                 let parsed = std::fs::read_to_string(entry.path())
                     .ok()
                     .and_then(|content| serde_json::from_str::<ClassificationFile>(&content).ok());
@@ -438,11 +446,13 @@ impl<'a> DashboardBuilder<'a> {
                         dll: dll_name,
                         category: p.category,
                         crate_replacement: p.crate_replacement,
+                        classified_at,
                     },
                     None => ClassifiedDll {
                         dll: dll_name,
                         category: None,
                         crate_replacement: None,
+                        classified_at,
                     },
                 });
             }
@@ -505,7 +515,7 @@ impl<'a> DashboardBuilder<'a> {
 
     fn build_unit(
         &self,
-        _branches: &[String],
+        branches: &[String],
         key: &str,
         latest_attempt: u32,
         patch_records: &[PatchRecordEntry],
@@ -540,15 +550,28 @@ impl<'a> DashboardBuilder<'a> {
         });
 
         let now = Utc::now();
-        let (updated_at, stale) = patch_data
-            .map(|pr| {
-                let dt = chrono::DateTime::parse_from_rfc3339(&pr.committed_at)
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or(now);
-                let staleness = Staleness::from_elapsed(now, dt);
-                (dt, staleness)
+        // The unit's work is dated by its branch tip commit when the branch
+        // exists — the build clock would make every unit "just now" on each
+        // dashboard rebuild. Fall back to the patch record, then to now.
+        let branch_time = branches
+            .iter()
+            .find(|b| {
+                parse_branch_name(b)
+                    .is_some_and(|bp| unit_key(&bp) == key && bp.attempt == latest_attempt)
             })
-            .unwrap_or_else(|| (now, Staleness::Fresh));
+            .and_then(|b| self.git.branch_commit_time(b).ok());
+        let (updated_at, stale) = match branch_time {
+            Some(t) => (t, Staleness::from_elapsed(now, t)),
+            None => patch_data
+                .map(|pr| {
+                    let dt = chrono::DateTime::parse_from_rfc3339(&pr.committed_at)
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or(now);
+                    let staleness = Staleness::from_elapsed(now, dt);
+                    (dt, staleness)
+                })
+                .unwrap_or((now, Staleness::Fresh)),
+        };
 
         UnitOfWork {
             id,
@@ -730,6 +753,8 @@ struct ClassifiedDll {
     dll: String,
     category: Option<DllCategory>,
     crate_replacement: Option<String>,
+    /// When the record was written (its file mtime).
+    classified_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[cfg(test)]

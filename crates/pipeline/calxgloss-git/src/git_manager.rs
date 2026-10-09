@@ -808,6 +808,27 @@ impl GitManager {
             .collect())
     }
 
+    /// The UTC timestamp of a branch's tip commit.
+    ///
+    /// Dashboards use this to date a unit's work by when it was committed
+    /// rather than when the dashboard was built.
+    pub fn branch_commit_time(
+        &self,
+        branch_name: &str,
+    ) -> Result<chrono::DateTime<Utc>, TypesError> {
+        let commit = self
+            .repo
+            .find_branch(branch_name, git2::BranchType::Local)
+            .ok()
+            .and_then(|b| b.get().peel_to_commit().ok())
+            .ok_or_else(|| {
+                TypesError::InvalidBranchName(format!("No local branch '{branch_name}'"))
+            })?;
+        chrono::DateTime::from_timestamp(commit.time().seconds(), 0).ok_or_else(|| {
+            TypesError::InvalidBranchName(format!("Invalid commit timestamp on '{branch_name}'"))
+        })
+    }
+
     /// Checks if a specific branch is an ancestor of `main`.
     pub fn is_branch_merged_into_main(&self, branch_name: &str) -> Result<bool, TypesError> {
         let main_ref = self
