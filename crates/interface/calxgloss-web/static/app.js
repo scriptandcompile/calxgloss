@@ -174,6 +174,19 @@ function setupEventListeners() {
 
 // ─── WebSocket Event Handler ────────────────────────────────────────────
 
+/* Coalesces WS-triggered dashboard refreshes: a live run emits many events
+   per second, and each one used to kick off a full git-backed dashboard
+   rebuild and re-render — the visible bounce. One rebuild per short window
+   keeps the data current without the churn. */
+let dashboardRefreshTimer = null;
+function scheduleDashboardRefresh() {
+    if (dashboardRefreshTimer) return;
+    dashboardRefreshTimer = setTimeout(() => {
+        dashboardRefreshTimer = null;
+        loadDashboard();
+    }, 2000);
+}
+
 function handleWSMessage(event) {
     console.log("[WS] handleWSMessage event:", event.event);
 
@@ -258,11 +271,11 @@ function handleWSMessage(event) {
         );
     }
 
-    // Silently refresh dashboard data on any progress event
-    loadDashboard();
-
-    // The live view needs no refetch here: the server pushes a `unit_phase`
-    // record after every unit event, and that updates the rows in place.
+    // Silently refresh dashboard data on any progress event (coalesced —
+    // see scheduleDashboardRefresh). The live view needs no refetch here:
+    // the server pushes a `unit_phase` record after every unit event, and
+    // that updates the rows in place.
+    scheduleDashboardRefresh();
 }
 
 // ─── Zoom indicator display ─────────────────────────────────────────────

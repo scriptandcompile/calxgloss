@@ -80,6 +80,18 @@ impl ReviewDashboard {
         // Sort queue by dependency order (fewer deps first)
         queue.sort_by_key(|a| a.dependencies.len());
 
+        // Stable graph order: the builder's input follows the filesystem, and
+        // the web graph view re-runs its layered layout on every refresh —
+        // an unstable node order made the binaries visibly reshuffle between
+        // refreshes. Sorting nodes and edges keeps the layout fixed while the
+        // data itself is unchanged.
+        graph.nodes.sort_by(|a, b| a.unit_id.cmp(&b.unit_id));
+        graph.edges.sort_by(|a, b| {
+            a.from
+                .cmp(&b.from)
+                .then_with(|| a.to.cmp(&b.to))
+        });
+
         // Recent activity: newest first, with an id tie-break so the order
         // is stable across rebuilds — consumers slice the top of this list,
         // and the builder's input order follows the filesystem.

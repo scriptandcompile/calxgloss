@@ -78,15 +78,30 @@ export function renderStatusCards(dashboard) {
         { cls: "sendback", label: "Send Back", value: counts.send_back },
         { cls: "blocked", label: "Blocked", value: counts.blocked },
     ];
+    const visible = cards.filter(c => c.value > 0);
 
-    container.innerHTML = cards
-        .filter(c => c.value > 0)
-        .map(c => `
-            <div class="status-card ${c.cls}">
-                <div class="status-card-label">${c.label}</div>
-                <div class="status-card-value">${c.value}</div>
-            </div>
-        `).join("");
+    // Skip the DOM churn when the counts haven't changed — wiping innerHTML
+    // on every refresh is what made the card row flicker during a live run.
+    const signature = visible.map(c => `${c.cls}:${c.value}`).join("|");
+    if (container.dataset.counts === signature) return;
+    container.dataset.counts = signature;
+
+    // Replace only the count cards. The server status card lives in this
+    // container too and must survive the swap — it is updated in place by
+    // renderServerStatusCard, not rebuilt.
+    const serverCard = document.getElementById("server-status-card");
+    container
+        .querySelectorAll(".status-card:not(#server-status-card)")
+        .forEach(el => el.remove());
+    for (const c of visible) {
+        const el = document.createElement("div");
+        el.className = `status-card ${c.cls}`;
+        el.innerHTML = `
+            <div class="status-card-label">${c.label}</div>
+            <div class="status-card-value">${c.value}</div>
+        `;
+        container.insertBefore(el, serverCard);
+    }
 }
 
 /* Binary category cards (issue #66) — one per DllCategory, counts sourced
@@ -195,25 +210,46 @@ export async function renderServerStatusCard() {
         if (!container) return null;
 
         const pipelineLabels = { unavailable: "no pipeline", idle: "idle", running: "running" };
-        const card = document.createElement("div");
-        card.id = "server-status-card";
-        card.className = "status-card server";
+        const pipelineLabel = pipelineLabels[status.pipeline_status] || status.pipeline_status;
+
+        // Create once, then update the fields in place — recreating the card
+        // on every refresh removed and re-added it, which flickered the card
+        // row during a live run.
+        let card = document.getElementById("server-status-card");
+        if (!card) {
+            card = document.createElement("div");
+            card.id = "server-status-card";
+            card.className = "status-card server";
+            card.innerHTML = `
+                <div class="status-card-label">Server</div>
+                <div class="status-card-value" id="server-status-uptime"></div>
+                <div class="server-status-meta">
+                    <span id="server-status-version"></span>
+                    <span id="server-status-pipeline"></span>
+                    <span id="server-status-host"></span>
+                    <span id="server-status-loglevel"></span>
+                    <span id="server-status-mem"></span>
+                    <span id="server-status-cpu"></span>
+                    <span id="server-status-ws"></span>
+                    <span id="server-status-fd"></span>
+                </div>
+            `;
+            container.appendChild(card);
+        }
         card.title = `Pipeline: ${status.pipeline_status} · Host: ${status.host} · Log level: ${status.log_level}`;
-        card.innerHTML = `
-            <div class="status-card-label">Server</div>
-            <div class="status-card-value" id="server-status-uptime">${fmtUptime(status.uptime_secs)}</div>
-            <div class="server-status-meta">
-                <span id="server-status-version">v${escapeHtml(status.version)}</span>
-                <span id="server-status-pipeline">${escapeHtml(pipelineLabels[status.pipeline_status] || status.pipeline_status)}</span>
-                <span id="server-status-host">${escapeHtml(status.host)}</span>
-                <span id="server-status-loglevel">${escapeHtml(status.log_level)}</span>
-                <span id="server-status-mem">${status.memory_mb} MB</span>
-                <span id="server-status-cpu">${status.cpu_percent}%</span>
-                <span id="server-status-ws">${status.ws_connections} WS</span>
-                <span id="server-status-fd">${status.open_file_handles} FD</span>
-            </div>
-        `;
-        container.appendChild(card);
+        const set = (id, text) => {
+            const el = card.querySelector(id);
+            if (el) el.textContent = text;
+        };
+        set("#server-status-uptime", fmtUptime(status.uptime_secs));
+        set("#server-status-version", `v${status.version}`);
+        set("#server-status-pipeline", pipelineLabel);
+        set("#server-status-host", status.host);
+        set("#server-status-loglevel", status.log_level);
+        set("#server-status-mem", `${status.memory_mb} MB`);
+        set("#server-status-cpu", `${status.cpu_percent}%`);
+        set("#server-status-ws", `${status.ws_connections} WS`);
+        set("#server-status-fd", `${status.open_file_handles} FD`);
         return status;
     } catch {
         // Silently fail — server status card is non-critical

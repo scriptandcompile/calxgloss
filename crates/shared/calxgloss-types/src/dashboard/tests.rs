@@ -1463,3 +1463,67 @@ fn auto_block_idempotent() {
     assert_eq!(second, 0);
     assert_eq!(third, 0);
 }
+
+#[test]
+fn dashboard_graph_order_is_stable_across_input_orders() {
+    fn unit(id: &str, deps: &[&str]) -> UnitOfWork {
+        UnitOfWork {
+            id: id.into(),
+            name: id.into(),
+            kind: WorkKind::FunctionTranslation,
+            dll: "test.dll".into(),
+            function: Some(id.into()),
+            attempt: 1,
+            status: ReviewStatus::Queued,
+            accepted: false,
+            unit_confidence: None,
+            baseline_tests_passed: None,
+            baseline_tests_total: None,
+            verification_tests_passed: None,
+            verification_tests_total: None,
+            llm_model: None,
+            context_tier: None,
+            dependencies: deps.iter().map(|d| (*d).into()).collect(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            known_gaps: vec![],
+            stale: Staleness::Fresh,
+        }
+    }
+
+    let units = vec![
+        unit("func_z", &["shim_a"]),
+        unit("shim_a", &["dll_c"]),
+        unit("dll_c", &[]),
+    ];
+
+    // The builder's input order follows the filesystem and can be anything;
+    // the graph the web view re-lays-out on every refresh must not shuffle
+    // with it.
+    let forward = ReviewDashboard::new(units.clone());
+    let mut reversed = units;
+    reversed.reverse();
+    let backward = ReviewDashboard::new(reversed);
+
+    let node_ids = |d: &ReviewDashboard| -> Vec<String> {
+        d.dependency_graph.nodes.iter().map(|n| n.unit_id.clone()).collect()
+    };
+    let edge_pairs = |d: &ReviewDashboard| -> Vec<(String, String)> {
+        d.dependency_graph
+            .edges
+            .iter()
+            .map(|e| (e.from.clone(), e.to.clone()))
+            .collect()
+    };
+
+    assert_eq!(node_ids(&forward), ["dll_c", "func_z", "shim_a"]);
+    assert_eq!(
+        edge_pairs(&forward),
+        vec![
+            ("func_z".to_string(), "shim_a".to_string()),
+            ("shim_a".to_string(), "dll_c".to_string()),
+        ]
+    );
+    assert_eq!(node_ids(&forward), node_ids(&backward));
+    assert_eq!(edge_pairs(&forward), edge_pairs(&backward));
+}
