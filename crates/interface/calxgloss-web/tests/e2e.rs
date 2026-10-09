@@ -7,7 +7,7 @@
 //! Run browser tests:   `cargo test --features server --test e2e headless -- --ignored`
 
 use calxgloss_git::{GitManager, InitConfig};
-use calxgloss_types::{GitBranch, ProgressEvent, TranslationEvents};
+use calxgloss_types::{GitBranch, ProgressEvent, TestCase, TestResult, TranslationEvents};
 use calxgloss_web::{
     ActionsState, ProgressState, ServerState, SessionManager, build_dashboard, build_router,
     build_router_with_actions, build_router_with_ws, serve_with_listener,
@@ -250,7 +250,9 @@ pub fn update_scene(world: &mut World) {
         )
         .unwrap();
 
-        // 7. Create baseline test data for DrawPrimitive.
+        // 7. Create baseline test data for DrawPrimitive — in the exact
+        //    `Vec<TestResult>` shape `calxgloss-testgen` persists, so the
+        //    dashboard's baseline readers parse it (issue #67).
         let baseline_dir = git
             .repo_path()
             .join("re")
@@ -258,23 +260,23 @@ pub fn update_scene(world: &mut World) {
             .join("game_logic.dll")
             .join("DrawPrimitive");
         std::fs::create_dir_all(&baseline_dir).unwrap();
-        let baseline = serde_json::json!([
-            {
-                "input": {"vertices": [1,2,3], "index": 0},
-                "expected_return": 0,
-                "passed": true
-            },
-            {
-                "input": {"vertices": [], "index": 0},
-                "expected_return": 0,
-                "passed": true
-            },
-            {
-                "input": {"vertices": [99], "index": -1},
-                "expected_return": -1,
-                "passed": true
-            }
-        ]);
+        let baseline: Vec<TestResult> = [
+            (
+                serde_json::json!({"vertices": [1,2,3], "index": 0}),
+                serde_json::json!(0),
+            ),
+            (
+                serde_json::json!({"vertices": [], "index": 0}),
+                serde_json::json!(0),
+            ),
+            (
+                serde_json::json!({"vertices": [99], "index": -1}),
+                serde_json::json!(-1),
+            ),
+        ]
+        .into_iter()
+        .map(|(inputs, expected)| baseline_result(inputs, expected, true))
+        .collect();
         std::fs::write(
             baseline_dir.join("baseline.json"),
             serde_json::to_string_pretty(&baseline).unwrap(),
@@ -289,13 +291,11 @@ pub fn update_scene(world: &mut World) {
             .join("game_logic.dll")
             .join("UpdateScene");
         std::fs::create_dir_all(&baseline_us).unwrap();
-        let baseline_us_data = serde_json::json!([
-            {
-                "input": {"delta_time": 0.016},
-                "expected_return": 0,
-                "passed": true
-            }
-        ]);
+        let baseline_us_data = vec![baseline_result(
+            serde_json::json!({"delta_time": 0.016}),
+            serde_json::json!(0),
+            true,
+        )];
         std::fs::write(
             baseline_us.join("baseline.json"),
             serde_json::to_string_pretty(&baseline_us_data).unwrap(),
@@ -326,6 +326,28 @@ pub fn update_scene(world: &mut World) {
 // ─────────────────────────────────────────────────────────────
 // Server helpers
 // ─────────────────────────────────────────────────────────────
+
+/// One baseline `TestResult` in the exact shape `calxgloss-testgen`
+/// persists to `re/baseline/{file}/{func}/baseline.json` — the observed
+/// return equals the expected one when the test passed — so every reader
+/// of the artifact parses it (issue #67).
+fn baseline_result(
+    inputs: serde_json::Value,
+    expected: serde_json::Value,
+    passed: bool,
+) -> TestResult {
+    TestResult {
+        test_case: TestCase {
+            inputs,
+            expected_return: expected.clone(),
+            expected_side_effects: Vec::new(),
+        },
+        actual_return: expected,
+        actual_side_effects: Vec::new(),
+        passed,
+        error: None,
+    }
+}
 
 /// Start the axum server in a background task.
 async fn spawn_server(router: axum::Router, port: u16) -> tokio::task::JoinHandle<()> {
@@ -1146,6 +1168,56 @@ async fn test_dashboard_endpoint() {
 
 // ── Test: Dashboard summary data (issue #66) ───────────────────────────
 
+/// Issue #67: baseline artifacts under `re/baseline/{file}/{func}/` must
+/// reach the dashboard units — the review queue's baseline columns and the
+/// quality summary both join on the verbatim `{file}/{func}` key.
+#[tokio::test]
+async fn test_dashboard_baseline_counts_attached() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/dashboard", fixture.port()))
+        .await
+        .expect("dashboard request succeeds");
+    assert_eq!(resp.status(), 200);
+    let json: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+
+    let all_units: Vec<serde_json::Value> = [
+        json["dashboard"]["review_queue"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default(),
+        json["dashboard"]["recent_activity"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default(),
+    ]
+    .concat();
+    let unit = |id: &str| -> serde_json::Value {
+        all_units
+            .iter()
+            .find(|u| u["id"] == id)
+            .cloned()
+            .unwrap_or_else(|| panic!("unit {id} present in dashboard payload"))
+    };
+
+    let draw = unit("game_logic.dll/DrawPrimitive/v2");
+    assert_eq!(
+        draw["baseline_tests_passed"].as_u64(),
+        Some(3),
+        "DrawPrimitive carries its 3 passing baseline tests"
+    );
+    assert_eq!(draw["baseline_tests_total"].as_u64(), Some(3));
+
+    let update = unit("game_logic.dll/UpdateScene/v1");
+    assert_eq!(update["baseline_tests_passed"].as_u64(), Some(1));
+    assert_eq!(update["baseline_tests_total"].as_u64(), Some(1));
+}
+
 #[tokio::test]
 async fn test_dashboard_binary_categories() {
     let fixture = TestFixture::new();
@@ -1195,10 +1267,11 @@ async fn test_dashboard_quality_summary() {
     let json: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
 
     // Fixture unit confidences: 0.5, 0.5 (DrawPrimitive v1/v2), 0.95, 0.95
-    // (classify) → average 0.725. No unit carries baseline or verification
-    // test data in the dashboard payload → both rates are null, not
-    // fabricated zeros. (The weighted pass-rate math itself is covered by
-    // the summary module's unit tests.)
+    // (classify) → average 0.725. Baseline counts reach the units (issue #67):
+    // DrawPrimitive v1 and v2 each carry the 3/3 baseline artifact and
+    // UpdateScene 1/1 → weighted pass rate 7/7. No unit carries verification
+    // test data → that rate stays null, not a fabricated zero. (The weighted
+    // pass-rate math itself is covered by the summary module's unit tests.)
     let qs = &json["quality_summary"];
     let avg = qs["avg_unit_confidence"]
         .as_f64()
@@ -1208,9 +1281,13 @@ async fn test_dashboard_quality_summary() {
         "avg_unit_confidence should be ~0.725, got {}",
         avg
     );
+    let rate = qs["baseline_pass_rate"]
+        .as_f64()
+        .expect("baseline_pass_rate is a number once units carry baseline data");
     assert!(
-        qs["baseline_pass_rate"].is_null(),
-        "baseline_pass_rate should be null when no unit has baseline data"
+        (rate - 1.0).abs() < 0.01,
+        "baseline_pass_rate should be ~1.0 (7/7 baseline tests), got {}",
+        rate
     );
     assert!(
         qs["verification_pass_rate"].is_null(),

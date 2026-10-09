@@ -169,7 +169,11 @@ impl<'a> DashboardBuilder<'a> {
         for (key, latest_attempt) in &seen_keys {
             let mut unit = self.build_unit(&branches, key, *latest_attempt, &patch_records);
 
-            let baseline_key = key.rsplit_once('/').map_or(key.as_str(), |(base, _)| base);
+            // The baseline map is keyed `{file}/{func}` verbatim; the unit
+            // key carries the attempt on top, so only that dimension is
+            // stripped — the binary part is already the verbatim filename
+            // (issue #68, issue #67).
+            let baseline_key = strip_attempt_suffix(key);
             if let Some(baseline) = baselines.get(baseline_key) {
                 unit.baseline_tests_total = Some(baseline.test_count);
                 unit.baseline_tests_passed = Some(baseline.pass_count);
@@ -358,6 +362,12 @@ impl<'a> DashboardBuilder<'a> {
         Ok(keys)
     }
 
+    /// Reads every baseline artifact under
+    /// `re/baseline/{file}/{func}/baseline.json` (the layout written by
+    /// `calxgloss-testgen`), keying the map `{file}/{func}` with both
+    /// directory names verbatim — the binary dir carries the filename
+    /// extension included (issue #68), so `foo.dll` and `foo.exe` stay
+    /// distinct entries.
     fn read_all_baselines(&self) -> Result<HashMap<String, BaselineData>, anyhow::Error> {
         let mut baselines = HashMap::new();
         let baseline_dir = self.repo_path.join("re").join("baseline");
@@ -365,42 +375,42 @@ impl<'a> DashboardBuilder<'a> {
             return Ok(baselines);
         }
 
-        for dll_dir in std::fs::read_dir(&baseline_dir)? {
-            let dll_dir = dll_dir?;
-            // Baseline dirs carry the binary filename verbatim (issue #68).
-            let dll = dll_dir.file_name().to_string_lossy().to_string();
-
-            let func_dir = dll_dir.path();
-            if !func_dir.is_dir() {
+        for file_dir in std::fs::read_dir(&baseline_dir)? {
+            let file_dir = file_dir?;
+            if !file_dir.path().is_dir() {
                 continue;
             }
+            let file = file_dir.file_name().to_string_lossy().to_string();
 
-            let func_name = func_dir
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
+            for func_dir in std::fs::read_dir(file_dir.path())? {
+                let func_dir = func_dir?;
+                if !func_dir.path().is_dir() {
+                    continue;
+                }
+                let func_name = func_dir.file_name().to_string_lossy().to_string();
 
-            let baseline_path = func_dir.join("baseline.json");
-            if !baseline_path.exists() {
-                continue;
+                let baseline_path = func_dir.path().join("baseline.json");
+                if !baseline_path.exists() {
+                    continue;
+                }
+
+                let content = std::fs::read_to_string(&baseline_path)?;
+                let tests: Vec<calxgloss_types::TestResult> = match serde_json::from_str(&content) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+
+                let test_count = tests.len();
+                let pass_count = tests.iter().filter(|t| t.passed).count();
+
+                baselines.insert(
+                    format!("{}/{}", file, func_name),
+                    BaselineData {
+                        test_count,
+                        pass_count,
+                    },
+                );
             }
-
-            let content = std::fs::read_to_string(&baseline_path)?;
-            let tests: Vec<calxgloss_types::TestResult> = match serde_json::from_str(&content) {
-                Ok(t) => t,
-                Err(_) => continue,
-            };
-
-            let test_count = tests.len();
-            let pass_count = tests.iter().filter(|t| t.passed).count();
-
-            baselines.insert(
-                format!("{}/{}", dll, func_name),
-                BaselineData {
-                    test_count,
-                    pass_count,
-                },
-            );
         }
 
         Ok(baselines)
@@ -816,5 +826,92 @@ mod tests {
         // both must key to the same verbatim binary filename.
         assert_eq!(strip_attempt_suffix("d3d9.dll"), "d3d9.dll");
         assert_eq!(strip_attempt_suffix("game_logic.dll/v1"), "game_logic.dll");
+    }
+
+    #[test]
+    fn baselines_attach_to_units_by_verbatim_file_and_function() {
+        // Baseline artifacts live at `re/baseline/{file}/{func}/baseline.json`
+        // (the layout testgen writes); the builder joins them to units on the
+        // verbatim `{file}/{func}` key — no extension stripping, so
+        // `game_logic.dll` and `game_logic.exe` stay distinct units (issue #67).
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = init_test_repo(dir.path());
+
+        git.create_branch("game_logic.dll", "DrawPrimitive", 1, None)
+            .expect("dll translation branch");
+        git.create_branch("game_logic.exe", "DrawPrimitive", 1, None)
+            .expect("exe translation branch");
+        write_baseline(
+            &git,
+            "game_logic.dll",
+            "DrawPrimitive",
+            &[true, true, false],
+        );
+        write_baseline(&git, "game_logic.exe", "DrawPrimitive", &[true]);
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("dashboard builds");
+
+        let dll_unit = find_unit(&dashboard, "game_logic.dll/DrawPrimitive/v1");
+        assert_eq!(dll_unit.baseline_tests_total, Some(3));
+        assert_eq!(dll_unit.baseline_tests_passed, Some(2));
+
+        let exe_unit = find_unit(&dashboard, "game_logic.exe/DrawPrimitive/v1");
+        assert_eq!(exe_unit.baseline_tests_total, Some(1));
+        assert_eq!(exe_unit.baseline_tests_passed, Some(1));
+    }
+
+    /// Initialises a test git repo (a `main` branch with one commit) in `path`.
+    fn init_test_repo(path: &std::path::Path) -> GitManager {
+        let config = calxgloss_git::InitConfig {
+            author_name: "Calxgloss Test".into(),
+            author_email: "test@calxgloss.test".into(),
+            committer_name: None,
+            committer_email: None,
+        };
+        GitManager::init_repo(path, Some(config)).expect("init git repo")
+    }
+
+    /// Writes a `re/baseline/{file}/{func}/baseline.json` artifact in the
+    /// exact `Vec<TestResult>` shape testgen persists, one result per entry
+    /// of `passed`.
+    fn write_baseline(git: &GitManager, file: &str, function: &str, passed: &[bool]) {
+        let results: Vec<calxgloss_types::TestResult> = passed
+            .iter()
+            .map(|&p| calxgloss_types::TestResult {
+                test_case: calxgloss_types::TestCase {
+                    inputs: serde_json::json!({"x": 1}),
+                    expected_return: serde_json::json!(1),
+                    expected_side_effects: vec![],
+                },
+                actual_return: serde_json::json!(1),
+                actual_side_effects: vec![],
+                passed: p,
+                error: None,
+            })
+            .collect();
+        let dir = git
+            .repo_path()
+            .join("re")
+            .join("baseline")
+            .join(file)
+            .join(function);
+        std::fs::create_dir_all(&dir).expect("baseline dir");
+        std::fs::write(
+            dir.join("baseline.json"),
+            serde_json::to_string(&results).expect("serialize baseline"),
+        )
+        .expect("write baseline");
+    }
+
+    /// Fetches a built unit by id from either dashboard list.
+    fn find_unit<'a>(dashboard: &'a ReviewDashboard, id: &str) -> &'a UnitOfWork {
+        dashboard
+            .review_queue
+            .iter()
+            .chain(dashboard.recent_activity.iter())
+            .find(|u| u.id == id)
+            .unwrap_or_else(|| panic!("unit {id} present in dashboard"))
     }
 }
