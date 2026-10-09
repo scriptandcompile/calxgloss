@@ -423,23 +423,31 @@ impl DependencyTracker {
 
         // ── Phase 3: Register all DLLs referenced by functions ──
 
+        // The classified binaries are the workspace's binary inventory: the
+        // detector resolves function-name hints against these real filenames
+        // (any extension) instead of inventing identities (issue #70).
+        let binary_inventory: Vec<String> =
+            classifications.iter().map(|c| c.binary.clone()).collect();
+
         let mut dll_nodes_added: std::collections::HashSet<String> =
             std::collections::HashSet::new();
 
         for (func_name, neighbors) in call_graph {
-            // Try to detect DLL from function name/neighbors
-            if let Some(ref func_dll) = Self::detect_dll_from_function(func_name, neighbors) {
-                if let Some(dll_id) = dll_node_ids.get(func_dll.as_str()) {
+            // Try to detect the binary from function name/neighbors
+            if let Some(ref func_binary) =
+                Self::detect_binary_from_function(func_name, neighbors, &binary_inventory)
+            {
+                if let Some(dll_id) = dll_node_ids.get(func_binary.as_str()) {
                     if dll_nodes_added.insert(dll_id.clone()) {}
                 } else {
-                    let dll_id = Self::dll_node_id(func_dll);
+                    let dll_id = Self::dll_node_id(func_binary);
                     graph.nodes.push(DependencyNode::with_level(
                         dll_id.clone(),
-                        format!("Classify {}", func_dll),
+                        format!("Classify {}", func_binary),
                         ReviewStatus::Queued,
                         WorkLevel::DllClassification,
                     ));
-                    dll_node_ids.insert(func_dll.clone(), dll_id.clone());
+                    dll_node_ids.insert(func_binary.clone(), dll_id.clone());
                     dll_nodes_added.insert(dll_id);
                 }
             }
@@ -466,20 +474,21 @@ impl DependencyTracker {
             let func_name_ref: &str = func_name;
             let func_id = &function_node_ids[func_name_ref];
 
-            // Determine the function's DLL: try name detection, fall back to first classification
-            let func_dll = Self::detect_dll_from_function(func_name, neighbors)
-                .or_else(|| classifications.first().map(|c| c.binary.clone()));
+            // Determine the function's binary: try name detection, fall back to first classification
+            let func_binary =
+                Self::detect_binary_from_function(func_name, neighbors, &binary_inventory)
+                    .or_else(|| classifications.first().map(|c| c.binary.clone()));
 
-            if let Some(ref func_dll_str) = func_dll {
+            if let Some(ref func_binary_str) = func_binary {
                 // Depend on shim layer if available
-                if let Some(shim_id) = shim_node_ids.get(func_dll_str.as_str()) {
+                if let Some(shim_id) = shim_node_ids.get(func_binary_str.as_str()) {
                     graph.edges.push(DependencyEdge {
                         from: func_id.clone(),
                         to: shim_id.clone(),
                     });
                 } else {
                     // Depend on DLL classification directly
-                    if let Some(dll_id) = dll_node_ids.get(func_dll_str.as_str()) {
+                    if let Some(dll_id) = dll_node_ids.get(func_binary_str.as_str()) {
                         graph.edges.push(DependencyEdge {
                             from: func_id.clone(),
                             to: dll_id.clone(),
@@ -643,47 +652,72 @@ impl DependencyTracker {
             .to_string()
     }
 
-    /// Detects the DLL a function belongs to by examining the function name
-    /// and its call graph neighbors.
+    /// Detects the binary a function belongs to by examining the function name
+    /// and its call graph neighbors against the workspace's binary inventory.
     ///
-    /// If the function name or any neighbor matches a DLL name from the
-    /// classifications, that DLL is returned. Otherwise `None` is returned
-    /// and the caller should use the default DLL for the function.
-    fn detect_dll_from_function(function: &str, neighbors: &[String]) -> Option<String> {
-        // Check if the function name starts with a known DLL base name
-        let func_lower = function.to_lowercase();
-
-        // Extract potential DLL base name from function if it has a prefix
-        // Common pattern: "dll_name/FunctionName" or "dll_Name_FunctionName"
-        for part in func_lower.split(['/', '_']) {
-            let candidate = part.to_string();
-            if candidate.ends_with(".dll") || !candidate.is_empty() && !candidate.chars().next().unwrap().is_ascii_alphabetic() ||
-                // Check if this part looks like a DLL name (ends with .dll or is a common system DLL)
-                (candidate.ends_with(".dll") || candidate == "d3d9" || candidate == "game_logic" || candidate == "directx_render" || candidate == "wgpu")
-            && !candidate.is_empty() && candidate.len() > 3
-            {
-                let candidate_stripped = candidate.strip_suffix(".dll").unwrap_or(&candidate);
-                // Only return if it looks like a meaningful DLL name
-                if candidate_stripped.len() > 2 {
-                    let full_name = if candidate.ends_with(".dll") {
-                        candidate.clone()
-                    } else {
-                        format!("{}.dll", candidate)
-                    };
-                    return Some(full_name);
-                }
+    /// Candidates are the `/`- and `_`-separated parts of the function name
+    /// (the common `dll_name/FunctionName` and `dll_Name_FunctionName`
+    /// patterns) plus the neighbors themselves. A candidate resolves when it
+    /// matches a binary in `binaries` — the workspace's classified binaries —
+    /// case-insensitively, either verbatim or against the filename stem, so
+    /// `eqgame_RunLoop` resolves to an `eqgame.exe` inventory entry. The
+    /// inventory's spelling of the name is returned verbatim (glossary:
+    /// *binary identity*).
+    ///
+    /// A candidate that already carries a binary extension (`.dll` or `.exe`)
+    /// resolves to itself even when the workspace has not classified it —
+    /// the extension is already there, nothing is invented. An
+    /// extension-less candidate that matches no inventory binary resolves to
+    /// `None`: the detector never fabricates an identity by appending an
+    /// extension (issue #70); the caller falls back to its default binary.
+    fn detect_binary_from_function(
+        function: &str,
+        neighbors: &[String],
+        binaries: &[String],
+    ) -> Option<String> {
+        for part in function.split(['/', '_']) {
+            if let Some(identity) = Self::resolve_binary_candidate(part, binaries) {
+                return Some(identity);
             }
         }
 
-        // Check neighbors for DLL name patterns
         for neighbor in neighbors {
-            let n_lower = neighbor.to_lowercase();
-            if n_lower.ends_with(".dll") {
-                return Some(n_lower);
+            if let Some(identity) = Self::resolve_binary_candidate(neighbor, binaries) {
+                return Some(identity);
             }
         }
 
         None
+    }
+
+    /// Resolves one name candidate to a binary identity.
+    ///
+    /// Matches case-insensitively against the inventory — verbatim or against
+    /// the filename stem — and returns the inventory's spelling. Otherwise a
+    /// candidate already ending in a binary extension is its own identity,
+    /// verbatim; anything else resolves to `None`.
+    fn resolve_binary_candidate(candidate: &str, binaries: &[String]) -> Option<String> {
+        if candidate.is_empty() {
+            return None;
+        }
+        let candidate_lower = candidate.to_lowercase();
+        if let Some(hit) = binaries.iter().find(|binary| {
+            let binary_lower = binary.to_lowercase();
+            binary_lower == candidate_lower
+                || std::path::Path::new(&binary_lower)
+                    .file_stem()
+                    .is_some_and(|stem| stem == std::ffi::OsStr::new(&candidate_lower))
+        }) {
+            return Some(hit.clone());
+        }
+        Self::has_binary_extension(&candidate_lower).then(|| candidate.to_string())
+    }
+
+    /// Whether a lowercased name already carries a binary extension (`.dll`
+    /// or `.exe`) — the set of extensions that make a name a complete binary
+    /// identity on its own.
+    fn has_binary_extension(name_lower: &str) -> bool {
+        name_lower.ends_with(".dll") || name_lower.ends_with(".exe")
     }
 }
 
@@ -1066,16 +1100,90 @@ mod tests {
     // ── Dependency detection tests ──
 
     #[test]
-    fn detect_dll_from_function_with_dll_prefix() {
-        // When function name has DLL prefix
-        let binary = DependencyTracker::detect_dll_from_function("d3d9_DrawPrimitive", &[]);
+    fn detect_binary_from_function_with_dll_prefix() {
+        // When function name has a prefix matching a classified DLL, the
+        // inventory's verbatim identity comes back.
+        let binary = DependencyTracker::detect_binary_from_function(
+            "d3d9_DrawPrimitive",
+            &[],
+            &["d3d9.dll".to_string()],
+        );
         assert_eq!(binary, Some("d3d9.dll".to_string()));
     }
 
     #[test]
-    fn detect_dll_from_empty_function_returns_none() {
-        let binary = DependencyTracker::detect_dll_from_function("", &[]);
+    fn detect_binary_from_empty_function_returns_none() {
+        let binary = DependencyTracker::detect_binary_from_function("", &[], &[]);
         assert!(binary.is_none());
+    }
+
+    #[test]
+    fn detect_binary_from_function_resolves_exe_stem_to_verbatim_identity() {
+        // A function-name hint originating from an .exe binary resolves to
+        // the verbatim .exe identity — never a fabricated .dll (issue #70).
+        let binary = DependencyTracker::detect_binary_from_function(
+            "eqgame_RunLoop",
+            &[],
+            &["eqgame.exe".to_string()],
+        );
+        assert_eq!(binary, Some("eqgame.exe".to_string()));
+    }
+
+    #[test]
+    fn detect_binary_from_function_never_fabricates_dll_extension() {
+        // An extension-less candidate that matches no workspace binary
+        // resolves to nothing rather than `{candidate}.dll` (issue #70).
+        let binary =
+            DependencyTracker::detect_binary_from_function("mysterylib_DrawSprite", &[], &[]);
+        assert!(binary.is_none());
+    }
+
+    #[test]
+    fn detect_binary_from_function_returns_inventory_spelling() {
+        // The inventory's spelling of the identity wins over the candidate's.
+        let binary = DependencyTracker::detect_binary_from_function(
+            "EQGAME_RunLoop",
+            &[],
+            &["EqGame.exe".to_string()],
+        );
+        assert_eq!(binary, Some("EqGame.exe".to_string()));
+    }
+
+    #[test]
+    fn detect_binary_from_function_neighbor_with_extension_is_verbatim() {
+        // A neighbor that already carries a binary extension is an identity
+        // verbatim — case preserved, no inventory entry required.
+        let binary = DependencyTracker::detect_binary_from_function(
+            "Init",
+            &["EqGame.EXE".to_string()],
+            &[],
+        );
+        assert_eq!(binary, Some("EqGame.EXE".to_string()));
+    }
+
+    #[test]
+    fn build_graph_exe_function_hint_resolves_to_exe_classification() {
+        let tracker = DependencyTracker;
+
+        let classifications = vec![test_classification(
+            "eqgame.exe",
+            DllCategory::ProjectSpecific,
+            None,
+        )];
+
+        let call_graph = vec![("eqgame_RunLoop", vec![])];
+
+        let graph = tracker.build(&classifications, &call_graph);
+
+        // The function depends on the exe's classification node — the
+        // function-name hint resolved against the inventory, not a
+        // fabricated dll (issue #70).
+        assert!(
+            graph
+                .edges
+                .iter()
+                .any(|e| { e.from == "func_eqgame_RunLoop" && e.to == "dll_classify_eqgame.exe" })
+        );
     }
 
     // ── DependencyGraphPersistor tests ──
