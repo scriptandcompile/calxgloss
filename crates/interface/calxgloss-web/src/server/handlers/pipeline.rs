@@ -129,9 +129,10 @@ pub async fn api_get_pipeline(
     let entries = progress.read().await.snapshot().await;
     let classifications_raw = progress.read().await.classifications().await;
     let batch_summaries_raw = progress.read().await.batch_summaries().await;
+    let processing = progress.read().await.processing_dll().await;
 
     // Convert to owned HashMaps for O(1) lookups by DLL name
-    let classifications: HashMap<String, ClassificationInfo> = classifications_raw
+    let mut classifications: HashMap<String, ClassificationInfo> = classifications_raw
         .into_iter()
         .map(|c| (c.dll.clone(), c))
         .collect();
@@ -139,6 +140,13 @@ pub async fn api_get_pipeline(
         .into_iter()
         .map(|b| (b.dll.clone(), b))
         .collect();
+
+    // A restarted run re-classifies nothing, so the persisted records are
+    // the only account of what the workspace already knows; this run's own
+    // events supersede them wherever both exist.
+    for (dll, info) in disk_classifications(combined.server.repo_path()) {
+        classifications.entry(dll).or_insert(info);
+    }
 
     // Snapshot entries before dropping the lock to avoid nested borrows
     let entries_snapshot: HashMap<String, ProgressEntry> = entries.clone();
@@ -156,6 +164,12 @@ pub async fn api_get_pipeline(
     }
     // From batch summaries
     for dll in batch_summaries.keys() {
+        dll_names.insert(dll.clone());
+    }
+    // The binary whose batch pass has begun is discovered even when no
+    // unit, classification, or summary event has named it yet — otherwise
+    // a restarted run shows nothing until its first function event.
+    if let Some(dll) = &processing {
         dll_names.insert(dll.clone());
     }
 
@@ -207,7 +221,7 @@ pub async fn api_get_pipeline(
         &classifications,
         &batch_summaries,
         &entries_snapshot,
-        progress.read().await.processing_dll().await.as_deref(),
+        processing.as_deref(),
     );
     let phases = derive_phases(
         total_dlls,
@@ -230,10 +244,64 @@ pub async fn api_get_pipeline(
     })
 }
 
+/// Classification records persisted by earlier runs (`re/classify/*.json`).
+/// A restarted pipeline re-classifies nothing, so these artifacts are the
+/// only account of what the workspace already knows — the pipeline table
+/// hydrates its rows from them until this run's own events supersede them.
+/// Records missing a name or category are skipped rather than guessed at.
+fn disk_classifications(repo_path: &Path) -> HashMap<String, ClassificationInfo> {
+    let mut found = HashMap::new();
+    let classify_dir = repo_path.join("re").join("classify");
+    let Ok(entries) = std::fs::read_dir(&classify_dir) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+            continue;
+        };
+        let dll = value.get("dll").and_then(|v| v.as_str()).unwrap_or("");
+        let category = value.get("category").and_then(|v| v.as_str()).unwrap_or("");
+        if dll.is_empty() || category.is_empty() {
+            continue;
+        }
+        found.insert(
+            dll.to_string(),
+            ClassificationInfo {
+                dll: dll.to_string(),
+                category: category.to_string(),
+                strategy: value
+                    .get("strategy")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                crate_replacement: value
+                    .get("crate_replacement")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                exported_symbols: value
+                    .get("exports_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize,
+                imported_symbols: value
+                    .get("imports_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize,
+            },
+        );
+    }
+    found
+}
+
 // ============================================================
 // Time estimate (issue #64)
 // ============================================================
-
 /// Derive the pipeline time estimate from the token-usage log's recorded
 /// attempt durations and the remaining work in `binaries`. Returns `None`
 /// when no attempt has a measured duration or no work remains — the

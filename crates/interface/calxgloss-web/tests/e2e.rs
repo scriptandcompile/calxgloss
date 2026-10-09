@@ -1626,6 +1626,73 @@ async fn test_pipeline_phases_from_canned_events() {
     assert_eq!(b["tokens_used"], 5000);
 }
 
+/// Restart gap: a fresh live run over a workspace with prior work emits no
+/// classification events (everything is already classified), so the pipeline
+/// table must hydrate its rows from the persisted `re/classify` artifacts —
+/// and the binary whose batch pass has begun must appear (Working) on
+/// `BatchStarted` alone, before any unit event exists.
+#[tokio::test]
+async fn test_pipeline_restart_hydrates_rows_without_live_classification_events() {
+    let fixture = TestFixture::new();
+    // The previous run's classification artifact, on disk.
+    let classify = fixture.repo_path().join("re").join("classify");
+    std::fs::create_dir_all(&classify).expect("create classify dir");
+    std::fs::write(
+        classify.join("eqmain.dll.json"),
+        r#"{"dll":"eqmain.dll","category":"ProjectSpecific","strategy":"ReverseEngineer","exports_count":0,"imports_count":286,"crate_replacement":null}"#,
+    )
+    .expect("write classification artifact");
+
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // The restarted run has only begun LaunchPad.exe's pass — no unit
+    // events, no classification events.
+    events.emit(ProgressEvent::BatchStarted {
+        dll: "LaunchPad.exe".into(),
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/pipeline", fixture.port()))
+        .await
+        .expect("pipeline request succeeds");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("pipeline body is JSON");
+
+    let binary = |name: &str| -> serde_json::Value {
+        body["binaries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["dll"].as_str().unwrap_or("") == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("{name} missing from {:?}", body["binaries"]))
+    };
+
+    // The binary being worked on appears on BatchStarted alone.
+    let b = binary("LaunchPad.exe");
+    assert_eq!(b["processing"], true, "started batch marks it working: {b}");
+
+    // The previously classified binary hydrates from disk.
+    let b = binary("eqmain.dll");
+    assert_eq!(b["category"], "ProjectSpecific");
+    assert_eq!(b["strategy"], "ReverseEngineer");
+    assert_eq!(b["processing"], false);
+
+    // Aggregate counts see both sources honestly.
+    assert_eq!(body["total_dlls"], 2);
+    assert_eq!(
+        body["classified_count"], 1,
+        "the disk record counts as classified"
+    );
+}
+
 // ─────────────────────────────────────────────────────────────
 // Pipeline time estimate + queue effort (issue #64)
 // ─────────────────────────────────────────────────────────────
