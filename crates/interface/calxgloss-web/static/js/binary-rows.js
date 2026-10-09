@@ -59,9 +59,9 @@ function shimStatus(b) {
     return { kind: "unknown", text: b.strategy || "Unclassified" };
 }
 
-// No "Classified" badge: the state column already states the
-// classification state (PAL trait / Shim → crate / Full RE /
-// Unclassified), so a badge would only repeat it.
+// No badge beside the name: the state lives in the Success column
+// until a real success rate exists, and the classification state
+// column already says whether the binary is classified.
 function statusBadge(b) {
     if ((b.functions_in_progress || 0) > 0) return { cls: "translating", text: "Translating" };
     if (b.functions_total != null) return { cls: "complete", text: "Batch done" };
@@ -120,7 +120,6 @@ function renderRow(b) {
         <div class="pipeline-binary-row" data-dll="${dll}" data-status="${status.cls}">
             <div class="pipeline-binary-head">
                 <span class="pipeline-binary-name" title="${dll}">${dll}</span>
-                <span class="pipeline-binary-status ${status.cls}">${status.text}</span>
             </div>
             <div class="pipeline-binary-counts">
                 <span class="pb-count" data-count="total" title="Total functions">${fmtCount(b.functions_total)} total</span>
@@ -131,7 +130,11 @@ function renderRow(b) {
             </div>
             <div class="pipeline-binary-cost">
                 <span data-metric="tokens" title="Tokens consumed">${fmtTokens(b.tokens_used)} tokens</span>
-                <span data-metric="success-rate" title="Translated / (translated + failed)">${rate == null ? "—" : `${rate}% success`}</span>
+                <span data-metric="success-rate" title="Translated / (translated + failed)">${
+                    rate == null
+                        ? `<span class="pipeline-binary-status ${status.cls}">${status.text}</span>`
+                        : `${rate}% success`
+                }</span>
             </div>
             <div class="pipeline-binary-state" data-shim="${shim.kind}" title="Classification state — PAL trait / shim layer / full RE / unclassified">${escapeHtml(shim.text)}</div>
             <div class="pipeline-binary-actions">

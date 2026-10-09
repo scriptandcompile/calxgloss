@@ -2021,8 +2021,8 @@ svg {
 .pipeline-binary-name {
     font-weight: 600;
     color: var(--text-primary);
-    /* Long filenames ellipsize instead of squeezing the status badge
-       into the next column. */
+    /* Long filenames ellipsize inside the fixed Binary column
+       instead of overflowing into the counts. */
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;

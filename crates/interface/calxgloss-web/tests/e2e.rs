@@ -3519,6 +3519,29 @@ async fn test_headless_pipeline_binary_rows() {
         cell_text("game_logic.dll", "[data-metric=\"success-rate\"]")
     );
 
+    // ── Status badge lives in the Success column, not beside the name ──
+    assert!(
+        eval_bool(
+            "document.querySelectorAll('#pipeline-binaries .pipeline-binary-head .pipeline-binary-status').length === 0"
+        ),
+        "no status badge next to the binary name"
+    );
+    assert!(
+        cell_text("d3d9.dll", "[data-metric=\"success-rate\"]").contains("In pipeline"),
+        "a binary with no terminal outcomes shows its status in the Success column, got: {}",
+        cell_text("d3d9.dll", "[data-metric=\"success-rate\"]")
+    );
+    assert!(
+        cell_text("dinput8.dll", "[data-metric=\"success-rate\"]").contains("Translating"),
+        "an in-flight binary shows Translating in the Success column, got: {}",
+        cell_text("dinput8.dll", "[data-metric=\"success-rate\"]")
+    );
+    assert!(
+        !cell_text("game_logic.dll", "[data-metric=\"success-rate\"]").contains("Batch done"),
+        "a real success rate replaces the status placeholder, got: {}",
+        cell_text("game_logic.dll", "[data-metric=\"success-rate\"]")
+    );
+
     // ── dinput8: the in-flight unit counts as in progress ──────────────
     assert!(
         cell_text("dinput8.dll", "[data-count=\"in_progress\"]").contains('1'),
@@ -3596,10 +3619,11 @@ async fn test_headless_pipeline_binary_rows() {
         "column headers line up with the data cells beneath them"
     );
 
-    // ── Honesty: unknown totals, tokens, and rates are em-dashes ──────
+    // ── Honesty: unknown totals and tokens are em-dashes ──────────────
+    // (success-rate is absent here: with no terminal outcomes the cell
+    // shows the status placeholder instead of a rate, never a zero)
     for (dll, selector) in [
         ("d3d9.dll", "[data-metric=\"tokens\"]"),
-        ("d3d9.dll", "[data-metric=\"success-rate\"]"),
         ("d3d9.dll", "[data-count=\"total\"]"),
     ] {
         let text = cell_text(dll, selector);
