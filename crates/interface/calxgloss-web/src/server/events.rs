@@ -57,9 +57,11 @@ pub struct SessionManager {
 
 enum WsCommand {
     Register(mpsc::Sender<WsMessage>),
-    /// Inject a server-derived message (e.g. a `unit_phase` record) into the
-    /// broadcast, alongside the forwarded pipeline events. Boxed: a record is
-    /// far larger than a sender, and the command enum shouldn't pay for it.
+    /// Inject a *server-derived* message (e.g. a `unit_phase` record) into the
+    /// broadcast, alongside the forwarded pipeline events. This is not a
+    /// client→server command channel — clients still only send keep-alives;
+    /// the spec's control path stays REST. Boxed: a record is far larger
+    /// than a sender, and the command enum shouldn't pay for it.
     Send(Box<WsMessage>),
 }
 
@@ -150,6 +152,18 @@ impl SessionManager {
     }
 }
 
+/// Prune disconnected clients and forward one message to the rest.
+async fn forward_to_clients(
+    clients: &std::sync::Arc<Mutex<Vec<mpsc::Sender<WsMessage>>>>,
+    msg: WsMessage,
+) {
+    let mut clients = clients.lock().await;
+    clients.retain(|tx| !tx.is_closed());
+    for tx in clients.iter() {
+        let _ = tx.send(msg.clone()).await;
+    }
+}
+
 async fn broadcast_loop(
     clients: std::sync::Arc<Mutex<Vec<mpsc::Sender<WsMessage>>>>,
     mut events: mpsc::Receiver<ProgressEvent>,
@@ -169,14 +183,7 @@ async fn broadcast_loop(
                     let mut clients = clients.lock().await;
                     clients.push(tx);
                 }
-                WsCommand::Send(msg) => {
-                    let msg = *msg;
-                    let mut clients = clients.lock().await;
-                    clients.retain(|tx| !tx.is_closed());
-                    for tx in clients.iter() {
-                        let _ = tx.send(msg.clone()).await;
-                    }
-                }
+                WsCommand::Send(msg) => forward_to_clients(&clients, *msg).await,
             },
             else => break,
         }
@@ -231,14 +238,7 @@ async fn broadcast_loop_from_broadcast(
                     clients.push(tx);
                     debug!("Client registered, total: {}", clients.len());
                 }
-                WsCommand::Send(msg) => {
-                    let msg = *msg;
-                    let mut clients = clients.lock().await;
-                    clients.retain(|tx| !tx.is_closed());
-                    for tx in clients.iter() {
-                        let _ = tx.send(msg.clone()).await;
-                    }
-                }
+                WsCommand::Send(msg) => forward_to_clients(&clients, *msg).await,
             },
             else => break,
         }

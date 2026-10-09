@@ -439,7 +439,7 @@ impl ProgressState {
         let Some((dll, function)) = event.unit_key() else {
             return;
         };
-        let key = format!("{dll}/{function}");
+        let key = Self::unit_key(dll, function);
 
         // The unit's record begins with the first event that names it. That is
         // normally `TranslationStarted`, but the event callback spawns one task
@@ -568,12 +568,17 @@ impl ProgressState {
         self.entries.read().await.clone()
     }
 
+    /// The entries-map key for one unit.
+    fn unit_key(dll: &str, function: &str) -> String {
+        format!("{dll}/{function}")
+    }
+
     /// The current record for one unit, keyed by dll and function name.
     pub async fn entry(&self, dll: &str, function: &str) -> Option<ProgressEntry> {
         self.entries
             .read()
             .await
-            .get(&format!("{dll}/{function}"))
+            .get(&Self::unit_key(dll, function))
             .cloned()
     }
 

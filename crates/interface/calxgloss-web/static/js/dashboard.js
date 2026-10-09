@@ -91,7 +91,7 @@ export function renderStatusCards(dashboard) {
     // renderServerStatusCard, not rebuilt.
     const serverCard = document.getElementById("server-status-card");
     container
-        .querySelectorAll(".status-card:not(#server-status-card)")
+        .querySelectorAll(".status-card:not(#server-status-card):not(#stale-branches-card)")
         .forEach(el => el.remove());
     for (const c of visible) {
         const el = document.createElement("div");
@@ -361,16 +361,27 @@ export async function renderStaleBranchesCard() {
         if (!container) return;
 
         const count = res.candidates?.length || 0;
-        if (count > 0) {
-            const card = document.createElement("div");
+        // Idempotent: the old innerHTML wipe deduped this card on every
+        // refresh; now that the card row updates in place, the card manages
+        // itself — created once, updated in place, removed when it empties.
+        let card = document.getElementById("stale-branches-card");
+        if (count === 0) {
+            if (card) card.remove();
+            return;
+        }
+        if (!card) {
+            card = document.createElement("div");
+            card.id = "stale-branches-card";
             card.className = "status-card stale_branches";
             card.innerHTML = `
                 <div class="status-card-label">Stale Branches</div>
-                <div class="status-card-value">${count}</div>
+                <div class="status-card-value"></div>
             `;
             card.addEventListener("click", () => switchView("gc"));
             container.appendChild(card);
         }
+        const value = card.querySelector(".status-card-value");
+        if (value) value.textContent = count;
     } catch {
         // Silently fail — stale card is non-critical
     }

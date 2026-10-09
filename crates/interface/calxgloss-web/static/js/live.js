@@ -44,6 +44,9 @@ export async function loadLiveProgress() {
         const data = await API.liveProgress();
         lastState = data;
         lastFetchedAt = Date.now();
+        // Anchor each row's elapsed clock to when its record arrived, so a
+        // later push for another unit doesn't shift this row's clock.
+        (lastState.units || []).forEach(u => { u._receivedAt = lastFetchedAt; });
         renderLiveUnits();
     } catch (err) {
         lastState = null;
@@ -74,14 +77,16 @@ export function stopLiveView() {
 }
 
 /**
- * Merge one pushed `unit_phase` record into the snapshot and re-render
- * (issue #55). The server pushes a unit's full record — current phase,
- * phase history, tier, evidence — after applying each unit-scoped event,
- * so rows stay current without refetching the endpoint. Records arriving
- * before the first snapshot are ignored: opening the tab fetches one.
+ * Merge one pushed `unit_phase` record into the snapshot and update that
+ * unit's row in place (issue #55). The server pushes a unit's full record —
+ * current phase, phase history, tier, evidence — after applying each
+ * unit-scoped event, so rows stay current without refetching the endpoint.
+ * Records arriving before the first snapshot are ignored: opening the tab
+ * fetches one.
  */
 export function applyUnitPhase(unit) {
     if (!lastState || !unit || !unit.dll) return;
+    unit._receivedAt = Date.now();
     const units = lastState.units || [];
     const idx = units.findIndex(u => u.dll === unit.dll && u.function === unit.function);
     if (idx >= 0) units[idx] = unit;
@@ -89,9 +94,31 @@ export function applyUnitPhase(unit) {
     lastState.units = units;
     lastState.count = units.length;
     lastState.in_flight = units.filter(u => !u.finished).length;
-    // The pushed record carries its own elapsed base — re-anchor the ticker.
-    lastFetchedAt = Date.now();
-    renderLiveUnits();
+
+    // Update just this unit's row — replacing the whole list on every push
+    // churned hover and scroll state the way the dashboard cards did.
+    const list = document.getElementById("live-units");
+    if (!list) return;
+    if (units.length === 0) { renderLiveUnits(); return; }
+    const empty = document.getElementById("live-empty");
+    if (empty) empty.style.display = "none";
+    const summary = document.getElementById("live-summary");
+    if (summary) {
+        summary.textContent = `${lastState.in_flight} in flight / ${lastState.count} tracked`;
+    }
+    const existing = list.querySelector(
+        `.live-unit[data-dll="${cssEscape(unit.dll)}"][data-function="${cssEscape(unit.function)}"]`
+    );
+    if (existing) {
+        existing.outerHTML = unitRowHtml(unit);
+    } else {
+        list.insertAdjacentHTML("beforeend", unitRowHtml(unit));
+    }
+}
+
+/** Escape a value for use inside a CSS attribute selector. */
+function cssEscape(value) {
+    return (window.CSS && CSS.escape) ? CSS.escape(value) : String(value).replace(/["\\]/g, "\\$&");
 }
 
 function showEmpty(message) {
@@ -130,48 +157,55 @@ function renderLiveUnits() {
         summary.textContent = `${lastState.in_flight} in flight / ${lastState.count} tracked`;
     }
 
-    list.innerHTML = units.map(u => {
-        const phase = u.phase || "unknown";
-        const phaseLabel = PHASE_LABELS[phase] || phase;
-        const idx = PHASE_ORDER.indexOf(phase);
-        const fill = u.finished ? 100 : Math.round(((idx + 1) / PHASE_ORDER.length) * 100);
-        const confidence = typeof u.unit_confidence === "number"
-            ? `${Math.round(u.unit_confidence * 100)}%`
-            : "—";
-        const tier = u.context_tier ? `${u.context_tier}${u.tier_label ? ` (${u.tier_label})` : ""}` : "—";
-        const strategy = u.retry_strategy || "—";
-        const statusClass = u.finished ? (u.succeeded ? "finished-ok" : "finished-fail") : "in-flight";
-        // Phases entered, in event order — tier escalations appear twice, so
-        // the retry path stays visible on hover.
-        const history = (u.phase_history || [])
-            .map(r => PHASE_LABELS[r.phase] || r.phase).join(" → ");
-
-        return `
-            <div class="live-unit ${statusClass}" data-dll="${escapeHtml(u.dll)}" data-function="${escapeHtml(u.function)}">
-                <div class="live-unit-header">
-                    <span class="live-unit-name">${escapeHtml(u.dll)} / ${escapeHtml(u.function)}</span>
-                    <span class="live-chip live-phase phase-${escapeHtml(phase)}" title="${escapeHtml(history)}">${escapeHtml(phaseLabel)}</span>
-                    <span class="live-chip live-elapsed" data-elapsed-base="${u.elapsed_secs ?? 0}">${Math.floor(u.elapsed_secs ?? 0)}s</span>
-                </div>
-                <div class="live-unit-bar"><div class="live-unit-bar-fill phase-${escapeHtml(phase)}" style="width:${fill}%"></div></div>
-                <div class="live-unit-meta">
-                    <span class="live-chip" title="Context tier">tier: ${escapeHtml(tier)}</span>
-                    <span class="live-chip" title="Retry strategy">strategy: ${escapeHtml(strategy)}</span>
-                    <span class="live-chip" title="Attempt">attempt: ${u.attempt ?? "—"}</span>
-                    ${passChip("baseline", "baseline", u.baseline || {})}
-                    ${passChip("verification", "verification", u.verification || {})}
-                    <span class="live-chip live-confidence" title="Unit confidence">confidence: ${escapeHtml(confidence)}</span>
-                </div>
-            </div>`;
-    }).join("");
+    list.innerHTML = units.map(unitRowHtml).join("");
 }
 
-/** Advance the displayed elapsed clocks from the snapshot's base values. */
+/** Markup for one unit row — shared by the full render and the per-push update. */
+function unitRowHtml(u) {
+    const phase = u.phase || "unknown";
+    const phaseLabel = PHASE_LABELS[phase] || phase;
+    const idx = PHASE_ORDER.indexOf(phase);
+    const fill = u.finished ? 100 : Math.round(((idx + 1) / PHASE_ORDER.length) * 100);
+    const confidence = typeof u.unit_confidence === "number"
+        ? `${Math.round(u.unit_confidence * 100)}%`
+        : "—";
+    const tier = u.context_tier ? `${u.context_tier}${u.tier_label ? ` (${u.tier_label})` : ""}` : "—";
+    const strategy = u.retry_strategy || "—";
+    const statusClass = u.finished ? (u.succeeded ? "finished-ok" : "finished-fail") : "in-flight";
+    // Phases entered, in event order — tier escalations appear twice, so
+    // the retry path stays visible on hover.
+    const history = (u.phase_history || [])
+        .map(r => PHASE_LABELS[r.phase] || r.phase).join(" → ");
+    // Each row's clock is anchored to when its own record arrived, so a push
+    // for one unit never shifts the other rows' elapsed counters.
+    const receivedAt = u._receivedAt || lastFetchedAt;
+
+    return `
+        <div class="live-unit ${statusClass}" data-dll="${escapeHtml(u.dll)}" data-function="${escapeHtml(u.function)}">
+            <div class="live-unit-header">
+                <span class="live-unit-name">${escapeHtml(u.dll)} / ${escapeHtml(u.function)}</span>
+                <span class="live-chip live-phase phase-${escapeHtml(phase)}" title="${escapeHtml(history)}">${escapeHtml(phaseLabel)}</span>
+                <span class="live-chip live-elapsed" data-elapsed-base="${u.elapsed_secs ?? 0}" data-received-at="${receivedAt}">${Math.floor(u.elapsed_secs ?? 0)}s</span>
+            </div>
+            <div class="live-unit-bar"><div class="live-unit-bar-fill phase-${escapeHtml(phase)}" style="width:${fill}%"></div></div>
+            <div class="live-unit-meta">
+                <span class="live-chip" title="Context tier">tier: ${escapeHtml(tier)}</span>
+                <span class="live-chip" title="Retry strategy">strategy: ${escapeHtml(strategy)}</span>
+                <span class="live-chip" title="Attempt">attempt: ${u.attempt ?? "—"}</span>
+                ${passChip("baseline", "baseline", u.baseline || {})}
+                ${passChip("verification", "verification", u.verification || {})}
+                <span class="live-chip live-confidence" title="Unit confidence">confidence: ${escapeHtml(confidence)}</span>
+            </div>
+        </div>`;
+}
+
+/** Advance the displayed elapsed clocks from each row's own base and anchor. */
 function tickElapsed() {
     if (!lastState) return;
-    const drift = (Date.now() - lastFetchedAt) / 1000;
     document.querySelectorAll("#live-units .live-elapsed").forEach(el => {
         const base = parseFloat(el.dataset.elapsedBase || "0");
+        const receivedAt = parseFloat(el.dataset.receivedAt || "0") || lastFetchedAt;
+        const drift = (Date.now() - receivedAt) / 1000;
         el.textContent = `${Math.floor(base + drift)}s`;
     });
 }
