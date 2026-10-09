@@ -31,13 +31,13 @@ pub async fn handle_translate(
 ) -> Result<()> {
     let TranslateArgs {
         target,
-        dll,
+        binary,
         function,
         skip_git,
         no_callgraph,
         ..
     } = args;
-    let (target, dll, function) = (target.as_path(), dll.as_str(), function.as_str());
+    let (target, binary, function) = (target.as_path(), binary.as_str(), function.as_str());
     let skip_git = *skip_git;
     let no_callgraph = *no_callgraph;
 
@@ -66,7 +66,7 @@ pub async fn handle_translate(
 
     info!(
         target = ?target,
-        dll = %dll,
+        binary = %binary,
         function = %function,
         llm_url = %llm_url,
         llm_url_source = source_of(&settings.llm_url),
@@ -82,7 +82,7 @@ pub async fn handle_translate(
 
     // Set up the output crate directory structure.
     let (_, crate_src_dir) =
-        setup_translation_crate(&workspace, dll).context("Failed to create output crate")?;
+        setup_translation_crate(&workspace, binary).context("Failed to create output crate")?;
 
     // Initialize Ghidra client
     let mut ghidra_config = calxgloss_ghidra::GhidraConfig::new(ghidra_url)
@@ -151,7 +151,7 @@ pub async fn handle_translate(
         escalate_on_failure: true,
     };
     let retry_result = pipeline
-        .try_translate_with_retry(dll, function, &retry_config, &verifier)
+        .try_translate_with_retry(binary, function, &retry_config, &verifier)
         .await
         .with_context(|| format!("Translation with retry failed for {}", function))?;
 
@@ -218,7 +218,7 @@ pub async fn handle_translate(
         if let Some(ref mut git) = git {
             let branch_result = git
                 .create_branch(
-                    dll,
+                    binary,
                     function,
                     attempt.attempt,
                     Some(&BranchCreationPolicy::Warn(DependencyPolicy {
@@ -238,7 +238,7 @@ pub async fn handle_translate(
                     branch_info,
                     &format!(
                         "re/translation/{}: translate {} (attempt {}, strategy: {})",
-                        function, dll, attempt.attempt, attempt.strategy
+                        function, binary, attempt.attempt, attempt.strategy
                     ),
                     &[&output_path_str],
                 )
@@ -275,7 +275,7 @@ pub async fn handle_translate(
 
                 // We found a successful attempt — break out of the loop
                 last_translation = Some(Translation {
-                    dll: dll.to_string(),
+                    binary: binary.to_string().into(),
                     function: function.to_string(),
                     function_address: None,
                     rust_code: attempt.rust_code.clone(),
@@ -320,7 +320,7 @@ pub async fn handle_translate(
                 green_bold("SUCCESS"),
                 t.model,
                 function,
-                b.dll,
+                b.binary,
                 t.rust_code.lines().count() as f64,
                 status
             );
@@ -335,7 +335,7 @@ pub async fn handle_translate(
                 "All {} translation attempts failed for {} ({})",
                 max_retries,
                 b.function,
-                b.dll
+                b.binary
             ));
         }
         (None, None) => {

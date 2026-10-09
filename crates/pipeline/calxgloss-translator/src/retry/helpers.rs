@@ -113,7 +113,7 @@ pub async fn extract_neighboring_context(
         {
             neighbors.push(NeighborFunction {
                 name: report.name.clone(),
-                dll: String::new(),
+                binary: String::new(),
                 address: report.address,
                 disassembly: report.disassembly.trim().to_string(),
                 decompiler_output: report.decompiled.body.trim().to_string(),
@@ -126,7 +126,7 @@ pub async fn extract_neighboring_context(
 /// Extract data structure information from the persisted type database.
 ///
 /// Reads the per-binary database recovered by the `calxgloss-typesdb`
-/// engines from `re/analysis/typesdb/{dll}.json` and keeps the records
+/// engines from `re/analysis/typesdb/{binary}.json` and keeps the records
 /// tied to the target function:
 ///
 /// - inferred struct candidates whose literals the function
@@ -137,12 +137,12 @@ pub async fn extract_neighboring_context(
 ///   database records for Type Manager types.
 ///
 /// Returns an empty vector when no workspace is configured, no database
-/// is persisted for `dll` (the scan has not run), or the document is
+/// is persisted for `binary` (the scan has not run), or the document is
 /// corrupt: missing data structure context degrades the prompt, it never
 /// fails it.
 pub fn extract_data_structures(
     workspace: Option<&std::path::Path>,
-    dll: &str,
+    binary: &str,
     function: &str,
 ) -> Vec<calxgloss_prompts::StructuredData> {
     let Some(workspace) = workspace else {
@@ -150,11 +150,11 @@ pub fn extract_data_structures(
     };
 
     let persistor = calxgloss_typesdb::persist::TypeDatabasePersistor::new(workspace);
-    let db = match persistor.load(dll) {
+    let db = match persistor.load(binary) {
         Ok(db) => db,
         Err(e) => {
             debug!(
-                dll,
+                binary,
                 error = %e,
                 "No usable type database; continuing without data structure context"
             );
@@ -196,17 +196,17 @@ pub fn extract_data_structures(
 /// Extract inferred type information from the persisted inference cache.
 ///
 /// Reads the per-binary result produced by the `calxgloss-typeinfer`
-/// engine from `re/analysis/typeinfer/{dll}.json` and keeps the
+/// engine from `re/analysis/typeinfer/{binary}.json` and keeps the
 /// inferences made for the target function — the parameter, local
 /// variable, and call-site readings whose evidence lives in
 /// `function`'s decompiled body.
 ///
 /// Returns an empty vector when no workspace is configured, no result
-/// is persisted for `dll` (the scan has not run), or the document is
+/// is persisted for `binary` (the scan has not run), or the document is
 /// corrupt: missing type context degrades the prompt, it never fails it.
 pub fn extract_type_info(
     workspace: Option<&std::path::Path>,
-    dll: &str,
+    binary: &str,
     function: &str,
 ) -> Vec<calxgloss_prompts::TypeInfo> {
     let Some(workspace) = workspace else {
@@ -214,11 +214,11 @@ pub fn extract_type_info(
     };
 
     let persistor = calxgloss_typeinfer::persist::TypeInferPersistor::new(workspace);
-    let result = match persistor.load(dll) {
+    let result = match persistor.load(binary) {
         Ok(result) => result,
         Err(e) => {
             debug!(
-                dll,
+                binary,
                 error = %e,
                 "No usable type inference result; continuing without type context"
             );
@@ -235,17 +235,17 @@ pub fn extract_type_info(
 /// Extract recognized algorithm hints from the persisted recognition result.
 ///
 /// Reads the per-binary result produced by the `calxgloss-algorithm`
-/// engine from `re/analysis/algorithm/{dll}.json` and keeps the hints
+/// engine from `re/analysis/algorithm/{binary}.json` and keeps the hints
 /// made for the target function — the algorithms whose evidence lives in
 /// `function`'s decompiled body or whose name the function carries.
 ///
 /// Returns an empty vector when no workspace is configured, no result
-/// is persisted for `dll` (the scan has not run), or the document is
+/// is persisted for `binary` (the scan has not run), or the document is
 /// corrupt: missing algorithm context degrades the prompt, it never
 /// fails it.
 pub fn extract_algorithm_hints(
     workspace: Option<&std::path::Path>,
-    dll: &str,
+    binary: &str,
     function: &str,
 ) -> Vec<calxgloss_prompts::AlgorithmInfo> {
     let Some(workspace) = workspace else {
@@ -253,11 +253,11 @@ pub fn extract_algorithm_hints(
     };
 
     let persistor = calxgloss_algorithm::persist::AlgorithmPersistor::new(workspace);
-    let result = match persistor.load(dll) {
+    let result = match persistor.load(binary) {
         Ok(result) => result,
         Err(e) => {
             debug!(
-                dll,
+                binary,
                 error = %e,
                 "No usable algorithm recognition result; continuing without algorithm context"
             );
@@ -275,17 +275,17 @@ pub fn extract_algorithm_hints(
 /// detection result.
 ///
 /// Reads the per-binary result produced by the `calxgloss-memory`
-/// engine from `re/analysis/memory/{dll}.json` and keeps the findings
+/// engine from `re/analysis/memory/{binary}.json` and keeps the findings
 /// made for the target function — the lifecycles whose pairing lives in
 /// `function`'s decompiled body.
 ///
 /// Returns an empty vector when no workspace is configured, no result
-/// is persisted for `dll` (the scan has not run), or the document is
+/// is persisted for `binary` (the scan has not run), or the document is
 /// corrupt: missing memory context degrades the prompt, it never fails
 /// it.
 pub fn extract_memory_hints(
     workspace: Option<&std::path::Path>,
-    dll: &str,
+    binary: &str,
     function: &str,
 ) -> Vec<calxgloss_prompts::MemoryInfo> {
     let Some(workspace) = workspace else {
@@ -293,11 +293,11 @@ pub fn extract_memory_hints(
     };
 
     let persistor = calxgloss_memory::persist::MemoryPersistor::new(workspace);
-    let result = match persistor.load(dll) {
+    let result = match persistor.load(binary) {
         Ok(result) => result,
         Err(e) => {
             debug!(
-                dll,
+                binary,
                 error = %e,
                 "No usable memory lifecycle result; continuing without memory context"
             );
@@ -315,17 +315,17 @@ pub fn extract_memory_hints(
 /// detection result.
 ///
 /// Reads the per-binary result produced by the `calxgloss-sync` engine
-/// from `re/analysis/sync/{dll}.json` and keeps the findings made for
+/// from `re/analysis/sync/{binary}.json` and keeps the findings made for
 /// the target function — the lock pairings, atomic calls, and thread
 /// spawns whose calls live in `function`'s decompiled body.
 ///
 /// Returns an empty vector when no workspace is configured, no result
-/// is persisted for `dll` (the scan has not run), or the document is
+/// is persisted for `binary` (the scan has not run), or the document is
 /// corrupt: missing concurrency context degrades the prompt, it never
 /// fails it.
 pub fn extract_concurrency_hints(
     workspace: Option<&std::path::Path>,
-    dll: &str,
+    binary: &str,
     function: &str,
 ) -> Vec<calxgloss_prompts::ConcurrencyInfo> {
     let Some(workspace) = workspace else {
@@ -333,11 +333,11 @@ pub fn extract_concurrency_hints(
     };
 
     let persistor = calxgloss_sync::persist::SyncPersistor::new(workspace);
-    let result = match persistor.load(dll) {
+    let result = match persistor.load(binary) {
         Ok(result) => result,
         Err(e) => {
             debug!(
-                dll,
+                binary,
                 error = %e,
                 "No usable concurrency result; continuing without concurrency context"
             );
@@ -355,18 +355,18 @@ pub fn extract_concurrency_hints(
 /// detection result.
 ///
 /// Reads the per-binary result produced by the `calxgloss-apidetect`
-/// engine from `re/analysis/apidetect/{dll}.json` and keeps the usages
+/// engine from `re/analysis/apidetect/{binary}.json` and keeps the usages
 /// recorded for the target function — the identified APIs the function
 /// calls directly or reaches through its call graph. Binary-level
 /// import entries belong to the binary, not to any function, and do not
 /// appear here.
 ///
 /// Returns an empty vector when no workspace is configured, no result
-/// is persisted for `dll` (the scan has not run), or the document is
+/// is persisted for `binary` (the scan has not run), or the document is
 /// corrupt: missing API context degrades the prompt, it never fails it.
 pub fn extract_api_hints(
     workspace: Option<&std::path::Path>,
-    dll: &str,
+    binary: &str,
     function: &str,
 ) -> Vec<calxgloss_prompts::ApiInfo> {
     let Some(workspace) = workspace else {
@@ -374,11 +374,11 @@ pub fn extract_api_hints(
     };
 
     let persistor = calxgloss_apidetect::persist::ApiPersistor::new(workspace);
-    let result = match persistor.load(dll) {
+    let result = match persistor.load(binary) {
         Ok(result) => result,
         Err(e) => {
             debug!(
-                dll,
+                binary,
                 error = %e,
                 "No usable API result; continuing without library/API context"
             );
@@ -396,18 +396,18 @@ pub fn extract_api_hints(
 /// detection result.
 ///
 /// Reads the per-binary result produced by the `calxgloss-consts`
-/// engine from `re/analysis/consts/{dll}.json` and keeps the findings
+/// engine from `re/analysis/consts/{binary}.json` and keeps the findings
 /// about the target function — the bitflag groups and enum candidates
 /// made in `function`'s decompiled body, plus the program-level named
 /// constants whose value `function` repeats.
 ///
 /// Returns an empty vector when no workspace is configured, no result
-/// is persisted for `dll` (the scan has not run), or the document is
+/// is persisted for `binary` (the scan has not run), or the document is
 /// corrupt: missing constant context degrades the prompt, it never
 /// fails it.
 pub fn extract_constant_hints(
     workspace: Option<&std::path::Path>,
-    dll: &str,
+    binary: &str,
     function: &str,
 ) -> Vec<calxgloss_prompts::ConstInfo> {
     let Some(workspace) = workspace else {
@@ -415,11 +415,11 @@ pub fn extract_constant_hints(
     };
 
     let persistor = calxgloss_consts::persist::ConstPersistor::new(workspace);
-    let result = match persistor.load(dll) {
+    let result = match persistor.load(binary) {
         Ok(result) => result,
         Err(e) => {
             debug!(
-                dll,
+                binary,
                 error = %e,
                 "No usable constant result; continuing without constant context"
             );
@@ -437,18 +437,18 @@ pub fn extract_constant_hints(
 /// detection result.
 ///
 /// Reads the per-binary result produced by the `calxgloss-serialize`
-/// engine from `re/analysis/serialize/{dll}.json` and keeps the
+/// engine from `re/analysis/serialize/{binary}.json` and keeps the
 /// findings made for the target function — the byte-swap calls,
 /// bit-packing chains, and file-format signature comparisons whose
 /// expressions live in `function`'s decompiled body.
 ///
 /// Returns an empty vector when no workspace is configured, no result
-/// is persisted for `dll` (the scan has not run), or the document is
+/// is persisted for `binary` (the scan has not run), or the document is
 /// corrupt: missing serialization context degrades the prompt, it
 /// never fails it.
 pub fn extract_serialization_hints(
     workspace: Option<&std::path::Path>,
-    dll: &str,
+    binary: &str,
     function: &str,
 ) -> Vec<calxgloss_prompts::SerializationInfo> {
     let Some(workspace) = workspace else {
@@ -456,11 +456,11 @@ pub fn extract_serialization_hints(
     };
 
     let persistor = calxgloss_serialize::persist::SerializePersistor::new(workspace);
-    let result = match persistor.load(dll) {
+    let result = match persistor.load(binary) {
         Ok(result) => result,
         Err(e) => {
             debug!(
-                dll,
+                binary,
                 error = %e,
                 "No usable serialization result; continuing without serialization context"
             );
@@ -478,18 +478,18 @@ pub fn extract_serialization_hints(
 /// detection result.
 ///
 /// Reads the per-binary result produced by the `calxgloss-callback`
-/// engine from `re/analysis/callback/{dll}.json` and keeps the findings
+/// engine from `re/analysis/callback/{binary}.json` and keeps the findings
 /// made for the target function — the function-pointer array calls,
 /// callback registrations, and jump-table dispatches whose calls live
 /// in `function`'s decompiled body.
 ///
 /// Returns an empty vector when no workspace is configured, no result
-/// is persisted for `dll` (the scan has not run), or the document is
+/// is persisted for `binary` (the scan has not run), or the document is
 /// corrupt: missing callback context degrades the prompt, it never
 /// fails it.
 pub fn extract_callback_hints(
     workspace: Option<&std::path::Path>,
-    dll: &str,
+    binary: &str,
     function: &str,
 ) -> Vec<calxgloss_prompts::CallbackInfo> {
     let Some(workspace) = workspace else {
@@ -497,11 +497,11 @@ pub fn extract_callback_hints(
     };
 
     let persistor = calxgloss_callback::persist::CallbackPersistor::new(workspace);
-    let result = match persistor.load(dll) {
+    let result = match persistor.load(binary) {
         Ok(result) => result,
         Err(e) => {
             debug!(
-                dll,
+                binary,
                 error = %e,
                 "No usable callback result; continuing without callback context"
             );
@@ -519,18 +519,18 @@ pub fn extract_callback_hints(
 /// detection result.
 ///
 /// Reads the per-binary result produced by the `calxgloss-controlflow`
-/// engine from `re/analysis/controlflow/{dll}.json` and keeps the findings
+/// engine from `re/analysis/controlflow/{binary}.json` and keeps the findings
 /// made for the target function — the switch-shaped if-else chains,
 /// self-recursion, and state-machine patterns whose code lives in
 /// `function`'s decompiled body.
 ///
 /// Returns an empty vector when no workspace is configured, no result
-/// is persisted for `dll` (the scan has not run), or the document is
+/// is persisted for `binary` (the scan has not run), or the document is
 /// corrupt: missing control-flow context degrades the prompt, it never
 /// fails it.
 pub fn extract_control_flow_hints(
     workspace: Option<&std::path::Path>,
-    dll: &str,
+    binary: &str,
     function: &str,
 ) -> Vec<calxgloss_prompts::ControlFlowInfo> {
     let Some(workspace) = workspace else {
@@ -538,11 +538,11 @@ pub fn extract_control_flow_hints(
     };
 
     let persistor = calxgloss_controlflow::persist::ControlFlowPersistor::new(workspace);
-    let result = match persistor.load(dll) {
+    let result = match persistor.load(binary) {
         Ok(result) => result,
         Err(e) => {
             debug!(
-                dll,
+                binary,
                 error = %e,
                 "No usable control-flow result; continuing without control-flow context"
             );
@@ -560,18 +560,18 @@ pub fn extract_control_flow_hints(
 /// scan result.
 ///
 /// Reads the per-binary result produced by the `calxgloss-stringctx`
-/// engine from `re/analysis/stringctx/{dll}.json` and keeps the findings
+/// engine from `re/analysis/stringctx/{binary}.json` and keeps the findings
 /// made for the target function — the classified strings the function
 /// references and the format-string calls it makes, with the argument
 /// types those calls imply.
 ///
 /// Returns an empty vector when no workspace is configured, no result
-/// is persisted for `dll` (the scan has not run), or the document is
+/// is persisted for `binary` (the scan has not run), or the document is
 /// corrupt: missing string context degrades the prompt, it never fails
 /// it.
 pub fn extract_string_context(
     workspace: Option<&std::path::Path>,
-    dll: &str,
+    binary: &str,
     function: &str,
 ) -> Vec<calxgloss_prompts::StringContextInfo> {
     let Some(workspace) = workspace else {
@@ -579,11 +579,11 @@ pub fn extract_string_context(
     };
 
     let persistor = calxgloss_stringctx::persist::StringContextPersistor::new(workspace);
-    let result = match persistor.load(dll) {
+    let result = match persistor.load(binary) {
         Ok(result) => result,
         Err(e) => {
             debug!(
-                dll,
+                binary,
                 error = %e,
                 "No usable string context result; continuing without string context"
             );
@@ -881,7 +881,7 @@ pub async fn build_escalated_prompt(
     ghidra: &GhidraClient,
     workspace: Option<&std::path::Path>,
 ) -> Result<String, String> {
-    let dll = &translation.dll;
+    let binary = &translation.binary;
     let function = &translation.function;
 
     match tier {
@@ -899,7 +899,7 @@ pub async fn build_escalated_prompt(
                 .collect();
             let data = calxgloss_prompts::SignaturePromptData {
                 function_name: function.clone(),
-                dll_name: dll.clone(),
+                dll_name: binary.to_string(),
                 address_hex: format!("{:#x}", translation.function_address.unwrap_or(0)),
                 signature: String::new(),
                 call_graph_neighbors: neighbors,
@@ -919,7 +919,7 @@ pub async fn build_escalated_prompt(
                 .collect();
             let data = calxgloss_prompts::DisassemblyPromptData {
                 function_name: function.clone(),
-                dll_name: dll.clone(),
+                dll_name: binary.to_string(),
                 address: translation.function_address.unwrap_or(0),
                 disassembly: translation.prompt_used.clone(),
                 decompiler_output: String::new(),
@@ -942,7 +942,7 @@ pub async fn build_escalated_prompt(
                 .collect();
 
             let request = TranslationRequest {
-                dll: dll.clone(),
+                binary: binary.clone(),
                 function: function.clone(),
                 disassembly: translation.prompt_used.clone(),
                 decompiler_output: String::new(),
@@ -966,7 +966,7 @@ pub async fn build_escalated_prompt(
                 .collect();
 
             let request = TranslationRequest {
-                dll: dll.clone(),
+                binary: binary.clone(),
                 function: function.clone(),
                 disassembly: translation.prompt_used.clone(),
                 decompiler_output: String::new(),
@@ -982,9 +982,9 @@ pub async fn build_escalated_prompt(
             .await;
             let neighboring_functions =
                 extract_neighboring_context(ghidra, &translation.call_graph).await;
-            let data_structures = extract_data_structures(workspace, dll, function);
+            let data_structures = extract_data_structures(workspace, binary, function);
 
-            let control_flow_findings = extract_control_flow_hints(workspace, dll, function);
+            let control_flow_findings = extract_control_flow_hints(workspace, binary, function);
 
             let data = calxgloss_prompts::ModuleContextPromptData::from_request_with_context(
                 &request,
@@ -1009,7 +1009,7 @@ pub async fn build_escalated_prompt(
                 .collect();
 
             let request = TranslationRequest {
-                dll: dll.clone(),
+                binary: binary.clone(),
                 function: function.clone(),
                 disassembly: translation.prompt_used.clone(),
                 decompiler_output: String::new(),
@@ -1025,12 +1025,12 @@ pub async fn build_escalated_prompt(
             .await;
             let neighboring_functions =
                 extract_neighboring_context(ghidra, &translation.call_graph).await;
-            let data_structures = extract_data_structures(workspace, dll, function);
+            let data_structures = extract_data_structures(workspace, binary, function);
 
-            let shim_layers = extract_shim_layers(workspace, dll);
+            let shim_layers = extract_shim_layers(workspace, binary);
             let pal_traits = Vec::<PalTraitDef>::new();
 
-            let control_flow_findings = extract_control_flow_hints(workspace, dll, function);
+            let control_flow_findings = extract_control_flow_hints(workspace, binary, function);
 
             let data = calxgloss_prompts::FullModulePromptData::from_request_with_full_context(
                 &request,

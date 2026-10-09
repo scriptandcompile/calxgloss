@@ -189,7 +189,7 @@ mod tests {
                 id: String::new(),
                 name: String::new(),
                 kind: calxgloss_types::WorkKind::FunctionTranslation,
-                dll: String::new(),
+                binary: calxgloss_types::BinaryIdentity::default(),
                 function: None,
                 attempt: 1,
                 status: calxgloss_types::ReviewStatus::Queued,

@@ -71,33 +71,33 @@ impl Verifier {
     ///
     /// # Arguments
     ///
-    /// * `dll` — The DLL name (used for project identification).
+    /// * `binary` — The DLL name (used for project identification).
     /// * `function` — The function name (used for module naming).
     /// * `rust_code` — The translated Rust source code.
     ///
     /// # Returns
     ///
     /// A [`CompileResult`] with compilation status and error details.
-    #[instrument(skip(self, rust_code), fields(dll, function))]
+    #[instrument(skip(self, rust_code), fields(binary, function))]
     pub async fn compile(
         &self,
-        dll: &str,
+        binary: &str,
         function: &str,
         rust_code: &str,
     ) -> Result<CompileResult> {
-        debug!(dll, function, "Starting compilation check");
+        debug!(binary, function, "Starting compilation check");
 
-        let project = self.scaffold_project(dll, function, rust_code)?;
+        let project = self.scaffold_project(binary, function, rust_code)?;
         let output = cargo::run_cargo_check(&project)
             .await
             .context("cargo check failed")?;
         let (success, errors, warnings) = parse::parse_cargo_output(&output);
 
         if success {
-            info!(dll, function, "Compilation successful");
+            info!(binary, function, "Compilation successful");
         } else {
             error!(
-                dll,
+                binary,
                 function,
                 error_count = errors.len(),
                 "Compilation failed"
@@ -121,7 +121,7 @@ impl Verifier {
     ///
     /// # Arguments
     ///
-    /// * `dll` — The DLL name.
+    /// * `binary` — The DLL name.
     /// * `function` — The function name.
     /// * `rust_code` — The translated Rust source code.
     /// * `baseline_tests` — Baseline test cases with expected return values.
@@ -130,20 +130,20 @@ impl Verifier {
     ///
     /// A [`VerificationResult`] with compilation status, test pass/fail counts,
     /// and detailed failure information.
-    #[instrument(skip(self, rust_code, baseline_tests), fields(dll, function, test_count = baseline_tests.len()))]
+    #[instrument(skip(self, rust_code, baseline_tests), fields(binary, function, test_count = baseline_tests.len()))]
     pub async fn verify(
         &self,
-        dll: &str,
+        binary: &str,
         function: &str,
         rust_code: &str,
         baseline_tests: &[TestCase],
     ) -> Result<VerificationResult> {
-        debug!(dll, function, "Starting verification");
+        debug!(binary, function, "Starting verification");
 
-        let compile_result = self.compile(dll, function, rust_code).await?;
+        let compile_result = self.compile(binary, function, rust_code).await?;
 
         if !compile_result.success {
-            info!(dll, function, "Skipping tests — compilation failed");
+            info!(binary, function, "Skipping tests — compilation failed");
             return Ok(VerificationResult {
                 compiled: false,
                 compilation_errors: compile_result.errors,
@@ -154,11 +154,11 @@ impl Verifier {
         }
 
         info!(
-            dll,
+            binary,
             function, "Compilation passed, running behavioral tests"
         );
 
-        let project = self.scaffold_test_project(dll, function, rust_code, baseline_tests)?;
+        let project = self.scaffold_test_project(binary, function, rust_code, baseline_tests)?;
         let test_output = cargo::run_test_runner(&project)
             .await
             .unwrap_or_else(|e| format!("Test execution failed: {}", e));
@@ -167,7 +167,7 @@ impl Verifier {
             parse::parse_test_results(&test_output, baseline_tests);
 
         info!(
-            dll,
+            binary,
             function,
             passed = tests_passed,
             total = tests_total,
@@ -223,13 +223,13 @@ include!("stub_content.rs");
     }
 
     /// Scaffold a minimal Cargo project for compilation verification.
-    fn scaffold_project(&self, dll: &str, function: &str, rust_code: &str) -> Result<PathBuf> {
+    fn scaffold_project(&self, binary: &str, function: &str, rust_code: &str) -> Result<PathBuf> {
         self.ensure_pal_crate();
-        let project_dir = self.create_scratch_dir(dll, function);
+        let project_dir = self.create_scratch_dir(binary, function);
 
         let cargo_toml = format!(
             "[package]\nname = \"{}_verify\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\npal = {{ path = \"../pal\", package = \"calxgloss-verify-pal\" }}\n\n[lib]\nname = \"{}_lib\"\npath = \"src/lib.rs\"\n",
-            sanitize_crate_name(dll),
+            sanitize_crate_name(binary),
             sanitize_identifier(function),
         );
         std::fs::write(project_dir.join("Cargo.toml"), cargo_toml)
@@ -254,17 +254,17 @@ include!("stub_content.rs");
     /// Scaffold a Cargo project with behavioral test runner.
     fn scaffold_test_project(
         &self,
-        dll: &str,
+        binary: &str,
         function: &str,
         rust_code: &str,
         baseline_tests: &[TestCase],
     ) -> Result<PathBuf> {
         self.ensure_pal_crate();
-        let project_dir = self.create_scratch_dir(dll, function);
+        let project_dir = self.create_scratch_dir(binary, function);
 
         let cargo_toml = format!(
             "[package]\nname = \"{}_verify\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\npal = {{ path = \"../pal\", package = \"calxgloss-verify-pal\" }}\nserde_json = \"1\"\n\n[lib]\nname = \"{}_lib\"\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"{}_runner\"\npath = \"src/main.rs\"\n",
-            sanitize_crate_name(dll),
+            sanitize_crate_name(binary),
             sanitize_identifier(function),
             sanitize_identifier(function),
         );
@@ -299,7 +299,7 @@ include!("stub_content.rs");
     }
 
     /// Create a scratch subdirectory in the working directory.
-    fn create_scratch_dir(&self, dll: &str, function: &str) -> PathBuf {
+    fn create_scratch_dir(&self, binary: &str, function: &str) -> PathBuf {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_micros())
@@ -307,7 +307,7 @@ include!("stub_content.rs");
 
         let dir_name = format!(
             "{}_{}_{}",
-            sanitize_identifier(dll),
+            sanitize_identifier(binary),
             sanitize_identifier(function),
             timestamp
         );
@@ -482,7 +482,7 @@ fn call_function(inputs: &Value) -> Value {
     /// # Ok(())
     /// # }
     /// ```
-    #[instrument(skip(self, shim_source, shim_tests), fields(dll, target_crate))]
+    #[instrument(skip(self, shim_source, shim_tests), fields(binary, target_crate))]
     pub async fn verify_shim(
         &self,
         shim_source: &str,
@@ -490,7 +490,7 @@ fn call_function(inputs: &Value) -> Value {
         target_crate: &str,
         dll_name: &str,
     ) -> Result<ShimVerificationResult> {
-        debug!(dll = dll_name, "Starting shim verification");
+        debug!(binary = dll_name, "Starting shim verification");
 
         // Scaffold a shim project and compile it.
         let project =
@@ -503,7 +503,7 @@ fn call_function(inputs: &Value) -> Value {
 
         if !compiled {
             info!(
-                dll = dll_name,
+                binary = dll_name,
                 error_count = compilation_errors.len(),
                 "Shim verification failed at compilation"
             );
@@ -520,7 +520,10 @@ fn call_function(inputs: &Value) -> Value {
             });
         }
 
-        info!(dll = dll_name, "Shim compiled successfully, running tests");
+        info!(
+            binary = dll_name,
+            "Shim compiled successfully, running tests"
+        );
 
         // Run the shim's tests.
         let test_output = Self::run_cargo_test(&project)
@@ -538,7 +541,7 @@ fn call_function(inputs: &Value) -> Value {
         ) = parse::parse_shim_test_results(&test_output, shim_source, shim_tests);
 
         info!(
-            dll = dll_name,
+            binary = dll_name,
             tests_passed, tests_total, "Shim verification complete"
         );
 

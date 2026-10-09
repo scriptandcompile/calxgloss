@@ -90,7 +90,7 @@ fn dashboard_sorts_by_dependencies() {
             id: "func_3".into(),
             name: "func_3".into(),
             kind: WorkKind::FunctionTranslation,
-            dll: "test.dll".into(),
+            binary: "test.dll".into(),
             function: Some("func3".into()),
             attempt: 1,
             status: ReviewStatus::Queued,
@@ -112,7 +112,7 @@ fn dashboard_sorts_by_dependencies() {
             id: "unit_1".into(),
             name: "unit_1".into(),
             kind: WorkKind::DllClassification,
-            dll: "test.dll".into(),
+            binary: "test.dll".into(),
             function: None,
             attempt: 1,
             status: ReviewStatus::PendingReview,
@@ -134,7 +134,7 @@ fn dashboard_sorts_by_dependencies() {
             id: "unit_2".into(),
             name: "unit_2".into(),
             kind: WorkKind::ShimLayer,
-            dll: "test.dll".into(),
+            binary: "test.dll".into(),
             function: None,
             attempt: 1,
             status: ReviewStatus::PendingReview,
@@ -288,7 +288,7 @@ fn recent_activity_is_ordered_newest_first_and_deterministic() {
             id: id.into(),
             name: id.into(),
             kind: WorkKind::FunctionTranslation,
-            dll: "test.dll".into(),
+            binary: "test.dll".into(),
             function: Some("F".into()),
             attempt: 1,
             status: ReviewStatus::Accepted,
@@ -334,7 +334,7 @@ fn dashboard_accepts_units_into_recent_activity() {
             id: "unit_1".into(),
             name: "unit_1".into(),
             kind: WorkKind::DllClassification,
-            dll: "test.dll".into(),
+            binary: "test.dll".into(),
             function: None,
             attempt: 1,
             status: ReviewStatus::Accepted,
@@ -356,7 +356,7 @@ fn dashboard_accepts_units_into_recent_activity() {
             id: "unit_2".into(),
             name: "unit_2".into(),
             kind: WorkKind::ShimLayer,
-            dll: "test.dll".into(),
+            binary: "test.dll".into(),
             function: None,
             attempt: 1,
             status: ReviewStatus::PendingReview,
@@ -446,7 +446,7 @@ fn pending_in_dependency_order() {
             id: "func_3".into(),
             name: "func_3".into(),
             kind: WorkKind::FunctionTranslation,
-            dll: "test.dll".into(),
+            binary: "test.dll".into(),
             function: Some("func3".into()),
             attempt: 1,
             status: ReviewStatus::Queued,
@@ -468,7 +468,7 @@ fn pending_in_dependency_order() {
             id: "unit_1".into(),
             name: "unit_1".into(),
             kind: WorkKind::DllClassification,
-            dll: "test.dll".into(),
+            binary: "test.dll".into(),
             function: None,
             attempt: 1,
             status: ReviewStatus::PendingReview,
@@ -490,7 +490,7 @@ fn pending_in_dependency_order() {
             id: "unit_2".into(),
             name: "unit_2".into(),
             kind: WorkKind::ShimLayer,
-            dll: "test.dll".into(),
+            binary: "test.dll".into(),
             function: None,
             attempt: 1,
             status: ReviewStatus::PendingReview,
@@ -906,7 +906,7 @@ fn level_tiebreaks_same_depth() {
     let graph = DependencyGraph {
         nodes: vec![
             DependencyNode::with_level(
-                "dll",
+                "binary",
                 "DLL",
                 ReviewStatus::Accepted,
                 WorkLevel::DllClassification,
@@ -928,15 +928,15 @@ fn level_tiebreaks_same_depth() {
         edges: vec![
             DependencyEdge {
                 from: "func_x".into(),
-                to: "dll".into(),
+                to: "binary".into(),
             },
             DependencyEdge {
                 from: "shim_y".into(),
-                to: "dll".into(),
+                to: "binary".into(),
             },
             DependencyEdge {
                 from: "pal_z".into(),
-                to: "dll".into(),
+                to: "binary".into(),
             },
         ],
     };
@@ -944,7 +944,7 @@ fn level_tiebreaks_same_depth() {
     let (ordered, _cycles) = graph.topological_order();
     let order_ids: Vec<&str> = ordered.iter().map(|n| n.unit_id.as_str()).collect();
 
-    assert_eq!(order_ids[0], "dll");
+    assert_eq!(order_ids[0], "binary");
     assert_eq!(order_ids[1], "shim_y");
     assert_eq!(order_ids[2], "pal_z");
     assert_eq!(order_ids[3], "func_x");
@@ -957,7 +957,7 @@ fn auto_block_marks_dependent_on_failed_dependency() {
             id: "shim_wgpu".into(),
             name: "Shim wgpu".into(),
             kind: WorkKind::ShimLayer,
-            dll: "d3d9.dll".into(),
+            binary: "d3d9.dll".into(),
             function: None,
             attempt: 1,
             status: ReviewStatus::SendBack,
@@ -979,7 +979,7 @@ fn auto_block_marks_dependent_on_failed_dependency() {
             id: "func_draw".into(),
             name: "func_DrawPrimitive".into(),
             kind: WorkKind::FunctionTranslation,
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: Some("DrawPrimitive".into()),
             attempt: 1,
             status: ReviewStatus::Queued,
@@ -1031,7 +1031,7 @@ fn auto_block_noop_when_all_deps_accepted() {
             id: "shim_wgpu".into(),
             name: "Shim wgpu".into(),
             kind: WorkKind::ShimLayer,
-            dll: "d3d9.dll".into(),
+            binary: "d3d9.dll".into(),
             function: None,
             attempt: 1,
             status: ReviewStatus::Accepted,
@@ -1053,7 +1053,7 @@ fn auto_block_noop_when_all_deps_accepted() {
             id: "func_draw".into(),
             name: "func_DrawPrimitive".into(),
             kind: WorkKind::FunctionTranslation,
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: Some("DrawPrimitive".into()),
             attempt: 1,
             status: ReviewStatus::Queued,
@@ -1091,7 +1091,7 @@ fn auto_block_multiple_deps_any_failed_blocks_dependent() {
             id: "shim_wgpu".into(),
             name: "Shim wgpu".into(),
             kind: WorkKind::ShimLayer,
-            dll: "d3d9.dll".into(),
+            binary: "d3d9.dll".into(),
             function: None,
             attempt: 1,
             status: ReviewStatus::SendBack,
@@ -1113,7 +1113,7 @@ fn auto_block_multiple_deps_any_failed_blocks_dependent() {
             id: "pal_graphics".into(),
             name: "PAL GraphicsDevice".into(),
             kind: WorkKind::PalTrait,
-            dll: "d3d9.dll".into(),
+            binary: "d3d9.dll".into(),
             function: None,
             attempt: 1,
             status: ReviewStatus::Accepted,
@@ -1135,7 +1135,7 @@ fn auto_block_multiple_deps_any_failed_blocks_dependent() {
             id: "func_draw".into(),
             name: "func_DrawPrimitive".into(),
             kind: WorkKind::FunctionTranslation,
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: Some("DrawPrimitive".into()),
             attempt: 1,
             status: ReviewStatus::Queued,
@@ -1173,7 +1173,7 @@ fn auto_block_propagates_transitively() {
             id: "dll_cls".into(),
             name: "Classify d3d9.dll".into(),
             kind: WorkKind::DllClassification,
-            dll: "d3d9.dll".into(),
+            binary: "d3d9.dll".into(),
             function: None,
             attempt: 1,
             status: ReviewStatus::Accepted,
@@ -1195,7 +1195,7 @@ fn auto_block_propagates_transitively() {
             id: "shim_wgpu".into(),
             name: "Shim wgpu".into(),
             kind: WorkKind::ShimLayer,
-            dll: "d3d9.dll".into(),
+            binary: "d3d9.dll".into(),
             function: None,
             attempt: 1,
             status: ReviewStatus::SendBack,
@@ -1217,7 +1217,7 @@ fn auto_block_propagates_transitively() {
             id: "func_draw".into(),
             name: "func_DrawPrimitive".into(),
             kind: WorkKind::FunctionTranslation,
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: Some("DrawPrimitive".into()),
             attempt: 1,
             status: ReviewStatus::Queued,
@@ -1239,7 +1239,7 @@ fn auto_block_propagates_transitively() {
             id: "integrate".into(),
             name: "Integrate batch 001".into(),
             kind: WorkKind::IntegrationStep,
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: None,
             attempt: 1,
             status: ReviewStatus::Queued,
@@ -1284,7 +1284,7 @@ fn auto_block_respects_terminal_statuses() {
             id: "shim_wgpu".into(),
             name: "Shim wgpu".into(),
             kind: WorkKind::ShimLayer,
-            dll: "d3d9.dll".into(),
+            binary: "d3d9.dll".into(),
             function: None,
             attempt: 1,
             status: ReviewStatus::SendBack,
@@ -1306,7 +1306,7 @@ fn auto_block_respects_terminal_statuses() {
             id: "func_draw".into(),
             name: "func_DrawPrimitive (v2)".into(),
             kind: WorkKind::FunctionTranslation,
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: Some("DrawPrimitive".into()),
             attempt: 2,
             status: ReviewStatus::Accepted,
@@ -1353,7 +1353,7 @@ fn auto_block_patch_requested_blocks_dependents() {
             id: "pal_graphics".into(),
             name: "PAL GraphicsDevice".into(),
             kind: WorkKind::PalTrait,
-            dll: "d3d9.dll".into(),
+            binary: "d3d9.dll".into(),
             function: None,
             attempt: 1,
             status: ReviewStatus::PatchRequested,
@@ -1375,7 +1375,7 @@ fn auto_block_patch_requested_blocks_dependents() {
             id: "func_present".into(),
             name: "func_Present".into(),
             kind: WorkKind::FunctionTranslation,
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: Some("Present".into()),
             attempt: 1,
             status: ReviewStatus::Queued,
@@ -1413,7 +1413,7 @@ fn auto_block_idempotent() {
             id: "shim_wgpu".into(),
             name: "Shim wgpu".into(),
             kind: WorkKind::ShimLayer,
-            dll: "d3d9.dll".into(),
+            binary: "d3d9.dll".into(),
             function: None,
             attempt: 1,
             status: ReviewStatus::SendBack,
@@ -1435,7 +1435,7 @@ fn auto_block_idempotent() {
             id: "func_draw".into(),
             name: "func_DrawPrimitive".into(),
             kind: WorkKind::FunctionTranslation,
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: Some("DrawPrimitive".into()),
             attempt: 1,
             status: ReviewStatus::Queued,
@@ -1471,7 +1471,7 @@ fn dashboard_graph_order_is_stable_across_input_orders() {
             id: id.into(),
             name: id.into(),
             kind: WorkKind::FunctionTranslation,
-            dll: "test.dll".into(),
+            binary: "test.dll".into(),
             function: Some(id.into()),
             attempt: 1,
             status: ReviewStatus::Queued,
@@ -1506,7 +1506,11 @@ fn dashboard_graph_order_is_stable_across_input_orders() {
     let backward = ReviewDashboard::new(reversed);
 
     let node_ids = |d: &ReviewDashboard| -> Vec<String> {
-        d.dependency_graph.nodes.iter().map(|n| n.unit_id.clone()).collect()
+        d.dependency_graph
+            .nodes
+            .iter()
+            .map(|n| n.unit_id.clone())
+            .collect()
     };
     let edge_pairs = |d: &ReviewDashboard| -> Vec<(String, String)> {
         d.dependency_graph

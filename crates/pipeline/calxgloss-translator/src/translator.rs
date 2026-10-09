@@ -6,7 +6,7 @@
 //! or cached data.
 
 use calxgloss_llm::{LlmClient, LlmMessage};
-use calxgloss_types::{ContextTier, TestCase, TranslationRequest};
+use calxgloss_types::{BinaryIdentity, ContextTier, TestCase, TranslationRequest};
 
 use crate::error::{Result, TranslatorError};
 
@@ -21,7 +21,7 @@ use crate::error::{Result, TranslatorError};
 #[derive(Debug, Clone)]
 pub struct Translation {
     /// The DLL containing the translated function.
-    pub dll: String,
+    pub binary: BinaryIdentity,
 
     /// The function name that was translated.
     pub function: String,
@@ -116,7 +116,7 @@ impl Translator {
     ///
     /// # Arguments
     ///
-    /// * `dll` — The DLL containing the function.
+    /// * `binary` — The DLL containing the function.
     /// * `function` — The function name.
     /// * `disassembly` — Raw disassembly text.
     /// * `decompiler_output` — Pseudo-C decompiler output (may be empty).
@@ -126,18 +126,18 @@ impl Translator {
     /// A [`Translation`] with the generated Rust code and metadata.
     pub async fn translate_raw(
         &self,
-        dll: &str,
+        binary: &str,
         function: &str,
         disassembly: &str,
         decompiler_output: &str,
     ) -> Result<Translation> {
-        tracing::debug!(dll, function, "Translating with raw data");
+        tracing::debug!(binary, function, "Translating with raw data");
 
-        let prompt = self.build_minimal_prompt(dll, function, disassembly, decompiler_output)?;
+        let prompt = self.build_minimal_prompt(binary, function, disassembly, decompiler_output)?;
         let response = self.send_to_llm(&prompt).await?;
 
         Ok(Translation {
-            dll: dll.to_string(),
+            binary: binary.into(),
             function: function.to_string(),
             function_address: None,
             rust_code: response.content,
@@ -159,7 +159,7 @@ impl Translator {
     ///
     /// # Arguments
     ///
-    /// * `dll` — The DLL containing the function.
+    /// * `binary` — The DLL containing the function.
     /// * `function` — The function name.
     /// * `request` — A [`TranslationRequest`] with disassembly, decompiler output,
     ///   API mappings, and baseline tests.
@@ -169,11 +169,11 @@ impl Translator {
     /// A [`Translation`] with the generated Rust code and metadata.
     pub async fn translate_with_request(
         &self,
-        dll: &str,
+        binary: &str,
         function: &str,
         request: TranslationRequest,
     ) -> Result<Translation> {
-        tracing::debug!(dll, function, "Translating with full request context");
+        tracing::debug!(binary, function, "Translating with full request context");
 
         if request.disassembly.is_empty() && request.decompiler_output.is_empty() {
             return Err(TranslatorError::MissingContext(
@@ -185,7 +185,7 @@ impl Translator {
         let response = self.send_to_llm(&prompt).await?;
 
         Ok(Translation {
-            dll: dll.to_string(),
+            binary: binary.into(),
             function: function.to_string(),
             function_address: None,
             rust_code: response.content,
@@ -203,14 +203,14 @@ impl Translator {
     /// Build a minimal translation prompt without test/API context.
     pub(crate) fn build_minimal_prompt(
         &self,
-        dll: &str,
+        binary: &str,
         function: &str,
         disassembly: &str,
         decompiler_output: &str,
     ) -> Result<String> {
         // Build a minimal request for the template
         let req = TranslationRequest {
-            dll: dll.to_string(),
+            binary: binary.into(),
             function: function.to_string(),
             disassembly: disassembly.trim().to_string(),
             decompiler_output: decompiler_output.trim().to_string(),

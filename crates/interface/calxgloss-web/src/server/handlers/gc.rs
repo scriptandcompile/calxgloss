@@ -48,7 +48,7 @@ pub async fn api_get_gc_candidates(
         }
 
         // Parse branch name into components
-        let (dll, function, attempt) = match parse_gc_branch(branch_name) {
+        let (binary, function, attempt) = match parse_gc_branch(branch_name) {
             Some(p) => p,
             None => continue,
         };
@@ -65,7 +65,7 @@ pub async fn api_get_gc_candidates(
         if age > threshold {
             candidates.push(GcCandidate {
                 branch: branch_name.clone(),
-                dll,
+                binary: binary.into(),
                 function,
                 attempt,
                 days_old,
@@ -130,7 +130,7 @@ pub async fn api_archive_gc(
     };
 
     for branch_name in &branches_to_archive {
-        let (dll, function, attempt) = match parse_gc_branch(branch_name) {
+        let (binary, function, attempt) = match parse_gc_branch(branch_name) {
             Some(p) => p,
             None => {
                 results.push(GcArchiveResult {
@@ -145,9 +145,9 @@ pub async fn api_archive_gc(
         };
 
         let archive_ref = if let Some(func) = &function {
-            format!("refs/archive/re/{dll}/{func}v{attempt}")
+            format!("refs/archive/re/{binary}/{func}v{attempt}")
         } else {
-            format!("refs/archive/re/{dll}v{attempt}")
+            format!("refs/archive/re/{binary}v{attempt}")
         };
 
         match git.archive_branch(branch_name, &archive_ref) {
@@ -189,9 +189,9 @@ pub async fn api_archive_gc(
 
 // ─── GC helper functions ─────────────────────────────────────────────
 
-/// Parse a translation branch name into (dll, function, attempt).
+/// Parse a translation branch name into (binary, function, attempt).
 ///
-/// Handles both `re/{dll}/{function}v{N}` and branches without a function
+/// Handles both `re/{binary}/{function}v{N}` and branches without a function
 /// component (e.g. classify or shim branches).
 fn parse_gc_branch(branch: &str) -> Option<(String, Option<String>, u32)> {
     let rest = branch.strip_prefix("re/")?;
@@ -220,10 +220,10 @@ fn parse_gc_branch(branch: &str) -> Option<(String, Option<String>, u32)> {
         return None;
     }
 
-    let dll = parts[0].to_string();
+    let binary = parts[0].to_string();
     let function = parts.get(1).map(|s| s.to_string());
 
-    Some((dll, function, attempt))
+    Some((binary, function, attempt))
 }
 
 /// Get the commit date of the HEAD commit for a branch.

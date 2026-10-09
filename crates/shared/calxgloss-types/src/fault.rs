@@ -26,6 +26,7 @@
 //! );
 //! ```
 
+use crate::identity::BinaryIdentity;
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 
@@ -308,7 +309,7 @@ impl ResourceExhaustionFault {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FaultEvent {
     /// The DLL containing the affected function.
-    pub dll: String,
+    pub binary: BinaryIdentity,
 
     /// The function name.
     pub function: String,
@@ -343,7 +344,7 @@ pub struct FaultEvent {
 impl FaultEvent {
     /// Create a new fault event from a context-window exceedance.
     pub fn context_window_exceeded(
-        dll: &str,
+        binary: &str,
         function: &str,
         attempt: u32,
         strategy: &str,
@@ -372,7 +373,7 @@ impl FaultEvent {
         };
 
         Self {
-            dll: dll.to_string(),
+            binary: binary.into(),
             function: function.to_string(),
             attempt,
             strategy: strategy.to_string(),
@@ -390,14 +391,14 @@ impl FaultEvent {
 
     /// Create a new fault event from a hallucination detection.
     pub fn hallucination(
-        dll: &str,
+        binary: &str,
         function: &str,
         attempt: u32,
         strategy: &str,
         non_existent_apis: &[&str],
     ) -> Self {
         Self {
-            dll: dll.to_string(),
+            binary: binary.into(),
             function: function.to_string(),
             attempt,
             strategy: strategy.to_string(),
@@ -424,7 +425,7 @@ impl FaultEvent {
     ///
     /// # Arguments
     ///
-    /// * `dll` — The DLL containing the stuck function.
+    /// * `binary` — The DLL containing the stuck function.
     /// * `function` — The function name.
     /// * `attempt` — The attempt where the loop was detected.
     /// * `strategy` — The strategy that produced the repeated output.
@@ -432,7 +433,7 @@ impl FaultEvent {
     /// * `streak_start` — First attempt number in the streak.
     /// * `streak_end` — Last attempt number in the streak.
     pub fn infinite_loop(
-        dll: &str,
+        binary: &str,
         function: &str,
         attempt: u32,
         strategy: &str,
@@ -441,7 +442,7 @@ impl FaultEvent {
         streak_end: u32,
     ) -> Self {
         Self {
-            dll: dll.to_string(),
+            binary: binary.into(),
             function: function.to_string(),
             attempt,
             strategy: strategy.to_string(),
@@ -472,14 +473,14 @@ impl FaultEvent {
     ///
     /// # Arguments
     ///
-    /// * `dll` — The DLL containing the affected function.
+    /// * `binary` — The DLL containing the affected function.
     /// * `function` — The function name.
     /// * `attempt` — The attempt where exhaustion was detected.
     /// * `strategy` — The strategy active when exhaustion occurred.
     /// * `reason` — Why the model was considered exhausted.
     /// * `elapsed_secs` — How many seconds the call ran before giving up.
     pub fn resource_exhaustion(
-        dll: &str,
+        binary: &str,
         function: &str,
         attempt: u32,
         strategy: &str,
@@ -515,7 +516,7 @@ impl FaultEvent {
         };
 
         Self {
-            dll: dll.to_string(),
+            binary: binary.into(),
             function: function.to_string(),
             attempt,
             strategy: strategy.to_string(),
@@ -535,7 +536,7 @@ impl FaultEvent {
     ///
     /// # Arguments
     ///
-    /// * `dll` — The DLL containing the function.
+    /// * `binary` — The DLL containing the function.
     /// * `function` — The function name.
     /// * `attempt` — The attempt where divergence was detected.
     /// * `strategy` — The strategy active when divergence was found.
@@ -547,7 +548,7 @@ impl FaultEvent {
     /// * `fault_confidence` — Confidence score for the diagnosis (0–10).
     #[allow(clippy::too_many_arguments)]
     pub fn behavior_divergence(
-        dll: &str,
+        binary: &str,
         function: &str,
         attempt: u32,
         strategy: &str,
@@ -565,7 +566,7 @@ impl FaultEvent {
         };
 
         Self {
-            dll: dll.to_string(),
+            binary: binary.into(),
             function: function.to_string(),
             attempt,
             strategy: strategy.to_string(),
@@ -606,7 +607,7 @@ impl std::fmt::Display for FaultEvent {
             "[{}] {} on {} '{}' (attempt #{} [{})]: {}",
             self.severity,
             self.category,
-            self.dll,
+            self.binary,
             self.function,
             self.attempt,
             self.strategy,
@@ -623,7 +624,7 @@ impl std::fmt::Display for FaultEvent {
 ///
 /// Stored at `<workspace>/re/analysis/fault_log.json`.  Supports appending
 /// new events and computing aggregate statistics (total faults per category,
-/// per-dll, etc.).
+/// per-binary, etc.).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FaultLog {
     pub entries: Vec<FaultEvent>,
@@ -646,14 +647,15 @@ impl FaultLog {
     pub fn compute_stats(&self) -> FaultStats {
         let mut by_category: std::collections::HashMap<FaultCategory, usize> =
             std::collections::HashMap::new();
-        let mut by_dll: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut by_binary: std::collections::HashMap<BinaryIdentity, usize> =
+            std::collections::HashMap::new();
         let mut total_warnings: usize = 0;
         let mut total_errors: usize = 0;
         let mut total_critical: usize = 0;
 
         for entry in &self.entries {
             *by_category.entry(entry.category.clone()).or_default() += 1;
-            *by_dll.entry(entry.dll.clone()).or_default() += 1;
+            *by_binary.entry(entry.binary.clone()).or_default() += 1;
             match entry.severity {
                 FaultSeverity::Warning => total_warnings += 1,
                 FaultSeverity::Error => total_errors += 1,
@@ -664,7 +666,7 @@ impl FaultLog {
         FaultStats {
             total_entries: self.entries.len(),
             by_category,
-            by_dll,
+            by_binary,
             total_warnings,
             total_errors,
             total_critical,
@@ -696,7 +698,7 @@ pub struct FaultStats {
     pub by_category: std::collections::HashMap<FaultCategory, usize>,
     /// Count per DLL.
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty", default)]
-    pub by_dll: std::collections::HashMap<String, usize>,
+    pub by_binary: std::collections::HashMap<BinaryIdentity, usize>,
     pub total_warnings: usize,
     pub total_errors: usize,
     pub total_critical: usize,
@@ -755,7 +757,7 @@ mod tests {
         );
         let json = serde_json::to_string(&event).unwrap();
         let deserialized: FaultEvent = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.dll, "game_logic.dll");
+        assert_eq!(deserialized.binary, "game_logic.dll");
         assert_eq!(deserialized.function, "DrawSprite");
         assert_eq!(deserialized.attempt, 3);
         assert!(matches!(
@@ -785,7 +787,7 @@ mod tests {
         let stats = log.compute_stats();
         assert_eq!(stats.total_entries, 2);
         assert_eq!(stats.by_category.len(), 1);
-        assert_eq!(stats.by_dll.len(), 2);
+        assert_eq!(stats.by_binary.len(), 2);
         assert_eq!(stats.total_errors, 2);
     }
 
@@ -876,7 +878,7 @@ mod tests {
             deserialized.category,
             FaultCategory::BehaviorDivergence
         ));
-        assert_eq!(deserialized.dll, "test.dll");
+        assert_eq!(deserialized.binary, "test.dll");
         assert_eq!(deserialized.attempt, 3);
         let meta = deserialized.metadata.unwrap();
         assert_eq!(meta["fault_confidence"], 9);

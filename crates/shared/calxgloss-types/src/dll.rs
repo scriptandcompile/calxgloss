@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::identity::BinaryIdentity;
+
 /// Classification of a DLL, determining the reverse-engineering strategy.
 ///
 /// The category drives whether a DLL is replaced with a crate shim,
@@ -62,7 +64,7 @@ pub struct Export {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Import {
     /// The name of the DLL being imported (e.g., `gdi32.dll`).
-    pub dll: String,
+    pub binary: BinaryIdentity,
 
     /// The function name imported from that DLL (e.g., `BitBlt`).
     pub function: String,

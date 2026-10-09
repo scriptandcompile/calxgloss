@@ -7,7 +7,7 @@ use crate::model::{
     FunctionSummary, OpenProgram, Segment, StringLiteral, StructLayout, Symbol, Xref,
 };
 use crate::parse;
-use calxgloss_types::{ProgressEvent, TranslationEvents};
+use calxgloss_types::{BinaryIdentity, ProgressEvent, TranslationEvents};
 use reqwest::Client;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -149,7 +149,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
 /// address-based decompiles to function names.
 #[derive(Debug)]
 struct Heartbeat {
-    dll: String,
+    binary: BinaryIdentity,
     pass: String,
     events: TranslationEvents,
     total: AtomicUsize,
@@ -203,9 +203,9 @@ impl GhidraClient {
     /// scans) that run before any unit event exists. One pass at a time —
     /// a new `begin_pass` replaces any pass left armed by an error path
     /// that skipped [`end_pass`](Self::end_pass).
-    pub fn begin_pass(&self, dll: &str, pass: &str, events: &TranslationEvents) {
+    pub fn begin_pass(&self, binary: &str, pass: &str, events: &TranslationEvents) {
         *self.heartbeat.lock().expect("heartbeat lock") = Some(Arc::new(Heartbeat {
-            dll: dll.to_string(),
+            binary: binary.into(),
             pass: pass.to_string(),
             events: events.clone(),
             total: AtomicUsize::new(0),
@@ -261,7 +261,7 @@ impl GhidraClient {
             .cloned()
             .unwrap_or_default();
         hb.events.emit(ProgressEvent::BatchProgress {
-            dll: hb.dll.clone(),
+            binary: hb.binary.clone(),
             pass: hb.pass.clone(),
             function,
             index,
@@ -1089,13 +1089,13 @@ mod tests {
         assert_eq!(beats.len(), 2, "one beat per decompile inside the pass");
         match &beats[0] {
             calxgloss_types::ProgressEvent::BatchProgress {
-                dll,
+                binary,
                 pass,
                 function,
                 index,
                 total,
             } => {
-                assert_eq!(dll, "eqgame.exe");
+                assert_eq!(binary, "eqgame.exe");
                 assert_eq!(pass, "type inference");
                 assert_eq!(function, "FUN_10", "address resolved through the worklist");
                 assert_eq!(*index, 1);

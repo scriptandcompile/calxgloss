@@ -1470,7 +1470,7 @@ mod tests {
     fn test_transitive_leaf_empty_graph() {
         let detector = LeafDetector::new();
         let graph = CallGraph {
-            dll: "empty.dll".to_string(),
+            binary: "empty.dll".to_string(),
             functions: vec![],
         };
         let results = detector.transitive_leaf_analysis(&graph);
@@ -1480,7 +1480,7 @@ mod tests {
     #[test]
     fn test_transitive_leaf_no_leaves() {
         let graph = CallGraph {
-            dll: "no_leaves.dll".to_string(),
+            binary: "no_leaves.dll".to_string(),
             functions: vec![
                 make_func_with_address("func_a", 0x1000, vec![], &["helper"]),
                 make_func_with_address("helper", 0x2000, vec![0x1000], &[]),
@@ -1496,7 +1496,7 @@ mod tests {
         // app → init_ui → MessageBox
         // app is a transitive leaf; init_ui is a direct leaf
         let graph = CallGraph {
-            dll: "transitive.dll".to_string(),
+            binary: "transitive.dll".to_string(),
             functions: vec![
                 make_func_with_address("app_init", 0x1000, vec![], &["init_ui"]),
                 make_func_with_address("init_ui", 0x2000, vec![0x1000], &["MessageBox"]),
@@ -1517,7 +1517,7 @@ mod tests {
     fn test_direct_leaf_no_transitive_for_itself() {
         // init_ui calls MessageBox directly; it's a direct leaf, not transitive
         let graph = CallGraph {
-            dll: "direct.dll".to_string(),
+            binary: "direct.dll".to_string(),
             functions: vec![make_func_with_address(
                 "init_ui",
                 0x1000,
@@ -1536,7 +1536,7 @@ mod tests {
         // entry → middle → leaf_fn → MessageBox
         // middle and entry should both be transitive leaves
         let graph = CallGraph {
-            dll: "chain.dll".to_string(),
+            binary: "chain.dll".to_string(),
             functions: vec![
                 make_func_with_address("entry", 0x1000, vec![], &["middle"]),
                 make_func_with_address("middle", 0x2000, vec![0x1000], &["leaf_fn"]),
@@ -1556,7 +1556,7 @@ mod tests {
         // Very deep chain: a → b → c → d → leaf → MessageBox
         // With default depth 3, only some intermediaries should be found
         let graph = CallGraph {
-            dll: "deep.dll".to_string(),
+            binary: "deep.dll".to_string(),
             functions: vec![
                 make_func_with_address("a", 0x1000, vec![], &["b"]),
                 make_func_with_address("b", 0x2000, vec![0x1000], &["c"]),

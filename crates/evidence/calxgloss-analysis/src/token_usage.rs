@@ -18,7 +18,7 @@
 //! {
 //!   "entries": [
 //!     {
-//!       "dll": "game_logic.dll",
+//!       "binary": "game_logic.dll",
 //!       "function": "DrawSprite",
 //!       "attempt": 1,
 //!       "strategy": "initial",
@@ -109,8 +109,8 @@ impl TokenUsageLogger {
             warn!(error = %e, "Failed to persist token usage log to disk");
         } else {
             debug!(
-                dll = %log.entries.last().map(|e| &e.dll).unwrap_or(&"".to_string()),
-                function = %log.entries.last().map(|e| &e.function).unwrap_or(&"".to_string()),
+                binary = %log.entries.last().map(|e| &e.binary).unwrap_or(&Default::default()),
+                function = %log.entries.last().map(|e| &e.function).unwrap_or(&Default::default()),
                 tokens = log.entries.last().map(|e| e.tokens_used).unwrap_or(0),
                 "Recorded token usage entry"
             );
@@ -227,7 +227,7 @@ mod tests {
         assert_eq!(stats.total_entries, 3);
         assert_eq!(stats.total_tokens, 4096 + 3072 + 2048);
         assert_eq!(stats.successful_tokens, 3072 + 2048);
-        assert_eq!(stats.by_dll.len(), 2);
+        assert_eq!(stats.by_binary.len(), 2);
     }
 
     #[test]

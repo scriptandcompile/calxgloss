@@ -17,7 +17,7 @@ use crate::utils::*;
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_live(
     target: Option<PathBuf>,
-    dlls: Option<String>,
+    binaries: Option<String>,
     all_functions: bool,
     classify_only: bool,
     skip_git: bool,
@@ -143,7 +143,7 @@ pub async fn handle_live(
     // Run the auto pipeline in the foreground (this blocks until complete).
     let auto_result = crate::commands::auto::handle_auto(
         target,
-        dlls,
+        binaries,
         all_functions,
         classify_only,
         skip_git,

@@ -5,10 +5,10 @@
 const llmLogEntries = [];
 const LLM_LOG_MAX = 200;
 
-export function addLlmLogEntry(type, dll, func, attempt, strategy, content) {
+export function addLlmLogEntry(type, binary, func, attempt, strategy, content) {
     const entry = {
         type,  // "request" or "response"
-        dll,
+        binary,
         func,
         attempt,
         strategy,
@@ -41,7 +41,7 @@ export function renderLlmLog() {
     const html = llmLogEntries.map((e) => {
         const typeLabel = e.type === "request" ? "Request" : e.type === "error" ? "⚠ Error" : "Response";
         const ts = e.timestamp.toLocaleTimeString();
-        const summary = `${e.dll}!${e.func} (attempt #${e.attempt}, ${e.strategy})`;
+        const summary = `${e.binary}!${e.func} (attempt #${e.attempt}, ${e.strategy})`;
         // Only escape < and > so JSON/Code stays readable in <pre>
         const safe = e.content
             .replace(/&/g, "&amp;")

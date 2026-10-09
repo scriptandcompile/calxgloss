@@ -24,6 +24,7 @@ calxgloss-controlflow = { path = "../../evidence/calxgloss-controlflow" }
 calxgloss-apidetect = { path = "../../evidence/calxgloss-apidetect" }
 calxgloss-serialize = { path = "../../evidence/calxgloss-serialize" }
 calxgloss-verify = { path = "../../pipeline/calxgloss-verify" }
+calxgloss-types = { path = "../../shared/calxgloss-types" }
 calxgloss-git = { path = "../../pipeline/calxgloss-git" }
 calxgloss-reports = { path = "../calxgloss-reports" }
 calxgloss-llm = { path = "../../integrations/calxgloss-llm" }

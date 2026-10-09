@@ -2,8 +2,8 @@
 
 use axum::http::StatusCode;
 use calxgloss_types::{
-    BinaryProgress, FaultCategory, FaultEvent, FaultSeverity, PhaseProgress, PhaseRecord,
-    PipelinePhase, ReviewDashboard, ReviewStatus, TokenUsageEntry, TranslationPhase,
+    BinaryIdentity, BinaryProgress, FaultCategory, FaultEvent, FaultSeverity, PhaseProgress,
+    PhaseRecord, PipelinePhase, ReviewDashboard, ReviewStatus, TokenUsageEntry, TranslationPhase,
 };
 use serde::{Deserialize, Serialize};
 
@@ -119,7 +119,7 @@ pub struct UnitResponseInner {
     /// Kind of work (e.g., "Function Translation").
     pub kind: String,
     /// Associated DLL name.
-    pub dll: String,
+    pub binary: BinaryIdentity,
     /// Associated function name (if applicable).
     pub function: Option<String>,
     /// Attempt number (v1, v2, v3, etc.).
@@ -455,7 +455,7 @@ pub struct QueueEntry {
     /// Kind of work.
     pub kind: String,
     /// Associated DLL.
-    pub dll: String,
+    pub binary: BinaryIdentity,
     /// Associated function (if applicable).
     pub function: Option<String>,
     /// Current review status.
@@ -479,7 +479,7 @@ impl QueueResponse {
                 id: u.id.clone(),
                 name: u.name.clone(),
                 kind: u.kind.to_string(),
-                dll: u.dll.clone(),
+                binary: u.binary.clone(),
                 function: u.function.clone(),
                 status: u.status.to_string(),
                 stale: u.stale.to_string(),
@@ -525,7 +525,7 @@ pub struct GcCandidate {
     /// Full branch name (e.g. "re/game_logic.dll/DrawSpritev3").
     pub branch: String,
     /// DLL name extracted from the branch.
-    pub dll: String,
+    pub binary: BinaryIdentity,
     /// Function name, if present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub function: Option<String>,
@@ -640,7 +640,7 @@ pub struct GhidraContext {
     pub address: Option<String>,
     /// DLL this function belongs to.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub dll: Option<String>,
+    pub binary: Option<String>,
     /// Ghidra decompiler (pseudo-C) output.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decompiler_output: Option<String>,
@@ -764,7 +764,7 @@ impl axum::response::IntoResponse for ServerError {
 /// Information about a unit currently being translated.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProgressInfo {
-    pub dll: String,
+    pub binary: BinaryIdentity,
     pub function: String,
     pub attempt: u32,
     pub strategy: String,
@@ -798,7 +798,7 @@ impl ProgressResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineDllProgress {
     /// DLL/EXE file name.
-    pub dll: String,
+    pub binary: BinaryIdentity,
     /// Whether the DLL has been classified.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub classification: Option<ClassificationInfo>,
@@ -816,7 +816,7 @@ pub struct PipelineDllProgress {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClassificationInfo {
     /// DLL this classification is for.
-    pub dll: String,
+    pub binary: BinaryIdentity,
     pub category: String,
     pub strategy: String,
     pub crate_replacement: Option<String>,
@@ -828,7 +828,7 @@ pub struct ClassificationInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchInfo {
     /// DLL this batch summary is for.
-    pub dll: String,
+    pub binary: BinaryIdentity,
     pub total_functions: usize,
     pub success_count: usize,
     pub failure_count: usize,
@@ -839,7 +839,7 @@ pub struct BatchInfo {
 /// Current DLL being translated.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CurrentDllStatus {
-    pub dll: String,
+    pub binary: BinaryIdentity,
     pub total_entries: usize,
     pub completed_entries: usize,
 }
@@ -868,7 +868,7 @@ pub struct PipelineProgressResponse {
     /// Batch translation complete count.
     pub batch_complete_count: usize,
     /// DLLs currently being translated (in ProgressState entries).
-    pub currently_translating: Vec<String>,
+    pub currently_translating: Vec<BinaryIdentity>,
     /// Per-DLL progress information.
     pub dlls: Vec<PipelineDllProgress>,
     /// Progress through the master-plan phases (issue #61), in bar order:

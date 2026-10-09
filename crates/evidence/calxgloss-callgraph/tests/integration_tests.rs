@@ -27,7 +27,7 @@ use calxgloss_callgraph::{
 /// ```
 fn synthetic_graph() -> CallGraph {
     CallGraph {
-        dll: "test.dll".to_string(),
+        binary: "test.dll".to_string(),
         functions: vec![
             FunctionCallGraph {
                 name: "main".to_string(),
@@ -166,7 +166,7 @@ fn test_root_detection_classifies_dllmain() {
 
     // Build a graph with a DllMain entry point.
     let graph = CallGraph {
-        dll: "plugin.dll".to_string(),
+        binary: "plugin.dll".to_string(),
         functions: vec![
             FunctionCallGraph {
                 name: "DllMain".to_string(),
@@ -264,7 +264,7 @@ async fn test_full_pipeline_ghidra_to_persist() {
     let loaded = persistor.load("test.dll").unwrap();
 
     assert_eq!(loaded.functions.len(), graph.functions.len());
-    assert_eq!(loaded.dll, graph.dll);
+    assert_eq!(loaded.binary, graph.binary);
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
@@ -283,7 +283,7 @@ fn test_classify_preserves_node_categories() {
 
     // Build a graph where every function should get a specific category.
     let mut graph = CallGraph {
-        dll: "categories.dll".to_string(),
+        binary: "categories.dll".to_string(),
         functions: vec![
             // root: DllMain
             FunctionCallGraph {
@@ -445,7 +445,7 @@ fn test_leaf_classify_returns_all_matched_categories() {
 /// ```
 fn game_plugin_graph() -> CallGraph {
     CallGraph {
-        dll: "game_plugin.dll".to_string(),
+        binary: "game_plugin.dll".to_string(),
         functions: vec![
             // ── Entry point ──────────────────────────────────────────────
             FunctionCallGraph {
@@ -625,7 +625,7 @@ fn test_end_to_end_realistic_plugin_pipeline() {
 
     // ===== Phase 1: Build graph =====
     let mut graph = game_plugin_graph();
-    assert_eq!(graph.dll, "game_plugin.dll");
+    assert_eq!(graph.binary, "game_plugin.dll");
     assert_eq!(graph.functions.len(), 9);
 
     // ===== Phase 2: Run classification =====
@@ -685,7 +685,7 @@ fn test_end_to_end_realistic_plugin_pipeline() {
     let json_content = std::fs::read_to_string(&json_path).expect("read persisted JSON");
     let saved_graph: CallGraph =
         serde_json::from_str(&json_content).expect("persisted JSON should be valid");
-    assert_eq!(saved_graph.dll, "game_plugin.dll");
+    assert_eq!(saved_graph.binary, "game_plugin.dll");
     assert_eq!(saved_graph.functions.len(), 9);
 
     // ===== Phase 4: Reload from disk =====
@@ -694,7 +694,7 @@ fn test_end_to_end_realistic_plugin_pipeline() {
         .expect("should load persisted graph");
 
     // Verify the reload preserves all function data
-    assert_eq!(reloaded.dll, "game_plugin.dll");
+    assert_eq!(reloaded.binary, "game_plugin.dll");
     assert_eq!(reloaded.functions.len(), 9);
 
     // Verify caller/callee counts are preserved after round-trip
@@ -986,7 +986,7 @@ fn test_end_to_end_realistic_plugin_pipeline() {
     use calxgloss_types::DllCategory;
 
     let classification = calxgloss_analysis::DllClassification {
-        dll: "game_plugin.dll".to_string(),
+        binary: "game_plugin.dll".to_string(),
         category: DllCategory::ProjectSpecific,
         strategy: calxgloss_analysis::Strategy::ReverseEngineer,
         exports_count: 0,

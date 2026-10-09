@@ -30,8 +30,8 @@ pub enum SerializeError {
     EmptyFunctionName,
 
     /// A serialization scan failed for a DLL.
-    #[error("serialization scan failed for '{dll}': {reason}")]
-    ScanFailed { dll: String, reason: String },
+    #[error("serialization scan failed for '{binary}': {reason}")]
+    ScanFailed { binary: String, reason: String },
 }
 
 /// Maps the shared JSON store's errors onto this crate's error type: the

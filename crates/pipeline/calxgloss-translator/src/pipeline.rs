@@ -62,8 +62,8 @@ use calxgloss_testgen::TestGenerator;
 use calxgloss_typeinfer::engine::TypeInferEngine;
 use calxgloss_typeinfer::persist::TypeInferPersistor;
 use calxgloss_types::{
-    ContextTier, Export, FunctionInfo, ProgressEvent, StopSignal, TestCase, TranslationEvents,
-    TranslationRequest,
+    BinaryIdentity, ContextTier, Export, FunctionInfo, ProgressEvent, StopSignal, TestCase,
+    TranslationEvents, TranslationRequest,
 };
 use calxgloss_typesdb::engine::TypesDBEngine;
 use calxgloss_typesdb::persist::TypeDatabasePersistor;
@@ -122,8 +122,8 @@ pub struct TranslationPipeline {
     /// Optional exports for signature extraction during test generation.
     exports: Vec<Export>,
 
-    /// Optional DLL name override for test generation context.
-    target_dll: Option<String>,
+    /// Optional binary name override for test generation context.
+    target_binary: Option<BinaryIdentity>,
 
     /// Optional workspace root path for experiment logging.
     workspace: Option<std::path::PathBuf>,
@@ -203,7 +203,7 @@ impl TranslationPipeline {
             analyzer,
             testgen: None,
             exports: Vec::new(),
-            target_dll: None,
+            target_binary: None,
             workspace: None,
             events: None,
             context_detector,
@@ -291,9 +291,9 @@ impl TranslationPipeline {
         self
     }
 
-    /// Set the target DLL name for test generation context.
-    pub fn with_target_dll(mut self, dll: String) -> Self {
-        self.target_dll = Some(dll);
+    /// Set the target binary name for test generation context.
+    pub fn with_target_binary(mut self, binary: impl Into<BinaryIdentity>) -> Self {
+        self.target_binary = Some(binary.into());
         self
     }
 
@@ -347,7 +347,7 @@ impl TranslationPipeline {
     ///
     /// # Arguments
     ///
-    /// * `dll` — The DLL containing the function. Recorded on the result; the
+    /// * `binary` — The DLL containing the function. Recorded on the result; the
     ///   lookup is against the program Ghidra has open, which must be this DLL.
     /// * `function` — The function name to translate.
     ///
@@ -374,33 +374,33 @@ impl TranslationPipeline {
     /// # Ok(())
     /// # }
     /// ```
-    #[instrument(skip(self), fields(dll, function, base_url = %self.ghidra.base_url()))]
-    pub async fn translate(&self, dll: &str, function: &str) -> Result<Translation> {
-        debug!(dll, function, "Starting translation pipeline");
+    #[instrument(skip(self), fields(binary, function, base_url = %self.ghidra.base_url()))]
+    pub async fn translate(&self, binary: &str, function: &str) -> Result<Translation> {
+        debug!(binary, function, "Starting translation pipeline");
 
         // Emit: translation started
         self.emit(ProgressEvent::TranslationStarted {
-            dll: dll.to_string(),
+            binary: binary.to_string().into(),
             function: function.to_string(),
         });
 
         // Step 1: Fetch function metadata from Ghidra
-        let function_info = self.fetch_function(dll, function).await?;
-        info!(dll, function, "Fetched function metadata");
+        let function_info = self.fetch_function(binary, function).await?;
+        info!(binary, function, "Fetched function metadata");
 
         // Emit: Ghidra fetch complete
         self.emit(ProgressEvent::GhidraFetchComplete {
-            dll: dll.to_string(),
+            binary: binary.to_string().into(),
             function: function.to_string(),
             address: Some(function_info.address),
             disassembly_lines: function_info.disassembly.lines().count(),
         });
 
         // Step 2: Fetch imports and tag Windows APIs
-        let imports = self.fetch_imports(dll).await?;
+        let imports = self.fetch_imports(binary).await?;
         let tagged_apis = self.tag_windows_apis(&function_info.disassembly, &imports)?;
         info!(
-            dll,
+            binary,
             function,
             tagged_apis = tagged_apis.len(),
             "Tagged Windows APIs"
@@ -408,7 +408,7 @@ impl TranslationPipeline {
 
         // Emit: API tagging complete
         self.emit(ProgressEvent::ApiTaggingComplete {
-            dll: dll.to_string(),
+            binary: binary.to_string().into(),
             function: function.to_string(),
             tagged_apis: tagged_apis.len(),
         });
@@ -418,7 +418,7 @@ impl TranslationPipeline {
             .generate_baseline_tests(&function_info, &imports)
             .await?;
         info!(
-            dll,
+            binary,
             function,
             tests = baseline_tests.len(),
             "Generated baseline tests"
@@ -426,7 +426,7 @@ impl TranslationPipeline {
 
         // Emit: tests generated
         self.emit(ProgressEvent::TestsGenerated {
-            dll: dll.to_string(),
+            binary: binary.to_string().into(),
             function: function.to_string(),
             test_count: baseline_tests.len(),
         });
@@ -436,7 +436,7 @@ impl TranslationPipeline {
             .analyzer
             .detect_complexity(&function_info.disassembly, &function_info.windows_apis);
         info!(
-            dll,
+            binary,
             function,
             complexity = %complexity,
             "Detected function complexity"
@@ -452,13 +452,13 @@ impl TranslationPipeline {
         );
         let complexity_label = complexity.to_string();
         info!(
-            dll,
+            binary,
             function,
             tier = %tier,
             "Selected context tier"
         );
         self.emit(ProgressEvent::ContextTierSelected {
-            dll: dll.to_string(),
+            binary: binary.to_string().into(),
             function: function.to_string(),
             tier: tier.to_string(),
             tier_label: tier.label().to_string(),
@@ -467,7 +467,7 @@ impl TranslationPipeline {
         });
 
         let request = self.build_translation_request(
-            dll,
+            binary,
             function,
             &function_info,
             tagged_apis.clone(),
@@ -492,10 +492,10 @@ impl TranslationPipeline {
                 .as_deref()
                 .unwrap_or_else(|| std::path::Path::new("."));
             let cache_dir = self.callgraph_cache_dir.as_deref();
-            self.begin_scan_pass(&function_info.dll, "call graph");
+            self.begin_scan_pass(&function_info.binary, "call graph");
             let built = self
                 .analyzer
-                .build_call_graph(&function_info.dll, workspace, cache_dir)
+                .build_call_graph(&function_info.binary, workspace, cache_dir)
                 .await;
             self.end_scan_pass();
             match built {
@@ -508,7 +508,7 @@ impl TranslationPipeline {
                 }
                 Err(e) => {
                     warn!(
-                        dll,
+                        binary,
                         function,
                         error = %e,
                         "Failed to build call graph for context enrichment; continuing without it"
@@ -520,7 +520,7 @@ impl TranslationPipeline {
 
         // Step 5: Build a complexity-aware prompt and send to LLM
         self.emit(ProgressEvent::LlmCallStart {
-            dll: dll.to_string(),
+            binary: binary.to_string().into(),
             function: function.to_string(),
             attempt: 1,
             strategy: "initial".to_string(),
@@ -555,12 +555,12 @@ impl TranslationPipeline {
                 .await;
                 let data_structures = crate::retry::helpers::extract_data_structures(
                     self.workspace.as_deref(),
-                    &function_info.dll,
+                    &function_info.binary,
                     function,
                 );
                 let control_flow_findings = crate::retry::helpers::extract_control_flow_hints(
                     self.workspace.as_deref(),
-                    &function_info.dll,
+                    &function_info.binary,
                     function,
                 );
                 let data = calxgloss_prompts::ModuleContextPromptData::from_request_with_context(
@@ -587,14 +587,14 @@ impl TranslationPipeline {
                 .await;
                 let data_structures = crate::retry::helpers::extract_data_structures(
                     self.workspace.as_deref(),
-                    &function_info.dll,
+                    &function_info.binary,
                     function,
                 );
 
                 // Extract shim layer code from the workspace
                 let shim_layers = crate::retry::helpers::extract_shim_layers(
                     self.workspace.as_deref(),
-                    &function_info.dll,
+                    &function_info.binary,
                 );
 
                 // Extract PAL trait definitions from the function's Windows API categories
@@ -603,7 +603,7 @@ impl TranslationPipeline {
 
                 let control_flow_findings = crate::retry::helpers::extract_control_flow_hints(
                     self.workspace.as_deref(),
-                    &function_info.dll,
+                    &function_info.binary,
                     function,
                 );
                 let data = calxgloss_prompts::FullModulePromptData::from_request_with_full_context(
@@ -622,7 +622,7 @@ impl TranslationPipeline {
 
         // Emit: LLM request (full prompt)
         self.emit(ProgressEvent::LlmRequest {
-            dll: dll.to_string(),
+            binary: binary.to_string().into(),
             function: function.to_string(),
             attempt: 1,
             strategy: "initial".to_string(),
@@ -633,7 +633,7 @@ impl TranslationPipeline {
             .send_to_llm(
                 &prompt,
                 self.events.as_ref(),
-                dll,
+                binary,
                 function,
                 1,
                 "initial",
@@ -649,7 +649,7 @@ impl TranslationPipeline {
 
         // Emit: LLM response (full content)
         self.emit(ProgressEvent::LlmResponse {
-            dll: dll.to_string(),
+            binary: binary.to_string().into(),
             function: function.to_string(),
             attempt: 1,
             strategy: "initial".to_string(),
@@ -659,7 +659,7 @@ impl TranslationPipeline {
 
         // Emit: LLM call complete
         self.emit(ProgressEvent::LlmCallComplete {
-            dll: dll.to_string(),
+            binary: binary.to_string().into(),
             function: function.to_string(),
             attempt: 1,
             code_length: response.content.len(),
@@ -667,7 +667,7 @@ impl TranslationPipeline {
         });
 
         info!(
-            dll,
+            binary,
             function,
             code_len = response.content.len(),
             model = %response.model,
@@ -675,7 +675,7 @@ impl TranslationPipeline {
         );
 
         Ok(Translation {
-            dll: dll.to_string(),
+            binary: binary.to_string().into(),
             function: function.to_string(),
             function_address: Some(function_info.address),
             rust_code: response.content,
@@ -700,7 +700,7 @@ impl TranslationPipeline {
     ///
     /// * `request` — A pre-built [`TranslationRequest`] with all context.
     pub async fn translate_from_request(&self, request: TranslationRequest) -> Result<Translation> {
-        debug!(dll = %request.dll, function = %request.function, "Translating from request");
+        debug!(binary = %request.binary, function = %request.function, "Translating from request");
 
         if request.disassembly.is_empty() && request.decompiler_output.is_empty() {
             return Err(TranslatorError::MissingContext(
@@ -713,7 +713,7 @@ impl TranslationPipeline {
             .send_to_llm(
                 &prompt,
                 self.events.as_ref(),
-                &request.dll,
+                &request.binary,
                 &request.function,
                 1,
                 "initial",
@@ -728,14 +728,14 @@ impl TranslationPipeline {
         }
 
         info!(
-            dll = %request.dll,
+            binary = %request.binary,
             function = %request.function,
             code_len = response.content.len(),
             "Translation from request complete"
         );
 
         Ok(Translation {
-            dll: request.dll,
+            binary: request.binary,
             function: request.function,
             function_address: None,
             rust_code: response.content,
@@ -765,7 +765,7 @@ impl TranslationPipeline {
     ///
     /// # Arguments
     ///
-    /// * `dll` — The DLL containing the function.
+    /// * `binary` — The DLL containing the function.
     /// * `function` — The function name to translate.
     /// * `config` — Retry configuration (default: 3 attempts, compile_fix strategy).
     /// * `verifier` — The verification engine to use for checking translations.
@@ -804,13 +804,13 @@ impl TranslationPipeline {
     /// ```
     pub async fn try_translate_with_retry(
         &self,
-        dll: &str,
+        binary: &str,
         function: &str,
         config: &retry::RetryConfig,
         verifier: &Verifier,
     ) -> Result<retry::RetryResult> {
         debug!(
-            dll,
+            binary,
             function, "Starting translation with retry (max {} attempts)", config.max_attempts
         );
 
@@ -821,11 +821,11 @@ impl TranslationPipeline {
         // recursion limit — see rust-lang/rust#159228).
         let initial_translation: std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<Translation>> + Send + '_>,
-        > = Box::pin(self.translate(dll, function));
+        > = Box::pin(self.translate(binary, function));
         let initial = initial_translation.await?;
 
         info!(
-            dll,
+            binary,
             function,
             code_len = initial.rust_code.len(),
             "Initial translation complete, beginning verification loop"
@@ -850,13 +850,13 @@ impl TranslationPipeline {
 
         if result.success {
             self.emit(ProgressEvent::TranslationCompleted {
-                dll: dll.to_string(),
+                binary: binary.to_string().into(),
                 function: function.to_string(),
                 total_attempts: result.attempts.len(),
                 success_strategy: result.success_strategy.clone(),
             });
             info!(
-                dll,
+                binary,
                 function,
                 attempts = result.attempts.len(),
                 strategy = %result.success_strategy.as_deref().unwrap_or("unknown"),
@@ -864,12 +864,12 @@ impl TranslationPipeline {
             );
         } else {
             self.emit(ProgressEvent::TranslationFailed {
-                dll: dll.to_string(),
+                binary: binary.to_string().into(),
                 function: function.to_string(),
                 total_attempts: result.attempts.len(),
             });
             warn!(
-                dll,
+                binary,
                 function,
                 attempts = result.attempts.len(),
                 "All retry attempts exhausted without success"
@@ -888,9 +888,9 @@ impl TranslationPipeline {
     /// lookup in that program. The name is resolved to an address first, and
     /// only an exact match is accepted: a substring match would silently
     /// translate a different function.
-    async fn fetch_function(&self, dll: &str, function: &str) -> Result<FunctionInfo> {
+    async fn fetch_function(&self, binary: &str, function: &str) -> Result<FunctionInfo> {
         let context = |source| TranslatorError::GhidraFetch {
-            dll: dll.to_string(),
+            binary: binary.to_string(),
             function: function.to_string(),
             source,
         };
@@ -902,7 +902,7 @@ impl TranslationPipeline {
             .map_err(context)?;
         let found = matches.iter().find(|m| m.name == function).ok_or_else(|| {
             TranslatorError::GhidraFetch {
-                dll: dll.to_string(),
+                binary: binary.to_string(),
                 function: function.to_string(),
                 source: calxgloss_ghidra::GhidraError::NotFound {
                     kind: "function",
@@ -937,7 +937,7 @@ impl TranslationPipeline {
         Ok(FunctionInfo {
             name: report.name,
             address: report.address,
-            dll: dll.to_string(),
+            binary: binary.to_string().into(),
             disassembly: report.disassembly,
             decompiler_output: report.decompiled.body,
             windows_apis: Vec::new(),
@@ -951,13 +951,13 @@ impl TranslationPipeline {
     /// Returned as names rather than [`calxgloss_ghidra::Import`] values: Ghidra reports an import
     /// as a name and an external slot with no module attached, so there is no
     /// module name to put in an `Import`.
-    async fn fetch_imports(&self, dll: &str) -> Result<Vec<String>> {
+    async fn fetch_imports(&self, binary: &str) -> Result<Vec<String>> {
         self.ghidra
             .imports(None)
             .await
             .map(|symbols| symbols.into_iter().map(|s| s.name).collect())
             .map_err(|e| TranslatorError::GhidraFetch {
-                dll: dll.to_string(),
+                binary: binary.to_string(),
                 function: "<imports>".to_string(),
                 source: e,
             })
@@ -1022,14 +1022,14 @@ impl TranslationPipeline {
     /// Build a [`TranslationRequest`] with all gathered context.
     pub(crate) fn build_translation_request(
         &self,
-        dll: &str,
+        binary: &str,
         function: &str,
         function_info: &FunctionInfo,
         tagged_apis: Vec<calxgloss_types::WindowsApiCall>,
         baseline_tests: Vec<TestCase>,
     ) -> TranslationRequest {
         TranslationRequest {
-            dll: dll.to_string(),
+            binary: binary.to_string().into(),
             function: function.to_string(),
             disassembly: function_info.disassembly.trim().to_string(),
             decompiler_output: function_info.decompiler_output.trim().to_string(),
@@ -1140,7 +1140,7 @@ impl TranslationPipeline {
         &self,
         prompt: &str,
         events: Option<&TranslationEvents>,
-        dll: &str,
+        binary: &str,
         function: &str,
         attempt: u32,
         strategy: &str,
@@ -1151,7 +1151,7 @@ impl TranslationPipeline {
         // Pre-check: is the prompt itself too large for the model's context?
         if let Some(fault) = self.context_detector.detect_prompt_too_large(&messages) {
             warn!(
-                dll,
+                binary,
                 function,
                 attempt,
                 strategy,
@@ -1166,7 +1166,7 @@ impl TranslationPipeline {
         let response = if let Some(em) = events {
             let em = em.clone();
             let em_err = em.clone();
-            let dll_s = dll.to_string();
+            let dll_s = binary.to_string();
             let function_s = function.to_string();
             let strategy_s = strategy.to_string();
 
@@ -1183,7 +1183,7 @@ impl TranslationPipeline {
                     tokio::time::sleep(interval).await;
                     let secs = elapsed.as_secs();
                     let _ = em.emit(ProgressEvent::LlmCallInProgress {
-                        dll: dll_kp.clone(),
+                        binary: dll_kp.clone().into(),
                         function: function_kp.clone(),
                         attempt,
                         strategy: strategy_kp.clone(),
@@ -1200,7 +1200,7 @@ impl TranslationPipeline {
                 Ok(_) => {}
                 Err(e) => {
                     let _ = em_err.emit(ProgressEvent::LlmCallFailed {
-                        dll: dll_s.clone(),
+                        binary: dll_s.clone().into(),
                         function: function_s.clone(),
                         attempt,
                         strategy: strategy_s.clone(),
@@ -1220,7 +1220,7 @@ impl TranslationPipeline {
             .detect_response(&response, disassembly_lines)
         {
             warn!(
-                dll,
+                binary,
                 function,
                 attempt,
                 strategy,
@@ -1232,7 +1232,7 @@ impl TranslationPipeline {
             );
             if let Some(logger) = &self.fault_logger {
                 let event = calxgloss_types::FaultEvent::context_window_exceeded(
-                    dll, function, attempt, strategy, &fault,
+                    binary, function, attempt, strategy, &fault,
                 );
                 logger.record(event);
             }
@@ -1250,7 +1250,7 @@ impl TranslationPipeline {
         if !hallucinations.is_empty() {
             let names: Vec<String> = hallucinations.iter().map(|h| h.name.clone()).collect();
             warn!(
-                dll,
+                binary,
                 function,
                 attempt,
                 strategy,
@@ -1260,7 +1260,7 @@ impl TranslationPipeline {
             );
             if let Some(em) = events {
                 let _ = em.emit(ProgressEvent::HallucinationDetected {
-                    dll: dll.to_string(),
+                    binary: binary.to_string().into(),
                     function: function.to_string(),
                     attempt,
                     strategy: strategy.to_string(),
@@ -1270,7 +1270,7 @@ impl TranslationPipeline {
             if let Some(logger) = &self.fault_logger {
                 let names_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
                 let event = calxgloss_types::FaultEvent::hallucination(
-                    dll,
+                    binary,
                     function,
                     attempt,
                     strategy,
@@ -1311,9 +1311,9 @@ impl TranslationPipeline {
     /// Arm the Ghidra client's heartbeat for one analysis pass so the
     /// dashboard can show which function the pass is on. Without an event
     /// channel there is nothing to beat to — the scan runs unchanged.
-    fn begin_scan_pass(&self, dll: &str, pass: &str) {
+    fn begin_scan_pass(&self, binary: &str, pass: &str) {
         if let Some(ref ev) = self.events {
-            self.ghidra.begin_pass(dll, pass, ev);
+            self.ghidra.begin_pass(binary, pass, ev);
         }
     }
 
@@ -1326,53 +1326,53 @@ impl TranslationPipeline {
     /// is already cached.
     ///
     /// Tier 3/4 prompts and escalated retries read recovered data structures
-    /// from `re/analysis/typesdb/{dll}.json` (see
+    /// from `re/analysis/typesdb/{binary}.json` (see
     /// [`extract_data_structures`](crate::retry::helpers::extract_data_structures));
     /// running the recovery scan once up front means every function in the
     /// batch can see type context instead of none. The persisted file is the
-    /// cache: when a database is already saved for `dll`, the scan is skipped
+    /// cache: when a database is already saved for `binary`, the scan is skipped
     /// entirely.
     ///
     /// Returns whether a database is available afterwards. A missing
     /// workspace, an unreachable Ghidra server, or a failed save only log a
     /// warning and return `false` — prompts without data structure context
     /// are degraded, not fatal, and the batch proceeds either way.
-    pub async fn ensure_type_database(&self, dll: &str) -> bool {
+    pub async fn ensure_type_database(&self, binary: &str) -> bool {
         let Some(workspace) = self.workspace.as_deref() else {
             debug!(
-                dll,
+                binary,
                 "No workspace configured; skipping type database recovery"
             );
             return false;
         };
 
         let persistor = TypeDatabasePersistor::new(workspace);
-        if persistor.exists(dll) {
+        if persistor.exists(binary) {
             debug!(
-                dll,
-                path = %persistor.path_for(dll).display(),
+                binary,
+                path = %persistor.path_for(binary).display(),
                 "Type database already cached; skipping recovery"
             );
             return true;
         }
 
-        info!(dll, "Recovering type database before batch translation");
+        info!(binary, "Recovering type database before batch translation");
         let engine = TypesDBEngine::new(&self.ghidra);
-        self.begin_scan_pass(dll, "type database");
-        let scan = engine.scan(dll).await;
+        self.begin_scan_pass(binary, "type database");
+        let scan = engine.scan(binary).await;
         self.end_scan_pass();
         match scan {
             Ok(db) => {
                 if let Err(e) = persistor.save(&db) {
                     warn!(
-                        dll,
+                        binary,
                         error = %e,
                         "Failed to persist recovered type database; continuing without data structure context"
                     );
                     return false;
                 }
                 info!(
-                    dll,
+                    binary,
                     named_types = db.named_types.len(),
                     vtables = db.vtables.len(),
                     inferred_structs = db.inferred_structs.len(),
@@ -1382,7 +1382,7 @@ impl TranslationPipeline {
             }
             Err(e) => {
                 warn!(
-                    dll,
+                    binary,
                     error = %e,
                     "Type database recovery failed; continuing without data structure context"
                 );
@@ -1395,50 +1395,50 @@ impl TranslationPipeline {
     /// an inference result is already cached.
     ///
     /// Prompts and escalated retries read inferred parameter types from
-    /// `re/analysis/typeinfer/{dll}.json` (see
+    /// `re/analysis/typeinfer/{binary}.json` (see
     /// [`extract_type_info`](crate::retry::helpers::extract_type_info));
     /// running the inference scan once up front means every function in the
     /// batch can see type context instead of none. The persisted file is the
-    /// cache: when a result is already saved for `dll`, the scan is skipped
+    /// cache: when a result is already saved for `binary`, the scan is skipped
     /// entirely.
     ///
     /// Returns whether a result is available afterwards. A missing workspace,
     /// an unreachable Ghidra server, or a failed save only log a warning and
     /// return `false` — prompts without type context are degraded, not
     /// fatal, and the batch proceeds either way.
-    pub async fn ensure_type_inference(&self, dll: &str) -> bool {
+    pub async fn ensure_type_inference(&self, binary: &str) -> bool {
         let Some(workspace) = self.workspace.as_deref() else {
-            debug!(dll, "No workspace configured; skipping type inference");
+            debug!(binary, "No workspace configured; skipping type inference");
             return false;
         };
 
         let persistor = TypeInferPersistor::new(workspace);
-        if persistor.exists(dll) {
+        if persistor.exists(binary) {
             debug!(
-                dll,
-                path = %persistor.path_for(dll).display(),
+                binary,
+                path = %persistor.path_for(binary).display(),
                 "Type inference result already cached; skipping scan"
             );
             return true;
         }
 
-        info!(dll, "Inferring parameter types before batch translation");
+        info!(binary, "Inferring parameter types before batch translation");
         let engine = TypeInferEngine::new(&self.ghidra);
-        self.begin_scan_pass(dll, "type inference");
-        let scan = engine.scan(dll).await;
+        self.begin_scan_pass(binary, "type inference");
+        let scan = engine.scan(binary).await;
         self.end_scan_pass();
         match scan {
             Ok(result) => {
                 if let Err(e) = persistor.save(&result) {
                     warn!(
-                        dll,
+                        binary,
                         error = %e,
                         "Failed to persist type inference result; continuing without type context"
                     );
                     return false;
                 }
                 info!(
-                    dll,
+                    binary,
                     inferences = result.inferences.len(),
                     "Type inference complete"
                 );
@@ -1446,7 +1446,7 @@ impl TranslationPipeline {
             }
             Err(e) => {
                 warn!(
-                    dll,
+                    binary,
                     error = %e,
                     "Type inference failed; continuing without type context"
                 );
@@ -1459,53 +1459,53 @@ impl TranslationPipeline {
     /// recognition result is already cached.
     ///
     /// Escalated retries read recognized algorithm hints from
-    /// `re/analysis/algorithm/{dll}.json` (see
+    /// `re/analysis/algorithm/{binary}.json` (see
     /// [`extract_algorithm_hints`](crate::retry::helpers::extract_algorithm_hints));
     /// running the recognition scan once up front means every function in the
     /// batch can see algorithm context instead of none. The persisted file is
-    /// the cache: when a result is already saved for `dll`, the scan is
+    /// the cache: when a result is already saved for `binary`, the scan is
     /// skipped entirely.
     ///
     /// Returns whether a result is available afterwards. A missing workspace,
     /// an unreachable Ghidra server, or a failed save only log a warning and
     /// return `false` — prompts without algorithm context are degraded, not
     /// fatal, and the batch proceeds either way.
-    pub async fn ensure_algorithm_recognition(&self, dll: &str) -> bool {
+    pub async fn ensure_algorithm_recognition(&self, binary: &str) -> bool {
         let Some(workspace) = self.workspace.as_deref() else {
             debug!(
-                dll,
+                binary,
                 "No workspace configured; skipping algorithm recognition"
             );
             return false;
         };
 
         let persistor = AlgorithmPersistor::new(workspace);
-        if persistor.exists(dll) {
+        if persistor.exists(binary) {
             debug!(
-                dll,
-                path = %persistor.path_for(dll).display(),
+                binary,
+                path = %persistor.path_for(binary).display(),
                 "Algorithm recognition result already cached; skipping scan"
             );
             return true;
         }
 
-        info!(dll, "Recognizing algorithms before batch translation");
+        info!(binary, "Recognizing algorithms before batch translation");
         let engine = AlgorithmEngine::new(&self.ghidra);
-        self.begin_scan_pass(dll, "algorithm recognition");
-        let scan = engine.scan(dll).await;
+        self.begin_scan_pass(binary, "algorithm recognition");
+        let scan = engine.scan(binary).await;
         self.end_scan_pass();
         match scan {
             Ok(result) => {
                 if let Err(e) = persistor.save(&result) {
                     warn!(
-                        dll,
+                        binary,
                         error = %e,
                         "Failed to persist algorithm recognition result; continuing without algorithm context"
                     );
                     return false;
                 }
                 info!(
-                    dll,
+                    binary,
                     hints = result.hints.len(),
                     "Algorithm recognition complete"
                 );
@@ -1513,7 +1513,7 @@ impl TranslationPipeline {
             }
             Err(e) => {
                 warn!(
-                    dll,
+                    binary,
                     error = %e,
                     "Algorithm recognition failed; continuing without algorithm context"
                 );
@@ -1526,54 +1526,57 @@ impl TranslationPipeline {
     /// unless a detection result is already cached.
     ///
     /// The scan's findings — allocation pairs, handle lifetimes, and
-    /// reference counts — are filed at `re/analysis/memory/{dll}.json` for
+    /// reference counts — are filed at `re/analysis/memory/{binary}.json` for
     /// the prompt path to read (see
     /// [`extract_memory_hints`](crate::retry::helpers::extract_memory_hints));
     /// running the detection scan once up front
     /// means every function in the batch can see memory context instead of
     /// none. The persisted file is the cache: when a result is already
-    /// saved for `dll`, the scan is skipped entirely.
+    /// saved for `binary`, the scan is skipped entirely.
     ///
     /// Returns whether a result is available afterwards. A missing workspace,
     /// an unreachable Ghidra server, or a failed save only log a warning and
     /// return `false` — prompts without memory context are degraded, not
     /// fatal, and the batch proceeds either way.
-    pub async fn ensure_memory_detection(&self, dll: &str) -> bool {
+    pub async fn ensure_memory_detection(&self, binary: &str) -> bool {
         let Some(workspace) = self.workspace.as_deref() else {
             debug!(
-                dll,
+                binary,
                 "No workspace configured; skipping memory lifecycle detection"
             );
             return false;
         };
 
         let persistor = MemoryPersistor::new(workspace);
-        if persistor.exists(dll) {
+        if persistor.exists(binary) {
             debug!(
-                dll,
-                path = %persistor.path_for(dll).display(),
+                binary,
+                path = %persistor.path_for(binary).display(),
                 "Memory lifecycle result already cached; skipping scan"
             );
             return true;
         }
 
-        info!(dll, "Detecting memory lifecycles before batch translation");
+        info!(
+            binary,
+            "Detecting memory lifecycles before batch translation"
+        );
         let engine = MemoryEngine::new(&self.ghidra);
-        self.begin_scan_pass(dll, "memory detection");
-        let scan = engine.scan(dll).await;
+        self.begin_scan_pass(binary, "memory detection");
+        let scan = engine.scan(binary).await;
         self.end_scan_pass();
         match scan {
             Ok(result) => {
                 if let Err(e) = persistor.save(&result) {
                     warn!(
-                        dll,
+                        binary,
                         error = %e,
                         "Failed to persist memory lifecycle result; continuing without memory context"
                     );
                     return false;
                 }
                 info!(
-                    dll,
+                    binary,
                     findings = result.findings.len(),
                     "Memory lifecycle detection complete"
                 );
@@ -1581,7 +1584,7 @@ impl TranslationPipeline {
             }
             Err(e) => {
                 warn!(
-                    dll,
+                    binary,
                     error = %e,
                     "Memory lifecycle detection failed; continuing without memory context"
                 );
@@ -1594,57 +1597,57 @@ impl TranslationPipeline {
     /// starts, unless a detection result is already cached.
     ///
     /// The scan's findings — mutex pairings, atomic calls, and thread
-    /// spawns — are filed at `re/analysis/sync/{dll}.json` for the prompt
+    /// spawns — are filed at `re/analysis/sync/{binary}.json` for the prompt
     /// path to read (see
     /// [`extract_concurrency_hints`](crate::retry::helpers::extract_concurrency_hints));
     /// running the detection scan once up front means every function in
     /// the batch can see concurrency context instead of none. The
     /// persisted file is the cache: when a result is already saved for
-    /// `dll`, the scan is skipped entirely.
+    /// `binary`, the scan is skipped entirely.
     ///
     /// Returns whether a result is available afterwards. A missing workspace,
     /// an unreachable Ghidra server, or a failed save only log a warning and
     /// return `false` — prompts without concurrency context are degraded,
     /// not fatal, and the batch proceeds either way.
-    pub async fn ensure_sync_detection(&self, dll: &str) -> bool {
+    pub async fn ensure_sync_detection(&self, binary: &str) -> bool {
         let Some(workspace) = self.workspace.as_deref() else {
             debug!(
-                dll,
+                binary,
                 "No workspace configured; skipping concurrency detection"
             );
             return false;
         };
 
         let persistor = SyncPersistor::new(workspace);
-        if persistor.exists(dll) {
+        if persistor.exists(binary) {
             debug!(
-                dll,
-                path = %persistor.path_for(dll).display(),
+                binary,
+                path = %persistor.path_for(binary).display(),
                 "Concurrency result already cached; skipping scan"
             );
             return true;
         }
 
         info!(
-            dll,
+            binary,
             "Detecting concurrency constructs before batch translation"
         );
         let engine = SyncEngine::new(&self.ghidra);
-        self.begin_scan_pass(dll, "sync detection");
-        let scan = engine.scan(dll).await;
+        self.begin_scan_pass(binary, "sync detection");
+        let scan = engine.scan(binary).await;
         self.end_scan_pass();
         match scan {
             Ok(result) => {
                 if let Err(e) = persistor.save(&result) {
                     warn!(
-                        dll,
+                        binary,
                         error = %e,
                         "Failed to persist concurrency result; continuing without concurrency context"
                     );
                     return false;
                 }
                 info!(
-                    dll,
+                    binary,
                     findings = result.findings.len(),
                     "Concurrency detection complete"
                 );
@@ -1652,7 +1655,7 @@ impl TranslationPipeline {
             }
             Err(e) => {
                 warn!(
-                    dll,
+                    binary,
                     error = %e,
                     "Concurrency detection failed; continuing without concurrency context"
                 );
@@ -1666,53 +1669,56 @@ impl TranslationPipeline {
     ///
     /// The scan's findings — bitflag groups, enum candidates, and
     /// repeated magic numbers — are filed at
-    /// `re/analysis/consts/{dll}.json` for the prompt path to read (see
+    /// `re/analysis/consts/{binary}.json` for the prompt path to read (see
     /// [`extract_constant_hints`](crate::retry::helpers::extract_constant_hints));
     /// running the detection scan once up front means every function in
     /// the batch can see constant context instead of none. The
     /// persisted file is the cache: when a result is already saved for
-    /// `dll`, the scan is skipped entirely.
+    /// `binary`, the scan is skipped entirely.
     ///
     /// Returns whether a result is available afterwards. A missing workspace,
     /// an unreachable Ghidra server, or a failed save only log a warning and
     /// return `false` — prompts without constant context are degraded, not
     /// fatal, and the batch proceeds either way.
-    pub async fn ensure_const_detection(&self, dll: &str) -> bool {
+    pub async fn ensure_const_detection(&self, binary: &str) -> bool {
         let Some(workspace) = self.workspace.as_deref() else {
-            debug!(dll, "No workspace configured; skipping constant detection");
+            debug!(
+                binary,
+                "No workspace configured; skipping constant detection"
+            );
             return false;
         };
 
         let persistor = ConstPersistor::new(workspace);
-        if persistor.exists(dll) {
+        if persistor.exists(binary) {
             debug!(
-                dll,
-                path = %persistor.path_for(dll).display(),
+                binary,
+                path = %persistor.path_for(binary).display(),
                 "Constant result already cached; skipping scan"
             );
             return true;
         }
 
         info!(
-            dll,
+            binary,
             "Detecting constant structures before batch translation"
         );
         let engine = ConstEngine::new(&self.ghidra);
-        self.begin_scan_pass(dll, "constant detection");
-        let scan = engine.scan(dll).await;
+        self.begin_scan_pass(binary, "constant detection");
+        let scan = engine.scan(binary).await;
         self.end_scan_pass();
         match scan {
             Ok(result) => {
                 if let Err(e) = persistor.save(&result) {
                     warn!(
-                        dll,
+                        binary,
                         error = %e,
                         "Failed to persist constant result; continuing without constant context"
                     );
                     return false;
                 }
                 info!(
-                    dll,
+                    binary,
                     findings = result.findings.len(),
                     "Constant detection complete"
                 );
@@ -1720,7 +1726,7 @@ impl TranslationPipeline {
             }
             Err(e) => {
                 warn!(
-                    dll,
+                    binary,
                     error = %e,
                     "Constant detection failed; continuing without constant context"
                 );
@@ -1734,50 +1740,53 @@ impl TranslationPipeline {
     ///
     /// The scan's findings — function-pointer array calls, callback
     /// registrations, and jump-table dispatches — are filed at
-    /// `re/analysis/callback/{dll}.json` for the prompt path to read (see
+    /// `re/analysis/callback/{binary}.json` for the prompt path to read (see
     /// [`extract_callback_hints`](crate::retry::helpers::extract_callback_hints));
     /// running the detection scan once up front means every function in
     /// the batch can see callback context instead of none. The persisted
-    /// file is the cache: when a result is already saved for `dll`, the
+    /// file is the cache: when a result is already saved for `binary`, the
     /// scan is skipped entirely.
     ///
     /// Returns whether a result is available afterwards. A missing workspace,
     /// an unreachable Ghidra server, or a failed save only log a warning and
     /// return `false` — prompts without callback context are degraded, not
     /// fatal, and the batch proceeds either way.
-    pub async fn ensure_callback_detection(&self, dll: &str) -> bool {
+    pub async fn ensure_callback_detection(&self, binary: &str) -> bool {
         let Some(workspace) = self.workspace.as_deref() else {
-            debug!(dll, "No workspace configured; skipping callback detection");
+            debug!(
+                binary,
+                "No workspace configured; skipping callback detection"
+            );
             return false;
         };
 
         let persistor = CallbackPersistor::new(workspace);
-        if persistor.exists(dll) {
+        if persistor.exists(binary) {
             debug!(
-                dll,
-                path = %persistor.path_for(dll).display(),
+                binary,
+                path = %persistor.path_for(binary).display(),
                 "Callback result already cached; skipping scan"
             );
             return true;
         }
 
-        info!(dll, "Detecting callback tables before batch translation");
+        info!(binary, "Detecting callback tables before batch translation");
         let engine = CallbackEngine::new(&self.ghidra);
-        self.begin_scan_pass(dll, "callback detection");
-        let scan = engine.scan(dll).await;
+        self.begin_scan_pass(binary, "callback detection");
+        let scan = engine.scan(binary).await;
         self.end_scan_pass();
         match scan {
             Ok(result) => {
                 if let Err(e) = persistor.save(&result) {
                     warn!(
-                        dll,
+                        binary,
                         error = %e,
                         "Failed to persist callback result; continuing without callback context"
                     );
                     return false;
                 }
                 info!(
-                    dll,
+                    binary,
                     findings = result.findings.len(),
                     "Callback detection complete"
                 );
@@ -1785,7 +1794,7 @@ impl TranslationPipeline {
             }
             Err(e) => {
                 warn!(
-                    dll,
+                    binary,
                     error = %e,
                     "Callback detection failed; continuing without callback context"
                 );
@@ -1799,56 +1808,56 @@ impl TranslationPipeline {
     ///
     /// The scan's findings — switch-shaped if-else chains, self-recursion,
     /// and state-machine patterns — are filed at
-    /// `re/analysis/controlflow/{dll}.json` for the prompt path to read (see
+    /// `re/analysis/controlflow/{binary}.json` for the prompt path to read (see
     /// [`extract_control_flow_hints`](crate::retry::helpers::extract_control_flow_hints));
     /// running the detection scan once up front means every function in
     /// the batch can see control-flow context instead of none. The persisted
-    /// file is the cache: when a result is already saved for `dll`, the scan
+    /// file is the cache: when a result is already saved for `binary`, the scan
     /// is skipped entirely.
     ///
     /// Returns whether a result is available afterwards. A missing workspace,
     /// an unreachable Ghidra server, or a failed save only log a warning and
     /// return `false` — prompts without control-flow context are degraded,
     /// not fatal, and the batch proceeds either way.
-    pub async fn ensure_controlflow_detection(&self, dll: &str) -> bool {
+    pub async fn ensure_controlflow_detection(&self, binary: &str) -> bool {
         let Some(workspace) = self.workspace.as_deref() else {
             debug!(
-                dll,
+                binary,
                 "No workspace configured; skipping control-flow detection"
             );
             return false;
         };
 
         let persistor = ControlFlowPersistor::new(workspace);
-        if persistor.exists(dll) {
+        if persistor.exists(binary) {
             debug!(
-                dll,
-                path = %persistor.path_for(dll).display(),
+                binary,
+                path = %persistor.path_for(binary).display(),
                 "Control-flow result already cached; skipping scan"
             );
             return true;
         }
 
         info!(
-            dll,
+            binary,
             "Detecting control-flow patterns before batch translation"
         );
         let engine = ControlFlowEngine::new(&self.ghidra);
-        self.begin_scan_pass(dll, "control flow detection");
-        let scan = engine.scan(dll).await;
+        self.begin_scan_pass(binary, "control flow detection");
+        let scan = engine.scan(binary).await;
         self.end_scan_pass();
         match scan {
             Ok(result) => {
                 if let Err(e) = persistor.save(&result) {
                     warn!(
-                        dll,
+                        binary,
                         error = %e,
                         "Failed to persist control-flow result; continuing without control-flow context"
                     );
                     return false;
                 }
                 info!(
-                    dll,
+                    binary,
                     findings = result.findings.len(),
                     "Control-flow detection complete"
                 );
@@ -1856,7 +1865,7 @@ impl TranslationPipeline {
             }
             Err(e) => {
                 warn!(
-                    dll,
+                    binary,
                     error = %e,
                     "Control-flow detection failed; continuing without control-flow context"
                 );
@@ -1870,51 +1879,54 @@ impl TranslationPipeline {
     ///
     /// The scan's findings — classified strings, their functions, and
     /// format-string calls with the argument types they imply — are filed
-    /// at `re/analysis/stringctx/{dll}.json` for the prompt path to read
+    /// at `re/analysis/stringctx/{binary}.json` for the prompt path to read
     /// (see
     /// [`extract_string_context`](crate::retry::helpers::extract_string_context));
     /// running the scan once up front means every function in the batch
     /// can see string context instead of none. The persisted file is the
-    /// cache: when a result is already saved for `dll`, the scan is
+    /// cache: when a result is already saved for `binary`, the scan is
     /// skipped entirely.
     ///
     /// Returns whether a result is available afterwards. A missing workspace,
     /// an unreachable Ghidra server, or a failed save only log a warning and
     /// return `false` — prompts without string context are degraded, not
     /// fatal, and the batch proceeds either way.
-    pub async fn ensure_string_context(&self, dll: &str) -> bool {
+    pub async fn ensure_string_context(&self, binary: &str) -> bool {
         let Some(workspace) = self.workspace.as_deref() else {
-            debug!(dll, "No workspace configured; skipping string context scan");
+            debug!(
+                binary,
+                "No workspace configured; skipping string context scan"
+            );
             return false;
         };
 
         let persistor = StringContextPersistor::new(workspace);
-        if persistor.exists(dll) {
+        if persistor.exists(binary) {
             debug!(
-                dll,
-                path = %persistor.path_for(dll).display(),
+                binary,
+                path = %persistor.path_for(binary).display(),
                 "String context result already cached; skipping scan"
             );
             return true;
         }
 
-        info!(dll, "Mapping program strings before batch translation");
+        info!(binary, "Mapping program strings before batch translation");
         let engine = StringContextEngine::new(&self.ghidra);
-        self.begin_scan_pass(dll, "string context");
-        let scan = engine.scan(dll).await;
+        self.begin_scan_pass(binary, "string context");
+        let scan = engine.scan(binary).await;
         self.end_scan_pass();
         match scan {
             Ok(result) => {
                 if let Err(e) = persistor.save(&result) {
                     warn!(
-                        dll,
+                        binary,
                         error = %e,
                         "Failed to persist string context result; continuing without string context"
                     );
                     return false;
                 }
                 info!(
-                    dll,
+                    binary,
                     findings = result.findings.len(),
                     "String context scan complete"
                 );
@@ -1922,7 +1934,7 @@ impl TranslationPipeline {
             }
             Err(e) => {
                 warn!(
-                    dll,
+                    binary,
                     error = %e,
                     "String context scan failed; continuing without string context"
                 );
@@ -1936,53 +1948,53 @@ impl TranslationPipeline {
     ///
     /// The scan's findings — identified import-table entries and the
     /// APIs each function reaches through the call graph — are filed at
-    /// `re/analysis/apidetect/{dll}.json` for the prompt path to read
+    /// `re/analysis/apidetect/{binary}.json` for the prompt path to read
     /// (see [`extract_api_hints`](crate::retry::helpers::extract_api_hints));
     /// running the scan once up front means every function in the batch
     /// can see library/API context instead of none. The persisted file
-    /// is the cache: when a result is already saved for `dll`, the scan
+    /// is the cache: when a result is already saved for `binary`, the scan
     /// is skipped entirely.
     ///
     /// Returns whether a result is available afterwards. A missing workspace,
     /// an unreachable Ghidra server, or a failed save only log a warning and
     /// return `false` — prompts without API context are degraded, not fatal,
     /// and the batch proceeds either way.
-    pub async fn ensure_api_detection(&self, dll: &str) -> bool {
+    pub async fn ensure_api_detection(&self, binary: &str) -> bool {
         let Some(workspace) = self.workspace.as_deref() else {
-            debug!(dll, "No workspace configured; skipping API detection");
+            debug!(binary, "No workspace configured; skipping API detection");
             return false;
         };
 
         let persistor = ApiPersistor::new(workspace);
-        if persistor.exists(dll) {
+        if persistor.exists(binary) {
             debug!(
-                dll,
-                path = %persistor.path_for(dll).display(),
+                binary,
+                path = %persistor.path_for(binary).display(),
                 "API result already cached; skipping scan"
             );
             return true;
         }
 
         info!(
-            dll,
+            binary,
             "Identifying libraries and APIs before batch translation"
         );
         let engine = ApiEngine::new(&self.ghidra);
-        self.begin_scan_pass(dll, "API detection");
-        let scan = engine.scan(dll).await;
+        self.begin_scan_pass(binary, "API detection");
+        let scan = engine.scan(binary).await;
         self.end_scan_pass();
         match scan {
             Ok(result) => {
                 if let Err(e) = persistor.save(&result) {
                     warn!(
-                        dll,
+                        binary,
                         error = %e,
                         "Failed to persist API result; continuing without API context"
                     );
                     return false;
                 }
                 info!(
-                    dll,
+                    binary,
                     findings = result.findings.len(),
                     "API detection complete"
                 );
@@ -1990,7 +2002,7 @@ impl TranslationPipeline {
             }
             Err(e) => {
                 warn!(
-                    dll,
+                    binary,
                     error = %e,
                     "API detection failed; continuing without API context"
                 );
@@ -2004,57 +2016,57 @@ impl TranslationPipeline {
     ///
     /// The scan's findings — byte-swap calls, bit-packing chains, and
     /// file-format signature comparisons — are filed at
-    /// `re/analysis/serialize/{dll}.json` for the prompt path to read
+    /// `re/analysis/serialize/{binary}.json` for the prompt path to read
     /// (see
     /// [`extract_serialization_hints`](crate::retry::helpers::extract_serialization_hints));
     /// running the detection scan once up front means every function in
     /// the batch can see serialization context instead of none. The
     /// persisted file is the cache: when a result is already saved for
-    /// `dll`, the scan is skipped entirely.
+    /// `binary`, the scan is skipped entirely.
     ///
     /// Returns whether a result is available afterwards. A missing workspace,
     /// an unreachable Ghidra server, or a failed save only log a warning and
     /// return `false` — prompts without serialization context are degraded,
     /// not fatal, and the batch proceeds either way.
-    pub async fn ensure_serialize_detection(&self, dll: &str) -> bool {
+    pub async fn ensure_serialize_detection(&self, binary: &str) -> bool {
         let Some(workspace) = self.workspace.as_deref() else {
             debug!(
-                dll,
+                binary,
                 "No workspace configured; skipping serialization detection"
             );
             return false;
         };
 
         let persistor = SerializePersistor::new(workspace);
-        if persistor.exists(dll) {
+        if persistor.exists(binary) {
             debug!(
-                dll,
-                path = %persistor.path_for(dll).display(),
+                binary,
+                path = %persistor.path_for(binary).display(),
                 "Serialization result already cached; skipping scan"
             );
             return true;
         }
 
         info!(
-            dll,
+            binary,
             "Detecting serialization patterns before batch translation"
         );
         let engine = SerializeEngine::new(&self.ghidra);
-        self.begin_scan_pass(dll, "serialization detection");
-        let scan = engine.scan(dll).await;
+        self.begin_scan_pass(binary, "serialization detection");
+        let scan = engine.scan(binary).await;
         self.end_scan_pass();
         match scan {
             Ok(result) => {
                 if let Err(e) = persistor.save(&result) {
                     warn!(
-                        dll,
+                        binary,
                         error = %e,
                         "Failed to persist serialization result; continuing without serialization context"
                     );
                     return false;
                 }
                 info!(
-                    dll,
+                    binary,
                     findings = result.findings.len(),
                     "Serialization detection complete"
                 );
@@ -2062,7 +2074,7 @@ impl TranslationPipeline {
             }
             Err(e) => {
                 warn!(
-                    dll,
+                    binary,
                     error = %e,
                     "Serialization detection failed; continuing without serialization context"
                 );
@@ -2102,7 +2114,7 @@ impl TranslationPipeline {
     ///
     /// # Arguments
     ///
-    /// * `dll` — The DLL containing all functions to translate.
+    /// * `binary` — The DLL containing all functions to translate.
     /// * `functions` — Function names to translate.
     /// * `config` — Retry configuration applied to every function.
     /// * `verifier` — Verification engine used for checking translations.
@@ -2211,7 +2223,7 @@ impl TranslationPipeline {
     #[allow(clippy::type_complexity)]
     pub async fn batch_translate(
         &self,
-        dll: &str,
+        binary: &str,
         functions: &[String],
         config: &retry::RetryConfig,
         verifier: &Verifier,
@@ -2219,26 +2231,30 @@ impl TranslationPipeline {
             &mut dyn FnMut(&str, &str, &mut batch::FunctionResult) -> bool,
         >,
     ) -> Result<batch::BatchTranslationResult> {
-        debug!(dll, count = functions.len(), "Starting batch translation");
+        debug!(
+            binary,
+            count = functions.len(),
+            "Starting batch translation"
+        );
 
-        self.ensure_type_database(dll).await;
-        self.ensure_type_inference(dll).await;
-        self.ensure_algorithm_recognition(dll).await;
-        self.ensure_memory_detection(dll).await;
-        self.ensure_sync_detection(dll).await;
-        self.ensure_callback_detection(dll).await;
-        self.ensure_controlflow_detection(dll).await;
-        self.ensure_string_context(dll).await;
-        self.ensure_api_detection(dll).await;
-        self.ensure_const_detection(dll).await;
-        self.ensure_serialize_detection(dll).await;
+        self.ensure_type_database(binary).await;
+        self.ensure_type_inference(binary).await;
+        self.ensure_algorithm_recognition(binary).await;
+        self.ensure_memory_detection(binary).await;
+        self.ensure_sync_detection(binary).await;
+        self.ensure_callback_detection(binary).await;
+        self.ensure_controlflow_detection(binary).await;
+        self.ensure_string_context(binary).await;
+        self.ensure_api_detection(binary).await;
+        self.ensure_const_detection(binary).await;
+        self.ensure_serialize_detection(binary).await;
 
-        let mut batch_result = batch::BatchTranslationResult::new(dll.to_string());
+        let mut batch_result = batch::BatchTranslationResult::new(binary.to_string());
 
         for (idx, function) in functions.iter().enumerate() {
             if self.stop_requested() {
                 info!(
-                    dll,
+                    binary,
                     remaining = functions.len() - idx,
                     "Stop signal received — ending batch at unit boundary"
                 );
@@ -2246,7 +2262,7 @@ impl TranslationPipeline {
             }
 
             info!(
-                dll,
+                binary,
                 function,
                 index = idx + 1,
                 total = functions.len(),
@@ -2254,20 +2270,20 @@ impl TranslationPipeline {
             );
 
             let mut result = match self
-                .try_translate_with_retry(dll, function, config, verifier)
+                .try_translate_with_retry(binary, function, config, verifier)
                 .await
             {
                 Ok(retry_result) => {
                     if retry_result.success {
                         info!(
-                            dll,
+                            binary,
                             function,
                             attempts = retry_result.attempts.len(),
                             "Batch function succeeded"
                         );
                         let rust_code = retry_result.rust_code.clone().unwrap_or_default();
                         batch::FunctionResult::success(
-                            dll.to_string(),
+                            binary.to_string(),
                             function.clone(),
                             rust_code,
                             retry_result,
@@ -2275,13 +2291,13 @@ impl TranslationPipeline {
                         )
                     } else {
                         warn!(
-                            dll,
+                            binary,
                             function,
                             attempts = retry_result.attempts.len(),
                             "Batch function exhausted all retries"
                         );
                         batch::FunctionResult::failure(
-                            dll.to_string(),
+                            binary.to_string(),
                             function.clone(),
                             retry_result,
                         )
@@ -2289,14 +2305,18 @@ impl TranslationPipeline {
                 }
                 Err(e) => {
                     warn!(
-                        dll,
+                        binary,
                         function,
                         error = %e,
                         "Batch function translation failed (pipeline error)"
                     );
                     // Create a minimal failed result so the caller sees it
                     let empty_result = retry::RetryResult::new();
-                    batch::FunctionResult::failure(dll.to_string(), function.clone(), empty_result)
+                    batch::FunctionResult::failure(
+                        binary.to_string(),
+                        function.clone(),
+                        empty_result,
+                    )
                 }
             };
 
@@ -2305,7 +2325,7 @@ impl TranslationPipeline {
 
             // Emit progress event for real-time tracking
             self.emit(ProgressEvent::FunctionCompleted {
-                dll: dll.to_string(),
+                binary: binary.to_string().into(),
                 function: function.clone(),
                 success,
                 attempts: 0,  // filled by caller after git branch creation
@@ -2314,19 +2334,19 @@ impl TranslationPipeline {
 
             // Invoke the caller's callback (e.g., for incremental git commits)
             let continue_batch = if let Some(ref mut cb) = on_function_completed {
-                cb(dll, function, &mut result)
+                cb(binary, function, &mut result)
             } else {
                 true
             };
 
             if !continue_batch {
-                info!(dll, function, "Batch stopped early by callback");
+                info!(binary, function, "Batch stopped early by callback");
                 break;
             }
         }
 
         info!(
-            dll,
+            binary,
             total = batch_result.total_count(),
             success = batch_result.success_count(),
             failure = batch_result.failure_count(),
@@ -2447,19 +2467,19 @@ impl TranslationPipeline {
             &mut dyn FnMut(&str, &str, &mut batch::FunctionResult) -> bool,
         >,
     ) -> Result<batch::BatchTranslationResult> {
-        debug!(dll = %graph.dll, count = graph.functions.len(), "Starting call-graph batch translation");
+        debug!(binary = %graph.binary, count = graph.functions.len(), "Starting call-graph batch translation");
 
-        self.ensure_type_database(&graph.dll).await;
-        self.ensure_type_inference(&graph.dll).await;
-        self.ensure_algorithm_recognition(&graph.dll).await;
-        self.ensure_memory_detection(&graph.dll).await;
-        self.ensure_sync_detection(&graph.dll).await;
-        self.ensure_callback_detection(&graph.dll).await;
-        self.ensure_controlflow_detection(&graph.dll).await;
-        self.ensure_string_context(&graph.dll).await;
-        self.ensure_api_detection(&graph.dll).await;
-        self.ensure_const_detection(&graph.dll).await;
-        self.ensure_serialize_detection(&graph.dll).await;
+        self.ensure_type_database(&graph.binary).await;
+        self.ensure_type_inference(&graph.binary).await;
+        self.ensure_algorithm_recognition(&graph.binary).await;
+        self.ensure_memory_detection(&graph.binary).await;
+        self.ensure_sync_detection(&graph.binary).await;
+        self.ensure_callback_detection(&graph.binary).await;
+        self.ensure_controlflow_detection(&graph.binary).await;
+        self.ensure_string_context(&graph.binary).await;
+        self.ensure_api_detection(&graph.binary).await;
+        self.ensure_const_detection(&graph.binary).await;
+        self.ensure_serialize_detection(&graph.binary).await;
 
         // Build a priority-ordered plan
         let orderer = calxgloss_callgraph::TranslationOrderer::new();
@@ -2468,15 +2488,15 @@ impl TranslationPipeline {
             .map_err(|e| TranslatorError::CallGraph(e.to_string()))?;
 
         let plan: Vec<_> = plan.into_iter().collect();
-        let dll = &graph.dll;
-        let mut batch_result = batch::BatchTranslationResult::new(dll.clone());
+        let binary = &graph.binary;
+        let mut batch_result = batch::BatchTranslationResult::new(binary.clone());
 
         for (idx, plan_func) in plan.iter().enumerate() {
             use calxgloss_callgraph::TranslationPriority;
 
             if self.stop_requested() {
                 info!(
-                    dll,
+                    binary,
                     remaining = plan.len() - idx,
                     "Stop signal received — ending call-graph batch at unit boundary"
                 );
@@ -2488,17 +2508,17 @@ impl TranslationPipeline {
                 // Skip functions are truly skipped (runtime library functions)
                 if matches!(plan_func.category, NodeCategory::Skip) {
                     info!(
-                        dll,
+                        binary,
                         name = %plan_func.name,
                         address = plan_func.address,
                         "Skipping runtime library function"
                     );
                     let skipped =
-                        batch::FunctionResult::skipped(dll.clone(), plan_func.name.clone());
+                        batch::FunctionResult::skipped(binary.clone(), plan_func.name.clone());
                     batch_result.add(skipped.clone());
 
                     self.emit(ProgressEvent::FunctionCompleted {
-                        dll: dll.clone(),
+                        binary: binary.clone().into(),
                         function: plan_func.name.clone(),
                         success: true,
                         attempts: 0,
@@ -2507,9 +2527,9 @@ impl TranslationPipeline {
 
                     // Invoke the caller's callback even for skipped functions
                     if let Some(ref mut cb) = on_function_completed
-                        && !cb(dll, &plan_func.name, &mut skipped.clone())
+                        && !cb(binary, &plan_func.name, &mut skipped.clone())
                     {
-                        info!(dll, function = %plan_func.name, "Batch stopped early by callback");
+                        info!(binary, function = %plan_func.name, "Batch stopped early by callback");
                         break;
                     }
 
@@ -2518,18 +2538,21 @@ impl TranslationPipeline {
 
                 // Generate stub for entry point functions
                 info!(
-                    dll,
+                    binary,
                     name = %plan_func.name,
                     address = plan_func.address,
                     "Generating stub for root function"
                 );
                 let stub_code = self.generate_stub(&plan_func.name, "");
-                let stubbed =
-                    batch::FunctionResult::stubbed(dll.clone(), plan_func.name.clone(), stub_code);
+                let stubbed = batch::FunctionResult::stubbed(
+                    binary.clone(),
+                    plan_func.name.clone(),
+                    stub_code,
+                );
                 batch_result.add(stubbed.clone());
 
                 self.emit(ProgressEvent::FunctionCompleted {
-                    dll: dll.clone(),
+                    binary: binary.clone().into(),
                     function: plan_func.name.clone(),
                     success: true,
                     attempts: 0,
@@ -2538,9 +2561,9 @@ impl TranslationPipeline {
 
                 // Invoke the caller's callback even for stubbed functions
                 if let Some(ref mut cb) = on_function_completed
-                    && !cb(dll, &plan_func.name, &mut stubbed.clone())
+                    && !cb(binary, &plan_func.name, &mut stubbed.clone())
                 {
-                    info!(dll, function = %plan_func.name, "Batch stopped early by callback");
+                    info!(binary, function = %plan_func.name, "Batch stopped early by callback");
                     break;
                 }
 
@@ -2548,7 +2571,7 @@ impl TranslationPipeline {
             }
 
             info!(
-                dll,
+                binary,
                 name = %plan_func.name,
                 address = plan_func.address,
                 priority = ?plan_func.priority,
@@ -2558,20 +2581,20 @@ impl TranslationPipeline {
             );
 
             let mut result = match self
-                .try_translate_with_retry(dll, &plan_func.name, config, verifier)
+                .try_translate_with_retry(binary, &plan_func.name, config, verifier)
                 .await
             {
                 Ok(retry_result) => {
                     if retry_result.success {
                         info!(
-                            dll,
+                            binary,
                             name = %plan_func.name,
                             attempts = retry_result.attempts.len(),
                             "Batch function succeeded"
                         );
                         let rust_code = retry_result.rust_code.clone().unwrap_or_default();
                         batch::FunctionResult::success(
-                            dll.clone(),
+                            binary.clone(),
                             plan_func.name.clone(),
                             rust_code,
                             retry_result,
@@ -2579,14 +2602,14 @@ impl TranslationPipeline {
                         )
                     } else {
                         warn!(
-                            dll,
+                            binary,
                             name = %plan_func.name,
                             attempts = retry_result.attempts.len(),
                             "Batch function exhausted all retries"
                         );
                         let empty_result = retry::RetryResult::new();
                         batch::FunctionResult::failure(
-                            dll.clone(),
+                            binary.clone(),
                             plan_func.name.clone(),
                             empty_result,
                         )
@@ -2594,14 +2617,14 @@ impl TranslationPipeline {
                 }
                 Err(e) => {
                     warn!(
-                        dll,
+                        binary,
                         name = %plan_func.name,
                         error = %e,
                         "Batch function translation failed (pipeline error)"
                     );
                     let empty_result = retry::RetryResult::new();
                     batch::FunctionResult::failure(
-                        dll.clone(),
+                        binary.clone(),
                         plan_func.name.clone(),
                         empty_result,
                     )
@@ -2613,7 +2636,7 @@ impl TranslationPipeline {
 
             // Emit progress event for real-time tracking
             self.emit(ProgressEvent::FunctionCompleted {
-                dll: dll.clone(),
+                binary: binary.clone().into(),
                 function: plan_func.name.clone(),
                 success,
                 attempts: 0,  // filled by caller after git branch creation
@@ -2622,19 +2645,19 @@ impl TranslationPipeline {
 
             // Invoke the caller's callback
             let continue_batch = if let Some(ref mut cb) = on_function_completed {
-                cb(dll, &plan_func.name, &mut result)
+                cb(binary, &plan_func.name, &mut result)
             } else {
                 true
             };
 
             if !continue_batch {
-                info!(dll, function = %plan_func.name, "Batch stopped early by callback");
+                info!(binary, function = %plan_func.name, "Batch stopped early by callback");
                 break;
             }
         }
 
         info!(
-            dll,
+            binary,
             total = batch_result.total_count(),
             success = batch_result.success_count(),
             failure = batch_result.failure_count(),

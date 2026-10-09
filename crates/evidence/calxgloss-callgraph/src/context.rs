@@ -156,7 +156,7 @@ impl Default for ContextEnricherConfig {
 ///
 /// # fn example() {
 /// let graph = CallGraph {
-///     dll: "example.dll".to_string(),
+///     binary: "example.dll".to_string(),
 ///     functions: vec![],
 /// };
 /// let enricher = ContextEnricher::new();
@@ -200,7 +200,7 @@ impl ContextEnricher {
     /// Returns an empty vector if the graph contains no functions.
     pub fn enrich(&self, graph: &CallGraph) -> Vec<FunctionContext> {
         if graph.functions.is_empty() {
-            debug!(dll = %graph.dll, "Empty call graph; returning empty context");
+            debug!(binary = %graph.binary, "Empty call graph; returning empty context");
             return Vec::new();
         }
 
@@ -219,7 +219,7 @@ impl ContextEnricher {
         }
 
         debug!(
-            dll = %graph.dll,
+            binary = %graph.binary,
             enriched = contexts.len(),
             "Context enrichment complete"
         );
@@ -439,7 +439,7 @@ mod tests {
     #[test]
     fn test_empty_graph_returns_empty_contexts() {
         let graph = CallGraph {
-            dll: "empty.dll".to_string(),
+            binary: "empty.dll".to_string(),
             functions: vec![],
         };
         let enricher = ContextEnricher::new();
@@ -450,7 +450,7 @@ mod tests {
     #[test]
     fn test_function_with_no_neighbors_has_empty_callers_and_callees() {
         let graph = CallGraph {
-            dll: "isolated.dll".to_string(),
+            binary: "isolated.dll".to_string(),
             functions: vec![make_func(
                 "standalone",
                 0x1000,
@@ -491,7 +491,7 @@ mod tests {
         );
 
         let graph = CallGraph {
-            dll: "callers.dll".to_string(),
+            binary: "callers.dll".to_string(),
             functions: vec![func_caller, func_callee],
         };
 
@@ -511,7 +511,7 @@ mod tests {
     #[test]
     fn test_unknown_caller_address_falls_back_to_hex() {
         let graph = CallGraph {
-            dll: "orphan.dll".to_string(),
+            binary: "orphan.dll".to_string(),
             functions: vec![make_func(
                 "orphan_fn",
                 0x1000,
@@ -534,7 +534,7 @@ mod tests {
     #[test]
     fn test_callees_included_with_names() {
         let graph = CallGraph {
-            dll: "callees.dll".to_string(),
+            binary: "callees.dll".to_string(),
             functions: vec![make_func(
                 "caller",
                 0x1000,
@@ -560,7 +560,7 @@ mod tests {
     #[test]
     fn test_leaf_api_categorized() {
         let graph = CallGraph {
-            dll: "leaf.dll".to_string(),
+            binary: "leaf.dll".to_string(),
             functions: vec![make_func(
                 "init_ui",
                 0x1000,
@@ -591,7 +591,7 @@ mod tests {
     #[test]
     fn test_leaf_api_context_includes_crate_suggestion() {
         let graph = CallGraph {
-            dll: "leaf_crate.dll".to_string(),
+            binary: "leaf_crate.dll".to_string(),
             functions: vec![make_func(
                 "do_crypto",
                 0x1000,
@@ -624,7 +624,7 @@ mod tests {
     #[test]
     fn test_multi_category_leaf_function() {
         let graph = CallGraph {
-            dll: "multi_leaf.dll".to_string(),
+            binary: "multi_leaf.dll".to_string(),
             functions: vec![make_func(
                 "complex_app",
                 0x1000,
@@ -663,7 +663,7 @@ mod tests {
     #[test]
     fn test_non_leaf_function_has_empty_categories_and_leaf_context() {
         let graph = CallGraph {
-            dll: "normal.dll".to_string(),
+            binary: "normal.dll".to_string(),
             functions: vec![make_func(
                 "pure_logic",
                 0x1000,
@@ -685,7 +685,7 @@ mod tests {
     #[test]
     fn test_call_edge_info_has_call_type() {
         let graph = CallGraph {
-            dll: "types.dll".to_string(),
+            binary: "types.dll".to_string(),
             functions: vec![make_func(
                 "indirect_caller",
                 0x1000,
@@ -713,7 +713,7 @@ mod tests {
     #[test]
     fn test_enrich_produces_context_for_all_functions() {
         let graph = CallGraph {
-            dll: "all.dll".to_string(),
+            binary: "all.dll".to_string(),
             functions: vec![
                 make_func("root_fn", 0x1000, vec![], vec![], NodeCategory::Root),
                 make_func(
@@ -771,7 +771,7 @@ mod tests {
     fn test_default_constructs() {
         let enricher = ContextEnricher::default();
         let graph = CallGraph {
-            dll: "default_test.dll".to_string(),
+            binary: "default_test.dll".to_string(),
             functions: vec![make_func(
                 "test_fn",
                 0x1000,
@@ -787,7 +787,7 @@ mod tests {
     #[test]
     fn test_context_clone_roundtrip() {
         let graph = CallGraph {
-            dll: "clone.dll".to_string(),
+            binary: "clone.dll".to_string(),
             functions: vec![make_func(
                 "clone_test",
                 0x1000,
@@ -813,7 +813,7 @@ mod tests {
     #[test]
     fn test_multiple_functions_with_leaf_apis() {
         let graph = CallGraph {
-            dll: "multi_leaf_fn.dll".to_string(),
+            binary: "multi_leaf_fn.dll".to_string(),
             functions: vec![
                 make_func(
                     "ui_init",
@@ -903,14 +903,14 @@ mod tests {
         };
 
         let graph = CallGraph {
-            dll: "limit_callers.dll".to_string(),
+            binary: "limit_callers.dll".to_string(),
             functions: callers,
         };
         // Manually add target's context by including it in the graph.
         let mut graph_funcs = graph.functions;
         graph_funcs.push(target);
         let graph = CallGraph {
-            dll: "limit_callers.dll".to_string(),
+            binary: "limit_callers.dll".to_string(),
             functions: graph_funcs,
         };
 
@@ -939,7 +939,7 @@ mod tests {
     #[test]
     fn test_zero_max_callers_means_no_limit() {
         let graph = CallGraph {
-            dll: "no_limit.dll".to_string(),
+            binary: "no_limit.dll".to_string(),
             functions: vec![
                 make_func(
                     "target",
@@ -985,7 +985,7 @@ mod tests {
             .collect();
 
         let graph = CallGraph {
-            dll: "limit_callees.dll".to_string(),
+            binary: "limit_callees.dll".to_string(),
             functions: vec![FunctionCallGraph {
                 name: "big_caller".to_string(),
                 address: 0x1000,
@@ -1041,7 +1041,7 @@ mod tests {
         );
 
         let graph = CallGraph {
-            dll: "filter_internal.dll".to_string(),
+            binary: "filter_internal.dll".to_string(),
             functions: vec![func_a, func_b, func_c],
         };
 
@@ -1089,7 +1089,7 @@ mod tests {
         );
 
         let graph = CallGraph {
-            dll: "no_filter.dll".to_string(),
+            binary: "no_filter.dll".to_string(),
             functions: vec![func_a, func_b, func_c],
         };
 
@@ -1119,7 +1119,7 @@ mod tests {
         let many_callers: Vec<u64> = (0..50).map(|i| 0x1000 + i).collect();
 
         let graph = CallGraph {
-            dll: "skipped.dll".to_string(),
+            binary: "skipped.dll".to_string(),
             functions: vec![
                 FunctionCallGraph {
                     name: "overloaded".to_string(),
@@ -1157,7 +1157,7 @@ mod tests {
     #[test]
     fn test_context_not_skipped_within_threshold() {
         let graph = CallGraph {
-            dll: "within_threshold.dll".to_string(),
+            binary: "within_threshold.dll".to_string(),
             functions: vec![
                 FunctionCallGraph {
                     name: "moderate".to_string(),
@@ -1198,7 +1198,7 @@ mod tests {
     #[test]
     fn test_skipped_contexts_helper() {
         let graph = CallGraph {
-            dll: "skip_helper.dll".to_string(),
+            binary: "skip_helper.dll".to_string(),
             functions: vec![
                 FunctionCallGraph {
                     name: "overloaded".to_string(),
@@ -1238,7 +1238,7 @@ mod tests {
     #[test]
     fn test_context_skipped_field_default() {
         let graph = CallGraph {
-            dll: "skipped_field.dll".to_string(),
+            binary: "skipped_field.dll".to_string(),
             functions: vec![make_func(
                 "test_fn",
                 0x1000,

@@ -201,7 +201,7 @@ function handleWSMessage(event) {
     // Handle translation start — show a toast notification
     if (event.event === "translation_started") {
         showToast(
-            `Translating ${event.function || "classify"} (${event.dll})`,
+            `Translating ${event.function || "classify"} (${event.binary})`,
             "info"
         );
         // Update the live indicator
@@ -212,7 +212,7 @@ function handleWSMessage(event) {
     // Handle translation completion
     if (event.event === "translation_completed" || event.event === "translation_failed") {
         showToast(
-            `${event.event === "translation_completed" ? "✓" : "✗"} Done: ${event.function || "classify"} (${event.dll})`,
+            `${event.event === "translation_completed" ? "✓" : "✗"} Done: ${event.function || "classify"} (${event.binary})`,
             event.event === "translation_completed" ? "success" : "error"
         );
     }
@@ -220,7 +220,7 @@ function handleWSMessage(event) {
     // Handle classification completion
     if (event.event === "classification_complete") {
         showToast(
-            `Classified ${event.dll} → ${event.category}`,
+            `Classified ${event.binary} → ${event.category}`,
             "success"
         );
         // Reload pipeline to show updated status
@@ -231,7 +231,7 @@ function handleWSMessage(event) {
     if (event.event === "batch_summary") {
         const b = event;
         showToast(
-            `Batch ${event.dll}: ${b.success_count}/${b.total_functions} succeeded`,
+            `Batch ${event.binary}: ${b.success_count}/${b.total_functions} succeeded`,
             b.failure_count > 0 ? "warning" : "success"
         );
         // Reload pipeline to show updated status
@@ -240,30 +240,30 @@ function handleWSMessage(event) {
 
     // Handle LLM I/O events
     if (event.event === "llm_request") {
-        console.log("[WS] LLM request:", event.dll, event.function, "prompt length:", event.prompt?.length);
+        console.log("[WS] LLM request:", event.binary, event.function, "prompt length:", event.prompt?.length);
         addLlmLogEntry(
             "request",
-            event.dll,
+            event.binary,
             event.function,
             event.attempt,
             event.strategy,
             event.prompt
         );
     } else if (event.event === "llm_response") {
-        console.log("[WS] LLM response:", event.dll, event.function, "content length:", event.content?.length);
+        console.log("[WS] LLM response:", event.binary, event.function, "content length:", event.content?.length);
         addLlmLogEntry(
             "response",
-            event.dll,
+            event.binary,
             event.function,
             event.attempt,
             event.strategy,
             event.content
         );
     } else if (event.event === "llm_call_failed") {
-        console.warn("[WS] LLM call failed:", event.dll, event.function, event.error);
+        console.warn("[WS] LLM call failed:", event.binary, event.function, event.error);
         addLlmLogEntry(
             "error",
-            event.dll,
+            event.binary,
             event.function,
             event.attempt,
             event.strategy,

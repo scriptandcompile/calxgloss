@@ -27,14 +27,14 @@ pub async fn handle_batch_translate(
 ) -> Result<()> {
     let BatchTranslateArgs {
         target,
-        dll,
+        binary,
         functions,
         all_functions,
         skip_git,
         no_callgraph,
         ..
     } = args;
-    let (target, dll) = (target.as_path(), dll.as_str());
+    let (target, binary) = (target.as_path(), binary.as_str());
     let skip_git = *skip_git;
     let no_callgraph = *no_callgraph;
 
@@ -53,7 +53,7 @@ pub async fn handle_batch_translate(
 
     info!(
         target = ?target,
-        dll = %dll,
+        binary = %binary,
         all_functions = %all_functions,
         "Starting batch translation"
     );
@@ -106,7 +106,7 @@ pub async fn handle_batch_translate(
 
     // Set up the output crate directory structure.
     let (_, crate_src_dir) =
-        setup_translation_crate(&workspace, dll).context("Failed to create output crate")?;
+        setup_translation_crate(&workspace, binary).context("Failed to create output crate")?;
 
     // Initialize Ghidra client
     let mut ghidra_config = calxgloss_ghidra::GhidraConfig::new(ghidra_url)
@@ -177,7 +177,7 @@ pub async fn handle_batch_translate(
     // for each function immediately after it completes.
     let batch_result = pipeline
         .batch_translate(
-            dll,
+            binary,
             &function_list,
             &retry_config,
             &verifier,
@@ -204,7 +204,7 @@ pub async fn handle_batch_translate(
 
                 if let Some(ref mut git_manager) = git
                     && let Ok(branch_result) = git_manager.create_branch(
-                        dll,
+                        binary,
                         &func_result.function,
                         1,
                         Some(&BranchCreationPolicy::Warn(DependencyPolicy {
@@ -221,7 +221,7 @@ pub async fn handle_batch_translate(
                             branch_info,
                             &format!(
                                 "re/batch/{}: translate {} (batch attempt)",
-                                func_result.function, dll
+                                func_result.function, binary
                             ),
                             &[output_path_str],
                         )
@@ -249,7 +249,7 @@ pub async fn handle_batch_translate(
             }),
         )
         .await
-        .with_context(|| format!("Batch translation failed for DLL: {}", dll))?;
+        .with_context(|| format!("Batch translation failed for DLL: {}", binary))?;
 
     // Print batch summary
     print_batch_summary(&batch_result);

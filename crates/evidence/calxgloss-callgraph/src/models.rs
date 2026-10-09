@@ -46,7 +46,7 @@ pub struct CallGraphEdge {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallGraph {
     /// Name of the DLL / binary this graph belongs to.
-    pub dll: String,
+    pub binary: String,
     /// Call graph data for each function in the binary.
     pub functions: Vec<FunctionCallGraph>,
 }
@@ -78,7 +78,7 @@ mod tests {
 
     fn sample_graph() -> CallGraph {
         CallGraph {
-            dll: "test.dll".to_string(),
+            binary: "test.dll".to_string(),
             functions: vec![
                 FunctionCallGraph {
                     name: "main".to_string(),
@@ -125,7 +125,7 @@ mod tests {
         let json = serde_json::to_string_pretty(&graph).expect("serialize");
         let loaded: CallGraph = serde_json::from_str(&json).expect("deserialize");
 
-        assert_eq!(loaded.dll, graph.dll);
+        assert_eq!(loaded.binary, graph.binary);
         assert_eq!(loaded.functions.len(), graph.functions.len());
         assert_eq!(loaded.functions[0].name, "main");
         assert_eq!(loaded.functions[0].callers.len(), 0);
@@ -165,7 +165,7 @@ mod tests {
     fn test_call_graph_clone() {
         let graph = sample_graph();
         let cloned = graph.clone();
-        assert_eq!(cloned.dll, graph.dll);
+        assert_eq!(cloned.binary, graph.binary);
         assert_eq!(cloned.functions.len(), graph.functions.len());
     }
 
@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn test_json_structure_valid() {
         let graph = CallGraph {
-            dll: "simple.dll".to_string(),
+            binary: "simple.dll".to_string(),
             functions: vec![FunctionCallGraph {
                 name: "fn_a".to_string(),
                 address: 0x1000,
@@ -200,9 +200,9 @@ mod tests {
         let json = serde_json::to_string(&graph).expect("json serialize");
         // Verify the JSON contains expected keys
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("json parse");
-        assert!(parsed["dll"].is_string());
+        assert!(parsed["binary"].is_string());
         assert!(parsed["functions"].is_array());
-        assert_eq!(parsed["dll"], "simple.dll");
+        assert_eq!(parsed["binary"], "simple.dll");
         assert_eq!(parsed["functions"][0]["name"], "fn_a");
         assert_eq!(parsed["functions"][0]["address"], 0x1000);
         assert_eq!(parsed["functions"][0]["node_category"], "Root");

@@ -70,8 +70,8 @@ pub fn scan_targets(target_dir: &std::path::Path) -> Vec<String> {
 }
 
 /// Check whether a classification record exists for the given file.
-pub fn classification_record_exists(base_path: &std::path::Path, dll: &str) -> bool {
-    let sanitized: String = dll
+pub fn classification_record_exists(base_path: &std::path::Path, binary: &str) -> bool {
+    let sanitized: String = binary
         .chars()
         .map(|c| match c {
             '/' | '\\' => '_',

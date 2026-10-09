@@ -32,7 +32,7 @@
 //! // Two classified DLLs: one that needs a shim, one that needs reverse engineering
 //! let classifications = vec![
 //!     DllClassification {
-//!         dll: "d3d9.dll".to_string(),
+//!         binary: "d3d9.dll".to_string(),
 //!         category: DllCategory::MicrosoftSdk,
 //!         strategy: Strategy::CrateReplacement {
 //!             crate_name: "wgpu".to_string(),
@@ -42,7 +42,7 @@
 //!         crate_replacement: Some("wgpu".to_string()),
 //!     },
 //!     DllClassification {
-//!         dll: "game_logic.dll".to_string(),
+//!         binary: "game_logic.dll".to_string(),
 //!         category: DllCategory::ProjectSpecific,
 //!         strategy: Strategy::ReverseEngineer,
 //!         exports_count: 10,
@@ -118,7 +118,7 @@ use crate::DllClassification;
 ///
 /// // Build a graph from classifications + call graph
 /// let classifications = vec![DllClassification {
-///     dll: "d3d9.dll".to_string(),
+///     binary: "d3d9.dll".to_string(),
 ///     category: DllCategory::MicrosoftSdk,
 ///     strategy: Strategy::CrateReplacement {
 ///         crate_name: "wgpu".to_string(),
@@ -281,7 +281,7 @@ impl ShimLayerDeclaration {
     pub fn from_classification(classification: &DllClassification) -> Option<Self> {
         match &classification.strategy {
             crate::Strategy::CrateReplacement { crate_name } => Some(Self {
-                source_dll: classification.dll.clone(),
+                source_dll: classification.binary.clone(),
                 target_crate: crate_name.clone(),
             }),
             _ => None,
@@ -315,7 +315,7 @@ impl ShimLayerDeclaration {
 ///
 /// let classifications = vec![
 ///     DllClassification {
-///         dll: "d3d9.dll".to_string(),
+///         binary: "d3d9.dll".to_string(),
 ///         category: DllCategory::MicrosoftSdk,
 ///         strategy: Strategy::CrateReplacement {
 ///             crate_name: "wgpu".to_string(),
@@ -389,14 +389,14 @@ impl DependencyTracker {
             std::collections::HashMap::new();
 
         for cls in classifications {
-            let node_id = Self::dll_node_id(&cls.dll);
+            let node_id = Self::dll_node_id(&cls.binary);
             graph.nodes.push(DependencyNode::with_level(
                 node_id.clone(),
-                format!("Classify {}", cls.dll),
+                format!("Classify {}", cls.binary),
                 ReviewStatus::Queued,
                 WorkLevel::DllClassification,
             ));
-            dll_node_ids.insert(cls.dll.clone(), node_id);
+            dll_node_ids.insert(cls.binary.clone(), node_id);
         }
 
         // ── Phase 2: Add shim layer nodes (depend on DLL classification) ──
@@ -406,17 +406,17 @@ impl DependencyTracker {
 
         for cls in classifications {
             if let crate::Strategy::CrateReplacement { crate_name } = &cls.strategy {
-                let shim_id = Self::shim_node_id(&cls.dll, crate_name);
+                let shim_id = Self::shim_node_id(&cls.binary, crate_name);
                 graph.nodes.push(DependencyNode::with_level(
                     shim_id.clone(),
-                    format!("Shim {} → {}", cls.dll, crate_name),
+                    format!("Shim {} → {}", cls.binary, crate_name),
                     ReviewStatus::Queued,
                     WorkLevel::ShimLayer,
                 ));
-                shim_node_ids.insert(cls.dll.clone(), shim_id.clone());
+                shim_node_ids.insert(cls.binary.clone(), shim_id.clone());
                 graph.edges.push(DependencyEdge {
                     from: shim_id,
-                    to: dll_node_ids[&cls.dll].clone(),
+                    to: dll_node_ids[&cls.binary].clone(),
                 });
             }
         }
@@ -468,7 +468,7 @@ impl DependencyTracker {
 
             // Determine the function's DLL: try name detection, fall back to first classification
             let func_dll = Self::detect_dll_from_function(func_name, neighbors)
-                .or_else(|| classifications.first().map(|c| c.dll.clone()));
+                .or_else(|| classifications.first().map(|c| c.binary.clone()));
 
             if let Some(ref func_dll_str) = func_dll {
                 // Depend on shim layer if available
@@ -522,10 +522,10 @@ impl DependencyTracker {
         let shim_decl = ShimLayerDeclaration::from_classification(classification);
 
         // Phase 1: DLL classification node
-        let dll_id = Self::dll_node_id(&classification.dll);
+        let dll_id = Self::dll_node_id(&classification.binary);
         let mut nodes = vec![DependencyNode::with_level(
             dll_id.clone(),
-            format!("Classify {}", classification.dll),
+            format!("Classify {}", classification.binary),
             ReviewStatus::Queued,
             WorkLevel::DllClassification,
         )];
@@ -534,16 +534,16 @@ impl DependencyTracker {
         // Phase 2: Shim layer node (if applicable)
         let mut shim_id: Option<String> = None;
         if let Some(ref decl) = shim_decl {
-            let sid = Self::shim_node_id(&classification.dll, &decl.target_crate);
+            let sid = Self::shim_node_id(&classification.binary, &decl.target_crate);
             nodes.push(DependencyNode::with_level(
                 sid.clone(),
-                format!("Shim {} → {}", classification.dll, decl.target_crate),
+                format!("Shim {} → {}", classification.binary, decl.target_crate),
                 ReviewStatus::Queued,
                 WorkLevel::ShimLayer,
             ));
             edges.push(DependencyEdge {
                 from: sid.clone(),
-                to: Self::dll_node_id(&classification.dll),
+                to: Self::dll_node_id(&classification.binary),
             });
             shim_id = Some(sid);
         }
@@ -575,7 +575,7 @@ impl DependencyTracker {
             } else {
                 edges.push(DependencyEdge {
                     from: func_id.clone(),
-                    to: Self::dll_node_id(&classification.dll),
+                    to: Self::dll_node_id(&classification.binary),
                 });
             }
 
@@ -615,15 +615,15 @@ impl DependencyTracker {
     // ── Node ID helpers ──
 
     /// Returns the node ID for a DLL classification unit.
-    fn dll_node_id(dll: &str) -> String {
-        format!("dll_classify_{}", Self::base_name(dll))
+    fn dll_node_id(binary: &str) -> String {
+        format!("dll_classify_{}", Self::base_name(binary))
     }
 
     /// Returns the node ID for a shim layer unit.
-    fn shim_node_id(dll: &str, crate_name: &str) -> String {
+    fn shim_node_id(binary: &str, crate_name: &str) -> String {
         format!(
             "shim_{}_{}",
-            Self::base_name(dll),
+            Self::base_name(binary),
             crate_name.replace(['-', '.', '/'], "_")
         )
     }
@@ -634,11 +634,12 @@ impl DependencyTracker {
     }
 
     /// Strips the `.dll` extension and lowercases the name.
-    fn base_name(dll: &str) -> String {
-        dll.trim()
+    fn base_name(binary: &str) -> String {
+        binary
+            .trim()
             .to_lowercase()
             .strip_suffix(".dll")
-            .unwrap_or(dll)
+            .unwrap_or(binary)
             .to_string()
     }
 
@@ -696,15 +697,15 @@ mod tests {
     use crate::{DllClassification, Strategy};
     use calxgloss_types::DllCategory;
 
-    fn test_shim_decl(dll: &str, crate_name: &str) -> ShimLayerDeclaration {
+    fn test_shim_decl(binary: &str, crate_name: &str) -> ShimLayerDeclaration {
         ShimLayerDeclaration {
-            source_dll: dll.to_string(),
+            source_dll: binary.to_string(),
             target_crate: crate_name.to_string(),
         }
     }
 
     fn test_classification(
-        dll: &str,
+        binary: &str,
         category: DllCategory,
         crate_name: Option<&str>,
     ) -> DllClassification {
@@ -715,7 +716,7 @@ mod tests {
             None => Strategy::ReverseEngineer,
         };
         DllClassification {
-            dll: dll.to_string(),
+            binary: binary.to_string(),
             category,
             strategy,
             exports_count: 0,
@@ -1067,14 +1068,14 @@ mod tests {
     #[test]
     fn detect_dll_from_function_with_dll_prefix() {
         // When function name has DLL prefix
-        let dll = DependencyTracker::detect_dll_from_function("d3d9_DrawPrimitive", &[]);
-        assert_eq!(dll, Some("d3d9.dll".to_string()));
+        let binary = DependencyTracker::detect_dll_from_function("d3d9_DrawPrimitive", &[]);
+        assert_eq!(binary, Some("d3d9.dll".to_string()));
     }
 
     #[test]
     fn detect_dll_from_empty_function_returns_none() {
-        let dll = DependencyTracker::detect_dll_from_function("", &[]);
-        assert!(dll.is_none());
+        let binary = DependencyTracker::detect_dll_from_function("", &[]);
+        assert!(binary.is_none());
     }
 
     // ── DependencyGraphPersistor tests ──

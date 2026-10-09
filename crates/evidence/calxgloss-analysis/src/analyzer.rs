@@ -44,7 +44,7 @@ pub enum Strategy {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DllClassification {
     /// The DLL filename (e.g., `game_logic.dll`).
-    pub dll: String,
+    pub binary: String,
 
     /// Classification category.
     pub category: DllCategory,
@@ -128,16 +128,16 @@ impl Analyzer {
     ///
     /// # Arguments
     ///
-    /// * `dll` — The DLL filename to classify (e.g., `game_logic.dll`).
+    /// * `binary` — The DLL filename to classify (e.g., `game_logic.dll`).
     ///
     /// # A note on the symbol counts
     ///
     /// Ghidra serves one program at a time and exposes no per-DLL routing, so
     /// `exports_count` and `imports_count` are the counts for whichever program
-    /// is open in Ghidra — not for the DLL named in `dll`. The category itself
+    /// is open in Ghidra — not for the DLL named in `binary`. The category itself
     /// comes from the filename and is unaffected. Call this when the open
     /// program is the DLL you mean; otherwise the counts describe something
-    /// else while still being attached to `dll`.
+    /// else while still being attached to `binary`.
     ///
     /// # Example
     ///
@@ -154,33 +154,33 @@ impl Analyzer {
     /// # Ok(())
     /// # }
     /// ```
-    #[instrument(skip(self), fields(dll, base_url = %self.ghidra.base_url()))]
-    pub async fn classify_dll(&self, dll: &str) -> Result<DllClassification> {
-        debug!(dll, "Classifying DLL");
+    #[instrument(skip(self), fields(binary, base_url = %self.ghidra.base_url()))]
+    pub async fn classify_dll(&self, binary: &str) -> Result<DllClassification> {
+        debug!(binary, "Classifying DLL");
 
         // Symbol counts come from the program currently open in Ghidra; see the
         // note on this method about what that means for a named DLL.
         let imports = self.ghidra.imports(None).await.unwrap_or_else(|e| {
-            warn!(dll, error = %e, "Could not read imports; counting none");
+            warn!(binary, error = %e, "Could not read imports; counting none");
             Vec::new()
         });
         let exports = self.ghidra.exports(None).await.unwrap_or_else(|e| {
-            warn!(dll, error = %e, "Could not read exports; counting none");
+            warn!(binary, error = %e, "Could not read exports; counting none");
             Vec::new()
         });
 
-        Ok(self.build_classification(dll, exports.len(), imports.len()))
+        Ok(self.build_classification(binary, exports.len(), imports.len()))
     }
 
     /// Build a classification from filename and symbol counts.
     fn build_classification(
         &self,
-        dll: &str,
+        binary: &str,
         exports_count: usize,
         imports_count: usize,
     ) -> DllClassification {
-        let category = classify_dll_name(dll);
-        let crate_replacement = crate_replacement_for(dll, &category);
+        let category = classify_dll_name(binary);
+        let crate_replacement = crate_replacement_for(binary, &category);
 
         let strategy = match &category {
             DllCategory::WindowsOs => Strategy::PalMapping,
@@ -195,7 +195,7 @@ impl Analyzer {
         };
 
         let classification = DllClassification {
-            dll: dll.to_string(),
+            binary: binary.to_string(),
             category,
             strategy,
             exports_count,
@@ -204,7 +204,7 @@ impl Analyzer {
         };
 
         info!(
-            dll,
+            binary,
             category = ?classification.category,
             strategy = ?classification.strategy,
             exports = classification.exports_count,
@@ -241,7 +241,7 @@ impl Analyzer {
     /// let names = vec!["eqmain.dll".to_string(), "eqgui.dll".to_string()];
     /// let target_dir = std::path::Path::new("/path/to/targets");
     /// for c in analyzer.classify_dlls(&names, target_dir).await? {
-    ///     println!("{}: {:?}", c.dll, c.strategy);
+    ///     println!("{}: {:?}", c.binary, c.strategy);
     /// }
     /// # Ok(())
     /// # }
@@ -253,8 +253,8 @@ impl Analyzer {
         target_dir: &std::path::Path,
     ) -> Result<Vec<DllClassification>> {
         let mut classifications = Vec::with_capacity(dlls.len());
-        for dll in dlls {
-            let classification = self.classify_dll_with_target(dll, target_dir).await?;
+        for binary in dlls {
+            let classification = self.classify_dll_with_target(binary, target_dir).await?;
             classifications.push(classification);
         }
 
@@ -265,12 +265,12 @@ impl Analyzer {
     /// Classify one DLL, reading symbol counts from the PE header on disk.
     async fn classify_dll_with_target(
         &self,
-        dll: &str,
+        binary: &str,
         target_dir: &std::path::Path,
     ) -> Result<DllClassification> {
         use anyhow::Context;
 
-        let dll_path = target_dir.join(dll);
+        let dll_path = target_dir.join(binary);
 
         // Try PE header parse first — gives accurate per-DLL counts.
         let bytes = std::fs::read(&dll_path)
@@ -281,7 +281,7 @@ impl Analyzer {
         let exports_count = pe.exports.len();
         let imports_count = pe.imports.len();
 
-        Ok(self.build_classification(dll, exports_count, imports_count))
+        Ok(self.build_classification(binary, exports_count, imports_count))
     }
 
     /// Performs complete analysis on a single function.
@@ -293,7 +293,7 @@ impl Analyzer {
     ///
     /// # Arguments
     ///
-    /// * `dll` — The DLL the function belongs to. Recorded on the result; the
+    /// * `binary` — The DLL the function belongs to. Recorded on the result; the
     ///   lookup itself is against the program Ghidra has open, which must be
     ///   this DLL.
     /// * `function` — The function name, as Ghidra knows it.
@@ -313,9 +313,9 @@ impl Analyzer {
     /// # Ok(())
     /// # }
     /// ```
-    #[instrument(skip(self), fields(dll, function, base_url = %self.ghidra.base_url()))]
-    pub async fn analyze_function(&self, dll: &str, function: &str) -> Result<FunctionAnalysis> {
-        debug!(dll, function, "Analyzing function");
+    #[instrument(skip(self), fields(binary, function, base_url = %self.ghidra.base_url()))]
+    pub async fn analyze_function(&self, binary: &str, function: &str) -> Result<FunctionAnalysis> {
+        debug!(binary, function, "Analyzing function");
 
         // Ghidra has no lookup that returns a function without an address, so
         // the name is resolved first. A partial match is refused rather than
@@ -324,7 +324,7 @@ impl Analyzer {
         let matches = self.ghidra.search_functions(function, Some(1)).await?;
         let found = matches.iter().find(|m| m.name == function).ok_or_else(|| {
             Error::FunctionAnalysisFailed {
-                dll: dll.to_string(),
+                binary: binary.to_string(),
                 function: function.to_string(),
                 reason: format!(
                     "no function by that exact name in the program Ghidra has open; the \
@@ -367,7 +367,7 @@ impl Analyzer {
             function_info: FunctionInfo {
                 name: report.name.clone(),
                 address: report.address,
-                dll: dll.to_string(),
+                binary: binary.to_string().into(),
                 disassembly: report.disassembly,
                 decompiler_output: report.decompiled.body,
                 windows_apis: Vec::new(),
@@ -379,7 +379,7 @@ impl Analyzer {
         };
 
         info!(
-            dll,
+            binary,
             function,
             address = format_args!("{:#x}", found.address),
             neighbors = analysis.call_graph.len(),
@@ -502,7 +502,7 @@ impl Analyzer {
         };
 
         DllClassification {
-            dll: dll_info.name.clone(),
+            binary: dll_info.name.clone(),
             category,
             strategy,
             exports_count: dll_info.exports.len(),
@@ -530,7 +530,7 @@ impl Analyzer {
     /// 2. Classifies each function as [`Root`](calxgloss_types::NodeCategory::Root),
     ///    [`Leaf`](calxgloss_types::NodeCategory::Leaf), or
     ///    [`Middle`](calxgloss_types::NodeCategory::Middle).
-    /// 3. Persists the enriched graph to `re/analysis/{dll}_call_graph.json`.
+    /// 3. Persists the enriched graph to `re/analysis/{binary}_call_graph.json`.
     ///
     /// # Arguments
     ///
@@ -676,7 +676,7 @@ pub fn suggest_shim(classification: &DllClassification) -> calxgloss_types::Shim
     );
 
     calxgloss_types::ShimSuggestion {
-        source_dll: classification.dll.clone(),
+        source_dll: classification.binary.clone(),
         target_crate: classification.crate_replacement.clone().unwrap_or_default(),
         estimated_mappings,
         estimated_complexity,
@@ -912,15 +912,15 @@ mod tests {
             ],
             imports: vec![
                 Import {
-                    dll: "kernel32.dll".to_string(),
+                    binary: "kernel32.dll".to_string().into(),
                     function: "CreateFileA".to_string(),
                 },
                 Import {
-                    dll: "user32.dll".to_string(),
+                    binary: "user32.dll".to_string().into(),
                     function: "MessageBoxA".to_string(),
                 },
                 Import {
-                    dll: "user32.dll".to_string(),
+                    binary: "user32.dll".to_string().into(),
                     function: "DestroyWindow".to_string(),
                 },
             ],
@@ -975,7 +975,7 @@ mod tests {
             function_info: FunctionInfo {
                 name: "SimpleFunc".to_string(),
                 address: 0x1000,
-                dll: "test.dll".to_string(),
+                binary: "test.dll".to_string().into(),
                 disassembly: "0x00401000: mov eax, 0\n0x00401004: ret".to_string(),
                 decompiler_output: "int SimpleFunc() { return 0; }".to_string(),
                 windows_apis: Vec::new(),
@@ -997,7 +997,7 @@ mod tests {
     #[test]
     fn test_suggest_shim_d3d9() {
         let classification = DllClassification {
-            dll: "d3d9.dll".to_string(),
+            binary: "d3d9.dll".to_string(),
             category: DllCategory::MicrosoftSdk,
             strategy: Strategy::CrateReplacement {
                 crate_name: "wgpu".to_string(),
@@ -1023,7 +1023,7 @@ mod tests {
         // suggest_shim generates a suggestion regardless of strategy;
         // filtering to CrateReplacement only happens in suggest_shim_layers.
         let classification = DllClassification {
-            dll: "kernel32.dll".to_string(),
+            binary: "kernel32.dll".to_string(),
             category: DllCategory::WindowsOs,
             strategy: Strategy::PalMapping,
             exports_count: 500,
@@ -1040,7 +1040,7 @@ mod tests {
     #[test]
     fn test_suggest_shim_fmod() {
         let classification = DllClassification {
-            dll: "fmod.dll".to_string(),
+            binary: "fmod.dll".to_string(),
             category: DllCategory::KnownThirdParty,
             strategy: Strategy::CrateReplacement {
                 crate_name: "fmod-rs".to_string(),
@@ -1060,7 +1060,7 @@ mod tests {
     #[test]
     fn test_suggest_shim_small_dll() {
         let classification = DllClassification {
-            dll: "tiny_lib.dll".to_string(),
+            binary: "tiny_lib.dll".to_string(),
             category: DllCategory::KnownThirdParty,
             strategy: Strategy::CrateReplacement {
                 crate_name: "lz4".to_string(),
@@ -1083,7 +1083,7 @@ mod tests {
         let analyzer = test_analyzer();
         let classifications = vec![
             DllClassification {
-                dll: "d3d9.dll".to_string(),
+                binary: "d3d9.dll".to_string(),
                 category: DllCategory::MicrosoftSdk,
                 strategy: Strategy::CrateReplacement {
                     crate_name: "wgpu".to_string(),
@@ -1093,7 +1093,7 @@ mod tests {
                 crate_replacement: Some("wgpu".to_string()),
             },
             DllClassification {
-                dll: "kernel32.dll".to_string(),
+                binary: "kernel32.dll".to_string(),
                 category: DllCategory::WindowsOs,
                 strategy: Strategy::PalMapping,
                 exports_count: 500,
@@ -1101,7 +1101,7 @@ mod tests {
                 crate_replacement: None,
             },
             DllClassification {
-                dll: "game_logic.dll".to_string(),
+                binary: "game_logic.dll".to_string(),
                 category: DllCategory::ProjectSpecific,
                 strategy: Strategy::ReverseEngineer,
                 exports_count: 100,
@@ -1109,7 +1109,7 @@ mod tests {
                 crate_replacement: None,
             },
             DllClassification {
-                dll: "fmod.dll".to_string(),
+                binary: "fmod.dll".to_string(),
                 category: DllCategory::KnownThirdParty,
                 strategy: Strategy::CrateReplacement {
                     crate_name: "fmod-rs".to_string(),
@@ -1133,7 +1133,7 @@ mod tests {
         let analyzer = test_analyzer();
         let classifications = vec![
             DllClassification {
-                dll: "kernel32.dll".to_string(),
+                binary: "kernel32.dll".to_string(),
                 category: DllCategory::WindowsOs,
                 strategy: Strategy::PalMapping,
                 exports_count: 500,
@@ -1141,7 +1141,7 @@ mod tests {
                 crate_replacement: None,
             },
             DllClassification {
-                dll: "game_logic.dll".to_string(),
+                binary: "game_logic.dll".to_string(),
                 category: DllCategory::ProjectSpecific,
                 strategy: Strategy::ReverseEngineer,
                 exports_count: 100,
@@ -1159,7 +1159,7 @@ mod tests {
     #[test]
     fn test_estimate_complexity_zero_exports() {
         let classification = DllClassification {
-            dll: "empty.dll".to_string(),
+            binary: "empty.dll".to_string(),
             category: DllCategory::MicrosoftSdk,
             strategy: Strategy::CrateReplacement {
                 crate_name: "wgpu".to_string(),

@@ -7,6 +7,8 @@
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
+use crate::identity::{BinaryIdentity, UnitKey};
+
 /// A single progress event emitted by the translation pipeline.
 ///
 /// Events are emitted at key milestones:
@@ -45,10 +47,13 @@ use tokio::sync::broadcast;
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum ProgressEvent {
     /// Pipeline started translating the given DLL and function.
-    TranslationStarted { dll: String, function: String },
+    TranslationStarted {
+        binary: BinaryIdentity,
+        function: String,
+    },
     /// GhidraMCP returned function metadata (disassembly, decompiler output).
     GhidraFetchComplete {
-        dll: String,
+        binary: BinaryIdentity,
         function: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         address: Option<u64>,
@@ -56,13 +61,13 @@ pub enum ProgressEvent {
     },
     /// Windows API tagging completed.
     ApiTaggingComplete {
-        dll: String,
+        binary: BinaryIdentity,
         function: String,
         tagged_apis: usize,
     },
     /// Baseline test inputs were generated.
     TestsGenerated {
-        dll: String,
+        binary: BinaryIdentity,
         function: String,
         test_count: usize,
     },
@@ -73,7 +78,7 @@ pub enum ProgressEvent {
     /// failures the tier is escalated and this event is re-emitted with
     /// the new tier.
     ContextTierSelected {
-        dll: String,
+        binary: BinaryIdentity,
         function: String,
         tier: String,
         tier_label: String,
@@ -84,14 +89,14 @@ pub enum ProgressEvent {
     },
     /// LLM call was sent to generate / fix code.
     LlmCallStart {
-        dll: String,
+        binary: BinaryIdentity,
         function: String,
         attempt: u32,
         strategy: String,
     },
     /// LLM call completed with generated code.
     LlmCallComplete {
-        dll: String,
+        binary: BinaryIdentity,
         function: String,
         attempt: u32,
         code_length: usize,
@@ -100,7 +105,7 @@ pub enum ProgressEvent {
     },
     /// The full prompt sent to the LLM (raw request body).
     LlmRequest {
-        dll: String,
+        binary: BinaryIdentity,
         function: String,
         attempt: u32,
         strategy: String,
@@ -109,7 +114,7 @@ pub enum ProgressEvent {
     },
     /// The full response received from the LLM.
     LlmResponse {
-        dll: String,
+        binary: BinaryIdentity,
         function: String,
         attempt: u32,
         strategy: String,
@@ -120,7 +125,7 @@ pub enum ProgressEvent {
     },
     /// A translation attempt was verified (compile + test results).
     TranslationAttemptCompleted {
-        dll: String,
+        binary: BinaryIdentity,
         function: String,
         attempt: u32,
         /// `true` if this attempt passed all tests.
@@ -142,13 +147,13 @@ pub enum ProgressEvent {
     },
     /// All retry attempts exhausted without success.
     TranslationFailed {
-        dll: String,
+        binary: BinaryIdentity,
         function: String,
         total_attempts: usize,
     },
     /// Translation completed successfully after retry loop.
     TranslationCompleted {
-        dll: String,
+        binary: BinaryIdentity,
         function: String,
         total_attempts: usize,
         /// Which strategy ultimately succeeded.
@@ -158,7 +163,7 @@ pub enum ProgressEvent {
     /// LLM call is still in progress (keepalive heartbeat).
     /// Emitted periodically to indicate the request has not hung.
     LlmCallInProgress {
-        dll: String,
+        binary: BinaryIdentity,
         function: String,
         attempt: u32,
         strategy: String,
@@ -167,7 +172,7 @@ pub enum ProgressEvent {
     },
     /// LLM call failed with an error (HTTP/network failure, timeout, etc.).
     LlmCallFailed {
-        dll: String,
+        binary: BinaryIdentity,
         function: String,
         attempt: u32,
         strategy: String,
@@ -176,7 +181,7 @@ pub enum ProgressEvent {
     },
     /// A DLL classification has completed.
     ClassificationComplete {
-        dll: String,
+        binary: BinaryIdentity,
         /// The assigned category.
         category: String,
         /// The strategy used.
@@ -195,7 +200,7 @@ pub enum ProgressEvent {
     /// translation, before moving on to the next function. This enables
     /// incremental git commits and real-time progress tracking per-function.
     FunctionCompleted {
-        dll: String,
+        binary: BinaryIdentity,
         function: String,
         /// Whether this function's translation ultimately succeeded.
         success: bool,
@@ -211,12 +216,12 @@ pub enum ProgressEvent {
     ///
     /// Batch-level (no unit key): it marks the binary as being worked on
     /// before any unit event exists, and `BatchSummary` marks the pass done.
-    BatchStarted { dll: String },
+    BatchStarted { binary: BinaryIdentity },
     /// The live loop's ordered plan for this run — the binaries it will
     /// process, in the exact order it will process them. Emitted once
     /// before the first pass starts so the pipeline table can show the
     /// queue, not just the current binary.
-    QueuePlanned { dlls: Vec<String> },
+    QueuePlanned { binaries: Vec<String> },
     /// A batch-level analysis pass is walking its work list — the heartbeat
     /// of the pre-translation passes (call-graph extraction, the evidence
     /// scans) that grind function-by-function before any unit event exists.
@@ -226,7 +231,7 @@ pub enum ProgressEvent {
     /// and `total` are the pass's own work list; `total` 0 means the pass
     /// has no per-item granularity, and `function`/`index` stay empty.
     BatchProgress {
-        dll: String,
+        binary: BinaryIdentity,
         pass: String,
         #[serde(default)]
         function: String,
@@ -235,7 +240,7 @@ pub enum ProgressEvent {
     },
     /// Batch translation for a DLL has completed (summary across all functions).
     BatchSummary {
-        dll: String,
+        binary: BinaryIdentity,
         /// Total functions attempted.
         total_functions: usize,
         /// Functions that succeeded.
@@ -253,7 +258,7 @@ pub enum ProgressEvent {
     /// calls are detected.  The `hallucinated_apis` field lists the names of
     /// the non-existent references found.
     HallucinationDetected {
-        dll: String,
+        binary: BinaryIdentity,
         function: String,
         attempt: u32,
         strategy: String,
@@ -265,7 +270,7 @@ pub enum ProgressEvent {
     /// Emitted when the infinite-loop detector fires.  The `streak` field
     /// indicates how many consecutive attempts produced the same output.
     InfiniteLoopDetected {
-        dll: String,
+        binary: BinaryIdentity,
         function: String,
         streak: usize,
         streak_start_attempt: u32,
@@ -279,7 +284,7 @@ pub enum ProgressEvent {
     /// implementation passes all baseline tests but one or more
     /// edge-case tests fail. This indicates insufficient test coverage.
     BehaviorDivergenceDetected {
-        dll: String,
+        binary: BinaryIdentity,
         function: String,
         attempt: u32,
         strategy: String,
@@ -301,7 +306,7 @@ pub enum ProgressEvent {
     /// or too many requests are queued.  The caller should queue the current
     /// work for later and optionally switch to a smaller model.
     ResourceExhaustionDetected {
-        dll: String,
+        binary: BinaryIdentity,
         function: String,
         attempt: u32,
         strategy: String,
@@ -315,32 +320,66 @@ pub enum ProgressEvent {
 }
 
 impl ProgressEvent {
-    /// The `(dll, function)` unit this event refers to, or `None` for
+    /// The [`UnitKey`] of the unit this event refers to, or `None` for
     /// batch-level events (`ClassificationComplete`, `BatchSummary`) that
     /// are not scoped to a single unit of work.
-    pub fn unit_key(&self) -> Option<(&str, &str)> {
+    pub fn unit_key(&self) -> Option<UnitKey> {
         match self {
-            ProgressEvent::TranslationStarted { dll, function }
-            | ProgressEvent::GhidraFetchComplete { dll, function, .. }
-            | ProgressEvent::ApiTaggingComplete { dll, function, .. }
-            | ProgressEvent::TestsGenerated { dll, function, .. }
-            | ProgressEvent::ContextTierSelected { dll, function, .. }
-            | ProgressEvent::LlmCallStart { dll, function, .. }
-            | ProgressEvent::LlmCallComplete { dll, function, .. }
-            | ProgressEvent::LlmRequest { dll, function, .. }
-            | ProgressEvent::LlmResponse { dll, function, .. }
-            | ProgressEvent::TranslationAttemptCompleted { dll, function, .. }
-            | ProgressEvent::TranslationFailed { dll, function, .. }
-            | ProgressEvent::TranslationCompleted { dll, function, .. }
-            | ProgressEvent::LlmCallInProgress { dll, function, .. }
-            | ProgressEvent::LlmCallFailed { dll, function, .. }
-            | ProgressEvent::FunctionCompleted { dll, function, .. }
-            | ProgressEvent::HallucinationDetected { dll, function, .. }
-            | ProgressEvent::InfiniteLoopDetected { dll, function, .. }
-            | ProgressEvent::BehaviorDivergenceDetected { dll, function, .. }
-            | ProgressEvent::ResourceExhaustionDetected { dll, function, .. } => {
-                Some((dll.as_str(), function.as_str()))
+            ProgressEvent::TranslationStarted { binary, function }
+            | ProgressEvent::GhidraFetchComplete {
+                binary, function, ..
             }
+            | ProgressEvent::ApiTaggingComplete {
+                binary, function, ..
+            }
+            | ProgressEvent::TestsGenerated {
+                binary, function, ..
+            }
+            | ProgressEvent::ContextTierSelected {
+                binary, function, ..
+            }
+            | ProgressEvent::LlmCallStart {
+                binary, function, ..
+            }
+            | ProgressEvent::LlmCallComplete {
+                binary, function, ..
+            }
+            | ProgressEvent::LlmRequest {
+                binary, function, ..
+            }
+            | ProgressEvent::LlmResponse {
+                binary, function, ..
+            }
+            | ProgressEvent::TranslationAttemptCompleted {
+                binary, function, ..
+            }
+            | ProgressEvent::TranslationFailed {
+                binary, function, ..
+            }
+            | ProgressEvent::TranslationCompleted {
+                binary, function, ..
+            }
+            | ProgressEvent::LlmCallInProgress {
+                binary, function, ..
+            }
+            | ProgressEvent::LlmCallFailed {
+                binary, function, ..
+            }
+            | ProgressEvent::FunctionCompleted {
+                binary, function, ..
+            }
+            | ProgressEvent::HallucinationDetected {
+                binary, function, ..
+            }
+            | ProgressEvent::InfiniteLoopDetected {
+                binary, function, ..
+            }
+            | ProgressEvent::BehaviorDivergenceDetected {
+                binary, function, ..
+            }
+            | ProgressEvent::ResourceExhaustionDetected {
+                binary, function, ..
+            } => Some(UnitKey::new(binary, function.as_str())),
             ProgressEvent::ClassificationComplete { .. }
             | ProgressEvent::BatchStarted { .. }
             | ProgressEvent::QueuePlanned { .. }
@@ -353,34 +392,36 @@ impl ProgressEvent {
 impl std::fmt::Display for ProgressEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ProgressEvent::TranslationStarted { dll, function } => {
-                write!(f, "Starting translation of {function} ({dll})")
+            ProgressEvent::TranslationStarted { binary, function } => {
+                write!(f, "Starting translation of {function} ({binary})")
             }
-            ProgressEvent::GhidraFetchComplete { dll, function, .. } => {
-                write!(f, "Fetched Ghidra data for {function} ({dll})")
+            ProgressEvent::GhidraFetchComplete {
+                binary, function, ..
+            } => {
+                write!(f, "Fetched Ghidra data for {function} ({binary})")
             }
             ProgressEvent::ApiTaggingComplete {
-                dll,
+                binary,
                 function,
                 tagged_apis,
             } => {
                 write!(
                     f,
-                    "Tagged {tagged_apis} Windows APIs for {function} ({dll})"
+                    "Tagged {tagged_apis} Windows APIs for {function} ({binary})"
                 )
             }
             ProgressEvent::TestsGenerated {
-                dll,
+                binary,
                 function,
                 test_count,
             } => {
                 write!(
                     f,
-                    "Generated {test_count} baseline tests for {function} ({dll})"
+                    "Generated {test_count} baseline tests for {function} ({binary})"
                 )
             }
             ProgressEvent::ContextTierSelected {
-                dll,
+                binary,
                 function,
                 tier,
                 tier_label,
@@ -389,19 +430,22 @@ impl std::fmt::Display for ProgressEvent {
             } => {
                 write!(
                     f,
-                    "Context tier selected for {function} ({dll}): {tier} ({tier_label}) — complexity={complexity}"
+                    "Context tier selected for {function} ({binary}): {tier} ({tier_label}) — complexity={complexity}"
                 )
             }
             ProgressEvent::LlmCallStart {
-                dll,
+                binary,
                 function,
                 attempt,
                 strategy,
             } => {
-                write!(f, "LLM call #{attempt} ({strategy}) for {function} ({dll})")
+                write!(
+                    f,
+                    "LLM call #{attempt} ({strategy}) for {function} ({binary})"
+                )
             }
             ProgressEvent::LlmCallComplete {
-                dll,
+                binary,
                 function,
                 attempt,
                 code_length,
@@ -409,11 +453,11 @@ impl std::fmt::Display for ProgressEvent {
             } => {
                 write!(
                     f,
-                    "LLM returned {code_length} bytes for {function} ({dll}) attempt #{attempt}"
+                    "LLM returned {code_length} bytes for {function} ({binary}) attempt #{attempt}"
                 )
             }
             ProgressEvent::LlmRequest {
-                dll,
+                binary,
                 function,
                 attempt,
                 strategy,
@@ -421,11 +465,11 @@ impl std::fmt::Display for ProgressEvent {
             } => {
                 write!(
                     f,
-                    "LLM prompt sent: {function} ({dll}) attempt #{attempt} [{strategy}]"
+                    "LLM prompt sent: {function} ({binary}) attempt #{attempt} [{strategy}]"
                 )
             }
             ProgressEvent::LlmResponse {
-                dll,
+                binary,
                 function,
                 attempt,
                 strategy,
@@ -434,12 +478,12 @@ impl std::fmt::Display for ProgressEvent {
             } => {
                 write!(
                     f,
-                    "LLM response received: {function} ({dll}) attempt #{attempt} [{strategy}] — {} chars",
+                    "LLM response received: {function} ({binary}) attempt #{attempt} [{strategy}] — {} chars",
                     content.len()
                 )
             }
             ProgressEvent::TranslationAttemptCompleted {
-                dll,
+                binary,
                 function,
                 attempt,
                 success,
@@ -450,33 +494,33 @@ impl std::fmt::Display for ProgressEvent {
             } => {
                 let status = if *success { "✓" } else { "✗" };
                 let msg = format!(
-                    "Attempt {attempt} {status} for {function} ({dll}) — compiled={compiled}, tests={tests_passed}/{tests_total}"
+                    "Attempt {attempt} {status} for {function} ({binary}) — compiled={compiled}, tests={tests_passed}/{tests_total}"
                 );
                 write!(f, "{msg}")
             }
             ProgressEvent::TranslationFailed {
-                dll,
+                binary,
                 function,
                 total_attempts,
             } => {
                 write!(
                     f,
-                    "Translation failed for {function} ({dll}) after {total_attempts} attempts"
+                    "Translation failed for {function} ({binary}) after {total_attempts} attempts"
                 )
             }
             ProgressEvent::TranslationCompleted {
-                dll,
+                binary,
                 function,
                 total_attempts,
                 ..
             } => {
                 write!(
                     f,
-                    "Translation completed for {function} ({dll}) in {total_attempts} attempts"
+                    "Translation completed for {function} ({binary}) in {total_attempts} attempts"
                 )
             }
             ProgressEvent::LlmCallFailed {
-                dll,
+                binary,
                 function,
                 attempt,
                 strategy,
@@ -484,11 +528,11 @@ impl std::fmt::Display for ProgressEvent {
             } => {
                 write!(
                     f,
-                    "LLM call failed for {function} ({dll}) attempt #{attempt} [{strategy}]: {error}"
+                    "LLM call failed for {function} ({binary}) attempt #{attempt} [{strategy}]: {error}"
                 )
             }
             ProgressEvent::LlmCallInProgress {
-                dll,
+                binary,
                 function,
                 attempt,
                 strategy,
@@ -496,14 +540,16 @@ impl std::fmt::Display for ProgressEvent {
             } => {
                 write!(
                     f,
-                    "LLM call still in progress — {function} ({dll}) attempt #{attempt} [{strategy}] ({elapsed_secs}s elapsed)"
+                    "LLM call still in progress — {function} ({binary}) attempt #{attempt} [{strategy}] ({elapsed_secs}s elapsed)"
                 )
             }
-            ProgressEvent::ClassificationComplete { dll, category, .. } => {
-                write!(f, "Classified {dll} as {category}")
+            ProgressEvent::ClassificationComplete {
+                binary, category, ..
+            } => {
+                write!(f, "Classified {binary} as {category}")
             }
             ProgressEvent::FunctionCompleted {
-                dll,
+                binary,
                 function,
                 success,
                 attempts,
@@ -516,22 +562,22 @@ impl std::fmt::Display for ProgressEvent {
                     .unwrap_or_default();
                 write!(
                     f,
-                    "Batch {status} for {function} ({dll}) in {attempts} attempt(s){branch_info}"
+                    "Batch {status} for {function} ({binary}) in {attempts} attempt(s){branch_info}"
                 )
             }
-            ProgressEvent::BatchStarted { dll } => {
-                write!(f, "Batch started for {dll}")
+            ProgressEvent::BatchStarted { binary } => {
+                write!(f, "Batch started for {binary}")
             }
-            ProgressEvent::QueuePlanned { dlls } => {
-                let noun = if dlls.len() == 1 {
+            ProgressEvent::QueuePlanned { binaries } => {
+                let noun = if binaries.len() == 1 {
                     "binary"
                 } else {
                     "binaries"
                 };
-                write!(f, "Translation queue planned: {} {noun}", dlls.len())
+                write!(f, "Translation queue planned: {} {noun}", binaries.len())
             }
             ProgressEvent::BatchProgress {
-                dll,
+                binary,
                 pass,
                 function,
                 index,
@@ -543,13 +589,13 @@ impl std::fmt::Display for ProgressEvent {
                     } else {
                         format!("{function} ({index} of {total})")
                     };
-                    write!(f, "{pass} — {item} ({dll})")
+                    write!(f, "{pass} — {item} ({binary})")
                 } else {
-                    write!(f, "{pass} ({dll})")
+                    write!(f, "{pass} ({binary})")
                 }
             }
             ProgressEvent::BatchSummary {
-                dll,
+                binary,
                 total_functions,
                 success_count,
                 failure_count,
@@ -558,11 +604,11 @@ impl std::fmt::Display for ProgressEvent {
             } => {
                 write!(
                     f,
-                    "Batch summary for {dll}: {success_count}/{total_functions} succeeded, {failure_count} failed after {total_attempts} attempts ({total_tokens} tokens)"
+                    "Batch summary for {binary}: {success_count}/{total_functions} succeeded, {failure_count} failed after {total_attempts} attempts ({total_tokens} tokens)"
                 )
             }
             ProgressEvent::HallucinationDetected {
-                dll,
+                binary,
                 function,
                 attempt,
                 strategy,
@@ -570,12 +616,12 @@ impl std::fmt::Display for ProgressEvent {
             } => {
                 write!(
                     f,
-                    "Hallucination detected for {function} ({dll}) attempt #{attempt} [{strategy}]: {} non-existent API(s) found",
+                    "Hallucination detected for {function} ({binary}) attempt #{attempt} [{strategy}]: {} non-existent API(s) found",
                     hallucinated_apis.len()
                 )
             }
             ProgressEvent::InfiniteLoopDetected {
-                dll,
+                binary,
                 function,
                 streak,
                 streak_start_attempt,
@@ -584,12 +630,12 @@ impl std::fmt::Display for ProgressEvent {
             } => {
                 write!(
                     f,
-                    "Infinite loop detected for {function} ({dll}): same bad output repeated {} times (attempts #{streak_start_attempt}–#{streak_end_attempt}) [{strategy}]",
+                    "Infinite loop detected for {function} ({binary}): same bad output repeated {} times (attempts #{streak_start_attempt}–#{streak_end_attempt}) [{strategy}]",
                     streak
                 )
             }
             ProgressEvent::BehaviorDivergenceDetected {
-                dll,
+                binary,
                 function,
                 attempt,
                 strategy,
@@ -602,13 +648,13 @@ impl std::fmt::Display for ProgressEvent {
             } => {
                 write!(
                     f,
-                    "Behavior divergence detected for {function} ({dll}) attempt #{attempt} [{strategy}]: {baseline_passed}/{baseline_total} baseline tests pass, {edge_tests_passed}/{edge_tests_total} edge-case tests pass ({} failing, fault confidence {}/10)",
+                    "Behavior divergence detected for {function} ({binary}) attempt #{attempt} [{strategy}]: {baseline_passed}/{baseline_total} baseline tests pass, {edge_tests_passed}/{edge_tests_total} edge-case tests pass ({} failing, fault confidence {}/10)",
                     failing_edge_cases.len(),
                     fault_confidence
                 )
             }
             ProgressEvent::ResourceExhaustionDetected {
-                dll,
+                binary,
                 function,
                 attempt,
                 strategy,
@@ -618,7 +664,7 @@ impl std::fmt::Display for ProgressEvent {
             } => {
                 write!(
                     f,
-                    "Resource exhaustion for {function} ({dll}) attempt #{attempt} [{strategy}]: {reason} ({elapsed_secs}s elapsed, backoff {recommended_backoff_secs}s)"
+                    "Resource exhaustion for {function} ({binary}) attempt #{attempt} [{strategy}]: {reason} ({elapsed_secs}s elapsed, backoff {recommended_backoff_secs}s)"
                 )
             }
         }
@@ -777,17 +823,20 @@ mod tests {
     #[test]
     fn unit_key_scopes_unit_events_and_skips_batch_events() {
         let unit_event = ProgressEvent::LlmCallStart {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 1,
             strategy: "direct".into(),
         };
         assert_eq!(
             unit_event.unit_key(),
-            Some(("game_logic.dll", "DrawPrimitive"))
+            Some(UnitKey::new(
+                &BinaryIdentity::new("game_logic.dll"),
+                "DrawPrimitive"
+            ))
         );
         let batch_event = ProgressEvent::BatchSummary {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             total_functions: 4,
             success_count: 3,
             failure_count: 1,
@@ -800,7 +849,7 @@ mod tests {
     #[test]
     fn batch_started_is_batch_scoped_phaseless_and_tagged() {
         let event = ProgressEvent::BatchStarted {
-            dll: "LaunchPad.exe".into(),
+            binary: "LaunchPad.exe".into(),
         };
         assert_eq!(event.unit_key(), None, "batch-level, not unit-scoped");
         assert!(
@@ -809,13 +858,13 @@ mod tests {
         );
         let json = serde_json::to_value(&event).expect("serializes");
         assert_eq!(json["event"], "batch_started");
-        assert_eq!(json["dll"], "LaunchPad.exe");
+        assert_eq!(json["binary"], "LaunchPad.exe");
     }
 
     #[test]
     fn queue_planned_is_batch_scoped_tagged_and_phaseless() {
         let event = ProgressEvent::QueuePlanned {
-            dlls: vec!["LaunchPad.exe".into(), "eqmain.dll".into()],
+            binaries: vec!["LaunchPad.exe".into(), "eqmain.dll".into()],
         };
         assert_eq!(event.unit_key(), None, "batch-level, not unit-scoped");
         assert!(
@@ -824,7 +873,10 @@ mod tests {
         );
         let json = serde_json::to_value(&event).expect("serializes");
         assert_eq!(json["event"], "queue_planned");
-        assert_eq!(json["dlls"].as_array().expect("dlls array").len(), 2);
+        assert_eq!(
+            json["binaries"].as_array().expect("binaries array").len(),
+            2
+        );
         assert!(
             event.to_string().contains("2"),
             "display counts the queue: {event}"
@@ -834,7 +886,7 @@ mod tests {
     #[test]
     fn batch_progress_is_batch_scoped_tagged_and_phaseless() {
         let event = ProgressEvent::BatchProgress {
-            dll: "LaunchPad.exe".into(),
+            binary: "LaunchPad.exe".into(),
             pass: "type inference".into(),
             function: "FUN_1929282".into(),
             index: 1,
@@ -905,27 +957,27 @@ mod tests {
         // llm → compile → test → completed).
         let flow = vec![
             ProgressEvent::TranslationStarted {
-                dll: "d".into(),
+                binary: "d".into(),
                 function: "f".into(),
             },
             ProgressEvent::GhidraFetchComplete {
-                dll: "d".into(),
+                binary: "d".into(),
                 function: "f".into(),
                 address: None,
                 disassembly_lines: 10,
             },
             ProgressEvent::ApiTaggingComplete {
-                dll: "d".into(),
+                binary: "d".into(),
                 function: "f".into(),
                 tagged_apis: 3,
             },
             ProgressEvent::TestsGenerated {
-                dll: "d".into(),
+                binary: "d".into(),
                 function: "f".into(),
                 test_count: 5,
             },
             ProgressEvent::ContextTierSelected {
-                dll: "d".into(),
+                binary: "d".into(),
                 function: "f".into(),
                 tier: "T1".into(),
                 tier_label: "Signature + imports".into(),
@@ -933,27 +985,27 @@ mod tests {
                 api_call_count: 3,
             },
             ProgressEvent::LlmCallStart {
-                dll: "d".into(),
+                binary: "d".into(),
                 function: "f".into(),
                 attempt: 1,
                 strategy: "direct".into(),
             },
             ProgressEvent::LlmRequest {
-                dll: "d".into(),
+                binary: "d".into(),
                 function: "f".into(),
                 attempt: 1,
                 strategy: "direct".into(),
                 prompt: "…".into(),
             },
             ProgressEvent::LlmCallInProgress {
-                dll: "d".into(),
+                binary: "d".into(),
                 function: "f".into(),
                 attempt: 1,
                 strategy: "direct".into(),
                 elapsed_secs: 5,
             },
             ProgressEvent::LlmResponse {
-                dll: "d".into(),
+                binary: "d".into(),
                 function: "f".into(),
                 attempt: 1,
                 strategy: "direct".into(),
@@ -961,14 +1013,14 @@ mod tests {
                 tokens_used: None,
             },
             ProgressEvent::LlmCallComplete {
-                dll: "d".into(),
+                binary: "d".into(),
                 function: "f".into(),
                 attempt: 1,
                 code_length: 12,
                 tokens_used: None,
             },
             ProgressEvent::TranslationAttemptCompleted {
-                dll: "d".into(),
+                binary: "d".into(),
                 function: "f".into(),
                 attempt: 1,
                 success: true,
@@ -981,7 +1033,7 @@ mod tests {
                 tokens_used: None,
             },
             ProgressEvent::TranslationCompleted {
-                dll: "d".into(),
+                binary: "d".into(),
                 function: "f".into(),
                 total_attempts: 1,
                 success_strategy: Some("direct".into()),
@@ -1014,7 +1066,7 @@ mod tests {
         // ContextTierSelected — it must derive ContextTier again so the
         // escalation is visible in the phase history.
         let first = phase_of(ProgressEvent::ContextTierSelected {
-            dll: "d".into(),
+            binary: "d".into(),
             function: "f".into(),
             tier: "T1".into(),
             tier_label: "Signature + imports".into(),
@@ -1022,14 +1074,14 @@ mod tests {
             api_call_count: 3,
         });
         let failed = phase_of(ProgressEvent::LlmCallFailed {
-            dll: "d".into(),
+            binary: "d".into(),
             function: "f".into(),
             attempt: 1,
             strategy: "direct".into(),
             error: "context window exceeded".into(),
         });
         let escalated = phase_of(ProgressEvent::ContextTierSelected {
-            dll: "d".into(),
+            binary: "d".into(),
             function: "f".into(),
             tier: "T2".into(),
             tier_label: "Signature + callees".into(),
@@ -1045,33 +1097,33 @@ mod tests {
     fn lifecycle_and_informational_events_derive_no_phase() {
         let events = vec![
             ProgressEvent::LlmCallFailed {
-                dll: "d".into(),
+                binary: "d".into(),
                 function: "f".into(),
                 attempt: 1,
                 strategy: "direct".into(),
                 error: "timeout".into(),
             },
             ProgressEvent::TranslationFailed {
-                dll: "d".into(),
+                binary: "d".into(),
                 function: "f".into(),
                 total_attempts: 3,
             },
             ProgressEvent::FunctionCompleted {
-                dll: "d".into(),
+                binary: "d".into(),
                 function: "f".into(),
                 success: true,
                 attempts: 1,
                 branch: None,
             },
             ProgressEvent::HallucinationDetected {
-                dll: "d".into(),
+                binary: "d".into(),
                 function: "f".into(),
                 attempt: 1,
                 strategy: "direct".into(),
                 hallucinated_apis: vec!["FakeApi".into()],
             },
             ProgressEvent::InfiniteLoopDetected {
-                dll: "d".into(),
+                binary: "d".into(),
                 function: "f".into(),
                 streak: 3,
                 streak_start_attempt: 1,
@@ -1079,7 +1131,7 @@ mod tests {
                 strategy: "direct".into(),
             },
             ProgressEvent::BehaviorDivergenceDetected {
-                dll: "d".into(),
+                binary: "d".into(),
                 function: "f".into(),
                 attempt: 1,
                 strategy: "direct".into(),
@@ -1091,7 +1143,7 @@ mod tests {
                 fault_confidence: 8,
             },
             ProgressEvent::ClassificationComplete {
-                dll: "d".into(),
+                binary: "d".into(),
                 category: "MicrosoftSdk".into(),
                 strategy: "crate_replacement".into(),
                 crate_replacement: None,
@@ -1099,7 +1151,7 @@ mod tests {
                 imported_symbols: 2,
             },
             ProgressEvent::BatchSummary {
-                dll: "d".into(),
+                binary: "d".into(),
                 total_functions: 4,
                 success_count: 3,
                 failure_count: 1,

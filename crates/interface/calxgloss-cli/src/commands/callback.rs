@@ -3,7 +3,7 @@
 //! Runs the callback-table detectors — function-pointer arrays, explicit
 //! registration calls, and switch/jump dispatch tables — against the
 //! program currently open in Ghidra and saves the result to
-//! `re/analysis/callback/{dll}.json` in the workspace, the same file
+//! `re/analysis/callback/{binary}.json` in the workspace, the same file
 //! batch translation will read as prompt context. Batch translation runs
 //! the same scan before its first batch when no result is cached; this
 //! command is the manual entry point: it rebuilds the result on demand
@@ -26,9 +26,9 @@ use crate::utils::*;
 const DETAIL_LIMIT: usize = 10;
 
 /// Handle the `callback` subcommand: detect callback tables for
-/// `dll`, or print the cached result when `show` is set.
+/// `binary`, or print the cached result when `show` is set.
 pub async fn handle_callback(
-    dll: &str,
+    binary: &str,
     workspace: &Path,
     show: bool,
     settings: &Settings,
@@ -36,17 +36,17 @@ pub async fn handle_callback(
     let persistor = CallbackPersistor::new(workspace);
 
     if show {
-        let result = persistor.load(dll).with_context(|| {
+        let result = persistor.load(binary).with_context(|| {
             format!(
-                "No cached callback result for {dll}; \
-                 run `calxgloss callback --dll {dll}` to produce one"
+                "No cached callback result for {binary}; \
+                 run `calxgloss callback --binary {binary}` to produce one"
             )
         })?;
-        print_callback_report(&result, &persistor.path_for(dll));
+        print_callback_report(&result, &persistor.path_for(binary));
         return Ok(());
     }
 
-    info!(dll, workspace = %workspace.display(), "Detecting callback tables");
+    info!(binary, workspace = %workspace.display(), "Detecting callback tables");
 
     let ghidra_url = &settings.ghidra_url.value;
     let mut config = GhidraConfig::new(ghidra_url)
@@ -59,14 +59,14 @@ pub async fn handle_callback(
 
     let engine = CallbackEngine::new(&ghidra);
     let result = engine
-        .scan(dll)
+        .scan(binary)
         .await
-        .with_context(|| format!("Callback detection failed for {dll}"))?;
+        .with_context(|| format!("Callback detection failed for {binary}"))?;
     persistor
         .save(&result)
-        .with_context(|| format!("Failed to save the callback result for {dll}"))?;
+        .with_context(|| format!("Failed to save the callback result for {binary}"))?;
 
-    print_callback_report(&result, &persistor.path_for(dll));
+    print_callback_report(&result, &persistor.path_for(binary));
     Ok(())
 }
 

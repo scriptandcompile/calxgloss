@@ -85,10 +85,10 @@ export function stopLiveView() {
  * fetches one.
  */
 export function applyUnitPhase(unit) {
-    if (!lastState || !unit || !unit.dll) return;
+    if (!lastState || !unit || !unit.binary) return;
     unit._receivedAt = Date.now();
     const units = lastState.units || [];
-    const idx = units.findIndex(u => u.dll === unit.dll && u.function === unit.function);
+    const idx = units.findIndex(u => u.binary === unit.binary && u.function === unit.function);
     if (idx >= 0) units[idx] = unit;
     else units.push(unit);
     lastState.units = units;
@@ -107,7 +107,7 @@ export function applyUnitPhase(unit) {
         summary.textContent = `${lastState.in_flight} in flight / ${lastState.count} tracked`;
     }
     const existing = list.querySelector(
-        `.live-unit[data-dll="${cssEscape(unit.dll)}"][data-function="${cssEscape(unit.function)}"]`
+        `.live-unit[data-dll="${cssEscape(unit.binary)}"][data-function="${cssEscape(unit.function)}"]`
     );
     if (existing) {
         existing.outerHTML = unitRowHtml(unit);
@@ -181,9 +181,9 @@ function unitRowHtml(u) {
     const receivedAt = u._receivedAt || lastFetchedAt;
 
     return `
-        <div class="live-unit ${statusClass}" data-dll="${escapeHtml(u.dll)}" data-function="${escapeHtml(u.function)}">
+        <div class="live-unit ${statusClass}" data-dll="${escapeHtml(u.binary)}" data-function="${escapeHtml(u.function)}">
             <div class="live-unit-header">
-                <span class="live-unit-name">${escapeHtml(u.dll)} / ${escapeHtml(u.function)}</span>
+                <span class="live-unit-name">${escapeHtml(u.binary)} / ${escapeHtml(u.function)}</span>
                 <span class="live-chip live-phase phase-${escapeHtml(phase)}" title="${escapeHtml(history)}">${escapeHtml(phaseLabel)}</span>
                 <span class="live-chip live-elapsed" data-elapsed-base="${u.elapsed_secs ?? 0}" data-received-at="${receivedAt}">${Math.floor(u.elapsed_secs ?? 0)}s</span>
             </div>

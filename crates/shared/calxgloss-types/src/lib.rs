@@ -16,6 +16,8 @@
 //! - [`translation`] — LLM translation requests and results
 //! - [`verification`] — Compilation and behavioral verification results
 //! - [`git`] — Branch and commit tracking
+//! - [`identity`] — `BinaryIdentity`, `UnitKey`, and the branch-name parser
+//!   (`parse_branch_name`) every crate shares
 //! - [`dashboard`] — Review dashboard data model
 //! - [`persist`] — Shared JSON persistence plumbing (`JsonStore`, `save_json`/`load_json`)
 //! - [`pipeline_phase`] — Pipeline phase progress records (`PipelinePhase`,
@@ -37,6 +39,7 @@ pub mod experiment_log;
 pub mod fault;
 pub mod function;
 pub mod git;
+pub mod identity;
 pub mod live_translation;
 pub mod persist;
 pub mod pipeline_phase;
@@ -73,6 +76,7 @@ pub use fault::{
 };
 pub use function::{ApiCategory, FunctionInfo, NodeCategory, WindowsApiCall};
 pub use git::{GitBranch, GitCommit};
+pub use identity::{BinaryIdentity, BranchName, UnitKey, parse_branch_name, work_kind_for_prefix};
 pub use live_translation::{
     LiveTranslationState, LiveUnitProgress, PassState, PassStatus, derive_unit_confidence,
 };
@@ -87,7 +91,7 @@ pub use shim::{
     ShimSuggestion, ShimSuggestionReport, ShimVerificationResult, dll_to_module_name,
 };
 pub use test::{SideEffect, SideEffectKind, TestCase, TestResult};
-pub use token_usage::{DllTokenStats, TokenUsageEntry, TokenUsageLog, TokenUsageStats};
+pub use token_usage::{BinaryTokenStats, TokenUsageEntry, TokenUsageLog, TokenUsageStats};
 pub use translation::{ApiCategoryMapping, ApiMappingItem, TranslationRequest, TranslationResult};
 pub use verification::{FailedTest, VerificationResult};
 
@@ -130,16 +134,16 @@ mod tests {
     fn test_git_branch_new() {
         let branch = GitBranch::new("game_logic.dll", "DrawSprite", 1).unwrap();
         assert_eq!(branch.name, "re/game_logic.dll/DrawSpritev1");
-        assert_eq!(branch.dll, "game_logic.dll");
+        assert_eq!(branch.binary, BinaryIdentity::new("game_logic.dll"));
         assert_eq!(branch.function, "DrawSprite");
         assert_eq!(branch.attempt, 1);
     }
 
     #[test]
-    fn test_git_branch_empty_dll() {
+    fn test_git_branch_empty_binary() {
         let result = GitBranch::new("", "DrawSprite", 1);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), TypesError::EmptyDllName));
+        assert!(matches!(result.unwrap_err(), TypesError::EmptyBinaryName));
     }
 
     #[test]

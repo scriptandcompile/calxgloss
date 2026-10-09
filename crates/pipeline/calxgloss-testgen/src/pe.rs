@@ -70,7 +70,7 @@ pub struct ExportEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportEntry {
     /// Name of the DLL the symbol is imported from.
-    pub dll: String,
+    pub binary: String,
     /// Imported symbol name.
     ///
     /// Imports by ordinal with no hint/name entry are reported as
@@ -195,7 +195,7 @@ impl PeImage {
             .imports
             .iter()
             .map(|i| ImportEntry {
-                dll: i.dll.to_string(),
+                binary: i.dll.to_string(),
                 function: i.name.to_string(),
             })
             .collect();
@@ -283,7 +283,7 @@ impl PeImage {
     pub fn imports_by_dll(&self) -> HashMap<&str, Vec<&ImportEntry>> {
         let mut out: HashMap<&str, Vec<&ImportEntry>> = HashMap::new();
         for import in &self.imports {
-            out.entry(import.dll.as_str()).or_default().push(import);
+            out.entry(import.binary.as_str()).or_default().push(import);
         }
         out
     }
@@ -365,7 +365,7 @@ mod tests {
     fn synthetic() -> Option<PeImage> {
         // Reuse the opt-in real DLL when present; otherwise the unit tests that
         // need a concrete image are skipped rather than faked.
-        real_dll().map(|p| PeImage::parse(&p).expect("parse real dll"))
+        real_dll().map(|p| PeImage::parse(&p).expect("parse real binary"))
     }
 
     #[test]
@@ -474,7 +474,7 @@ mod tests {
         println!("libraries     : {:?}", img.libraries());
         println!("imports (first 10):");
         for i in img.imports().iter().take(10) {
-            println!("  {} :: {}", i.dll, i.function);
+            println!("  {} :: {}", i.binary, i.function);
         }
     }
 

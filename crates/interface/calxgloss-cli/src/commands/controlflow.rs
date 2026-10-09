@@ -3,7 +3,7 @@
 //! Runs the control-flow detectors — switch-shaped if/else-if chains,
 //! self-recursion, and state-machine patterns — against the program
 //! currently open in Ghidra and saves the result to
-//! `re/analysis/controlflow/{dll}.json` in the workspace, the same file
+//! `re/analysis/controlflow/{binary}.json` in the workspace, the same file
 //! batch translation will read as prompt context. Batch translation runs
 //! the same scan before its first batch when no result is cached; this
 //! command is the manual entry point: it rebuilds the result on demand
@@ -26,9 +26,9 @@ use crate::utils::*;
 const DETAIL_LIMIT: usize = 10;
 
 /// Handle the `controlflow` subcommand: detect control-flow patterns for
-/// `dll`, or print the cached result when `show` is set.
+/// `binary`, or print the cached result when `show` is set.
 pub async fn handle_controlflow(
-    dll: &str,
+    binary: &str,
     workspace: &Path,
     show: bool,
     settings: &Settings,
@@ -36,17 +36,17 @@ pub async fn handle_controlflow(
     let persistor = ControlFlowPersistor::new(workspace);
 
     if show {
-        let result = persistor.load(dll).with_context(|| {
+        let result = persistor.load(binary).with_context(|| {
             format!(
-                "No cached control-flow result for {dll}; \
-                 run `calxgloss controlflow --dll {dll}` to produce one"
+                "No cached control-flow result for {binary}; \
+                 run `calxgloss controlflow --binary {binary}` to produce one"
             )
         })?;
-        print_controlflow_report(&result, &persistor.path_for(dll));
+        print_controlflow_report(&result, &persistor.path_for(binary));
         return Ok(());
     }
 
-    info!(dll, workspace = %workspace.display(), "Detecting control-flow patterns");
+    info!(binary, workspace = %workspace.display(), "Detecting control-flow patterns");
 
     let ghidra_url = &settings.ghidra_url.value;
     let mut config = GhidraConfig::new(ghidra_url)
@@ -59,14 +59,14 @@ pub async fn handle_controlflow(
 
     let engine = ControlFlowEngine::new(&ghidra);
     let result = engine
-        .scan(dll)
+        .scan(binary)
         .await
-        .with_context(|| format!("Control-flow detection failed for {dll}"))?;
+        .with_context(|| format!("Control-flow detection failed for {binary}"))?;
     persistor
         .save(&result)
-        .with_context(|| format!("Failed to save the control-flow result for {dll}"))?;
+        .with_context(|| format!("Failed to save the control-flow result for {binary}"))?;
 
-    print_controlflow_report(&result, &persistor.path_for(dll));
+    print_controlflow_report(&result, &persistor.path_for(binary));
     Ok(())
 }
 

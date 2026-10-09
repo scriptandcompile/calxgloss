@@ -179,7 +179,7 @@ impl ShimPipeline {
     /// On mapping generation failure, the pipeline produces a skeletal shim
     /// (with `TODO` stubs) and returns the best-effort result so the
     /// reviewer can still inspect and fix the output.
-    #[instrument(skip(self, base_dir, git), fields(dll = %self.dll_name, crate = %self.target_crate))]
+    #[instrument(skip(self, base_dir, git), fields(binary = %self.dll_name, crate = %self.target_crate))]
     pub async fn run(
         &self,
         base_dir: &Path,
@@ -430,13 +430,13 @@ pub async fn generate_all_shims(
     let mut results = Vec::with_capacity(shim_layers.len());
 
     for classification in shim_layers {
-        let dll_name = &classification.dll;
+        let dll_name = &classification.binary;
         let crate_name = classification
             .crate_replacement
             .as_deref()
             .unwrap_or("<unknown>");
 
-        info!(dll = %dll_name, crate = crate_name, "Processing shim for DLL");
+        info!(binary = %dll_name, crate = crate_name, "Processing shim for DLL");
 
         // Fetch exports from Ghidra.
         // GhidraMCP serves the currently open program, so we fetch all exports
@@ -446,7 +446,7 @@ pub async fn generate_all_shims(
         let exports: Vec<Export> = match &symbols {
             Ok(syms) => syms.iter().map(symbol_to_export).collect(),
             Err(e) => {
-                warn!(dll = %dll_name, error = %e, "Failed to fetch exports from Ghidra; using empty list");
+                warn!(binary = %dll_name, error = %e, "Failed to fetch exports from Ghidra; using empty list");
                 Vec::new()
             }
         };

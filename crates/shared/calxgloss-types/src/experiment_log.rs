@@ -27,7 +27,7 @@
 //! use calxgloss_types::DllCategory;
 //!
 //! let entry = PromptStrategyEntry {
-//!     dll: "game_logic.dll".to_string(),
+//!     binary: "game_logic.dll".into(),
 //!     dll_category: DllCategory::ProjectSpecific,
 //!     strategy: "compile_fix".to_string(),
 //!     success: false,
@@ -39,6 +39,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::DllCategory;
+use crate::identity::BinaryIdentity;
 
 /// A single experiment entry recording the outcome of one translation attempt.
 ///
@@ -47,7 +48,7 @@ use crate::DllCategory;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PromptStrategyEntry {
     /// The DLL filename (e.g., `"game_logic.dll"`).
-    pub dll: String,
+    pub binary: BinaryIdentity,
 
     /// The DLL classification category.
     pub dll_category: DllCategory,
@@ -68,14 +69,14 @@ pub struct PromptStrategyEntry {
 impl PromptStrategyEntry {
     /// Create a new experiment entry with the current timestamp.
     pub fn new(
-        dll: impl Into<String>,
+        binary: impl Into<BinaryIdentity>,
         dll_category: DllCategory,
         strategy: impl Into<String>,
         success: bool,
         attempt: u32,
     ) -> Self {
         Self {
-            dll: dll.into(),
+            binary: binary.into(),
             dll_category,
             strategy: strategy.into(),
             success,
@@ -254,7 +255,7 @@ mod tests {
             false,
             1,
         );
-        assert_eq!(entry.dll, "game_logic.dll");
+        assert_eq!(entry.binary, "game_logic.dll");
         assert_eq!(entry.dll_category, DllCategory::ProjectSpecific);
         assert_eq!(entry.strategy, "compile_fix");
         assert!(!entry.success);
@@ -394,7 +395,7 @@ mod tests {
             serde_json::from_str(&json).expect("should deserialize");
 
         assert_eq!(deserialized.entries.len(), 1);
-        assert_eq!(deserialized.entries[0].dll, "game_logic.dll");
+        assert_eq!(deserialized.entries[0].binary, "game_logic.dll");
         assert_eq!(deserialized.entries[0].strategy, "compile_fix");
         assert!(!deserialized.entries[0].success);
         assert_eq!(deserialized.entries[0].attempt, 1);

@@ -68,7 +68,7 @@ pub struct InfiniteLoopSignal {
     pub strategy: String,
 
     /// The DLL that is stuck.
-    pub dll: String,
+    pub binary: String,
 
     /// The function that is stuck.
     pub function: String,
@@ -244,7 +244,7 @@ impl InfiniteLoopDetector {
                 prompt_hash: last_prompt_hash,
                 repeated_code,
                 strategy: current_strategy,
-                dll: String::new(),
+                binary: String::new(),
                 function: String::new(),
                 streak_start_attempt,
                 streak_end_attempt: first.attempt,

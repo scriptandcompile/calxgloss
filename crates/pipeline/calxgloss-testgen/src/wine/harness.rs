@@ -273,7 +273,7 @@ fn main() {
         SetUnhandledExceptionFilter(Some(on_crash));
     }
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    let mut dll = String::new();
+    let mut binary = String::new();
     let mut locator: Option<(u8, String)> = None;
     let mut flags = DONT_RESOLVE_DLL_REFERENCES;
     // When set, run only this case index. Used to survive a crash in batch mode.
@@ -285,11 +285,11 @@ fn main() {
         let value = argv.get(i + 1).cloned().unwrap_or_default();
         // How many argv slots this flag occupies, so the loop advances correctly.
         let consumed = match arg.as_str() {
-            "--dll" => { dll = value; 1 }
+            "--binary" => { binary = value; 1 }
             "--rva" => { locator = Some((0, value)); 1 }
             "--export-name" => { locator = Some((1, value)); 1 }
             "--export-ordinal" => { locator = Some((2, value)); 1 }
-            "--run-dll-main" => { flags = 0; 0 }
+            "--run-binary-main" => { flags = 0; 0 }
             "--isolate" => { isolate = value.parse().ok(); 1 }
             other => {
                 eprintln!("harness: ignoring unknown argument '{other}'");
@@ -299,14 +299,14 @@ fn main() {
         i += 1 + consumed;
     }
 
-    if dll.is_empty() {
-        die(2, "--dll is required");
+    if binary.is_empty() {
+        die(2, "--binary is required");
     }
     let Some((kind, value)) = locator else {
         die(2, "one of --rva, --export-name, or --export-ordinal is required");
     };
 
-    let base = unsafe { LoadLibraryExW(wide(&dll).as_ptr(), std::ptr::null_mut(), flags) };
+    let base = unsafe { LoadLibraryExW(wide(&binary).as_ptr(), std::ptr::null_mut(), flags) };
     if base.is_null() {
         let e = unsafe { GetLastError() };
         die(3, &format!("LoadLibraryExW failed: GetLastError={e} (0x{e:x})"));

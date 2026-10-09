@@ -38,8 +38,8 @@ export function renderFullQueue(dashboard, selectedId = null) {
     list.innerHTML = units.map(u => {
         const iconClass = u.status.toLowerCase().replace(/\s+/g, "_");
         const name = u.kind === "dll_classification"
-            ? `Classify ${u.dll}`
-            : u.function ? `${u.dll} ${u.function}` : u.dll;
+            ? `Classify ${u.binary}`
+            : u.function ? `${u.binary} ${u.function}` : u.binary;
 
         // Effort estimate from historical attempt durations (issue #64);
         // "—" when the unit has no recorded history.
@@ -115,8 +115,8 @@ export async function renderInlineDetail(unitId) {
         const u = res.unit;
 
         titleEl.textContent = u.function
-            ? `${u.dll}!${u.function}`
-            : `Classify ${u.dll}`;
+            ? `${u.binary}!${u.function}`
+            : `Classify ${u.binary}`;
         titleEl.title = u.id;
         closeBtn.style.display = "";
 
@@ -177,7 +177,7 @@ function renderDetailOverview(u) {
             </div>
             <div class="detail-row">
                 <span class="detail-row-label">DLL</span>
-                <span class="detail-row-value">${u.dll}</span>
+                <span class="detail-row-value">${u.binary}</span>
             </div>
             ${u.function ? `
                 <div class="detail-row">
@@ -586,7 +586,7 @@ async function loadGhidraView(unitId) {
 
         // Ghidra metadata
         html += `<div style="padding:8px 12px;font-size:12px;color:var(--text-muted)">`;
-        if (ctx.dll) html += `DLL: <strong style="color:var(--text-secondary)">${escapeHtml(ctx.dll)}</strong> &nbsp;`;
+        if (ctx.binary) html += `DLL: <strong style="color:var(--text-secondary)">${escapeHtml(ctx.binary)}</strong> &nbsp;`;
         if (ctx.function_name) html += `Function: <strong style="color:var(--text-secondary)">${escapeHtml(ctx.function_name)}</strong>`;
         if (ctx.address) html += ` &nbsp;Addr: <code>${escapeHtml(ctx.address)}</code>`;
         html += `</div>`;

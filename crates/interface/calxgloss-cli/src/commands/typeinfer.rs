@@ -3,7 +3,7 @@
 //! Runs the three inference detectors — C++ this-pointer detection,
 //! parameter-size detection, and known-type propagation — against the
 //! program currently open in Ghidra and saves the result to
-//! `re/analysis/typeinfer/{dll}.json` in the workspace. Batch translation
+//! `re/analysis/typeinfer/{binary}.json` in the workspace. Batch translation
 //! runs the same scan before its first batch when no result is cached;
 //! this command is the manual entry point: it rebuilds the result on
 //! demand and can print what a cached one holds.
@@ -24,10 +24,10 @@ use crate::utils::*;
 /// How many entries a detail section lists before collapsing the rest.
 const DETAIL_LIMIT: usize = 10;
 
-/// Handle the `typeinfer` subcommand: infer parameter types for `dll`,
+/// Handle the `typeinfer` subcommand: infer parameter types for `binary`,
 /// or print the cached result when `show` is set.
 pub async fn handle_typeinfer(
-    dll: &str,
+    binary: &str,
     workspace: &Path,
     show: bool,
     settings: &Settings,
@@ -35,17 +35,17 @@ pub async fn handle_typeinfer(
     let persistor = TypeInferPersistor::new(workspace);
 
     if show {
-        let result = persistor.load(dll).with_context(|| {
+        let result = persistor.load(binary).with_context(|| {
             format!(
-                "No cached type inference result for {dll}; \
-                 run `calxgloss typeinfer --dll {dll}` to produce one"
+                "No cached type inference result for {binary}; \
+                 run `calxgloss typeinfer --binary {binary}` to produce one"
             )
         })?;
-        print_type_inference_report(&result, &persistor.path_for(dll));
+        print_type_inference_report(&result, &persistor.path_for(binary));
         return Ok(());
     }
 
-    info!(dll, workspace = %workspace.display(), "Inferring parameter types");
+    info!(binary, workspace = %workspace.display(), "Inferring parameter types");
 
     let ghidra_url = &settings.ghidra_url.value;
     let mut config = GhidraConfig::new(ghidra_url)
@@ -58,14 +58,14 @@ pub async fn handle_typeinfer(
 
     let engine = TypeInferEngine::new(&ghidra);
     let result = engine
-        .scan(dll)
+        .scan(binary)
         .await
-        .with_context(|| format!("Type inference failed for {dll}"))?;
+        .with_context(|| format!("Type inference failed for {binary}"))?;
     persistor
         .save(&result)
-        .with_context(|| format!("Failed to save the type inference result for {dll}"))?;
+        .with_context(|| format!("Failed to save the type inference result for {binary}"))?;
 
-    print_type_inference_report(&result, &persistor.path_for(dll));
+    print_type_inference_report(&result, &persistor.path_for(binary));
     Ok(())
 }
 

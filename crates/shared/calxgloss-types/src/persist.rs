@@ -124,11 +124,11 @@ pub fn load_json<T: DeserializeOwned>(path: &Path) -> Result<T, PersistError> {
 /// use serde::{Deserialize, Serialize};
 ///
 /// #[derive(Serialize, Deserialize)]
-/// struct Report { dll: String }
+/// struct Report { binary: String }
 ///
 /// # fn main() -> Result<(), calxgloss_types::persist::PersistError> {
 /// let store = JsonStore::<Report>::new("re/analysis/reports");
-/// store.save("eqmain.dll", &Report { dll: "eqmain.dll".into() })?;
+/// store.save("eqmain.dll", &Report { binary: "eqmain.dll".into() })?;
 /// let report = store.load("eqmain.dll")?;
 /// # Ok(())
 /// # }

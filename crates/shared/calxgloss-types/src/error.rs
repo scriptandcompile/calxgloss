@@ -18,9 +18,9 @@ pub enum TypesError {
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
-    /// A DLL name was empty or unparseable.
-    #[error("empty DLL name")]
-    EmptyDllName,
+    /// A binary identity was empty or unparseable.
+    #[error("empty binary name")]
+    EmptyBinaryName,
 
     /// A function name was empty or unparseable.
     #[error("empty function name")]
@@ -34,9 +34,9 @@ pub enum TypesError {
     #[error("no imports found in DLL: {0}")]
     NoImports(String),
 
-    /// The requested function was not found in the specified DLL.
-    #[error("function not found: {dll}!{function}")]
-    FunctionNotFound { dll: String, function: String },
+    /// The requested function was not found in the specified binary.
+    #[error("function not found: {binary}!{function}")]
+    FunctionNotFound { binary: String, function: String },
 
     /// The generated branch name was invalid.
     #[error("invalid branch name: {0}")]

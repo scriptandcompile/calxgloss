@@ -30,8 +30,8 @@ pub enum TypeInferError {
     EmptyFunctionName,
 
     /// A type inference scan failed for a DLL.
-    #[error("type inference scan failed for '{dll}': {reason}")]
-    ScanFailed { dll: String, reason: String },
+    #[error("type inference scan failed for '{binary}': {reason}")]
+    ScanFailed { binary: String, reason: String },
 }
 
 /// Maps the shared JSON store's errors onto this crate's error type: the

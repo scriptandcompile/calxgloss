@@ -77,7 +77,7 @@ mod tests {
     #[test]
     fn test_translation_clone() {
         let translation = Translation {
-            dll: "game_logic.dll".to_string(),
+            binary: "game_logic.dll".to_string().into(),
             function: "DrawSprite".to_string(),
             function_address: Some(0x1000),
             rust_code: "fn draw_sprite(x: i32, y: i32, texture_index: u32) -> i32 { x + y }"
@@ -93,7 +93,7 @@ mod tests {
         };
 
         let cloned = translation.clone();
-        assert_eq!(cloned.dll, translation.dll);
+        assert_eq!(cloned.binary, translation.binary);
         assert_eq!(cloned.function, translation.function);
         assert_eq!(cloned.function_address, translation.function_address);
         assert_eq!(cloned.rust_code, translation.rust_code);
@@ -115,7 +115,7 @@ mod tests {
         let func_info = FunctionInfo {
             name: "DrawSprite".to_string(),
             address: 0x1000,
-            dll: "game_logic.dll".to_string(),
+            binary: "game_logic.dll".to_string().into(),
             disassembly: String::new(),
             decompiler_output: "int __stdcall DrawSprite(int x, int y, unsigned int texture_index) {\n    return x + y;\n}".to_string(),
             windows_apis: Vec::new(),
@@ -143,7 +143,7 @@ mod tests {
         let func_info = FunctionInfo {
             name: "FUN_18008ed50".to_string(),
             address: 0x18008ed50,
-            dll: "eqmain.dll".to_string(),
+            binary: "eqmain.dll".to_string().into(),
             disassembly: String::new(),
             decompiler_output: "\nlonglong FUN_18008ed50(longlong param_1,int param_2)\n\n{\n  return param_1 + ((longlong)param_2 + 4) * 8;\n}\n".to_string(),
             windows_apis: Vec::new(),
@@ -174,7 +174,7 @@ mod tests {
         let func_info = FunctionInfo {
             name: "SomeFunc".to_string(),
             address: 0x2000,
-            dll: "test.dll".to_string(),
+            binary: "test.dll".to_string().into(),
             disassembly: String::new(),
             decompiler_output: String::new(),
             windows_apis: Vec::new(),
@@ -221,7 +221,7 @@ mod tests {
         let func_info = FunctionInfo {
             name: "DrawSprite".to_string(),
             address: 0x1000,
-            dll: "game_logic.dll".to_string(),
+            binary: "game_logic.dll".to_string().into(),
             disassembly: "mov eax, [esp+4]\nret".to_string(),
             decompiler_output: "int DrawSprite(int x) { return x; }".to_string(),
             windows_apis: Vec::new(),
@@ -237,7 +237,7 @@ mod tests {
             vec![],
         );
 
-        assert_eq!(request.dll, "game_logic.dll");
+        assert_eq!(request.binary, "game_logic.dll");
         assert_eq!(request.function, "DrawSprite");
         assert_eq!(request.disassembly, "mov eax, [esp+4]\nret");
         assert_eq!(
@@ -267,7 +267,7 @@ mod tests {
         let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
 
         let graph = calxgloss_callgraph::CallGraph {
-            dll: "empty.dll".to_string(),
+            binary: "empty.dll".to_string(),
             functions: vec![],
         };
 
@@ -285,7 +285,7 @@ mod tests {
 
         // Build a graph with three tiers
         let graph = CallGraph {
-            dll: "tiers.dll".to_string(),
+            binary: "tiers.dll".to_string(),
             functions: vec![
                 // Leaf: render_frame — calls Direct3DCreate9
                 FunctionCallGraph {
@@ -387,7 +387,7 @@ mod tests {
         use calxgloss_callgraph::FunctionCallGraph;
 
         let graph = CallGraph {
-            dll: "trunc.dll".to_string(),
+            binary: "trunc.dll".to_string(),
             functions: (0..10)
                 .map(|i| FunctionCallGraph {
                     name: format!("func_{i}"),
@@ -454,7 +454,7 @@ mod tests {
         let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
 
         let graph = CallGraph {
-            dll: "categories.dll".to_string(),
+            binary: "categories.dll".to_string(),
             functions: vec![
                 calxgloss_callgraph::FunctionCallGraph {
                     name: "WinMain".to_string(),

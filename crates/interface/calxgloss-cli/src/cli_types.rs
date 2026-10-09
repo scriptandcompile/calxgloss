@@ -98,7 +98,7 @@ pub(super) struct TranslateArgs {
 
     /// DLL name containing the function
     #[arg(long)]
-    pub(super) dll: String,
+    pub(super) binary: String,
 
     /// Function name to translate
     #[arg(long)]
@@ -136,7 +136,7 @@ pub(super) struct BatchTranslateArgs {
 
     /// DLL name containing the functions to translate
     #[arg(long)]
-    pub(super) dll: String,
+    pub(super) binary: String,
 
     /// Comma-separated list of function names to translate (e.g., "Func1,Func2,Func3")
     #[arg(long)]
@@ -183,7 +183,7 @@ pub(super) enum Command {
         /// The DLLs to classify are named here because Ghidra serves a single
         /// open program and cannot list what a target links against.
         #[arg(long, required = true)]
-        dll: Vec<String>,
+        binary: Vec<String>,
     },
 
     /// Translate a single function from disassembly to Rust
@@ -197,7 +197,7 @@ pub(super) enum Command {
     /// Runs the three recovery scans — named types from Ghidra's Type
     /// Manager, vtable detection, and string-guided struct inference —
     /// against the currently open program and saves the result to
-    /// `re/analysis/typesdb/<dll>.json` in the workspace. Batch
+    /// `re/analysis/typesdb/<binary>.json` in the workspace. Batch
     /// translation recovers this automatically before its first batch
     /// when no database is cached; this command is the manual entry
     /// point: it rebuilds the database on demand and can print what a
@@ -205,7 +205,7 @@ pub(super) enum Command {
     ///
     /// # Arguments
     ///
-    /// * `--dll` — Binary the open Ghidra program was loaded from, e.g.
+    /// * `--binary` — Binary the open Ghidra program was loaded from, e.g.
     ///   `eqmain.dll`. Names the persisted file.
     /// * `--show` — Print a summary of the cached database without
     ///   connecting to Ghidra.
@@ -215,13 +215,13 @@ pub(super) enum Command {
     /// # Examples
     ///
     /// ```text
-    /// calxgloss typesdb --dll eqmain.dll
-    /// calxgloss typesdb --dll eqmain.dll --show
+    /// calxgloss typesdb --binary eqmain.dll
+    /// calxgloss typesdb --binary eqmain.dll --show
     /// ```
     Typesdb {
         /// Binary the open Ghidra program was loaded from, e.g. `eqmain.dll`
         #[arg(long, required = true)]
-        dll: String,
+        binary: String,
 
         /// Show the cached database instead of running the scans
         #[arg(long)]
@@ -237,7 +237,7 @@ pub(super) enum Command {
     /// Runs the three inference detectors — C++ this-pointer detection,
     /// parameter-size detection, and known-type propagation — against the
     /// currently open program and saves the result to
-    /// `re/analysis/typeinfer/<dll>.json` in the workspace. Batch
+    /// `re/analysis/typeinfer/<binary>.json` in the workspace. Batch
     /// translation runs the same scan automatically before its first
     /// batch when no result is cached; this command is the manual entry
     /// point: it rebuilds the result on demand and can print what a
@@ -245,7 +245,7 @@ pub(super) enum Command {
     ///
     /// # Arguments
     ///
-    /// * `--dll` — Binary the open Ghidra program was loaded from, e.g.
+    /// * `--binary` — Binary the open Ghidra program was loaded from, e.g.
     ///   `eqmain.dll`. Names the persisted file.
     /// * `--show` — Print a summary of the cached result without
     ///   connecting to Ghidra.
@@ -253,13 +253,13 @@ pub(super) enum Command {
     /// # Examples
     ///
     /// ```text
-    /// calxgloss typeinfer --dll eqmain.dll
-    /// calxgloss typeinfer --dll eqmain.dll --show
+    /// calxgloss typeinfer --binary eqmain.dll
+    /// calxgloss typeinfer --binary eqmain.dll --show
     /// ```
     Typeinfer {
         /// Binary the open Ghidra program was loaded from, e.g. `eqmain.dll`
         #[arg(long, required = true)]
-        dll: String,
+        binary: String,
 
         /// Show the cached result instead of running the scan
         #[arg(long)]
@@ -271,7 +271,7 @@ pub(super) enum Command {
     /// Runs the three recognition detectors — control flow signature
     /// matching, string-guided hints, and callback pattern detection —
     /// against the currently open program and saves the result to
-    /// `re/analysis/algorithm/<dll>.json` in the workspace. Batch
+    /// `re/analysis/algorithm/<binary>.json` in the workspace. Batch
     /// translation runs the same scan automatically before its first
     /// batch when no result is cached; this command is the manual entry
     /// point: it rebuilds the result on demand and can print what a
@@ -279,7 +279,7 @@ pub(super) enum Command {
     ///
     /// # Arguments
     ///
-    /// * `--dll` — Binary the open Ghidra program was loaded from, e.g.
+    /// * `--binary` — Binary the open Ghidra program was loaded from, e.g.
     ///   `eqmain.dll`. Names the persisted file.
     /// * `--show` — Print a summary of the cached result without
     ///   connecting to Ghidra.
@@ -287,13 +287,13 @@ pub(super) enum Command {
     /// # Examples
     ///
     /// ```text
-    /// calxgloss algorithm --dll eqmain.dll
-    /// calxgloss algorithm --dll eqmain.dll --show
+    /// calxgloss algorithm --binary eqmain.dll
+    /// calxgloss algorithm --binary eqmain.dll --show
     /// ```
     Algorithm {
         /// Binary the open Ghidra program was loaded from, e.g. `eqmain.dll`
         #[arg(long, required = true)]
-        dll: String,
+        binary: String,
 
         /// Show the cached result instead of running the scan
         #[arg(long)]
@@ -304,25 +304,25 @@ pub(super) enum Command {
     /// lifetimes, reference counting) for a binary.
     ///
     /// The lifecycle findings are persisted per binary to
-    /// `re/analysis/memory/<dll>.json` in the workspace — the same file
+    /// `re/analysis/memory/<binary>.json` in the workspace — the same file
     /// batch translation will read as prompt context. `--show` prints a
     /// cached result without connecting to Ghidra.
     ///
     /// # Arguments
     ///
-    /// * `--dll` — Binary to scan, e.g. `eqmain.dll`. Names the
+    /// * `--binary` — Binary to scan, e.g. `eqmain.dll`. Names the
     ///   persisted file.
     /// * `--show` — Print a summary of the cached result.
     ///
     /// # Examples
     ///
     /// ```text
-    /// calxgloss memory --dll eqmain.dll --show
+    /// calxgloss memory --binary eqmain.dll --show
     /// ```
     Memory {
         /// Binary to scan, e.g. `eqmain.dll`
         #[arg(long, required = true)]
-        dll: String,
+        binary: String,
 
         /// Show the cached result instead of running the scan
         #[arg(long)]
@@ -333,25 +333,25 @@ pub(super) enum Command {
     /// operations, thread spawns) for a binary.
     ///
     /// The concurrency findings are persisted per binary to
-    /// `re/analysis/sync/<dll>.json` in the workspace — the same file
+    /// `re/analysis/sync/<binary>.json` in the workspace — the same file
     /// batch translation will read as prompt context. `--show` prints a
     /// cached result without connecting to Ghidra.
     ///
     /// # Arguments
     ///
-    /// * `--dll` — Binary to scan, e.g. `eqmain.dll`. Names the
+    /// * `--binary` — Binary to scan, e.g. `eqmain.dll`. Names the
     ///   persisted file.
     /// * `--show` — Print a summary of the cached result.
     ///
     /// # Examples
     ///
     /// ```text
-    /// calxgloss sync --dll eqmain.dll --show
+    /// calxgloss sync --binary eqmain.dll --show
     /// ```
     Sync {
         /// Binary to scan, e.g. `eqmain.dll`
         #[arg(long, required = true)]
-        dll: String,
+        binary: String,
 
         /// Show the cached result instead of running the scan
         #[arg(long)]
@@ -362,25 +362,25 @@ pub(super) enum Command {
     /// repeated magic numbers) for a binary.
     ///
     /// The constant findings are persisted per binary to
-    /// `re/analysis/consts/<dll>.json` in the workspace — the same file
+    /// `re/analysis/consts/<binary>.json` in the workspace — the same file
     /// batch translation will read as prompt context. `--show` prints a
     /// cached result without connecting to Ghidra.
     ///
     /// # Arguments
     ///
-    /// * `--dll` — Binary to scan, e.g. `eqmain.dll`. Names the
+    /// * `--binary` — Binary to scan, e.g. `eqmain.dll`. Names the
     ///   persisted file.
     /// * `--show` — Print a summary of the cached result.
     ///
     /// # Examples
     ///
     /// ```text
-    /// calxgloss consts --dll eqmain.dll --show
+    /// calxgloss consts --binary eqmain.dll --show
     /// ```
     Consts {
         /// Binary to scan, e.g. `eqmain.dll`
         #[arg(long, required = true)]
-        dll: String,
+        binary: String,
 
         /// Show the cached result instead of running the scan
         #[arg(long)]
@@ -395,25 +395,25 @@ pub(super) enum Command {
     /// switch/jump-table dispatch.
     ///
     /// The callback findings are persisted per binary to
-    /// `re/analysis/callback/<dll>.json` in the workspace — the same
+    /// `re/analysis/callback/<binary>.json` in the workspace — the same
     /// file batch translation will read as prompt context. `--show`
     /// prints a cached result without connecting to Ghidra.
     ///
     /// # Arguments
     ///
-    /// * `--dll` — Binary to scan, e.g. `eqmain.dll`. Names the
+    /// * `--binary` — Binary to scan, e.g. `eqmain.dll`. Names the
     ///   persisted file.
     /// * `--show` — Print a summary of the cached result.
     ///
     /// # Examples
     ///
     /// ```text
-    /// calxgloss callback --dll eqmain.dll --show
+    /// calxgloss callback --binary eqmain.dll --show
     /// ```
     Callback {
         /// Binary to scan, e.g. `eqmain.dll`
         #[arg(long, required = true)]
-        dll: String,
+        binary: String,
 
         /// Show the cached result instead of running the scan
         #[arg(long)]
@@ -428,26 +428,26 @@ pub(super) enum Command {
     /// assignments).
     ///
     /// The control-flow findings are persisted per binary to
-    /// `re/analysis/controlflow/<dll>.json` in the workspace — the same
+    /// `re/analysis/controlflow/<binary>.json` in the workspace — the same
     /// file batch translation will read as prompt context. `--show`
     /// prints a cached result without connecting to Ghidra.
     ///
     /// # Arguments
     ///
-    /// * `--dll` — Binary to scan, e.g. `eqmain.dll`. Names the
+    /// * `--binary` — Binary to scan, e.g. `eqmain.dll`. Names the
     ///   persisted file.
     /// * `--show` — Print a summary of the cached result.
     ///
     /// # Examples
     ///
     /// ```text
-    /// calxgloss controlflow --dll eqmain.dll --show
+    /// calxgloss controlflow --binary eqmain.dll --show
     /// ```
     #[command(name = "controlflow")]
     ControlFlow {
         /// Binary to scan, e.g. `eqmain.dll`
         #[arg(long, required = true)]
-        dll: String,
+        binary: String,
 
         /// Show the cached result instead of running the scan
         #[arg(long)]
@@ -462,26 +462,26 @@ pub(super) enum Command {
     /// Rust argument types format-string calls carry.
     ///
     /// The string-context findings are persisted per binary to
-    /// `re/analysis/stringctx/<dll>.json` in the workspace — the same
+    /// `re/analysis/stringctx/<binary>.json` in the workspace — the same
     /// file batch translation will read as prompt context. `--show`
     /// prints a cached result without connecting to Ghidra.
     ///
     /// # Arguments
     ///
-    /// * `--dll` — Binary to scan, e.g. `eqmain.dll`. Names the
+    /// * `--binary` — Binary to scan, e.g. `eqmain.dll`. Names the
     ///   persisted file.
     /// * `--show` — Print a summary of the cached result.
     ///
     /// # Examples
     ///
     /// ```text
-    /// calxgloss stringctx --dll eqmain.dll --show
+    /// calxgloss stringctx --binary eqmain.dll --show
     /// ```
     #[command(name = "stringctx")]
     StringCtx {
         /// Binary to scan, e.g. `eqmain.dll`
         #[arg(long, required = true)]
-        dll: String,
+        binary: String,
 
         /// Show the cached result instead of running the scan
         #[arg(long)]
@@ -497,26 +497,26 @@ pub(super) enum Command {
     /// through the call graph.
     ///
     /// The API findings are persisted per binary to
-    /// `re/analysis/apidetect/<dll>.json` in the workspace — the same
+    /// `re/analysis/apidetect/<binary>.json` in the workspace — the same
     /// file batch translation will read as prompt context. `--show`
     /// prints a cached result without connecting to Ghidra.
     ///
     /// # Arguments
     ///
-    /// * `--dll` — Binary to scan, e.g. `eqmain.dll`. Names the
+    /// * `--binary` — Binary to scan, e.g. `eqmain.dll`. Names the
     ///   persisted file.
     /// * `--show` — Print a summary of the cached result.
     ///
     /// # Examples
     ///
     /// ```text
-    /// calxgloss apidetect --dll eqmain.dll --show
+    /// calxgloss apidetect --binary eqmain.dll --show
     /// ```
     #[command(name = "apidetect")]
     ApiDetect {
         /// Binary to scan, e.g. `eqmain.dll`
         #[arg(long, required = true)]
-        dll: String,
+        binary: String,
 
         /// Show the cached result instead of running the scan
         #[arg(long)]
@@ -527,25 +527,25 @@ pub(super) enum Command {
     /// bit-packing chains, magic-byte comparisons) for a binary.
     ///
     /// The serialization findings are persisted per binary to
-    /// `re/analysis/serialize/<dll>.json` in the workspace — the same
+    /// `re/analysis/serialize/<binary>.json` in the workspace — the same
     /// file batch translation will read as prompt context. `--show`
     /// prints a cached result without connecting to Ghidra.
     ///
     /// # Arguments
     ///
-    /// * `--dll` — Binary to scan, e.g. `eqmain.dll`. Names the
+    /// * `--binary` — Binary to scan, e.g. `eqmain.dll`. Names the
     ///   persisted file.
     /// * `--show` — Print a summary of the cached result.
     ///
     /// # Examples
     ///
     /// ```text
-    /// calxgloss serialize --dll eqmain.dll --show
+    /// calxgloss serialize --binary eqmain.dll --show
     /// ```
     Serialize {
         /// Binary to scan, e.g. `eqmain.dll`
         #[arg(long, required = true)]
-        dll: String,
+        binary: String,
 
         /// Show the cached result instead of running the scan
         #[arg(long)]
@@ -562,7 +562,7 @@ pub(super) enum Command {
     Verify {
         /// DLL name
         #[arg(long)]
-        dll: String,
+        binary: String,
 
         /// Function name
         #[arg(long)]
@@ -612,9 +612,9 @@ pub(super) enum Command {
         #[arg(long)]
         target: Option<PathBuf>,
 
-        /// DLLs or EXEs to process (default: scan the target directory for .dll and .exe files)
+        /// Binaries to process (default: scan the target directory for .dll and .exe files)
         #[arg(long)]
-        dlls: Option<String>,
+        binaries: Option<String>,
 
         /// Translate all exported functions (requires classification to be complete)
         #[arg(long)]
@@ -685,7 +685,7 @@ pub(super) enum Command {
     /// * `--port` — TCP port for the review UI (default: 3000).
     /// * `--workspace` — Path to the workspace to translate into and review.
     /// * `--target` — Path to the target executable directory (passed to auto).
-    /// * `--dlls` — Comma-separated DLL names (passed to auto).
+    /// * `--binaries` — Comma-separated binary names (passed to auto).
     /// * `--all-functions` — Translate all exported functions (passed to auto).
     /// * `--classify-only` — Only classify, do not translate (passed to auto).
     /// * `--skip-git` — Skip git operations (passed to auto).
@@ -697,7 +697,7 @@ pub(super) enum Command {
     /// ```text
     /// calxgloss live                           # Start auto + UI on port 3000
     /// calxgloss live --port 8080               # Custom port
-    /// calxgloss live --dlls "eqgame,eqmain"    # Pre-select DLLs
+    /// calxgloss live --binaries "eqgame,eqmain" # Pre-select binaries
     /// ```
     Live {
         /// Port to listen on (default: 3000)
@@ -708,9 +708,9 @@ pub(super) enum Command {
         #[arg(long)]
         target: Option<PathBuf>,
 
-        /// DLLs to process, comma-separated
+        /// Binaries to process, comma-separated
         #[arg(long)]
-        dlls: Option<String>,
+        binaries: Option<String>,
 
         /// Translate all exported functions (requires classification to be complete)
         #[arg(long)]
@@ -753,13 +753,13 @@ pub(super) enum Command {
     ///
     /// # Arguments
     ///
-    /// * `--dll` — Process only this specific DLL. Omit to process all
+    /// * `--binary` — Process only this specific DLL. Omit to process all
     ///   `CrateReplacement` DLLs listed in the classification records.
     /// * `--skip-git` — Skip git commit of the generated artifacts.
     AutoShim {
         /// Process only this specific DLL (default: all crate-replacement DLLs)
         #[arg(long)]
-        dll: Option<String>,
+        binary: Option<String>,
 
         /// Skip git commit of generated artifacts
         #[arg(long)]
@@ -770,7 +770,7 @@ pub(super) enum Command {
     ///
     /// Walks all unmerged `re/*` branches, checks their last commit date,
     /// and renames branches older than the staleness threshold (default 7
-    /// days) to `refs/archive/re/{dll}/{function}/v{N}` instead of
+    /// days) to `refs/archive/re/{binary}/{function}/v{N}` instead of
     /// deleting them. Archived branches remain reachable for reference.
     ///
     /// Use `--dry-run` to preview what would be archived without making
@@ -801,7 +801,7 @@ pub(super) enum DashboardSubcommand {
     ///
     /// # Arguments
     ///
-    /// * `<target>` — Unit identifier in the format `dll/function` or `dll/function/vN`
+    /// * `<target>` — Unit identifier in the format `binary/function` or `binary/function/vN`
     ///
     /// # Examples
     ///
@@ -810,15 +810,15 @@ pub(super) enum DashboardSubcommand {
     /// calxgloss dashboard view game_logic/DrawPrimitive/v3
     /// ```
     View {
-        /// Unit to view: `<dll>/<function>` or `<dll>/<function>/vN`
+        /// Unit to view: `<binary>/<function>` or `<binary>/<function>/vN`
         #[arg(value_name = "TARGET")]
         target: String,
     },
 
     /// Accept a unit — merge its branch into main
     ///
-    /// The unit identifier is in the format `dll/function` or
-    /// `dll/function/vN`.  If no version is given, the latest attempt is
+    /// The unit identifier is in the format `binary/function` or
+    /// `binary/function/vN`.  If no version is given, the latest attempt is
     /// accepted.
     ///
     /// # Examples
@@ -828,19 +828,19 @@ pub(super) enum DashboardSubcommand {
     /// calxgloss dashboard accept game_logic/DrawPrimitive/v3
     /// ```
     Accept {
-        /// Unit to accept: `<dll>/<function>` or `<dll>/<function>/vN`
+        /// Unit to accept: `<binary>/<function>` or `<binary>/<function>/vN`
         #[arg(value_name = "TARGET")]
         target: String,
     },
 
     /// Reject a unit and send it back for fixes
     ///
-    /// Records the rejection reason in `re/rejections/{dll}/{function}/vN.json`
+    /// Records the rejection reason in `re/rejections/{binary}/{function}/vN.json`
     /// so the dashboard can display send-back history.
     ///
     /// # Arguments
     ///
-    /// * `<target>` — Unit identifier in the format `dll/function` or `dll/function/vN`
+    /// * `<target>` — Unit identifier in the format `binary/function` or `binary/function/vN`
     /// * `--reason` — Optional rejection reason (shown in the dashboard)
     ///
     /// # Examples
@@ -849,7 +849,7 @@ pub(super) enum DashboardSubcommand {
     /// calxgloss dashboard reject game_logic/DrawPrimitive/v2 --reason "wrong shader mapping"
     /// ```
     Reject {
-        /// Unit to reject: `<dll>/<function>` or `<dll>/<function>/vN`
+        /// Unit to reject: `<binary>/<function>` or `<binary>/<function>/vN`
         #[arg(value_name = "TARGET")]
         target: String,
 

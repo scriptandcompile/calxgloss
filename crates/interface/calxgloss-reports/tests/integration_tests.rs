@@ -34,12 +34,12 @@ fn temp_workspace() -> tempfile::TempDir {
     dir
 }
 
-/// Creates the attempt branch `re/{dll}/{function}v{attempt}` off `main`,
+/// Creates the attempt branch `re/{binary}/{function}v{attempt}` off `main`,
 /// commits a stub source file on it, and returns HEAD to `main`.
-fn commit_on_branch(git: &GitManager, dll: &str, function: &str, attempt: u32) {
-    git.create_branch(dll, function, attempt, None)
+fn commit_on_branch(git: &GitManager, binary: &str, function: &str, attempt: u32) {
+    git.create_branch(binary, function, attempt, None)
         .expect("create branch");
-    let branch = GitBranch::new(dll, function, attempt).expect("branch name");
+    let branch = GitBranch::new(binary, function, attempt).expect("branch name");
 
     let file = format!("src/{function}_v{attempt}.rs");
     std::fs::create_dir_all(git.repo_path().join("src")).expect("src dir");
@@ -82,12 +82,12 @@ fn return_to_main(git: &GitManager) {
 }
 
 /// Writes a failure-shaped patch record at
-/// `re/patches/{dll}/{function}/v{attempt}.json` — the shape
+/// `re/patches/{binary}/{function}/v{attempt}.json` — the shape
 /// `GitManager::store_failure` writes. With `patch_request` set it becomes
 /// the shape the review UI's request-patch action writes instead.
 fn write_patch_record(
     git: &GitManager,
-    dll: &str,
+    binary: &str,
     function: &str,
     attempt: u32,
     patch_request: Option<&str>,
@@ -96,15 +96,15 @@ fn write_patch_record(
         .repo_path()
         .join("re")
         .join("patches")
-        .join(dll)
+        .join(binary)
         .join(function);
     std::fs::create_dir_all(&patch_dir).expect("create patch dir");
 
     let mut record = serde_json::json!({
-        "dll": dll,
+        "binary": binary,
         "function": function,
         "attempt": attempt,
-        "branch_name": format!("re/{dll}/{function}v{attempt}"),
+        "branch_name": format!("re/{binary}/{function}v{attempt}"),
         "committed_at": "2026-10-05T10:00:00Z",
         "error_message": "type mismatch",
         "compilation_errors": ["mismatched types"],
@@ -121,12 +121,12 @@ fn write_patch_record(
     .expect("write patch record");
 }
 
-/// Writes a classification record at `re/classify/{dll}.json` in the shape
+/// Writes a classification record at `re/classify/{binary}.json` in the shape
 /// the `classify` command writes (a serialized `DllClassification`), carrying
 /// the category and crate replacement the branch-creation policy checks.
 fn write_classification_record(
     git: &GitManager,
-    dll: &str,
+    binary: &str,
     category: &str,
     crate_replacement: Option<&str>,
 ) {
@@ -134,7 +134,7 @@ fn write_classification_record(
     std::fs::create_dir_all(&classify_dir).expect("create classify dir");
 
     let mut record = serde_json::json!({
-        "dll": dll,
+        "binary": binary,
         "category": category,
         "strategy": "ReverseEngineer",
         "exports_count": 10,
@@ -145,7 +145,7 @@ fn write_classification_record(
         record["crate_replacement"] = serde_json::Value::String(krate.to_string());
     }
     std::fs::write(
-        classify_dir.join(format!("{dll}.json")),
+        classify_dir.join(format!("{binary}.json")),
         serde_json::to_string_pretty(&record).expect("serialize classification record"),
     )
     .expect("write classification record");
@@ -298,11 +298,11 @@ fn foo_dll_and_foo_exe_coexist_as_distinct_units() {
 
     let dashboard = build(&git);
     assert_eq!(
-        find_unit(&dashboard, "foo.dll/DrawSprite/v1").dll,
+        find_unit(&dashboard, "foo.dll/DrawSprite/v1").binary,
         "foo.dll"
     );
     assert_eq!(
-        find_unit(&dashboard, "foo.exe/DrawSprite/v1").dll,
+        find_unit(&dashboard, "foo.exe/DrawSprite/v1").binary,
         "foo.exe"
     );
 
@@ -310,7 +310,7 @@ fn foo_dll_and_foo_exe_coexist_as_distinct_units() {
     let queued: Vec<&str> = dashboard
         .review_queue
         .iter()
-        .filter(|u| u.dll == "foo.dll" || u.dll == "foo.exe")
+        .filter(|u| u.binary == "foo.dll" || u.binary == "foo.exe")
         .map(|u| u.id.as_str())
         .collect();
     assert!(
@@ -319,10 +319,10 @@ fn foo_dll_and_foo_exe_coexist_as_distinct_units() {
     );
 
     // The unit-detail seam parses both identities verbatim.
-    for dll in ["foo.dll", "foo.exe"] {
-        let target = ViewTarget::parse(&format!("{dll}/DrawSprite/v1"))
+    for binary in ["foo.dll", "foo.exe"] {
+        let target = ViewTarget::parse(&format!("{binary}/DrawSprite/v1"))
             .expect("unit id parses as a view target");
-        assert_eq!(target.dll, dll);
+        assert_eq!(target.binary, binary);
         assert_eq!(target.function, "DrawSprite");
     }
 }
@@ -390,10 +390,13 @@ fn tagged_object_strategy_hydrates_category_and_strategy() {
 
     let dashboard = build(&git);
     let unit = find_unit(&dashboard, "steam_api64.dll/SteamAPI_Init/v1");
-    assert_eq!(unit.dll, "steam_api64.dll", "the unit exists to be viewed");
+    assert_eq!(
+        unit.binary, "steam_api64.dll",
+        "the unit exists to be viewed"
+    );
 
     let target = ViewTarget {
-        dll: "steam_api64.dll".into(),
+        binary: "steam_api64.dll".into(),
         function: "SteamAPI_Init".into(),
         specific_attempt: None,
     };

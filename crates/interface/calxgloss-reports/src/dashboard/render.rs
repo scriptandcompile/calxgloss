@@ -182,7 +182,7 @@ pub fn render_dashboard(dashboard: &ReviewDashboard, follow: bool) {
     if !blocked.is_empty() {
         println_content(format!("  Blocked units ({}):", blocked.len()));
         for unit in &blocked {
-            let name = format!("{} ({})", unit.name, unit.dll);
+            let name = format!("{} ({})", unit.name, unit.binary);
             println_content(format!(
                 "    ✖ {} — depends on: {}",
                 name,
@@ -211,7 +211,7 @@ pub fn render_dashboard(dashboard: &ReviewDashboard, follow: bool) {
             critical_count
         ));
         for unit in &stale_units {
-            let name = format!("{} ({})", unit.name, unit.dll);
+            let name = format!("{} ({})", unit.name, unit.binary);
             let stale = unit.stale;
             match stale {
                 Staleness::Critical(elapsed) => {
@@ -251,7 +251,7 @@ pub fn render_dashboard(dashboard: &ReviewDashboard, follow: bool) {
 
             println_content(format!(
                 "    ✓ {} [{}] — {} — {}",
-                unit.name, unit.dll, test_info, confidence
+                unit.name, unit.binary, test_info, confidence
             ));
         }
         println_content("");
@@ -354,7 +354,7 @@ pub fn render_unit_view(data: &UnitViewData) {
     println!("{}", sep_bold);
     println_content(format!(
         "  Unit View: {}/{}",
-        data.target.dll, data.target.function
+        data.target.binary, data.target.function
     ));
     println!("{}", sep);
 

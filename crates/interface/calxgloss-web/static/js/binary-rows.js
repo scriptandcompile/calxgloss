@@ -128,7 +128,7 @@ function renderRow(b) {
     const shim = shimStatus(b);
     const queued = queuedCount(b);
     const rate = successRate(b);
-    const dll = escapeHtml(b.dll || "unknown");
+    const dll = escapeHtml(b.binary || "unknown");
 
     return `
         <div class="pipeline-binary-row" data-dll="${dll}" data-status="${status.cls}">

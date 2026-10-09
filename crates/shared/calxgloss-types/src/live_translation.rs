@@ -13,6 +13,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::identity::BinaryIdentity;
+
 use crate::progress::{PhaseRecord, TranslationPhase};
 
 /// Honest status of one class of test evidence for an in-flight unit.
@@ -113,7 +115,7 @@ impl PassStatus {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LiveUnitProgress {
     /// Target binary this unit belongs to.
-    pub dll: String,
+    pub binary: BinaryIdentity,
     /// Function this unit translates.
     pub function: String,
     /// The pipeline step the unit is currently in.
@@ -164,7 +166,7 @@ pub struct LiveUnitProgress {
 /// an empty payload here would be indistinguishable from an idle run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LiveTranslationState {
-    /// One record per unit, sorted by (dll, function) so rendering is stable
+    /// One record per unit, sorted by (binary, function) so rendering is stable
     /// across refreshes.
     pub units: Vec<LiveUnitProgress>,
     /// Units tracked, including ones that have just finished.
@@ -213,7 +215,7 @@ mod tests {
 
     fn unit() -> LiveUnitProgress {
         LiveUnitProgress {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             phase: TranslationPhase::LlmCall,
             phase_history: vec![PhaseRecord {
@@ -237,7 +239,7 @@ mod tests {
     #[test]
     fn live_unit_progress_serde_round_trip_covers_every_field() {
         let json = serde_json::to_value(unit()).expect("serializes");
-        assert_eq!(json["dll"], "game_logic.dll");
+        assert_eq!(json["binary"], "game_logic.dll");
         assert_eq!(json["phase"], "llm_call");
         assert_eq!(json["elapsed_secs"], 47.25);
         assert_eq!(json["attempt"], 2);
@@ -259,7 +261,7 @@ mod tests {
     #[test]
     fn unreported_fields_are_omitted_rather_than_fabricated() {
         let fresh = LiveUnitProgress {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "Update".into(),
             phase: TranslationPhase::GhidraFetch,
             phase_history: vec![PhaseRecord {

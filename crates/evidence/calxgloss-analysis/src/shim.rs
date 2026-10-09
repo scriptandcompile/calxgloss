@@ -226,7 +226,7 @@ pub async fn generate_shim_mappings(
     client: &LlmClient,
 ) -> calxgloss_llm::Result<ShimLayer> {
     debug!(
-        dll = dll_name,
+        binary = dll_name,
         crate_name = target_crate,
         export_count = exports.len(),
         "Generating shim mappings"
@@ -359,7 +359,7 @@ fn parse_shim_mappings(
     })?;
 
     if mappings.is_empty() {
-        warn!(dll = dll_name, "LLM returned empty mapping array");
+        warn!(binary = dll_name, "LLM returned empty mapping array");
         return Err(calxgloss_llm::LlmError::EmptyResponse);
     }
 
@@ -397,7 +397,7 @@ fn parse_shim_mappings(
     }
 
     info!(
-        dll = dll_name,
+        binary = dll_name,
         crate_name = target_crate,
         mapping_count = shim.mapping_count(),
         "Generated shim mappings"

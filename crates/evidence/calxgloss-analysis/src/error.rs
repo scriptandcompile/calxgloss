@@ -29,13 +29,13 @@ pub enum AnalysisError {
     NoSymbols(String),
 
     /// The DLL could not be classified.
-    #[error("classification failed for '{dll}': {reason}")]
-    ClassificationFailed { dll: String, reason: String },
+    #[error("classification failed for '{binary}': {reason}")]
+    ClassificationFailed { binary: String, reason: String },
 
     /// Function analysis failed.
-    #[error("function analysis failed for '{function}' in '{dll}': {reason}")]
+    #[error("function analysis failed for '{function}' in '{binary}': {reason}")]
     FunctionAnalysisFailed {
-        dll: String,
+        binary: String,
         function: String,
         reason: String,
     },

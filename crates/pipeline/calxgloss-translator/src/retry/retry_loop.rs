@@ -90,7 +90,7 @@ pub async fn try_translate_with_retry(
                               success: bool,
                               strategy: &str,
                               attempt: u32,
-                              dll: &str,
+                              binary: &str,
                               function: &str,
                               events: Option<&TranslationEvents>,
                               fault_logger: Option<&FaultLogger>| {
@@ -101,7 +101,7 @@ pub async fn try_translate_with_retry(
             // Emit progress event
             if let Some(em) = events {
                 let _ = em.emit(ProgressEvent::InfiniteLoopDetected {
-                    dll: dll.to_string(),
+                    binary: binary.to_string().into(),
                     function: function.to_string(),
                     streak: signal.streak,
                     streak_start_attempt: signal.streak_start_attempt,
@@ -112,7 +112,7 @@ pub async fn try_translate_with_retry(
             // Persist fault event for post-hoc analysis
             if let Some(logger) = fault_logger {
                 let event = FaultEvent::infinite_loop(
-                    dll,
+                    binary,
                     function,
                     attempt,
                     strategy,
@@ -123,7 +123,7 @@ pub async fn try_translate_with_retry(
                 logger.record(event);
             }
             warn!(
-                dll,
+                binary,
                 function,
                 streak = signal.streak,
                 strategy = signal.strategy,
@@ -135,7 +135,7 @@ pub async fn try_translate_with_retry(
         false
     };
 
-    let dll = initial_translation.dll.clone();
+    let binary = initial_translation.binary.clone();
     let function = initial_translation.function.clone();
 
     // Helper: emit a TranslationAttemptCompleted event if events are wired up
@@ -143,7 +143,7 @@ pub async fn try_translate_with_retry(
         if let Some(em) = ctx.events {
             let attempt = &result.attempts[attempt_num as usize - 1];
             let _ = em.emit(ProgressEvent::TranslationAttemptCompleted {
-                dll: dll.clone(),
+                binary: binary.clone(),
                 function: function.clone(),
                 attempt: attempt_num,
                 success: attempt.is_successful(),
@@ -162,7 +162,7 @@ pub async fn try_translate_with_retry(
     let compile_result = match ctx
         .verifier
         .compile(
-            &initial_translation.dll,
+            &initial_translation.binary,
             &initial_translation.function,
             &initial_translation.rust_code,
         )
@@ -199,7 +199,7 @@ pub async fn try_translate_with_retry(
     emit_attempt(&result, 1, "initial");
 
     // Record in infinite-loop detector (initial translation).
-    let initial_prompt = format!("{function} ({dll}) initial translation");
+    let initial_prompt = format!("{function} ({binary}) initial translation");
     let loop_detected = record_in_detector(
         &mut loop_detector,
         &initial_prompt,
@@ -207,7 +207,7 @@ pub async fn try_translate_with_retry(
         result.success,
         "initial",
         1,
-        &dll,
+        &binary,
         &function,
         ctx.events,
         ctx.fault_logger,
@@ -258,7 +258,7 @@ pub async fn try_translate_with_retry(
                 Ok(p) => p,
                 Err(e) => {
                     warn!(
-                        dll,
+                        binary = %binary,
                         function,
                         error = %e,
                         tier = %current_tier,
@@ -292,7 +292,7 @@ pub async fn try_translate_with_retry(
             // Emit: LLM request (full prompt) for this retry attempt
             if let Some(em) = ctx.events {
                 let _ = em.emit(ProgressEvent::LlmRequest {
-                    dll: initial_translation.dll.clone(),
+                    binary: initial_translation.binary.clone(),
                     function: initial_translation.function.clone(),
                     attempt: attempt_num,
                     strategy: format!("escalated({tier_label})"),
@@ -303,7 +303,7 @@ pub async fn try_translate_with_retry(
             // Emit: LLM call started
             if let Some(em) = ctx.events {
                 let _ = em.emit(ProgressEvent::LlmCallStart {
-                    dll: initial_translation.dll.clone(),
+                    binary: initial_translation.binary.clone(),
                     function: initial_translation.function.clone(),
                     attempt: attempt_num,
                     strategy: format!("escalated({tier_label})"),
@@ -333,7 +333,7 @@ pub async fn try_translate_with_retry(
                         if let Some(signal) = detector.check_overload() {
                             if let Some(em) = ctx.events {
                                 let _ = em.emit(ProgressEvent::ResourceExhaustionDetected {
-                                    dll: initial_translation.dll.clone(),
+                                    binary: initial_translation.binary.clone(),
                                     function: initial_translation.function.clone(),
                                     attempt: attempt_num,
                                     strategy: format!("escalated({tier_label})"),
@@ -343,7 +343,7 @@ pub async fn try_translate_with_retry(
                                 });
                             }
                             warn!(
-                                dll = %initial_translation.dll,
+                                binary = %initial_translation.binary,
                                 function = %initial_translation.function,
                                 streak = signal.streak,
                                 kind = %kind,
@@ -355,7 +355,7 @@ pub async fn try_translate_with_retry(
                     if let Some(logger) = ctx.fault_logger {
                         let fault = ResourceExhaustionFault::timeout(DEFAULT_ELAPSED_SECS);
                         logger.record_resource_exhaustion(
-                            &initial_translation.dll,
+                            &initial_translation.binary,
                             &initial_translation.function,
                             attempt_num,
                             &format!("escalated({tier_label})"),
@@ -411,7 +411,7 @@ pub async fn try_translate_with_retry(
             // Emit: LLM response (full content) for this retry attempt
             if let Some(em) = ctx.events {
                 let _ = em.emit(ProgressEvent::LlmResponse {
-                    dll: initial_translation.dll.clone(),
+                    binary: initial_translation.binary.clone(),
                     function: initial_translation.function.clone(),
                     attempt: attempt_num,
                     strategy: format!("escalated({tier_label})"),
@@ -442,7 +442,7 @@ pub async fn try_translate_with_retry(
                 });
                 emit_attempt(&result, attempt_num, &format!("escalated({tier_label})"));
                 log_token_usage(
-                    &dll,
+                    &binary,
                     &function,
                     attempt_num,
                     &format!("escalated({tier_label})"),
@@ -459,7 +459,7 @@ pub async fn try_translate_with_retry(
             let compile_result = match ctx
                 .verifier
                 .compile(
-                    &initial_translation.dll,
+                    &initial_translation.binary,
                     &initial_translation.function,
                     &new_rust_code,
                 )
@@ -478,7 +478,7 @@ pub async fn try_translate_with_retry(
                 match ctx
                     .verifier
                     .verify(
-                        &initial_translation.dll,
+                        &initial_translation.binary,
                         &initial_translation.function,
                         &new_rust_code,
                         &initial_translation.baseline_tests,
@@ -526,7 +526,7 @@ pub async fn try_translate_with_retry(
                         let edge_results: Vec<bool> = edge_tests.iter().map(|_| true).collect();
 
                         detector.detect_divergence(
-                            &initial_translation.dll,
+                            &initial_translation.binary,
                             &initial_translation.function,
                             attempt_num,
                             &format!("escalated({tier_label})"),
@@ -552,7 +552,7 @@ pub async fn try_translate_with_retry(
 
                 if let Some(em) = ctx.events {
                     let _ = em.emit(ProgressEvent::BehaviorDivergenceDetected {
-                        dll: signal.dll.clone(),
+                        binary: signal.binary.clone().into(),
                         function: signal.function.clone(),
                         attempt: signal.attempt,
                         strategy: signal.strategy.clone(),
@@ -566,7 +566,7 @@ pub async fn try_translate_with_retry(
                 }
                 if let Some(logger) = ctx.fault_logger {
                     let event = FaultEvent::behavior_divergence(
-                        &signal.dll,
+                        &signal.binary,
                         &signal.function,
                         signal.attempt,
                         &signal.strategy,
@@ -589,7 +589,7 @@ pub async fn try_translate_with_retry(
                 attempt_success,
                 &format!("escalated({tier_label})"),
                 attempt_num,
-                &dll,
+                &binary,
                 &function,
                 ctx.events,
                 ctx.fault_logger,
@@ -611,7 +611,7 @@ pub async fn try_translate_with_retry(
             emit_attempt(&result, attempt_num, &format!("escalated({tier_label})"));
 
             log_token_usage(
-                &dll,
+                &binary,
                 &function,
                 attempt_num,
                 &format!("escalated({tier_label})"),
@@ -657,7 +657,7 @@ pub async fn try_translate_with_retry(
             }
 
             log_prompt_variant_experiment(
-                &dll,
+                &binary,
                 &format!("escalated({tier_label})"),
                 result.success,
                 attempt_num,
@@ -704,14 +704,14 @@ pub async fn try_translate_with_retry(
                 let prompt = if failure_history.is_empty() {
                     build_compile_fix_prompt(
                         &initial_translation.function,
-                        &initial_translation.dll,
+                        &initial_translation.binary,
                         &initial_translation.rust_code,
                         &initial_errors,
                     )
                 } else {
                     build_failure_informed_compile_fix_prompt(
                         &initial_translation.function,
-                        &initial_translation.dll,
+                        &initial_translation.binary,
                         &initial_translation.rust_code,
                         &initial_errors,
                         &failure_history,
@@ -724,7 +724,7 @@ pub async fn try_translate_with_retry(
                 let verification = ctx
                     .verifier
                     .verify(
-                        &initial_translation.dll,
+                        &initial_translation.binary,
                         &initial_translation.function,
                         &initial_translation.rust_code,
                         &initial_translation.baseline_tests,
@@ -749,14 +749,14 @@ pub async fn try_translate_with_retry(
                 let prompt = if failure_history.is_empty() {
                     build_test_fix_prompt(
                         &initial_translation.function,
-                        &initial_translation.dll,
+                        &initial_translation.binary,
                         &initial_translation.rust_code,
                         &failed_tests,
                     )
                 } else {
                     build_failure_informed_test_fix_prompt(
                         &initial_translation.function,
-                        &initial_translation.dll,
+                        &initial_translation.binary,
                         &initial_translation.rust_code,
                         &failed_tests,
                         &failure_history,
@@ -778,7 +778,7 @@ pub async fn try_translate_with_retry(
                     let verification = ctx
                         .verifier
                         .verify(
-                            &initial_translation.dll,
+                            &initial_translation.binary,
                             &initial_translation.function,
                             &initial_translation.rust_code,
                             &initial_translation.baseline_tests,
@@ -806,7 +806,7 @@ pub async fn try_translate_with_retry(
                 let call_graph = initial_translation.call_graph.clone();
                 let escalation_ctx = EscalatePromptCtx {
                     function_name: function.clone(),
-                    dll_name: dll.clone(),
+                    dll_name: binary.to_string(),
                     original_rust_code: initial_translation.rust_code.clone(),
                     failure_description: failure_desc,
                     ghidra: ctx.ghidra.clone(),
@@ -830,7 +830,7 @@ pub async fn try_translate_with_retry(
                 let verification = ctx
                     .verifier
                     .verify(
-                        &initial_translation.dll,
+                        &initial_translation.binary,
                         &initial_translation.function,
                         &initial_translation.rust_code,
                         &initial_translation.baseline_tests,
@@ -864,14 +864,14 @@ pub async fn try_translate_with_retry(
                 let prompt = if failure_history.is_empty() {
                     build_edge_case_fix_prompt(
                         &initial_translation.function,
-                        &initial_translation.dll,
+                        &initial_translation.binary,
                         &initial_translation.rust_code,
                         &failed_tests,
                     )
                 } else {
                     build_failure_informed_edge_case_fix_prompt(
                         &initial_translation.function,
-                        &initial_translation.dll,
+                        &initial_translation.binary,
                         &initial_translation.rust_code,
                         &failed_tests,
                         &failure_history,
@@ -884,7 +884,7 @@ pub async fn try_translate_with_retry(
         // Emit: LLM request (full prompt) for this retry attempt
         if let Some(em) = ctx.events {
             let _ = em.emit(ProgressEvent::LlmRequest {
-                dll: initial_translation.dll.clone(),
+                binary: initial_translation.binary.clone(),
                 function: initial_translation.function.clone(),
                 attempt: attempt_num,
                 strategy: strategy_name.clone(),
@@ -898,7 +898,7 @@ pub async fn try_translate_with_retry(
         // Emit: LLM call started
         if let Some(em) = ctx.events {
             let _ = em.emit(ProgressEvent::LlmCallStart {
-                dll: initial_translation.dll.clone(),
+                binary: initial_translation.binary.clone(),
                 function: initial_translation.function.clone(),
                 attempt: attempt_num,
                 strategy: strategy_name.clone(),
@@ -932,7 +932,7 @@ pub async fn try_translate_with_retry(
                         // Emit progress event
                         if let Some(em) = ctx.events {
                             let _ = em.emit(ProgressEvent::ResourceExhaustionDetected {
-                                dll: initial_translation.dll.clone(),
+                                binary: initial_translation.binary.clone(),
                                 function: initial_translation.function.clone(),
                                 attempt: attempt_num,
                                 strategy: strategy_name.clone(),
@@ -942,7 +942,7 @@ pub async fn try_translate_with_retry(
                             });
                         }
                         warn!(
-                            dll = %initial_translation.dll,
+                            binary = %initial_translation.binary,
                             function = %initial_translation.function,
                             streak = signal.streak,
                             kind = %kind,
@@ -955,7 +955,7 @@ pub async fn try_translate_with_retry(
                 if let Some(logger) = ctx.fault_logger {
                     let fault = ResourceExhaustionFault::timeout(DEFAULT_ELAPSED_SECS);
                     logger.record_resource_exhaustion(
-                        &initial_translation.dll,
+                        &initial_translation.binary,
                         &initial_translation.function,
                         attempt_num,
                         &strategy_name,
@@ -1018,7 +1018,7 @@ pub async fn try_translate_with_retry(
         // Emit: LLM response (full content) for this retry attempt
         if let Some(em) = ctx.events {
             let _ = em.emit(ProgressEvent::LlmResponse {
-                dll: initial_translation.dll.clone(),
+                binary: initial_translation.binary.clone(),
                 function: initial_translation.function.clone(),
                 attempt: attempt_num,
                 strategy: strategy_name.clone(),
@@ -1051,7 +1051,7 @@ pub async fn try_translate_with_retry(
 
             // Log token usage (even with empty code, the LLM consumed tokens)
             log_token_usage(
-                &dll,
+                &binary,
                 &function,
                 attempt_num,
                 &strategy_name,
@@ -1068,7 +1068,7 @@ pub async fn try_translate_with_retry(
         let compile_result = match ctx
             .verifier
             .compile(
-                &initial_translation.dll,
+                &initial_translation.binary,
                 &initial_translation.function,
                 &new_rust_code,
             )
@@ -1088,7 +1088,7 @@ pub async fn try_translate_with_retry(
             match ctx
                 .verifier
                 .verify(
-                    &initial_translation.dll,
+                    &initial_translation.binary,
                     &initial_translation.function,
                     &new_rust_code,
                     &initial_translation.baseline_tests,
@@ -1142,7 +1142,7 @@ pub async fn try_translate_with_retry(
 
                     if edge_tests.len() >= 2 && tests_total >= 1 {
                         let signal = detector.detect_divergence(
-                            &initial_translation.dll,
+                            &initial_translation.binary,
                             &initial_translation.function,
                             attempt_num,
                             &strategy_name,
@@ -1172,7 +1172,7 @@ pub async fn try_translate_with_retry(
 
             if let Some(em) = ctx.events {
                 let _ = em.emit(ProgressEvent::BehaviorDivergenceDetected {
-                    dll: signal.dll.clone(),
+                    binary: signal.binary.clone().into(),
                     function: signal.function.clone(),
                     attempt: signal.attempt,
                     strategy: signal.strategy.clone(),
@@ -1187,7 +1187,7 @@ pub async fn try_translate_with_retry(
             // Persist the fault event for post-hoc analysis.
             if let Some(logger) = ctx.fault_logger {
                 let event = FaultEvent::behavior_divergence(
-                    &signal.dll,
+                    &signal.binary,
                     &signal.function,
                     signal.attempt,
                     &signal.strategy,
@@ -1214,7 +1214,7 @@ pub async fn try_translate_with_retry(
             attempt_success,
             &strategy_name,
             attempt_num,
-            &dll,
+            &binary,
             &function,
             ctx.events,
             ctx.fault_logger,
@@ -1237,7 +1237,7 @@ pub async fn try_translate_with_retry(
 
         // Log token usage to file
         log_token_usage(
-            &dll,
+            &binary,
             &function,
             attempt_num,
             &strategy_name,
@@ -1283,7 +1283,7 @@ pub async fn try_translate_with_retry(
         }
 
         // Log experiment data for prompt variant tracking
-        let dll_name = &initial_translation.dll;
+        let dll_name = &initial_translation.binary;
         log_prompt_variant_experiment(
             dll_name,
             &strategy_name,
@@ -1308,7 +1308,7 @@ pub async fn try_translate_with_retry(
             // prompt is actually rebuilt at the top of the next iteration).
             if let Some(next_tier) = current_tier.escalate() {
                 warn!(
-                    dll,
+                    binary = %binary,
                     function,
                     old_tier = %current_tier,
                     new_tier = %next_tier,
@@ -1316,7 +1316,7 @@ pub async fn try_translate_with_retry(
                 );
                 if let Some(em) = ctx.events {
                     let _ = em.emit(ProgressEvent::ContextTierSelected {
-                        dll: dll.clone(),
+                        binary: binary.clone(),
                         function: function.clone(),
                         tier: next_tier.to_string(),
                         tier_label: next_tier.label().to_string(),
@@ -1345,7 +1345,7 @@ fn llm_call_with_keepalive<'a>(
     strategy: &str,
     events: Option<&'a TranslationEvents>,
 ) -> impl std::future::Future<Output = Result<calxgloss_llm::LlmResponse, LlmError>> + 'a {
-    let dll = initial_translation.dll.clone();
+    let binary = initial_translation.binary.clone();
     let function = initial_translation.function.clone();
     let messages = messages.to_vec();
     let events = events.cloned();
@@ -1357,7 +1357,7 @@ fn llm_call_with_keepalive<'a>(
 
         // Spawn a keepalive task that emits progress events every 30s
         let events_clone = events.clone();
-        let dll_kp = dll.clone();
+        let dll_kp = binary.clone();
         let function_kp = function.clone();
         let strategy_kp = strategy.clone();
         let attempt_kp = attempt;
@@ -1368,7 +1368,7 @@ fn llm_call_with_keepalive<'a>(
                     tokio::time::sleep(keepalive_interval).await;
                     let secs = elapsed.as_secs();
                     let _ = em.emit(ProgressEvent::LlmCallInProgress {
-                        dll: dll_kp.clone(),
+                        binary: dll_kp.clone(),
                         function: function_kp.clone(),
                         attempt: attempt_kp,
                         strategy: strategy_kp.clone(),
@@ -1390,7 +1390,7 @@ fn llm_call_with_keepalive<'a>(
             Err(e) => {
                 if let Some(em) = events {
                     let _ = em.emit(ProgressEvent::LlmCallFailed {
-                        dll: dll.clone(),
+                        binary: binary.clone(),
                         function: function.clone(),
                         attempt,
                         strategy: strategy.clone(),
@@ -1692,7 +1692,7 @@ mod tests {
 
         // Broken initial code → attempt 1 fails compile → retry loop runs.
         let translation = Translation {
-            dll: "game_logic.dll".to_string(),
+            binary: "game_logic.dll".to_string().into(),
             function: "DrawSprite".to_string(),
             function_address: None,
             rust_code: "fn draw_sprite(x: i32) -> i32 { let y: = ; x }".to_string(),

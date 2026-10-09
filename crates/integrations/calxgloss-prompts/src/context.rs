@@ -37,7 +37,7 @@ impl SignaturePromptData {
     pub fn from_function_info(info: &calxgloss_types::FunctionInfo) -> Self {
         Self {
             function_name: info.name.clone(),
-            dll_name: info.dll.clone(),
+            dll_name: info.binary.to_string(),
             address_hex: format!("{:#x}", info.address),
             signature: String::new(),
             call_graph_neighbors: info
@@ -75,7 +75,7 @@ impl DisassemblyPromptData {
     pub fn from_function_info(info: &calxgloss_types::FunctionInfo) -> Self {
         Self {
             function_name: info.name.clone(),
-            dll_name: info.dll.clone(),
+            dll_name: info.binary.to_string(),
             address: info.address,
             disassembly: info.disassembly.clone(),
             decompiler_output: info.decompiler_output.clone(),
@@ -122,7 +122,7 @@ impl WithTestsPromptData {
 
         Self {
             function_name: req.function.clone(),
-            dll_name: req.dll.clone(),
+            dll_name: req.binary.to_string(),
             address: 0,
             disassembly: req.disassembly.clone(),
             decompiler_output: req.decompiler_output.clone(),
@@ -202,7 +202,7 @@ impl ModuleContextPromptData {
 
         Self {
             function_name: req.function.clone(),
-            dll_name: req.dll.clone(),
+            dll_name: req.binary.to_string(),
             address: 0,
             disassembly: req.disassembly.clone(),
             decompiler_output: req.decompiler_output.clone(),
@@ -242,7 +242,7 @@ impl ModuleContextPromptData {
 
         Self {
             function_name: req.function.clone(),
-            dll_name: req.dll.clone(),
+            dll_name: req.binary.to_string(),
             address: 0,
             disassembly: req.disassembly.clone(),
             decompiler_output: req.decompiler_output.clone(),
@@ -299,7 +299,7 @@ impl ComplexityPromptData {
 
         Self {
             function_name: req.function.clone(),
-            dll_name: req.dll.clone(),
+            dll_name: req.binary.to_string(),
             address: 0,
             disassembly: req.disassembly.clone(),
             decompiler_output: req.decompiler_output.clone(),
@@ -383,7 +383,7 @@ impl FullModulePromptData {
 
         Self {
             function_name: req.function.clone(),
-            dll_name: req.dll.clone(),
+            dll_name: req.binary.to_string(),
             address: 0,
             disassembly: req.disassembly.clone(),
             decompiler_output: req.decompiler_output.clone(),
@@ -428,7 +428,7 @@ impl FullModulePromptData {
 
         Self {
             function_name: req.function.clone(),
-            dll_name: req.dll.clone(),
+            dll_name: req.binary.to_string(),
             address: 0,
             disassembly: req.disassembly.clone(),
             decompiler_output: req.decompiler_output.clone(),

@@ -13,9 +13,9 @@ pub fn compute_diff_summary(
     state: &ServerState,
     unit: &calxgloss_types::UnitOfWork,
 ) -> DiffSummary {
-    let dll = &unit.dll;
+    let binary = &unit.binary;
     if let Some(function) = unit.function.as_deref() {
-        let branch_name = format!("re/{dll}/{function}v{}", unit.attempt);
+        let branch_name = format!("re/{binary}/{function}v{}", unit.attempt);
         if let Ok(git) = calxgloss_git::GitManager::open(state.repo_path())
             && let Ok(summary) = compute_branch_diff(&git, &branch_name)
         {
@@ -144,9 +144,9 @@ pub async fn api_get_unit_diff(
 ) -> Result<Json<DiffResponse>, ServerError> {
     let unit = super::queue::find_unit(&state, &unit_id)?;
 
-    let branch_name = match (unit.dll.as_str(), unit.function.as_deref()) {
-        (dll, Some(func)) => format!("re/{dll}/{func}v{}", unit.attempt),
-        (dll, None) => format!("re/{dll}v{}", unit.attempt),
+    let branch_name = match (unit.binary.as_str(), unit.function.as_deref()) {
+        (binary, Some(func)) => format!("re/{binary}/{func}v{}", unit.attempt),
+        (binary, None) => format!("re/{binary}v{}", unit.attempt),
     };
 
     let git = calxgloss_git::GitManager::open(state.repo_path())

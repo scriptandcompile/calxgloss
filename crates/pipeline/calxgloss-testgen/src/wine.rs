@@ -242,7 +242,7 @@ impl WineRunner {
     ) -> HarnessReport {
         let mut cmd = Command::new(&self.wine_bin);
         cmd.arg(exe)
-            .arg("--dll")
+            .arg("--binary")
             .arg(wine_dll)
             .args(spec.locator.harness_args())
             // Wine's own diagnostics drown out the harness output.
@@ -252,7 +252,7 @@ impl WineRunner {
             .stderr(Stdio::piped());
 
         if spec.load_mode.runs_dll_main() {
-            cmd.arg("--run-dll-main");
+            cmd.arg("--run-binary-main");
         }
         if let Some(index) = isolate {
             cmd.arg("--isolate").arg(index.to_string());

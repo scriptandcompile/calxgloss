@@ -18,7 +18,7 @@
 //! {
 //!   "entries": [
 //!     {
-//!       "dll": "game_logic.dll",
+//!       "binary": "game_logic.dll",
 //!       "function": "DrawSprite",
 //!       "attempt": 3,
 //!       "strategy": "compile_fix",
@@ -119,8 +119,8 @@ impl FaultLogger {
             warn!(error = %e, "Failed to persist fault log to disk");
         } else {
             debug!(
-                dll = %log.entries.last().map(|e| &e.dll).unwrap_or(&"".to_string()),
-                function = %log.entries.last().map(|e| &e.function).unwrap_or(&"".to_string()),
+                binary = %log.entries.last().map(|e| &e.binary).unwrap_or(&Default::default()),
+                function = %log.entries.last().map(|e| &e.function).unwrap_or(&Default::default()),
                 category = ?log.entries.last().map(|e| &e.category).unwrap_or(&calxgloss_types::FaultCategory::ContextWindowExceeded),
                 "Recorded fault event"
             );
@@ -150,20 +150,20 @@ impl FaultLogger {
     ///
     /// # Arguments
     ///
-    /// * `dll` — The DLL containing the affected function.
+    /// * `binary` — The DLL containing the affected function.
     /// * `function` — The function name.
     /// * `attempt` — Which attempt the fault was detected in.
     /// * `strategy` — The retry strategy active when the fault occurred.
     /// * `fault` — The resource exhaustion details (reason, elapsed time, etc.).
     pub fn record_resource_exhaustion(
         &self,
-        dll: &str,
+        binary: &str,
         function: &str,
         attempt: u32,
         strategy: &str,
         fault: &ResourceExhaustionFault,
     ) {
-        let event = FaultEvent::resource_exhaustion(dll, function, attempt, strategy, fault);
+        let event = FaultEvent::resource_exhaustion(binary, function, attempt, strategy, fault);
         self.record(event);
     }
 
@@ -207,7 +207,7 @@ mod tests {
 
         let log = logger.load().expect("log should exist");
         assert_eq!(log.entries.len(), 1);
-        assert_eq!(log.entries[0].dll, "test.dll");
+        assert_eq!(log.entries[0].binary, "test.dll");
         assert_eq!(log.entries[0].function, "entry");
     }
 
@@ -257,7 +257,7 @@ mod tests {
 
         let stats = logger.compute_stats().expect("stats should exist");
         assert_eq!(stats.total_entries, 2);
-        assert_eq!(stats.by_dll.len(), 2);
+        assert_eq!(stats.by_binary.len(), 2);
         assert_eq!(stats.total_errors, 2);
     }
 

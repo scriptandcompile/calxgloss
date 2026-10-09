@@ -3,7 +3,7 @@
 //! Runs the three lifecycle detectors — allocation/release pair tracking,
 //! handle lifetime detection, and reference-counting detection — against
 //! the program currently open in Ghidra and saves the result to
-//! `re/analysis/memory/{dll}.json` in the workspace, the same file batch
+//! `re/analysis/memory/{binary}.json` in the workspace, the same file batch
 //! translation will read as prompt context. Batch translation runs the
 //! same scan before its first batch when no result is cached; this
 //! command is the manual entry point: it rebuilds the result on demand
@@ -25,10 +25,10 @@ use crate::utils::*;
 /// How many entries a detail section lists before collapsing the rest.
 const DETAIL_LIMIT: usize = 10;
 
-/// Handle the `memory` subcommand: detect memory lifecycles for `dll`,
+/// Handle the `memory` subcommand: detect memory lifecycles for `binary`,
 /// or print the cached result when `show` is set.
 pub async fn handle_memory(
-    dll: &str,
+    binary: &str,
     workspace: &Path,
     show: bool,
     settings: &Settings,
@@ -36,17 +36,17 @@ pub async fn handle_memory(
     let persistor = MemoryPersistor::new(workspace);
 
     if show {
-        let result = persistor.load(dll).with_context(|| {
+        let result = persistor.load(binary).with_context(|| {
             format!(
-                "No cached memory lifecycle result for {dll}; \
-                 run `calxgloss memory --dll {dll}` to produce one"
+                "No cached memory lifecycle result for {binary}; \
+                 run `calxgloss memory --binary {binary}` to produce one"
             )
         })?;
-        print_memory_lifecycle_report(&result, &persistor.path_for(dll));
+        print_memory_lifecycle_report(&result, &persistor.path_for(binary));
         return Ok(());
     }
 
-    info!(dll, workspace = %workspace.display(), "Detecting memory lifecycles");
+    info!(binary, workspace = %workspace.display(), "Detecting memory lifecycles");
 
     let ghidra_url = &settings.ghidra_url.value;
     let mut config = GhidraConfig::new(ghidra_url)
@@ -59,14 +59,14 @@ pub async fn handle_memory(
 
     let engine = MemoryEngine::new(&ghidra);
     let result = engine
-        .scan(dll)
+        .scan(binary)
         .await
-        .with_context(|| format!("Memory lifecycle detection failed for {dll}"))?;
+        .with_context(|| format!("Memory lifecycle detection failed for {binary}"))?;
     persistor
         .save(&result)
-        .with_context(|| format!("Failed to save the memory lifecycle result for {dll}"))?;
+        .with_context(|| format!("Failed to save the memory lifecycle result for {binary}"))?;
 
-    print_memory_lifecycle_report(&result, &persistor.path_for(dll));
+    print_memory_lifecycle_report(&result, &persistor.path_for(binary));
     Ok(())
 }
 

@@ -76,7 +76,7 @@ pub async fn api_get_dashboard(
 
         // Helper: match a dashboard unit against a progress entry.
         let match_unit = |u: &calxgloss_types::UnitOfWork| -> bool {
-            let key = format!("{}/{}", u.dll, u.function.as_deref().unwrap_or(""));
+            let key = format!("{}/{}", u.binary, u.function.as_deref().unwrap_or(""));
             in_progress_ids.contains(key.as_str())
         };
 
@@ -90,7 +90,7 @@ pub async fn api_get_dashboard(
                 if !matches!(old, calxgloss_types::ReviewStatus::Accepted) {
                     unit.updated_at = chrono::Utc::now();
                 }
-                let key = format!("{}/{}", unit.dll, unit.function.as_deref().unwrap_or(""));
+                let key = format!("{}/{}", unit.binary, unit.function.as_deref().unwrap_or(""));
                 matched_keys.insert(key);
             }
         }
@@ -100,7 +100,7 @@ pub async fn api_get_dashboard(
             if match_unit(unit) {
                 unit.status = calxgloss_types::ReviewStatus::InProgress;
                 unit.updated_at = chrono::Utc::now();
-                let key = format!("{}/{}", unit.dll, unit.function.as_deref().unwrap_or(""));
+                let key = format!("{}/{}", unit.binary, unit.function.as_deref().unwrap_or(""));
                 matched_keys.insert(key);
             }
         }
@@ -112,9 +112,9 @@ pub async fn api_get_dashboard(
             }
             // Create a synthetic unit for this in-progress translation.
             let name = if entry.function.is_empty() {
-                format!("Classify {}", entry.dll)
+                format!("Classify {}", entry.binary)
             } else {
-                format!("{}!{}", entry.dll, entry.function)
+                format!("{}!{}", entry.binary, entry.function)
             };
             let unit_id = format!("live/{}/v{}", key, entry.attempt);
 
@@ -122,7 +122,7 @@ pub async fn api_get_dashboard(
                 id: unit_id,
                 name,
                 kind: calxgloss_types::WorkKind::FunctionTranslation,
-                dll: entry.dll.clone(),
+                binary: entry.binary.clone(),
                 function: if entry.function.is_empty() {
                     None
                 } else {
@@ -198,7 +198,7 @@ pub async fn api_get_unit(
 
         // Update existing units that match progress entries
         for unit in &mut dashboard.review_queue {
-            let key = format!("{}/{}", unit.dll, unit.function.as_deref().unwrap_or(""));
+            let key = format!("{}/{}", unit.binary, unit.function.as_deref().unwrap_or(""));
             if in_progress_keys.contains(key.as_str()) {
                 unit.status = calxgloss_types::ReviewStatus::InProgress;
                 unit.updated_at = chrono::Utc::now();
@@ -206,7 +206,7 @@ pub async fn api_get_unit(
             }
         }
         for unit in &mut dashboard.recent_activity {
-            let key = format!("{}/{}", unit.dll, unit.function.as_deref().unwrap_or(""));
+            let key = format!("{}/{}", unit.binary, unit.function.as_deref().unwrap_or(""));
             if in_progress_keys.contains(key.as_str()) {
                 unit.status = calxgloss_types::ReviewStatus::InProgress;
                 matched_keys.insert(key);
@@ -219,16 +219,16 @@ pub async fn api_get_unit(
                 continue;
             }
             let name = if entry.function.is_empty() {
-                format!("Classify {}", entry.dll)
+                format!("Classify {}", entry.binary)
             } else {
-                format!("{}!{}", entry.dll, entry.function)
+                format!("{}!{}", entry.binary, entry.function)
             };
             let synthetic_id = format!("live/{}/v{}", key, entry.attempt);
             dashboard.review_queue.push(calxgloss_types::UnitOfWork {
                 id: synthetic_id,
                 name,
                 kind: calxgloss_types::WorkKind::FunctionTranslation,
-                dll: entry.dll.clone(),
+                binary: entry.binary.clone(),
                 function: if entry.function.is_empty() {
                     None
                 } else {
@@ -274,7 +274,7 @@ pub async fn api_get_unit(
             id: unit.id.clone(),
             name: unit.name.clone(),
             kind: unit.kind.to_string(),
-            dll: unit.dll.clone(),
+            binary: unit.binary.clone(),
             function: unit.function.clone(),
             attempt: unit.attempt,
             status: unit.status.to_string(),
@@ -333,7 +333,7 @@ pub async fn api_accept_unit(
     let unit = super::queue::find_unit(&state, &unit_id)?;
 
     let branch = calxgloss_types::GitBranch::new(
-        &unit.dll,
+        &unit.binary,
         unit.function.as_deref().unwrap_or(""),
         unit.attempt,
     )
@@ -398,7 +398,7 @@ pub async fn api_send_back_unit(
     let unit = super::queue::find_unit(&state, &unit_id)?;
 
     let branch = calxgloss_types::GitBranch::new(
-        &unit.dll,
+        &unit.binary,
         unit.function.as_deref().unwrap_or(""),
         unit.attempt,
     )
@@ -463,7 +463,7 @@ pub async fn api_request_patch(
 
     let branch_name = format!(
         "re/{}{}/v{}",
-        unit.dll,
+        unit.binary,
         unit.function
             .as_deref()
             .map(|f| format!("/{f}"))

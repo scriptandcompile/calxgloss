@@ -63,9 +63,9 @@ pub async fn handle_dashboard_view(target: &str) -> Result<()> {
 
     // Parse target using the shared type from reports crate
     let view_target = ViewTarget::parse(target)
-        .context("Invalid target format. Use: <dll>/<function> or <dll>/<function>/vN")?;
+        .context("Invalid target format. Use: <binary>/<function> or <binary>/<function>/vN")?;
     info!(
-        dll = %view_target.dll,
+        binary = %view_target.binary,
         function = %view_target.function,
         attempt = ?view_target.specific_attempt,
         "Parsed view target"
@@ -108,9 +108,9 @@ pub async fn handle_dashboard_accept(target: &str) -> Result<()> {
     info!(target = %target, "Handling dashboard accept");
 
     let view_target =
-        ViewTarget::parse(target).context("Invalid target format. Use: <dll>/<function>/vN")?;
+        ViewTarget::parse(target).context("Invalid target format. Use: <binary>/<function>/vN")?;
     info!(
-        dll = %view_target.dll,
+        binary = %view_target.binary,
         function = %view_target.function,
         attempt = ?view_target.specific_attempt,
         "Parsed accept target"
@@ -127,8 +127,8 @@ pub async fn handle_dashboard_accept(target: &str) -> Result<()> {
     info!(branch = %branch_name, "Resolved branch for acceptance");
 
     // Parse the branch name into a GitBranch for the accept operation
-    let (dll, function, attempt) = parse_branch_for_accept(&branch_name);
-    let branch = GitBranch::new(&dll, &function, attempt).context("Invalid branch name")?;
+    let (binary, function, attempt) = parse_branch_for_accept(&branch_name);
+    let branch = GitBranch::new(&binary, &function, attempt).context("Invalid branch name")?;
 
     // Check if already merged
     if git.is_branch_merged_into_main(&branch.name)? {
@@ -157,7 +157,7 @@ pub async fn handle_dashboard_accept(target: &str) -> Result<()> {
             println!(
                 "  {} Unit '{}/{}' is now accepted.",
                 green_bold("✓"),
-                view_target.dll,
+                view_target.binary,
                 view_target.function
             );
         }
@@ -201,14 +201,14 @@ pub async fn handle_dashboard_accept(target: &str) -> Result<()> {
 
 /// Handle the `dashboard reject <target> --reason "..."` subcommand.
 ///
-/// Records the rejection in `re/rejections/{dll}/{function}/vN.json`.
+/// Records the rejection in `re/rejections/{binary}/{function}/vN.json`.
 pub async fn handle_dashboard_reject(target: &str, reason: Option<&str>) -> Result<()> {
     info!(target = %target, reason = ?reason, "Handling dashboard reject");
 
     let view_target =
-        ViewTarget::parse(target).context("Invalid target format. Use: <dll>/<function>/vN")?;
+        ViewTarget::parse(target).context("Invalid target format. Use: <binary>/<function>/vN")?;
     info!(
-        dll = %view_target.dll,
+        binary = %view_target.binary,
         function = %view_target.function,
         attempt = ?view_target.specific_attempt,
         "Parsed reject target"
@@ -227,8 +227,8 @@ pub async fn handle_dashboard_reject(target: &str, reason: Option<&str>) -> Resu
     info!(branch = %branch_name, "Resolved branch for rejection");
 
     // Parse the branch name into a GitBranch for the reject operation
-    let (dll, function, attempt) = parse_branch_for_accept(&branch_name);
-    let branch = GitBranch::new(&dll, &function, attempt).context("Invalid branch name")?;
+    let (binary, function, attempt) = parse_branch_for_accept(&branch_name);
+    let branch = GitBranch::new(&binary, &function, attempt).context("Invalid branch name")?;
 
     // Perform the rejection
     println!();
@@ -249,7 +249,7 @@ pub async fn handle_dashboard_reject(target: &str, reason: Option<&str>) -> Resu
             println!(
                 "  {} Unit '{}/{}' has been sent back.",
                 red_bold("✗"),
-                view_target.dll,
+                view_target.binary,
                 view_target.function
             );
         }
@@ -326,7 +326,7 @@ pub async fn handle_dashboard_accept_all(all_flag: bool) -> Result<()> {
         let branch_name = resolve_branch(
             &git,
             &ViewTarget {
-                dll: unit.dll.clone(),
+                binary: unit.binary.clone(),
                 function: unit.function.clone().unwrap_or_default(),
                 specific_attempt: Some(unit.attempt),
             },
@@ -338,7 +338,7 @@ pub async fn handle_dashboard_accept_all(all_flag: bool) -> Result<()> {
                 println!(
                     "  {} {} [{}] — branch not found",
                     yellow_bold("◉"),
-                    dim(&format!("{}/{}", unit.dll, unit.name)),
+                    dim(&format!("{}/{}", unit.binary, unit.name)),
                     red_bold("skip")
                 );
                 skipped += 1;
@@ -351,7 +351,7 @@ pub async fn handle_dashboard_accept_all(all_flag: bool) -> Result<()> {
             println!(
                 "  {} {} [v{}] — already merged",
                 dim(" "),
-                format_dim(&format!("{}/{}", unit.dll, unit.name)),
+                format_dim(&format!("{}/{}", unit.binary, unit.name)),
                 unit.attempt
             );
             skipped += 1;
@@ -359,14 +359,14 @@ pub async fn handle_dashboard_accept_all(all_flag: bool) -> Result<()> {
         }
 
         // Parse the branch into a GitBranch
-        let (dll, function, attempt) = parse_branch_for_accept(&branch_name);
-        let branch = match GitBranch::new(&dll, &function, attempt) {
+        let (binary, function, attempt) = parse_branch_for_accept(&branch_name);
+        let branch = match GitBranch::new(&binary, &function, attempt) {
             Ok(b) => b,
             Err(e) => {
                 println!(
                     "  {} {} [{}] — {}",
                     red_bold("✗"),
-                    format_dim(&format!("{}/{}", unit.dll, unit.name)),
+                    format_dim(&format!("{}/{}", unit.binary, unit.name)),
                     red_bold("error"),
                     e
                 );
@@ -381,7 +381,7 @@ pub async fn handle_dashboard_accept_all(all_flag: bool) -> Result<()> {
                 println!(
                     "  {} {} [v{}] — {} ({})",
                     green_bold("✓"),
-                    format_dim(&format!("{}/{}", unit.dll, unit.name)),
+                    format_dim(&format!("{}/{}", unit.binary, unit.name)),
                     unit.attempt,
                     green_bold("accepted"),
                     &merge_hash[..7]
@@ -392,7 +392,7 @@ pub async fn handle_dashboard_accept_all(all_flag: bool) -> Result<()> {
                 println!(
                     "  {} {} [v{}] — {}",
                     yellow_bold("◉"),
-                    format_dim(&format!("{}/{}", unit.dll, unit.name)),
+                    format_dim(&format!("{}/{}", unit.binary, unit.name)),
                     unit.attempt,
                     yellow_bold("up to date")
                 );
@@ -405,7 +405,7 @@ pub async fn handle_dashboard_accept_all(all_flag: bool) -> Result<()> {
                 println!(
                     "  {} {} [v{}] — {} ({})",
                     red_bold("✗"),
-                    format_dim(&format!("{}/{}", unit.dll, unit.name)),
+                    format_dim(&format!("{}/{}", unit.binary, unit.name)),
                     unit.attempt,
                     red_bold("conflict"),
                     error
@@ -420,7 +420,7 @@ pub async fn handle_dashboard_accept_all(all_flag: bool) -> Result<()> {
                 println!(
                     "  {} {} [v{}] — {} ({})",
                     red_bold("✗"),
-                    format_dim(&format!("{}/{}", unit.dll, unit.name)),
+                    format_dim(&format!("{}/{}", unit.binary, unit.name)),
                     unit.attempt,
                     red_bold("failed"),
                     e

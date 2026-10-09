@@ -86,7 +86,7 @@ pub struct FfiBinding {
     pub code: String,
 
     /// The DLL this binding targets.
-    pub dll: String,
+    pub binary: String,
 
     /// The function name.
     pub function: String,
@@ -219,15 +219,15 @@ fn extract_params_str(sig: &str) -> Result<&str> {
 ///
 /// # Arguments
 ///
-/// * `dll` - The DLL filename.
+/// * `binary` - The DLL filename.
 /// * `function` - The function name.
 /// * `signature` - The function signature string.
 ///
 /// # Returns
 ///
 /// A [`FfiBinding`] containing the generated code and parsed information.
-pub fn generate_ffi_binding(dll: &str, function: &str, signature: &str) -> Result<FfiBinding> {
-    debug!(dll, function, "Generating FFI binding");
+pub fn generate_ffi_binding(binary: &str, function: &str, signature: &str) -> Result<FfiBinding> {
+    debug!(binary, function, "Generating FFI binding");
 
     let parsed = parse_signature(signature)?;
 
@@ -268,7 +268,7 @@ pub fn generate_ffi_binding(dll: &str, function: &str, signature: &str) -> Resul
 
     Ok(FfiBinding {
         code,
-        dll: dll.to_string(),
+        binary: binary.to_string(),
         function: function.to_string(),
         signature: parsed,
     })
@@ -293,7 +293,7 @@ pub fn generate_ffi_binding(dll: &str, function: &str, signature: &str) -> Resul
 /// ```
 #[derive(Debug, Clone)]
 pub struct FfiBindingBuilder {
-    dll: String,
+    binary: String,
     function: String,
     return_type: String,
     calling_convention: Option<String>,
@@ -302,9 +302,9 @@ pub struct FfiBindingBuilder {
 
 impl FfiBindingBuilder {
     /// Create a new FFI binding builder.
-    pub fn new(dll: &str, function: &str) -> Self {
+    pub fn new(binary: &str, function: &str) -> Self {
         Self {
-            dll: dll.to_string(),
+            binary: binary.to_string(),
             function: function.to_string(),
             return_type: "void".to_string(),
             calling_convention: None,
@@ -371,7 +371,7 @@ impl FfiBindingBuilder {
 
         FfiBinding {
             code,
-            dll: self.dll,
+            binary: self.binary,
             function: self.function,
             signature: ParsedSignature {
                 return_type: self.return_type,

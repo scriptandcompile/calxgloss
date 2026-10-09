@@ -48,7 +48,7 @@ use crate::{FfiBinding, parse_signature};
 #[derive(Debug, Clone)]
 pub struct TestContext {
     /// The DLL being tested.
-    pub dll: String,
+    pub binary: String,
 
     /// The function being tested.
     pub function: String,
@@ -86,7 +86,7 @@ impl BaselineRunner {
     ///
     /// # Arguments
     ///
-    /// * `dll` — The DLL filename.
+    /// * `binary` — The DLL filename.
     /// * `function` — The function name.
     /// * `signature` — The function signature string.
     /// * `tests` — The test cases to execute.
@@ -96,10 +96,10 @@ impl BaselineRunner {
     ///
     /// A vector of [`TestResult`] structs with actual return values populated.
     /// If the DLL path doesn't exist, returns a vector of failed test results.
-    #[instrument(skip(self, tests, dll_path), fields(dll, function, test_count = tests.len()))]
+    #[instrument(skip(self, tests, dll_path), fields(binary, function, test_count = tests.len()))]
     pub async fn run(
         &self,
-        dll: &str,
+        binary: &str,
         function: &str,
         signature: &str,
         tests: &[TestCase],
@@ -111,7 +111,7 @@ impl BaselineRunner {
                 dll_path = %dll_path.display(),
                 "Original DLL not found — returning failed test results"
             );
-            return self.create_placeholder_failures(dll, function, tests);
+            return self.create_placeholder_failures(binary, function, tests);
         }
 
         let image = PeImage::parse(dll_path)
@@ -136,7 +136,7 @@ impl BaselineRunner {
         let results = collect_results(&report.results, tests);
 
         info!(
-            dll,
+            binary,
             function,
             count = results.len(),
             passed = results.iter().filter(|r| r.passed).count(),
@@ -149,7 +149,7 @@ impl BaselineRunner {
     /// Create placeholder failure results when the DLL is not available.
     fn create_placeholder_failures(
         &self,
-        dll: &str,
+        binary: &str,
         _function: &str,
         tests: &[TestCase],
     ) -> Result<Vec<TestResult>> {
@@ -161,7 +161,7 @@ impl BaselineRunner {
                 actual_side_effects: Vec::new(),
                 passed: false,
                 error: Some(format!(
-                    "Original DLL '{dll}' not found — baseline cannot be executed. DLL path must be provided to run_baseline_tests.",
+                    "Original DLL '{binary}' not found — baseline cannot be executed. DLL path must be provided to run_baseline_tests.",
                 )),
             })
             .collect();

@@ -33,7 +33,7 @@ use crate::utils::*;
 /// result reporting.  Both `handle_auto` and `handle_live` call this.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_translation_for_dll(
-    dll: &str,
+    binary: &str,
     workspace: &Path,
     skip_git: bool,
     settings: &Settings,
@@ -50,7 +50,7 @@ pub async fn run_translation_for_dll(
     // analysis recovery, and test generation can run for minutes first.
     if let Some(ev) = events {
         ev.emit(ProgressEvent::BatchStarted {
-            dll: dll.to_string(),
+            binary: binary.to_string().into(),
         });
     }
 
@@ -95,7 +95,7 @@ pub async fn run_translation_for_dll(
     };
 
     info!(
-        dll = %dll,
+        binary = %binary,
         function_count = function_names.len(),
         "Starting batch translation"
     );
@@ -171,7 +171,7 @@ pub async fn run_translation_for_dll(
     // and merged — before the next function even starts.
     let batch_result = pipeline
         .batch_translate(
-            dll,
+            binary,
             &function_names,
             &retry_config,
             &verifier,
@@ -202,7 +202,7 @@ pub async fn run_translation_for_dll(
 
                 if let Some(ref mut git_manager) = git
                     && let Ok(branch_result) = git_manager.create_branch(
-                        dll,
+                        binary,
                         &func_result.function,
                         1,
                         Some(&BranchCreationPolicy::Warn(DependencyPolicy {
@@ -219,7 +219,7 @@ pub async fn run_translation_for_dll(
                             branch_info,
                             &format!(
                                 "re/auto/{}: translate {} (batch attempt)",
-                                func_result.function, dll
+                                func_result.function, binary
                             ),
                             &[output_path_str],
                         )
@@ -246,7 +246,7 @@ pub async fn run_translation_for_dll(
             }),
         )
         .await
-        .with_context(|| format!("Batch translation failed for DLL: {}", dll))?;
+        .with_context(|| format!("Batch translation failed for DLL: {}", binary))?;
 
     print_batch_summary(&batch_result);
 
@@ -264,7 +264,7 @@ pub async fn run_translation_for_dll(
             .filter_map(|a| a.tokens_used)
             .sum();
         events.emit(ProgressEvent::BatchSummary {
-            dll: dll.to_string(),
+            binary: binary.to_string().into(),
             total_functions: batch_result.total_count(),
             success_count: batch_result.success_count(),
             failure_count: batch_result.failure_count(),
@@ -316,7 +316,7 @@ pub async fn run_translation_for_dll(
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_auto(
     target: Option<PathBuf>,
-    dlls_arg: Option<String>,
+    binaries_arg: Option<String>,
     _all_functions: bool,
     classify_only: bool,
     skip_git: bool,
@@ -345,7 +345,7 @@ pub async fn handle_auto(
     info!(path = ?workspace, "Auto mode: using workspace");
 
     // Discover or accept DLL list
-    let dlls = if let Some(ref dll_list) = dlls_arg {
+    let dlls = if let Some(ref dll_list) = binaries_arg {
         dll_list
             .split(',')
             .map(|s| s.trim().to_string())
@@ -361,7 +361,9 @@ pub async fn handle_auto(
             red_bold("✗"),
             target_dir.display()
         );
-        println_content("Specify files explicitly: calxgloss auto --dlls \"eqgame.dll,myapp.exe\"");
+        println_content(
+            "Specify files explicitly: calxgloss auto --binaries \"eqgame.dll,myapp.exe\"",
+        );
         anyhow::bail!("No files found");
     }
 
@@ -373,11 +375,11 @@ pub async fn handle_auto(
     ));
     hsep();
     println_content("");
-    for dll in &dlls {
+    for binary in &dlls {
         println_content(format!(
             "  • {}{}",
-            bold(dll),
-            if classification_record_exists(&workspace, dll) {
+            bold(binary),
+            if classification_record_exists(&workspace, binary) {
                 format!("  [{}] already classified", yellow_bold("done"))
             } else {
                 format!("  [{}] needs classification", red_bold("pending"))
@@ -464,11 +466,11 @@ pub async fn handle_auto(
         // binary currently in flight.
         if let Some(ev) = events {
             ev.emit(ProgressEvent::QueuePlanned {
-                dlls: classified.clone(),
+                binaries: classified.clone(),
             });
         }
 
-        for dll in &classified {
+        for binary in &classified {
             if stop.is_some_and(|s| s.is_stopped()) {
                 println!();
                 println_content("Stop requested — skipping remaining binaries.");
@@ -478,11 +480,11 @@ pub async fn handle_auto(
             println!(
                 "  {} Translating functions from {}…",
                 cyan_bold("→"),
-                bold(dll)
+                bold(binary)
             );
             println!();
             run_translation_for_dll(
-                dll,
+                binary,
                 &workspace,
                 skip_git,
                 settings,
@@ -499,9 +501,9 @@ pub async fn handle_auto(
         println!();
         println!("  {} Which file would you like to translate?", bold("?"));
         println!();
-        for (i, dll) in classified.iter().enumerate() {
+        for (i, binary) in classified.iter().enumerate() {
             let num = i + 1;
-            println_content(format!("  {}  {}", num, bold(dll)));
+            println_content(format!("  {}  {}", num, bold(binary)));
         }
         println_content("");
         println_content("Enter a number (or 0 to cancel):");
@@ -518,17 +520,17 @@ pub async fn handle_auto(
             return Ok(());
         }
 
-        let dll = &classified[choice - 1];
+        let binary = &classified[choice - 1];
         println!();
         println!(
             "  {} Translating functions from {}…",
             cyan_bold("→"),
-            bold(dll)
+            bold(binary)
         );
         println!();
 
         run_translation_for_dll(
-            dll,
+            binary,
             &workspace,
             skip_git,
             settings,

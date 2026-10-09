@@ -70,8 +70,8 @@ impl ShimDependencyMap {
     }
 
     /// Returns the shim crate name for a DLL, if known.
-    pub fn get(&self, dll: &str) -> Option<&str> {
-        self.0.get(dll).map(|s| s.as_str())
+    pub fn get(&self, binary: &str) -> Option<&str> {
+        self.0.get(binary).map(|s| s.as_str())
     }
 }
 
@@ -165,9 +165,9 @@ impl DependencyChecker {
     /// Returns the expected shim branch name for a DLL.
     ///
     /// Returns `None` if the DLL has no known shim layer.
-    pub fn shim_branch_name(&self, dll: &str) -> Option<String> {
+    pub fn shim_branch_name(&self, binary: &str) -> Option<String> {
         self.shim_map
-            .get(dll)
+            .get(binary)
             .map(|crate_name| format!("re/shim/{}", crate_name))
     }
 
@@ -182,12 +182,12 @@ impl DependencyChecker {
     ///
     /// # Arguments
     ///
-    /// * `dll` — The DLL filename (e.g. `d3d9.dll`).
+    /// * `binary` — The DLL filename (e.g. `d3d9.dll`).
     /// * `category` — The DLL's classification category.
     /// * `crate_replacement` — The recommended Rust crate name, if any.
     pub fn check(
         &self,
-        dll: &str,
+        binary: &str,
         category: &DllCategory,
         crate_replacement: Option<&str>,
     ) -> DependencyCheckResult {
@@ -199,7 +199,7 @@ impl DependencyChecker {
         match category {
             DllCategory::MicrosoftSdk | DllCategory::KnownThirdParty => {
                 // Check the shim branch from the DLL-name lookup first
-                if let Some(shim) = self.shim_branch_name(dll) {
+                if let Some(shim) = self.shim_branch_name(binary) {
                     required.push(shim.clone());
                     unmet.push(shim);
                 } else if let Some(crate_name) = crate_replacement {
@@ -234,17 +234,17 @@ impl DependencyChecker {
     /// # Arguments
     ///
     /// * `repo` — The Git repository to query.
-    /// * `dll` — The DLL being translated.
+    /// * `binary` — The DLL being translated.
     /// * `category` — The DLL's classification.
     /// * `crate_replacement` — Optional crate replacement name.
     pub fn resolve(
         &self,
         repo: &Repository,
-        dll: &str,
+        binary: &str,
         category: &DllCategory,
         crate_replacement: Option<&str>,
     ) -> DependencyCheckResult {
-        let mut result = self.check(dll, category, crate_replacement);
+        let mut result = self.check(binary, category, crate_replacement);
 
         // Clear the placeholder unmet list and repopulate based on actual
         // merge status. The `check` method pre-fills `unmet` with the

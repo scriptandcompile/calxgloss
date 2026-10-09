@@ -14,6 +14,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::identity::BinaryIdentity;
+
 /// One segment of the master-plan pipeline, listed in bar order
 /// (Phase 1 → 7, with Phase 2.5 between 2 and 3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -149,7 +151,7 @@ pub struct BinaryActivity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BinaryProgress {
     /// DLL/EXE file name.
-    pub dll: String,
+    pub binary: BinaryIdentity,
     /// Classification category (e.g. "WindowsOs", "ProjectSpecific").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
@@ -280,7 +282,7 @@ mod tests {
     #[test]
     fn binary_progress_serde_round_trip_omits_unknown_fields() {
         let full = BinaryProgress {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             category: Some("ProjectSpecific".into()),
             strategy: Some("ReverseEngineer".into()),
             crate_replacement: None,
@@ -298,7 +300,7 @@ mod tests {
             }),
         };
         let json = serde_json::to_value(&full).expect("serializes");
-        assert_eq!(json["dll"], "game_logic.dll");
+        assert_eq!(json["binary"], "game_logic.dll");
         assert_eq!(json["category"], "ProjectSpecific");
         assert_eq!(json["functions_total"], 24);
         assert_eq!(json["tokens_used"], 120_000);
@@ -314,7 +316,7 @@ mod tests {
         // serializes with just the honest zeros. `processing` is always
         // present — a false flag is a real observation, not a fabrication.
         let bare = BinaryProgress {
-            dll: "unknown.dll".into(),
+            binary: "unknown.dll".into(),
             category: None,
             strategy: None,
             crate_replacement: None,

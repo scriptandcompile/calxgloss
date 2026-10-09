@@ -4,7 +4,7 @@
 //! Runs the serialization detectors — byte-swap call matching, manual
 //! bit-packing recognition, and magic-byte format sniffing — against the
 //! program currently open in Ghidra and saves the result to
-//! `re/analysis/serialize/{dll}.json` in the workspace, the same file
+//! `re/analysis/serialize/{binary}.json` in the workspace, the same file
 //! batch translation will read as prompt context. Batch translation runs
 //! the same scan before its first batch when no result is cached; this
 //! command is the manual entry point: it rebuilds the result on demand
@@ -27,9 +27,9 @@ use crate::utils::*;
 const DETAIL_LIMIT: usize = 10;
 
 /// Handle the `serialize` subcommand: detect serialization patterns for
-/// `dll`, or print the cached result when `show` is set.
+/// `binary`, or print the cached result when `show` is set.
 pub async fn handle_serialize(
-    dll: &str,
+    binary: &str,
     workspace: &Path,
     show: bool,
     settings: &Settings,
@@ -37,17 +37,17 @@ pub async fn handle_serialize(
     let persistor = SerializePersistor::new(workspace);
 
     if show {
-        let result = persistor.load(dll).with_context(|| {
+        let result = persistor.load(binary).with_context(|| {
             format!(
-                "No cached serialization result for {dll}; \
-                 run `calxgloss serialize --dll {dll}` to produce one"
+                "No cached serialization result for {binary}; \
+                 run `calxgloss serialize --binary {binary}` to produce one"
             )
         })?;
-        print_serialization_report(&result, &persistor.path_for(dll));
+        print_serialization_report(&result, &persistor.path_for(binary));
         return Ok(());
     }
 
-    info!(dll, workspace = %workspace.display(), "Detecting serialization patterns");
+    info!(binary, workspace = %workspace.display(), "Detecting serialization patterns");
 
     let ghidra_url = &settings.ghidra_url.value;
     let mut config = GhidraConfig::new(ghidra_url)
@@ -60,14 +60,14 @@ pub async fn handle_serialize(
 
     let engine = SerializeEngine::new(&ghidra);
     let result = engine
-        .scan(dll)
+        .scan(binary)
         .await
-        .with_context(|| format!("Serialization detection failed for {dll}"))?;
+        .with_context(|| format!("Serialization detection failed for {binary}"))?;
     persistor
         .save(&result)
-        .with_context(|| format!("Failed to save the serialization result for {dll}"))?;
+        .with_context(|| format!("Failed to save the serialization result for {binary}"))?;
 
-    print_serialization_report(&result, &persistor.path_for(dll));
+    print_serialization_report(&result, &persistor.path_for(binary));
     Ok(())
 }
 

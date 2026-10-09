@@ -6,9 +6,9 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum TranslatorError {
     /// Failed to fetch function information from Ghidra.
-    #[error("failed to get function '{function}' from DLL '{dll}': {source}")]
+    #[error("failed to get function '{function}' from DLL '{binary}': {source}")]
     GhidraFetch {
-        dll: String,
+        binary: String,
         function: String,
         source: calxgloss_ghidra::GhidraError,
     },

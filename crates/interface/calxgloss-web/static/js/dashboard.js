@@ -390,8 +390,8 @@ export async function renderStaleBranchesCard() {
 function renderQueueItem(unit, selected = false) {
     const iconClass = unit.status.toLowerCase().replace(/\s+/g, "_");
     const name = unit.kind === "dll_classification"
-        ? `Classify ${unit.dll}`
-        : unit.function ? `${unit.dll} ${unit.function}` : unit.dll;
+        ? `Classify ${unit.binary}`
+        : unit.function ? `${unit.binary} ${unit.function}` : unit.binary;
 
     return `
         <div class="queue-item ${selected ? "selected" : ""}" data-unit-id="${unit.id}">
@@ -441,8 +441,8 @@ export function renderActivity(activity) {
         const iconCls = u.accepted ? "accept" : "sendback";
         const icon = u.accepted ? "✓" : "↩";
         const name = u.kind === "dll_classification"
-            ? `Classify ${u.dll}`
-            : u.function ? `${u.dll}/${u.function}` : u.dll;
+            ? `Classify ${u.binary}`
+            : u.function ? `${u.binary}/${u.function}` : u.binary;
         const actionText = u.accepted ? "accepted" : "sent back";
 
         return `

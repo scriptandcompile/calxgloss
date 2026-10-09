@@ -83,7 +83,7 @@ pub struct NeighborFunction {
     /// The function name.
     pub name: String,
     /// The DLL containing the function.
-    pub dll: String,
+    pub binary: String,
     /// Virtual address.
     pub address: u64,
     /// Disassembly listing.
@@ -435,7 +435,7 @@ impl MinimalTemplate {
 
         MinimalTemplate {
             function_name: req.function.clone(),
-            dll_name: req.dll.clone(),
+            dll_name: req.binary.to_string(),
             address: 0,
             disassembly: req.disassembly.clone(),
             decompiler_output: req.decompiler_output.clone(),
@@ -495,7 +495,7 @@ impl TranslateTemplate {
 
         TranslateTemplate {
             function_name: req.function.clone(),
-            dll_name: req.dll.clone(),
+            dll_name: req.binary.to_string(),
             address: 0,
             disassembly: req.disassembly.clone(),
             decompiler_output: req.decompiler_output.clone(),
@@ -874,7 +874,7 @@ impl RichTemplate {
 
         RichTemplate {
             function_name: req.function.clone(),
-            dll_name: req.dll.clone(),
+            dll_name: req.binary.to_string(),
             address: 0,
             disassembly: req.disassembly.clone(),
             decompiler_output: req.decompiler_output.clone(),
@@ -946,7 +946,7 @@ impl DetailedTemplate {
 
         DetailedTemplate {
             function_name: req.function.clone(),
-            dll_name: req.dll.clone(),
+            dll_name: req.binary.to_string(),
             address: 0,
             disassembly: req.disassembly.clone(),
             decompiler_output: req.decompiler_output.clone(),

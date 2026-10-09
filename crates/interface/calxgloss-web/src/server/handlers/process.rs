@@ -18,7 +18,7 @@ use super::super::types::{
 /// Builds the process-telemetry section for a unit of work.
 ///
 /// Reads `re/analysis/token_usage.json`, `re/analysis/fault_log.json`, and
-/// the Ghidra artifact at `re/analysis/{dll}/{function}.json`, filtering the
+/// the Ghidra artifact at `re/analysis/{binary}/{function}.json`, filtering the
 /// shared logs down to entries belonging to this unit. Every read failure
 /// (missing file, corrupt JSON) degrades that section to its empty value.
 pub(crate) fn build_unit_process(
@@ -35,7 +35,7 @@ pub(crate) fn build_unit_process(
     )
     .entries
     .into_iter()
-    .filter(|e| dll_matches(&e.dll, &unit.dll) && e.function == function)
+    .filter(|e| binary_matches(&e.binary, &unit.binary) && e.function == function)
     .collect::<Vec<_>>();
 
     let faults = load_json_or_default::<FaultLog>(
@@ -43,7 +43,7 @@ pub(crate) fn build_unit_process(
     )
     .entries
     .iter()
-    .filter(|e| dll_matches(&e.dll, &unit.dll) && e.function == function)
+    .filter(|e| binary_matches(&e.binary, &unit.binary) && e.function == function)
     .map(FaultRecord::from)
     .collect();
 
@@ -112,7 +112,7 @@ fn build_tier_section(
         escalated: distinct_tiers.len() > 1,
         rationale: load_tier_rationale(
             repo_path,
-            &unit.dll,
+            &unit.binary,
             &unit.function.clone().unwrap_or_default(),
         ),
         attempts,
@@ -123,14 +123,14 @@ fn build_tier_section(
 /// mirroring the signals the pipeline feeds to `select_context_tier`
 /// (complexity and Windows API call-site count).
 /// Returns `None` when the artifact is missing or unreadable.
-fn load_tier_rationale(repo_path: &Path, dll: &str, function: &str) -> Option<TierRationale> {
+fn load_tier_rationale(repo_path: &Path, binary: &str, function: &str) -> Option<TierRationale> {
     if function.is_empty() {
         return None;
     }
     let artifact_path = repo_path
         .join("re")
         .join("analysis")
-        .join(dll)
+        .join(binary)
         .join(format!("{function}.json"));
 
     #[derive(serde::Deserialize)]
@@ -285,7 +285,7 @@ pub(crate) fn build_queue_effort(
         let durations: Vec<u64> = log
             .entries
             .iter()
-            .filter(|e| dll_matches(&e.dll, &unit.dll) && e.function == function)
+            .filter(|e| binary_matches(&e.binary, &unit.binary) && e.function == function)
             .filter_map(|e| e.duration_secs)
             .collect();
         let avg = match durations.len() {
@@ -308,8 +308,8 @@ fn sorted_entries(entries: &[TokenUsageEntry]) -> Vec<&TokenUsageEntry> {
 /// True when a log-entry DLL name refers to the same binary as a unit's
 /// DLL name. Both spell the binary identity verbatim, extension included
 /// (issue #68); the comparison only folds case.
-fn dll_matches(entry_dll: &str, unit_dll: &str) -> bool {
-    entry_dll.eq_ignore_ascii_case(unit_dll)
+fn binary_matches(entry_binary: &str, unit_binary: &str) -> bool {
+    entry_binary.eq_ignore_ascii_case(unit_binary)
 }
 
 #[cfg(test)]
@@ -318,9 +318,9 @@ mod tests {
 
     #[test]
     fn test_dll_matches_compares_verbatim() {
-        assert!(dll_matches("game_logic.dll", "game_logic.dll"));
-        assert!(dll_matches("GAME_LOGIC.DLL", "game_logic.dll"));
-        assert!(!dll_matches("game_logic.dll", "game_logic"));
-        assert!(!dll_matches("audio.dll", "game_logic.dll"));
+        assert!(binary_matches("game_logic.dll", "game_logic.dll"));
+        assert!(binary_matches("GAME_LOGIC.DLL", "game_logic.dll"));
+        assert!(!binary_matches("game_logic.dll", "game_logic"));
+        assert!(!binary_matches("audio.dll", "game_logic.dll"));
     }
 }

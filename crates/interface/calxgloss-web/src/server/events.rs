@@ -131,7 +131,12 @@ impl SessionManager {
     /// connected client, ordered with the forwarded pipeline events because
     /// both flow through the same broadcast loop.
     pub async fn push(&self, msg: WsMessage) {
-        if self.commands.send(WsCommand::Send(Box::new(msg))).await.is_err() {
+        if self
+            .commands
+            .send(WsCommand::Send(Box::new(msg)))
+            .await
+            .is_err()
+        {
             debug!("Broadcast loop closed, dropping pushed WS message");
         }
     }

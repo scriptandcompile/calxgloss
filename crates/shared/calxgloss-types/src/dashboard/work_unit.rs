@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::types::{ReviewStatus, Staleness, WorkKind};
+use crate::identity::BinaryIdentity;
 
 /// A single item in the review dashboard.
 ///
@@ -21,7 +22,7 @@ pub struct UnitOfWork {
     /// The kind of work this item represents.
     pub kind: WorkKind,
     /// Associated DLL.
-    pub dll: String,
+    pub binary: BinaryIdentity,
     /// Associated function (if applicable).
     pub function: Option<String>,
     /// Attempt number (v1, v2, v3, etc.).

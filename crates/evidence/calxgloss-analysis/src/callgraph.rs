@@ -129,7 +129,7 @@ pub fn print_call_graph_stats(graph: &calxgloss_callgraph::CallGraph) {
     println!();
     println!(
         "  → Call Graph Statistics for {} ({})",
-        bold(&graph.dll),
+        bold(&graph.binary),
         bold(&total.to_string())
     );
     println!("  {top}");
@@ -353,28 +353,28 @@ pub fn build_dependency_graph_from_call_graph(
         std::collections::HashMap::new();
 
     for cls in classifications {
-        if cls.dll == call_graph.dll {
-            let node_id = helpers::dll_node_id(&cls.dll);
+        if cls.binary == call_graph.binary {
+            let node_id = helpers::dll_node_id(&cls.binary);
             graph.nodes.push(DependencyNode::with_level(
                 node_id.clone(),
-                format!("Classify {}", cls.dll),
+                format!("Classify {}", cls.binary),
                 ReviewStatus::Queued,
                 WorkLevel::DllClassification,
             ));
-            dll_node_ids.insert(cls.dll.clone(), node_id);
+            dll_node_ids.insert(cls.binary.clone(), node_id);
         }
     }
 
     // If no classification exists for this DLL, create a default one
-    if !dll_node_ids.contains_key(&call_graph.dll) {
-        let node_id = helpers::dll_node_id(&call_graph.dll);
+    if !dll_node_ids.contains_key(&call_graph.binary) {
+        let node_id = helpers::dll_node_id(&call_graph.binary);
         graph.nodes.push(DependencyNode::with_level(
             node_id.clone(),
-            format!("Classify {}", call_graph.dll),
+            format!("Classify {}", call_graph.binary),
             ReviewStatus::Queued,
             WorkLevel::DllClassification,
         ));
-        dll_node_ids.insert(call_graph.dll.clone(), node_id);
+        dll_node_ids.insert(call_graph.binary.clone(), node_id);
     }
 
     // ── Phase 2: Add shim layer node if applicable ──
@@ -382,18 +382,18 @@ pub fn build_dependency_graph_from_call_graph(
     let mut shim_node_id: Option<String> = None;
 
     for cls in classifications {
-        if cls.dll == call_graph.dll {
+        if cls.binary == call_graph.binary {
             if let crate::Strategy::CrateReplacement { crate_name } = &cls.strategy {
-                let shim_id = helpers::shim_node_id(&cls.dll, crate_name);
+                let shim_id = helpers::shim_node_id(&cls.binary, crate_name);
                 graph.nodes.push(DependencyNode::with_level(
                     shim_id.clone(),
-                    format!("Shim {} → {}", cls.dll, crate_name),
+                    format!("Shim {} → {}", cls.binary, crate_name),
                     ReviewStatus::Queued,
                     WorkLevel::ShimLayer,
                 ));
                 graph.edges.push(DependencyEdge {
                     from: shim_id.clone(),
-                    to: dll_node_ids[&cls.dll].clone(),
+                    to: dll_node_ids[&cls.binary].clone(),
                 });
                 shim_node_id = Some(shim_id);
             }
@@ -433,7 +433,7 @@ pub fn build_dependency_graph_from_call_graph(
             });
         }
     } else {
-        let dll_id = &dll_node_ids[&call_graph.dll];
+        let dll_id = &dll_node_ids[&call_graph.binary];
         for func_id in function_node_ids.values() {
             graph.edges.push(DependencyEdge {
                 from: func_id.clone(),
@@ -467,15 +467,15 @@ pub fn build_dependency_graph_from_call_graph(
 /// Helper utilities for dependency graph construction from call graph data.
 mod helpers {
     /// Returns the node ID for a DLL classification unit.
-    pub fn dll_node_id(dll: &str) -> String {
-        format!("dll_classify_{}", base_name(dll))
+    pub fn dll_node_id(binary: &str) -> String {
+        format!("dll_classify_{}", base_name(binary))
     }
 
     /// Returns the node ID for a shim layer unit.
-    pub fn shim_node_id(dll: &str, crate_name: &str) -> String {
+    pub fn shim_node_id(binary: &str, crate_name: &str) -> String {
         format!(
             "shim_{}_{}",
-            base_name(dll),
+            base_name(binary),
             crate_name.replace(['-', '.', '/'], "_")
         )
     }
@@ -486,11 +486,12 @@ mod helpers {
     }
 
     /// Strips the `.dll` extension and lowercases the name.
-    pub fn base_name(dll: &str) -> String {
-        dll.trim()
+    pub fn base_name(binary: &str) -> String {
+        binary
+            .trim()
             .to_lowercase()
             .strip_suffix(".dll")
-            .unwrap_or(dll)
+            .unwrap_or(binary)
             .to_string()
     }
 
@@ -520,7 +521,7 @@ mod tests {
     use crate::{DllClassification, Strategy};
 
     fn test_classification(
-        dll: &str,
+        binary: &str,
         category: DllCategory,
         crate_name: Option<&str>,
     ) -> DllClassification {
@@ -531,7 +532,7 @@ mod tests {
             None => Strategy::ReverseEngineer,
         };
         DllClassification {
-            dll: dll.to_string(),
+            binary: binary.to_string(),
             category,
             strategy,
             exports_count: 0,
@@ -541,11 +542,11 @@ mod tests {
     }
 
     fn make_call_graph(
-        dll: &str,
+        binary: &str,
         functions: Vec<FunctionCallGraph>,
     ) -> calxgloss_callgraph::CallGraph {
         calxgloss_callgraph::CallGraph {
-            dll: dll.to_string(),
+            binary: binary.to_string(),
             functions,
         }
     }

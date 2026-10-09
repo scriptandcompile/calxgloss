@@ -30,8 +30,8 @@ pub enum MemoryError {
     EmptyFunctionName,
 
     /// A memory lifecycle scan failed for a DLL.
-    #[error("memory lifecycle scan failed for '{dll}': {reason}")]
-    ScanFailed { dll: String, reason: String },
+    #[error("memory lifecycle scan failed for '{binary}': {reason}")]
+    ScanFailed { binary: String, reason: String },
 }
 
 /// Maps the shared JSON store's errors onto this crate's error type: the

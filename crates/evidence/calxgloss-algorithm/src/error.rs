@@ -30,8 +30,8 @@ pub enum AlgorithmError {
     EmptyFunctionName,
 
     /// An algorithm recognition scan failed for a DLL.
-    #[error("algorithm recognition scan failed for '{dll}': {reason}")]
-    ScanFailed { dll: String, reason: String },
+    #[error("algorithm recognition scan failed for '{binary}': {reason}")]
+    ScanFailed { binary: String, reason: String },
 }
 
 /// Maps the shared JSON store's errors onto this crate's error type: the

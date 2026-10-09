@@ -29,7 +29,7 @@ pub async fn api_get_next_unit(
             id: u.id.clone(),
             name: u.name.clone(),
             kind: u.kind.to_string(),
-            dll: u.dll.clone(),
+            binary: u.binary.clone(),
             function: u.function.clone(),
             status: u.status.to_string(),
             stale: u.stale.to_string(),

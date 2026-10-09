@@ -7,8 +7,9 @@ use super::super::{
 
 use axum::{Json, extract::State};
 use calxgloss_types::{
-    BinaryProgress, LiveTranslationState, LiveUnitProgress, PassStatus, PhaseProgress, PhaseState,
-    PipelinePhase, TokenUsageLog, TranslationPhase, derive_unit_confidence,
+    BinaryIdentity, BinaryProgress, LiveTranslationState, LiveUnitProgress, PassStatus,
+    PhaseProgress, PhaseState, PipelinePhase, TokenUsageLog, TranslationPhase,
+    derive_unit_confidence,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -27,7 +28,7 @@ pub async fn api_get_progress(State(combined): State<CombinedState>) -> Json<Pro
         .map(|e| {
             let elapsed = e.started_at.elapsed().as_secs_f64();
             ProgressInfo {
-                dll: e.dll.clone(),
+                binary: e.binary.clone(),
                 function: e.function.clone(),
                 attempt: e.attempt,
                 strategy: e.strategy.clone(),
@@ -67,7 +68,11 @@ pub async fn api_get_progress_enhanced(
     let mut units: Vec<LiveUnitProgress> = entries.values().map(live_unit_progress).collect();
 
     // Stable order so the live view doesn't shuffle rows between refreshes.
-    units.sort_by(|a, b| a.dll.cmp(&b.dll).then_with(|| a.function.cmp(&b.function)));
+    units.sort_by(|a, b| {
+        a.binary
+            .cmp(&b.binary)
+            .then_with(|| a.function.cmp(&b.function))
+    });
 
     let count = units.len();
     let in_flight = units.iter().filter(|u| !u.finished).count();
@@ -88,11 +93,12 @@ pub async fn api_get_progress_enhanced(
 /// evidence rather than guessed.
 pub(crate) fn live_unit_progress(e: &ProgressEntry) -> LiveUnitProgress {
     let elapsed = e.started_at.elapsed().as_secs_f64();
-    let baseline = PassStatus::from_optional_counts(e.baseline_tests_passed, e.baseline_tests_total);
+    let baseline =
+        PassStatus::from_optional_counts(e.baseline_tests_passed, e.baseline_tests_total);
     let verification =
         PassStatus::from_optional_counts(e.verification_tests_passed, e.verification_tests_total);
     LiveUnitProgress {
-        dll: e.dll.clone(),
+        binary: e.binary.clone(),
         function: e.function.clone(),
         phase: e.phase,
         phase_history: e.phase_history.clone(),
@@ -133,66 +139,66 @@ pub async fn api_get_pipeline(
     let entries = progress.read().await.snapshot().await;
     let classifications_raw = progress.read().await.classifications().await;
     let batch_summaries_raw = progress.read().await.batch_summaries().await;
-    let processing = progress.read().await.processing_dll().await;
+    let processing = progress.read().await.processing_binary().await;
     let activity = progress.read().await.activity().await;
     let queue = progress.read().await.queue().await;
 
-    // Convert to owned HashMaps for O(1) lookups by DLL name
-    let mut classifications: HashMap<String, ClassificationInfo> = classifications_raw
+    // Convert to owned HashMaps for O(1) lookups by binary identity
+    let mut classifications: HashMap<BinaryIdentity, ClassificationInfo> = classifications_raw
         .into_iter()
-        .map(|c| (c.dll.clone(), c))
+        .map(|c| (c.binary.clone(), c))
         .collect();
-    let batch_summaries: HashMap<String, BatchInfo> = batch_summaries_raw
+    let batch_summaries: HashMap<BinaryIdentity, BatchInfo> = batch_summaries_raw
         .into_iter()
-        .map(|b| (b.dll.clone(), b))
+        .map(|b| (b.binary.clone(), b))
         .collect();
 
     // A restarted run re-classifies nothing, so the persisted records are
     // the only account of what the workspace already knows; this run's own
     // events supersede them wherever both exist.
-    for (dll, info) in disk_classifications(combined.server.repo_path()) {
-        classifications.entry(dll).or_insert(info);
+    for (binary, info) in disk_classifications(combined.server.repo_path()) {
+        classifications.entry(binary).or_insert(info);
     }
 
     // Snapshot entries before dropping the lock to avoid nested borrows
     let entries_snapshot: HashMap<String, ProgressEntry> = entries.clone();
 
-    // Collect all DLL names from all three sources
-    let mut dll_names: HashSet<String> = HashSet::new();
+    // Collect all binary identities from all three sources
+    let mut dll_names: HashSet<BinaryIdentity> = HashSet::new();
 
     // From live translation entries (group by DLL)
     for entry in entries_snapshot.values() {
-        dll_names.insert(entry.dll.clone());
+        dll_names.insert(entry.binary.clone());
     }
     // From classification results
-    for dll in classifications.keys() {
-        dll_names.insert(dll.clone());
+    for binary in classifications.keys() {
+        dll_names.insert(binary.clone());
     }
     // From batch summaries
-    for dll in batch_summaries.keys() {
-        dll_names.insert(dll.clone());
+    for binary in batch_summaries.keys() {
+        dll_names.insert(binary.clone());
     }
     // The binary whose batch pass has begun is discovered even when no
     // unit, classification, or summary event has named it yet — otherwise
     // a restarted run shows nothing until its first function event.
-    if let Some(dll) = &processing {
-        dll_names.insert(dll.clone());
+    if let Some(binary) = &processing {
+        dll_names.insert(binary.clone());
     }
     // A beating pass names its binary too — the beat can only be honest
     // about a binary the table actually shows.
-    if let Some((dll, _)) = &activity {
-        dll_names.insert(dll.clone());
+    if let Some((binary, _)) = &activity {
+        dll_names.insert(binary.clone());
     }
     // The run's queue plan names every binary it will process — the
     // table shows the whole plan, not just what has started.
-    dll_names.extend(queue.iter().cloned());
+    dll_names.extend(queue.iter().map(|q| BinaryIdentity::new(q.as_str())));
 
     let total_dlls = dll_names.len();
-    let dll_names_vec: Vec<String> = {
-        let mut v: Vec<String> = dll_names.into_iter().collect();
+    let dll_names_vec: Vec<BinaryIdentity> = {
+        let mut v: Vec<BinaryIdentity> = dll_names.into_iter().collect();
         // Rows follow the run's queue plan — the order the live loop
         // will process them — with unplanned binaries after, alphabetical.
-        let pos = |d: &String| queue.iter().position(|q| q == d);
+        let pos = |d: &BinaryIdentity| queue.iter().position(|q| q == d.as_str());
         v.sort_by(|a, b| match (pos(a), pos(b)) {
             (Some(i), Some(j)) => i.cmp(&j),
             (Some(_), None) => std::cmp::Ordering::Less,
@@ -203,34 +209,40 @@ pub async fn api_get_pipeline(
     };
 
     // Find DLLs currently being translated (have entries not yet finished)
-    let currently_translating: Vec<String> = entries_snapshot
+    let currently_translating: Vec<BinaryIdentity> = entries_snapshot
         .values()
         .filter(|e| !e.finished)
-        .map(|e| e.dll.clone())
+        .map(|e| e.binary.clone())
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();
 
     // Build per-DLL progress
     let mut dlls = Vec::new();
-    for (order, dll) in dll_names_vec.iter().enumerate() {
-        let classification = classifications.get(dll).cloned();
+    for (order, binary) in dll_names_vec.iter().enumerate() {
+        let classification = classifications.get(binary).cloned();
 
-        let batch = batch_summaries.get(dll).cloned();
+        let batch = batch_summaries.get(binary).cloned();
 
         // Check if this DLL is currently being translated
-        let current_translating = currently_translating.iter().find(|d| **d == *dll).map(|d| {
-            let dll_entries: Vec<_> = entries_snapshot.values().filter(|e| e.dll == **d).collect();
-            let completed = dll_entries.iter().filter(|e| e.finished).count();
-            super::super::CurrentDllStatus {
-                dll: d.clone(),
-                total_entries: dll_entries.len(),
-                completed_entries: completed,
-            }
-        });
+        let current_translating = currently_translating
+            .iter()
+            .find(|d| **d == *binary)
+            .map(|d| {
+                let dll_entries: Vec<_> = entries_snapshot
+                    .values()
+                    .filter(|e| e.binary == **d)
+                    .collect();
+                let completed = dll_entries.iter().filter(|e| e.finished).count();
+                super::super::CurrentDllStatus {
+                    binary: d.clone(),
+                    total_entries: dll_entries.len(),
+                    completed_entries: completed,
+                }
+            });
 
         dlls.push(PipelineDllProgress {
-            dll: dll.clone(),
+            binary: binary.clone(),
             classification,
             batch,
             in_progress: current_translating,
@@ -243,7 +255,7 @@ pub async fn api_get_pipeline(
         &classifications,
         &batch_summaries,
         &entries_snapshot,
-        processing.as_deref(),
+        processing.as_ref(),
         activity.as_ref(),
     );
     let phases = derive_phases(
@@ -272,7 +284,7 @@ pub async fn api_get_pipeline(
 /// only account of what the workspace already knows — the pipeline table
 /// hydrates its rows from them until this run's own events supersede them.
 /// Records missing a name or category are skipped rather than guessed at.
-fn disk_classifications(repo_path: &Path) -> HashMap<String, ClassificationInfo> {
+fn disk_classifications(repo_path: &Path) -> HashMap<BinaryIdentity, ClassificationInfo> {
     let mut found = HashMap::new();
     let classify_dir = repo_path.join("re").join("classify");
     let Ok(entries) = std::fs::read_dir(&classify_dir) else {
@@ -289,9 +301,9 @@ fn disk_classifications(repo_path: &Path) -> HashMap<String, ClassificationInfo>
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
             continue;
         };
-        let dll = value.get("dll").and_then(|v| v.as_str()).unwrap_or("");
+        let binary = value.get("binary").and_then(|v| v.as_str()).unwrap_or("");
         let category = value.get("category").and_then(|v| v.as_str()).unwrap_or("");
-        if dll.is_empty() || category.is_empty() {
+        if binary.is_empty() || category.is_empty() {
             continue;
         }
         // Strategy is serialized from `calxgloss_analysis::Strategy`:
@@ -304,9 +316,9 @@ fn disk_classifications(repo_path: &Path) -> HashMap<String, ClassificationInfo>
             _ => String::new(),
         };
         found.insert(
-            dll.to_string(),
+            binary.into(),
             ClassificationInfo {
-                dll: dll.to_string(),
+                binary: binary.to_string().into(),
                 category: category.to_string(),
                 strategy,
                 crate_replacement: value
@@ -411,19 +423,19 @@ fn counted_phase(phase: PipelinePhase, completed: usize, total: usize) -> PhaseP
 fn dll_done_count(
     total_dlls: usize,
     entries: &HashMap<String, ProgressEntry>,
-    batch_summaries: &HashMap<String, BatchInfo>,
+    batch_summaries: &HashMap<BinaryIdentity, BatchInfo>,
     threshold: TranslationPhase,
     batch_counts: bool,
 ) -> usize {
     let mut done: HashSet<&str> = HashSet::new();
     for entry in entries.values() {
         if furthest_phase(entry) >= threshold {
-            done.insert(entry.dll.as_str());
+            done.insert(entry.binary.as_str());
         }
     }
     if batch_counts {
-        for dll in batch_summaries.keys() {
-            done.insert(dll.as_str());
+        for binary in batch_summaries.keys() {
+            done.insert(binary.as_str());
         }
     }
     // Only count binaries the pipeline actually knows about.
@@ -436,16 +448,16 @@ fn dll_done_count(
 /// summary landed) — the counts are per binary, matching `total_dlls`.
 fn derive_phases(
     total_dlls: usize,
-    classifications: &HashMap<String, ClassificationInfo>,
-    batch_summaries: &HashMap<String, BatchInfo>,
+    classifications: &HashMap<BinaryIdentity, ClassificationInfo>,
+    batch_summaries: &HashMap<BinaryIdentity, BatchInfo>,
     entries: &HashMap<String, ProgressEntry>,
 ) -> Vec<PhaseProgress> {
     // Phase 2.5 only covers binaries classified with the PAL strategy.
-    let pal_binaries: Vec<&String> = classifications
+    let pal_binaries: Vec<&BinaryIdentity> = classifications
         .keys()
-        .filter(|dll| {
+        .filter(|binary| {
             classifications
-                .get(*dll)
+                .get(*binary)
                 .is_some_and(|c| is_pal_strategy(&c.strategy))
         })
         .collect();
@@ -471,7 +483,7 @@ fn derive_phases(
                 phase,
                 pal_binaries
                     .iter()
-                    .filter(|dll| batch_summaries.contains_key(dll.as_str()))
+                    .filter(|binary| batch_summaries.contains_key(*binary))
                     .count(),
                 pal_binaries.len(),
             ),
@@ -520,20 +532,21 @@ fn derive_phases(
 /// the authoritative function counts when present; otherwise the counts come
 /// from per-unit terminal events, and unknown totals stay `None`.
 fn derive_binaries(
-    dll_names: &[String],
-    classifications: &HashMap<String, ClassificationInfo>,
-    batch_summaries: &HashMap<String, BatchInfo>,
+    dll_names: &[BinaryIdentity],
+    classifications: &HashMap<BinaryIdentity, ClassificationInfo>,
+    batch_summaries: &HashMap<BinaryIdentity, BatchInfo>,
     entries: &HashMap<String, ProgressEntry>,
-    processing_dll: Option<&str>,
-    activity: Option<&(String, calxgloss_types::BinaryActivity)>,
+    processing: Option<&BinaryIdentity>,
+    activity: Option<&(BinaryIdentity, calxgloss_types::BinaryActivity)>,
 ) -> Vec<BinaryProgress> {
     dll_names
         .iter()
-        .map(|dll| {
-            let classification = classifications.get(dll);
-            let batch = batch_summaries.get(dll);
+        .map(|binary| {
+            let classification = classifications.get(binary);
+            let batch = batch_summaries.get(binary);
 
-            let units: Vec<&ProgressEntry> = entries.values().filter(|e| e.dll == *dll).collect();
+            let units: Vec<&ProgressEntry> =
+                entries.values().filter(|e| e.binary == *binary).collect();
 
             let (functions_translated, functions_failed, functions_total, tokens_used) = match batch
             {
@@ -552,7 +565,7 @@ fn derive_binaries(
             };
 
             BinaryProgress {
-                dll: dll.clone(),
+                binary: binary.clone(),
                 category: classification.map(|c| c.category.clone()),
                 strategy: classification.map(|c| c.strategy.clone()),
                 crate_replacement: classification.and_then(|c| c.crate_replacement.clone()),
@@ -561,8 +574,10 @@ fn derive_binaries(
                 functions_in_progress: units.iter().filter(|e| !e.finished).count(),
                 functions_failed,
                 tokens_used,
-                processing: processing_dll == Some(dll.as_str()),
-                activity: activity.filter(|(d, _)| d == dll).map(|(_, a)| a.clone()),
+                processing: processing == Some(binary),
+                activity: activity
+                    .filter(|(d, _)| d == binary)
+                    .map(|(_, a)| a.clone()),
             }
         })
         .collect()

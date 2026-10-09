@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::identity::BinaryIdentity;
 use crate::{TestCase, WindowsApiCall};
 
 /// A request to translate a single function from disassembly to Rust.
@@ -15,7 +16,7 @@ use crate::{TestCase, WindowsApiCall};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranslationRequest {
     /// The DLL containing the function to translate.
-    pub dll: String,
+    pub binary: BinaryIdentity,
 
     /// The function name to translate.
     pub function: String,

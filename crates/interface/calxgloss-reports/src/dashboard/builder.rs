@@ -21,71 +21,35 @@ use std::path::PathBuf;
 use calxgloss_git::{DependencyChecker, GitManager};
 use calxgloss_types::DllCategory;
 use calxgloss_types::dashboard::{ReviewDashboard, ReviewStatus, Staleness, UnitOfWork, WorkKind};
+use calxgloss_types::{BinaryIdentity, work_kind_for_prefix};
 use chrono::Utc;
 
 /// Parses a git branch name like `re/game_logic.dll/DrawSpritev1` or
-/// `re/classify/game_logic.dllv1` into its components. The dll segment is
-/// the target binary's filename verbatim, extension included (issue #68).
+/// `re/classify/game_logic.dllv1` into its components. Delegates to
+/// [`calxgloss_types::parse_branch_name`], the one owner of the branch-name
+/// grammar (issue #69); only branches carrying the `re/` prefix parse, and a
+/// missing attempt suffix reads as the first attempt.
 pub fn parse_branch_name(name: &str) -> Option<BranchParts> {
-    let rest = name.strip_prefix("re/")?;
-
-    let (rest, attempt) = if let Some(vpos) = rest.rfind('v') {
-        let after_v = &rest[vpos + 1..];
-        if after_v.chars().all(|c| c.is_ascii_digit()) && !after_v.is_empty() {
-            let attempt: u32 = after_v.parse().ok()?;
-            (&rest[..vpos], attempt)
-        } else {
-            (rest, 1)
-        }
-    } else {
-        (rest, 1)
-    };
-
-    let parts: Vec<&str> = rest.splitn(2, '/').collect();
-    let kind = parts[0];
-
-    let (dll, function) = if parts.len() > 1 {
-        (parts[0].to_string(), Some(parts[1].to_string()))
-    } else {
-        (parts[0].to_string(), None)
-    };
-
-    let kind = work_kind_for_prefix(kind).unwrap_or(WorkKind::FunctionTranslation);
-
+    let parts = calxgloss_types::parse_branch_name(name.strip_prefix("re/")?)?;
     Some(BranchParts {
-        kind,
-        dll,
-        function,
-        attempt,
+        kind: parts.kind,
+        binary: parts.binary,
+        function: parts.function,
+        attempt: parts.attempt.unwrap_or(1),
     })
-}
-
-/// Maps a branch name's first path segment to its supporting work kind
-/// (`shim`, `pal`, …); any other segment is a DLL name, making the branch a
-/// function translation.
-fn work_kind_for_prefix(prefix: &str) -> Option<WorkKind> {
-    match prefix {
-        "classify" => Some(WorkKind::DllClassification),
-        "shim" => Some(WorkKind::ShimLayer),
-        "pal" => Some(WorkKind::PalTrait),
-        "test" => Some(WorkKind::TestCaseAddition),
-        "integration" => Some(WorkKind::IntegrationStep),
-        "fix" => Some(WorkKind::BugFix),
-        _ => None,
-    }
 }
 
 /// Returns true if a git branch name matches the given DLL, function,
 /// and optional attempt number. The DLL is compared verbatim — branch
 /// names carry the filename exactly as identity (issue #68).
-pub fn branch_matches(branch: &str, dll: &str, function: &str, attempt: Option<u32>) -> bool {
+pub fn branch_matches(branch: &str, binary: &str, function: &str, attempt: Option<u32>) -> bool {
     let Some(parts) = parse_branch_name(branch) else {
         return false;
     };
 
     let branch_func = parts.function.as_deref().unwrap_or("");
 
-    if parts.dll != dll || branch_func != function {
+    if parts.binary != binary || branch_func != function {
         return false;
     }
 
@@ -99,7 +63,7 @@ pub fn branch_matches(branch: &str, dll: &str, function: &str, attempt: Option<u
 #[derive(Debug)]
 pub struct BranchParts {
     kind: WorkKind,
-    dll: String,
+    binary: BinaryIdentity,
     function: Option<String>,
     attempt: u32,
 }
@@ -211,13 +175,13 @@ impl<'a> DashboardBuilder<'a> {
         // 5. Also check for classified DLLs not covered by translation branches
         let classified = self.read_classification_records();
         for cls in &classified {
-            let key = format!("classify/{}", cls.dll);
+            let key = format!("classify/{}", cls.binary);
             if !seen_keys.contains_key(&key) {
                 let unit = UnitOfWork {
                     id: key.clone(),
-                    name: format!("Classify {}", cls.dll),
+                    name: format!("Classify {}", cls.binary),
                     kind: WorkKind::DllClassification,
-                    dll: cls.dll.clone(),
+                    binary: cls.binary.clone().into(),
                     function: None,
                     attempt: 1,
                     status: ReviewStatus::Accepted,
@@ -251,7 +215,7 @@ impl<'a> DashboardBuilder<'a> {
         // 6. Wire dependency edges from the branch model so the failing
         //    verdicts above cascade `Blocked` down the graph. A function
         //    unit depends on:
-        //    - its DLL's classification unit (`classify/{dll}`), and
+        //    - its DLL's classification unit (`classify/{binary}`), and
         //    - the shim-layer unit its classification requires — the same
         //      `DependencyChecker` result `GitManager::create_branch` gates
         //      branch creation on, so the dashboard graph reflects which
@@ -260,8 +224,8 @@ impl<'a> DashboardBuilder<'a> {
             .iter()
             .filter(|u| u.kind == WorkKind::DllClassification)
             .map(|u| {
-                let dll = u.id.strip_prefix("classify/").unwrap_or(&u.id);
-                (strip_attempt_suffix(dll).to_string(), u.id.clone())
+                let binary = u.id.strip_prefix("classify/").unwrap_or(&u.id);
+                (strip_attempt_suffix(binary).to_string(), u.id.clone())
             })
             .collect();
 
@@ -272,14 +236,14 @@ impl<'a> DashboardBuilder<'a> {
             .collect();
 
         let classified_by_dll: HashMap<String, &ClassifiedDll> =
-            classified.iter().map(|c| (c.dll.clone(), c)).collect();
+            classified.iter().map(|c| (c.binary.clone(), c)).collect();
 
         let checker = DependencyChecker::new();
         for unit in &mut units {
             if unit.kind != WorkKind::FunctionTranslation {
                 continue;
             }
-            let dll_key = unit.dll.as_str();
+            let dll_key = unit.binary.as_str();
 
             if let Some(class_id) = classify_ids.get(dll_key)
                 && !unit.dependencies.contains(class_id)
@@ -290,7 +254,8 @@ impl<'a> DashboardBuilder<'a> {
             if let Some(cls) = classified_by_dll.get(dll_key)
                 && let Some(category) = &cls.category
             {
-                let required = checker.check(&cls.dll, category, cls.crate_replacement.as_deref());
+                let required =
+                    checker.check(&cls.binary, category, cls.crate_replacement.as_deref());
                 for branch in &required.required {
                     // Required deps are branch names (`re/shim/{crate}`); the
                     // dashboard unit lives under the same parts as a shim unit.
@@ -318,7 +283,7 @@ impl<'a> DashboardBuilder<'a> {
         Ok(dashboard)
     }
 
-    /// Reads every patch record under `re/patches/{dll}/{function}/v{N}.json`
+    /// Reads every patch record under `re/patches/{binary}/{function}/v{N}.json`
     /// (written by `GitManager::store_failure` for failures and by the review
     /// UI's request-patch action for patch requests).
     fn read_all_patch_records(&self) -> Result<Vec<PatchRecordEntry>, anyhow::Error> {
@@ -328,7 +293,7 @@ impl<'a> DashboardBuilder<'a> {
         )? {
             let patch = file.record;
             records.push(PatchRecordEntry {
-                key: format!("{}/{}/v{}", file.dll, patch.function, file.attempt),
+                key: format!("{}/{}/v{}", file.binary, patch.function, file.attempt),
                 attempt: file.attempt,
                 compilation_errors: patch.compilation_errors.len(),
                 test_failures: patch.test_failures.len(),
@@ -340,9 +305,9 @@ impl<'a> DashboardBuilder<'a> {
     }
 
     /// Reads every send-back record under
-    /// `re/rejections/{dll}/{function}/v{N}.json` (written by
+    /// `re/rejections/{binary}/{function}/v{N}.json` (written by
     /// `GitManager::reject_branch`), returning the unit keys
-    /// (`{dll}/{function}/v{attempt}`) whose attempt a reviewer sent back.
+    /// (`{binary}/{function}/v{attempt}`) whose attempt a reviewer sent back.
     ///
     /// Without this read the `SendBack` verdict is invisible after a rebuild
     /// — branch state alone cannot tell a sent-back branch from a queued one,
@@ -356,7 +321,7 @@ impl<'a> DashboardBuilder<'a> {
         {
             keys.insert(format!(
                 "{}/{}/v{}",
-                file.dll, file.record.function, file.attempt
+                file.binary, file.record.function, file.attempt
             ));
         }
         Ok(keys)
@@ -416,7 +381,7 @@ impl<'a> DashboardBuilder<'a> {
         Ok(baselines)
     }
 
-    /// Reads every classification record under `re/classify/{dll}.json`
+    /// Reads every classification record under `re/classify/{binary}.json`
     /// (written by the `classify` command). The category and crate
     /// replacement are parsed leniently — a record that fails to parse
     /// still counts as classified, it just declares no shim dependency.
@@ -453,13 +418,13 @@ impl<'a> DashboardBuilder<'a> {
                     .and_then(|content| serde_json::from_str::<ClassificationFile>(&content).ok());
                 dlls.push(match parsed {
                     Some(p) => ClassifiedDll {
-                        dll: dll_name,
+                        binary: dll_name,
                         category: p.category,
                         crate_replacement: p.crate_replacement,
                         classified_at,
                     },
                     None => ClassifiedDll {
-                        dll: dll_name,
+                        binary: dll_name,
                         category: None,
                         crate_replacement: None,
                         classified_at,
@@ -533,19 +498,19 @@ impl<'a> DashboardBuilder<'a> {
         let parts = parse_branch_name_for_key(key, latest_attempt);
         let display_name = match &parts.function {
             Some(func) => format!("Translate {}", func),
-            None => format!("Classify {}", parts.dll),
+            None => format!("Classify {}", parts.binary),
         };
 
         let id = if let Some(ref func) = parts.function {
-            format!("{}/{}/v{}", parts.dll, func, latest_attempt)
+            format!("{}/{}/v{}", parts.binary, func, latest_attempt)
         } else {
-            format!("classify/{}", parts.dll)
+            format!("classify/{}", parts.binary)
         };
 
         let patch_data = patch_records
             .iter()
             .filter(|pr| {
-                pr.key.contains(&parts.dll)
+                pr.key.contains(parts.binary.as_str())
                     && pr.key.contains(parts.function.as_deref().unwrap_or(""))
             })
             .max_by_key(|pr| pr.attempt);
@@ -587,7 +552,7 @@ impl<'a> DashboardBuilder<'a> {
             id,
             name: display_name,
             kind: parts.kind,
-            dll: parts.dll,
+            binary: parts.binary,
             function: parts.function,
             attempt: latest_attempt,
             status: ReviewStatus::Queued,
@@ -610,17 +575,17 @@ impl<'a> DashboardBuilder<'a> {
 
 fn unit_key(parts: &BranchParts) -> String {
     match &parts.function {
-        Some(func) => format!("{}/{}/v{}", parts.dll, func, parts.attempt),
-        None => format!("classify/{}", parts.dll),
+        Some(func) => format!("{}/{}/v{}", parts.binary, func, parts.attempt),
+        None => format!("classify/{}", parts.binary),
     }
 }
 
 fn parse_branch_name_for_key(key: &str, default_attempt: u32) -> BranchParts {
     if key.starts_with("classify/") {
-        let dll = key.strip_prefix("classify/").unwrap_or(key);
+        let binary = key.strip_prefix("classify/").unwrap_or(key);
         return BranchParts {
             kind: WorkKind::DllClassification,
-            dll: dll.to_string(),
+            binary: binary.to_string().into(),
             function: None,
             attempt: default_attempt,
         };
@@ -634,14 +599,18 @@ fn parse_branch_name_for_key(key: &str, default_attempt: u32) -> BranchParts {
             .first()
             .and_then(|s| work_kind_for_prefix(s))
             .unwrap_or(WorkKind::FunctionTranslation),
-        dll: parts.first().map(|s| s.to_string()).unwrap_or_default(),
+        binary: parts
+            .first()
+            .map(|s| s.to_string())
+            .unwrap_or_default()
+            .into(),
         function: parts.get(1).map(|s| s.to_string()),
         attempt: default_attempt,
     }
 }
 
 /// Strips a trailing `/v{N}` attempt suffix from a classification unit's
-/// dll segment so branch-derived ids (`classify/{file}/vN`) and
+/// binary segment so branch-derived ids (`classify/{file}/vN`) and
 /// record-derived ids (`classify/{file}`) key to the same verbatim binary
 /// filename — identity is never extension-normalized (issue #68).
 fn strip_attempt_suffix(name: &str) -> &str {
@@ -665,7 +634,7 @@ struct PatchRecordEntry {
 }
 
 /// The fields the builder needs from a send-back record
-/// (`re/rejections/{dll}/{function}/v{N}.json`, written by
+/// (`re/rejections/{binary}/{function}/v{N}.json`, written by
 /// `GitManager::reject_branch`); the attempt comes from the file name.
 #[derive(Debug, serde::Deserialize)]
 struct SendBackRecord {
@@ -676,12 +645,12 @@ struct SendBackRecord {
 /// name (verbatim, extension included), the attempt number from the file
 /// name, and the deserialized record.
 struct RecordFile<T> {
-    dll: String,
+    binary: String,
     attempt: u32,
     record: T,
 }
 
-/// Walks the `{root}/{dll}/{function}/v{N}.json` layout shared by patch and
+/// Walks the `{root}/{binary}/{function}/v{N}.json` layout shared by patch and
 /// send-back records, deserializing every `*.json` file into `T`. A missing
 /// root yields nothing; unreadable or malformed files are skipped.
 fn read_record_tree<T: serde::de::DeserializeOwned>(
@@ -695,7 +664,7 @@ fn read_record_tree<T: serde::de::DeserializeOwned>(
     for dll_dir in std::fs::read_dir(root)? {
         let dll_dir = dll_dir?;
         // Record dirs carry the binary filename verbatim (issue #68).
-        let dll = dll_dir.file_name().to_string_lossy().to_string();
+        let binary = dll_dir.file_name().to_string_lossy().to_string();
 
         if !dll_dir.path().is_dir() {
             continue;
@@ -726,7 +695,7 @@ fn read_record_tree<T: serde::de::DeserializeOwned>(
                 };
 
                 files.push(RecordFile {
-                    dll: dll.clone(),
+                    binary: binary.clone(),
                     attempt,
                     record,
                 });
@@ -744,7 +713,7 @@ struct BaselineData {
 }
 
 /// The fields the builder needs from a classification record
-/// (`re/classify/{dll}.json`, written by the `classify` command); everything
+/// (`re/classify/{binary}.json`, written by the `classify` command); everything
 /// else in the record is ignored, and both fields are optional so older or
 /// partial records still read.
 #[derive(Debug, Default, serde::Deserialize)]
@@ -755,12 +724,12 @@ struct ClassificationFile {
     crate_replacement: Option<String>,
 }
 
-/// A DLL with a classification record on disk. `dll` is the record file name
+/// A DLL with a classification record on disk. `binary` is the record file name
 /// minus `.json` (the `classify` command keeps the `.dll` extension in it);
 /// the category and crate replacement drive the shim dependency edge.
 #[derive(Debug)]
 struct ClassifiedDll {
-    dll: String,
+    binary: String,
     category: Option<DllCategory>,
     crate_replacement: Option<String>,
     /// When the record was written (its file mtime).
@@ -775,7 +744,7 @@ mod tests {
     fn parse_branch_name_reads_shim_branch() {
         let parts = parse_branch_name("re/shim/wgpu").expect("shim branch parses");
         assert_eq!(parts.kind, WorkKind::ShimLayer);
-        assert_eq!(parts.dll, "shim");
+        assert_eq!(parts.binary, "shim");
         assert_eq!(parts.function.as_deref(), Some("wgpu"));
         assert_eq!(unit_key(&parts), "shim/wgpu/v1");
     }
@@ -786,12 +755,12 @@ mod tests {
         // the dependency graph, not collapse to a function translation.
         let parts = parse_branch_name_for_key("shim/wgpu/v2", 2);
         assert_eq!(parts.kind, WorkKind::ShimLayer);
-        assert_eq!(parts.dll, "shim");
+        assert_eq!(parts.binary, "shim");
         assert_eq!(parts.function.as_deref(), Some("wgpu"));
 
         let parts = parse_branch_name_for_key("game_logic.dll/DrawSprite/v1", 1);
         assert_eq!(parts.kind, WorkKind::FunctionTranslation);
-        assert_eq!(parts.dll, "game_logic.dll");
+        assert_eq!(parts.binary, "game_logic.dll");
         assert_eq!(parts.function.as_deref(), Some("DrawSprite"));
     }
 
@@ -838,7 +807,7 @@ mod tests {
         let git = init_test_repo(dir.path());
 
         git.create_branch("game_logic.dll", "DrawPrimitive", 1, None)
-            .expect("dll translation branch");
+            .expect("binary translation branch");
         git.create_branch("game_logic.exe", "DrawPrimitive", 1, None)
             .expect("exe translation branch");
         write_baseline(

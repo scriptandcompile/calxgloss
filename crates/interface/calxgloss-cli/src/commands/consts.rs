@@ -3,7 +3,7 @@
 //! Runs the three constant detectors — bitflag group detection,
 //! enumerated-dispatch detection, and repeated-magic-number frequency
 //! analysis — against the program currently open in Ghidra and saves the
-//! result to `re/analysis/consts/{dll}.json` in the workspace, the same
+//! result to `re/analysis/consts/{binary}.json` in the workspace, the same
 //! file batch translation will read as prompt context. Batch translation
 //! runs the same scan before its first batch when no result is cached;
 //! this command is the manual entry point: it rebuilds the result on
@@ -26,9 +26,9 @@ use crate::utils::*;
 const DETAIL_LIMIT: usize = 10;
 
 /// Handle the `consts` subcommand: detect constant structures for
-/// `dll`, or print the cached result when `show` is set.
+/// `binary`, or print the cached result when `show` is set.
 pub async fn handle_consts(
-    dll: &str,
+    binary: &str,
     workspace: &Path,
     show: bool,
     settings: &Settings,
@@ -36,17 +36,17 @@ pub async fn handle_consts(
     let persistor = ConstPersistor::new(workspace);
 
     if show {
-        let result = persistor.load(dll).with_context(|| {
+        let result = persistor.load(binary).with_context(|| {
             format!(
-                "No cached constant result for {dll}; \
-                 run `calxgloss consts --dll {dll}` to produce one"
+                "No cached constant result for {binary}; \
+                 run `calxgloss consts --binary {binary}` to produce one"
             )
         })?;
-        print_constant_report(&result, &persistor.path_for(dll));
+        print_constant_report(&result, &persistor.path_for(binary));
         return Ok(());
     }
 
-    info!(dll, workspace = %workspace.display(), "Detecting constant structures");
+    info!(binary, workspace = %workspace.display(), "Detecting constant structures");
 
     let ghidra_url = &settings.ghidra_url.value;
     let mut config = GhidraConfig::new(ghidra_url)
@@ -59,14 +59,14 @@ pub async fn handle_consts(
 
     let engine = ConstEngine::new(&ghidra);
     let result = engine
-        .scan(dll)
+        .scan(binary)
         .await
-        .with_context(|| format!("Constant detection failed for {dll}"))?;
+        .with_context(|| format!("Constant detection failed for {binary}"))?;
     persistor
         .save(&result)
-        .with_context(|| format!("Failed to save the constant result for {dll}"))?;
+        .with_context(|| format!("Failed to save the constant result for {binary}"))?;
 
-    print_constant_report(&result, &persistor.path_for(dll));
+    print_constant_report(&result, &persistor.path_for(binary));
     Ok(())
 }
 

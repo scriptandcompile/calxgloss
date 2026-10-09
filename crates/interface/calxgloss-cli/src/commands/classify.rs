@@ -56,7 +56,7 @@ pub async fn handle_classify(
     let mut written = Vec::new();
     for c in &classifications {
         let sanitized: String = c
-            .dll
+            .binary
             .chars()
             .map(|ch| match ch {
                 '/' | '\\' => '_',
@@ -65,17 +65,17 @@ pub async fn handle_classify(
             .collect();
         let record_path = classify_dir.join(format!("{sanitized}.json"));
         let json = serde_json::to_string_pretty(&c)
-            .with_context(|| format!("Failed to serialize classification for {}", c.dll))?;
+            .with_context(|| format!("Failed to serialize classification for {}", c.binary))?;
         std::fs::write(&record_path, &json)
-            .with_context(|| format!("Failed to write classification record for {}", c.dll))?;
+            .with_context(|| format!("Failed to write classification record for {}", c.binary))?;
         let record_path_str = record_path.to_string_lossy().to_string();
         written.push(record_path_str.clone());
-        info!(dll = %c.dll, record = %record_path_str, "Wrote classification record");
+        info!(binary = %c.binary, record = %record_path_str, "Wrote classification record");
 
         // Emit classification complete event for live mode
         if let Some(events) = events {
             events.emit(ProgressEvent::ClassificationComplete {
-                dll: c.dll.clone(),
+                binary: c.binary.clone().into(),
                 category: format!("{:?}", c.category),
                 strategy: format!("{:?}", c.strategy),
                 crate_replacement: c.crate_replacement.clone(),

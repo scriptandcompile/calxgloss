@@ -37,7 +37,7 @@ fn test_create_branch() {
         .unwrap();
     assert!(result.created);
     assert_eq!(result.branch.name, "re/game_logic.dll/DrawSpritev1");
-    assert_eq!(result.branch.dll, "game_logic.dll");
+    assert_eq!(result.branch.binary, "game_logic.dll");
     assert_eq!(result.branch.function, "DrawSprite");
     assert_eq!(result.branch.attempt, 1);
 }
@@ -286,7 +286,7 @@ fn test_store_failure() {
 
     let content = std::fs::read_to_string(&patch_path).unwrap();
     let record: PatchRecord = serde_json::from_str(&content).unwrap();
-    assert_eq!(record.dll, "game_logic.dll");
+    assert_eq!(record.binary, "game_logic.dll");
     assert_eq!(record.function, "DrawSprite");
     assert_eq!(record.attempt, 1);
     assert_eq!(record.error_message, "Compilation failed");
@@ -314,7 +314,7 @@ fn test_current_commit() {
 #[test]
 fn test_git_branch_validation() {
     assert!(GitBranch::new("", "Func", 1).is_err());
-    assert!(GitBranch::new("dll.dll", "", 1).is_err());
+    assert!(GitBranch::new("binary.dll", "", 1).is_err());
 }
 
 // ============================================================

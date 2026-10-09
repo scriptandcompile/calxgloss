@@ -265,7 +265,7 @@ pub fn known_third_party_crate(dll_name: &str) -> Option<&'static str> {
 
 /// Returns the lowercase DLL filename without the `.dll` extension.
 ///
-/// Returns `None` if the name is empty or doesn't end with `.dll`.
+/// Returns `None` if the name is empty or doesn't end with `.binary`.
 pub fn dll_base_name(dll_name: &str) -> Option<String> {
     let lower = dll_name.trim().to_lowercase();
     if lower.is_empty() {
@@ -342,9 +342,9 @@ pub fn imported_dll_names(imports: &[Import]) -> Vec<String> {
     let mut result = Vec::new();
 
     for import in imports {
-        let dll = import.dll.trim().to_lowercase();
-        if !dll.is_empty() && seen.insert(dll.clone()) {
-            result.push(dll);
+        let binary = import.binary.trim().to_lowercase();
+        if !binary.is_empty() && seen.insert(binary.clone()) {
+            result.push(binary);
         }
     }
 
@@ -498,15 +498,15 @@ mod tests {
     fn test_imported_dll_names() {
         let imports = vec![
             Import {
-                dll: "kernel32.dll".to_string(),
+                binary: "kernel32.dll".to_string().into(),
                 function: "CreateFileA".to_string(),
             },
             Import {
-                dll: "user32.dll".to_string(),
+                binary: "user32.dll".to_string().into(),
                 function: "MessageBoxA".to_string(),
             },
             Import {
-                dll: "kernel32.dll".to_string(),
+                binary: "kernel32.dll".to_string().into(),
                 function: "ReadFile".to_string(),
             },
         ];
@@ -527,11 +527,11 @@ mod tests {
     fn test_imported_dll_names_deduplication() {
         let imports = vec![
             Import {
-                dll: "advapi32.dll".to_string(),
+                binary: "advapi32.dll".to_string().into(),
                 function: "RegOpenKeyExA".to_string(),
             },
             Import {
-                dll: "ADVAPI32.DLL".to_string(),
+                binary: "ADVAPI32.DLL".to_string().into(),
                 function: "RegQueryValueExA".to_string(),
             },
         ];

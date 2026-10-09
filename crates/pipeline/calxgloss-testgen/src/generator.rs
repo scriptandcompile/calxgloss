@@ -19,7 +19,7 @@ pub use crate::inputs::generate_test_inputs;
 ///
 /// Manages the generation of FFI bindings, test inputs, and baseline execution
 /// for functions extracted from DLLs. The generator stores baseline results
-/// in a structured directory layout under `re/baseline/{dll}/{function}.json`.
+/// in a structured directory layout under `re/baseline/{binary}/{function}.json`.
 ///
 /// # Directory Layout
 ///
@@ -34,7 +34,7 @@ pub use crate::inputs::generate_test_inputs;
 #[derive(Debug, Clone)]
 pub struct TestGenerator {
     /// Base directory for storing baseline data.
-    /// Baselines are written to `{target_dir}/re/baseline/{dll}/{function}.json`.
+    /// Baselines are written to `{target_dir}/re/baseline/{binary}/{function}.json`.
     target_dir: PathBuf,
 
     /// Optional Ghidra client for exporting function signatures.
@@ -79,7 +79,7 @@ impl TestGenerator {
     ///
     /// # Arguments
     ///
-    /// * `dll` - The DLL filename this function belongs to.
+    /// * `binary` - The DLL filename this function belongs to.
     /// * `function` - The function name.
     /// * `signature` - The function signature as provided by Ghidra.
     ///
@@ -88,13 +88,13 @@ impl TestGenerator {
     /// A [`FfiBinding`] containing the generated FFI code and parsed type information.
     pub fn generate_ffi_binding(
         &self,
-        dll: &str,
+        binary: &str,
         function: &str,
         signature: &str,
     ) -> Result<FfiBinding> {
-        debug!(dll, function, signature, "Generating FFI binding");
-        let binding = generate_ffi_binding(dll, function, signature)?;
-        info!(dll, function, "Generated FFI binding");
+        debug!(binary, function, signature, "Generating FFI binding");
+        let binding = generate_ffi_binding(binary, function, signature)?;
+        info!(binary, function, "Generated FFI binding");
         Ok(binding)
     }
 
@@ -139,7 +139,7 @@ impl TestGenerator {
         function_info: &FunctionInfo,
     ) -> Result<Vec<TestCase>> {
         debug!(
-            dll = function_info.dll,
+            binary = %function_info.binary,
             function = function_info.name,
             "Generating test inputs from function"
         );
@@ -158,7 +158,7 @@ impl TestGenerator {
     ///
     /// # Arguments
     ///
-    /// * `dll` - The DLL filename.
+    /// * `binary` - The DLL filename.
     /// * `function` - The function name.
     /// * `signature` - The function signature.
     /// * `tests` - The test cases to execute.
@@ -167,24 +167,24 @@ impl TestGenerator {
     /// # Returns
     ///
     /// A vector of [`TestResult`] structs with actual return values and side effects populated.
-    #[instrument(skip(self, tests, dll_path), fields(dll, function, test_count = tests.len()))]
+    #[instrument(skip(self, tests, dll_path), fields(binary, function, test_count = tests.len()))]
     pub async fn run_baseline_tests(
         &self,
-        dll: &str,
+        binary: &str,
         function: &str,
         signature: &str,
         tests: &[TestCase],
         dll_path: &Path,
     ) -> Result<Vec<TestResult>> {
-        debug!(dll, function, "Running baseline tests");
+        debug!(binary, function, "Running baseline tests");
 
         let runner = BaselineRunner::new(&self.target_dir);
         let results = runner
-            .run(dll, function, signature, tests, dll_path)
+            .run(binary, function, signature, tests, dll_path)
             .await?;
 
         info!(
-            dll,
+            binary,
             function,
             passed = results.iter().filter(|r| r.passed).count(),
             failed = results.iter().filter(|r| !r.passed).count(),
@@ -200,7 +200,7 @@ impl TestGenerator {
     /// extracts its signature, and runs the baseline tests.
     pub async fn run_baseline_tests_from_exports(
         &self,
-        dll: &str,
+        binary: &str,
         function: &str,
         exports: &[Export],
         tests: &[TestCase],
@@ -212,7 +212,7 @@ impl TestGenerator {
             .map(|e| e.signature.clone())
             .ok_or_else(|| anyhow::anyhow!("Function '{}' not found in exports", function))?;
 
-        self.run_baseline_tests(dll, function, &signature, tests, dll_path)
+        self.run_baseline_tests(binary, function, &signature, tests, dll_path)
             .await
     }
 
@@ -232,7 +232,7 @@ impl TestGenerator {
         match signature {
             Some(sig) => {
                 self.run_baseline_tests(
-                    &function_info.dll,
+                    &function_info.binary,
                     &function_info.name,
                     &sig,
                     tests,
@@ -242,7 +242,7 @@ impl TestGenerator {
             }
             None => {
                 warn!(
-                    dll = function_info.dll,
+                    binary = %function_info.binary,
                     function = function_info.name,
                     "No signature found in exports, skipping baseline"
                 );
@@ -253,22 +253,27 @@ impl TestGenerator {
 
     /// Save baseline test results to disk.
     ///
-    /// Writes the test results to `re/baseline/{dll}/{function}.json` under
+    /// Writes the test results to `re/baseline/{binary}/{function}.json` under
     /// the generator's target directory. Creates parent directories as needed.
     ///
     /// # Arguments
     ///
-    /// * `dll` - The DLL filename.
+    /// * `binary` - The DLL filename.
     /// * `function` - The function name.
     /// * `results` - The test results to save.
-    pub fn save_baseline(&self, dll: &str, function: &str, results: &[TestResult]) -> Result<()> {
-        debug!(dll, function, "Saving baseline");
+    pub fn save_baseline(
+        &self,
+        binary: &str,
+        function: &str,
+        results: &[TestResult],
+    ) -> Result<()> {
+        debug!(binary, function, "Saving baseline");
 
         let baseline_dir = self
             .target_dir
             .join("re")
             .join("baseline")
-            .join(dll)
+            .join(binary)
             .join(function);
         std::fs::create_dir_all(&baseline_dir).context("Failed to create baseline directory")?;
 
@@ -292,19 +297,19 @@ impl TestGenerator {
     ///
     /// # Arguments
     ///
-    /// * `dll` - The DLL filename.
+    /// * `binary` - The DLL filename.
     /// * `function` - The function name.
     ///
     /// # Returns
     ///
     /// A vector of [`TestResult`] structs, or an error if the baseline file
     /// does not exist or cannot be parsed.
-    pub fn load_baseline(&self, dll: &str, function: &str) -> Result<Vec<TestResult>> {
+    pub fn load_baseline(&self, binary: &str, function: &str) -> Result<Vec<TestResult>> {
         let baseline_path = self
             .target_dir
             .join("re")
             .join("baseline")
-            .join(dll)
+            .join(binary)
             .join(function)
             .join("baseline.json");
 
@@ -332,11 +337,11 @@ impl TestGenerator {
     }
 
     /// Get the path where a baseline would be saved for a function.
-    pub fn baseline_path(&self, dll: &str, function: &str) -> PathBuf {
+    pub fn baseline_path(&self, binary: &str, function: &str) -> PathBuf {
         self.target_dir
             .join("re")
             .join("baseline")
-            .join(dll)
+            .join(binary)
             .join(function)
             .join("baseline.json")
     }

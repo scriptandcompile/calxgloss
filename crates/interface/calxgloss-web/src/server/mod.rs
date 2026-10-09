@@ -24,7 +24,8 @@ use axum::{
 };
 use calxgloss_reports::dashboard::DashboardBuilder;
 use calxgloss_types::{
-    BinaryActivity, PhaseRecord, ProgressEvent, ReviewDashboard, StopSignal, TranslationPhase,
+    BinaryActivity, BinaryIdentity, PhaseRecord, ProgressEvent, ReviewDashboard, StopSignal,
+    TranslationPhase, UnitKey,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -218,7 +219,7 @@ impl FromRef<CombinedState> for ActionsState {
 /// A single DLL classification result, tracked during live translation.
 #[derive(Debug)]
 struct ClassificationResult {
-    dll: String,
+    binary: BinaryIdentity,
     category: String,
     strategy: String,
     crate_replacement: Option<String>,
@@ -229,7 +230,7 @@ struct ClassificationResult {
 /// Batch summary for a DLL after all functions are translated.
 #[derive(Debug)]
 struct BatchResult {
-    dll: String,
+    binary: BinaryIdentity,
     total_functions: usize,
     success_count: usize,
     failure_count: usize,
@@ -245,31 +246,32 @@ struct BatchResult {
 /// with the git-backed state.
 #[derive(Debug, Clone, Default)]
 pub struct ProgressState {
-    /// Map of "dll/function" → current progress info for a live translation.
+    /// Map of unit key (`{binary}/{function}`) → current progress info for a
+    /// live translation.
     entries: Arc<RwLock<std::collections::HashMap<String, ProgressEntry>>>,
-    /// Classification results keyed by DLL name.
-    classifications: Arc<RwLock<std::collections::HashMap<String, ClassificationResult>>>,
-    /// Batch summary results keyed by DLL name.
-    batch_summaries: Arc<RwLock<std::collections::HashMap<String, BatchResult>>>,
+    /// Classification results keyed by binary identity.
+    classifications: Arc<RwLock<std::collections::HashMap<BinaryIdentity, ClassificationResult>>>,
+    /// Batch summary results keyed by binary identity.
+    batch_summaries: Arc<RwLock<std::collections::HashMap<BinaryIdentity, BatchResult>>>,
     /// The DLL whose batch pass is currently in flight — set by
     /// `BatchStarted`, cleared by that DLL's `BatchSummary`. The live loop
     /// works one binary at a time, so one slot is enough; a new
     /// `BatchStarted` replaces the old value if a pass ended without a
     /// summary (an error path).
-    processing: Arc<RwLock<Option<String>>>,
+    processing: Arc<RwLock<Option<BinaryIdentity>>>,
     /// The run's ordered plan — `QueuePlanned` names the binaries the
     /// live loop will process, in that order. Empty until a plan lands;
     /// a later plan replaces the earlier one.
     queue: Arc<RwLock<Vec<String>>>,
-    /// The working pass's latest heartbeat — `(dll, activity)`. Set by
+    /// The working pass's latest heartbeat — `(binary, activity)`. Set by
     /// `BatchProgress`, cleared when a new `BatchStarted` replaces the
     /// pass or that DLL's `BatchSummary` lands.
-    activity: Arc<RwLock<Option<(String, BinaryActivity)>>>,
+    activity: Arc<RwLock<Option<(BinaryIdentity, BinaryActivity)>>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ProgressEntry {
-    pub dll: String,
+    pub binary: BinaryIdentity,
     pub function: String,
     pub attempt: u32,
     pub strategy: String,
@@ -347,7 +349,7 @@ impl ProgressState {
                 self.on_translation_event(event).await;
             }
             ProgressEvent::ClassificationComplete {
-                dll,
+                binary,
                 category,
                 strategy,
                 crate_replacement,
@@ -356,9 +358,9 @@ impl ProgressState {
             } => {
                 let mut classifications = self.classifications.write().await;
                 classifications.insert(
-                    dll.clone(),
+                    binary.clone(),
                     ClassificationResult {
-                        dll: dll.clone(),
+                        binary: binary.clone(),
                         category: category.clone(),
                         strategy: strategy.clone(),
                         crate_replacement: crate_replacement.clone(),
@@ -367,20 +369,20 @@ impl ProgressState {
                     },
                 );
             }
-            ProgressEvent::BatchStarted { dll } => {
+            ProgressEvent::BatchStarted { binary } => {
                 // The live loop works one binary at a time; the newest
                 // started pass is the one in flight. Any heartbeat from the
                 // previous pass is stale the moment a new one begins.
-                *self.processing.write().await = Some(dll.clone());
+                *self.processing.write().await = Some(binary.clone());
                 *self.activity.write().await = None;
             }
-            ProgressEvent::QueuePlanned { dlls } => {
+            ProgressEvent::QueuePlanned { binaries } => {
                 // The plan is the run's intent, replaced wholesale if a
                 // later run plans differently.
-                *self.queue.write().await = dlls.clone();
+                *self.queue.write().await = binaries.clone();
             }
             ProgressEvent::BatchProgress {
-                dll,
+                binary,
                 pass,
                 function,
                 index,
@@ -394,10 +396,10 @@ impl ProgressState {
                     index: (*index > 0).then_some(*index),
                     total: (*total > 0).then_some(*total),
                 };
-                *self.activity.write().await = Some((dll.clone(), activity));
+                *self.activity.write().await = Some((binary.clone(), activity));
             }
             ProgressEvent::BatchSummary {
-                dll,
+                binary,
                 total_functions,
                 success_count,
                 failure_count,
@@ -406,9 +408,9 @@ impl ProgressState {
             } => {
                 let mut batch_summaries = self.batch_summaries.write().await;
                 batch_summaries.insert(
-                    dll.clone(),
+                    binary.clone(),
                     BatchResult {
-                        dll: dll.clone(),
+                        binary: binary.clone(),
                         total_functions: *total_functions,
                         success_count: *success_count,
                         failure_count: *failure_count,
@@ -418,11 +420,11 @@ impl ProgressState {
                 );
                 // The pass in flight is done — no binary is being worked on.
                 let mut processing = self.processing.write().await;
-                if processing.as_deref() == Some(dll.as_str()) {
+                if processing.as_deref() == Some(binary.as_str()) {
                     *processing = None;
                 }
                 let mut activity = self.activity.write().await;
-                if activity.as_ref().is_some_and(|(d, _)| d == dll) {
+                if activity.as_ref().is_some_and(|(d, _)| d == binary) {
                     *activity = None;
                 }
             }
@@ -433,13 +435,13 @@ impl ProgressState {
     async fn on_translation_event(&self, event: &ProgressEvent) {
         let mut entries = self.entries.write().await;
 
-        // Unit-scoped events carry the dll/function pair identifying the unit;
+        // Unit-scoped events carry the binary/function pair identifying the unit;
         // batch-level events (ClassificationComplete, BatchSummary) are handled
         // in `on_event` and never reach here.
-        let Some((dll, function)) = event.unit_key() else {
+        let Some(unit) = event.unit_key() else {
             return;
         };
-        let key = Self::unit_key(dll, function);
+        let key = unit.to_string();
 
         // The unit's record begins with the first event that names it. That is
         // normally `TranslationStarted`, but the event callback spawns one task
@@ -454,8 +456,8 @@ impl ProgressState {
             let phase =
                 TranslationPhase::from_event(event).unwrap_or(TranslationPhase::GhidraFetch);
             ProgressEntry {
-                dll: dll.to_string(),
-                function: function.to_string(),
+                binary: unit.binary().clone(),
+                function: unit.function().to_string(),
                 attempt: 1,
                 strategy: String::new(),
                 started_at: std::time::Instant::now(),
@@ -568,18 +570,10 @@ impl ProgressState {
         self.entries.read().await.clone()
     }
 
-    /// The entries-map key for one unit.
-    fn unit_key(dll: &str, function: &str) -> String {
-        format!("{dll}/{function}")
-    }
-
-    /// The current record for one unit, keyed by dll and function name.
-    pub async fn entry(&self, dll: &str, function: &str) -> Option<ProgressEntry> {
-        self.entries
-            .read()
-            .await
-            .get(&Self::unit_key(dll, function))
-            .cloned()
+    /// The current record for one unit, keyed by binary and function name.
+    pub async fn entry(&self, binary: &str, function: &str) -> Option<ProgressEntry> {
+        let key = UnitKey::new(&BinaryIdentity::from(binary), function).to_string();
+        self.entries.read().await.get(&key).cloned()
     }
 
     /// Returns a snapshot of classification results as serializable info.
@@ -587,7 +581,7 @@ impl ProgressState {
         let map = self.classifications.read().await;
         map.values()
             .map(|v| super::ClassificationInfo {
-                dll: v.dll.clone(),
+                binary: v.binary.clone(),
                 category: v.category.clone(),
                 strategy: v.strategy.clone(),
                 crate_replacement: v.crate_replacement.clone(),
@@ -602,7 +596,7 @@ impl ProgressState {
         let map = self.batch_summaries.read().await;
         map.values()
             .map(|v| super::BatchInfo {
-                dll: v.dll.clone(),
+                binary: v.binary.clone(),
                 total_functions: v.total_functions,
                 success_count: v.success_count,
                 failure_count: v.failure_count,
@@ -612,9 +606,9 @@ impl ProgressState {
             .collect()
     }
 
-    /// The DLL whose batch pass is currently in flight, if any —
-    /// `BatchStarted` names it, that DLL's `BatchSummary` clears it.
-    pub async fn processing_dll(&self) -> Option<String> {
+    /// The binary whose batch pass is currently in flight, if any —
+    /// `BatchStarted` names it, that binary's `BatchSummary` clears it.
+    pub async fn processing_binary(&self) -> Option<BinaryIdentity> {
         self.processing.read().await.clone()
     }
 
@@ -624,9 +618,9 @@ impl ProgressState {
         self.queue.read().await.clone()
     }
 
-    /// The working pass's latest heartbeat — `(dll, activity)`, `None`
+    /// The working pass's latest heartbeat — `(binary, activity)`, `None`
     /// while no pass is beating.
-    pub async fn activity(&self) -> Option<(String, BinaryActivity)> {
+    pub async fn activity(&self) -> Option<(BinaryIdentity, BinaryActivity)> {
         self.activity.read().await.clone()
     }
 
@@ -789,8 +783,10 @@ pub fn build_router_with_ws(
             // applied, push that unit's full live record — current phase,
             // phase history, tier, evidence — so the live view updates the
             // row in place instead of refetching the enhanced endpoint.
-            if let Some((dll, function)) = event.unit_key()
-                && let Some(entry) = progress_clone.entry(dll, function).await
+            if let Some(unit) = event.unit_key()
+                && let Some(entry) = progress_clone
+                    .entry(unit.binary().as_str(), unit.function())
+                    .await
             {
                 let record = handlers::live_unit_progress(&entry);
                 manager_clone

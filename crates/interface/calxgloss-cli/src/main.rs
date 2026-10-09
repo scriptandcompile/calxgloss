@@ -170,7 +170,7 @@ fn main() -> Result<()> {
     // No subcommand defaults to `auto` mode.
     let command = cli.command.unwrap_or(Command::Auto {
         target: None,
-        dlls: None,
+        binaries: None,
         all_functions: false,
         classify_only: false,
         skip_git: false,
@@ -183,7 +183,7 @@ fn main() -> Result<()> {
             print!("{}", settings::render(&settings));
             Ok(())
         }
-        Command::Classify { dll } => {
+        Command::Classify { binary } => {
             let target_dir = settings
                 .target_dir
                 .as_ref()
@@ -199,7 +199,7 @@ fn main() -> Result<()> {
                 .build()
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_classify(
-                    &dll, target_dir, &workspace, skip_git, &settings, None,
+                    &binary, target_dir, &workspace, skip_git, &settings, None,
                 ))
         }
         Command::Translate(args) => {
@@ -234,96 +234,100 @@ fn main() -> Result<()> {
                     callgraph_verbose,
                 ))
         }
-        Command::Typesdb { dll, show, no_tag } => {
+        Command::Typesdb {
+            binary,
+            show,
+            no_tag,
+        } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_typesdb(&dll, &workspace, show, no_tag, &settings))
+                .block_on(handle_typesdb(&binary, &workspace, show, no_tag, &settings))
         }
-        Command::Typeinfer { dll, show } => {
+        Command::Typeinfer { binary, show } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_typeinfer(&dll, &workspace, show, &settings))
+                .block_on(handle_typeinfer(&binary, &workspace, show, &settings))
         }
-        Command::Algorithm { dll, show } => {
+        Command::Algorithm { binary, show } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_algorithm(&dll, &workspace, show, &settings))
+                .block_on(handle_algorithm(&binary, &workspace, show, &settings))
         }
-        Command::Memory { dll, show } => {
+        Command::Memory { binary, show } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_memory(&dll, &workspace, show, &settings))
+                .block_on(handle_memory(&binary, &workspace, show, &settings))
         }
-        Command::Sync { dll, show } => {
+        Command::Sync { binary, show } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_sync(&dll, &workspace, show, &settings))
+                .block_on(handle_sync(&binary, &workspace, show, &settings))
         }
-        Command::Consts { dll, show } => {
+        Command::Consts { binary, show } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_consts(&dll, &workspace, show, &settings))
+                .block_on(handle_consts(&binary, &workspace, show, &settings))
         }
-        Command::Callback { dll, show } => {
+        Command::Callback { binary, show } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_callback(&dll, &workspace, show, &settings))
+                .block_on(handle_callback(&binary, &workspace, show, &settings))
         }
-        Command::ControlFlow { dll, show } => {
+        Command::ControlFlow { binary, show } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_controlflow(&dll, &workspace, show, &settings))
+                .block_on(handle_controlflow(&binary, &workspace, show, &settings))
         }
-        Command::StringCtx { dll, show } => {
+        Command::StringCtx { binary, show } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_stringctx(&dll, &workspace, show, &settings))
+                .block_on(handle_stringctx(&binary, &workspace, show, &settings))
         }
-        Command::ApiDetect { dll, show } => {
+        Command::ApiDetect { binary, show } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_apidetect(&dll, &workspace, show, &settings))
+                .block_on(handle_apidetect(&binary, &workspace, show, &settings))
         }
-        Command::Serialize { dll, show } => {
+        Command::Serialize { binary, show } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_serialize(&dll, &workspace, show, &settings))
+                .block_on(handle_serialize(&binary, &workspace, show, &settings))
         }
         Command::Verify {
-            dll,
+            binary,
             function,
             rust_source,
             baseline_path,
@@ -334,7 +338,7 @@ fn main() -> Result<()> {
                 .build()
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_verify(
-                    &dll,
+                    &binary,
                     &function,
                     &rust_source,
                     baseline_path.as_deref(),
@@ -393,7 +397,7 @@ fn main() -> Result<()> {
             .block_on(async { handle_init() }),
         Command::Auto {
             target,
-            dlls,
+            binaries,
             all_functions,
             classify_only,
             skip_git,
@@ -408,7 +412,7 @@ fn main() -> Result<()> {
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_auto(
                     target,
-                    dlls,
+                    binaries,
                     all_functions,
                     classify_only,
                     skip_git,
@@ -422,7 +426,7 @@ fn main() -> Result<()> {
                     None, // no stop signal — plain auto runs to completion
                 ))
         }
-        Command::AutoShim { dll, skip_git } => {
+        Command::AutoShim { binary, skip_git } => {
             let target_dir = settings
                 .target_dir
                 .as_ref()
@@ -436,7 +440,7 @@ fn main() -> Result<()> {
                 .build()
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_auto_shim(
-                    dll.as_deref(),
+                    binary.as_deref(),
                     skip_git,
                     &target_dir,
                     &workspace,
@@ -457,7 +461,7 @@ fn main() -> Result<()> {
         }
         Command::Live {
             target,
-            dlls,
+            binaries,
             all_functions,
             classify_only,
             skip_git,
@@ -476,7 +480,7 @@ fn main() -> Result<()> {
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_live(
                     target,
-                    dlls,
+                    binaries,
                     all_functions,
                     classify_only,
                     skip_git,

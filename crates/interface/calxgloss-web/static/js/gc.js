@@ -61,8 +61,8 @@ function renderGcTable(candidates) {
 
     tbody.innerHTML = candidates.map(c => {
         const displayName = c.function
-            ? `re/${c.dll}/${c.function}v${c.attempt}`
-            : `re/${c.dll}v${c.attempt}`;
+            ? `re/${c.binary}/${c.function}v${c.attempt}`
+            : `re/${c.binary}v${c.attempt}`;
         const funcDisplay = c.function
             ? `<span style="color:var(--text-primary)">${escapeHtml(c.function)}</span>`
             : `<span style="color:var(--text-muted)">—</span>`;
@@ -73,7 +73,7 @@ function renderGcTable(candidates) {
                     <input type="checkbox" class="gc-branch-check" data-branch="${escapeHtml(displayName)}" aria-label="Select ${escapeHtml(displayName)}">
                 </td>
                 <td class="gc-col-name" title="${escapeHtml(displayName)}">${displayName}</td>
-                <td class="gc-col-dll">${escapeHtml(c.dll)}${funcDisplay}</td>
+                <td class="gc-col-dll">${escapeHtml(c.binary)}${funcDisplay}</td>
                 <td class="gc-col-attempt">v${c.attempt}</td>
                 <td class="gc-col-age">${c.days_old.toFixed(1)}d</td>
                 <td class="gc-col-last">${fmtTime(c.last_commit)}</td>

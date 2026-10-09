@@ -131,7 +131,7 @@ impl CallGraphBuilder {
         }
 
         Ok(CallGraph {
-            dll: dll_name,
+            binary: dll_name,
             functions: call_graph_functions,
         })
     }

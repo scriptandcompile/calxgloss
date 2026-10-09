@@ -216,7 +216,7 @@ pub fn update_scene(world: &mut World) {
             .join("DrawPrimitive");
         std::fs::create_dir_all(&patch_dir).unwrap();
         let patch_record = serde_json::json!({
-            "dll": "game_logic.dll",
+            "binary": "game_logic.dll",
             "function": "DrawPrimitive",
             "attempt": 1,
             "branch_name": "re/game_logic.dll/DrawPrimitivev1",
@@ -234,7 +234,7 @@ pub fn update_scene(world: &mut World) {
 
         // Patch record for v2 (this one had compile errors).
         let patch_record_v2 = serde_json::json!({
-            "dll": "game_logic.dll",
+            "binary": "game_logic.dll",
             "function": "DrawPrimitive",
             "attempt": 2,
             "branch_name": "re/game_logic.dll/DrawPrimitivev2",
@@ -479,7 +479,7 @@ async fn test_server_status_live_router() {
     // handler uses) and an in-flight unit.
     let (_handler, _sender) = manager.register_client().await;
     events.emit(ProgressEvent::TranslationStarted {
-        dll: "game_logic.dll".into(),
+        binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -561,16 +561,16 @@ async fn test_ws_pushes_unit_phase_records() {
     // Walk one unit through the pipeline: start, tests, tier, LLM call, done.
     for event in [
         ProgressEvent::TranslationStarted {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
         },
         ProgressEvent::TestsGenerated {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             test_count: 3,
         },
         ProgressEvent::ContextTierSelected {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             tier: "T2".into(),
             tier_label: "with_tests".into(),
@@ -578,13 +578,13 @@ async fn test_ws_pushes_unit_phase_records() {
             api_call_count: 3,
         },
         ProgressEvent::LlmCallStart {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 2,
             strategy: "decompose".into(),
         },
         ProgressEvent::TranslationCompleted {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             total_attempts: 2,
             success_strategy: Some("decompose".into()),
@@ -637,7 +637,7 @@ async fn test_ws_pushes_unit_phase_records() {
         "each unit-scoped event should push one unit_phase record"
     );
     let first = &records[0];
-    assert_eq!(first["dll"], "game_logic.dll");
+    assert_eq!(first["binary"], "game_logic.dll");
     assert_eq!(first["function"], "DrawPrimitive");
     assert_eq!(first["phase"], "ghidra_fetch");
     assert_eq!(first["finished"], false);
@@ -718,7 +718,7 @@ async fn test_server_shutdown_live_router_stops_pipeline_and_server() {
 
     // A unit in flight (fed exactly how live mode feeds ProgressState).
     events.emit(ProgressEvent::TranslationStarted {
-        dll: "game_logic.dll".into(),
+        binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -759,7 +759,7 @@ async fn test_server_shutdown_live_router_stops_pipeline_and_server() {
         "the in-flight unit must survive the stop request"
     );
     events.emit(ProgressEvent::TranslationCompleted {
-        dll: "game_logic.dll".into(),
+        binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         total_attempts: 1,
         success_strategy: Some("direct".into()),
@@ -1354,7 +1354,7 @@ async fn test_unit_detail_endpoint() {
 
     let unit = body["unit"].as_object().expect("unit is object");
     assert_eq!(unit["id"], unit_id);
-    assert_eq!(unit["dll"], "game_logic.dll");
+    assert_eq!(unit["binary"], "game_logic.dll");
     assert_eq!(unit["function"], "DrawPrimitive");
     assert_eq!(unit["attempt"].as_u64(), Some(2));
     let history = unit["attempt_history"]
@@ -1601,7 +1601,7 @@ async fn test_pipeline_phases_from_canned_events() {
 
     // Two binaries classified; d3d9 via the PAL strategy.
     events.emit(ProgressEvent::ClassificationComplete {
-        dll: "dinput8.dll".into(),
+        binary: "dinput8.dll".into(),
         category: "WindowsOs".into(),
         strategy: "ReverseEngineer".into(),
         crate_replacement: None,
@@ -1609,7 +1609,7 @@ async fn test_pipeline_phases_from_canned_events() {
         imported_symbols: 4,
     });
     events.emit(ProgressEvent::ClassificationComplete {
-        dll: "d3d9.dll".into(),
+        binary: "d3d9.dll".into(),
         category: "WindowsOs".into(),
         strategy: "PalMapping".into(),
         crate_replacement: None,
@@ -1619,33 +1619,33 @@ async fn test_pipeline_phases_from_canned_events() {
     // d3d9's batch pass has begun — enumeration/testgen before any unit
     // event exists. The pipeline API must report it as being worked on.
     events.emit(ProgressEvent::BatchStarted {
-        dll: "d3d9.dll".into(),
+        binary: "d3d9.dll".into(),
     });
 
     // game_logic.dll: one unit runs the full flow to review...
     events.emit(ProgressEvent::TranslationStarted {
-        dll: "game_logic.dll".into(),
+        binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
     });
     events.emit(ProgressEvent::ApiTaggingComplete {
-        dll: "game_logic.dll".into(),
+        binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         tagged_apis: 3,
     });
     events.emit(ProgressEvent::TestsGenerated {
-        dll: "game_logic.dll".into(),
+        binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         test_count: 3,
     });
     events.emit(ProgressEvent::LlmCallComplete {
-        dll: "game_logic.dll".into(),
+        binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         attempt: 1,
         code_length: 1200,
         tokens_used: Some(4000),
     });
     events.emit(ProgressEvent::TranslationAttemptCompleted {
-        dll: "game_logic.dll".into(),
+        binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         attempt: 1,
         success: true,
@@ -1658,30 +1658,30 @@ async fn test_pipeline_phases_from_canned_events() {
         failed_tests: vec![],
     });
     events.emit(ProgressEvent::TranslationCompleted {
-        dll: "game_logic.dll".into(),
+        binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         total_attempts: 1,
         success_strategy: Some("direct".into()),
     });
     // ...and one fails at the compile step.
     events.emit(ProgressEvent::TranslationStarted {
-        dll: "game_logic.dll".into(),
+        binary: "game_logic.dll".into(),
         function: "UpdateScene".into(),
     });
     events.emit(ProgressEvent::TestsGenerated {
-        dll: "game_logic.dll".into(),
+        binary: "game_logic.dll".into(),
         function: "UpdateScene".into(),
         test_count: 2,
     });
     events.emit(ProgressEvent::LlmCallComplete {
-        dll: "game_logic.dll".into(),
+        binary: "game_logic.dll".into(),
         function: "UpdateScene".into(),
         attempt: 3,
         code_length: 900,
         tokens_used: Some(1000),
     });
     events.emit(ProgressEvent::FunctionCompleted {
-        dll: "game_logic.dll".into(),
+        binary: "game_logic.dll".into(),
         function: "UpdateScene".into(),
         success: false,
         attempts: 3,
@@ -1690,7 +1690,7 @@ async fn test_pipeline_phases_from_canned_events() {
 
     // Batch summary for game_logic — the authoritative counts when present.
     events.emit(ProgressEvent::BatchSummary {
-        dll: "game_logic.dll".into(),
+        binary: "game_logic.dll".into(),
         total_functions: 5,
         success_count: 2,
         failure_count: 1,
@@ -1700,11 +1700,11 @@ async fn test_pipeline_phases_from_canned_events() {
 
     // dinput8.dll: translation in progress, stopped after test generation.
     events.emit(ProgressEvent::TranslationStarted {
-        dll: "dinput8.dll".into(),
+        binary: "dinput8.dll".into(),
         function: "GetDeviceState".into(),
     });
     events.emit(ProgressEvent::TestsGenerated {
-        dll: "dinput8.dll".into(),
+        binary: "dinput8.dll".into(),
         function: "GetDeviceState".into(),
         test_count: 2,
     });
@@ -1797,7 +1797,7 @@ async fn test_pipeline_phases_from_canned_events() {
     assert_eq!(binaries.len(), 3);
     let names: Vec<&str> = binaries
         .iter()
-        .map(|b| b["dll"].as_str().unwrap())
+        .map(|b| b["binary"].as_str().unwrap())
         .collect();
     assert_eq!(names, ["d3d9.dll", "dinput8.dll", "game_logic.dll"]);
 
@@ -1854,7 +1854,7 @@ async fn test_pipeline_restart_hydrates_rows_without_live_classification_events(
     std::fs::create_dir_all(&classify).expect("create classify dir");
     std::fs::write(
         classify.join("eqmain.dll.json"),
-        r#"{"dll":"eqmain.dll","category":"ProjectSpecific","strategy":"ReverseEngineer","exports_count":0,"imports_count":286,"crate_replacement":null}"#,
+        r#"{"binary":"eqmain.dll","category":"ProjectSpecific","strategy":"ReverseEngineer","exports_count":0,"imports_count":286,"crate_replacement":null}"#,
     )
     .expect("write classification artifact");
     // A crate-replacement record stores strategy as the enum's tagged
@@ -1862,7 +1862,7 @@ async fn test_pipeline_restart_hydrates_rows_without_live_classification_events(
     // reader must not assume a bare string.
     std::fs::write(
         classify.join("steam_api64.dll.json"),
-        r#"{"dll":"steam_api64.dll","category":"KnownThirdParty","strategy":{"CrateReplacement":{"crate_name":"steamworks"}},"exports_count":1019,"imports_count":89,"crate_replacement":"steamworks"}"#,
+        r#"{"binary":"steam_api64.dll","category":"KnownThirdParty","strategy":{"CrateReplacement":{"crate_name":"steamworks"}},"exports_count":1019,"imports_count":89,"crate_replacement":"steamworks"}"#,
     )
     .expect("write crate-replacement classification artifact");
 
@@ -1878,7 +1878,7 @@ async fn test_pipeline_restart_hydrates_rows_without_live_classification_events(
     // The restarted run has only begun LaunchPad.exe's pass — no unit
     // events, no classification events.
     events.emit(ProgressEvent::BatchStarted {
-        dll: "LaunchPad.exe".into(),
+        binary: "LaunchPad.exe".into(),
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -1893,7 +1893,7 @@ async fn test_pipeline_restart_hydrates_rows_without_live_classification_events(
             .as_array()
             .unwrap()
             .iter()
-            .find(|b| b["dll"].as_str().unwrap_or("") == name)
+            .find(|b| b["binary"].as_str().unwrap_or("") == name)
             .cloned()
             .unwrap_or_else(|| panic!("{name} missing from {:?}", body["binaries"]))
     };
@@ -1940,10 +1940,10 @@ async fn test_pipeline_batch_progress_heartbeat_surfaces_on_row() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     events.emit(ProgressEvent::BatchStarted {
-        dll: "LaunchPad.exe".into(),
+        binary: "LaunchPad.exe".into(),
     });
     events.emit(ProgressEvent::BatchProgress {
-        dll: "LaunchPad.exe".into(),
+        binary: "LaunchPad.exe".into(),
         pass: "type inference".into(),
         function: "FUN_1929282".into(),
         index: 1,
@@ -1966,7 +1966,7 @@ async fn test_pipeline_batch_progress_heartbeat_surfaces_on_row() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|b| b["dll"].as_str().unwrap_or("") == "LaunchPad.exe")
+        .find(|b| b["binary"].as_str().unwrap_or("") == "LaunchPad.exe")
         .expect("LaunchPad.exe row present");
     assert_eq!(b["activity"]["pass"], "type inference");
     assert_eq!(b["activity"]["function"], "FUN_1929282");
@@ -1975,7 +1975,7 @@ async fn test_pipeline_batch_progress_heartbeat_surfaces_on_row() {
 
     // A pass with no per-item granularity: only the name is honest.
     events.emit(ProgressEvent::BatchProgress {
-        dll: "LaunchPad.exe".into(),
+        binary: "LaunchPad.exe".into(),
         pass: "type database".into(),
         function: String::new(),
         index: 0,
@@ -1988,7 +1988,7 @@ async fn test_pipeline_batch_progress_heartbeat_surfaces_on_row() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|b| b["dll"].as_str().unwrap_or("") == "LaunchPad.exe")
+        .find(|b| b["binary"].as_str().unwrap_or("") == "LaunchPad.exe")
         .expect("LaunchPad.exe row present");
     assert_eq!(b["activity"]["pass"], "type database", "latest beat wins");
     assert!(
@@ -2010,7 +2010,7 @@ async fn test_pipeline_queue_plan_drives_row_order() {
     std::fs::create_dir_all(&classify).expect("create classify dir");
     std::fs::write(
         classify.join("zzz.dll.json"),
-        r#"{"dll":"zzz.dll","category":"ProjectSpecific","strategy":"ReverseEngineer","exports_count":0,"imports_count":1,"crate_replacement":null}"#,
+        r#"{"binary":"zzz.dll","category":"ProjectSpecific","strategy":"ReverseEngineer","exports_count":0,"imports_count":1,"crate_replacement":null}"#,
     )
     .expect("write classification artifact");
 
@@ -2024,7 +2024,7 @@ async fn test_pipeline_queue_plan_drives_row_order() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     events.emit(ProgressEvent::QueuePlanned {
-        dlls: vec![
+        binaries: vec![
             "LaunchPad.exe".into(),
             "eqgame.exe".into(),
             "eqmain.dll".into(),
@@ -2042,7 +2042,7 @@ async fn test_pipeline_queue_plan_drives_row_order() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|b| b["dll"].as_str().unwrap_or(""))
+        .map(|b| b["binary"].as_str().unwrap_or(""))
         .collect();
     assert_eq!(
         names,
@@ -2066,7 +2066,7 @@ fn write_token_usage_log(fixture: &TestFixture, with_durations: bool) {
     for (attempt, tokens) in [(1usize, 4096usize), (2, 3072)] {
         let mut entry = serde_json::json!({
             "timestamp": 1767225600 + attempt as u64 * 300,
-            "dll": "game_logic.dll",
+            "binary": "game_logic.dll",
             "function": "DrawPrimitive",
             "attempt": attempt,
             "strategy": if attempt == 1 { "initial" } else { "compile_fix" },
@@ -2090,7 +2090,7 @@ fn write_token_usage_log(fixture: &TestFixture, with_durations: bool) {
 /// total with work remaining (5 total, 2 translated, 1 failed → 2 remain).
 fn emit_canned_batch_summary(events: &TranslationEvents) {
     events.emit(ProgressEvent::BatchSummary {
-        dll: "game_logic.dll".into(),
+        binary: "game_logic.dll".into(),
         total_functions: 5,
         success_count: 2,
         failure_count: 1,
@@ -2212,7 +2212,7 @@ async fn test_dashboard_queue_effort_falls_back_to_global_average() {
         "entries": [
             {
                 "timestamp": 1767225600,
-                "dll": "game_logic.dll",
+                "binary": "game_logic.dll",
                 "function": "UpdateScene",
                 "attempt": 1,
                 "strategy": "initial",
@@ -2222,7 +2222,7 @@ async fn test_dashboard_queue_effort_falls_back_to_global_average() {
             },
             {
                 "timestamp": 1767225900,
-                "dll": "game_logic.dll",
+                "binary": "game_logic.dll",
                 "function": "UpdateScene",
                 "attempt": 2,
                 "strategy": "compile_fix",
@@ -2272,7 +2272,7 @@ fn write_canned_run_telemetry_with_durations(fixture: &TestFixture) {
         "entries": [
             {
                 "timestamp": 1767225600,
-                "dll": "game_logic.dll",
+                "binary": "game_logic.dll",
                 "function": "DrawPrimitive",
                 "attempt": 1,
                 "strategy": "initial",
@@ -2283,7 +2283,7 @@ fn write_canned_run_telemetry_with_durations(fixture: &TestFixture) {
             },
             {
                 "timestamp": 1767225900,
-                "dll": "game_logic.dll",
+                "binary": "game_logic.dll",
                 "function": "DrawPrimitive",
                 "attempt": 2,
                 "strategy": "compile_fix",
@@ -2349,7 +2349,7 @@ async fn test_pipeline_all_failed_batch_not_verification_complete() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     events.emit(ProgressEvent::BatchSummary {
-        dll: "broken.dll".into(),
+        binary: "broken.dll".into(),
         total_functions: 1,
         success_count: 0,
         failure_count: 1,
@@ -2386,7 +2386,7 @@ async fn test_pipeline_all_failed_batch_not_verification_complete() {
 
     // The binary record keeps the failure counts honest.
     let b = &body["binaries"].as_array().unwrap()[0];
-    assert_eq!(b["dll"], "broken.dll");
+    assert_eq!(b["binary"], "broken.dll");
     assert_eq!(b["functions_translated"], 0);
     assert_eq!(b["functions_failed"], 1);
     assert_eq!(b["tokens_used"], 800);
@@ -2432,7 +2432,7 @@ async fn test_progress_reports_phase_history() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let tier = |tier: &str| ProgressEvent::ContextTierSelected {
-        dll: "game_logic.dll".into(),
+        binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         tier: tier.into(),
         tier_label: format!("{tier} label"),
@@ -2441,34 +2441,34 @@ async fn test_progress_reports_phase_history() {
     };
     for event in [
         ProgressEvent::TranslationStarted {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
         },
         ProgressEvent::GhidraFetchComplete {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             address: None,
             disassembly_lines: 10,
         },
         ProgressEvent::ApiTaggingComplete {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             tagged_apis: 3,
         },
         ProgressEvent::TestsGenerated {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             test_count: 5,
         },
         tier("T1"),
         ProgressEvent::LlmCallStart {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 1,
             strategy: "direct".into(),
         },
         ProgressEvent::LlmCallFailed {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 1,
             strategy: "direct".into(),
@@ -2476,20 +2476,20 @@ async fn test_progress_reports_phase_history() {
         },
         tier("T2"),
         ProgressEvent::LlmCallStart {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 2,
             strategy: "decompose".into(),
         },
         ProgressEvent::LlmCallComplete {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 2,
             code_length: 120,
             tokens_used: None,
         },
         ProgressEvent::TranslationAttemptCompleted {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 2,
             success: true,
@@ -2504,11 +2504,11 @@ async fn test_progress_reports_phase_history() {
         // A second unit that runs to completion: TranslationCompleted moves
         // it to the review phase and marks it finished.
         ProgressEvent::TranslationStarted {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "Update".into(),
         },
         ProgressEvent::TranslationCompleted {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "Update".into(),
             total_attempts: 1,
             success_strategy: Some("direct".into()),
@@ -2533,7 +2533,7 @@ async fn test_progress_reports_phase_history() {
         .iter()
         .find(|u| u["function"] == "DrawPrimitive")
         .expect("DrawPrimitive unit present");
-    assert_eq!(unit["dll"].as_str(), Some("game_logic.dll"));
+    assert_eq!(unit["binary"].as_str(), Some("game_logic.dll"));
     assert_eq!(unit["attempt"].as_u64(), Some(2));
     assert_eq!(unit["strategy"].as_str(), Some("decompose"));
     // Current phase: the attempt completed, so the unit is testing.
@@ -2609,16 +2609,16 @@ async fn test_progress_enhanced_reports_live_records() {
     for event in [
         // DrawPrimitive: full evidence, still in flight.
         ProgressEvent::TranslationStarted {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
         },
         ProgressEvent::TestsGenerated {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             test_count: 5,
         },
         ProgressEvent::ContextTierSelected {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             tier: "T2".into(),
             tier_label: "with_tests".into(),
@@ -2626,13 +2626,13 @@ async fn test_progress_enhanced_reports_live_records() {
             api_call_count: 3,
         },
         ProgressEvent::LlmCallStart {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 2,
             strategy: "decompose".into(),
         },
         ProgressEvent::TranslationAttemptCompleted {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 2,
             success: false,
@@ -2645,7 +2645,7 @@ async fn test_progress_enhanced_reports_live_records() {
             tokens_used: None,
         },
         ProgressEvent::BehaviorDivergenceDetected {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 2,
             strategy: "decompose".into(),
@@ -2659,11 +2659,11 @@ async fn test_progress_enhanced_reports_live_records() {
         // Update: completed without any test evidence reported — every
         // unmeasured field must stay absent, not become a fabricated zero.
         ProgressEvent::TranslationStarted {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "Update".into(),
         },
         ProgressEvent::TranslationCompleted {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "Update".into(),
             total_attempts: 1,
             success_strategy: Some("direct".into()),
@@ -2671,17 +2671,17 @@ async fn test_progress_enhanced_reports_live_records() {
         // FailedUnit: a verified attempt that did not compile — confidence is
         // a real 0.0, not absent.
         ProgressEvent::TranslationStarted {
-            dll: "kernel32.dll".into(),
+            binary: "kernel32.dll".into(),
             function: "FailedUnit".into(),
         },
         ProgressEvent::LlmCallStart {
-            dll: "kernel32.dll".into(),
+            binary: "kernel32.dll".into(),
             function: "FailedUnit".into(),
             attempt: 1,
             strategy: "direct".into(),
         },
         ProgressEvent::TranslationAttemptCompleted {
-            dll: "kernel32.dll".into(),
+            binary: "kernel32.dll".into(),
             function: "FailedUnit".into(),
             attempt: 1,
             success: false,
@@ -2694,7 +2694,7 @@ async fn test_progress_enhanced_reports_live_records() {
             tokens_used: None,
         },
         ProgressEvent::TranslationFailed {
-            dll: "kernel32.dll".into(),
+            binary: "kernel32.dll".into(),
             function: "FailedUnit".into(),
             total_attempts: 1,
         },
@@ -2716,13 +2716,13 @@ async fn test_progress_enhanced_reports_live_records() {
     assert_eq!(body["count"].as_u64(), Some(3));
     assert_eq!(body["in_flight"].as_u64(), Some(1));
 
-    // Sorted by (dll, function) so the live view doesn't shuffle rows.
+    // Sorted by (binary, function) so the live view doesn't shuffle rows.
     let units = body["units"].as_array().expect("units is an array");
     let keys: Vec<(&str, &str)> = units
         .iter()
         .map(|u| {
             (
-                u["dll"].as_str().unwrap_or_default(),
+                u["binary"].as_str().unwrap_or_default(),
                 u["function"].as_str().unwrap_or_default(),
             )
         })
@@ -3101,7 +3101,7 @@ fn write_canned_run_telemetry(fixture: &TestFixture) {
         "entries": [
             {
                 "timestamp": 1767225600,
-                "dll": "game_logic.dll",
+                "binary": "game_logic.dll",
                 "function": "DrawPrimitive",
                 "attempt": 1,
                 "strategy": "initial",
@@ -3111,7 +3111,7 @@ fn write_canned_run_telemetry(fixture: &TestFixture) {
             },
             {
                 "timestamp": 1767225900,
-                "dll": "game_logic.dll",
+                "binary": "game_logic.dll",
                 "function": "DrawPrimitive",
                 "attempt": 2,
                 "strategy": "compile_fix",
@@ -3121,7 +3121,7 @@ fn write_canned_run_telemetry(fixture: &TestFixture) {
             },
             {
                 "timestamp": 1767226200,
-                "dll": "audio.dll",
+                "binary": "audio.dll",
                 "function": "PlaySample",
                 "attempt": 1,
                 "strategy": "initial",
@@ -3141,7 +3141,7 @@ fn write_canned_run_telemetry(fixture: &TestFixture) {
         "entries": [
             {
                 "timestamp": 1767225660,
-                "dll": "game_logic.dll",
+                "binary": "game_logic.dll",
                 "function": "DrawPrimitive",
                 "attempt": 1,
                 "strategy": "initial",
@@ -3152,7 +3152,7 @@ fn write_canned_run_telemetry(fixture: &TestFixture) {
             },
             {
                 "timestamp": 1767225960,
-                "dll": "game_logic.dll",
+                "binary": "game_logic.dll",
                 "function": "DrawPrimitive",
                 "attempt": 2,
                 "strategy": "compile_fix",
@@ -3163,7 +3163,7 @@ fn write_canned_run_telemetry(fixture: &TestFixture) {
             },
             {
                 "timestamp": 1767226260,
-                "dll": "audio.dll",
+                "binary": "audio.dll",
                 "function": "PlaySample",
                 "attempt": 1,
                 "strategy": "initial",
@@ -3181,11 +3181,11 @@ fn write_canned_run_telemetry(fixture: &TestFixture) {
     .expect("write fault_log.json");
 
     let dll_dir = analysis_dir.join("game_logic.dll");
-    std::fs::create_dir_all(&dll_dir).expect("create dll dir");
+    std::fs::create_dir_all(&dll_dir).expect("create binary dir");
     let ghidra_artifact = serde_json::json!({
         "name": "DrawPrimitive",
         "address": 4198400,
-        "dll": "game_logic.dll",
+        "binary": "game_logic.dll",
         "disassembly": "push rbp\nmov rbp, rsp\nmov rax, [rdi]\ncall DirectXDraw\ncall Present\nret\npop rbp\nret\nnop\nnop",
         "decompiler_output": "void DrawPrimitive() { DirectXDraw(); Present(); }",
         "windows_apis": [
@@ -3343,7 +3343,7 @@ async fn test_unit_process_corrupt_artifacts_degrade() {
     std::fs::write(analysis_dir.join("fault_log.json"), "garbage")
         .expect("write corrupt fault log");
     let dll_dir = analysis_dir.join("game_logic.dll");
-    std::fs::create_dir_all(&dll_dir).expect("create dll dir");
+    std::fs::create_dir_all(&dll_dir).expect("create binary dir");
     std::fs::write(dll_dir.join("DrawPrimitive.json"), "also not json")
         .expect("write corrupt ghidra artifact");
 
@@ -3710,7 +3710,7 @@ async fn test_headless_pipeline_phase_bar_live() {
 
     // A little live data so the pipeline panel is visible.
     events.emit(ProgressEvent::ClassificationComplete {
-        dll: "d3d9.dll".into(),
+        binary: "d3d9.dll".into(),
         category: "WindowsOs".into(),
         strategy: "PalMapping".into(),
         crate_replacement: None,
@@ -3718,11 +3718,11 @@ async fn test_headless_pipeline_phase_bar_live() {
         imported_symbols: 6,
     });
     events.emit(ProgressEvent::TranslationStarted {
-        dll: "game_logic.dll".into(),
+        binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
     });
     events.emit(ProgressEvent::TestsGenerated {
-        dll: "game_logic.dll".into(),
+        binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         test_count: 3,
     });
@@ -3827,7 +3827,7 @@ async fn test_headless_pipeline_binary_rows() {
     // authoritative count source: 2 of 5 translated, 1 failed, 5000 tokens
     // → 2 queued, 67% success rate.
     events.emit(ProgressEvent::ClassificationComplete {
-        dll: "d3d9.dll".into(),
+        binary: "d3d9.dll".into(),
         category: "WindowsOs".into(),
         strategy: "PalMapping".into(),
         crate_replacement: None,
@@ -3835,7 +3835,7 @@ async fn test_headless_pipeline_binary_rows() {
         imported_symbols: 6,
     });
     events.emit(ProgressEvent::ClassificationComplete {
-        dll: "dinput8.dll".into(),
+        binary: "dinput8.dll".into(),
         category: "WindowsOs".into(),
         strategy: "CrateReplacement".into(),
         crate_replacement: Some("wgpu".into()),
@@ -3843,11 +3843,11 @@ async fn test_headless_pipeline_binary_rows() {
         imported_symbols: 4,
     });
     events.emit(ProgressEvent::TranslationStarted {
-        dll: "dinput8.dll".into(),
+        binary: "dinput8.dll".into(),
         function: "GetDeviceState".into(),
     });
     events.emit(ProgressEvent::ClassificationComplete {
-        dll: "engine.dll".into(),
+        binary: "engine.dll".into(),
         category: "ProjectSpecific".into(),
         strategy: "ReverseEngineer".into(),
         crate_replacement: None,
@@ -3857,10 +3857,10 @@ async fn test_headless_pipeline_binary_rows() {
     // engine.dll's batch pass is in flight — the row must show it working
     // even though no unit event exists yet.
     events.emit(ProgressEvent::BatchStarted {
-        dll: "engine.dll".into(),
+        binary: "engine.dll".into(),
     });
     events.emit(ProgressEvent::BatchSummary {
-        dll: "game_logic.dll".into(),
+        binary: "game_logic.dll".into(),
         total_functions: 5,
         success_count: 2,
         failure_count: 1,
@@ -3901,7 +3901,7 @@ async fn test_headless_pipeline_binary_rows() {
     let mut rendered = false;
     for _ in 0..25 {
         if eval_len(
-            "document.querySelectorAll('#pipeline-binaries .pipeline-binary-row[data-dll]').length",
+            "document.querySelectorAll('#pipeline-binaries .pipeline-binary-row[data-binary]').length",
         ) == 4
         {
             rendered = true;
@@ -3915,18 +3915,18 @@ async fn test_headless_pipeline_binary_rows() {
     );
 
     // One row per discovered binary, keyed by name.
-    for dll in ["d3d9.dll", "dinput8.dll", "engine.dll", "game_logic.dll"] {
+    for binary in ["d3d9.dll", "dinput8.dll", "engine.dll", "game_logic.dll"] {
         assert!(
             eval_bool(&format!(
-                "!!document.querySelector('#pipeline-binaries [data-dll=\"{dll}\"]')"
+                "!!document.querySelector('#pipeline-binaries [data-binary=\"{binary}\"]')"
             )),
-            "row for {dll} should exist"
+            "row for {binary} should exist"
         );
     }
 
-    let cell_text = |dll: &str, selector: &str| -> String {
+    let cell_text = |binary: &str, selector: &str| -> String {
         eval_text(&format!(
-            "document.querySelector('#pipeline-binaries [data-dll=\"{dll}\"] {selector}')?.textContent || ''"
+            "document.querySelector('#pipeline-binaries [data-binary=\"{binary}\"] {selector}')?.textContent || ''"
         ))
     };
 
@@ -4049,7 +4049,7 @@ async fn test_headless_pipeline_binary_rows() {
                 ];
                 for (const [sel, n] of pairs) {
                     const h = document.querySelector(`#pipeline-binaries .pipeline-binary-header ${sel}`);
-                    const r = document.querySelector(`#pipeline-binaries .pipeline-binary-row[data-dll] ${sel}`);
+                    const r = document.querySelector(`#pipeline-binaries .pipeline-binary-row[data-binary] ${sel}`);
                     if (!h || !r) return false;
                     const hb = h.getBoundingClientRect(), rb = r.getBoundingClientRect();
                     if (hb.width < 100 || rb.width < 100) return false;
@@ -4070,21 +4070,21 @@ async fn test_headless_pipeline_binary_rows() {
     // ── Honesty: unknown totals and tokens are em-dashes ──────────────
     // (success-rate is absent here: with no terminal outcomes the cell
     // shows the status placeholder instead of a rate, never a zero)
-    for (dll, selector) in [
+    for (binary, selector) in [
         ("d3d9.dll", "[data-metric=\"tokens\"]"),
         ("d3d9.dll", "[data-count=\"total\"]"),
     ] {
-        let text = cell_text(dll, selector);
+        let text = cell_text(binary, selector);
         assert!(
             text.contains('—') && !text.contains('0'),
-            "{dll} {selector} must render unknown as —, not a fabricated zero, got: {text}"
+            "{binary} {selector} must render unknown as —, not a fabricated zero, got: {text}"
         );
     }
 
     // ── Quick-action buttons: placeholders that announce, never control ──
     assert!(
         eval_bool(
-            "[...document.querySelectorAll('#pipeline-binaries [data-dll=\"game_logic.dll\"] .pipeline-binary-actions button')].length === 3"
+            "[...document.querySelectorAll('#pipeline-binaries [data-binary=\"game_logic.dll\"] .pipeline-binary-actions button')].length === 3"
         ),
         "each row should offer Start Translation, Pause, and Configure"
     );
@@ -4102,7 +4102,7 @@ async fn test_headless_pipeline_binary_rows() {
     .expect("instrument fetch");
 
     tab.evaluate(
-        "document.querySelector('#pipeline-binaries [data-dll=\"game_logic.dll\"] [data-action=\"start\"]').click() === undefined",
+        "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"start\"]').click() === undefined",
         false,
     )
     .expect("click start-translation placeholder");
@@ -4362,16 +4362,16 @@ async fn test_headless_live_view_renders_and_updates() {
     // One unit mid-flight with tier, strategy, and pending baseline evidence.
     for event in [
         ProgressEvent::TranslationStarted {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
         },
         ProgressEvent::TestsGenerated {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             test_count: 3,
         },
         ProgressEvent::ContextTierSelected {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             tier: "T2".into(),
             tier_label: "with_tests".into(),
@@ -4379,7 +4379,7 @@ async fn test_headless_live_view_renders_and_updates() {
             api_call_count: 3,
         },
         ProgressEvent::LlmCallStart {
-            dll: "game_logic.dll".into(),
+            binary: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 2,
             strategy: "decompose".into(),
@@ -4476,7 +4476,7 @@ async fn test_headless_live_view_renders_and_updates() {
     // A later event over the WebSocket must update the same row: the attempt
     // verifies (confidence 100%) and the unit completes (phase Review).
     events.emit(ProgressEvent::TranslationAttemptCompleted {
-        dll: "game_logic.dll".into(),
+        binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         attempt: 2,
         success: true,
@@ -4489,7 +4489,7 @@ async fn test_headless_live_view_renders_and_updates() {
         tokens_used: None,
     });
     events.emit(ProgressEvent::TranslationCompleted {
-        dll: "game_logic.dll".into(),
+        binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         total_attempts: 2,
         success_strategy: Some("decompose".into()),

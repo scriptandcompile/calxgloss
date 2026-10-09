@@ -5,6 +5,8 @@
 //! call sites, and call graph neighbors.
 
 use serde::{Deserialize, Serialize};
+
+use crate::identity::BinaryIdentity;
 use std::fmt;
 
 /// Platform-specific category for a Windows API call.
@@ -138,7 +140,7 @@ pub struct FunctionInfo {
     pub address: u64,
 
     /// The DLL this function belongs to.
-    pub dll: String,
+    pub binary: BinaryIdentity,
 
     /// Raw disassembly listing from Ghidra.
     pub disassembly: String,

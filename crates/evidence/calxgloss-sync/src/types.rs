@@ -285,7 +285,7 @@ impl From<&SyncFinding> for calxgloss_prompts::ConcurrencyInfo {
 // ============================================================
 
 /// The concurrency result for one binary — the document persisted to
-/// `re/analysis/sync/{dll}.json`.
+/// `re/analysis/sync/{binary}.json`.
 ///
 /// The findings are the three detectors' outputs in scan order:
 /// function by function, and within one function the mutex pairings,

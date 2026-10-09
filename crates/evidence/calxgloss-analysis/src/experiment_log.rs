@@ -18,7 +18,7 @@
 //! {
 //!   "entries": [
 //!     {
-//!       "dll": "game_logic.dll",
+//!       "binary": "game_logic.dll",
 //!       "dll_category": "ProjectSpecific",
 //!       "strategy": "compile_fix",
 //!       "success": false,
@@ -107,8 +107,8 @@ impl PromptStrategyLogger {
             warn!(error = %e, "Failed to persist experiment log to disk");
         } else {
             debug!(
-                dll = %log.entries.last().map(|e| &e.dll).unwrap_or(&"".to_string()),
-                strategy = %log.entries.last().map(|e| &e.strategy).unwrap_or(&"".to_string()),
+                binary = %log.entries.last().map(|e| &e.binary).unwrap_or(&Default::default()),
+                strategy = %log.entries.last().map(|e| &e.strategy).unwrap_or(&Default::default()),
                 success = log.entries.last().map(|e| e.success).unwrap_or(false),
                 "Recorded experiment entry"
             );
@@ -261,7 +261,7 @@ mod tests {
         let logger2 = PromptStrategyLogger::new(&ws);
         let log = logger2.load().expect("should load from disk");
         assert_eq!(log.entries.len(), 1);
-        assert_eq!(log.entries[0].dll, "persist_test.dll");
+        assert_eq!(log.entries[0].binary, "persist_test.dll");
     }
 
     #[test]
@@ -301,6 +301,6 @@ mod tests {
 
         let log = logger.load().expect("should load after recovery");
         assert_eq!(log.entries.len(), 1);
-        assert_eq!(log.entries[0].dll, "recovery.dll");
+        assert_eq!(log.entries[0].binary, "recovery.dll");
     }
 }

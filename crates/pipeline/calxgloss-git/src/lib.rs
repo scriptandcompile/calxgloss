@@ -3,7 +3,7 @@
 //! This crate provides [`git_manager::GitManager`], the central orchestrator
 //! for all Git operations performed during the translation pipeline. Every
 //! translation attempt gets its own branch following the naming convention
-//! `re/{dll}/{function}v{N}`.
+//! `re/{binary}/{function}v{N}`.
 //!
 //! # Branching Strategy
 //!
@@ -38,7 +38,7 @@ pub use dependency::{
 pub use git_manager::{BranchResult, GitManager, MergeResult, PatchRecord};
 
 // Re-export types used by the public API
-pub use calxgloss_types::{DllCategory, GitBranch, GitCommit, TypesError};
+pub use calxgloss_types::{BinaryIdentity, DllCategory, GitBranch, GitCommit, TypesError};
 /// Configuration for Git repository initialization.
 #[derive(Debug, Clone)]
 pub struct InitConfig {

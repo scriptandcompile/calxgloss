@@ -109,8 +109,8 @@ pub(super) fn init_logging(
 // ============================================================
 
 /// Derive a crate name from a DLL or EXE filename by stripping the extension.
-pub fn derive_crate_name(dll: &str) -> String {
-    dll.rsplit('.').next().unwrap_or(dll).to_string()
+pub fn derive_crate_name(binary: &str) -> String {
+    binary.rsplit('.').next().unwrap_or(binary).to_string()
 }
 
 /// Set up the output crate directory structure for a translated DLL/EXE.
@@ -119,8 +119,8 @@ pub fn derive_crate_name(dll: &str) -> String {
 /// doesn't already exist, so repeated calls are safe).
 ///
 /// Returns `(crate_dir, src_dir)` for further file creation.
-pub fn setup_translation_crate(workspace: &Path, dll: &str) -> Result<(PathBuf, PathBuf)> {
-    let crate_name = derive_crate_name(dll);
+pub fn setup_translation_crate(workspace: &Path, binary: &str) -> Result<(PathBuf, PathBuf)> {
+    let crate_name = derive_crate_name(binary);
     let crate_dir = workspace.join("crates").join(&crate_name);
     let crate_src_dir = crate_dir.join("src");
 
@@ -290,7 +290,7 @@ pub(super) fn resolve_branch(
     target: &calxgloss_reports::dashboard::ViewTarget,
 ) -> Result<String> {
     let candidates = git.list_translation_branches()?;
-    let target_dll = target.dll.clone();
+    let target_binary = target.binary.clone();
     let target_func = target.function.clone();
     let target_attempt = target.specific_attempt;
 
@@ -303,7 +303,7 @@ pub(super) fn resolve_branch(
         // Use the public matching function from reports
         if !calxgloss_reports::dashboard::branch_matches(
             branch,
-            &target_dll,
+            target_binary.as_str(),
             &target_func,
             target_attempt,
         ) {
@@ -316,7 +316,9 @@ pub(super) fn resolve_branch(
     // Collect available branches for a helpful error message
     let available: Vec<String> = candidates
         .iter()
-        .filter(|b| b.starts_with("re/") && b.contains(&target_dll) && b.contains(&target_func))
+        .filter(|b| {
+            b.starts_with("re/") && b.contains(target_binary.as_str()) && b.contains(&target_func)
+        })
         .cloned()
         .collect();
 
@@ -330,7 +332,7 @@ pub(super) fn resolve_branch(
         anyhow::bail!(
             "No translation branch found for '{}/{}'.\n\
              Available branches: {}",
-            target_dll,
+            target_binary,
             target_func,
             all_branches
         )
@@ -338,38 +340,26 @@ pub(super) fn resolve_branch(
         anyhow::bail!(
             "No translation branch found for '{}/{}'.\n\
              Possible matches (check attempt number): {}",
-            target_dll,
+            target_binary,
             target_func,
             available.join(", ")
         )
     }
 }
 
-/// Parse a git branch name back into (dll, function, attempt) components.
+/// Parse a git branch name back into (binary, function, attempt) components.
 ///
-/// Accepts branches in the format `re/{file}/{function}v{N}`, where `{file}`
-/// is the binary filename verbatim, extension included (issue #68).
+/// Delegates to [`calxgloss_types::parse_branch_name`], the one owner of the
+/// `re/{file}/{function}v{N}` grammar (issue #69). A name the grammar cannot
+/// read yields empty components, which [`calxgloss_types::GitBranch::new`]
+/// then rejects as an invalid branch name.
 pub(super) fn parse_branch_for_accept(branch: &str) -> (String, String, u32) {
-    // Strip re/ prefix
-    let rest = branch.strip_prefix("re/").unwrap_or(branch);
-
-    // Split into path and attempt suffix
-    // e.g. "game_logic.dll/DrawSpritev1" → path="game_logic.dll/DrawSprite", attempt=1
-    let (path, attempt) = if let Some(vpos) = rest.rfind('v') {
-        let after_v = &rest[vpos + 1..];
-        if after_v.chars().all(|c| c.is_ascii_digit()) && !after_v.is_empty() {
-            (rest, after_v.parse().unwrap_or(1))
-        } else {
-            (rest, 1)
-        }
-    } else {
-        (rest, 1)
-    };
-
-    // Split path into dll and function on first /
-    let parts: Vec<&str> = path.splitn(2, '/').collect();
-    let dll = parts[0].to_string();
-    let function = parts.get(1).map(|s| s.to_string()).unwrap_or_default();
-
-    (dll, function, attempt)
+    match calxgloss_types::parse_branch_name(branch) {
+        Some(parts) => (
+            parts.binary.to_string(),
+            parts.function.unwrap_or_default(),
+            parts.attempt.unwrap_or(1),
+        ),
+        None => (String::new(), String::new(), 1),
+    }
 }

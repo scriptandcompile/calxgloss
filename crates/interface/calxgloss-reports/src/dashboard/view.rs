@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use calxgloss_git::GitManager;
+use calxgloss_types::BinaryIdentity;
 use calxgloss_types::dashboard::UnitOfWork;
 
 // ============================================================
@@ -15,7 +16,7 @@ use calxgloss_types::dashboard::UnitOfWork;
 /// Parsed representation of a `dashboard view <target>` argument.
 #[derive(Debug, Clone)]
 pub struct ViewTarget {
-    pub dll: String,
+    pub binary: BinaryIdentity,
     pub function: String,
     pub specific_attempt: Option<u32>,
 }
@@ -68,25 +69,16 @@ pub struct AttemptInfo {
 
 impl ViewTarget {
     /// Parse a target string like `game_logic.dll/DrawPrimitive/v3` or
-    /// `game_logic.dll/DrawPrimitive`. The dll segment is the binary
-    /// filename verbatim, extension included (issue #68).
+    /// `game_logic.dll/DrawPrimitive`. Delegates to
+    /// [`calxgloss_types::parse_branch_name`], the one owner of the
+    /// branch-name grammar (issue #69); a target must name both a binary
+    /// and a function.
     pub fn parse(s: &str) -> Option<Self> {
-        let parts: Vec<&str> = s.split('/').collect();
-        if parts.len() < 2 || parts.len() > 3 {
-            return None;
-        }
-        let dll = parts[0].to_string();
-        let (function, specific_attempt) = if parts.len() == 3 {
-            let func = parts[1];
-            let attempt = parts[2].strip_prefix('v')?.parse().ok()?;
-            (func.to_string(), Some(attempt))
-        } else {
-            (parts[1].to_string(), None)
-        };
+        let parts = calxgloss_types::parse_branch_name(s)?;
         Some(Self {
-            dll,
-            function,
-            specific_attempt,
+            binary: parts.binary,
+            function: parts.function?,
+            specific_attempt: parts.attempt,
         })
     }
 }
@@ -108,7 +100,7 @@ impl UnitViewData {
             .iter()
             .chain(dashboard.recent_activity.iter())
             .find(|u| {
-                u.dll == target.dll
+                u.binary == target.binary
                     && u.function.as_deref() == Some(&target.function)
                     && (target.specific_attempt.is_none()
                         || Some(u.attempt) == target.specific_attempt)
@@ -119,7 +111,7 @@ impl UnitViewData {
         let default_attempt = unit.as_ref().map(|u| u.attempt).unwrap_or(0);
         let branch_name = git.list_translation_branches()?.into_iter().find(|b| {
             b.starts_with("re/")
-                && b.contains(&target.dll)
+                && b.contains(target.binary.as_str())
                 && b.contains(&target.function)
                 && (target.specific_attempt.is_none()
                     || b.ends_with(&format!(
@@ -149,7 +141,7 @@ impl UnitViewData {
         let patch_dir = repo_path
             .join("re")
             .join("patches")
-            .join(&target.dll)
+            .join(&target.binary)
             .join(&target.function);
         let attempt_history =
             Self::load_attempt_history(&patch_dir, &target.function, &branch_name);
@@ -158,7 +150,7 @@ impl UnitViewData {
         let baseline_path = repo_path
             .join("re")
             .join("baseline")
-            .join(&target.dll)
+            .join(&target.binary)
             .join(&target.function)
             .join("baseline.json");
 
@@ -184,7 +176,7 @@ impl UnitViewData {
         };
 
         // 7. Get DLL classification data
-        let (dll_category, dll_strategy) = Self::load_classification(repo_path, &target.dll);
+        let (dll_category, dll_strategy) = Self::load_classification(repo_path, &target.binary);
 
         Ok(Self {
             target: target.clone(),
@@ -311,11 +303,11 @@ impl UnitViewData {
         attempts
     }
 
-    /// Load DLL classification data. `dll` is the binary filename verbatim;
-    /// the record file is `{dll}.json` (issue #68).
-    fn load_classification(repo_path: &Path, dll: &str) -> (Option<String>, Option<String>) {
+    /// Load DLL classification data. `binary` is the binary filename verbatim;
+    /// the record file is `{binary}.json` (issue #68).
+    fn load_classification(repo_path: &Path, binary: &str) -> (Option<String>, Option<String>) {
         let classify_dir = repo_path.join("re").join("classify");
-        let file_name = format!("{}.json", dll);
+        let file_name = format!("{}.json", binary);
         let path = classify_dir.join(&file_name);
 
         if !path.exists() {

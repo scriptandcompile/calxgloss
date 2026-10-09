@@ -33,7 +33,7 @@ use crate::CallGraph;
 ///
 /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let graph = CallGraph {
-///     dll: "eqmain.dll".to_string(),
+///     binary: "eqmain.dll".to_string(),
 ///     functions: vec![FunctionCallGraph {
 ///         name: "main".to_string(),
 ///         address: 0x401000,
@@ -87,9 +87,9 @@ impl CallGraphPersistor {
     ///
     /// Returns an error if directory creation or file I/O fails.
     pub fn save(&self, graph: &CallGraph) -> Result<()> {
-        info!(path = %self.graph_path(&graph.dll).display(), "Saving call graph");
+        info!(path = %self.graph_path(&graph.binary).display(), "Saving call graph");
 
-        self.store.save(&graph.dll, graph)?;
+        self.store.save(&graph.binary, graph)?;
         Ok(())
     }
 
@@ -111,7 +111,7 @@ impl CallGraphPersistor {
     }
 }
 
-/// Files each graph as `{dll}_call_graph.json`.
+/// Files each graph as `{binary}_call_graph.json`.
 fn call_graph_name(dll_name: &str) -> String {
     format!("{dll_name}_call_graph.json")
 }
@@ -123,7 +123,7 @@ mod tests {
 
     fn sample_graph() -> CallGraph {
         CallGraph {
-            dll: "test.dll".to_string(),
+            binary: "test.dll".to_string(),
             functions: vec![FunctionCallGraph {
                 name: "main".to_string(),
                 address: 0x401000,
@@ -146,7 +146,7 @@ mod tests {
         persistor.save(&graph).unwrap();
         let loaded = persistor.load("test.dll").unwrap();
 
-        assert_eq!(loaded.dll, graph.dll);
+        assert_eq!(loaded.binary, graph.binary);
         assert_eq!(loaded.functions.len(), graph.functions.len());
         assert_eq!(loaded.functions[0].name, graph.functions[0].name);
 
@@ -173,7 +173,7 @@ mod tests {
 
         let persistor = CallGraphPersistor::new(&temp_dir);
         let graph = CallGraph {
-            dll: "nested.dll".to_string(),
+            binary: "nested.dll".to_string(),
             functions: vec![FunctionCallGraph {
                 name: "entry".to_string(),
                 address: 0x1000,
@@ -206,7 +206,7 @@ mod tests {
 
         let persistor = CallGraphPersistor::with_cache_dir(&custom_cache);
         let graph = CallGraph {
-            dll: "test.dll".to_string(),
+            binary: "test.dll".to_string(),
             functions: vec![FunctionCallGraph {
                 name: "main".to_string(),
                 address: 0x401000,
@@ -225,7 +225,7 @@ mod tests {
         );
 
         let loaded = persistor.load("test.dll").unwrap();
-        assert_eq!(loaded.dll, "test.dll");
+        assert_eq!(loaded.binary, "test.dll");
         assert_eq!(loaded.functions[0].name, "main");
 
         let _ = std::fs::remove_dir_all(&temp_dir);
@@ -239,7 +239,7 @@ mod tests {
 
         let persistor = CallGraphPersistor::new(&temp_dir);
         let graph = CallGraph {
-            dll: "addr_test.dll".to_string(),
+            binary: "addr_test.dll".to_string(),
             functions: vec![
                 FunctionCallGraph {
                     name: "caller".to_string(),
@@ -320,7 +320,7 @@ mod tests {
         let persistor = CallGraphPersistor::new(&temp_dir);
 
         let graph_a = CallGraph {
-            dll: "game.dll".to_string(),
+            binary: "game.dll".to_string(),
             functions: vec![FunctionCallGraph {
                 name: "game_loop".to_string(),
                 address: 0x400000,
@@ -330,7 +330,7 @@ mod tests {
             }],
         };
         let graph_b = CallGraph {
-            dll: "renderer.dll".to_string(),
+            binary: "renderer.dll".to_string(),
             functions: vec![FunctionCallGraph {
                 name: "render_frame".to_string(),
                 address: 0x500000,
@@ -346,9 +346,9 @@ mod tests {
         let loaded_a = persistor.load("game.dll").unwrap();
         let loaded_b = persistor.load("renderer.dll").unwrap();
 
-        assert_eq!(loaded_a.dll, "game.dll");
+        assert_eq!(loaded_a.binary, "game.dll");
         assert_eq!(loaded_a.functions[0].name, "game_loop");
-        assert_eq!(loaded_b.dll, "renderer.dll");
+        assert_eq!(loaded_b.binary, "renderer.dll");
         assert_eq!(loaded_b.functions[0].name, "render_frame");
         assert_ne!(loaded_a.functions[0].address, loaded_b.functions[0].address);
 

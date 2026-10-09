@@ -89,7 +89,7 @@ pub fn print_translation_summary(translation: &Translation) {
         white_bold("  Function: "),
         translation.function,
         dim("("),
-        dim(&translation.dll)
+        dim(&translation.binary)
     );
     println!(
         "  {}{}{}",
@@ -266,7 +266,7 @@ pub fn print_success(branch: &GitBranch, verification: &VerificationResult) -> b
 
     // Function info
     println!("  {}{}", white_bold("  Function: "), branch.function);
-    println!("  {}{}", white_bold("  DLL: "), branch.dll);
+    println!("  {}{}", white_bold("  DLL: "), branch.binary);
     println!("{}", cyan_bold(&"║".repeat(60)));
 
     // Verification results
@@ -326,7 +326,7 @@ pub fn print_failure(branch: &GitBranch, verification: &VerificationResult) {
 
     // Function info
     println!("  {}{}", white_bold("  Function: "), branch.function);
-    println!("  {}{}", white_bold("  DLL: "), branch.dll);
+    println!("  {}{}", white_bold("  DLL: "), branch.binary);
     println!("{}", cyan_bold(&"║".repeat(60)));
 
     // Verification results
@@ -409,7 +409,7 @@ pub fn print_classification_report(
             Strategy::ReverseEngineer => "Reverse Engineer".to_string(),
         };
 
-        println!("  {}{}", white_bold("  DLL: "), classification.dll);
+        println!("  {}{}", white_bold("  DLL: "), classification.binary);
         println!(
             "  {}{}",
             white_bold("  Category: "),
@@ -520,7 +520,7 @@ fn format_category(category: &calxgloss_types::DllCategory) -> String {
 pub fn print_batch_summary(result: &BatchTranslationResult) {
     let sep = cyan_bold(&"═".repeat(58));
     println!();
-    println!("{} Batch Translation — {}", sep, result.dll);
+    println!("{} Batch Translation — {}", sep, result.binary);
     println!("{}", sep);
 
     for (idx, func_result) in result.results.iter().enumerate() {

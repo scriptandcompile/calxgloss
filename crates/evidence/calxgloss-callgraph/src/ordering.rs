@@ -23,7 +23,7 @@
 //!
 //! # fn example() -> anyhow::Result<()> {
 //! let graph = CallGraph {
-//!     dll: "example.dll".to_string(),
+//!     binary: "example.dll".to_string(),
 //!     functions: vec![
 //!         FunctionCallGraph {
 //!             name: "WinMain".to_string(),
@@ -169,7 +169,7 @@ impl TranslationOrderer {
     /// are duplicated (which would make topological sorting ambiguous).
     pub fn order(&self, graph: &CallGraph) -> Result<VecDeque<FunctionTranslationPlan>> {
         if graph.functions.is_empty() {
-            debug!(dll = %graph.dll, "Empty call graph; returning empty plan");
+            debug!(binary = %graph.binary, "Empty call graph; returning empty plan");
             return Ok(VecDeque::new());
         }
 
@@ -260,7 +260,7 @@ impl TranslationOrderer {
         }
 
         debug!(
-            dll = %graph.dll,
+            binary = %graph.binary,
             total = plan.len(),
             "Translation plan generated"
         );
@@ -433,7 +433,7 @@ mod tests {
     #[test]
     fn test_empty_graph_returns_empty_plan() {
         let graph = CallGraph {
-            dll: "empty.dll".to_string(),
+            binary: "empty.dll".to_string(),
             functions: vec![],
         };
         let orderer = TranslationOrderer::new();
@@ -444,7 +444,7 @@ mod tests {
     #[test]
     fn test_root_functions_comes_first() {
         let graph = CallGraph {
-            dll: "roots.dll".to_string(),
+            binary: "roots.dll".to_string(),
             functions: vec![
                 make_func(
                     "app_logic",
@@ -476,7 +476,7 @@ mod tests {
     #[test]
     fn test_leaf_functions_comes_last() {
         let graph = CallGraph {
-            dll: "leaves.dll".to_string(),
+            binary: "leaves.dll".to_string(),
             functions: vec![
                 make_func(
                     "render_frame",
@@ -512,7 +512,7 @@ mod tests {
         // app_init calls game_loop, which calls render_frame.
         // All middle-tier; topological sort should put callee before caller.
         let graph = CallGraph {
-            dll: "topo.dll".to_string(),
+            binary: "topo.dll".to_string(),
             functions: vec![
                 make_func(
                     "app_init",
@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn test_function_plan_includes_metadata() {
         let graph = CallGraph {
-            dll: "metadata.dll".to_string(),
+            binary: "metadata.dll".to_string(),
             functions: vec![
                 // Caller A
                 make_func(
@@ -603,7 +603,7 @@ mod tests {
     #[test]
     fn test_all_three_tiers() {
         let graph = CallGraph {
-            dll: "three_tiers.dll".to_string(),
+            binary: "three_tiers.dll".to_string(),
             functions: vec![
                 // Root: WinMain
                 make_func(
@@ -657,7 +657,7 @@ mod tests {
     #[test]
     fn test_duplicate_address_returns_error() {
         let graph = CallGraph {
-            dll: "dup.dll".to_string(),
+            binary: "dup.dll".to_string(),
             functions: vec![
                 make_func("func_a", 0x1000, vec![], vec![], NodeCategory::Middle),
                 make_func("func_b", 0x1000, vec![], vec![], NodeCategory::Middle),
@@ -672,7 +672,7 @@ mod tests {
     #[test]
     fn test_max_functions_truncation() {
         let graph = CallGraph {
-            dll: "trunc.dll".to_string(),
+            binary: "trunc.dll".to_string(),
             functions: vec![
                 make_func("fn_a", 0x1000, vec![], vec![], NodeCategory::Middle),
                 make_func("fn_b", 0x2000, vec![], vec![], NodeCategory::Middle),
@@ -689,7 +689,7 @@ mod tests {
     #[test]
     fn test_skip_category_treated_as_root() {
         let graph = CallGraph {
-            dll: "skip.dll".to_string(),
+            binary: "skip.dll".to_string(),
             functions: vec![
                 make_func(
                     "runtime_helper",
@@ -720,7 +720,7 @@ mod tests {
     #[test]
     fn test_plan_includes_node_category() {
         let graph = CallGraph {
-            dll: "categories.dll".to_string(),
+            binary: "categories.dll".to_string(),
             functions: vec![
                 make_func("WinMain", 0x401000, vec![], vec![], NodeCategory::Root),
                 make_func(
@@ -762,7 +762,7 @@ mod tests {
         // Two middle functions: A calls B, neither has callees in the same tier
         // (B's callees point to leaf functions outside the tier).
         let graph = CallGraph {
-            dll: "no_internal.dll".to_string(),
+            binary: "no_internal.dll".to_string(),
             functions: vec![
                 make_func(
                     "caller",
@@ -794,7 +794,7 @@ mod tests {
     fn test_cyclic_functions_appended_at_end_of_tier() {
         // A calls B, B calls A — cycle within the same tier.
         let graph = CallGraph {
-            dll: "cycle.dll".to_string(),
+            binary: "cycle.dll".to_string(),
             functions: vec![
                 make_func(
                     "func_a",

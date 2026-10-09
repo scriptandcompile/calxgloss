@@ -3,11 +3,11 @@
 //! This module provides the [`GitManager`] struct, the central orchestrator
 //! for all Git operations performed during the translation pipeline.
 //! Every translation attempt gets its own branch following the naming
-//! convention `re/{dll}/{function}v{N}`.
+//! convention `re/{binary}/{function}v{N}`.
 
 use std::path::{Path, PathBuf};
 
-use calxgloss_types::{GitBranch, GitCommit, TypesError};
+use calxgloss_types::{BinaryIdentity, GitBranch, GitCommit, TypesError};
 use chrono::Utc;
 use git2::build::CheckoutBuilder;
 use git2::{DiffOptions, Oid, Repository, ResetType};
@@ -39,7 +39,7 @@ pub enum MergeResult {
 /// Stores failure details for a translation attempt.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct PatchRecord {
-    pub dll: String,
+    pub binary: BinaryIdentity,
     pub function: String,
     pub attempt: u32,
     pub branch_name: String,
@@ -169,7 +169,7 @@ impl GitManager {
     /// # Dependency Enforcement
     ///
     /// If `policy` is `Some`, the method checks that all required shim layers
-    /// and PAL traits for the given `dll` are already merged into `main` before
+    /// and PAL traits for the given `binary` are already merged into `main` before
     /// creating the branch. The policy controls the behavior when dependencies
     /// are unmet:
     ///
@@ -179,7 +179,7 @@ impl GitManager {
     ///
     /// # Arguments
     ///
-    /// * `dll` — The DLL filename (e.g. `d3d9.dll`).
+    /// * `binary` — The DLL filename (e.g. `d3d9.dll`).
     /// * `function` — The function name being translated.
     /// * `attempt` — The attempt number (1-based).
     /// * `policy` — Optional dependency enforcement policy with classification data.
@@ -202,12 +202,12 @@ impl GitManager {
     /// ```
     pub fn create_branch(
         &self,
-        dll: &str,
+        binary: &str,
         function: &str,
         attempt: u32,
         policy: Option<&BranchCreationPolicy>,
     ) -> Result<BranchResult, TypesError> {
-        let branch = GitBranch::new(dll, function, attempt)?;
+        let branch = GitBranch::new(binary, function, attempt)?;
         let git_branch_name = format!("refs/heads/{}", branch.name);
 
         if self
@@ -228,7 +228,7 @@ impl GitManager {
             let check_result = match policy {
                 BranchCreationPolicy::Skip => crate::DependencyCheckResult::default(),
                 BranchCreationPolicy::Warn(dp) | BranchCreationPolicy::Enforce(dp) => {
-                    self.check_dependencies(dll, &dp.category, dp.crate_replacement.as_deref())
+                    self.check_dependencies(binary, &dp.category, dp.crate_replacement.as_deref())
                 }
             };
 
@@ -237,7 +237,7 @@ impl GitManager {
                 BranchCreationPolicy::Warn(_) => {
                     if check_result.has_unmet() {
                         warn!(
-                            dll = %dll,
+                            binary = %binary,
                             unmet = ?check_result.unmet,
                             "Dependencies unmet — continuing anyway (Warn policy)"
                         );
@@ -582,7 +582,7 @@ impl GitManager {
     /// Accepts a branch by merging it into `main` and records the acceptance.
     ///
     /// Returns the merge result and writes a timestamp to
-    /// `re/accepts/{dll}/{function}/v{N}.json` for dashboard visibility.
+    /// `re/accepts/{binary}/{function}/v{N}.json` for dashboard visibility.
     pub fn accept_branch(&self, branch: &GitBranch) -> Result<MergeResult, TypesError> {
         info!("Accepting branch '{}'", branch.name);
 
@@ -593,7 +593,7 @@ impl GitManager {
             .repo_path
             .join("re")
             .join("accepts")
-            .join(&branch.dll)
+            .join(&branch.binary)
             .join(&branch.function);
         std::fs::create_dir_all(&accepts_dir).map_err(|e| {
             TypesError::InvalidBranchName(format!("Failed to create accepts dir: {}", e))
@@ -602,7 +602,7 @@ impl GitManager {
         let accept_file = accepts_dir.join(format!("v{}.json", branch.attempt));
         let accept_record = serde_json::json!({
             "branch": branch.name,
-            "dll": branch.dll,
+            "binary": branch.binary,
             "function": branch.function,
             "attempt": branch.attempt,
             "merged_at": Utc::now().to_rfc3339(),
@@ -633,7 +633,7 @@ impl GitManager {
     /// Rejects a branch and stores a rejection record.
     ///
     /// The rejection reason is saved to
-    /// `re/rejections/{dll}/{function}/v{N}.json` so the dashboard can
+    /// `re/rejections/{binary}/{function}/v{N}.json` so the dashboard can
     /// display send-back history.
     pub fn reject_branch(&self, branch: &GitBranch, reason: &str) -> Result<PathBuf, TypesError> {
         info!("Rejecting branch '{}' — reason: {}", branch.name, reason);
@@ -642,7 +642,7 @@ impl GitManager {
             .repo_path
             .join("re")
             .join("rejections")
-            .join(&branch.dll)
+            .join(&branch.binary)
             .join(&branch.function);
         std::fs::create_dir_all(&rejection_dir).map_err(|e| {
             TypesError::InvalidBranchName(format!("Failed to create rejection dir: {}", e))
@@ -651,7 +651,7 @@ impl GitManager {
         let rejection_path = rejection_dir.join(format!("v{}.json", branch.attempt));
         let rejection_record = serde_json::json!({
             "branch": branch.name,
-            "dll": branch.dll,
+            "binary": branch.binary,
             "function": branch.function,
             "attempt": branch.attempt,
             "reason": reason,
@@ -679,7 +679,7 @@ impl GitManager {
     /// Returns the new `GitBranch` ready to be used for the retry attempt.
     pub fn next_attempt_branch(
         &self,
-        dll: &str,
+        binary: &str,
         function: &str,
         current_attempt: u32,
     ) -> Result<GitBranch, TypesError> {
@@ -687,7 +687,7 @@ impl GitManager {
             .checked_add(1)
             .ok_or_else(|| TypesError::InvalidBranchName("Attempt number overflow".to_string()))?;
 
-        GitBranch::new(dll, function, next_attempt)
+        GitBranch::new(binary, function, next_attempt)
     }
 
     /// Stores failure details for a translation attempt.
@@ -699,7 +699,11 @@ impl GitManager {
         test_failures: &[String],
         commit_hash: &str,
     ) -> Result<PathBuf, TypesError> {
-        let patch_dir = self.repo_path.join("re").join("patches").join(&branch.dll);
+        let patch_dir = self
+            .repo_path
+            .join("re")
+            .join("patches")
+            .join(&branch.binary);
         let function_dir = patch_dir.join(&branch.function);
         std::fs::create_dir_all(&function_dir).map_err(|e| {
             TypesError::InvalidBranchName(format!("Failed to create patch dir: {}", e))
@@ -707,7 +711,7 @@ impl GitManager {
 
         let patch_path = function_dir.join(format!("v{}.json", branch.attempt));
         let record = PatchRecord {
-            dll: branch.dll.clone(),
+            binary: branch.binary.clone(),
             function: branch.function.clone(),
             attempt: branch.attempt,
             branch_name: branch.name.clone(),
@@ -734,12 +738,12 @@ impl GitManager {
     /// that uses the checker's default shim mapping.
     fn check_dependencies(
         &self,
-        dll: &str,
+        binary: &str,
         category: &calxgloss_types::DllCategory,
         crate_replacement: Option<&str>,
     ) -> crate::DependencyCheckResult {
         let checker = crate::DependencyChecker::default();
-        checker.resolve(&self.repo, dll, category, crate_replacement)
+        checker.resolve(&self.repo, binary, category, crate_replacement)
     }
 
     /// Returns the name of the current branch.
@@ -884,7 +888,7 @@ impl GitManager {
     /// Archives a branch by renaming it to an `refs/archive/` reference.
     ///
     /// The branch is not deleted; instead it is renamed to
-    /// `refs/archive/re/{dll}/{function}/v{N}` so it remains reachable for
+    /// `refs/archive/re/{binary}/{function}/v{N}` so it remains reachable for
     /// reference.  This is the archival half of the garbage-collection
     /// workflow — branches are archived rather than discarded.
     ///

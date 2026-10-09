@@ -2,7 +2,7 @@
 //!
 //! Runs the two API detectors — the import-table scanner and the
 //! per-function call-graph summary — against the program currently open
-//! in Ghidra and saves the result to `re/analysis/apidetect/{dll}.json`
+//! in Ghidra and saves the result to `re/analysis/apidetect/{binary}.json`
 //! in the workspace, the same file batch translation will read as prompt
 //! context. Batch translation runs the same scan before its first batch
 //! when no result is cached; this command is the manual entry point: it
@@ -25,9 +25,9 @@ use crate::utils::*;
 const DETAIL_LIMIT: usize = 10;
 
 /// Handle the `apidetect` subcommand: identify the libraries and APIs of
-/// `dll`, or print the cached result when `show` is set.
+/// `binary`, or print the cached result when `show` is set.
 pub async fn handle_apidetect(
-    dll: &str,
+    binary: &str,
     workspace: &Path,
     show: bool,
     settings: &Settings,
@@ -35,17 +35,17 @@ pub async fn handle_apidetect(
     let persistor = ApiPersistor::new(workspace);
 
     if show {
-        let result = persistor.load(dll).with_context(|| {
+        let result = persistor.load(binary).with_context(|| {
             format!(
-                "No cached API result for {dll}; \
-                 run `calxgloss apidetect --dll {dll}` to produce one"
+                "No cached API result for {binary}; \
+                 run `calxgloss apidetect --binary {binary}` to produce one"
             )
         })?;
-        print_api_report(&result, &persistor.path_for(dll));
+        print_api_report(&result, &persistor.path_for(binary));
         return Ok(());
     }
 
-    info!(dll, workspace = %workspace.display(), "Identifying libraries and APIs");
+    info!(binary, workspace = %workspace.display(), "Identifying libraries and APIs");
 
     let ghidra_url = &settings.ghidra_url.value;
     let mut config = GhidraConfig::new(ghidra_url)
@@ -58,14 +58,14 @@ pub async fn handle_apidetect(
 
     let engine = ApiEngine::new(&ghidra);
     let result = engine
-        .scan(dll)
+        .scan(binary)
         .await
-        .with_context(|| format!("API detection failed for {dll}"))?;
+        .with_context(|| format!("API detection failed for {binary}"))?;
     persistor
         .save(&result)
-        .with_context(|| format!("Failed to save the API result for {dll}"))?;
+        .with_context(|| format!("Failed to save the API result for {binary}"))?;
 
-    print_api_report(&result, &persistor.path_for(dll));
+    print_api_report(&result, &persistor.path_for(binary));
     Ok(())
 }
 

@@ -3,7 +3,7 @@
 //! Runs the string-context scan — nine-category string classification,
 //! hybrid body-parse/xref string mapping, and format-string type
 //! inference — against the program currently open in Ghidra and saves the
-//! result to `re/analysis/stringctx/{dll}.json` in the workspace, the same
+//! result to `re/analysis/stringctx/{binary}.json` in the workspace, the same
 //! file batch translation will read as prompt context. Batch translation
 //! runs the same scan before its first batch when no result is cached;
 //! this command is the manual entry point: it rebuilds the result on
@@ -26,9 +26,9 @@ use crate::utils::*;
 const DETAIL_LIMIT: usize = 10;
 
 /// Handle the `stringctx` subcommand: map strings to functions for
-/// `dll`, or print the cached result when `show` is set.
+/// `binary`, or print the cached result when `show` is set.
 pub async fn handle_stringctx(
-    dll: &str,
+    binary: &str,
     workspace: &Path,
     show: bool,
     settings: &Settings,
@@ -36,17 +36,17 @@ pub async fn handle_stringctx(
     let persistor = StringContextPersistor::new(workspace);
 
     if show {
-        let result = persistor.load(dll).with_context(|| {
+        let result = persistor.load(binary).with_context(|| {
             format!(
-                "No cached string context for {dll}; \
-                 run `calxgloss stringctx --dll {dll}` to produce one"
+                "No cached string context for {binary}; \
+                 run `calxgloss stringctx --binary {binary}` to produce one"
             )
         })?;
-        print_string_context_report(&result, &persistor.path_for(dll));
+        print_string_context_report(&result, &persistor.path_for(binary));
         return Ok(());
     }
 
-    info!(dll, workspace = %workspace.display(), "Mapping program strings to functions");
+    info!(binary, workspace = %workspace.display(), "Mapping program strings to functions");
 
     let ghidra_url = &settings.ghidra_url.value;
     let mut config = GhidraConfig::new(ghidra_url)
@@ -59,14 +59,14 @@ pub async fn handle_stringctx(
 
     let engine = StringContextEngine::new(&ghidra);
     let result = engine
-        .scan(dll)
+        .scan(binary)
         .await
-        .with_context(|| format!("String context scan failed for {dll}"))?;
+        .with_context(|| format!("String context scan failed for {binary}"))?;
     persistor
         .save(&result)
-        .with_context(|| format!("Failed to save the string context result for {dll}"))?;
+        .with_context(|| format!("Failed to save the string context result for {binary}"))?;
 
-    print_string_context_report(&result, &persistor.path_for(dll));
+    print_string_context_report(&result, &persistor.path_for(binary));
     Ok(())
 }
 

@@ -30,8 +30,8 @@ pub enum StringCtxError {
     EmptyFunctionName,
 
     /// A string-context scan failed for a DLL.
-    #[error("string context scan failed for '{dll}': {reason}")]
-    ScanFailed { dll: String, reason: String },
+    #[error("string context scan failed for '{binary}': {reason}")]
+    ScanFailed { binary: String, reason: String },
 }
 
 /// Maps the shared JSON store's errors onto this crate's error type: the

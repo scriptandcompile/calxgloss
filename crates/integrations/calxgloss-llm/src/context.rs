@@ -250,7 +250,7 @@ impl FunctionSplitter {
     ///
     /// # Arguments
     ///
-    /// * `dll` — The DLL name (used in chunk metadata).
+    /// * `binary` — The DLL name (used in chunk metadata).
     /// * `function` — The function name (used in chunk metadata).
     /// * `disassembly` — The full disassembly text.
     /// * `decompiler_output` — The decompiler/pseudo-C output (may be empty).
@@ -261,7 +261,7 @@ impl FunctionSplitter {
     /// A vector of [`FunctionChunk`] instances, each containing a slice of the
     /// disassembly and decompiler output with metadata for the LLM.
     pub fn split(
-        dll: &str,
+        binary: &str,
         function: &str,
         disassembly: &str,
         decompiler_output: &str,
@@ -272,7 +272,7 @@ impl FunctionSplitter {
         let total = lines.len();
         if total == 0 {
             return vec![FunctionChunk {
-                dll: dll.to_string(),
+                binary: binary.to_string(),
                 function: function.to_string(),
                 chunk_index: 0,
                 chunk_total: 1,
@@ -296,7 +296,7 @@ impl FunctionSplitter {
             let disassembly_chunk = chunk_lines.join("\n");
 
             chunks.push(FunctionChunk {
-                dll: dll.to_string(),
+                binary: binary.to_string(),
                 function: function.to_string(),
                 chunk_index: i,
                 chunk_total: chunk_count,
@@ -309,7 +309,7 @@ impl FunctionSplitter {
         // produced none (e.g., chunk_count > total lines).
         if chunks.is_empty() {
             chunks.push(FunctionChunk {
-                dll: dll.to_string(),
+                binary: binary.to_string(),
                 function: function.to_string(),
                 chunk_index: 0,
                 chunk_total: 1,
@@ -329,7 +329,7 @@ impl FunctionSplitter {
 #[derive(Debug, Clone)]
 pub struct FunctionChunk {
     /// The DLL name.
-    pub dll: String,
+    pub binary: String,
 
     /// The function name.
     pub function: String,
@@ -367,7 +367,7 @@ impl FunctionChunk {
              Translate ONLY the disassembly above. Focus on chunk {}/{}.",
             self.chunk_index + 1,
             self.chunk_total,
-            self.dll,
+            self.binary,
             self.function,
             self.decompiler_context.trim(),
             self.disassembly.trim(),
@@ -515,7 +515,7 @@ mod tests {
 
         assert_eq!(chunks.len(), 5);
         for (i, chunk) in chunks.iter().enumerate() {
-            assert_eq!(chunk.dll, "test.dll");
+            assert_eq!(chunk.binary, "test.dll");
             assert_eq!(chunk.function, "entry");
             assert_eq!(chunk.chunk_index, i);
             assert_eq!(chunk.chunk_total, 5);

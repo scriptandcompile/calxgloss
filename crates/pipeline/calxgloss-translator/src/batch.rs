@@ -33,7 +33,7 @@
 //! # }
 //! ```
 
-use calxgloss_types::GitBranch;
+use calxgloss_types::{BinaryIdentity, GitBranch};
 
 use crate::RetryResult;
 
@@ -44,8 +44,8 @@ use crate::RetryResult;
 /// The result of translating a single function within a batch.
 #[derive(Debug, Clone)]
 pub struct FunctionResult {
-    /// The DLL containing the function.
-    pub dll: String,
+    /// The binary containing the function.
+    pub binary: BinaryIdentity,
 
     /// The function name that was translated.
     pub function: String,
@@ -69,9 +69,13 @@ pub struct FunctionResult {
 
 impl FunctionResult {
     /// Create a new failure result for a function.
-    pub(crate) fn failure(dll: String, function: String, retry_result: RetryResult) -> Self {
+    pub(crate) fn failure(
+        binary: impl Into<BinaryIdentity>,
+        function: String,
+        retry_result: RetryResult,
+    ) -> Self {
         Self {
-            dll,
+            binary: binary.into(),
             function,
             success: false,
             rust_code: None,
@@ -83,14 +87,14 @@ impl FunctionResult {
 
     /// Create a new success result for a function.
     pub(crate) fn success(
-        dll: String,
+        binary: impl Into<BinaryIdentity>,
         function: String,
         rust_code: String,
         retry_result: RetryResult,
         branch: Option<GitBranch>,
     ) -> Self {
         Self {
-            dll,
+            binary: binary.into(),
             function,
             success: true,
             rust_code: Some(rust_code),
@@ -101,9 +105,9 @@ impl FunctionResult {
     }
 
     /// Create a new skipped result for a function that requires no translation.
-    pub(crate) fn skipped(dll: String, function: String) -> Self {
+    pub(crate) fn skipped(binary: impl Into<BinaryIdentity>, function: String) -> Self {
         Self {
-            dll,
+            binary: binary.into(),
             function,
             success: true,
             rust_code: None,
@@ -114,9 +118,13 @@ impl FunctionResult {
     }
 
     /// Create a stub result for a function that was stubbed (e.g., entry point).
-    pub(crate) fn stubbed(dll: String, function: String, stub_code: String) -> Self {
+    pub(crate) fn stubbed(
+        binary: impl Into<BinaryIdentity>,
+        function: String,
+        stub_code: String,
+    ) -> Self {
         Self {
-            dll,
+            binary: binary.into(),
             function,
             success: true,
             rust_code: None,
@@ -130,8 +138,8 @@ impl FunctionResult {
 /// The aggregated result of translating an entire batch of functions.
 #[derive(Debug, Clone)]
 pub struct BatchTranslationResult {
-    /// The DLL being translated.
-    pub dll: String,
+    /// The binary being translated.
+    pub binary: BinaryIdentity,
 
     /// Per-function results, in the order the functions were listed.
     pub results: Vec<FunctionResult>,
@@ -139,9 +147,9 @@ pub struct BatchTranslationResult {
 
 impl BatchTranslationResult {
     /// Create a new batch result.
-    pub fn new(dll: String) -> Self {
+    pub fn new(binary: impl Into<BinaryIdentity>) -> Self {
         Self {
-            dll,
+            binary: binary.into(),
             results: Vec::new(),
         }
     }

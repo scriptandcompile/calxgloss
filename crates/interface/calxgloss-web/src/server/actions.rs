@@ -66,7 +66,7 @@ fn persist_action_state(
         .map_err(|e| TypesError::InvalidBranchName(format!("Failed to create actions dir: {e}")))?;
 
     let action_file = actions_dir.join(format!("{}.json", record.unit_id));
-    // unit_id carries slashes (`{dll}/{function}/v{attempt}`), so the joined
+    // unit_id carries slashes (`{binary}/{function}/v{attempt}`), so the joined
     // path nests under actions_dir — create those parents before writing.
     if let Some(parent) = action_file.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
@@ -92,7 +92,7 @@ pub async fn accept_unit(
 ) -> Result<ActionResult, anyhow::Error> {
     let unit = lookup_unit(state, unit_id)?;
     let branch = GitBranch::new(
-        &unit.dll,
+        &unit.binary,
         unit.function.as_deref().unwrap_or(""),
         unit.attempt,
     )?;
@@ -137,7 +137,7 @@ pub async fn send_back_unit(
 ) -> Result<ActionResult, anyhow::Error> {
     let unit = lookup_unit(state, unit_id)?;
     let branch = GitBranch::new(
-        &unit.dll,
+        &unit.binary,
         unit.function.as_deref().unwrap_or(""),
         unit.attempt,
     )?;
@@ -181,7 +181,7 @@ pub async fn request_patch(
 
     // Create the next-attempt branch
     let next_branch = git.next_attempt_branch(
-        &unit.dll,
+        &unit.binary,
         unit.function.as_deref().unwrap_or(""),
         unit.attempt,
     )?;
@@ -191,7 +191,7 @@ pub async fn request_patch(
         calxgloss_types::WorkKind::FunctionTranslation => {
             // For function translations, check shim dependencies
             let shim_map = ShimDependencyMap::new();
-            let shim_crate = shim_map.get(&unit.dll).map(|s| s.to_string());
+            let shim_crate = shim_map.get(&unit.binary).map(|s| s.to_string());
             Some(calxgloss_git::BranchCreationPolicy::Warn(
                 calxgloss_git::DependencyPolicy {
                     category: calxgloss_types::DllCategory::ProjectSpecific,
@@ -203,7 +203,7 @@ pub async fn request_patch(
     };
 
     let _branch_result = git.create_branch(
-        &unit.dll,
+        &unit.binary,
         unit.function.as_deref().unwrap_or(""),
         next_branch.attempt,
         policy.as_ref(),
@@ -214,14 +214,14 @@ pub async fn request_patch(
         .repo_path()
         .join("re")
         .join("patches")
-        .join(&next_branch.dll)
+        .join(&next_branch.binary)
         .join(&next_branch.function);
     std::fs::create_dir_all(&patch_dir)
         .map_err(|e| TypesError::InvalidBranchName(format!("Failed to create patch dir: {e}")))?;
 
     let patch_record_path = patch_dir.join(format!("v{}.json", next_branch.attempt));
     let patch_record = serde_json::json!({
-        "dll": next_branch.dll,
+        "binary": next_branch.binary,
         "function": next_branch.function,
         "attempt": next_branch.attempt,
         "branch_name": next_branch.name,
@@ -253,14 +253,14 @@ pub async fn request_patch(
     // so we pass only the data the closure needs and let it open its own GitManager.
     let repo_path = state.repo_path().to_path_buf();
     let issue_str = issue.to_string();
-    let dll = unit.dll.clone();
+    let binary = unit.binary.clone();
     let function = unit.function.clone().unwrap_or_default();
     let attempt = next_branch.attempt;
     let branch_name = next_branch.name.clone();
     let branch_name_for_log = branch_name.clone();
 
     tokio::task::spawn(async move {
-        if let Err(e) = run_patch_retry(&repo_path, &issue_str, &dll, &function, attempt).await {
+        if let Err(e) = run_patch_retry(&repo_path, &issue_str, &binary, &function, attempt).await {
             warn!("Patch retry failed for {branch_name_for_log}: {e}");
         }
     });
@@ -285,7 +285,7 @@ pub async fn request_patch(
 async fn run_patch_retry(
     repo_path: &Path,
     _issue: &str,
-    dll: &str,
+    binary: &str,
     function: &str,
     attempt: u32,
 ) -> Result<(), anyhow::Error> {
@@ -316,7 +316,7 @@ async fn run_patch_retry(
     let config = RetryConfig::default();
 
     // Build the branch name for the retry
-    let branch = GitBranch::new(dll, function, attempt)?;
+    let branch = GitBranch::new(binary, function, attempt)?;
 
     // Switch to the branch — we must drop all git2 objects before awaiting.
     // We use a helper closure that does all the git setup and returns the
@@ -370,10 +370,10 @@ async fn run_patch_retry(
 
     // Now drop all git2 objects — the `git` variable goes out of scope
     // (it was moved into the closure). Run the pipeline.
-    info!("Starting patch retry for {dll}/{function} v{attempt}");
+    info!("Starting patch retry for {binary}/{function} v{attempt}");
 
     let result = pipeline
-        .try_translate_with_retry(dll, function, &config, &verifier)
+        .try_translate_with_retry(binary, function, &config, &verifier)
         .await?;
 
     if result.success {
@@ -388,11 +388,11 @@ async fn run_patch_retry(
 
         // Determine the source file name (e.g., game_logic.rs for game_logic.dll).
         // Stem derivation is naming, not identity (issue #68): strip whatever
-        // extension the binary carries (.dll, .exe, …).
-        let src_file_name = std::path::Path::new(dll)
+        // extension the binary carries (.binary, .exe, …).
+        let src_file_name = std::path::Path::new(binary)
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| dll.to_string())
+            .unwrap_or_else(|| binary.to_string())
             + ".rs";
         let dest_path = modules_dir.join(&src_file_name);
 
@@ -429,8 +429,9 @@ async fn run_patch_retry(
             .map_err(|e| anyhow::anyhow!("Failed to reset: {e}"))?;
 
         // Commit
-        let commit_msg =
-            format!("re/{dll}/{function}v{attempt}: translate {function} to Rust (patch retry)",);
+        let commit_msg = format!(
+            "re/{binary}/{function}v{attempt}: translate {function} to Rust (patch retry)",
+        );
         let _commit = git.commit(
             &branch,
             &commit_msg,
@@ -441,11 +442,11 @@ async fn run_patch_retry(
         let patch_dir = repo_path
             .join("re")
             .join("patches")
-            .join(dll)
+            .join(binary)
             .join(function);
         let patch_record_path = patch_dir.join(format!("v{}.json", attempt));
         let mut patch_record = serde_json::json!({
-            "dll": dll,
+            "binary": binary,
             "function": function,
             "attempt": attempt,
             "branch_name": branch.name,
@@ -461,9 +462,9 @@ async fn run_patch_retry(
         let json = serde_json::to_string_pretty(&patch_record)?;
         std::fs::write(&patch_record_path, json)?;
 
-        info!("Patch retry succeeded for {dll}/{function} v{attempt} — committed");
+        info!("Patch retry succeeded for {binary}/{function} v{attempt} — committed");
     } else {
-        warn!("Patch retry exhausted all attempts for {dll}/{function} v{attempt}");
+        warn!("Patch retry exhausted all attempts for {binary}/{function} v{attempt}");
     }
 
     Ok(())

@@ -33,7 +33,7 @@
 //! for classification in &classifications {
 //!     println!(
 //!         "{:20} → {:?} ({:?})",
-//!         classification.dll, classification.category, classification.strategy
+//!         classification.binary, classification.category, classification.strategy
 //!     );
 //! }
 //! # Ok(())

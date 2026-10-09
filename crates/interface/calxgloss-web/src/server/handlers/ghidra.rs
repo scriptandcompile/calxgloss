@@ -21,10 +21,10 @@ pub async fn api_get_unit_ghidra(
         _ => return Ok(Json(GhidraContextResponse::not_found(&unit_id))),
     };
 
-    let dll = unit.dll.clone();
+    let binary = unit.binary.clone();
 
     // Try to read Ghidra data from analysis artifacts on disk
-    if let Ok(ctx) = load_ghidra_artifacts(state.repo_path(), &dll, &func_name) {
+    if let Ok(ctx) = load_ghidra_artifacts(state.repo_path(), &binary, &func_name) {
         return Ok(Json(GhidraContextResponse::ok(ctx)));
     }
 
@@ -36,10 +36,10 @@ pub async fn api_get_unit_ghidra(
 /// Load Ghidra artifacts from the analysis directory on disk.
 pub(crate) fn load_ghidra_artifacts(
     repo_path: &std::path::Path,
-    dll: &str,
+    binary: &str,
     function: &str,
 ) -> Result<GhidraContext, anyhow::Error> {
-    let analysis_dir = repo_path.join("re").join("analysis").join(dll);
+    let analysis_dir = repo_path.join("re").join("analysis").join(binary);
     let func_file = analysis_dir.join(format!("{function}.json"));
 
     if !func_file.exists() {
@@ -69,7 +69,7 @@ pub(crate) fn load_ghidra_artifacts(
             .function_name
             .unwrap_or_else(|| function.to_string()),
         address: None,
-        dll: Some(dll.to_string()),
+        binary: Some(binary.to_string()),
         decompiler_output: artifact.decompiler_output,
         disassembly: None,
         windows_apis: artifact.windows_apis,
@@ -125,14 +125,14 @@ pub(crate) fn load_attempt_history(
     repo_path: &std::path::Path,
     unit_id: &str,
 ) -> Vec<super::super::AttemptRecord> {
-    let (dll, function, _attempt) = if let Some(attempt_suffix) = unit_id.rsplit_once('/') {
+    let (binary, function, _attempt) = if let Some(attempt_suffix) = unit_id.rsplit_once('/') {
         let base = attempt_suffix.0;
         if let Some(v) = attempt_suffix.1.strip_prefix('v') {
             let attempt = v.parse::<u32>().unwrap_or(0);
             let parts: Vec<&str> = base.splitn(2, '/').collect();
-            let dll = parts[0];
+            let binary = parts[0];
             let function = parts.get(1).copied().unwrap_or("");
-            (dll, function, attempt)
+            (binary, function, attempt)
         } else {
             return Vec::new();
         }
@@ -143,7 +143,7 @@ pub(crate) fn load_attempt_history(
     let patch_dir = repo_path
         .join("re")
         .join("patches")
-        .join(dll)
+        .join(binary)
         .join(function);
     if !patch_dir.exists() {
         return Vec::new();
@@ -193,9 +193,9 @@ pub(crate) fn compute_revision_count(
     state: &ServerState,
     unit: &calxgloss_types::UnitOfWork,
 ) -> usize {
-    let dll = &unit.dll;
+    let binary = &unit.binary;
     if let Some(function) = unit.function.as_deref() {
-        let branch_prefix = format!("re/{dll}/{function}v");
+        let branch_prefix = format!("re/{binary}/{function}v");
         if let Ok(git) = calxgloss_git::GitManager::open(state.repo_path())
             && let Ok(all_branches) = git.list_branches()
         {

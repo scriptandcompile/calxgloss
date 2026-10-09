@@ -99,17 +99,17 @@ fn spec(signature: &str, rva: u32) -> HarnessSpec {
 #[test]
 #[ignore = "needs Wine, a real DLL, and the windows-gnu Rust target"]
 fn baseline_return_values_match_the_model() {
-    let Some(dll) = real_dll() else {
+    let Some(binary) = real_dll() else {
         eprintln!("CALXGLOSS_TEST_DLL not set; skipping");
         return;
     };
-    let image = PeImage::parse(&dll).expect("PE should parse");
+    let image = PeImage::parse(&binary).expect("PE should parse");
     let work = tempfile::tempdir().expect("tempdir");
 
     let spec = spec(TARGET_SIGNATURE, TARGET_RVA);
     let test_cases = cases();
     let report = runner(work.path())
-        .run(&spec, &dll, &test_cases, image.machine())
+        .run(&spec, &binary, &test_cases, image.machine())
         .expect("harness should run");
 
     // Every case must be accounted for, and none may have crashed the process.
@@ -151,11 +151,11 @@ fn baseline_return_values_match_the_model() {
 #[test]
 #[ignore = "needs Wine, a real DLL, and the windows-gnu Rust target"]
 fn baseline_reaches_memory_accessing_functions() {
-    let Some(dll) = real_dll() else {
+    let Some(binary) = real_dll() else {
         eprintln!("CALXGLOSS_TEST_DLL not set; skipping");
         return;
     };
-    let image = PeImage::parse(&dll).expect("PE should parse");
+    let image = PeImage::parse(&binary).expect("PE should parse");
     let work = tempfile::tempdir().expect("tempdir");
     let r = runner(work.path());
 
@@ -179,7 +179,7 @@ fn baseline_reaches_memory_accessing_functions() {
     let report = r
         .run(
             &getter,
-            &dll,
+            &binary,
             std::slice::from_ref(&getter_case),
             image.machine(),
         )
@@ -206,7 +206,7 @@ fn baseline_reaches_memory_accessing_functions() {
     )
     .unwrap();
     let report = r
-        .run(&setter, &dll, &[getter_case], image.machine())
+        .run(&setter, &binary, &[getter_case], image.machine())
         .expect("setter should run");
     let result = &report.results[0];
     assert!(!result.crashed, "setter crashed: {:?}", result.error);
@@ -218,11 +218,11 @@ fn baseline_reaches_memory_accessing_functions() {
 #[test]
 #[ignore = "needs Wine, a real DLL, and the windows-gnu Rust target"]
 fn baseline_reports_a_faulting_function_instead_of_hanging() {
-    let Some(dll) = real_dll() else {
+    let Some(binary) = real_dll() else {
         eprintln!("CALXGLOSS_TEST_DLL not set; skipping");
         return;
     };
-    let image = PeImage::parse(&dll).expect("PE should parse");
+    let image = PeImage::parse(&binary).expect("PE should parse");
     let work = tempfile::tempdir().expect("tempdir");
 
     // Calling through a null pointer must fault. The runner has to come back with
@@ -259,7 +259,7 @@ fn baseline_reports_a_faulting_function_instead_of_hanging() {
     ];
 
     let report = runner(work.path())
-        .run(&spec, &dll, &cases, image.machine())
+        .run(&spec, &binary, &cases, image.machine())
         .expect("harness should run");
 
     assert_eq!(
@@ -293,11 +293,11 @@ fn baseline_reports_a_faulting_function_instead_of_hanging() {
 #[test]
 #[ignore = "needs Wine, a real DLL, and the windows-gnu Rust target"]
 fn baseline_resolves_a_va_through_the_image_base() {
-    let Some(dll) = real_dll() else {
+    let Some(binary) = real_dll() else {
         eprintln!("CALXGLOSS_TEST_DLL not set; skipping");
         return;
     };
-    let image = PeImage::parse(&dll).expect("PE should parse");
+    let image = PeImage::parse(&binary).expect("PE should parse");
 
     // This is the step the whole design rests on: a Ghidra virtual address
     // becomes a call target via the image base.
@@ -314,11 +314,11 @@ fn baseline_resolves_a_va_through_the_image_base() {
 #[test]
 #[ignore = "needs Wine, a real DLL, and the windows-gnu Rust target"]
 fn full_load_mode_still_produces_a_baseline() {
-    let Some(dll) = real_dll() else {
+    let Some(binary) = real_dll() else {
         eprintln!("CALXGLOSS_TEST_DLL not set; skipping");
         return;
     };
-    let image = PeImage::parse(&dll).expect("PE should parse");
+    let image = PeImage::parse(&binary).expect("PE should parse");
     let work = tempfile::tempdir().expect("tempdir");
 
     let mut spec = spec(TARGET_SIGNATURE, TARGET_RVA);
@@ -327,7 +327,7 @@ fn full_load_mode_still_produces_a_baseline() {
 
     let test_cases = cases();
     let report = runner(work.path())
-        .run(&spec, &dll, &test_cases, image.machine())
+        .run(&spec, &binary, &test_cases, image.machine())
         .expect("harness should run");
 
     assert_eq!(report.results.len(), test_cases.len());
@@ -378,7 +378,7 @@ fn generated_harness_has_no_dependencies() {
 #[tokio::test]
 #[ignore = "needs Wine, a real DLL, and the windows-gnu Rust target"]
 async fn baseline_runner_returns_ground_truth_for_a_ghidra_function() {
-    let Some(dll) = real_dll() else {
+    let Some(binary) = real_dll() else {
         eprintln!("CALXGLOSS_TEST_DLL not set; skipping");
         return;
     };
@@ -410,7 +410,7 @@ async fn baseline_runner_returns_ground_truth_for_a_ghidra_function() {
             "FUN_18008ed50",
             TARGET_SIGNATURE,
             &test_cases,
-            &dll,
+            &binary,
         )
         .await
         .expect("baseline should run");
@@ -432,7 +432,7 @@ async fn baseline_runner_returns_ground_truth_for_a_ghidra_function() {
 #[tokio::test]
 #[ignore = "needs Wine, a real DLL, and the windows-gnu Rust target"]
 async fn baseline_runner_reports_a_mismatch_against_the_expectation() {
-    let Some(dll) = real_dll() else {
+    let Some(binary) = real_dll() else {
         eprintln!("CALXGLOSS_TEST_DLL not set; skipping");
         return;
     };
@@ -452,7 +452,7 @@ async fn baseline_runner_reports_a_mismatch_against_the_expectation() {
             "FUN_18008ed50",
             TARGET_SIGNATURE,
             &test_cases,
-            &dll,
+            &binary,
         )
         .await
         .expect("baseline should run");

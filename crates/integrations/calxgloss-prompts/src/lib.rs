@@ -78,7 +78,7 @@ mod tests {
 
     fn sample_request() -> TranslationRequest {
         TranslationRequest {
-            dll: "game_logic.dll".to_string(),
+            binary: "game_logic.dll".to_string().into(),
             function: "DrawSprite".to_string(),
             disassembly: "mov eax, [esp+4]\nadd eax, ebx\nret".to_string(),
             decompiler_output: "int DrawSprite(int x, int y) { return x + y; }".to_string(),

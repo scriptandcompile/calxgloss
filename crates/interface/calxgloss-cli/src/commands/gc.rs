@@ -16,7 +16,7 @@ use crate::utils::*;
 #[derive(Debug)]
 struct GcCandidate {
     name: String,
-    dll: String,
+    binary: String,
     function: Option<String>,
     attempt: u32,
     days_old: f64,
@@ -50,7 +50,7 @@ pub fn handle_gc(days: u64, dry_run: bool) -> Result<()> {
         }
 
         // Parse branch name into components using the same pattern as dashboard
-        let (dll, function, attempt) = match parse_translation_branch(branch_name) {
+        let (binary, function, attempt) = match parse_translation_branch(branch_name) {
             Some(p) => p,
             None => continue,
         };
@@ -70,7 +70,7 @@ pub fn handle_gc(days: u64, dry_run: bool) -> Result<()> {
         if age > threshold {
             candidates.push(GcCandidate {
                 name: branch_name.clone(),
-                dll,
+                binary,
                 function: function.clone(),
                 attempt,
                 days_old,
@@ -117,10 +117,10 @@ pub fn handle_gc(days: u64, dry_run: bool) -> Result<()> {
         println_content("  Recent (kept):");
         hsep();
         for branch in &recent_branches {
-            if let Some((dll, function, _attempt)) = parse_translation_branch(branch) {
+            if let Some((binary, function, _attempt)) = parse_translation_branch(branch) {
                 let display = match &function {
-                    Some(func) => format!("  {}  {}/{}", dim("●"), dll, func),
-                    None => format!("  {}  {}", dim("●"), dll),
+                    Some(func) => format!("  {}  {}/{}", dim("●"), binary, func),
+                    None => format!("  {}  {}", dim("●"), binary),
                 };
                 println_content(display);
             }
@@ -146,7 +146,7 @@ pub fn handle_gc(days: u64, dry_run: bool) -> Result<()> {
             Some(func) => format!(
                 "  {}  {}/{} v{}  ({:.1}d ago)",
                 red_bold("○"),
-                candidate.dll,
+                candidate.binary,
                 func,
                 candidate.attempt,
                 candidate.days_old,
@@ -154,7 +154,7 @@ pub fn handle_gc(days: u64, dry_run: bool) -> Result<()> {
             None => format!(
                 "  {}  {} v{}  ({:.1}d ago)",
                 red_bold("○"),
-                candidate.dll,
+                candidate.binary,
                 candidate.attempt,
                 candidate.days_old,
             ),
@@ -184,16 +184,16 @@ pub fn handle_gc(days: u64, dry_run: bool) -> Result<()> {
             candidate
                 .function
                 .as_ref()
-                .map(|f| format!("{}/{}", candidate.dll, f))
-                .unwrap_or_else(|| candidate.dll.clone()),
+                .map(|f| format!("{}/{}", candidate.binary, f))
+                .unwrap_or_else(|| candidate.binary.clone()),
             candidate.attempt
         );
 
         match git.archive_branch(&candidate.name, &archive_ref) {
             Ok(()) => {
                 let display = match &candidate.function {
-                    Some(func) => format!("{}/{}", candidate.dll, func),
-                    None => candidate.dll.clone(),
+                    Some(func) => format!("{}/{}", candidate.binary, func),
+                    None => candidate.binary.clone(),
                 };
                 println_content(format!(
                     "  {}  {} [v{}] → {}",
@@ -208,7 +208,7 @@ pub fn handle_gc(days: u64, dry_run: bool) -> Result<()> {
                 println_content(format!(
                     "  {}  {} [v{}] — {}",
                     red_bold("✗"),
-                    candidate.dll,
+                    candidate.binary,
                     candidate.attempt,
                     e
                 ));
@@ -234,9 +234,9 @@ pub fn handle_gc(days: u64, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-/// Parse a translation branch name into (dll, function, attempt).
+/// Parse a translation branch name into (binary, function, attempt).
 ///
-/// Handles both `re/{dll}/{function}v{N}` and branches without a function
+/// Handles both `re/{binary}/{function}v{N}` and branches without a function
 /// component (e.g. shim or classify branches).
 fn parse_translation_branch(branch: &str) -> Option<(String, Option<String>, u32)> {
     let rest = branch.strip_prefix("re/")?;
@@ -266,10 +266,10 @@ fn parse_translation_branch(branch: &str) -> Option<(String, Option<String>, u32
         return None;
     }
 
-    let dll = parts[0].to_string();
+    let binary = parts[0].to_string();
     let function = parts.get(1).map(|s| s.to_string());
 
-    Some((dll, function, attempt))
+    Some((binary, function, attempt))
 }
 
 /// Get the commit date of the HEAD commit for a branch.

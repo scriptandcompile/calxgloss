@@ -228,7 +228,7 @@ pub fn build_signature_prompt(data: &SignaturePromptData) -> Result<String, Prom
 /// Used for functions where test generation is not feasible.
 pub fn build_disassembly_prompt(data: &DisassemblyPromptData) -> Result<String, PromptError> {
     let req = TranslationRequest {
-        dll: data.dll_name.clone(),
+        binary: data.dll_name.clone().into(),
         function: data.function_name.clone(),
         disassembly: data.disassembly.clone(),
         decompiler_output: data.decompiler_output.clone(),
@@ -412,7 +412,7 @@ fn build_std_request(data: &ComplexityPromptData) -> TranslationRequest {
         .collect();
 
     TranslationRequest {
-        dll: data.dll_name.clone(),
+        binary: data.dll_name.clone().into(),
         function: data.function_name.clone(),
         disassembly: data.disassembly.clone(),
         decompiler_output: data.decompiler_output.clone(),

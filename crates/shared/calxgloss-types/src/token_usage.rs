@@ -38,6 +38,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::identity::BinaryIdentity;
+
 /// A single token usage entry recording the token count for one translation attempt.
 ///
 /// Each entry captures which function and DLL it belongs to, the attempt number,
@@ -46,7 +48,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TokenUsageEntry {
     /// The DLL filename (e.g., `"game_logic.dll"`).
-    pub dll: String,
+    pub binary: BinaryIdentity,
 
     /// The function name that was translated.
     pub function: String,
@@ -82,7 +84,7 @@ pub struct TokenUsageEntry {
 impl TokenUsageEntry {
     /// Create a new token usage entry with the current timestamp.
     pub fn new(
-        dll: impl Into<String>,
+        binary: impl Into<BinaryIdentity>,
         function: impl Into<String>,
         attempt: u32,
         strategy: impl Into<String>,
@@ -90,7 +92,7 @@ impl TokenUsageEntry {
         success: bool,
     ) -> Self {
         Self {
-            dll: dll.into(),
+            binary: binary.into(),
             function: function.into(),
             attempt,
             strategy: strategy.into(),
@@ -104,7 +106,7 @@ impl TokenUsageEntry {
 
     /// Create a new token usage entry with the current timestamp and a context tier label.
     pub fn new_with_tier(
-        dll: impl Into<String>,
+        binary: impl Into<BinaryIdentity>,
         function: impl Into<String>,
         attempt: u32,
         strategy: impl Into<String>,
@@ -113,7 +115,7 @@ impl TokenUsageEntry {
         context_tier: impl Into<String>,
     ) -> Self {
         Self {
-            dll: dll.into(),
+            binary: binary.into(),
             function: function.into(),
             attempt,
             strategy: strategy.into(),
@@ -155,14 +157,14 @@ pub struct TokenUsageStats {
     pub failed_tokens: usize,
 
     /// Per-DLL token totals.
-    pub by_dll: Vec<DllTokenStats>,
+    pub by_binary: Vec<BinaryTokenStats>,
 }
 
 /// Token consumption statistics for a single DLL.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DllTokenStats {
+pub struct BinaryTokenStats {
     /// The DLL filename.
-    pub dll: String,
+    pub binary: BinaryIdentity,
     /// Total attempts for this DLL.
     pub total_attempts: usize,
     /// Total tokens consumed.
@@ -206,29 +208,30 @@ impl TokenUsageLog {
         let failed_tokens = total_tokens.saturating_sub(successful_tokens);
 
         // Group by DLL
-        let mut dll_map: std::collections::HashMap<String, (usize, usize)> =
+        let mut binary_map: std::collections::HashMap<BinaryIdentity, (usize, usize)> =
             std::collections::HashMap::new();
         for entry in &self.entries {
-            let (attempts, tokens) = dll_map.entry(entry.dll.clone()).or_insert((0, 0));
+            let (attempts, tokens) = binary_map.entry(entry.binary.clone()).or_insert((0, 0));
             *attempts += 1;
             *tokens += entry.tokens_used;
         }
 
-        let by_dll: Vec<DllTokenStats> = dll_map
+        let mut by_binary: Vec<BinaryTokenStats> = binary_map
             .into_iter()
-            .map(|(dll, (attempts, tokens))| DllTokenStats {
-                dll,
+            .map(|(binary, (attempts, tokens))| BinaryTokenStats {
+                binary,
                 total_attempts: attempts,
                 total_tokens: tokens,
             })
             .collect();
+        by_binary.sort_by(|a, b| a.binary.cmp(&b.binary));
 
         TokenUsageStats {
             total_entries: total,
             total_tokens,
             successful_tokens,
             failed_tokens,
-            by_dll,
+            by_binary,
         }
     }
 
@@ -273,7 +276,7 @@ mod tests {
     #[test]
     fn test_entry_creation() {
         let entry = TokenUsageEntry::new("game_logic.dll", "DrawSprite", 1, "initial", 4096, true);
-        assert_eq!(entry.dll, "game_logic.dll");
+        assert_eq!(entry.binary, "game_logic.dll");
         assert_eq!(entry.function, "DrawSprite");
         assert_eq!(entry.attempt, 1);
         assert_eq!(entry.strategy, "initial");
@@ -294,7 +297,7 @@ mod tests {
             true,
             "with_tests",
         );
-        assert_eq!(entry.dll, "game_logic.dll");
+        assert_eq!(entry.binary, "game_logic.dll");
         assert_eq!(entry.function, "DrawSprite");
         assert_eq!(entry.attempt, 1);
         assert_eq!(entry.strategy, "initial");
@@ -312,7 +315,7 @@ mod tests {
         assert_eq!(stats.total_tokens, 0);
         assert_eq!(stats.successful_tokens, 0);
         assert_eq!(stats.failed_tokens, 0);
-        assert!(stats.by_dll.is_empty());
+        assert!(stats.by_binary.is_empty());
     }
 
     #[test]
@@ -327,8 +330,8 @@ mod tests {
         assert_eq!(stats.total_tokens, 2048);
         assert_eq!(stats.successful_tokens, 2048);
         assert_eq!(stats.failed_tokens, 0);
-        assert_eq!(stats.by_dll.len(), 1);
-        assert_eq!(stats.by_dll[0].total_tokens, 2048);
+        assert_eq!(stats.by_binary.len(), 1);
+        assert_eq!(stats.by_binary[0].total_tokens, 2048);
     }
 
     #[test]
@@ -366,12 +369,12 @@ mod tests {
         assert_eq!(stats.total_tokens, 4096 + 3072 + 2048);
         assert_eq!(stats.successful_tokens, 3072 + 2048);
         assert_eq!(stats.failed_tokens, 4096);
-        assert_eq!(stats.by_dll.len(), 2);
+        assert_eq!(stats.by_binary.len(), 2);
 
         let gl = stats
-            .by_dll
+            .by_binary
             .iter()
-            .find(|d| d.dll == "game_logic.dll")
+            .find(|d| d.binary == "game_logic.dll")
             .unwrap();
         assert_eq!(gl.total_attempts, 2);
         assert_eq!(gl.total_tokens, 4096 + 3072);
@@ -393,7 +396,7 @@ mod tests {
         let deserialized: TokenUsageLog = serde_json::from_str(&json).expect("should deserialize");
 
         assert_eq!(deserialized.entries.len(), 1);
-        assert_eq!(deserialized.entries[0].dll, "game_logic.dll");
+        assert_eq!(deserialized.entries[0].binary, "game_logic.dll");
         assert_eq!(deserialized.entries[0].function, "DrawSprite");
         assert_eq!(deserialized.entries[0].tokens_used, 4096);
         assert!(!deserialized.entries[0].success);
@@ -418,7 +421,7 @@ mod tests {
 
         assert_eq!(deserialized.total_entries, 1);
         assert_eq!(deserialized.total_tokens, 1024);
-        assert_eq!(deserialized.by_dll.len(), 1);
+        assert_eq!(deserialized.by_binary.len(), 1);
     }
 
     #[test]
@@ -469,7 +472,7 @@ mod tests {
 
         // …and logs written before durations existed still deserialize,
         // with the field reading as unmeasured rather than zero.
-        let legacy = r#"{"dll":"game_logic.dll","function":"DrawSprite","attempt":1,
+        let legacy = r#"{"binary":"game_logic.dll","function":"DrawSprite","attempt":1,
             "strategy":"initial","tokens_used":2048,"success":true,"timestamp":1767225600}"#;
         let legacy_entry: TokenUsageEntry =
             serde_json::from_str(legacy).expect("legacy entry should deserialize");

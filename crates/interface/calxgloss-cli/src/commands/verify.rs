@@ -11,13 +11,13 @@ use crate::utils::*;
 
 /// Handle the `verify` subcommand: verify a translated function.
 pub async fn handle_verify(
-    dll: &str,
+    binary: &str,
     function: &str,
     rust_source: &Path,
     baseline_path: Option<&Path>,
     workspace: &Path,
 ) -> Result<()> {
-    info!(dll = %dll, function = %function, "Starting verification");
+    info!(binary = %binary, function = %function, "Starting verification");
 
     // Read the translated Rust code
     let rust_code = std::fs::read_to_string(rust_source)
@@ -28,7 +28,7 @@ pub async fn handle_verify(
     // Load baseline tests if available
     let baseline_path = baseline_path
         .map(PathBuf::from)
-        .or_else(|| Some(TestGenerator::new(workspace).baseline_path(dll, function)));
+        .or_else(|| Some(TestGenerator::new(workspace).baseline_path(binary, function)));
 
     let baseline_tests: Vec<calxgloss::TestCase> = match &baseline_path {
         Some(path) if path.exists() => {
@@ -48,7 +48,7 @@ pub async fn handle_verify(
     // Verify
     let verifier = Verifier::new(workspace).context("Failed to create verifier")?;
     let verification = verifier
-        .verify(dll, function, &rust_code, &baseline_tests)
+        .verify(binary, function, &rust_code, &baseline_tests)
         .await
         .context("Verification failed")?;
 
@@ -60,12 +60,12 @@ pub async fn handle_verify(
         cyan_bold(&"═".repeat(58))
     );
     println!("  {}{}", white_bold("  Function: "), function);
-    let label = if dll.to_lowercase().ends_with(".exe") {
+    let label = if binary.to_lowercase().ends_with(".exe") {
         "File:"
     } else {
         "DLL:"
     };
-    println!("  {}{}", white_bold(&format!("  {label} ")), dll);
+    println!("  {}{}", white_bold(&format!("  {label} ")), binary);
     println!("  {}{}", white_bold("  Source: "), rust_source.display());
     println!("{}", cyan_bold(&"═".repeat(58)));
     print_verification_results(&verification);

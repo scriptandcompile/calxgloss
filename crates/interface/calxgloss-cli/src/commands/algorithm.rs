@@ -3,7 +3,7 @@
 //! Runs the three recognition detectors — control flow signature
 //! matching, string-guided hints, and callback pattern detection —
 //! against the program currently open in Ghidra and saves the result to
-//! `re/analysis/algorithm/{dll}.json` in the workspace. Batch
+//! `re/analysis/algorithm/{binary}.json` in the workspace. Batch
 //! translation runs the same scan before its first batch when no result
 //! is cached; this command is the manual entry point: it rebuilds the
 //! result on demand and can print what a cached one holds.
@@ -25,10 +25,10 @@ use crate::utils::*;
 /// How many entries a detail section lists before collapsing the rest.
 const DETAIL_LIMIT: usize = 10;
 
-/// Handle the `algorithm` subcommand: recognize algorithms in `dll`,
+/// Handle the `algorithm` subcommand: recognize algorithms in `binary`,
 /// or print the cached result when `show` is set.
 pub async fn handle_algorithm(
-    dll: &str,
+    binary: &str,
     workspace: &Path,
     show: bool,
     settings: &Settings,
@@ -36,17 +36,17 @@ pub async fn handle_algorithm(
     let persistor = AlgorithmPersistor::new(workspace);
 
     if show {
-        let result = persistor.load(dll).with_context(|| {
+        let result = persistor.load(binary).with_context(|| {
             format!(
-                "No cached algorithm recognition result for {dll}; \
-                 run `calxgloss algorithm --dll {dll}` to produce one"
+                "No cached algorithm recognition result for {binary}; \
+                 run `calxgloss algorithm --binary {binary}` to produce one"
             )
         })?;
-        print_algorithm_recognition_report(&result, &persistor.path_for(dll));
+        print_algorithm_recognition_report(&result, &persistor.path_for(binary));
         return Ok(());
     }
 
-    info!(dll, workspace = %workspace.display(), "Recognizing algorithms");
+    info!(binary, workspace = %workspace.display(), "Recognizing algorithms");
 
     let ghidra_url = &settings.ghidra_url.value;
     let mut config = GhidraConfig::new(ghidra_url)
@@ -59,14 +59,14 @@ pub async fn handle_algorithm(
 
     let engine = AlgorithmEngine::new(&ghidra);
     let result = engine
-        .scan(dll)
+        .scan(binary)
         .await
-        .with_context(|| format!("Algorithm recognition failed for {dll}"))?;
+        .with_context(|| format!("Algorithm recognition failed for {binary}"))?;
     persistor
         .save(&result)
-        .with_context(|| format!("Failed to save the algorithm recognition result for {dll}"))?;
+        .with_context(|| format!("Failed to save the algorithm recognition result for {binary}"))?;
 
-    print_algorithm_recognition_report(&result, &persistor.path_for(dll));
+    print_algorithm_recognition_report(&result, &persistor.path_for(binary));
     Ok(())
 }
 

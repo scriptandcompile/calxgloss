@@ -121,7 +121,7 @@ pub struct BehaviorDivergenceSignal {
     pub suggested_new_baseline_tests: Vec<EdgeCaseTest>,
 
     /// The DLL where the divergence was found.
-    pub dll: String,
+    pub binary: String,
 
     /// The function where the divergence was found.
     pub function: String,
@@ -206,7 +206,7 @@ impl BehaviorDivergenceDetector {
     ///
     /// # Arguments
     ///
-    /// * `dll` — The DLL name.
+    /// * `binary` — The DLL name.
     /// * `function` — The function name.
     /// * `attempt` — The 1-based attempt number.
     /// * `strategy` — The retry strategy label.
@@ -226,7 +226,7 @@ impl BehaviorDivergenceDetector {
     #[allow(clippy::too_many_arguments)]
     pub fn detect_divergence(
         &self,
-        dll: &str,
+        binary: &str,
         function: &str,
         attempt: u32,
         strategy: &str,
@@ -296,7 +296,7 @@ impl BehaviorDivergenceDetector {
             edge_tests_total: edge_results.len(),
             failing_edge_cases: failing,
             suggested_new_baseline_tests: suggested,
-            dll: dll.to_string(),
+            binary: binary.to_string(),
             function: function.to_string(),
             attempt,
             strategy: strategy.to_string(),
@@ -696,7 +696,7 @@ mod tests {
         assert_eq!(s.failing_edge_cases.len(), 1);
         assert_eq!(s.failing_edge_cases[0].label, "zero");
         assert_eq!(s.suggested_new_baseline_tests.len(), 1);
-        assert_eq!(s.dll, "game_logic.dll");
+        assert_eq!(s.binary, "game_logic.dll");
         assert_eq!(s.function, "AddTwo");
     }
 
@@ -946,7 +946,7 @@ mod tests {
                 EdgeCaseTest::new("negative", serde_json::json!([-1]), serde_json::json!(-1)),
             ],
             suggested_new_baseline_tests: Vec::new(),
-            dll: "t".into(),
+            binary: "t".into(),
             function: "f".into(),
             attempt: 1,
             strategy: "initial".into(),
@@ -973,7 +973,7 @@ mod tests {
                 ),
             ],
             suggested_new_baseline_tests: Vec::new(),
-            dll: "t".into(),
+            binary: "t".into(),
             function: "f".into(),
             attempt: 1,
             strategy: "initial".into(),
@@ -1011,7 +1011,7 @@ mod tests {
                 ),
             ],
             suggested_new_baseline_tests: Vec::new(),
-            dll: "t".into(),
+            binary: "t".into(),
             function: "f".into(),
             attempt: 1,
             strategy: "initial".into(),
@@ -1037,7 +1037,7 @@ mod tests {
                 serde_json::json!(200),
             )],
             suggested_new_baseline_tests: Vec::new(),
-            dll: "t".into(),
+            binary: "t".into(),
             function: "f".into(),
             attempt: 1,
             strategy: "initial".into(),
@@ -1086,7 +1086,7 @@ mod tests {
                 EdgeCaseTest::new("j", serde_json::json!([0i64]), serde_json::json!(0i64)),
             ],
             suggested_new_baseline_tests: Vec::new(),
-            dll: "t".into(),
+            binary: "t".into(),
             function: "f".into(),
             attempt: 1,
             strategy: "initial".into(),
@@ -1119,7 +1119,7 @@ mod tests {
                 serde_json::json!([0]),
                 serde_json::json!(0),
             )],
-            dll: "game.dll".into(),
+            binary: "game.dll".into(),
             function: "Compute".into(),
             attempt: 3,
             strategy: "test_fix".into(),
@@ -1145,7 +1145,7 @@ mod tests {
                 EdgeCaseTest::new("negative", serde_json::json!([-5]), serde_json::json!(-5)),
             ],
             suggested_new_baseline_tests: Vec::new(),
-            dll: "t".into(),
+            binary: "t".into(),
             function: "f".into(),
             attempt: 1,
             strategy: "initial".into(),
@@ -1254,7 +1254,7 @@ mod tests {
             .unwrap();
 
         let cloned = signal.clone();
-        assert_eq!(cloned.dll, signal.dll);
+        assert_eq!(cloned.binary, signal.binary);
         assert_eq!(cloned.function, signal.function);
         assert_eq!(
             cloned.failing_edge_cases.len(),

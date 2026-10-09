@@ -59,10 +59,10 @@ pub async fn handle_auto_shim(
 
     // Determine which DLLs to process.
     let (dll_names, classifications): (Vec<String>, Vec<calxgloss_analysis::DllClassification>) =
-        if let Some(dll) = dll_filter {
+        if let Some(binary) = dll_filter {
             // Process a single specified DLL.
-            let classification = analyzer.classify_dll(dll).await?;
-            let names: Vec<String> = vec![dll.to_string()];
+            let classification = analyzer.classify_dll(binary).await?;
+            let names: Vec<String> = vec![binary.to_string()];
             (names, vec![classification])
         } else {
             // Read existing classification records to find CrateReplacement DLLs.
@@ -92,7 +92,7 @@ pub async fn handle_auto_shim(
                         c.strategy,
                         calxgloss_analysis::Strategy::CrateReplacement { .. }
                     ) {
-                        names.push(c.dll.clone());
+                        names.push(c.binary.clone());
                         classif.push(c);
                     }
                 }
@@ -105,7 +105,7 @@ pub async fn handle_auto_shim(
                 );
                 println!();
                 println_content(
-                    "Run `classify --dll <dll1> <dll2> ...` to produce crate-replacement candidates.",
+                    "Run `classify --binary <dll1> <dll2> ...` to produce crate-replacement candidates.",
                 );
                 return Ok(());
             }
@@ -163,7 +163,7 @@ pub async fn handle_auto_shim(
         match result {
             Ok(pipeline_result) => {
                 info!(
-                    dll = %pipeline_result.shim.source_dll,
+                    binary = %pipeline_result.shim.source_dll,
                     mappings = pipeline_result.mapping_count,
                     "Shim generated successfully"
                 );

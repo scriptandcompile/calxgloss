@@ -457,6 +457,7 @@ dependencies = [
  "calxgloss-testgen",
  "calxgloss-translator",
  "calxgloss-typeinfer",
+ "calxgloss-types",
  "calxgloss-typesdb",
  "calxgloss-verify",
  "calxgloss-web",

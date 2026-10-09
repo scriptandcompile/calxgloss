@@ -3,7 +3,7 @@
 //! Runs the three recovery scans — named types from Ghidra's Type Manager,
 //! vtable detection, and string-guided struct inference — against the
 //! program currently open in Ghidra and saves the result to
-//! `re/analysis/typesdb/{dll}.json` in the workspace. Batch translation
+//! `re/analysis/typesdb/{binary}.json` in the workspace. Batch translation
 //! runs the same recovery before its first batch when no database is
 //! cached; this command is the manual entry point: it rebuilds the
 //! database on demand and can print what a cached one holds.
@@ -24,10 +24,10 @@ use crate::utils::*;
 /// How many entries a detail section lists before collapsing the rest.
 const DETAIL_LIMIT: usize = 10;
 
-/// Handle the `typesdb` subcommand: recover the type database for `dll`,
+/// Handle the `typesdb` subcommand: recover the type database for `binary`,
 /// or print the cached one when `show` is set.
 pub async fn handle_typesdb(
-    dll: &str,
+    binary: &str,
     workspace: &Path,
     show: bool,
     no_tag: bool,
@@ -36,17 +36,17 @@ pub async fn handle_typesdb(
     let persistor = TypeDatabasePersistor::new(workspace);
 
     if show {
-        let db = persistor.load(dll).with_context(|| {
+        let db = persistor.load(binary).with_context(|| {
             format!(
-                "No cached type database for {dll}; \
-                 run `calxgloss typesdb --dll {dll}` to recover one"
+                "No cached type database for {binary}; \
+                 run `calxgloss typesdb --binary {binary}` to recover one"
             )
         })?;
-        print_type_database_report(&db, &persistor.path_for(dll));
+        print_type_database_report(&db, &persistor.path_for(binary));
         return Ok(());
     }
 
-    info!(dll, workspace = %workspace.display(), "Recovering type database");
+    info!(binary, workspace = %workspace.display(), "Recovering type database");
 
     let ghidra_url = &settings.ghidra_url.value;
     let mut config = GhidraConfig::new(ghidra_url)
@@ -63,14 +63,14 @@ pub async fn handle_typesdb(
     }
 
     let db = engine
-        .scan(dll)
+        .scan(binary)
         .await
-        .with_context(|| format!("Type database recovery failed for {dll}"))?;
+        .with_context(|| format!("Type database recovery failed for {binary}"))?;
     persistor
         .save(&db)
-        .with_context(|| format!("Failed to save the type database for {dll}"))?;
+        .with_context(|| format!("Failed to save the type database for {binary}"))?;
 
-    print_type_database_report(&db, &persistor.path_for(dll));
+    print_type_database_report(&db, &persistor.path_for(binary));
     Ok(())
 }
 
