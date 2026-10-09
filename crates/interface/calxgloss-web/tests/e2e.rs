@@ -3556,6 +3556,32 @@ async fn test_headless_pipeline_binary_rows() {
         ),
         "the redundant strategy column is gone"
     );
+    assert!(
+        eval_bool(
+            r#"(() => {
+                const pairs = [
+                    ['.pipeline-binary-counts', 2],
+                    ['.pipeline-binary-cost', 2],
+                    ['div:nth-child(4)', 1],
+                ];
+                for (const [sel, n] of pairs) {
+                    const h = document.querySelector(`#pipeline-binaries .pipeline-binary-header ${sel}`);
+                    const r = document.querySelector(`#pipeline-binaries .pipeline-binary-row[data-dll] ${sel}`);
+                    if (!h || !r) return false;
+                    const hb = h.getBoundingClientRect(), rb = r.getBoundingClientRect();
+                    if (Math.abs(hb.left - rb.left) > 2 || Math.abs(hb.width - rb.width) > 2) return false;
+                    if (n > 1) {
+                        const hc = [...h.children].map(c => c.getBoundingClientRect());
+                        const rc = [...r.children].map(c => c.getBoundingClientRect());
+                        for (let i = 0; i < n; i++)
+                            if (Math.abs(hc[i].left - rc[i].left) > 2) return false;
+                    }
+                }
+                return true;
+            })()"#
+        ),
+        "column headers line up with the data cells beneath them"
+    );
 
     // ── Honesty: unknown totals, tokens, and rates are em-dashes ──────
     for (dll, selector) in [
