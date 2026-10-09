@@ -29,6 +29,15 @@ pub enum CallbackError {
     #[error("empty function name")]
     EmptyFunctionName,
 
+    /// Too many of the program's functions failed to decompile for the
+    /// scan to be trusted — the signature of the bridge answering from
+    /// the wrong program. The skip-rate breaker aborts the scan rather
+    /// than letting it persist a phantom-clean record.
+    #[error(
+        "Ghidra failed to decompile {failed} of {total} functions — is the right program open?"
+    )]
+    DecompileBreaker { failed: usize, total: usize },
+
     /// A callback scan failed for a DLL.
     #[error("callback scan failed for '{binary}': {reason}")]
     ScanFailed { binary: String, reason: String },

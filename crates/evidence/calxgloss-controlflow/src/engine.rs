@@ -125,7 +125,12 @@ impl<S> ControlFlowEngine<S> {
     /// A function whose body Ghidra cannot produce (a thunk, a bad
     /// entry point) is skipped with a warning; only a failure of the
     /// listing itself — the server being down — aborts the run, since
-    /// then nothing was scanned. A chain can read as both a switch and
+    /// then nothing was scanned.
+    /// But when more than half the listing fails to decompile, the
+    /// skip-rate breaker aborts the run too: that is the signature of
+    /// the bridge answering from the wrong program, and skipping on
+    /// would persist a phantom-clean record (issue #71).
+    /// A chain can read as both a switch and
     /// a state machine, so a function can carry findings of every kind
     /// at once and nothing is resolved between them.
     pub async fn scan(&self, binary: impl Into<String>) -> Result<ControlFlowResult>
@@ -137,6 +142,7 @@ impl<S> ControlFlowEngine<S> {
 
         let mut findings = Vec::new();
         let mut skipped = 0usize;
+        let mut decompile_failures = 0usize;
         for function in &functions {
             if function.name.is_empty() {
                 // A nameless listing entry would send the name lookup
@@ -158,6 +164,19 @@ impl<S> ControlFlowEngine<S> {
                         "Skipping function: decompile failed"
                     );
                     skipped += 1;
+                    decompile_failures += 1;
+                    // Skip-rate breaker: once most of the listing has
+                    // failed to decompile, the scan is reading the
+                    // wrong program (or a half-broken server), and an
+                    // empty result would persist as a phantom-clean
+                    // record. Abort with the counts instead of
+                    // skipping on.
+                    if decompile_failures * 2 > functions.len() {
+                        return Err(crate::ControlFlowError::DecompileBreaker {
+                            failed: decompile_failures,
+                            total: functions.len(),
+                        });
+                    }
                     continue;
                 }
             };
@@ -443,6 +462,61 @@ mod tests {
             "the failing function contributed nothing"
         );
         assert_eq!(program.decompiled(), vec!["FUN_18003ab00", "FUN_18003e750"]);
+    }
+
+    #[tokio::test]
+    async fn a_scan_where_every_decompile_fails_aborts() {
+        // The 2026-10-08 incident: the bridge answered the listing from
+        // one program and the decompiles from another, every decompile
+        // failed, and the scan nearly persisted a phantom-clean record
+        // under the target's name. The skip-rate breaker aborts with
+        // the counts instead, so nothing is persisted.
+        let mut program = program();
+        program.fail_decompiles = vec!["FUN_18003ab00".into(), "FUN_18003e750".into()];
+        let result = ControlFlowEngine::with_source(program)
+            .scan("eqmain.dll")
+            .await;
+        assert!(matches!(
+            result,
+            Err(crate::ControlFlowError::DecompileBreaker {
+                failed: 2,
+                total: 2
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_breaker_stops_the_scan_from_decompiling_the_rest() {
+        // The breaker is a circuit breaker, not a post-mortem: once
+        // most of the listing has failed, the remaining decompiles are
+        // wasted round-trips against the wrong program.
+        let mut program = program();
+        program.listing.push(summary("FUN_1800412a0"));
+        program.bodies.insert(
+            "FUN_1800412a0".into(),
+            function(
+                "FUN_1800412a0",
+                "undefined FUN_1800412a0(void)",
+                "  return;\n",
+            ),
+        );
+        program.fail_decompiles = vec!["FUN_18003ab00".into(), "FUN_18003e750".into()];
+        let result = ControlFlowEngine::with_source(program.clone())
+            .scan("eqmain.dll")
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(crate::ControlFlowError::DecompileBreaker {
+                failed: 2,
+                total: 3
+            })
+        ));
+        assert_eq!(
+            program.decompiled(),
+            vec!["FUN_18003ab00", "FUN_18003e750"],
+            "the scan stopped once the breaker tripped"
+        );
     }
 
     #[tokio::test]

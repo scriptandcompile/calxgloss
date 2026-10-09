@@ -147,6 +147,10 @@ impl<S> AlgorithmEngine<S> {
     /// string listing — the server being down — aborts the run: the
     /// listing failure means nothing was scanned, and a listing failure
     /// would silently cost every function its string-guided evidence.
+    /// But when more than half the listing fails to decompile, the
+    /// skip-rate breaker aborts the run too: that is the signature of
+    /// the bridge answering from the wrong program, and skipping on
+    /// would persist a phantom-clean record (issue #71).
     pub async fn scan(&self, binary: impl Into<String>) -> Result<AlgorithmRecognitionResult>
     where
         S: ScanSource,
@@ -157,6 +161,7 @@ impl<S> AlgorithmEngine<S> {
 
         let mut hints = Vec::new();
         let mut skipped = 0usize;
+        let mut decompile_failures = 0usize;
         for function in &functions {
             if function.name.is_empty() {
                 // A nameless listing entry would send the name lookup
@@ -178,6 +183,19 @@ impl<S> AlgorithmEngine<S> {
                         "Skipping function: decompile failed"
                     );
                     skipped += 1;
+                    decompile_failures += 1;
+                    // Skip-rate breaker: once most of the listing has
+                    // failed to decompile, the scan is reading the
+                    // wrong program (or a half-broken server), and an
+                    // empty result would persist as a phantom-clean
+                    // record. Abort with the counts instead of
+                    // skipping on.
+                    if decompile_failures * 2 > functions.len() {
+                        return Err(crate::AlgorithmError::DecompileBreaker {
+                            failed: decompile_failures,
+                            total: functions.len(),
+                        });
+                    }
                     continue;
                 }
             };
@@ -595,6 +613,40 @@ mod tests {
         assert_eq!(
             program.decompiled(),
             vec!["FUN_18003ab00", "FUN_18003e750", "FUN_1800412a0"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_scan_where_every_decompile_fails_aborts() {
+        // The 2026-10-08 incident: the bridge answered the listing from
+        // one program and the decompiles from another, every decompile
+        // failed, and the scan nearly persisted a phantom-clean record
+        // under the target's name. The skip-rate breaker aborts with
+        // the counts instead, so nothing is persisted.
+        let mut program = program();
+        program.fail_decompiles = vec![
+            "FUN_18003ab00".into(),
+            "FUN_18003e750".into(),
+            "FUN_1800412a0".into(),
+        ];
+        let result = AlgorithmEngine::with_source(program.clone())
+            .scan("eqmain.dll")
+            .await;
+
+        // The breaker is a circuit breaker, not a post-mortem: it trips
+        // the moment most of the listing has failed, so the third
+        // decompile is never issued.
+        assert!(matches!(
+            result,
+            Err(crate::AlgorithmError::DecompileBreaker {
+                failed: 2,
+                total: 3
+            })
+        ));
+        assert_eq!(
+            program.decompiled(),
+            vec!["FUN_18003ab00", "FUN_18003e750"],
+            "the scan stopped once the breaker tripped"
         );
     }
 

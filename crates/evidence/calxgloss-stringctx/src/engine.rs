@@ -151,6 +151,10 @@ impl<S> StringContextEngine<S> {
     /// resolution. Only a failure of the function listing itself — the
     /// server being down — aborts the run, since then nothing can be
     /// scanned.
+    /// But when more than half the listing fails to decompile, the
+    /// skip-rate breaker aborts the run too: that is the signature of
+    /// the bridge answering from the wrong program, and skipping on
+    /// would persist a phantom-clean record (issue #71).
     pub async fn scan(&self, binary: impl Into<String>) -> Result<StringContextResult>
     where
         S: ScanSource,
@@ -186,6 +190,7 @@ impl<S> StringContextEngine<S> {
 
         let mut findings = Vec::new();
         let mut skipped = 0usize;
+        let mut decompile_failures = 0usize;
         for function in &functions {
             if function.name.is_empty() {
                 // A nameless listing entry would send the name lookup
@@ -207,6 +212,19 @@ impl<S> StringContextEngine<S> {
                         "Skipping function: decompile failed"
                     );
                     skipped += 1;
+                    decompile_failures += 1;
+                    // Skip-rate breaker: once most of the listing has
+                    // failed to decompile, the scan is reading the
+                    // wrong program (or a half-broken server), and an
+                    // empty result would persist as a phantom-clean
+                    // record. Abort with the counts instead of
+                    // skipping on.
+                    if decompile_failures * 2 > functions.len() {
+                        return Err(crate::StringCtxError::DecompileBreaker {
+                            failed: decompile_failures,
+                            total: functions.len(),
+                        });
+                    }
                     continue;
                 }
             };
@@ -535,6 +553,57 @@ mod tests {
             .expect("scan");
         assert!(result.for_function("FUN_18003ab00").next().is_none());
         assert!(result.for_function("FUN_18003e750").next().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_scan_where_every_decompile_fails_aborts() {
+        // The 2026-10-08 incident: the bridge answered the listing from
+        // one program and the decompiles from another, every decompile
+        // failed, and the scan nearly persisted a phantom-clean record
+        // under the target's name. The skip-rate breaker aborts with
+        // the counts instead, so nothing is persisted.
+        let mut program = program();
+        program.fail_decompile = vec!["FUN_18003ab00".into(), "FUN_18003e750".into()];
+        let result = StringContextEngine::with_source(program)
+            .scan("eqmain.dll")
+            .await;
+        assert!(matches!(
+            result,
+            Err(crate::StringCtxError::DecompileBreaker {
+                failed: 2,
+                total: 2
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_breaker_stops_the_scan_from_decompiling_the_rest() {
+        // The breaker is a circuit breaker, not a post-mortem: once
+        // most of the listing has failed, the remaining decompiles are
+        // wasted round-trips against the wrong program.
+        let mut program = program();
+        program.listing.push(summary("FUN_1800412a0"));
+        program.bodies.insert(
+            "FUN_1800412a0".into(),
+            function("FUN_1800412a0", "  return;\n"),
+        );
+        program.fail_decompile = vec!["FUN_18003ab00".into(), "FUN_18003e750".into()];
+        let result = StringContextEngine::with_source(program.clone())
+            .scan("eqmain.dll")
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(crate::StringCtxError::DecompileBreaker {
+                failed: 2,
+                total: 3
+            })
+        ));
+        assert_eq!(
+            program.decompile_fetches.load(Ordering::SeqCst),
+            2,
+            "the scan stopped once the breaker tripped"
+        );
     }
 
     #[tokio::test]
