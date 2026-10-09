@@ -28,6 +28,7 @@
 pub mod complexity;
 pub mod confidence;
 pub mod context_tier;
+pub mod cscan;
 pub mod dashboard;
 pub mod display;
 pub mod dll;
@@ -52,6 +53,11 @@ pub mod verification;
 pub use complexity::{FailureHint, FunctionComplexity, PromptVariant, detect_complexity};
 pub use confidence::Confidence;
 pub use context_tier::{ContextTier, SuccessRate, record_translation_result, select_context_tier};
+pub use cscan::{
+    CallSite, NON_CALL_KEYWORDS, NameContinuation, ScanOptions, call_sites, cast_group,
+    closing_paren, is_ident_byte, line_at, skip_char, skip_literal, skip_string, skip_ws,
+    split_arguments, strip_casts,
+};
 pub use dashboard::{
     DependencyEdge, DependencyGraph, DependencyNode, ReviewAction, ReviewActionKind,
     ReviewDashboard, ReviewStatus, StatusCounts, UnitOfWork, WorkKind,

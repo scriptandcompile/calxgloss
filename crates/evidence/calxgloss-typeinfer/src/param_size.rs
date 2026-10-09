@@ -20,6 +20,10 @@
 use crate::reading::Reading;
 use crate::types::{InferenceMethod, InferenceScope, InferredParamType};
 use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_types::{
+    CallSite, NameContinuation, ScanOptions, call_sites, cast_group, is_ident_byte, line_at,
+    skip_string, skip_ws, strip_casts,
+};
 use std::collections::HashMap;
 
 // ============================================================
@@ -184,141 +188,21 @@ const STRING_FUNCTIONS: [StringFunction; 23] = [
     },
 ];
 
-/// A direct call found in a body: the callee name, the text of each
-/// top-level argument, and the byte offset of the call.
-struct DirectCall<'a> {
-    callee: &'a str,
-    args: Vec<&'a str>,
-    offset: usize,
-}
+/// The scan this reader uses: every balanced `name(` counts, keyword
+/// shapes included — `if (param_1 & 1)` still reads the parameter's
+/// width. A name preceded by an identifier byte is the tail of a
+/// longer identifier, and one preceded by a `.` is a member access;
+/// neither is a plain call.
+const CALL_SCAN: ScanOptions = ScanOptions {
+    continuation: NameContinuation::Ident,
+    reject_preceding: b".",
+    skip_keywords: &[],
+};
 
-/// Every direct call `name(args)` in the body whose callee is a plain
-/// identifier, scanned outside string literals so a stray `(` in a
-/// format string cannot be read as a call. A name preceded by an
-/// identifier byte is the tail of a longer identifier, and one preceded
-/// by a `.` is a member access; neither is a plain call.
-fn direct_calls(body: &str) -> Vec<DirectCall<'_>> {
-    let bytes = body.as_bytes();
-    let mut calls = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' => i = skip_string(bytes, i + 1),
-            b if b.is_ascii_alphabetic() || b == b'_' => {
-                if i > 0 && (is_ident_byte(bytes[i - 1]) || bytes[i - 1] == b'.') {
-                    i += 1;
-                    continue;
-                }
-                let mut j = i;
-                while j < bytes.len() && is_ident_byte(bytes[j]) {
-                    j += 1;
-                }
-                let open = skip_ws(bytes, j);
-                if j > i && bytes.get(open) == Some(&b'(') {
-                    if let Some(close) = closing_paren(body, open) {
-                        calls.push(DirectCall {
-                            callee: &body[i..j],
-                            args: split_arguments(body, open, close),
-                            offset: i,
-                        });
-                    }
-                    i = j;
-                } else {
-                    i = j;
-                }
-            }
-            _ => i += 1,
-        }
-    }
-    calls
-}
-
-/// The text of each top-level argument of the call whose `(` sits at
-/// `open` and whose `)` sits at `close`, in order. A call with no
-/// arguments yields none.
-fn split_arguments(body: &str, open: usize, close: usize) -> Vec<&str> {
-    let bytes = body.as_bytes();
-    let mut args = Vec::new();
-    let mut depth = 0usize;
-    let mut start = open + 1;
-    let mut i = start;
-    while i < close {
-        match bytes[i] {
-            b'"' => i = skip_string(bytes, i + 1),
-            b'(' | b'[' => {
-                depth += 1;
-                i += 1;
-            }
-            b')' | b']' => {
-                depth -= 1;
-                i += 1;
-            }
-            b',' if depth == 0 => {
-                args.push(body[start..i].trim());
-                start = i + 1;
-                i += 1;
-            }
-            _ => i += 1,
-        }
-    }
-    let last = body[start..close].trim();
-    if !last.is_empty() {
-        args.push(last);
-    }
-    args
-}
-
-/// A call argument with Ghidra casts stripped: the decompiler writes
-/// `strlen((char *)param_2)` when the argument's applied type differs
-/// from the callee's parameter, and the value behind the cast is what
-/// the reading is about.
-fn strip_casts(arg: &str) -> String {
-    let bytes = arg.as_bytes();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'('
-            && let Some(close) = cast_group(bytes, i)
-        {
-            i = skip_ws(bytes, close + 1);
-            while bytes.get(i) == Some(&b'*') {
-                i = skip_ws(bytes, i + 1);
-            }
-            continue;
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).trim().to_string()
-}
-
-/// The index of `)` when the `(` at `open` opens a Ghidra type cast —
-/// a group holding only type words and stars, like `(code **)` or
-/// `(undefined4 *)` — and `None` when it opens a call or a grouped
-/// expression instead.
-fn cast_group(bytes: &[u8], open: usize) -> Option<usize> {
-    let mut i = open + 1;
-    let mut saw_word = false;
-    loop {
-        i = skip_ws(bytes, i);
-        let b = *bytes.get(i)?;
-        match b {
-            b'*' => i += 1,
-            b')' => return saw_word.then_some(i),
-            b if b.is_ascii_alphabetic() || b == b'_' => {
-                let start = i;
-                while i < bytes.len() && is_ident_byte(bytes[i]) {
-                    i += 1;
-                }
-                let word = String::from_utf8_lossy(&bytes[start..i]).to_lowercase();
-                if !is_type_word(&word) {
-                    return None;
-                }
-                saw_word = true;
-            }
-            _ => return None,
-        }
-    }
+/// Every direct call `name(args)` in the body — the shared pseudo-C
+/// scan configured by [`CALL_SCAN`].
+fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
+    call_sites(body, &CALL_SCAN)
 }
 
 /// The type words a Ghidra cast may spell, matching the decompiler's
@@ -495,7 +379,7 @@ fn behind_cast(bytes: &[u8], occ: &Occurrence) -> bool {
     matches!(
         occ.before,
         Some(p) if bytes[p] == b')'
-            && matching_open(bytes, p).is_some_and(|o| cast_group(bytes, o).is_some())
+            && matching_open(bytes, p).is_some_and(|o| cast_group(bytes, o, is_type_word).is_some())
     )
 }
 
@@ -617,7 +501,7 @@ fn dereferences(bytes: &[u8], star: usize) -> bool {
     if bytes[p] == b')'
         && let Some(open) = matching_open(bytes, p)
     {
-        return cast_group(bytes, open).is_some();
+        return cast_group(bytes, open, is_type_word).is_some();
     }
     false
 }
@@ -680,7 +564,7 @@ fn offset_is_read_through(bytes: &[u8], at: usize) -> bool {
     }
     if bytes[p] == b')'
         && let Some(cast_open) = matching_open(bytes, p)
-        && cast_group(bytes, cast_open).is_some()
+        && cast_group(bytes, cast_open, is_type_word).is_some()
     {
         return matches!(prev_non_ws(bytes, cast_open), Some(q) if bytes[q] == b'*');
     }
@@ -815,7 +699,7 @@ impl ParameterSizeDetector {
                 let Some(arg) = call.args.get(position) else {
                     continue;
                 };
-                let value = strip_casts(arg);
+                let value = strip_casts(arg, is_type_word);
                 if let Some(index) = params.iter().position(|p| *p == value) {
                     readings.push(Reading {
                         param_index: index,
@@ -919,56 +803,6 @@ impl ParameterSizeDetector {
 // Scanning helpers
 // ============================================================
 
-/// The trimmed source line containing `offset`.
-fn line_at(body: &str, offset: usize) -> String {
-    let line = body[..offset].matches('\n').count();
-    body.lines().nth(line).unwrap_or("").trim().to_string()
-}
-
-/// The index of `)` matching the `(` at `open`, skipping string literals.
-fn closing_paren(body: &str, open: usize) -> Option<usize> {
-    let bytes = body.as_bytes();
-    let mut depth = 0usize;
-    let mut i = open;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' => i = skip_string(bytes, i + 1),
-            b'(' => {
-                depth += 1;
-                i += 1;
-            }
-            b')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i);
-                }
-                i += 1;
-            }
-            _ => i += 1,
-        }
-    }
-    None
-}
-
-/// The index just past the string literal whose opening `"` sits at `open`.
-fn skip_string(bytes: &[u8], mut i: usize) -> usize {
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => i += 2,
-            b'"' => return i + 1,
-            _ => i += 1,
-        }
-    }
-    bytes.len()
-}
-
-fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
-    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    i
-}
-
 /// The index of the last non-space byte before `at`.
 fn prev_non_ws(bytes: &[u8], at: usize) -> Option<usize> {
     let mut i = at;
@@ -988,10 +822,6 @@ fn next_non_ws(bytes: &[u8], at: usize) -> Option<usize> {
         i += 1;
     }
     (i < bytes.len()).then_some(i)
-}
-
-fn is_ident_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
 }
 
 // ============================================================

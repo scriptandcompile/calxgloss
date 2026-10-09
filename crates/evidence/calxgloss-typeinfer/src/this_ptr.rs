@@ -20,6 +20,8 @@ use regex::Regex;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
+use calxgloss_types::{closing_paren, is_ident_byte, line_at, skip_string, skip_ws};
+
 // ============================================================
 // Vtable call patterns
 // ============================================================
@@ -323,32 +325,6 @@ fn calls_through<'a>(body: &'a str, base: &str) -> Vec<(&'a str, usize, usize)> 
     }
     args
 }
-
-/// The index of `)` matching the `(` at `open`, skipping string literals.
-fn closing_paren(body: &str, open: usize) -> Option<usize> {
-    let bytes = body.as_bytes();
-    let mut depth = 0usize;
-    let mut i = open;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' => i = skip_string(bytes, i + 1),
-            b'(' => {
-                depth += 1;
-                i += 1;
-            }
-            b')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i);
-                }
-                i += 1;
-            }
-            _ => i += 1,
-        }
-    }
-    None
-}
-
 /// The `[slot]` index and the `(` opening the argument list that follows
 /// a closed callee.
 fn slot_and_call_paren(body: &str, from: usize) -> (Option<usize>, Option<usize>) {
@@ -394,36 +370,6 @@ fn first_argument(body: &str, open: usize) -> &str {
     }
     body[start..i].trim()
 }
-
-/// The trimmed source line containing `offset`.
-fn line_at(body: &str, offset: usize) -> String {
-    let line = body[..offset].matches('\n').count();
-    body.lines().nth(line).unwrap_or("").trim().to_string()
-}
-
-/// The index just past the string literal whose opening `"` sits at `open`.
-fn skip_string(bytes: &[u8], mut i: usize) -> usize {
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => i += 2,
-            b'"' => return i + 1,
-            _ => i += 1,
-        }
-    }
-    bytes.len()
-}
-
-fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
-    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    i
-}
-
-fn is_ident_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
-
 fn is_identifier(s: &str) -> bool {
     let mut chars = s.chars();
     match chars.next() {

@@ -34,6 +34,26 @@
 use crate::types::{CountStyle, ReferenceCount};
 use calxgloss_ghidra::DecompiledFunction;
 
+use calxgloss_types::{
+    CallSite, NON_CALL_KEYWORDS, NameContinuation, ScanOptions, call_sites, is_ident_byte, line_at,
+    skip_string, skip_ws, strip_casts,
+};
+
+/// The scan: a `.` followed by an identifier byte continues a demangled
+/// spelling (`operator.delete`), member accesses through `->` are
+/// skipped, and C keywords are not calls.
+const CALL_SCAN: ScanOptions = ScanOptions {
+    continuation: NameContinuation::DemangledDot,
+    reject_preceding: b".>",
+    skip_keywords: &NON_CALL_KEYWORDS,
+};
+
+/// Every direct call `name(args)` in the body — the shared pseudo-C
+/// scan configured by [`CALL_SCAN`].
+fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
+    call_sites(body, &CALL_SCAN)
+}
+
 // ============================================================
 // Detector
 // ============================================================
@@ -246,7 +266,7 @@ impl ReferenceCountDetector {
             if let Some(name) = self.increments.iter().find(|n| n == &call.callee) {
                 // An increment naming no variable its drop could
                 // answer counts no object this function releases.
-                let bumped = call.args.first().map(|arg| strip_casts(arg));
+                let bumped = call.args.first().map(|arg| strip_casts(arg, is_type_word));
                 if let Some(object) = bumped.as_deref().and_then(plain_variable) {
                     open.push(OpenCall {
                         object: object.to_string(),
@@ -256,7 +276,7 @@ impl ReferenceCountDetector {
                     });
                 }
             } else if let Some(name) = self.decrements.iter().find(|n| n == &call.callee) {
-                let dropped = call.args.first().map(|arg| strip_casts(arg));
+                let dropped = call.args.first().map(|arg| strip_casts(arg, is_type_word));
                 if let Some(object) = dropped.as_deref().and_then(plain_variable)
                     && let Some(at) = open.iter().rposition(|bump| bump.object == object)
                 {
@@ -291,7 +311,7 @@ impl ReferenceCountDetector {
                 && call
                     .args
                     .iter()
-                    .any(|arg| plain_variable(&strip_casts(arg)) == Some(object))
+                    .any(|arg| plain_variable(&strip_casts(arg, is_type_word)) == Some(object))
         });
         if shared {
             (ARC_SUGGESTION, ARC_CONFIDENCE)
@@ -451,234 +471,6 @@ fn bump_operator(bytes: &[u8], name_end: usize) -> Option<bool> {
         _ => None,
     }
 }
-
-/// The control-flow keywords Ghidra writes with a parenthesised
-/// operand; none of them is a callee.
-const NON_CALL_KEYWORDS: [&str; 7] = ["if", "while", "for", "switch", "case", "return", "sizeof"];
-
-/// A direct call found in a body: the callee name, the text of each
-/// top-level argument, and the byte offset of the callee.
-struct CallSite<'a> {
-    callee: &'a str,
-    args: Vec<&'a str>,
-    offset: usize,
-}
-
-/// Every direct call `name(args)` in the body whose callee is a plain
-/// identifier, scanned outside string literals so a stray `(` in a
-/// format string cannot be read as a call. A name preceded by an
-/// identifier byte is the tail of a longer identifier, and one
-/// preceded by a `>` is a member access through a pointer; neither is
-/// a plain call — the COM shape reads `param_1->Release(param_1)` as
-/// a member access, not a call. A qualified spelling the decompiler
-/// writes with `::` separators still names its method whole. Like the
-/// allocator tracker's scan this one keeps a demangled spelling whole:
-/// a `.` followed by an identifier byte continues the name — Ghidra
-/// writes demangled `operator new` as `operator.new`. A call whose
-/// `(` never closes — a truncated decompile — yields nothing, and
-/// nested calls are each visited.
-fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
-    let bytes = body.as_bytes();
-    let mut calls = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' => i = skip_string(bytes, i + 1),
-            b if b.is_ascii_alphabetic() || b == b'_' => {
-                if i > 0
-                    && (is_ident_byte(bytes[i - 1]) || bytes[i - 1] == b'.' || bytes[i - 1] == b'>')
-                {
-                    i += 1;
-                    continue;
-                }
-                let mut j = i;
-                while j < bytes.len() {
-                    // A `.` followed by an identifier byte continues
-                    // the name: Ghidra writes demangled `operator new`
-                    // as `operator.new`.
-                    let continues = is_ident_byte(bytes[j])
-                        || (bytes[j] == b'.'
-                            && bytes
-                                .get(j + 1)
-                                .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_'));
-                    if continues {
-                        j += 1;
-                    } else {
-                        break;
-                    }
-                }
-                // The array spelling carries its brackets: `operator.new[]`.
-                let mut name_end = j;
-                let bracket = skip_ws(bytes, j);
-                if bytes.get(bracket) == Some(&b'[')
-                    && bytes.get(skip_ws(bytes, bracket + 1)) == Some(&b']')
-                {
-                    name_end = skip_ws(bytes, bracket + 1) + 1;
-                }
-                let open = skip_ws(bytes, name_end);
-                if bytes.get(open) == Some(&b'(')
-                    && !NON_CALL_KEYWORDS.contains(&&body[i..j])
-                    && let Some(close) = closing_paren(body, open)
-                {
-                    calls.push(CallSite {
-                        callee: &body[i..name_end],
-                        args: split_arguments(body, open, close),
-                        offset: i,
-                    });
-                }
-                i = j;
-            }
-            _ => i += 1,
-        }
-    }
-    calls
-}
-
-/// The text of each top-level argument of the call whose `(` sits at
-/// `open` and whose `)` sits at `close`, in order. A call with no
-/// arguments yields none, and commas nested inside a parenthesised or
-/// bracketed argument — a nested call, an array index — belong to that
-/// argument rather than splitting it. The COM pairing reads only the
-/// first argument, the object the method counts.
-fn split_arguments(body: &str, open: usize, close: usize) -> Vec<&str> {
-    let bytes = body.as_bytes();
-    let mut args = Vec::new();
-    let mut depth = 0usize;
-    let mut start = open + 1;
-    let mut i = start;
-    while i < close {
-        match bytes[i] {
-            b'"' => i = skip_string(bytes, i + 1),
-            b'(' | b'[' => {
-                depth += 1;
-                i += 1;
-            }
-            b')' | b']' => {
-                depth -= 1;
-                i += 1;
-            }
-            b',' if depth == 0 => {
-                args.push(body[start..i].trim());
-                start = i + 1;
-                i += 1;
-            }
-            _ => i += 1,
-        }
-    }
-    let last = body[start..close].trim();
-    if !last.is_empty() {
-        args.push(last);
-    }
-    args
-}
-
-/// The index of `)` matching the `(` at `open`, skipping string literals.
-fn closing_paren(body: &str, open: usize) -> Option<usize> {
-    let bytes = body.as_bytes();
-    let mut depth = 0usize;
-    let mut i = open;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' => i = skip_string(bytes, i + 1),
-            b'(' => {
-                depth += 1;
-                i += 1;
-            }
-            b')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i);
-                }
-                i += 1;
-            }
-            _ => i += 1,
-        }
-    }
-    None
-}
-
-/// The index just past the string literal whose opening `"` sits at `open`.
-fn skip_string(bytes: &[u8], mut i: usize) -> usize {
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => i += 2,
-            b'"' => return i + 1,
-            _ => i += 1,
-        }
-    }
-    bytes.len()
-}
-
-fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
-    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    i
-}
-
-fn is_ident_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
-
-/// The trimmed source line containing `offset`.
-fn line_at(body: &str, offset: usize) -> String {
-    let line = body[..offset].matches('\n').count();
-    body.lines().nth(line).unwrap_or("").trim().to_string()
-}
-
-/// A call argument with Ghidra casts stripped: the decompiler writes
-/// `AddRef((IUnknown *)param_1)` when the argument's applied type
-/// differs from the callee's parameter, and the value behind the cast
-/// is the object the method counts.
-fn strip_casts(arg: &str) -> String {
-    let bytes = arg.as_bytes();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'('
-            && let Some(close) = cast_group(bytes, i)
-        {
-            i = skip_ws(bytes, close + 1);
-            while bytes.get(i) == Some(&b'*') {
-                i = skip_ws(bytes, i + 1);
-            }
-            continue;
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).trim().to_string()
-}
-
-/// The index of `)` when the `(` at `open` opens a Ghidra type cast —
-/// a group holding only type words and stars, like `(IUnknown *)` or
-/// `(void *)` — and `None` when it opens a call or a grouped
-/// expression instead.
-fn cast_group(bytes: &[u8], open: usize) -> Option<usize> {
-    let mut i = open + 1;
-    let mut saw_word = false;
-    loop {
-        i = skip_ws(bytes, i);
-        let b = *bytes.get(i)?;
-        match b {
-            b'*' => i += 1,
-            b')' => return saw_word.then_some(i),
-            b if b.is_ascii_alphabetic() || b == b'_' => {
-                let start = i;
-                while i < bytes.len() && is_ident_byte(bytes[i]) {
-                    i += 1;
-                }
-                let word = String::from_utf8_lossy(&bytes[start..i]).to_lowercase();
-                if !is_type_word(&word) {
-                    return None;
-                }
-                saw_word = true;
-            }
-            _ => return None,
-        }
-    }
-}
-
 /// The type words a Ghidra cast may spell, the decompiler's
 /// vocabulary the other detectors' scans strip plus the interface
 /// typedefs this detector's casts carry: COM analysis types an

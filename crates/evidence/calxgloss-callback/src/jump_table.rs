@@ -27,6 +27,7 @@
 
 use crate::types::JumpTable;
 use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_types::skip_literal;
 
 // ============================================================
 // Detector
@@ -137,7 +138,7 @@ impl JumpTableDetector {
             if bytes[i] == b'"' || bytes[i] == b'\'' {
                 // A dispatch shape inside a string literal is prose,
                 // not a call.
-                i = skip_string(line, i);
+                i = skip_literal(bytes, i);
                 continue;
             }
             if bytes[i] != b'(' {
@@ -256,7 +257,7 @@ fn bracket_index_at(haystack: &str, open: usize) -> Option<String> {
     let mut i = open;
     while i < bytes.len() {
         if bytes[i] == b'"' || bytes[i] == b'\'' {
-            i = skip_string(haystack, i);
+            i = skip_literal(bytes, i);
             continue;
         }
         match bytes[i] {
@@ -446,26 +447,6 @@ fn build_table(
 // ============================================================
 // Scanning helpers
 // ============================================================
-
-/// Skip a string or char literal starting at `line[i]`; return the
-/// index after the closing quote.
-fn skip_string(line: &str, i: usize) -> usize {
-    let quote = line.as_bytes()[i];
-    let mut j = i + 1;
-    let bytes = line.as_bytes();
-    while j < bytes.len() {
-        if bytes[j] == b'\\' {
-            j += 2;
-            continue;
-        }
-        if bytes[j] == quote {
-            return j + 1;
-        }
-        j += 1;
-    }
-    j
-}
-
 /// Scan a slice that starts just after an opening `(`; return the
 /// index of the `)` that closes it.
 fn matching_close_paren(s: &str) -> Option<usize> {
@@ -474,7 +455,7 @@ fn matching_close_paren(s: &str) -> Option<usize> {
     let mut i = 0usize;
     while i < bytes.len() {
         if bytes[i] == b'"' || bytes[i] == b'\'' {
-            i = skip_string(s, i);
+            i = skip_literal(bytes, i);
             continue;
         }
         match bytes[i] {
@@ -502,7 +483,7 @@ fn matching_paren_back(line: &str, close: usize) -> Option<usize> {
     let mut i = 0usize;
     while i <= close {
         if bytes[i] == b'"' || bytes[i] == b'\'' {
-            i = skip_string(line, i);
+            i = skip_literal(bytes, i);
             continue;
         }
         match bytes[i] {

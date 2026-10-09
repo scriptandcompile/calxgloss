@@ -22,6 +22,27 @@
 use crate::types::CallbackRegistration;
 use calxgloss_ghidra::DecompiledFunction;
 
+use calxgloss_types::{
+    CallSite, NON_CALL_KEYWORDS, NameContinuation, ScanOptions, call_sites, closing_paren, line_at,
+    skip_string, skip_ws,
+};
+
+/// The scan: plain-identifier callees, qualified tails and member
+/// accesses skipped, and C keywords are not calls. The registration
+/// read re-derives the argument text itself, so the scan's arguments
+/// go unused.
+const CALL_SCAN: ScanOptions = ScanOptions {
+    continuation: NameContinuation::Ident,
+    reject_preceding: b".>:",
+    skip_keywords: &NON_CALL_KEYWORDS,
+};
+
+/// Every direct call in the body — the shared pseudo-C scan configured
+/// by [`CALL_SCAN`].
+fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
+    call_sites(body, &CALL_SCAN)
+}
+
 // ============================================================
 // Detector
 // ============================================================
@@ -135,66 +156,6 @@ const REGISTRATION_CONFIDENCE: u8 = 70;
 /// stored or passed where the original kept a raw function pointer,
 /// so the callback boundary survives translation.
 const REGISTRATION_SUGGESTION: &str = "Box<dyn Fn(...)>";
-
-/// The control-flow keywords Ghidra writes with a parenthesised
-/// operand; none of them is a callee.
-const NON_CALL_KEYWORDS: [&str; 7] = ["if", "while", "for", "switch", "case", "return", "sizeof"];
-
-/// A direct call found in a body: the callee name and the byte offset
-/// of the callee.
-struct CallSite<'a> {
-    callee: &'a str,
-    offset: usize,
-}
-
-/// Every direct call `name(...)` in the body whose callee is a plain
-/// identifier, scanned outside string literals so a stray name in a
-/// format string cannot be read as a call. A name preceded by an
-/// identifier byte is the tail of a longer identifier, one preceded
-/// by a `.` or a `>` is a member access through an object, and one
-/// preceded by `:` is a qualified name the decompiler resolved to a
-/// different symbol; none is a plain C function call. A call whose
-/// `(` never closes — a truncated decompile — yields nothing, and
-/// nested calls are each visited.
-fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
-    let bytes = body.as_bytes();
-    let mut calls = Vec::new();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' => i = skip_string(bytes, i + 1),
-            b if b.is_ascii_alphabetic() || b == b'_' => {
-                if i > 0
-                    && (is_ident_byte(bytes[i - 1])
-                        || bytes[i - 1] == b'.'
-                        || bytes[i - 1] == b'>'
-                        || bytes[i - 1] == b':')
-                {
-                    i += 1;
-                    continue;
-                }
-                let mut j = i;
-                while j < bytes.len() && is_ident_byte(bytes[j]) {
-                    j += 1;
-                }
-                let open = skip_ws(bytes, j);
-                if bytes.get(open) == Some(&b'(')
-                    && !NON_CALL_KEYWORDS.contains(&&body[i..j])
-                    && closing_paren(body, open).is_some()
-                {
-                    calls.push(CallSite {
-                        callee: &body[i..j],
-                        offset: i,
-                    });
-                }
-                i = j;
-            }
-            _ => i += 1,
-        }
-    }
-    calls
-}
-
 /// The offset of the `(` opening `callee`'s argument list, given the
 /// offset just past the callee name.
 fn argument_open(body: &str, after_callee: usize) -> Option<usize> {
@@ -309,61 +270,6 @@ fn is_decompiler_minted(name: &str) -> bool {
     const MINTED_PREFIXES: [&str; 7] = ["local_", "param_", "uVar", "iVar", "sVar", "cVar", "fVar"];
     name == "this" || MINTED_PREFIXES.iter().any(|p| name.starts_with(p))
 }
-
-/// The index of `)` matching the `(` at `open`, skipping string literals.
-fn closing_paren(body: &str, open: usize) -> Option<usize> {
-    let bytes = body.as_bytes();
-    let mut depth = 0usize;
-    let mut i = open;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'"' => i = skip_string(bytes, i + 1),
-            b'(' => {
-                depth += 1;
-                i += 1;
-            }
-            b')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i);
-                }
-                i += 1;
-            }
-            _ => i += 1,
-        }
-    }
-    None
-}
-
-/// The index just past the string literal whose opening `"` sits at `open`.
-fn skip_string(bytes: &[u8], mut i: usize) -> usize {
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => i += 2,
-            b'"' => return i + 1,
-            _ => i += 1,
-        }
-    }
-    bytes.len()
-}
-
-fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
-    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    i
-}
-
-fn is_ident_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
-
-/// The trimmed source line containing `offset`.
-fn line_at(body: &str, offset: usize) -> String {
-    let line = body[..offset].matches('\n').count();
-    body.lines().nth(line).unwrap_or("").trim().to_string()
-}
-
 // ============================================================
 // The standard name set
 // ============================================================
