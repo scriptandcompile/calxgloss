@@ -290,16 +290,21 @@ fn disk_classifications(repo_path: &Path) -> HashMap<String, ClassificationInfo>
         if dll.is_empty() || category.is_empty() {
             continue;
         }
+        // Strategy is serialized from `calxgloss_analysis::Strategy`:
+        // unit variants land as bare strings ("PalMapping"), struct
+        // variants as tagged objects ({"CrateReplacement": {…}}). The
+        // variant name is the strategy either way.
+        let strategy = match value.get("strategy") {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(serde_json::Value::Object(obj)) => obj.keys().next().cloned().unwrap_or_default(),
+            _ => String::new(),
+        };
         found.insert(
             dll.to_string(),
             ClassificationInfo {
                 dll: dll.to_string(),
                 category: category.to_string(),
-                strategy: value
-                    .get("strategy")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
+                strategy,
                 crate_replacement: value
                     .get("crate_replacement")
                     .and_then(|v| v.as_str())

@@ -17,7 +17,7 @@
 
 use calxgloss_git::{GitManager, InitConfig};
 use calxgloss_reports::dashboard::{
-    DashboardBuilder, ReviewDashboard, ReviewStatus, UnitOfWork, ViewTarget,
+    DashboardBuilder, ReviewDashboard, ReviewStatus, UnitOfWork, UnitViewData, ViewTarget,
 };
 use calxgloss_types::GitBranch;
 
@@ -369,6 +369,44 @@ fn accepted_units_keep_stable_recent_activity_across_rebuilds() {
         classify.updated_at,
         chrono::DateTime::<chrono::Utc>::from(mtime),
         "the classify unit's updated_at is the record file's mtime"
+    );
+}
+
+/// The `classify` command serializes `Strategy` as an enum: unit variants
+/// as bare strings, crate replacement as a tagged object. The dashboard
+/// must read the variant name from either form — a record whose strategy
+/// is an object must not fail to parse and lose its category too.
+#[test]
+fn tagged_object_strategy_hydrates_category_and_strategy() {
+    let dir = temp_workspace();
+    let git = GitManager::open(dir.path()).expect("open repo");
+    write_classification_record(
+        &git,
+        "steam_api64.dll",
+        "KnownThirdParty",
+        Some("steamworks"),
+    );
+    commit_on_branch(&git, "steam_api64.dll", "SteamAPI_Init", 1);
+
+    let dashboard = build(&git);
+    let unit = find_unit(&dashboard, "steam_api64.dll/SteamAPI_Init/v1");
+    assert_eq!(unit.dll, "steam_api64.dll", "the unit exists to be viewed");
+
+    let target = ViewTarget {
+        dll: "steam_api64.dll".into(),
+        function: "SteamAPI_Init".into(),
+        specific_attempt: None,
+    };
+    let view = UnitViewData::load(&git, &target, dir.path()).expect("unit view loads");
+    assert_eq!(
+        view.dll_category.as_deref(),
+        Some("KnownThirdParty"),
+        "the tagged-object strategy must not sink the whole record"
+    );
+    assert_eq!(
+        view.dll_strategy.as_deref(),
+        Some("CrateReplacement"),
+        "the strategy's variant name is the strategy"
     );
 }
 

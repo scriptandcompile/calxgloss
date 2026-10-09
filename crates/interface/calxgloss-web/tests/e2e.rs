@@ -1642,6 +1642,14 @@ async fn test_pipeline_restart_hydrates_rows_without_live_classification_events(
         r#"{"dll":"eqmain.dll","category":"ProjectSpecific","strategy":"ReverseEngineer","exports_count":0,"imports_count":286,"crate_replacement":null}"#,
     )
     .expect("write classification artifact");
+    // A crate-replacement record stores strategy as the enum's tagged
+    // object form — the writer serializes `Strategy` directly, so the
+    // reader must not assume a bare string.
+    std::fs::write(
+        classify.join("steam_api64.dll.json"),
+        r#"{"dll":"steam_api64.dll","category":"KnownThirdParty","strategy":{"CrateReplacement":{"crate_name":"steamworks"}},"exports_count":1019,"imports_count":89,"crate_replacement":"steamworks"}"#,
+    )
+    .expect("write crate-replacement classification artifact");
 
     let state = ServerState::new(fixture.repo_path());
     let events = TranslationEvents::new(128);
@@ -1685,11 +1693,18 @@ async fn test_pipeline_restart_hydrates_rows_without_live_classification_events(
     assert_eq!(b["strategy"], "ReverseEngineer");
     assert_eq!(b["processing"], false);
 
+    // A tagged-object strategy hydrates to its variant name — not an
+    // empty string that the UI would render as "Unclassified".
+    let b = binary("steam_api64.dll");
+    assert_eq!(b["category"], "KnownThirdParty");
+    assert_eq!(b["strategy"], "CrateReplacement");
+    assert_eq!(b["crate_replacement"], "steamworks");
+
     // Aggregate counts see both sources honestly.
-    assert_eq!(body["total_dlls"], 2);
+    assert_eq!(body["total_dlls"], 3);
     assert_eq!(
-        body["classified_count"], 1,
-        "the disk record counts as classified"
+        body["classified_count"], 2,
+        "both disk records count as classified"
     );
 }
 

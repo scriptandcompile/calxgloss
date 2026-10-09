@@ -331,15 +331,23 @@ impl UnitViewData {
         struct ClassificationRecord {
             #[serde(rename = "category")]
             category: Option<String>,
+            // `Strategy` serializes as an enum: unit variants as bare
+            // strings, crate replacement as a tagged object. Reading it
+            // as a plain string would fail the whole record parse.
             #[serde(rename = "strategy")]
-            strategy: Option<String>,
+            strategy: Option<serde_json::Value>,
         }
 
         let record: ClassificationRecord = match serde_json::from_str(&content) {
             Ok(r) => r,
             Err(_) => return (None, None),
         };
+        let strategy = record.strategy.and_then(|s| match s {
+            serde_json::Value::String(s) => Some(s),
+            serde_json::Value::Object(obj) => obj.keys().next().cloned(),
+            _ => None,
+        });
 
-        (record.category, record.strategy)
+        (record.category, strategy)
     }
 }
