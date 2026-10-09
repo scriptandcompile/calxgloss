@@ -61,9 +61,12 @@ function shimStatus(b) {
 
 // No badge beside the name: the state lives in the Success column
 // until a real success rate exists, and the classification state
-// column already says whether the binary is classified.
+// column already says whether the binary is classified. "Working"
+// means the live pipeline's batch pass for this binary is in flight
+// (enumeration, testgen, translation) — no unit events needed.
 function statusBadge(b) {
     if ((b.functions_in_progress || 0) > 0) return { cls: "translating", text: "Translating" };
+    if (b.processing) return { cls: "translating", text: "Working" };
     if (b.functions_total != null) return { cls: "complete", text: "Batch done" };
     return { cls: "pending", text: "In pipeline" };
 }

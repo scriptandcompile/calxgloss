@@ -249,6 +249,12 @@ pub struct ProgressState {
     classifications: Arc<RwLock<std::collections::HashMap<String, ClassificationResult>>>,
     /// Batch summary results keyed by DLL name.
     batch_summaries: Arc<RwLock<std::collections::HashMap<String, BatchResult>>>,
+    /// The DLL whose batch pass is currently in flight — set by
+    /// `BatchStarted`, cleared by that DLL's `BatchSummary`. The live loop
+    /// works one binary at a time, so one slot is enough; a new
+    /// `BatchStarted` replaces the old value if a pass ended without a
+    /// summary (an error path).
+    processing: Arc<RwLock<Option<String>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -300,6 +306,7 @@ impl ProgressState {
             entries: Arc::new(RwLock::new(std::collections::HashMap::new())),
             classifications: Arc::new(RwLock::new(std::collections::HashMap::new())),
             batch_summaries: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            processing: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -348,6 +355,11 @@ impl ProgressState {
                     },
                 );
             }
+            ProgressEvent::BatchStarted { dll } => {
+                // The live loop works one binary at a time; the newest
+                // started pass is the one in flight.
+                *self.processing.write().await = Some(dll.clone());
+            }
             ProgressEvent::BatchSummary {
                 dll,
                 total_functions,
@@ -368,6 +380,11 @@ impl ProgressState {
                         total_tokens: *total_tokens,
                     },
                 );
+                // The pass in flight is done — no binary is being worked on.
+                let mut processing = self.processing.write().await;
+                if processing.as_deref() == Some(dll.as_str()) {
+                    *processing = None;
+                }
             }
         }
     }
@@ -539,6 +556,12 @@ impl ProgressState {
                 total_tokens: v.total_tokens,
             })
             .collect()
+    }
+
+    /// The DLL whose batch pass is currently in flight, if any —
+    /// `BatchStarted` names it, that DLL's `BatchSummary` clears it.
+    pub async fn processing_dll(&self) -> Option<String> {
+        self.processing.read().await.clone()
     }
 
     /// Returns the number of currently in-flight units.

@@ -1401,6 +1401,11 @@ async fn test_pipeline_phases_from_canned_events() {
         exported_symbols: 25,
         imported_symbols: 6,
     });
+    // d3d9's batch pass has begun — enumeration/testgen before any unit
+    // event exists. The pipeline API must report it as being worked on.
+    events.emit(ProgressEvent::BatchStarted {
+        dll: "d3d9.dll".into(),
+    });
 
     // game_logic.dll: one unit runs the full flow to review...
     events.emit(ProgressEvent::TranslationStarted {
@@ -1581,9 +1586,13 @@ async fn test_pipeline_phases_from_canned_events() {
         .collect();
     assert_eq!(names, ["d3d9.dll", "dinput8.dll", "game_logic.dll"]);
 
-    // d3d9: classified via PAL, nothing translated yet — no fabricated totals.
+    // d3d9: classified via PAL, batch pass in flight — no fabricated totals.
     let b = &binaries[0];
     assert_eq!(b["strategy"], "PalMapping");
+    assert_eq!(
+        b["processing"], true,
+        "a started batch pass marks the binary as being worked on: {b}"
+    );
     assert!(
         b.get("functions_total").is_none(),
         "no batch summary, no total: {b}"
@@ -1598,6 +1607,10 @@ async fn test_pipeline_phases_from_canned_events() {
     // dinput8: one unit in flight after test generation.
     let b = &binaries[1];
     assert_eq!(b["category"], "WindowsOs");
+    assert_eq!(
+        b["processing"], false,
+        "only the started binary is marked working: {b}"
+    );
     assert!(b.get("functions_total").is_none());
     assert_eq!(b["functions_in_progress"], 1);
     assert_eq!(b["functions_translated"], 0);
@@ -3416,6 +3429,11 @@ async fn test_headless_pipeline_binary_rows() {
         exported_symbols: 40,
         imported_symbols: 12,
     });
+    // engine.dll's batch pass is in flight — the row must show it working
+    // even though no unit event exists yet.
+    events.emit(ProgressEvent::BatchStarted {
+        dll: "engine.dll".into(),
+    });
     events.emit(ProgressEvent::BatchSummary {
         dll: "game_logic.dll".into(),
         total_functions: 5,
@@ -3535,6 +3553,11 @@ async fn test_headless_pipeline_binary_rows() {
         cell_text("dinput8.dll", "[data-metric=\"success-rate\"]").contains("Translating"),
         "an in-flight binary shows Translating in the Success column, got: {}",
         cell_text("dinput8.dll", "[data-metric=\"success-rate\"]")
+    );
+    assert!(
+        cell_text("engine.dll", "[data-metric=\"success-rate\"]").contains("Working"),
+        "a binary whose batch pass started shows Working in the Success column, got: {}",
+        cell_text("engine.dll", "[data-metric=\"success-rate\"]")
     );
     assert!(
         !cell_text("game_logic.dll", "[data-metric=\"success-rate\"]").contains("Batch done"),

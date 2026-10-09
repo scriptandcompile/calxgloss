@@ -45,6 +45,15 @@ pub async fn run_translation_for_dll(
 ) -> Result<()> {
     // The workspace — git, src/, scratch all live here.
 
+    // Announce the per-binary pass so the dashboard can mark this binary as
+    // being worked on before any unit event exists — function enumeration,
+    // analysis recovery, and test generation can run for minutes first.
+    if let Some(ev) = events {
+        ev.emit(ProgressEvent::BatchStarted {
+            dll: dll.to_string(),
+        });
+    }
+
     // Get Ghidra client to list functions
     let ghidra_url = &settings.ghidra_url.value;
     let mut ghidra_config = GhidraConfig::new(ghidra_url)

@@ -207,6 +207,7 @@ pub async fn api_get_pipeline(
         &classifications,
         &batch_summaries,
         &entries_snapshot,
+        progress.read().await.processing_dll().await.as_deref(),
     );
     let phases = derive_phases(
         total_dlls,
@@ -427,6 +428,7 @@ fn derive_binaries(
     classifications: &HashMap<String, ClassificationInfo>,
     batch_summaries: &HashMap<String, BatchInfo>,
     entries: &HashMap<String, ProgressEntry>,
+    processing_dll: Option<&str>,
 ) -> Vec<BinaryProgress> {
     dll_names
         .iter()
@@ -462,6 +464,7 @@ fn derive_binaries(
                 functions_in_progress: units.iter().filter(|e| !e.finished).count(),
                 functions_failed,
                 tokens_used,
+                processing: processing_dll == Some(dll.as_str()),
             }
         })
         .collect()

@@ -155,6 +155,12 @@ pub struct BinaryProgress {
     /// summary reports them, so an unknown total is never shown as zero.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens_used: Option<usize>,
+    /// True while the live pipeline is working on this binary — from
+    /// `BatchStarted` until that binary's `BatchSummary`. Covers the
+    /// pre-translation phases (enumeration, analysis recovery, test
+    /// generation) where no unit-level progress exists yet.
+    #[serde(default)]
+    pub processing: bool,
 }
 
 // ============================================================
@@ -260,17 +266,20 @@ mod tests {
             functions_in_progress: 2,
             functions_failed: 1,
             tokens_used: Some(120_000),
+            processing: true,
         };
         let json = serde_json::to_value(&full).expect("serializes");
         assert_eq!(json["dll"], "game_logic.dll");
         assert_eq!(json["category"], "ProjectSpecific");
         assert_eq!(json["functions_total"], 24);
         assert_eq!(json["tokens_used"], 120_000);
+        assert_eq!(json["processing"], true);
         let back: BinaryProgress = serde_json::from_value(json).expect("deserializes");
         assert_eq!(back, full);
 
         // A binary only discovered (no classification, no batch summary yet)
-        // serializes with just the honest zeros.
+        // serializes with just the honest zeros. `processing` is always
+        // present — a false flag is a real observation, not a fabrication.
         let bare = BinaryProgress {
             dll: "unknown.dll".into(),
             category: None,
@@ -281,11 +290,12 @@ mod tests {
             functions_in_progress: 0,
             functions_failed: 0,
             tokens_used: None,
+            processing: false,
         };
         let json = serde_json::to_value(&bare).expect("serializes");
         assert_eq!(
             json.as_object().expect("object").len(),
-            4,
+            5,
             "unknown fields are omitted, not fabricated: {json}"
         );
     }

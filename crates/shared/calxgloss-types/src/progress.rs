@@ -206,6 +206,12 @@ pub enum ProgressEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         branch: Option<String>,
     },
+    /// Batch work for a DLL has begun — the whole per-binary pass: function
+    /// enumeration, analysis recovery, test generation, and translation.
+    ///
+    /// Batch-level (no unit key): it marks the binary as being worked on
+    /// before any unit event exists, and `BatchSummary` marks the pass done.
+    BatchStarted { dll: String },
     /// Batch translation for a DLL has completed (summary across all functions).
     BatchSummary {
         dll: String,
@@ -314,9 +320,9 @@ impl ProgressEvent {
             | ProgressEvent::ResourceExhaustionDetected { dll, function, .. } => {
                 Some((dll.as_str(), function.as_str()))
             }
-            ProgressEvent::ClassificationComplete { .. } | ProgressEvent::BatchSummary { .. } => {
-                None
-            }
+            ProgressEvent::ClassificationComplete { .. }
+            | ProgressEvent::BatchStarted { .. }
+            | ProgressEvent::BatchSummary { .. } => None,
         }
     }
 }
@@ -489,6 +495,9 @@ impl std::fmt::Display for ProgressEvent {
                     f,
                     "Batch {status} for {function} ({dll}) in {attempts} attempt(s){branch_info}"
                 )
+            }
+            ProgressEvent::BatchStarted { dll } => {
+                write!(f, "Batch started for {dll}")
             }
             ProgressEvent::BatchSummary {
                 dll,
@@ -737,6 +746,21 @@ mod tests {
             total_tokens: 1000,
         };
         assert_eq!(batch_event.unit_key(), None);
+    }
+
+    #[test]
+    fn batch_started_is_batch_scoped_phaseless_and_tagged() {
+        let event = ProgressEvent::BatchStarted {
+            dll: "LaunchPad.exe".into(),
+        };
+        assert_eq!(event.unit_key(), None, "batch-level, not unit-scoped");
+        assert!(
+            TranslationPhase::from_event(&event).is_none(),
+            "a batch pass names no unit phase"
+        );
+        let json = serde_json::to_value(&event).expect("serializes");
+        assert_eq!(json["event"], "batch_started");
+        assert_eq!(json["dll"], "LaunchPad.exe");
     }
 
     #[test]
