@@ -23,8 +23,9 @@ use calxgloss_types::DllCategory;
 use calxgloss_types::dashboard::{ReviewDashboard, ReviewStatus, Staleness, UnitOfWork, WorkKind};
 use chrono::Utc;
 
-/// Parses a git branch name like `re/game_logic/DrawSpritev1` or
-/// `re/classify/game_logic.dllv1` into its components.
+/// Parses a git branch name like `re/game_logic.dll/DrawSpritev1` or
+/// `re/classify/game_logic.dllv1` into its components. The dll segment is
+/// the target binary's filename verbatim, extension included (issue #68).
 pub fn parse_branch_name(name: &str) -> Option<BranchParts> {
     let rest = name.strip_prefix("re/")?;
 
@@ -75,16 +76,16 @@ fn work_kind_for_prefix(prefix: &str) -> Option<WorkKind> {
 }
 
 /// Returns true if a git branch name matches the given DLL, function,
-/// and optional attempt number.
+/// and optional attempt number. The DLL is compared verbatim — branch
+/// names carry the filename exactly as identity (issue #68).
 pub fn branch_matches(branch: &str, dll: &str, function: &str, attempt: Option<u32>) -> bool {
     let Some(parts) = parse_branch_name(branch) else {
         return false;
     };
 
-    let branch_dll = parts.dll.strip_suffix(".dll").unwrap_or(&parts.dll);
     let branch_func = parts.function.as_deref().unwrap_or("");
 
-    if branch_dll != dll || branch_func != function {
+    if parts.dll != dll || branch_func != function {
         return false;
     }
 
@@ -256,7 +257,7 @@ impl<'a> DashboardBuilder<'a> {
             .filter(|u| u.kind == WorkKind::DllClassification)
             .map(|u| {
                 let dll = u.id.strip_prefix("classify/").unwrap_or(&u.id);
-                (classify_dll_key(dll).to_string(), u.id.clone())
+                (strip_attempt_suffix(dll).to_string(), u.id.clone())
             })
             .collect();
 
@@ -266,17 +267,15 @@ impl<'a> DashboardBuilder<'a> {
             .filter_map(|u| u.function.clone().map(|krate| (krate, u.id.clone())))
             .collect();
 
-        let classified_by_dll: HashMap<String, &ClassifiedDll> = classified
-            .iter()
-            .map(|c| (trim_dll_suffix(&c.dll).to_string(), c))
-            .collect();
+        let classified_by_dll: HashMap<String, &ClassifiedDll> =
+            classified.iter().map(|c| (c.dll.clone(), c)).collect();
 
         let checker = DependencyChecker::new();
         for unit in &mut units {
             if unit.kind != WorkKind::FunctionTranslation {
                 continue;
             }
-            let dll_key = trim_dll_suffix(&unit.dll);
+            let dll_key = unit.dll.as_str();
 
             if let Some(class_id) = classify_ids.get(dll_key)
                 && !unit.dependencies.contains(class_id)
@@ -368,11 +367,8 @@ impl<'a> DashboardBuilder<'a> {
 
         for dll_dir in std::fs::read_dir(&baseline_dir)? {
             let dll_dir = dll_dir?;
-            let dll = dll_dir
-                .file_name()
-                .to_string_lossy()
-                .trim_end_matches(".dll")
-                .to_string();
+            // Baseline dirs carry the binary filename verbatim (issue #68).
+            let dll = dll_dir.file_name().to_string_lossy().to_string();
 
             let func_dir = dll_dir.path();
             if !func_dir.is_dir() {
@@ -611,21 +607,10 @@ fn parse_branch_name_for_key(key: &str, default_attempt: u32) -> BranchParts {
     }
 }
 
-/// Trims a single trailing `.dll` from a DLL name for cross-artifact
-/// matching: branch names drop the extension, classification records keep it.
-fn trim_dll_suffix(name: &str) -> &str {
-    name.strip_suffix(".dll").unwrap_or(name)
-}
-
-/// Normalizes a classification unit's dll segment to the extension-free dll
-/// name a function unit's `dll` matches: record-derived ids are
-/// `classify/{dll}` and branch-derived ids carry an attempt
-/// (`classify/{dll}/vN`, the shape `parse_branch_name` documents).
-fn classify_dll_key(dll: &str) -> &str {
-    trim_dll_suffix(strip_attempt_suffix(dll))
-}
-
-/// Strips a trailing `/v{N}` attempt suffix from a unit id segment.
+/// Strips a trailing `/v{N}` attempt suffix from a classification unit's
+/// dll segment so branch-derived ids (`classify/{file}/vN`) and
+/// record-derived ids (`classify/{file}`) key to the same verbatim binary
+/// filename — identity is never extension-normalized (issue #68).
 fn strip_attempt_suffix(name: &str) -> &str {
     match name.rsplit_once("/v") {
         Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => base,
@@ -655,8 +640,8 @@ struct SendBackRecord {
 }
 
 /// One record file from the shared review-record tree: the DLL directory
-/// name (`.dll` suffix trimmed), the attempt number from the file name,
-/// and the deserialized record.
+/// name (verbatim, extension included), the attempt number from the file
+/// name, and the deserialized record.
 struct RecordFile<T> {
     dll: String,
     attempt: u32,
@@ -676,11 +661,8 @@ fn read_record_tree<T: serde::de::DeserializeOwned>(
 
     for dll_dir in std::fs::read_dir(root)? {
         let dll_dir = dll_dir?;
-        let dll = dll_dir
-            .file_name()
-            .to_string_lossy()
-            .trim_end_matches(".dll")
-            .to_string();
+        // Record dirs carry the binary filename verbatim (issue #68).
+        let dll = dll_dir.file_name().to_string_lossy().to_string();
 
         if !dll_dir.path().is_dir() {
             continue;
@@ -772,24 +754,42 @@ mod tests {
         assert_eq!(parts.dll, "shim");
         assert_eq!(parts.function.as_deref(), Some("wgpu"));
 
-        let parts = parse_branch_name_for_key("game_logic/DrawSprite/v1", 1);
+        let parts = parse_branch_name_for_key("game_logic.dll/DrawSprite/v1", 1);
         assert_eq!(parts.kind, WorkKind::FunctionTranslation);
-        assert_eq!(parts.dll, "game_logic");
+        assert_eq!(parts.dll, "game_logic.dll");
         assert_eq!(parts.function.as_deref(), Some("DrawSprite"));
     }
 
     #[test]
-    fn trim_dll_suffix_matches_branch_and_record_spellings() {
-        assert_eq!(trim_dll_suffix("d3d9.dll"), "d3d9");
-        assert_eq!(trim_dll_suffix("d3d9"), "d3d9");
+    fn branch_matches_compares_dll_verbatim() {
+        // Binary identity is the filename verbatim, extension included:
+        // `foo.dll` and `foo.exe` are different units, never normalized
+        // onto each other (issue #68).
+        assert!(branch_matches(
+            "re/game_logic.dll/DrawSpritev1",
+            "game_logic.dll",
+            "DrawSprite",
+            Some(1)
+        ));
+        assert!(!branch_matches(
+            "re/game_logic.dll/DrawSpritev1",
+            "game_logic",
+            "DrawSprite",
+            Some(1)
+        ));
+        assert!(!branch_matches(
+            "re/foo.exe/DrawSpritev1",
+            "foo.dll",
+            "DrawSprite",
+            Some(1)
+        ));
     }
 
     #[test]
-    fn classify_dll_key_normalizes_record_and_branch_id_shapes() {
-        // Record-derived ids carry the extension, branch-derived ids an
-        // attempt; both must key to the same extension-free dll name.
-        assert_eq!(classify_dll_key("d3d9.dll"), "d3d9");
-        assert_eq!(classify_dll_key("game_logic"), "game_logic");
-        assert_eq!(classify_dll_key("game_logic.dll/v1"), "game_logic");
+    fn strip_attempt_suffix_keys_record_and_branch_id_shapes() {
+        // Record-derived ids carry no attempt, branch-derived ids do;
+        // both must key to the same verbatim binary filename.
+        assert_eq!(strip_attempt_suffix("d3d9.dll"), "d3d9.dll");
+        assert_eq!(strip_attempt_suffix("game_logic.dll/v1"), "game_logic.dll");
     }
 }

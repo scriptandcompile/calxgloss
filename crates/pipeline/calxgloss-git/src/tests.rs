@@ -36,7 +36,7 @@ fn test_create_branch() {
         .create_branch("game_logic.dll", "DrawSprite", 1, None)
         .unwrap();
     assert!(result.created);
-    assert_eq!(result.branch.name, "re/game_logic/DrawSpritev1");
+    assert_eq!(result.branch.name, "re/game_logic.dll/DrawSpritev1");
     assert_eq!(result.branch.dll, "game_logic.dll");
     assert_eq!(result.branch.function, "DrawSprite");
     assert_eq!(result.branch.attempt, 1);
@@ -53,7 +53,7 @@ fn test_create_branch_reuses_existing() {
         .create_branch("game_logic.dll", "DrawSprite", 1, None)
         .unwrap();
     assert!(!result2.created);
-    assert_eq!(result2.branch.name, "re/game_logic/DrawSpritev1");
+    assert_eq!(result2.branch.name, "re/game_logic.dll/DrawSpritev1");
 }
 
 #[test]
@@ -62,13 +62,13 @@ fn test_branch_naming() {
         GitBranch::new("game_logic.dll", "DrawSprite", 1)
             .unwrap()
             .name,
-        "re/game_logic/DrawSpritev1"
+        "re/game_logic.dll/DrawSpritev1"
     );
     assert_eq!(
         GitBranch::new("directx_render.dll", "Present", 3)
             .unwrap()
             .name,
-        "re/directx_render/Presentv3"
+        "re/directx_render.dll/Presentv3"
     );
 }
 
@@ -97,7 +97,7 @@ fn test_commit() {
         .unwrap();
 
     assert!(!commit.hash.is_empty());
-    assert_eq!(commit.branch, "re/game_logic/DrawSpritev1");
+    assert_eq!(commit.branch, "re/game_logic.dll/DrawSpritev1");
     assert_eq!(commit.files, vec!["src/modules/test.rs".to_string()]);
 }
 
@@ -190,8 +190,8 @@ fn test_list_branches() {
     manager.create_branch("test.dll", "FuncB", 2, None).unwrap();
 
     let branches = manager.list_branches().unwrap();
-    assert!(branches.contains(&"re/test/FuncAv1".to_string()));
-    assert!(branches.contains(&"re/test/FuncBv2".to_string()));
+    assert!(branches.contains(&"re/test.dll/FuncAv1".to_string()));
+    assert!(branches.contains(&"re/test.dll/FuncBv2".to_string()));
     assert!(branches.contains(&"main".to_string()));
 }
 
@@ -205,8 +205,16 @@ fn test_list_translation_branches() {
 
     let translation_branches = manager.list_translation_branches().unwrap();
     assert_eq!(translation_branches.len(), 2);
-    assert!(translation_branches.iter().any(|b| b == "re/test/FuncAv1"));
-    assert!(translation_branches.iter().any(|b| b == "re/other/FuncBv1"));
+    assert!(
+        translation_branches
+            .iter()
+            .any(|b| b == "re/test.dll/FuncAv1")
+    );
+    assert!(
+        translation_branches
+            .iter()
+            .any(|b| b == "re/other.dll/FuncBv1")
+    );
     assert!(!translation_branches.iter().any(|b| b == "main"));
 }
 
@@ -230,11 +238,11 @@ fn test_delete_branch() {
         .unwrap();
 
     let branches = manager.list_branches().unwrap();
-    assert!(branches.contains(&"re/test/FuncAv1".to_string()));
+    assert!(branches.contains(&"re/test.dll/FuncAv1".to_string()));
 
-    manager.delete_branch("re/test/FuncAv1").unwrap();
+    manager.delete_branch("re/test.dll/FuncAv1").unwrap();
     let branches = manager.list_branches().unwrap();
-    assert!(!branches.contains(&"re/test/FuncAv1".to_string()));
+    assert!(!branches.contains(&"re/test.dll/FuncAv1".to_string()));
 }
 
 #[test]

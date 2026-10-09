@@ -522,7 +522,7 @@ pub struct ActionResponse {
 /// A branch candidate for archival (stale, unmerged translation branch).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GcCandidate {
-    /// Full branch name (e.g. "re/game_logic/DrawSpritev3").
+    /// Full branch name (e.g. "re/game_logic.dll/DrawSpritev3").
     pub branch: String,
     /// DLL name extracted from the branch.
     pub dll: String,

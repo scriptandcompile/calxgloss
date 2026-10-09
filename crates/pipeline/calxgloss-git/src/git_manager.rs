@@ -870,9 +870,9 @@ impl GitManager {
     /// # Arguments
     ///
     /// * `branch_name` — The existing local branch name (e.g.
-    ///   `re/game_logic/DrawSpritev3`).
+    ///   `re/game_logic.dll/DrawSpritev3`).
     /// * `archive_ref` — The full reference to rename to (e.g.
-    ///   `refs/archive/re/game_logic/DrawSpritev3`).
+    ///   `refs/archive/re/game_logic.dll/DrawSpritev3`).
     pub fn archive_branch(&self, branch_name: &str, archive_ref: &str) -> Result<(), TypesError> {
         debug!("Archiving branch '{}' → '{}'", branch_name, archive_ref);
 

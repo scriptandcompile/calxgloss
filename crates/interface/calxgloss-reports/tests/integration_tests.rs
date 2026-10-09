@@ -168,9 +168,9 @@ fn find_unit<'a>(dashboard: &'a ReviewDashboard, id: &str) -> &'a UnitOfWork {
 fn send_back_verdict_survives_rebuild() {
     let dir = temp_workspace();
     let git = GitManager::open(dir.path()).expect("open repo");
-    commit_on_branch(&git, "game_logic", "DrawSprite", 1);
+    commit_on_branch(&git, "game_logic.dll", "DrawSprite", 1);
 
-    let branch = GitBranch::new("game_logic", "DrawSprite", 1).expect("branch name");
+    let branch = GitBranch::new("game_logic.dll", "DrawSprite", 1).expect("branch name");
     git.reject_branch(&branch, "wrong blend mode mapping")
         .expect("write send-back record");
 
@@ -178,7 +178,7 @@ fn send_back_verdict_survives_rebuild() {
     // the action — the builder reads `re/rejections/`, not in-memory state.
     for round in 1..=2 {
         let dashboard = build(&git);
-        let unit = find_unit(&dashboard, "game_logic/DrawSprite/v1");
+        let unit = find_unit(&dashboard, "game_logic.dll/DrawSprite/v1");
         assert_eq!(
             unit.status,
             ReviewStatus::SendBack,
@@ -195,19 +195,19 @@ fn send_back_verdict_survives_rebuild() {
 fn patch_request_record_reports_patch_requested() {
     let dir = temp_workspace();
     let git = GitManager::open(dir.path()).expect("open repo");
-    commit_on_branch(&git, "game_logic", "DrawSprite", 1);
+    commit_on_branch(&git, "game_logic.dll", "DrawSprite", 1);
     // request_patch spawns the next-attempt branch and records the request there.
-    commit_on_branch(&git, "game_logic", "DrawSprite", 2);
+    commit_on_branch(&git, "game_logic.dll", "DrawSprite", 2);
     write_patch_record(
         &git,
-        "game_logic",
+        "game_logic.dll",
         "DrawSprite",
         2,
         Some("index buffer stride wrong"),
     );
 
     let dashboard = build(&git);
-    let unit = find_unit(&dashboard, "game_logic/DrawSprite/v2");
+    let unit = find_unit(&dashboard, "game_logic.dll/DrawSprite/v2");
     assert_eq!(
         unit.status,
         ReviewStatus::PatchRequested,
@@ -220,13 +220,13 @@ fn patch_request_record_reports_patch_requested() {
 fn failure_record_without_patch_request_reports_pending_review() {
     let dir = temp_workspace();
     let git = GitManager::open(dir.path()).expect("open repo");
-    commit_on_branch(&git, "game_logic", "DrawSprite", 1);
-    write_patch_record(&git, "game_logic", "DrawSprite", 1, None);
+    commit_on_branch(&git, "game_logic.dll", "DrawSprite", 1);
+    write_patch_record(&git, "game_logic.dll", "DrawSprite", 1, None);
 
     // A plain pipeline failure record is not a reviewer verdict — the
     // attempt simply failed and awaits review as before.
     let dashboard = build(&git);
-    let unit = find_unit(&dashboard, "game_logic/DrawSprite/v1");
+    let unit = find_unit(&dashboard, "game_logic.dll/DrawSprite/v1");
     assert_eq!(
         unit.status,
         ReviewStatus::PendingReview,
@@ -239,9 +239,9 @@ fn failure_record_without_patch_request_reports_pending_review() {
 fn merged_branch_with_send_back_reports_accepted() {
     let dir = temp_workspace();
     let git = GitManager::open(dir.path()).expect("open repo");
-    commit_on_branch(&git, "game_logic", "DrawSprite", 1);
+    commit_on_branch(&git, "game_logic.dll", "DrawSprite", 1);
 
-    let branch = GitBranch::new("game_logic", "DrawSprite", 1).expect("branch name");
+    let branch = GitBranch::new("game_logic.dll", "DrawSprite", 1).expect("branch name");
     git.merge_to_main(&branch).expect("merge to main");
     git.reject_branch(&branch, "stale rejection")
         .expect("write send-back record");
@@ -249,7 +249,7 @@ fn merged_branch_with_send_back_reports_accepted() {
     // Branch state stays authoritative for acceptance: a merged branch is
     // Accepted whichever records sit beside it.
     let dashboard = build(&git);
-    let unit = find_unit(&dashboard, "game_logic/DrawSprite/v1");
+    let unit = find_unit(&dashboard, "game_logic.dll/DrawSprite/v1");
     assert_eq!(
         unit.status,
         ReviewStatus::Accepted,
@@ -261,22 +261,47 @@ fn merged_branch_with_send_back_reports_accepted() {
 fn send_back_is_scoped_to_its_attempt() {
     let dir = temp_workspace();
     let git = GitManager::open(dir.path()).expect("open repo");
-    commit_on_branch(&git, "game_logic", "DrawSprite", 1);
-    let branch_v1 = GitBranch::new("game_logic", "DrawSprite", 1).expect("branch name");
+    commit_on_branch(&git, "game_logic.dll", "DrawSprite", 1);
+    let branch_v1 = GitBranch::new("game_logic.dll", "DrawSprite", 1).expect("branch name");
     git.reject_branch(&branch_v1, "wrong blend mode mapping")
         .expect("write send-back record");
-    commit_on_branch(&git, "game_logic", "DrawSprite", 2);
+    commit_on_branch(&git, "game_logic.dll", "DrawSprite", 2);
 
     let dashboard = build(&git);
     assert_eq!(
-        find_unit(&dashboard, "game_logic/DrawSprite/v1").status,
+        find_unit(&dashboard, "game_logic.dll/DrawSprite/v1").status,
         ReviewStatus::SendBack,
         "the sent-back attempt keeps its verdict"
     );
     assert_eq!(
-        find_unit(&dashboard, "game_logic/DrawSprite/v2").status,
+        find_unit(&dashboard, "game_logic.dll/DrawSprite/v2").status,
         ReviewStatus::Queued,
         "the fresh attempt carries no verdict from the previous attempt"
+    );
+}
+
+#[test]
+fn foo_dll_and_foo_exe_coexist_as_distinct_units() {
+    // Binary identity is the filename verbatim, extension included: a
+    // workspace holding both `foo.dll` and `foo.exe` must key their units
+    // apart end-to-end — branches, unit ids, and the dashboard (issue #68).
+    let dir = temp_workspace();
+    let git = GitManager::open(dir.path()).expect("open repo");
+    commit_on_branch(&git, "foo.dll", "DrawSprite", 1);
+    commit_on_branch(&git, "foo.exe", "DrawSprite", 1);
+
+    let branches = git.list_translation_branches().expect("list branches");
+    assert!(branches.contains(&"re/foo.dll/DrawSpritev1".to_string()));
+    assert!(branches.contains(&"re/foo.exe/DrawSpritev1".to_string()));
+
+    let dashboard = build(&git);
+    assert_eq!(
+        find_unit(&dashboard, "foo.dll/DrawSprite/v1").dll,
+        "foo.dll"
+    );
+    assert_eq!(
+        find_unit(&dashboard, "foo.exe/DrawSprite/v1").dll,
+        "foo.exe"
     );
 }
 
@@ -294,10 +319,10 @@ fn sent_back_shim_blocks_dependent_function_unit() {
         .expect("write send-back record");
 
     // A function translating on top of the sent-back shim.
-    commit_on_branch(&git, "d3d9", "Present", 1);
+    commit_on_branch(&git, "d3d9.dll", "Present", 1);
 
     let dashboard = build(&git);
-    let unit = find_unit(&dashboard, "d3d9/Present/v1");
+    let unit = find_unit(&dashboard, "d3d9.dll/Present/v1");
     assert!(
         unit.dependencies.iter().any(|d| d == "shim/wgpu/v1"),
         "the function unit carries the branch-model shim edge"
@@ -318,7 +343,7 @@ fn sent_back_shim_blocks_dependent_function_unit() {
             .dependency_graph
             .edges
             .iter()
-            .any(|e| e.from == "d3d9/Present/v1" && e.to == "shim/wgpu/v1"),
+            .any(|e| e.from == "d3d9.dll/Present/v1" && e.to == "shim/wgpu/v1"),
         "the dependency graph carries the shim edge"
     );
 }
@@ -333,10 +358,10 @@ fn merged_shim_wires_the_edge_without_blocking() {
     let shim_branch = GitBranch::new("shim", "wgpu", 1).expect("branch name");
     git.merge_to_main(&shim_branch).expect("merge shim to main");
 
-    commit_on_branch(&git, "d3d9", "Present", 1);
+    commit_on_branch(&git, "d3d9.dll", "Present", 1);
 
     let dashboard = build(&git);
-    let unit = find_unit(&dashboard, "d3d9/Present/v1");
+    let unit = find_unit(&dashboard, "d3d9.dll/Present/v1");
     assert!(
         unit.dependencies.iter().any(|d| d == "shim/wgpu/v1"),
         "the shim edge is wired whichever way the shim went"
@@ -361,10 +386,10 @@ fn no_classification_record_means_no_shim_edge_and_no_blocking() {
     git.reject_branch(&shim_branch, "shim rejected")
         .expect("write send-back record");
 
-    commit_on_branch(&git, "d3d9", "Present", 1);
+    commit_on_branch(&git, "d3d9.dll", "Present", 1);
 
     let dashboard = build(&git);
-    let unit = find_unit(&dashboard, "d3d9/Present/v1");
+    let unit = find_unit(&dashboard, "d3d9.dll/Present/v1");
     assert!(
         !unit.dependencies.iter().any(|d| d == "shim/wgpu/v1"),
         "no classification record, no declared shim dependency"

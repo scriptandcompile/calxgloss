@@ -719,14 +719,17 @@ mod tests {
     #[test]
     fn unit_key_scopes_unit_events_and_skips_batch_events() {
         let unit_event = ProgressEvent::LlmCallStart {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 1,
             strategy: "direct".into(),
         };
-        assert_eq!(unit_event.unit_key(), Some(("game_logic", "DrawPrimitive")));
+        assert_eq!(
+            unit_event.unit_key(),
+            Some(("game_logic.dll", "DrawPrimitive"))
+        );
         let batch_event = ProgressEvent::BatchSummary {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             total_functions: 4,
             success_count: 3,
             failure_count: 1,

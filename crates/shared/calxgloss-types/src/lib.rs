@@ -121,7 +121,7 @@ mod tests {
     #[test]
     fn test_git_branch_new() {
         let branch = GitBranch::new("game_logic.dll", "DrawSprite", 1).unwrap();
-        assert_eq!(branch.name, "re/game_logic/DrawSpritev1");
+        assert_eq!(branch.name, "re/game_logic.dll/DrawSpritev1");
         assert_eq!(branch.dll, "game_logic.dll");
         assert_eq!(branch.function, "DrawSprite");
         assert_eq!(branch.attempt, 1);

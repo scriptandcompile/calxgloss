@@ -31,7 +31,7 @@
 //! let baseline_tests = vec![];
 //!
 //! let results = verifier.verify(
-//!     "game_logic",
+//!     "game_logic.dll",
 //!     "draw_sprite",
 //!     rust_code,
 //!     &baseline_tests,

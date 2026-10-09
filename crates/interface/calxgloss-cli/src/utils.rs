@@ -347,14 +347,14 @@ pub(super) fn resolve_branch(
 
 /// Parse a git branch name back into (dll, function, attempt) components.
 ///
-/// Accepts branches in the format `re/{dll}/{function}v{N}` or
-/// `re/{dll_without_dot}/{function}v{N}`.
+/// Accepts branches in the format `re/{file}/{function}v{N}`, where `{file}`
+/// is the binary filename verbatim, extension included (issue #68).
 pub(super) fn parse_branch_for_accept(branch: &str) -> (String, String, u32) {
     // Strip re/ prefix
     let rest = branch.strip_prefix("re/").unwrap_or(branch);
 
     // Split into path and attempt suffix
-    // e.g. "game_logic/DrawSpritev1" → path="game_logic/DrawSprite", attempt=1
+    // e.g. "game_logic.dll/DrawSpritev1" → path="game_logic.dll/DrawSprite", attempt=1
     let (path, attempt) = if let Some(vpos) = rest.rfind('v') {
         let after_v = &rest[vpos + 1..];
         if after_v.chars().all(|c| c.is_ascii_digit()) && !after_v.is_empty() {

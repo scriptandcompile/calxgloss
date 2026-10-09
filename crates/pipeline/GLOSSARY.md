@@ -10,6 +10,9 @@ The translation loop of the reverse-engineering effort: every unit of work is tr
 One function or struct definition produced by the reverse-engineering effort, delivered as one commit. Shortened to *unit*.
 _Avoid_: work unit, task, job
 
+**Unit key**:
+A unit's identity string: `{file}/{function}`, where `{file}` is the binary identity. Carried verbatim through API payloads, review records, and artifact paths.
+
 **Attempt**:
 One try at a unit; each attempt is a fresh translation, noted as `v{N}`.
 _Avoid_: version, revision
@@ -23,6 +26,10 @@ _Avoid_: subject, binary
 **Target binary**:
 One individual EXE or DLL under analysis.
 _Avoid_: bare "target"
+
+**Binary identity**:
+A target binary's filename verbatim, extension included — `game_logic.dll`, `eqgame.exe`. The same string, with no normalization, names translation branches (`re/{file}/{function}v{N}`), unit keys, artifact directories (`re/baseline/{file}/…`), classification records (`re/classify/{file}.json`), and UI display. Deriving *Rust identifiers* from a binary name (crate and shim file names) takes the stem — that is naming, not identity.
+_Avoid_: stem, extension-stripped name (as an identity)
 
 **Workspace**:
 The working directory of one reverse-engineering effort: it holds the translated Rust, the record of the effort (`re/`), scratch, and the git repo that makes every unit restorable.

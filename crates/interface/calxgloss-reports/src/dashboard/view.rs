@@ -67,7 +67,9 @@ pub struct AttemptInfo {
 }
 
 impl ViewTarget {
-    /// Parse a target string like `game_logic/DrawPrimitive/v3` or `game_logic/DrawPrimitive`.
+    /// Parse a target string like `game_logic.dll/DrawPrimitive/v3` or
+    /// `game_logic.dll/DrawPrimitive`. The dll segment is the binary
+    /// filename verbatim, extension included (issue #68).
     pub fn parse(s: &str) -> Option<Self> {
         let parts: Vec<&str> = s.split('/').collect();
         if parts.len() < 2 || parts.len() > 3 {
@@ -152,11 +154,11 @@ impl UnitViewData {
         let attempt_history =
             Self::load_attempt_history(&patch_dir, &target.function, &branch_name);
 
-        // 6. Get baseline test data
+        // 6. Get baseline test data (baseline dirs carry the filename verbatim)
         let baseline_path = repo_path
             .join("re")
             .join("baseline")
-            .join(format!("{}.dll", target.dll))
+            .join(&target.dll)
             .join(&target.function)
             .join("baseline.json");
 
@@ -309,10 +311,11 @@ impl UnitViewData {
         attempts
     }
 
-    /// Load DLL classification data.
+    /// Load DLL classification data. `dll` is the binary filename verbatim;
+    /// the record file is `{dll}.json` (issue #68).
     fn load_classification(repo_path: &Path, dll: &str) -> (Option<String>, Option<String>) {
         let classify_dir = repo_path.join("re").join("classify");
-        let file_name = format!("{}.json", dll.trim_end_matches(".dll"));
+        let file_name = format!("{}.json", dll);
         let path = classify_dir.join(&file_name);
 
         if !path.exists() {

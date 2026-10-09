@@ -77,7 +77,7 @@ impl TestFixture {
         let classify_dir = git.repo_path().join("re").join("classify");
         std::fs::create_dir_all(&classify_dir).unwrap();
         std::fs::write(
-            classify_dir.join("game_logic.json"),
+            classify_dir.join("game_logic.dll.json"),
             serde_json::json!({
                 "category": "ProjectSpecific",
                 "strategy": "reverse_engineer",
@@ -90,7 +90,7 @@ impl TestFixture {
 
         // Also classify `d3d9.dll` as a crate-replacement target
         std::fs::write(
-            classify_dir.join("d3d9.json"),
+            classify_dir.join("d3d9.dll.json"),
             serde_json::json!({
                 "category": "MicrosoftSdk",
                 "strategy": "crate_replacement",
@@ -104,8 +104,8 @@ impl TestFixture {
 
         // 2. Create a shim branch `re/shim/wgpu` with a file and merge it into main.
         {
-            let shim_branch = GitBranch::new("d3d9", "wgpu", 1).unwrap();
-            git.create_branch("d3d9", "wgpu", 1, None).unwrap();
+            let shim_branch = GitBranch::new("d3d9.dll", "wgpu", 1).unwrap();
+            git.create_branch("d3d9.dll", "wgpu", 1, None).unwrap();
 
             let shim_file = "src/d3d9_shim.rs";
             std::fs::create_dir_all(git.repo_path().join("src")).unwrap();
@@ -136,11 +136,11 @@ impl TestFixture {
             git.merge_to_main(&pal_branch).unwrap();
         }
 
-        // 4. Create a translation branch `re/game_logic/DrawPrimitivev1`
+        // 4. Create a translation branch `re/game_logic.dll/DrawPrimitivev1`
         //    with a Rust source file.
         {
-            let branch = GitBranch::new("game_logic", "DrawPrimitive", 1).unwrap();
-            git.create_branch("game_logic", "DrawPrimitive", 1, None)
+            let branch = GitBranch::new("game_logic.dll", "DrawPrimitive", 1).unwrap();
+            git.create_branch("game_logic.dll", "DrawPrimitive", 1, None)
                 .unwrap();
 
             let src_file = "src/draw_primitive.rs";
@@ -161,8 +161,8 @@ pub fn draw_primitive(encoder: &mut wgpu::CommandEncoder, _args: &[u8]) {
             git.merge_to_main(&branch).unwrap();
 
             // Create a v2 branch that failed (for attempt history)
-            let branch_v2 = GitBranch::new("game_logic", "DrawPrimitive", 2).unwrap();
-            git.create_branch("game_logic", "DrawPrimitive", 2, None)
+            let branch_v2 = GitBranch::new("game_logic.dll", "DrawPrimitive", 2).unwrap();
+            git.create_branch("game_logic.dll", "DrawPrimitive", 2, None)
                 .unwrap();
 
             let src_file_v2 = "src/draw_primitive_v2.rs";
@@ -184,10 +184,10 @@ pub fn draw_primitive_v2(_encoder: &mut wgpu::CommandEncoder) {
             .unwrap();
         }
 
-        // 5. A second translation: `re/game_logic/UpdateScenev1` (accepted/merged).
+        // 5. A second translation: `re/game_logic.dll/UpdateScenev1` (accepted/merged).
         {
-            let branch = GitBranch::new("game_logic", "UpdateScene", 1).unwrap();
-            git.create_branch("game_logic", "UpdateScene", 1, None)
+            let branch = GitBranch::new("game_logic.dll", "UpdateScene", 1).unwrap();
+            git.create_branch("game_logic.dll", "UpdateScene", 1, None)
                 .unwrap();
 
             let src_file = "src/update_scene.rs";
@@ -207,19 +207,19 @@ pub fn update_scene(world: &mut World) {
             git.merge_to_main(&branch).unwrap();
         }
 
-        // 6. Create a patch record for game_logic/DrawPrimitive v1.
+        // 6. Create a patch record for game_logic.dll/DrawPrimitive v1.
         let patch_dir = git
             .repo_path()
             .join("re")
             .join("patches")
-            .join("game_logic")
+            .join("game_logic.dll")
             .join("DrawPrimitive");
         std::fs::create_dir_all(&patch_dir).unwrap();
         let patch_record = serde_json::json!({
-            "dll": "game_logic",
+            "dll": "game_logic.dll",
             "function": "DrawPrimitive",
             "attempt": 1,
-            "branch_name": "re/game_logic/DrawPrimitivev1",
+            "branch_name": "re/game_logic.dll/DrawPrimitivev1",
             "committed_at": "2025-09-28T10:00:00Z",
             "error_message": "",
             "compilation_errors": [],
@@ -234,10 +234,10 @@ pub fn update_scene(world: &mut World) {
 
         // Patch record for v2 (this one had compile errors).
         let patch_record_v2 = serde_json::json!({
-            "dll": "game_logic",
+            "dll": "game_logic.dll",
             "function": "DrawPrimitive",
             "attempt": 2,
-            "branch_name": "re/game_logic/DrawPrimitivev2",
+            "branch_name": "re/game_logic.dll/DrawPrimitivev2",
             "committed_at": "2025-09-28T11:30:00Z",
             "error_message": "type mismatch in shader constant",
             "compilation_errors": ["mismatched types"],
@@ -457,7 +457,7 @@ async fn test_server_status_live_router() {
     // handler uses) and an in-flight unit.
     let (_handler, _sender) = manager.register_client().await;
     events.emit(ProgressEvent::TranslationStarted {
-        dll: "game_logic".into(),
+        dll: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -558,7 +558,7 @@ async fn test_server_shutdown_live_router_stops_pipeline_and_server() {
 
     // A unit in flight (fed exactly how live mode feeds ProgressState).
     events.emit(ProgressEvent::TranslationStarted {
-        dll: "game_logic".into(),
+        dll: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
     });
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -599,7 +599,7 @@ async fn test_server_shutdown_live_router_stops_pipeline_and_server() {
         "the in-flight unit must survive the stop request"
     );
     events.emit(ProgressEvent::TranslationCompleted {
-        dll: "game_logic".into(),
+        dll: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         total_attempts: 1,
         success_strategy: Some("direct".into()),
@@ -607,7 +607,7 @@ async fn test_server_shutdown_live_router_stops_pipeline_and_server() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     let snapshot = progress.snapshot().await;
     let entry = snapshot
-        .get("game_logic/DrawPrimitive")
+        .get("game_logic.dll/DrawPrimitive")
         .expect("the in-flight unit is tracked");
     assert!(entry.finished, "the unit completes and is recorded");
     assert_eq!(
@@ -966,7 +966,7 @@ async fn test_dashboard_endpoint() {
     assert!(
         unit_ids
             .iter()
-            .any(|id| id.contains("game_logic") && id.contains("DrawPrimitive")),
+            .any(|id| id.contains("game_logic.dll") && id.contains("DrawPrimitive")),
         "DrawPrimitive v2 unit present in queue (IDs: {:?})",
         unit_ids
     );
@@ -993,7 +993,7 @@ async fn test_dashboard_endpoint() {
     assert!(
         all_ids
             .iter()
-            .any(|id| id.contains("game_logic") && id.contains("UpdateScene")),
+            .any(|id| id.contains("game_logic.dll") && id.contains("UpdateScene")),
         "UpdateScene unit present in dashboard (all: {:?})",
         all_ids
     );
@@ -1023,8 +1023,8 @@ async fn test_dashboard_binary_categories() {
     assert_eq!(resp.status(), 200);
     let json: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
 
-    // The fixture classifies game_logic.json as ProjectSpecific and
-    // d3d9.json as MicrosoftSdk; every category is listed, even at zero.
+    // The fixture classifies game_logic.dll.json as ProjectSpecific and
+    // d3d9.dll.json as MicrosoftSdk; every category is listed, even at zero.
     let count = |name: &str| {
         json["binary_categories"]
             .as_array()
@@ -1123,7 +1123,7 @@ async fn test_unit_detail_endpoint() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let unit_id = "game_logic/DrawPrimitive/v2";
+    let unit_id = "game_logic.dll/DrawPrimitive/v2";
     let encoded_id = urlencoding::encode(unit_id);
     let resp = reqwest::get(format!(
         "http://127.0.0.1:{}/api/units/{}",
@@ -1139,7 +1139,7 @@ async fn test_unit_detail_endpoint() {
 
     let unit = body["unit"].as_object().expect("unit is object");
     assert_eq!(unit["id"], unit_id);
-    assert_eq!(unit["dll"], "game_logic");
+    assert_eq!(unit["dll"], "game_logic.dll");
     assert_eq!(unit["function"], "DrawPrimitive");
     assert_eq!(unit["attempt"].as_u64(), Some(2));
     let history = unit["attempt_history"]
@@ -1750,9 +1750,9 @@ async fn test_dashboard_queue_effort_from_durations() {
     let effort = &body["queue_effort"];
     assert!(effort.is_object(), "queue_effort should be a map: {body}");
 
-    // The dashboard's game_logic/DrawPrimitive unit has its own measured
+    // The dashboard's game_logic.dll/DrawPrimitive unit has its own measured
     // attempts (100s and 200s) → average 150s.
-    let unit_id = "game_logic/DrawPrimitive/v2";
+    let unit_id = "game_logic.dll/DrawPrimitive/v2";
     assert_eq!(
         effort.get(unit_id),
         Some(&serde_json::json!(150)),
@@ -1816,7 +1816,7 @@ async fn test_dashboard_queue_effort_falls_back_to_global_average() {
     assert!(effort.is_object(), "queue_effort should be a map: {body}");
 
     // No own durations → global average of 300s and 500s = 400s.
-    let unit_id = "game_logic/DrawPrimitive/v2";
+    let unit_id = "game_logic.dll/DrawPrimitive/v2";
     assert_eq!(
         effort.get(unit_id),
         Some(&serde_json::json!(400)),
@@ -1994,7 +1994,7 @@ async fn test_progress_reports_phase_history() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let tier = |tier: &str| ProgressEvent::ContextTierSelected {
-        dll: "game_logic".into(),
+        dll: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         tier: tier.into(),
         tier_label: format!("{tier} label"),
@@ -2003,34 +2003,34 @@ async fn test_progress_reports_phase_history() {
     };
     for event in [
         ProgressEvent::TranslationStarted {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
         },
         ProgressEvent::GhidraFetchComplete {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             address: None,
             disassembly_lines: 10,
         },
         ProgressEvent::ApiTaggingComplete {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             tagged_apis: 3,
         },
         ProgressEvent::TestsGenerated {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             test_count: 5,
         },
         tier("T1"),
         ProgressEvent::LlmCallStart {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 1,
             strategy: "direct".into(),
         },
         ProgressEvent::LlmCallFailed {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 1,
             strategy: "direct".into(),
@@ -2038,20 +2038,20 @@ async fn test_progress_reports_phase_history() {
         },
         tier("T2"),
         ProgressEvent::LlmCallStart {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 2,
             strategy: "decompose".into(),
         },
         ProgressEvent::LlmCallComplete {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 2,
             code_length: 120,
             tokens_used: None,
         },
         ProgressEvent::TranslationAttemptCompleted {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 2,
             success: true,
@@ -2066,11 +2066,11 @@ async fn test_progress_reports_phase_history() {
         // A second unit that runs to completion: TranslationCompleted moves
         // it to the review phase and marks it finished.
         ProgressEvent::TranslationStarted {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "Update".into(),
         },
         ProgressEvent::TranslationCompleted {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "Update".into(),
             total_attempts: 1,
             success_strategy: Some("direct".into()),
@@ -2095,7 +2095,7 @@ async fn test_progress_reports_phase_history() {
         .iter()
         .find(|u| u["function"] == "DrawPrimitive")
         .expect("DrawPrimitive unit present");
-    assert_eq!(unit["dll"].as_str(), Some("game_logic"));
+    assert_eq!(unit["dll"].as_str(), Some("game_logic.dll"));
     assert_eq!(unit["attempt"].as_u64(), Some(2));
     assert_eq!(unit["strategy"].as_str(), Some("decompose"));
     // Current phase: the attempt completed, so the unit is testing.
@@ -2171,16 +2171,16 @@ async fn test_progress_enhanced_reports_live_records() {
     for event in [
         // DrawPrimitive: full evidence, still in flight.
         ProgressEvent::TranslationStarted {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
         },
         ProgressEvent::TestsGenerated {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             test_count: 5,
         },
         ProgressEvent::ContextTierSelected {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             tier: "T2".into(),
             tier_label: "with_tests".into(),
@@ -2188,13 +2188,13 @@ async fn test_progress_enhanced_reports_live_records() {
             api_call_count: 3,
         },
         ProgressEvent::LlmCallStart {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 2,
             strategy: "decompose".into(),
         },
         ProgressEvent::TranslationAttemptCompleted {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 2,
             success: false,
@@ -2207,7 +2207,7 @@ async fn test_progress_enhanced_reports_live_records() {
             tokens_used: None,
         },
         ProgressEvent::BehaviorDivergenceDetected {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 2,
             strategy: "decompose".into(),
@@ -2221,11 +2221,11 @@ async fn test_progress_enhanced_reports_live_records() {
         // Update: completed without any test evidence reported — every
         // unmeasured field must stay absent, not become a fabricated zero.
         ProgressEvent::TranslationStarted {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "Update".into(),
         },
         ProgressEvent::TranslationCompleted {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "Update".into(),
             total_attempts: 1,
             success_strategy: Some("direct".into()),
@@ -2233,17 +2233,17 @@ async fn test_progress_enhanced_reports_live_records() {
         // FailedUnit: a verified attempt that did not compile — confidence is
         // a real 0.0, not absent.
         ProgressEvent::TranslationStarted {
-            dll: "kernel32".into(),
+            dll: "kernel32.dll".into(),
             function: "FailedUnit".into(),
         },
         ProgressEvent::LlmCallStart {
-            dll: "kernel32".into(),
+            dll: "kernel32.dll".into(),
             function: "FailedUnit".into(),
             attempt: 1,
             strategy: "direct".into(),
         },
         ProgressEvent::TranslationAttemptCompleted {
-            dll: "kernel32".into(),
+            dll: "kernel32.dll".into(),
             function: "FailedUnit".into(),
             attempt: 1,
             success: false,
@@ -2256,7 +2256,7 @@ async fn test_progress_enhanced_reports_live_records() {
             tokens_used: None,
         },
         ProgressEvent::TranslationFailed {
-            dll: "kernel32".into(),
+            dll: "kernel32.dll".into(),
             function: "FailedUnit".into(),
             total_attempts: 1,
         },
@@ -2292,9 +2292,9 @@ async fn test_progress_enhanced_reports_live_records() {
     assert_eq!(
         keys,
         vec![
-            ("game_logic", "DrawPrimitive"),
-            ("game_logic", "Update"),
-            ("kernel32", "FailedUnit"),
+            ("game_logic.dll", "DrawPrimitive"),
+            ("game_logic.dll", "Update"),
+            ("kernel32.dll", "FailedUnit"),
         ]
     );
 
@@ -2453,7 +2453,7 @@ async fn test_send_back_verdict_survives_rebuild() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let unit_id = "game_logic/DrawPrimitive/v2";
+    let unit_id = "game_logic.dll/DrawPrimitive/v2";
     let encoded_id = urlencoding::encode(unit_id);
     let client = reqwest::Client::new();
     let resp = client
@@ -2598,7 +2598,7 @@ async fn test_unit_diff_endpoint() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let unit_id = "game_logic/DrawPrimitive/v2";
+    let unit_id = "game_logic.dll/DrawPrimitive/v2";
     let encoded_id = urlencoding::encode(unit_id);
     let resp = reqwest::get(format!(
         "http://127.0.0.1:{}/api/units/{}/diff",
@@ -2633,7 +2633,7 @@ async fn test_unit_ghidra_missing_artifacts() {
 
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let unit_id = "game_logic/DrawPrimitive/v2";
+    let unit_id = "game_logic.dll/DrawPrimitive/v2";
     let encoded_id = urlencoding::encode(unit_id);
     let resp = reqwest::get(format!(
         "http://127.0.0.1:{}/api/units/{}/ghidra",
@@ -2652,7 +2652,7 @@ async fn test_unit_ghidra_missing_artifacts() {
 // Unit process detail tests (issue #62)
 // ─────────────────────────────────────────────────────────────
 
-/// Writes canned run-telemetry artifacts for game_logic/DrawPrimitive:
+/// Writes canned run-telemetry artifacts for game_logic.dll/DrawPrimitive:
 /// a token-usage log (2 attempts, escalated tiers), a fault log (2 faults),
 /// and a Ghidra analysis artifact (for the tier rationale).
 fn write_canned_run_telemetry(fixture: &TestFixture) {
@@ -2742,7 +2742,7 @@ fn write_canned_run_telemetry(fixture: &TestFixture) {
     )
     .expect("write fault_log.json");
 
-    let dll_dir = analysis_dir.join("game_logic");
+    let dll_dir = analysis_dir.join("game_logic.dll");
     std::fs::create_dir_all(&dll_dir).expect("create dll dir");
     let ghidra_artifact = serde_json::json!({
         "name": "DrawPrimitive",
@@ -2787,7 +2787,7 @@ async fn fetch_unit_detail(fixture: &TestFixture, unit_id: &str) -> serde_json::
 async fn test_unit_process_sections_from_canned_artifacts() {
     let fixture = TestFixture::new();
     write_canned_run_telemetry(&fixture);
-    let body = fetch_unit_detail(&fixture, "game_logic/DrawPrimitive/v2").await;
+    let body = fetch_unit_detail(&fixture, "game_logic.dll/DrawPrimitive/v2").await;
 
     assert_eq!(body["success"], true);
     let process = body["unit"]["process"]
@@ -2868,7 +2868,7 @@ async fn test_unit_process_sections_from_canned_artifacts() {
 #[tokio::test]
 async fn test_unit_process_degrades_to_empty_sections() {
     let fixture = TestFixture::new();
-    let body = fetch_unit_detail(&fixture, "game_logic/UpdateScene/v1").await;
+    let body = fetch_unit_detail(&fixture, "game_logic.dll/UpdateScene/v1").await;
 
     // No telemetry artifacts exist for this unit — every section must be
     // present but empty, and the response must still be a success.
@@ -2904,12 +2904,12 @@ async fn test_unit_process_corrupt_artifacts_degrade() {
         .expect("write corrupt token log");
     std::fs::write(analysis_dir.join("fault_log.json"), "garbage")
         .expect("write corrupt fault log");
-    let dll_dir = analysis_dir.join("game_logic");
+    let dll_dir = analysis_dir.join("game_logic.dll");
     std::fs::create_dir_all(&dll_dir).expect("create dll dir");
     std::fs::write(dll_dir.join("DrawPrimitive.json"), "also not json")
         .expect("write corrupt ghidra artifact");
 
-    let body = fetch_unit_detail(&fixture, "game_logic/DrawPrimitive/v2").await;
+    let body = fetch_unit_detail(&fixture, "game_logic.dll/DrawPrimitive/v2").await;
 
     assert_eq!(body["success"], true, "corrupt artifacts must not error");
     let process = body["unit"]["process"]
@@ -2941,7 +2941,7 @@ async fn test_build_dashboard_api() {
     assert!(
         unit_ids
             .iter()
-            .any(|id| id.contains("game_logic") && id.contains("DrawPrimitive")),
+            .any(|id| id.contains("game_logic.dll") && id.contains("DrawPrimitive")),
         "DrawPrimitive unit present in review queue (IDs: {:?})",
         unit_ids
     );
@@ -2956,14 +2956,14 @@ async fn test_build_dashboard_api() {
     assert!(
         all_ids
             .iter()
-            .any(|id| id.contains("game_logic") && id.contains("DrawPrimitive")),
+            .any(|id| id.contains("game_logic.dll") && id.contains("DrawPrimitive")),
         "DrawPrimitive unit present (all: {:?})",
         all_ids
     );
     assert!(
         all_ids
             .iter()
-            .any(|id| id.contains("game_logic") && id.contains("UpdateScene")),
+            .any(|id| id.contains("game_logic.dll") && id.contains("UpdateScene")),
         "UpdateScene unit present (all: {:?})",
         all_ids
     );
@@ -3653,7 +3653,7 @@ async fn test_headless_unit_process_sections() {
     let mut listed = false;
     for _ in 0..25 {
         if eval_bool(
-            "!!document.querySelector('#full-queue-list [data-unit-id=\"game_logic/DrawPrimitive/v2\"]')",
+            "!!document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]')",
         ) {
             listed = true;
             break;
@@ -3667,7 +3667,7 @@ async fn test_headless_unit_process_sections() {
 
     // Click the unit to render its inline detail panel.
     tab.evaluate(
-        "document.querySelector('#full-queue-list [data-unit-id=\"game_logic/DrawPrimitive/v2\"]').click() === undefined",
+        "document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]').click() === undefined",
         false,
     )
     .expect("click queue item");
@@ -3793,7 +3793,7 @@ async fn test_headless_pipeline_estimate_and_queue_effort() {
     for _ in 0..25 {
         if eval_bool(
             "(() => { const el = document.querySelector('#full-queue-list \
-                [data-unit-id=\"game_logic/DrawPrimitive/v2\"] .qi-effort'); \
+                [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"] .qi-effort'); \
                 return !!el && el.textContent !== '—'; })()",
         ) {
             effort_rendered = true;
@@ -3803,7 +3803,7 @@ async fn test_headless_pipeline_estimate_and_queue_effort() {
     }
     let effort_text = eval_text(
         "document.querySelector('#full-queue-list \
-            [data-unit-id=\"game_logic/DrawPrimitive/v2\"] .qi-effort')?.textContent || ''",
+            [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"] .qi-effort')?.textContent || ''",
     );
     assert!(
         effort_rendered,
@@ -3837,16 +3837,16 @@ async fn test_headless_live_view_renders_and_updates() {
     // One unit mid-flight with tier, strategy, and pending baseline evidence.
     for event in [
         ProgressEvent::TranslationStarted {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
         },
         ProgressEvent::TestsGenerated {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             test_count: 3,
         },
         ProgressEvent::ContextTierSelected {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             tier: "T2".into(),
             tier_label: "with_tests".into(),
@@ -3854,7 +3854,7 @@ async fn test_headless_live_view_renders_and_updates() {
             api_call_count: 3,
         },
         ProgressEvent::LlmCallStart {
-            dll: "game_logic".into(),
+            dll: "game_logic.dll".into(),
             function: "DrawPrimitive".into(),
             attempt: 2,
             strategy: "decompose".into(),
@@ -3951,7 +3951,7 @@ async fn test_headless_live_view_renders_and_updates() {
     // A later event over the WebSocket must update the same row: the attempt
     // verifies (confidence 100%) and the unit completes (phase Review).
     events.emit(ProgressEvent::TranslationAttemptCompleted {
-        dll: "game_logic".into(),
+        dll: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         attempt: 2,
         success: true,
@@ -3964,7 +3964,7 @@ async fn test_headless_live_view_renders_and_updates() {
         tokens_used: None,
     });
     events.emit(ProgressEvent::TranslationCompleted {
-        dll: "game_logic".into(),
+        dll: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
         total_attempts: 2,
         success_strategy: Some("decompose".into()),

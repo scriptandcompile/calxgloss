@@ -305,12 +305,11 @@ fn sorted_entries(entries: &[TokenUsageEntry]) -> Vec<&TokenUsageEntry> {
     sorted
 }
 
-/// True when a log-entry DLL name refers to the same module as a unit's
-/// DLL name — log entries carry the `.dll` suffix, unit records do not.
+/// True when a log-entry DLL name refers to the same binary as a unit's
+/// DLL name. Both spell the binary identity verbatim, extension included
+/// (issue #68); the comparison only folds case.
 fn dll_matches(entry_dll: &str, unit_dll: &str) -> bool {
-    let lower = entry_dll.to_ascii_lowercase();
-    let trimmed = lower.strip_suffix(".dll").unwrap_or(&lower);
-    trimmed == unit_dll.to_ascii_lowercase()
+    entry_dll.eq_ignore_ascii_case(unit_dll)
 }
 
 #[cfg(test)]
@@ -318,10 +317,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_dll_matches_normalizes_suffix() {
-        assert!(dll_matches("game_logic.dll", "game_logic"));
-        assert!(dll_matches("game_logic", "game_logic"));
-        assert!(dll_matches("GAME_LOGIC.DLL", "game_logic"));
-        assert!(!dll_matches("audio.dll", "game_logic"));
+    fn test_dll_matches_compares_verbatim() {
+        assert!(dll_matches("game_logic.dll", "game_logic.dll"));
+        assert!(dll_matches("GAME_LOGIC.DLL", "game_logic.dll"));
+        assert!(!dll_matches("game_logic.dll", "game_logic"));
+        assert!(!dll_matches("audio.dll", "game_logic.dll"));
     }
 }

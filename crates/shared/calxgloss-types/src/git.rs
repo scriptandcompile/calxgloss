@@ -10,12 +10,14 @@ use crate::error::TypesError;
 
 /// Represents a Git branch created for a single translation attempt.
 ///
-/// Branch names follow the convention `re/{dll_without_dotdll}/{function}v{N}`,
-/// e.g., `re/game_logic/DrawSpritev1`. Each attempt to translate a function
+/// Branch names follow the convention `re/{file}/{function}v{N}`, where
+/// `{file}` is the target binary's filename verbatim, extension included —
+/// binary identity is never normalized (issue #68). E.g.,
+/// `re/game_logic.dll/DrawSpritev1`. Each attempt to translate a function
 /// gets its own branch, and failed branches are retained as historical record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitBranch {
-    /// The full branch name (e.g., `re/game_logic/DrawSpritev1`).
+    /// The full branch name (e.g., `re/game_logic.dll/DrawSpritev1`).
     pub name: String,
 
     /// The DLL this translation targets.
@@ -50,8 +52,10 @@ pub struct GitCommit {
 impl GitBranch {
     /// Creates a new `GitBranch` with a canonical branch name.
     ///
-    /// The branch name is constructed as `re/{dll_without_dotdll}/{function}v{attempt}`.
-    /// Returns an error if `dll` or `function` is empty.
+    /// The branch name is constructed as `re/{dll}/{function}v{attempt}`, with
+    /// `dll` used verbatim — the filename including its extension is the
+    /// binary's identity (issue #68). Returns an error if `dll` or `function`
+    /// is empty.
     ///
     /// # Examples
     ///
@@ -59,7 +63,7 @@ impl GitBranch {
     /// use calxgloss_types::GitBranch;
     ///
     /// let branch = GitBranch::new("game_logic.dll", "DrawSprite", 1).unwrap();
-    /// assert_eq!(branch.name, "re/game_logic/DrawSpritev1");
+    /// assert_eq!(branch.name, "re/game_logic.dll/DrawSpritev1");
     /// assert_eq!(branch.attempt, 1);
     /// ```
     pub fn new(dll: &str, function: &str, attempt: u32) -> Result<Self, TypesError> {
@@ -69,7 +73,7 @@ impl GitBranch {
         if function.is_empty() {
             return Err(TypesError::EmptyFunctionName);
         }
-        let branch_name = format!("re/{}/{}v{}", dll.replace(".dll", ""), function, attempt);
+        let branch_name = format!("re/{}/{}v{}", dll, function, attempt);
         Ok(GitBranch {
             name: branch_name,
             dll: dll.to_string(),
