@@ -4441,6 +4441,18 @@ async fn test_headless_live_view_renders_and_updates() {
         "confidence appears once an attempt verifies, got: {meta}"
     );
 
+    // The pushed records carry the phase history — the phase chip's tooltip
+    // shows the path the unit walked, escalations and retries included.
+    let history = row_text(".querySelector('.live-phase')?.getAttribute('title') || ''");
+    assert!(
+        history.contains("Ghidra Fetch")
+            && history.contains("Context Tier")
+            && history.contains("LLM Call")
+            && history.contains("Testing")
+            && history.contains("Review"),
+        "phase history visible on the phase chip, got: {history}"
+    );
+
     tab.close_target().ok();
     drop(browser);
 }

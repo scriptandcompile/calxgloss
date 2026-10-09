@@ -26,7 +26,7 @@ import { GraphRenderer } from "./js/graph.js";
 import { WSManager } from "./js/ws.js";
 import { addLlmLogEntry, clearLlmLog } from "./js/llm-log.js";
 import { loadGcCandidates, archiveSelectedGc } from "./js/gc.js";
-import { loadLiveProgress } from "./js/live.js";
+import { loadLiveProgress, applyUnitPhase } from "./js/live.js";
 import { showToast } from "./js/ui.js";
 
 // ─── Event Handlers ─────────────────────────────────────────────────────
@@ -177,6 +177,14 @@ function setupEventListeners() {
 function handleWSMessage(event) {
     console.log("[WS] handleWSMessage event:", event.event);
 
+    // Per-unit phase record pushed after each unit event (issue #55) —
+    // update the live row in place. The raw event that accompanied it
+    // already drives everything below, so the record itself stops here.
+    if (event.event === "unit_phase") {
+        applyUnitPhase(event.unit);
+        return;
+    }
+
     // Handle translation start — show a toast notification
     if (event.event === "translation_started") {
         showToast(
@@ -253,10 +261,8 @@ function handleWSMessage(event) {
     // Silently refresh dashboard data on any progress event
     loadDashboard();
 
-    // And the live view's per-unit records while that tab is open.
-    if (State.currentView === "live") {
-        loadLiveProgress();
-    }
+    // The live view needs no refetch here: the server pushes a `unit_phase`
+    // record after every unit event, and that updates the rows in place.
 }
 
 // ─── Zoom indicator display ─────────────────────────────────────────────
@@ -304,6 +310,13 @@ async function init() {
     // Initialize WebSocket for live updates
     console.log("[WS] Initializing WebSocket manager");
     State.wsManager = new WSManager(handleWSMessage);
+    // After a reconnect the records missed during the gap are gone — resync
+    // the live view from a fresh snapshot rather than trust stale rows.
+    State.wsManager.onOpen = () => {
+        if (State.currentView === "live") {
+            loadLiveProgress();
+        }
+    };
     State.wsManager.connect();
 
     // Load initial data

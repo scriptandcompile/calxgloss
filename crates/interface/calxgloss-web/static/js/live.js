@@ -73,6 +73,27 @@ export function stopLiveView() {
     }
 }
 
+/**
+ * Merge one pushed `unit_phase` record into the snapshot and re-render
+ * (issue #55). The server pushes a unit's full record — current phase,
+ * phase history, tier, evidence — after applying each unit-scoped event,
+ * so rows stay current without refetching the endpoint. Records arriving
+ * before the first snapshot are ignored: opening the tab fetches one.
+ */
+export function applyUnitPhase(unit) {
+    if (!lastState || !unit || !unit.dll) return;
+    const units = lastState.units || [];
+    const idx = units.findIndex(u => u.dll === unit.dll && u.function === unit.function);
+    if (idx >= 0) units[idx] = unit;
+    else units.push(unit);
+    lastState.units = units;
+    lastState.count = units.length;
+    lastState.in_flight = units.filter(u => !u.finished).length;
+    // The pushed record carries its own elapsed base — re-anchor the ticker.
+    lastFetchedAt = Date.now();
+    renderLiveUnits();
+}
+
 function showEmpty(message) {
     const empty = document.getElementById("live-empty");
     const msg = document.getElementById("live-empty-message");
@@ -120,12 +141,16 @@ function renderLiveUnits() {
         const tier = u.context_tier ? `${u.context_tier}${u.tier_label ? ` (${u.tier_label})` : ""}` : "—";
         const strategy = u.retry_strategy || "—";
         const statusClass = u.finished ? (u.succeeded ? "finished-ok" : "finished-fail") : "in-flight";
+        // Phases entered, in event order — tier escalations appear twice, so
+        // the retry path stays visible on hover.
+        const history = (u.phase_history || [])
+            .map(r => PHASE_LABELS[r.phase] || r.phase).join(" → ");
 
         return `
             <div class="live-unit ${statusClass}" data-dll="${escapeHtml(u.dll)}" data-function="${escapeHtml(u.function)}">
                 <div class="live-unit-header">
                     <span class="live-unit-name">${escapeHtml(u.dll)} / ${escapeHtml(u.function)}</span>
-                    <span class="live-chip live-phase phase-${escapeHtml(phase)}">${escapeHtml(phaseLabel)}</span>
+                    <span class="live-chip live-phase phase-${escapeHtml(phase)}" title="${escapeHtml(history)}">${escapeHtml(phaseLabel)}</span>
                     <span class="live-chip live-elapsed" data-elapsed-base="${u.elapsed_secs ?? 0}">${Math.floor(u.elapsed_secs ?? 0)}s</span>
                 </div>
                 <div class="live-unit-bar"><div class="live-unit-bar-fill phase-${escapeHtml(phase)}" style="width:${fill}%"></div></div>

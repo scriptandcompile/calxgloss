@@ -5,6 +5,7 @@
 export class WSManager {
     constructor(onMessage) {
         this.onMessage = onMessage;
+        this.onOpen = null;
         this.ws = null;
         this.connected = false;
         this.reconnectDelay = 3000;
@@ -28,6 +29,7 @@ export class WSManager {
                 document.getElementById("live-indicator").classList.add("active");
                 this.reconnectDelay = 3000;
                 console.log("[WS] Connected successfully");
+                this.onOpen?.();
             };
             this.ws.onmessage = (e) => {
                 console.log("[WS] Received message:", e.data);
