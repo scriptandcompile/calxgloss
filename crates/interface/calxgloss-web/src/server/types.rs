@@ -1121,6 +1121,15 @@ pub struct ServerLifecycleResponse {
     pub restart_required: bool,
 }
 
+/// Response body of `GET /api/llm-io` (issue #77) — the retained window of
+/// the server-side LLM I/O log, oldest first. A workspace that has never
+/// run live honestly reports an empty `entries`, never a 404.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmIoLogResponse {
+    /// The retained entries in append order.
+    pub entries: Vec<crate::server::llm_io_log::LlmIoEntry>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

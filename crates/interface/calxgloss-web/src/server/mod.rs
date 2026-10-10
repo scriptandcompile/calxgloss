@@ -6,12 +6,14 @@ mod actions;
 mod events;
 mod handlers;
 mod lifecycle;
+mod llm_io_log;
 mod metrics;
 mod types;
 
 pub use self::actions::*;
 pub use self::handlers::*;
 pub use self::lifecycle::{LifecycleError, LogLevel, LogLevelControl};
+pub use self::llm_io_log::{LlmIoEntry, LlmIoEntryType, LlmIoLog, MAX_LLM_IO_ENTRIES};
 pub use self::types::*;
 pub use events::{EventsBridge, SessionManager, UnitPhaseMessage, WebSocketHandler, WsMessage};
 
@@ -699,6 +701,11 @@ fn shared_routes() -> Router<CombinedState> {
                 .put(handlers::api_update_queue_overlay)
                 .layer(DefaultBodyLimit::max(256 * 1024)),
         )
+        // LLM I/O log (issue #77): persisted in every mode — it reads
+        // `re/analysis/llm_io/log.jsonl`, written by the live server as
+        // requests/responses happen, never live pipeline state. A workspace
+        // that has never run live honestly answers with an empty payload.
+        .route("/api/llm-io", get(handlers::api_get_llm_io_log))
         .route("/api/graph", get(handlers::api_get_dependency_graph))
         .route("/api/gc/candidates", get(handlers::api_get_gc_candidates))
         .route("/api/gc/archive", post(handlers::api_archive_gc))
@@ -790,9 +797,15 @@ pub fn build_router_with_ws(
     // task scheduling instead of event order.
     let progress_clone = progress.clone();
     let manager_clone = manager.clone();
+    // Server-side LLM I/O log (issue #77): every request/response/error the
+    // run emits is appended to `re/analysis/llm_io/log.jsonl` as it happens,
+    // so `GET /api/llm-io` can serve the history a page reload would
+    // otherwise lose.
+    let llm_io_log = LlmIoLog::new(state.repo_path());
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<calxgloss_types::ProgressEvent>();
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
+            llm_io_log.record(&event);
             progress_clone.on_event(&event).await;
             // WS phase events (issue #55): once a unit-scoped event is
             // applied, push that unit's full live record — current phase,

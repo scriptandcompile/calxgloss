@@ -3433,6 +3433,124 @@ async fn test_live_only_endpoints_absent_from_non_live_routers() {
     }
 }
 
+/// Issue #77 router contract: `/api/llm-io` is registered in the shared
+/// routes — it reads the persisted log, never live pipeline state — so every
+/// router answers it. With no log on disk (a workspace that never ran live)
+/// it serves an honest empty payload, not a 404 and not fabricated records.
+#[tokio::test]
+async fn test_llm_io_log_honest_empty_payload_on_non_live_routers() {
+    for kind in ["serve", "actions"] {
+        let fixture = TestFixture::new();
+        let state = ServerState::new(fixture.repo_path());
+        let router = if kind == "serve" {
+            build_router(state)
+        } else {
+            build_router_with_actions(state, ActionsState::new(fixture.repo_path()))
+        };
+        let _server = spawn_server(router, fixture.port()).await;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let resp = reqwest::get(format!("http://127.0.0.1:{}/api/llm-io", fixture.port()))
+            .await
+            .expect("request reaches server");
+        assert_eq!(resp.status(), 200, "{kind} router serves /api/llm-io");
+        let body: serde_json::Value = resp.json().await.expect("body is JSON");
+        assert_eq!(body["entries"].as_array().expect("entries array").len(), 0);
+    }
+}
+
+/// Issue #77 write + read round-trip: during a live run every LLM request,
+/// response, and failure the pipeline emits is appended to
+/// `re/analysis/llm_io/log.jsonl` as it happens, and `GET /api/llm-io`
+/// serves the entries back with their metadata and token counts.
+#[tokio::test]
+async fn test_llm_io_log_round_trip_from_canned_events() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // A non-LLM event must not touch the log.
+    events.emit(ProgressEvent::LlmCallStart {
+        binary: "game_logic.dll".into(),
+        function: "DrawPrimitive".into(),
+        attempt: 1,
+        strategy: "direct".into(),
+    });
+    events.emit(ProgressEvent::LlmRequest {
+        binary: "game_logic.dll".into(),
+        function: "DrawPrimitive".into(),
+        attempt: 1,
+        strategy: "direct".into(),
+        prompt: "translate DrawPrimitive".into(),
+    });
+    events.emit(ProgressEvent::LlmResponse {
+        binary: "game_logic.dll".into(),
+        function: "DrawPrimitive".into(),
+        attempt: 1,
+        strategy: "direct".into(),
+        content: "fn draw_primitive() {}".into(),
+        tokens_used: Some(4321),
+    });
+    events.emit(ProgressEvent::LlmCallFailed {
+        binary: "game_logic.dll".into(),
+        function: "UpdateScene".into(),
+        attempt: 2,
+        strategy: "retry".into(),
+        error: "connection reset".into(),
+    });
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // The log is on disk in the analysis directory, not just in memory.
+    let log_path = fixture
+        .repo_path()
+        .join("re")
+        .join("analysis")
+        .join("llm_io")
+        .join("log.jsonl");
+    assert!(log_path.is_file(), "live run persists the LLM I/O log");
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/llm-io", fixture.port()))
+        .await
+        .expect("request reaches server");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    let entries = body["entries"].as_array().expect("entries array");
+    assert_eq!(
+        entries.len(),
+        3,
+        "only request/response/error events are logged"
+    );
+
+    let request = &entries[0];
+    assert_eq!(request["type"], "request");
+    assert_eq!(request["binary"], "game_logic.dll");
+    assert_eq!(request["function"], "DrawPrimitive");
+    assert_eq!(request["attempt"], 1);
+    assert_eq!(request["strategy"], "direct");
+    assert_eq!(request["content"], "translate DrawPrimitive");
+    assert!(request["timestamp"].as_u64().expect("timestamp") > 0);
+
+    let response = &entries[1];
+    assert_eq!(response["type"], "response");
+    assert_eq!(response["content"], "fn draw_primitive() {}");
+    assert_eq!(response["tokens_used"], 4321);
+
+    let failure = &entries[2];
+    assert_eq!(failure["type"], "error");
+    assert_eq!(failure["function"], "UpdateScene");
+    assert_eq!(failure["attempt"], 2);
+    assert_eq!(failure["strategy"], "retry");
+    assert_eq!(failure["content"], "connection reset");
+}
+
 /// Integration test verifying that the full router with actions
 /// can serve the dashboard.
 #[tokio::test]
