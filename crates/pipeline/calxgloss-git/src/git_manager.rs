@@ -517,7 +517,6 @@ impl GitManager {
         // Check if we can fast-forward (branch is a direct descendant of main)
         if main_ahead == 0 && branch_ahead > 0 {
             debug!("Fast-forward merge {}", branch.name);
-            debug!("Fast-forward merge {}", branch.name);
             self.repo
                 .reference(
                     "refs/heads/main",

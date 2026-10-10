@@ -45,13 +45,14 @@ targets, not exact requirements.
 | P10.5 | consts Phase 5: full bitmask enum reconstruction, named constants from context, protocol constants, RGB grouping, codegen output | `calxgloss-consts` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P11.5 | serialize Phase 5: full serialization format inference, cross-field validation, protocol message / network protocol identification, per-type endianness mapping | `calxgloss-serialize` | — | ⬜ not started | `/to-spec` when picked up | — |
 | X1 | Integration-test backend: prefer bethington's headless server over a hand-built mock | test infra | — | ⬜ not started | `/to-spec` when picked up | — |
-| X2 | Orphaned templates `fix.j2` / `disassembly_translate.j2` removed or wired up | `calxgloss-prompts` | — | ⬜ not started | `/to-spec` when picked up | — |
+| X2 | Orphaned templates `fix.j2` / `disassembly_translate.j2` removed or wired up | `calxgloss-prompts` | — | ✅ done | closed — deleted, see [#87](https://github.com/scriptandcompile/calxgloss/issues/87) | [#87](https://github.com/scriptandcompile/calxgloss/issues/87) |
 | X3 | `data_flow.md` updated to include all methodologies | docs | — | ⬜ not started | `/to-spec` when picked up | — |
 | X4 | Architecture diagrams in source docs match implementation | docs | — | ⬜ not started | `/to-spec` when picked up | — |
 
-Legend: ✅ done · 🔶 in progress · ⬜ not started. Rows P1.5–P11.5 and X1–X4 are open
-future-work items — optional Phase 5 depth work and cross-cutting chores —
-verified still open in the code (2026-10-08); no effort estimates yet.
+Legend: ✅ done · 🔶 in progress · ⬜ not started. Rows P1.5–P11.5 and X1,
+X3–X4 are open future-work items — optional Phase 5 depth work and
+cross-cutting chores — verified still open in the code (2026-10-08); no
+effort estimates yet.
 
 ## W0 — Web UI Foundation & Phase Progress (`calxgloss-web`)
 
@@ -190,8 +191,9 @@ tests; current state is inline fixtures + `#[ignore]`d live tests.
 
 ## X2 — Orphaned templates (`calxgloss-prompts`)
 
-`fix.j2` and `disassembly_translate.j2` sit in `templates/` but are
-unreferenced in `templates.rs` — remove them or wire them up.
+Done — decision was remove. `fix.j2` and `disassembly_translate.j2` sat in
+`templates/` unreferenced in `templates.rs`; the renderer already covers both
+jobs with other templates, so both files were deleted (#87).
 
 ## X3 — `data_flow.md` update (docs)
 
