@@ -7,6 +7,7 @@ import { renderFullQueue } from "./queue.js";
 import { loadGcCandidates } from "./gc.js";
 import { startLiveView, stopLiveView } from "./live.js";
 import { loadPipelineProgress } from "./dashboard.js";
+import { loadLlmLogHistory } from "./llm-log.js";
 
 export function switchView(viewName) {
     State.currentView = viewName;
@@ -34,7 +35,9 @@ export function switchView(viewName) {
     }
 
     if (viewName === "llm-log") {
-        // Focus the log container when switching to LLM log view
+        // Reload the persisted history on entry (issue #80) — dedup keeps
+        // live entries intact — and focus the log container.
+        loadLlmLogHistory().catch((err) => console.warn("[LLM log] history load failed:", err));
         const container = document.getElementById("llm-log-container");
         if (container) container.focus();
     }

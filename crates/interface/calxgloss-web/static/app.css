@@ -1993,6 +1993,26 @@ svg {
 
 /* ─── LLM I/O Log View ──────────────────────────────────────────────── */
 
+.llm-log-controls {
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.graph-filter-label input[type="search"] {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    padding: 4px 8px;
+    font-size: 12px;
+    width: 180px;
+}
+
+.graph-filter-label input[type="search"]:focus {
+    outline: none;
+    border-color: var(--accent-blue);
+}
+
 .llm-log-container {
     height: calc(100vh - var(--topbar-h) - 120px);
     display: flex;
@@ -2053,6 +2073,35 @@ svg {
     text-transform: uppercase;
     letter-spacing: 0.04em;
     border-bottom: 1px solid var(--border-subtle);
+    cursor: pointer;
+}
+
+.llm-log-chevron {
+    color: var(--text-muted);
+    font-size: 10px;
+}
+
+/* Collapsed by default (issue #80): the header carries the metadata,
+   the full prompt/response only shows once the entry is expanded. */
+.llm-log-entry:not(.expanded) .llm-log-entry-body {
+    display: none;
+}
+
+.llm-log-copy {
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-size: 10px;
+    padding: 2px 8px;
+    cursor: pointer;
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+.llm-log-copy:hover {
+    color: var(--text-primary);
+    border-color: var(--accent-blue);
 }
 
 .llm-log-entry-header.request {

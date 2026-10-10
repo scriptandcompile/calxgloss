@@ -9,8 +9,8 @@
 use calxgloss_git::{GitManager, InitConfig};
 use calxgloss_types::{GitBranch, ProgressEvent, TestCase, TestResult, TranslationEvents};
 use calxgloss_web::{
-    ActionsState, ProgressState, ServerState, SessionManager, build_dashboard, build_router,
-    build_router_with_actions, build_router_with_ws, serve_with_listener,
+    ActionsState, LlmIoLog, ProgressState, ServerState, SessionManager, build_dashboard,
+    build_router, build_router_with_actions, build_router_with_ws, serve_with_listener,
 };
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -1951,8 +1951,13 @@ async fn test_batch_actions_report_per_item_results() {
     }
 
     // An empty selection is a client error, not an honest no-op.
-    let (status, _) =
-        post_batch(&base, &client, "/api/batch/skip", serde_json::json!({ "unit_ids": [] })).await;
+    let (status, _) = post_batch(
+        &base,
+        &client,
+        "/api/batch/skip",
+        serde_json::json!({ "unit_ids": [] }),
+    )
+    .await;
     assert_eq!(status, 400, "empty batch selection is rejected");
 
     // Batch skip: both real units land, the unknown one fails per-item.
@@ -1963,9 +1968,15 @@ async fn test_batch_actions_report_per_item_results() {
         serde_json::json!({ "unit_ids": [hud, ghost, sound] }),
     )
     .await;
-    assert_eq!(status, 200, "partial failure still answers 200 with results");
+    assert_eq!(
+        status, 200,
+        "partial failure still answers 200 with results"
+    );
     assert_eq!(body["action"], "skip");
-    assert_eq!(body["success"], false, "one unit failed, so not all succeeded");
+    assert_eq!(
+        body["success"], false,
+        "one unit failed, so not all succeeded"
+    );
     assert_eq!(body["succeeded"], 2);
     assert_eq!(body["failed"], 1);
     let results = body["results"].as_array().expect("results is an array");
@@ -5916,10 +5927,7 @@ async fn test_headless_queue_multiselect_batch_actions() {
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    let skipped = persisted["skipped"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    let skipped = persisted["skipped"].as_array().cloned().unwrap_or_default();
     assert!(
         skipped.iter().any(|id| id == draw) && skipped.iter().any(|id| id == hud),
         "batch skip persists both selected units, got {skipped:?}"
@@ -6312,6 +6320,238 @@ async fn test_headless_graph_export_and_share_url() {
     );
 
     shared_tab.close_target().ok();
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for the LLM I/O log browser (issue #80): the view
+/// loads its history from `GET /api/llm-io` (so it survives a reload),
+/// shows a token count per entry, starts entries collapsed and expands
+/// them on header click, offers one-click copy per entry, narrows the list
+/// through the binary filter and full-text search, and still appends live
+/// WebSocket entries on top of the history — without duplicating them when
+/// the history reloads on the next view entry.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_llm_log_browser() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // History from a "previous run": persisted before the page opens, so
+    // the view must load it from the server rather than a memory buffer.
+    let log = LlmIoLog::new(fixture.repo_path());
+    log.record(&ProgressEvent::LlmRequest {
+        binary: "game_logic.dll".into(),
+        function: "DrawPrimitive".into(),
+        attempt: 1,
+        strategy: "direct".into(),
+        prompt: "translate DrawPrimitive from the decompile".into(),
+    });
+    log.record(&ProgressEvent::LlmResponse {
+        binary: "game_logic.dll".into(),
+        function: "DrawPrimitive".into(),
+        attempt: 1,
+        strategy: "direct".into(),
+        content: "fn draw_primitive() {}".into(),
+        tokens_used: Some(4321),
+    });
+    log.record(&ProgressEvent::LlmRequest {
+        binary: "d3d9.dll".into(),
+        function: "UpdateScene".into(),
+        attempt: 2,
+        strategy: "compile_fix".into(),
+        prompt: "fix the compile errors in UpdateScene".into(),
+    });
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+    let eval_text = |expr: &str| -> String {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default()
+    };
+    let visible_count = || -> i64 {
+        tab.evaluate(
+            "document.querySelectorAll('#llm-log-entries .llm-log-entry').length",
+            false,
+        )
+        .ok()
+        .and_then(|r| r.value)
+        .and_then(|v| v.as_i64())
+        .unwrap_or(-1)
+    };
+
+    // Switch to the LLM I/O tab.
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"llm-log\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click llm-log tab");
+
+    // The persisted history renders — loaded over HTTP, not from a buffer.
+    let mut loaded = false;
+    for _ in 0..25 {
+        if visible_count() == 3 {
+            loaded = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(loaded, "log view should load the persisted history");
+
+    // Token count per entry: the response carries its count, the request
+    // shows an honest em dash rather than a fabricated zero.
+    let response_meta = eval_text(
+        "document.querySelector('#llm-log-entries .llm-log-entry:nth-child(2) .meta').textContent",
+    );
+    assert!(
+        response_meta.contains("4321 tokens"),
+        "response entry should show its token count, got: {response_meta}"
+    );
+    let request_meta = eval_text(
+        "document.querySelector('#llm-log-entries .llm-log-entry:nth-child(1) .meta').textContent",
+    );
+    assert!(
+        request_meta.contains('—'),
+        "request entry should show an em dash for the unmeasured token count, got: {request_meta}"
+    );
+
+    // Entries start collapsed: the body is hidden until the header is clicked.
+    assert!(
+        eval_bool(
+            "document.querySelector('#llm-log-entries .llm-log-entry .llm-log-entry-body').offsetHeight === 0"
+        ),
+        "entries should start collapsed"
+    );
+    tab.evaluate(
+        "document.querySelector('#llm-log-entries .llm-log-entry .llm-log-entry-header').click() === undefined",
+        false,
+    )
+    .expect("click entry header");
+    assert!(
+        eval_bool(
+            "document.querySelector('#llm-log-entries .llm-log-entry .llm-log-entry-body').offsetHeight > 0"
+        ),
+        "header click should expand the entry"
+    );
+
+    // One-click copy: every entry carries a copy button.
+    assert!(
+        eval_bool("document.querySelectorAll('#llm-log-entries .llm-log-copy').length === 3"),
+        "every entry should have a copy button"
+    );
+
+    // Binary filter narrows to one binary.
+    tab.evaluate(
+        "(() => { const sel = document.getElementById('llm-log-filter-binary'); \
+            sel.value = 'd3d9.dll'; \
+            sel.dispatchEvent(new Event('change')); })()",
+        false,
+    )
+    .expect("set binary filter");
+    assert!(
+        visible_count() == 1,
+        "binary filter should leave only the d3d9.dll entry"
+    );
+
+    // Full-text search through prompt content (filter reset first).
+    tab.evaluate(
+        "(() => { const sel = document.getElementById('llm-log-filter-binary'); \
+            sel.value = ''; \
+            sel.dispatchEvent(new Event('change')); \
+            const inp = document.getElementById('llm-log-search'); \
+            inp.value = 'compile errors'; \
+            inp.dispatchEvent(new Event('input')); })()",
+        false,
+    )
+    .expect("set search");
+    assert!(
+        visible_count() == 1,
+        "search should match exactly the entry whose content mentions it"
+    );
+    let searched_meta =
+        eval_text("document.querySelector('#llm-log-entries .llm-log-entry .meta').textContent");
+    assert!(
+        searched_meta.contains("UpdateScene"),
+        "the searched entry should be the UpdateScene prompt, got: {searched_meta}"
+    );
+
+    // Reset the search — back to the full history.
+    tab.evaluate(
+        "(() => { const inp = document.getElementById('llm-log-search'); \
+            inp.value = ''; \
+            inp.dispatchEvent(new Event('input')); })()",
+        false,
+    )
+    .expect("clear search");
+    assert!(
+        visible_count() == 3,
+        "clearing the search should show all history"
+    );
+
+    // Live WebSocket entries still append on top of the history — including
+    // a failed call, whose content must match the server log's raw error.
+    events.emit(ProgressEvent::LlmRequest {
+        binary: "game_logic.dll".into(),
+        function: "UpdateScene".into(),
+        attempt: 3,
+        strategy: "direct".into(),
+        prompt: "translate UpdateScene".into(),
+    });
+    events.emit(ProgressEvent::LlmCallFailed {
+        binary: "d3d9.dll".into(),
+        function: "UpdateScene".into(),
+        attempt: 4,
+        strategy: "retry".into(),
+        error: "connection reset".into(),
+    });
+    let mut appended = false;
+    for _ in 0..25 {
+        if visible_count() == 5 {
+            appended = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        appended,
+        "live WS entries should append on top of the history"
+    );
+
+    // Re-entering the view reloads the history — the live entries were also
+    // persisted server-side, and dedup must keep them from showing twice
+    // (the error entry's content is the raw error on both sides).
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"dashboard\"]').click(); \
+         document.querySelector('.nav-tab[data-view=\"llm-log\"]').click();",
+        false,
+    )
+    .expect("re-enter llm-log view");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        visible_count() == 5,
+        "history reload must not duplicate the live entries"
+    );
+
     tab.close_target().ok();
     drop(browser);
 }

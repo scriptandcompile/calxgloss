@@ -227,8 +227,32 @@
         <section id="view-llm-log" class="view">
             <div class="view-header">
                 <h2>LLM I/O Log</h2>
-                <div class="view-controls">
-                    <button id="btn-clear-llm-log" class="btn btn-sm btn-secondary">Clear</button>
+                <div class="view-controls graph-filters llm-log-controls">
+                    <label class="graph-filter-label">Search
+                        <input id="llm-log-search" type="search" placeholder="prompt & response content…" aria-label="Search LLM log content">
+                    </label>
+                    <label class="graph-filter-label">Binary
+                        <select id="llm-log-filter-binary" aria-label="Filter LLM log by binary">
+                            <option value="">All</option>
+                        </select>
+                    </label>
+                    <label class="graph-filter-label">Function
+                        <select id="llm-log-filter-function" aria-label="Filter LLM log by function">
+                            <option value="">All</option>
+                        </select>
+                    </label>
+                    <label class="graph-filter-label">Attempt
+                        <select id="llm-log-filter-attempt" aria-label="Filter LLM log by attempt">
+                            <option value="">All</option>
+                        </select>
+                    </label>
+                    <label class="graph-filter-label">Strategy
+                        <select id="llm-log-filter-strategy" aria-label="Filter LLM log by strategy">
+                            <option value="">All</option>
+                        </select>
+                    </label>
+                    <span id="llm-log-filter-summary" class="graph-filter-summary"></span>
+                    <button id="btn-clear-llm-log" class="btn btn-sm btn-secondary" title="Clear the view — the server-side log keeps its entries">Clear</button>
                 </div>
             </div>
             <div id="llm-log-container" class="llm-log-container">

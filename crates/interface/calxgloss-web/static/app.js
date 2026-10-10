@@ -37,7 +37,12 @@ import {
     applyGraphShareFilters,
 } from "./js/graph-share.js";
 import { WSManager } from "./js/ws.js";
-import { addLlmLogEntry, clearLlmLog } from "./js/llm-log.js";
+import {
+    addLlmLogEntry,
+    clearLlmLog,
+    loadLlmLogHistory,
+    setupLlmLogControls,
+} from "./js/llm-log.js";
 import { loadGcCandidates, archiveSelectedGc } from "./js/gc.js";
 import { loadLiveProgress, applyUnitPhase } from "./js/live.js";
 import { showToast } from "./js/ui.js";
@@ -198,7 +203,8 @@ function setupEventListeners() {
             showToast(`Share URL: ${url}`, "info");
         }
     });
-    // LLM I/O log clear button
+    // LLM I/O log controls (issue #80) — filters, search, collapse, copy.
+    setupLlmLogControls();
     document.getElementById("btn-clear-llm-log")?.addEventListener("click", clearLlmLog);
 
     // GC tab buttons
@@ -349,17 +355,20 @@ function handleWSMessage(event) {
             event.function,
             event.attempt,
             event.strategy,
-            event.content
+            event.content,
+            event.tokens_used
         );
     } else if (event.event === "llm_call_failed") {
         console.warn("[WS] LLM call failed:", event.binary, event.function, event.error);
+        // Content matches the server log's raw error string (no "Error:"
+        // prefix) so the dedup key lines up with the persisted twin.
         addLlmLogEntry(
             "error",
             event.binary,
             event.function,
             event.attempt,
             event.strategy,
-            `Error: ${event.error}`
+            event.error
         );
     }
 
@@ -440,6 +449,10 @@ async function init() {
         }
     };
     State.wsManager.connect();
+
+    // Load the persisted LLM I/O history (issue #80) so the log view
+    // survives reloads; live WS entries append on top of it.
+    loadLlmLogHistory().catch((err) => console.warn("[LLM log] history load failed:", err));
 
     // Load initial data
     await loadDashboard();

@@ -71,8 +71,7 @@ pub async fn api_batch_skip(
     let response = run_batch("skip", &unit_ids, |unit_id| {
         let server = combined.server.clone();
         async move {
-            super::queue::set_unit_skipped(&server, &unit_id, true)
-                .map(|result| result.0.message)
+            super::queue::set_unit_skipped(&server, &unit_id, true).map(|result| result.0.message)
         }
     })
     .await;
@@ -96,11 +95,7 @@ fn selected_units(request: &BatchActionRequest) -> Result<Vec<String>, ServerErr
 /// repository, and sequential application keeps per-item results in request
 /// order and deterministic — collecting one result per unit. A failure on
 /// one unit is recorded and the batch continues with the next.
-async fn run_batch<F, Fut>(
-    action: &str,
-    unit_ids: &[String],
-    mut apply: F,
-) -> BatchActionResponse
+async fn run_batch<F, Fut>(action: &str, unit_ids: &[String], mut apply: F) -> BatchActionResponse
 where
     F: FnMut(String) -> Fut,
     Fut: std::future::Future<Output = Result<String, ServerError>>,

@@ -63,6 +63,7 @@ export const API = {
     async queue() { return API.get("/api/queue"); },
     async nextUnit() { return API.get("/api/queue/next"); },
     async graph() { return API.get("/api/graph"); },
+    async llmIoLog() { return API.get("/api/llm-io"); },
     async health() { return API.get("/health"); },
     async serverStatus() { return API.get("/api/server/status"); },
     async shutdownServer() { return API.post("/api/server/shutdown"); },
