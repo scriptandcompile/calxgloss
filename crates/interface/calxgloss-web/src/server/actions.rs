@@ -15,6 +15,12 @@
 //! Patch requests are idempotent while a retry is in flight: a second request
 //! for a unit whose next attempt already has a patch request returns the
 //! existing one instead of starting a second retry (issue #84).
+//!
+//! Actions on the same unit never silently disagree with git: each action
+//! captures the unit's persisted action state at start and re-checks it before
+//! writing its own record, so a racing action fails with a conflict error
+//! instead of overwriting a newer record, and send-back/patch on an
+//! already-accepted unit are refused (issue #86).
 
 use calxgloss_git::{GitManager, ShimDependencyMap};
 use calxgloss_translator::{RetryConfig, TranslationPipeline};
@@ -23,6 +29,7 @@ use chrono::Utc;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::Arc;
 use tracing::{info, warn};
 
 // ============================================================
@@ -34,16 +41,40 @@ use tracing::{info, warn};
 pub struct ActionsState {
     /// Path to the Git repository.
     repo_path: PathBuf,
+    /// Serializes review actions within this process (issue #86). Action
+    /// records are written only by the web server, so an in-process lock —
+    /// not cross-process file locking — makes each action's conflict
+    /// re-check and record write atomic against racing actions on a unit
+    /// (e.g. a fast Accept-then-Send-Back double-click).
+    action_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl ActionsState {
     pub fn new(repo_path: PathBuf) -> Self {
-        Self { repo_path }
+        Self {
+            repo_path,
+            action_lock: Arc::new(tokio::sync::Mutex::new(())),
+        }
     }
 
     /// Returns the path to the repository.
     pub fn repo_path(&self) -> &Path {
         &self.repo_path
+    }
+
+    /// Begins one review action on a unit: captures the unit's persisted
+    /// action state at start, then acquires the action lock so the action's
+    /// conflict re-check and record write are atomic against racing actions
+    /// on the unit (issue #86). The capture deliberately happens *before*
+    /// the lock — a state that lands in between is exactly what the
+    /// action's write-time re-check must catch.
+    async fn begin_action(
+        &self,
+        unit_id: &str,
+    ) -> (Option<ReviewStatus>, tokio::sync::MutexGuard<'_, ()>) {
+        let captured = read_action_state(&self.repo_path, unit_id).map(|r| r.action);
+        let guard = self.action_lock.lock().await;
+        (captured, guard)
     }
 }
 
@@ -107,6 +138,84 @@ fn read_action_state(repo_path: &Path, unit_id: &str) -> Option<ReviewActionReco
 }
 
 // ============================================================
+// Conflict checking (issue #86)
+// ============================================================
+
+/// A review action was refused because of the unit's persisted action state
+/// (issue #86). The message names the state that is actually persisted, so
+/// the reviewer learns the unit changed underneath them instead of watching
+/// a later action silently overwrite an earlier one.
+#[derive(Debug, thiserror::Error)]
+pub enum ActionConflictError {
+    /// A different action landed between this action's start and its record
+    /// write — the persisted state no longer matches what was captured.
+    #[error(
+        "Unit {unit_id} changed underneath you: its review state is now {current} — \
+         not overwriting that action record"
+    )]
+    ChangedUnderneath {
+        /// The unit the refused action targeted.
+        unit_id: String,
+        /// The persisted state found at check time, named for display.
+        current: String,
+    },
+    /// The unit is already accepted: its code is merged to main and there is
+    /// no un-merge path, so send-back and patch are refused outright.
+    #[error(
+        "Unit {unit_id} is already accepted (merged to main) — send-back and patch \
+         are refused; there is no un-merge path"
+    )]
+    AlreadyAccepted {
+        /// The unit the refused action targeted.
+        unit_id: String,
+    },
+}
+
+/// Names a persisted action state for conflict messages; a missing record
+/// reads as "no recorded action" rather than an empty string.
+fn state_name(state: Option<&ReviewStatus>) -> String {
+    state
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "no recorded action".to_string())
+}
+
+/// Re-checks the unit's persisted action state just before an action writes
+/// its own record. Fails with [`ActionConflictError::ChangedUnderneath`]
+/// naming the current state when a different action landed since the action
+/// captured the state at start (issue #86).
+///
+/// Returns the current persisted state so callers can apply further rules
+/// (e.g. refusing send-back/patch on an accepted unit).
+fn check_action_conflict(
+    repo_path: &Path,
+    unit_id: &str,
+    captured: Option<ReviewStatus>,
+) -> Result<Option<ReviewStatus>, ActionConflictError> {
+    let current = read_action_state(repo_path, unit_id).map(|r| r.action);
+    if current != captured {
+        return Err(ActionConflictError::ChangedUnderneath {
+            unit_id: unit_id.to_string(),
+            current: state_name(current.as_ref()),
+        });
+    }
+    Ok(current)
+}
+
+/// Refuses send-back and patch on an already-accepted unit: the code is
+/// merged to main and there is no un-merge path (issue #86).
+fn ensure_not_accepted(
+    unit_id: &str,
+    current: Option<ReviewStatus>,
+) -> Result<(), ActionConflictError> {
+    if current == Some(ReviewStatus::Accepted) {
+        return Err(ActionConflictError::AlreadyAccepted {
+            unit_id: unit_id.to_string(),
+        });
+    }
+    Ok(())
+}
+
+// ============================================================
 // Action implementations
 // ============================================================
 
@@ -115,10 +224,17 @@ fn read_action_state(repo_path: &Path, unit_id: &str) -> Option<ReviewActionReco
 /// When the branch cannot merge cleanly, the merge conflicts are reported as
 /// an error naming the conflicted files and no `Accepted` action state is
 /// persisted — the unit keeps its pre-accept status (issue #83).
+///
+/// The unit's persisted action state is captured at start and re-checked
+/// before touching git: if another review action landed in the meantime, the
+/// accept fails with a conflict error instead of racing the other action's
+/// record write (issue #86).
 pub async fn accept_unit(
     state: &ActionsState,
     unit_id: &str,
 ) -> Result<ActionResult, anyhow::Error> {
+    let (captured, _action_guard) = state.begin_action(unit_id).await;
+
     let unit = lookup_unit(state, unit_id)?;
     let branch = GitBranch::new(
         &unit.binary,
@@ -126,6 +242,11 @@ pub async fn accept_unit(
         unit.attempt,
     )?;
     let git = GitManager::open(state.repo_path())?;
+
+    // Re-check before merging: the lock guarantees nothing lands between here
+    // and the persist below, so a stale capture means the unit changed
+    // underneath us — fail without merging or overwriting (issue #86).
+    check_action_conflict(state.repo_path(), unit_id, captured)?;
 
     // Merge the branch (write acceptance record)
     let merge_result = git.accept_branch(&branch)?;
@@ -169,11 +290,19 @@ pub async fn accept_unit(
 }
 
 /// Send back a unit of work: write rejection record and persist the action.
+///
+/// Rejected when the unit is already accepted — its code is merged to main
+/// and there is no un-merge path (issue #86). A different action landing
+/// between this action's start and its record write also fails it with a
+/// conflict error naming the current state, instead of letting the last
+/// write silently win.
 pub async fn send_back_unit(
     state: &ActionsState,
     unit_id: &str,
     reason: &str,
 ) -> Result<ActionResult, anyhow::Error> {
+    let (captured, _action_guard) = state.begin_action(unit_id).await;
+
     let unit = lookup_unit(state, unit_id)?;
     let branch = GitBranch::new(
         &unit.binary,
@@ -181,6 +310,10 @@ pub async fn send_back_unit(
         unit.attempt,
     )?;
     let git = GitManager::open(state.repo_path())?;
+
+    // Re-check before writing anything (issue #86).
+    let current = check_action_conflict(state.repo_path(), unit_id, captured)?;
+    ensure_not_accepted(unit_id, current)?;
 
     // Write rejection record
     let rejection_path = git.reject_branch(&branch, reason)?;
@@ -215,6 +348,11 @@ pub async fn send_back_unit(
 /// action record already records a patch request for the next attempt, the
 /// existing request is returned (`action: "patch_already_in_progress"`) —
 /// no second branch, record, or racing retry task is created.
+///
+/// Rejected when the unit is already accepted — the code is merged to main
+/// and there is no un-merge path (issue #86). As with the other actions, a
+/// different action landing between this request's start and its record
+/// write fails it with a conflict error instead of overwriting the record.
 pub async fn request_patch(
     state: &ActionsState,
     unit_id: &str,
@@ -238,8 +376,14 @@ async fn request_patch_spawning(
     issue: &str,
     spawn_retry: impl FnOnce(PatchRetryTask),
 ) -> Result<ActionResult, anyhow::Error> {
+    let (captured, _action_guard) = state.begin_action(unit_id).await;
+
     let unit = lookup_unit(state, unit_id)?;
     let git = GitManager::open(state.repo_path())?;
+
+    // Re-check before creating anything (issue #86).
+    let current = check_action_conflict(state.repo_path(), unit_id, captured)?;
+    ensure_not_accepted(unit_id, current)?;
 
     // Create the next-attempt branch
     let next_branch = git.next_attempt_branch(
@@ -614,12 +758,25 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// A repo with one review unit: branch `re/game_logic.dll/DrawSpritev1`.
+    /// A repo with one review unit: branch `re/game_logic.dll/DrawSpritev1`,
+    /// carrying one translated commit so accepting the unit really merges
+    /// code to main (issue #86 tests check the persisted status against the
+    /// actual git outcome).
     fn make_repo_with_unit() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("temp dir");
         let git = GitManager::init_repo(dir.path(), None).expect("init git repo");
         git.create_branch("game_logic.dll", "DrawSprite", 1, None)
             .expect("create v1 branch");
+
+        let branch = GitBranch::new("game_logic.dll", "DrawSprite", 1).expect("branch name");
+        std::fs::create_dir_all(dir.path().join("src").join("modules")).expect("src dir");
+        std::fs::write(
+            dir.path().join("src").join("modules").join("game_logic.rs"),
+            "pub fn draw_sprite() {}\n",
+        )
+        .expect("write translation");
+        git.commit(&branch, "Translate DrawSprite", &["src/modules/game_logic.rs"])
+            .expect("commit translation");
         dir
     }
 
@@ -749,6 +906,166 @@ mod tests {
             spawns.load(Ordering::SeqCst),
             2,
             "fresh attempt starts a retry"
+        );
+    }
+
+    /// Issue #86: a fast Accept-then-Send-Back double-click must not leave the
+    /// persisted status silently disagreeing with git. Both actions capture
+    /// the unit's state while the other is still in flight; exactly one wins,
+    /// the loser fails with a changed-underneath conflict, and the final
+    /// persisted status matches the git outcome (merged ⇒ Accepted).
+    #[tokio::test]
+    async fn accept_and_send_back_race_exactly_one_wins() {
+        let dir = make_repo_with_unit();
+        let state = ActionsState::new(dir.path().to_path_buf());
+
+        // Hold the action lock while both actions start, so each captures the
+        // persisted state ("nothing recorded yet") before either can proceed
+        // — the double-click scenario from the issue. Releasing it lets the
+        // first-spawned action (accept) win the lock; send-back's write-time
+        // re-check must then catch that the unit changed underneath it.
+        let guard = state.action_lock.lock().await;
+        let accept_state = state.clone();
+        let send_back_state = state.clone();
+        let accept = tokio::spawn(async move {
+            accept_unit(&accept_state, "game_logic.dll/DrawSprite/v1").await
+        });
+        let send_back = tokio::spawn(async move {
+            send_back_unit(
+                &send_back_state,
+                "game_logic.dll/DrawSprite/v1",
+                "changed my mind",
+            )
+            .await
+        });
+        tokio::task::yield_now().await; // both tasks capture and queue on the lock
+        drop(guard);
+
+        let accept = accept
+            .await
+            .expect("accept task")
+            .expect("the first action (accept) wins the race");
+        assert_eq!(accept.action, "accept");
+        let send_back_err = send_back
+            .await
+            .expect("send-back task")
+            .expect_err("the losing action must fail, not overwrite the record");
+        let conflict = send_back_err
+            .downcast_ref::<ActionConflictError>()
+            .expect("send-back fails with an action conflict");
+        assert!(
+            matches!(conflict, ActionConflictError::ChangedUnderneath { .. }),
+            "the loser's stale capture must surface as a changed-underneath conflict: {conflict}"
+        );
+        assert!(
+            conflict.to_string().contains("accepted"),
+            "conflict error names the landed state: {conflict}"
+        );
+
+        // Git outcome: the branch really is merged into main…
+        let git = GitManager::open(dir.path()).expect("open git");
+        assert!(
+            git.is_branch_merged_into_main("re/game_logic.dll/DrawSpritev1")
+                .expect("merged check"),
+            "accept merged the branch to main"
+        );
+        // …and the persisted status matches it.
+        let record = read_action_state(dir.path(), "game_logic.dll/DrawSprite/v1")
+            .expect("action record exists");
+        assert_eq!(record.action, ReviewStatus::Accepted);
+    }
+
+    /// Issue #86: send-back on an already-accepted unit is rejected — the code
+    /// is merged to main and there is no un-merge path.
+    #[tokio::test]
+    async fn send_back_on_accepted_unit_is_rejected() {
+        let dir = make_repo_with_unit();
+        let state = ActionsState::new(dir.path().to_path_buf());
+
+        accept_unit(&state, "game_logic.dll/DrawSprite/v1")
+            .await
+            .expect("accept succeeds");
+
+        let err = send_back_unit(&state, "game_logic.dll/DrawSprite/v1", "too late")
+            .await
+            .expect_err("send-back on an accepted unit must be rejected");
+        let conflict = err
+            .downcast_ref::<ActionConflictError>()
+            .expect("rejection is an action conflict");
+        assert!(
+            matches!(conflict, ActionConflictError::AlreadyAccepted { .. }),
+            "rejection explains the unit is already accepted: {conflict}"
+        );
+
+        // The Accepted record survives untouched.
+        let record = read_action_state(dir.path(), "game_logic.dll/DrawSprite/v1")
+            .expect("action record exists");
+        assert_eq!(record.action, ReviewStatus::Accepted);
+    }
+
+    /// Issue #86: patch on an already-accepted unit is rejected too — no new
+    /// attempt branch and no retry task.
+    #[tokio::test]
+    async fn patch_on_accepted_unit_is_rejected() {
+        let dir = make_repo_with_unit();
+        let state = ActionsState::new(dir.path().to_path_buf());
+        let spawns = Arc::new(AtomicUsize::new(0));
+
+        accept_unit(&state, "game_logic.dll/DrawSprite/v1")
+            .await
+            .expect("accept succeeds");
+
+        let err = request_patch_spawning(
+            &state,
+            "game_logic.dll/DrawSprite/v1",
+            "still wrong",
+            counting_spawner(&spawns),
+        )
+        .await
+        .expect_err("patch on an accepted unit must be rejected");
+        let conflict = err
+            .downcast_ref::<ActionConflictError>()
+            .expect("rejection is an action conflict");
+        assert!(
+            matches!(conflict, ActionConflictError::AlreadyAccepted { .. }),
+            "rejection explains the unit is already accepted: {conflict}"
+        );
+        assert_eq!(spawns.load(Ordering::SeqCst), 0, "no retry is started");
+
+        let git = GitManager::open(dir.path()).expect("open git");
+        let v2_branches: Vec<_> = git
+            .list_translation_branches()
+            .expect("list branches")
+            .into_iter()
+            .filter(|b| b.ends_with("v2"))
+            .collect();
+        assert!(v2_branches.is_empty(), "no next-attempt branch is created");
+    }
+
+    /// Issue #86: the write-time re-check fails with an error naming the state
+    /// that landed between the action's start and its record write.
+    #[test]
+    fn conflict_check_names_the_landed_state() {
+        let dir = make_repo_with_unit();
+        let record = ReviewActionRecord {
+            unit_id: "game_logic.dll/DrawSprite/v1".to_string(),
+            action: ReviewStatus::Accepted,
+            comments: None,
+            performed_at: Utc::now().to_rfc3339(),
+            branch_name: Some("re/game_logic.dll/DrawSpritev1".to_string()),
+        };
+        persist_action_state(dir.path(), &record).expect("persist record");
+
+        // The action started before the accept landed (captured: no record).
+        let err = check_action_conflict(dir.path(), "game_logic.dll/DrawSprite/v1", None)
+            .expect_err("a landed accept conflicts with a stale capture");
+        assert!(
+            matches!(err, ActionConflictError::ChangedUnderneath { .. }),
+            "a stale capture surfaces as changed-underneath: {err}"
+        );
+        assert!(
+            err.to_string().contains("accepted"),
+            "conflict names the current state: {err}"
         );
     }
 }

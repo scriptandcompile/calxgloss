@@ -302,6 +302,16 @@ pub async fn api_get_unit(
 
 // ─── POST /api/units/:id/accept ──────────────────────────────────────
 
+/// Maps a review-action failure to a status: a conflict with the unit's
+/// persisted action state becomes a 409 naming the current state (issue #86);
+/// everything else stays a 500.
+fn action_error(e: anyhow::Error) -> ServerError {
+    match e.downcast_ref::<super::super::actions::ActionConflictError>() {
+        Some(conflict) => ServerError::Conflict(conflict.to_string()),
+        None => ServerError::internal(&e.to_string()),
+    }
+}
+
 /// Accepts a unit of work: merges its Git branch into `main` and records the acceptance.
 ///
 /// When the `ActionsState` is configured (via `build_router_with_actions`), this
@@ -317,7 +327,7 @@ pub async fn api_accept_unit(
     if let Some(actions) = combined.actions {
         let result = super::super::actions::accept_unit(&actions, &unit_id)
             .await
-            .map_err(|e| ServerError::internal(&e.to_string()))?;
+            .map_err(action_error)?;
         return Ok(Json(ActionResponse {
             unit_id: result.unit_id,
             action: result.action,
@@ -392,7 +402,7 @@ pub async fn api_send_back_unit(
     if let Some(actions) = combined.actions {
         let result = super::super::actions::send_back_unit(&actions, &unit_id, &reason)
             .await
-            .map_err(|e| ServerError::internal(&e.to_string()))?;
+            .map_err(action_error)?;
         return Ok(Json(ActionResponse {
             unit_id: result.unit_id,
             action: result.action,
@@ -457,7 +467,7 @@ pub async fn api_request_patch(
     if let Some(actions) = combined.actions {
         let result = super::super::actions::request_patch(&actions, &unit_id, &issue)
             .await
-            .map_err(|e| ServerError::internal(&e.to_string()))?;
+            .map_err(action_error)?;
         return Ok(Json(ActionResponse {
             unit_id: result.unit_id,
             action: result.action,

@@ -611,6 +611,12 @@ pub enum ServerError {
     /// reloadable log filter.
     #[error("Service unavailable: {0}")]
     ServiceUnavailable(String),
+
+    /// The request is valid but conflicts with the unit's current persisted
+    /// state — e.g. a review action refused because a different action landed
+    /// on the unit in the meantime (issue #86).
+    #[error("Conflict: {0}")]
+    Conflict(String),
 }
 
 // ─── Ghidra context types ──────────────────────────────────────────────
@@ -745,6 +751,7 @@ impl axum::response::IntoResponse for ServerError {
             ServerError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
             ServerError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
             ServerError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg),
+            ServerError::Conflict(msg) => (StatusCode::CONFLICT, msg),
         };
 
         let body = serde_json::to_string(&serde_json::json!({
