@@ -138,37 +138,111 @@ pub struct StrategyStats {
     pub pass_rate: f64,
 }
 
+/// Aggregate contribution of entries trimmed away by the [`MAX_LOG_ENTRIES`]
+/// cap (issue #82).
+///
+/// [`PromptStrategyLog::add_entry`] folds each dropped entry into this
+/// accumulator so [`PromptStrategyLog::compute_stats`] keeps covering the
+/// whole run's history even though the entries themselves are gone.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PromptStrategyTrim {
+    /// How many entries were trimmed away.
+    #[serde(default)]
+    pub entries: usize,
+
+    /// Trimmed entries whose attempt succeeded.
+    #[serde(default)]
+    pub successes: usize,
+
+    /// Trimmed (total, successes) per DLL category.
+    #[serde(default)]
+    pub by_category: std::collections::HashMap<String, (usize, usize)>,
+
+    /// Trimmed (total, successes) per retry strategy.
+    #[serde(default)]
+    pub by_strategy: std::collections::HashMap<String, (usize, usize)>,
+}
+
+impl PromptStrategyTrim {
+    /// True when nothing has ever been trimmed — the state every fresh log
+    /// starts in, and the reason the accumulator can be skipped in JSON.
+    fn is_empty(&self) -> bool {
+        self.entries == 0
+    }
+
+    /// Fold one dropped entry into the running totals.
+    fn absorb(&mut self, entry: &PromptStrategyEntry) {
+        self.entries += 1;
+        if entry.success {
+            self.successes += 1;
+        }
+        let category = format!("{:?}", entry.dll_category);
+        let (tot, suc) = self.by_category.entry(category).or_insert((0, 0));
+        *tot += 1;
+        if entry.success {
+            *suc += 1;
+        }
+        let (tot, suc) = self
+            .by_strategy
+            .entry(entry.strategy.clone())
+            .or_insert((0, 0));
+        *tot += 1;
+        if entry.success {
+            *suc += 1;
+        }
+    }
+}
+
 /// A complete experiment log collecting entries across all translation runs.
 ///
 /// This struct is the in-memory representation that the logger serializes
 /// to `re/analysis/prompt_strategy_log.json`. It can also compute aggregate
 /// statistics via [`compute_stats`](Self::compute_stats).
+///
+/// The log is bounded: [`add_entry`](Self::add_entry) keeps at most
+/// [`MAX_LOG_ENTRIES`] newest entries and folds the trimmed-away ones into
+/// [`trimmed`](Self::trimmed), so aggregates still cover the whole run.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PromptStrategyLog {
-    /// All recorded entries.
+    /// The retained entries — the newest window of at most
+    /// [`MAX_LOG_ENTRIES`] entries.
     pub entries: Vec<PromptStrategyEntry>,
+
+    /// Aggregate totals for entries trimmed away by the cap.
+    #[serde(default, skip_serializing_if = "PromptStrategyTrim::is_empty")]
+    pub trimmed: PromptStrategyTrim,
 }
 
 impl PromptStrategyLog {
     /// Create an empty log.
     pub fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-        }
+        Self::default()
     }
 
     /// Append an entry to the log.
+    ///
+    /// The log retains at most [`MAX_LOG_ENTRIES`] entries: once full, each
+    /// new entry drops the oldest one, keeping the file's size and the
+    /// per-entry rewrite cost bounded (issue #82). The dropped entry is
+    /// folded into [`trimmed`](Self::trimmed) so aggregates stay honest.
     pub fn add_entry(&mut self, entry: PromptStrategyEntry) {
         self.entries.push(entry);
+        if self.entries.len() > crate::MAX_LOG_ENTRIES {
+            let dropped = self.entries.remove(0);
+            self.trimmed.absorb(&dropped);
+        }
     }
 
-    /// Compute aggregated pass-rate statistics across all entries.
+    /// Compute aggregated pass-rate statistics across the whole run.
+    ///
+    /// Covers both the retained entries and the trimmed-away history in
+    /// [`trimmed`](Self::trimmed).
     pub fn compute_stats(&self) -> PromptStrategyStats {
-        let total = self.entries.len();
-        let successes = self.entries.iter().filter(|e| e.success).count();
+        let total = self.entries.len() + self.trimmed.entries;
+        let successes = self.entries.iter().filter(|e| e.success).count() + self.trimmed.successes;
         let failures = total - successes;
 
-        // Group by category
+        // Group by category, merging the retained entries with the trimmed totals.
         let mut category_map: std::collections::HashMap<String, (usize, usize)> =
             std::collections::HashMap::new();
         for entry in &self.entries {
@@ -178,6 +252,11 @@ impl PromptStrategyLog {
             if entry.success {
                 *suc += 1;
             }
+        }
+        for (cat, (tot, suc)) in &self.trimmed.by_category {
+            let (acc_tot, acc_suc) = category_map.entry(cat.clone()).or_insert((0, 0));
+            *acc_tot += tot;
+            *acc_suc += suc;
         }
 
         let by_category: Vec<CategoryStats> = category_map
@@ -194,7 +273,7 @@ impl PromptStrategyLog {
             })
             .collect();
 
-        // Group by strategy
+        // Group by strategy, merging the retained entries with the trimmed totals.
         let mut strategy_map: std::collections::HashMap<String, (usize, usize)> =
             std::collections::HashMap::new();
         for entry in &self.entries {
@@ -203,6 +282,11 @@ impl PromptStrategyLog {
             if entry.success {
                 *suc += 1;
             }
+        }
+        for (strategy, (tot, suc)) in &self.trimmed.by_strategy {
+            let (acc_tot, acc_suc) = strategy_map.entry(strategy.clone()).or_insert((0, 0));
+            *acc_tot += tot;
+            *acc_suc += suc;
         }
 
         let by_strategy: Vec<StrategyStats> = strategy_map
@@ -421,5 +505,113 @@ mod tests {
         assert_eq!(deserialized.total_successes, 1);
         assert_eq!(deserialized.by_category.len(), 1);
         assert_eq!(deserialized.by_strategy.len(), 1);
+    }
+
+    /// Build a varied entry for cap tests — binary, category, strategy and
+    /// success all cycle so aggregates can't match by accident.
+    fn make_strategy_entry(i: usize) -> PromptStrategyEntry {
+        PromptStrategyEntry::new(
+            if i.is_multiple_of(2) {
+                "a.dll"
+            } else {
+                "b.dll"
+            },
+            match i % 3 {
+                0 => DllCategory::MicrosoftSdk,
+                1 => DllCategory::KnownThirdParty,
+                _ => DllCategory::UnknownThirdParty,
+            },
+            if i.is_multiple_of(2) {
+                "initial"
+            } else {
+                "compile_fix"
+            },
+            !i.is_multiple_of(4),
+            i as u32 + 1,
+        )
+    }
+
+    /// Serialize stats with the HashMap-derived breakdowns sorted by name,
+    /// so two equal aggregates compare equal regardless of map order.
+    fn sorted_stats_value(stats: PromptStrategyStats) -> serde_json::Value {
+        let mut value = serde_json::to_value(stats).expect("serialize stats");
+        for (array_key, name_key) in [("by_category", "category"), ("by_strategy", "strategy")] {
+            value[array_key]
+                .as_array_mut()
+                .expect("breakdown is an array")
+                .sort_by(|a, b| {
+                    a[name_key]
+                        .as_str()
+                        .unwrap_or_default()
+                        .cmp(b[name_key].as_str().unwrap_or_default())
+                });
+        }
+        value
+    }
+
+    #[test]
+    fn test_add_entry_caps_retained_entries_at_the_documented_max() {
+        let mut log = PromptStrategyLog::new();
+        for i in 0..crate::MAX_LOG_ENTRIES {
+            log.add_entry(make_strategy_entry(i));
+        }
+        assert_eq!(log.entries.len(), crate::MAX_LOG_ENTRIES);
+        assert_eq!(log.entries[0].attempt, 1);
+
+        log.add_entry(make_strategy_entry(crate::MAX_LOG_ENTRIES));
+        assert_eq!(log.entries.len(), crate::MAX_LOG_ENTRIES);
+        assert_eq!(log.entries[0].attempt, 2);
+    }
+
+    #[test]
+    fn test_compute_stats_cover_trimmed_entries() {
+        let history = crate::MAX_LOG_ENTRIES + 25;
+
+        // Reference: the same history with no cap applied, built by
+        // assigning entries directly past `add_entry`.
+        let mut reference = PromptStrategyLog::new();
+        reference.entries = (0..history).map(make_strategy_entry).collect();
+
+        // Capped: same history through `add_entry`, oldest entries trimmed.
+        let mut capped = PromptStrategyLog::new();
+        for i in 0..history {
+            capped.add_entry(make_strategy_entry(i));
+        }
+        assert_eq!(capped.entries.len(), crate::MAX_LOG_ENTRIES);
+
+        assert_eq!(
+            sorted_stats_value(capped.compute_stats()),
+            sorted_stats_value(reference.compute_stats()),
+            "strategy stats must cover the whole run's history, not just the retained window"
+        );
+    }
+
+    #[test]
+    fn test_trimmed_log_round_trips_through_json() {
+        let mut log = PromptStrategyLog::new();
+        for i in 0..crate::MAX_LOG_ENTRIES + 5 {
+            log.add_entry(make_strategy_entry(i));
+        }
+
+        let json = serde_json::to_string(&log).expect("serialize trimmed log");
+        let back: PromptStrategyLog = serde_json::from_str(&json).expect("deserialize trimmed log");
+
+        assert_eq!(back.entries.len(), crate::MAX_LOG_ENTRIES);
+        assert_eq!(back.trimmed.entries, 5);
+        assert_eq!(
+            sorted_stats_value(back.compute_stats()),
+            sorted_stats_value(log.compute_stats()),
+            "a trimmed experiment log must round-trip with its aggregates intact"
+        );
+    }
+
+    #[test]
+    fn test_log_without_trimmed_field_stays_compatible() {
+        // Experiment logs written before the cap (issue #82) carry no `trimmed` field.
+        let json = r#"{"entries":[{"binary":"test.dll","dll_category":"ProjectSpecific","strategy":"initial","success":true,"attempt":1,"timestamp":1700000000}]}"#;
+        let log: PromptStrategyLog =
+            serde_json::from_str(json).expect("old experiment logs must still load");
+        assert_eq!(log.entries.len(), 1);
+        assert_eq!(log.trimmed.entries, 0);
     }
 }

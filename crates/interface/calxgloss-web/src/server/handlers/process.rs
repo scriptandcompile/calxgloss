@@ -323,4 +323,83 @@ mod tests {
         assert!(!binary_matches("game_logic.dll", "game_logic"));
         assert!(!binary_matches("audio.dll", "game_logic.dll"));
     }
+
+    #[test]
+    fn test_unit_process_renders_retained_window_after_trim() {
+        let ws = tempfile::tempdir().expect("temp workspace");
+        write_trimmed_token_log(ws.path());
+
+        let unit = calxgloss_types::UnitOfWork {
+            id: "game_logic.dll/DrawSprite".to_string(),
+            name: "game_logic.dll!DrawSprite".to_string(),
+            kind: calxgloss_types::WorkKind::FunctionTranslation,
+            binary: "game_logic.dll".into(),
+            function: Some("DrawSprite".to_string()),
+            attempt: 5,
+            status: calxgloss_types::ReviewStatus::Queued,
+            accepted: false,
+            unit_confidence: None,
+            baseline_tests_passed: None,
+            baseline_tests_total: None,
+            verification_tests_passed: None,
+            verification_tests_total: None,
+            llm_model: None,
+            context_tier: None,
+            dependencies: Vec::new(),
+            known_gaps: Vec::new(),
+            stale: calxgloss_types::dashboard::Staleness::Fresh,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+
+        let process = build_unit_process(ws.path(), &unit);
+
+        // Per-attempt detail honestly covers the retained window only.
+        assert_eq!(process.tokens.attempts, 2);
+        assert_eq!(process.tokens.per_attempt.len(), 2);
+        assert_eq!(process.tokens.total_tokens, 700);
+        // Missing fault and Ghidra artifacts degrade to empty sections, never errors.
+        assert!(process.faults.is_empty());
+    }
+
+    /// Write a trimmed token-usage log: two retained attempts for
+    /// `game_logic.dll!DrawSprite`, three older attempts folded into the
+    /// trimmed accumulator.
+    fn write_trimmed_token_log(repo_path: &std::path::Path) {
+        use calxgloss_types::{TokenUsageEntry, TokenUsageLog, TokenUsageTrim};
+
+        let log_path = token_usage_log_path(repo_path);
+        std::fs::create_dir_all(log_path.parent().expect("log has a parent"))
+            .expect("create re/analysis");
+        let mut log = TokenUsageLog::new();
+        log.add_entry(TokenUsageEntry::new(
+            "game_logic.dll",
+            "DrawSprite",
+            4,
+            "test_fix",
+            300,
+            true,
+        ));
+        log.add_entry(TokenUsageEntry::new(
+            "game_logic.dll",
+            "DrawSprite",
+            5,
+            "escalate",
+            400,
+            true,
+        ));
+        log.trimmed = TokenUsageTrim {
+            entries: 3,
+            total_tokens: 900,
+            successful_tokens: 600,
+            by_binary: Vec::new(),
+            duration_secs_sum: 0,
+            duration_count: 0,
+        };
+        std::fs::write(
+            &log_path,
+            serde_json::to_string(&log).expect("serialize log"),
+        )
+        .expect("write token usage log");
+    }
 }

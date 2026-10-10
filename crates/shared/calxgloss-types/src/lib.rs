@@ -27,6 +27,19 @@
 //!   in-flight unit right now
 //! - [`error`] — Unified error type (`TypesError`)
 
+// ============================================================
+// Shared log policy
+// ============================================================
+
+/// Maximum number of entries a run-telemetry log retains (issue #82).
+///
+/// The token-usage, fault, and prompt-strategy logs each keep at most this
+/// many newest entries; as new entries arrive past the cap, the oldest are
+/// dropped so the log file's size and the per-entry rewrite cost stay
+/// bounded. Dropped entries are folded into the log's trimmed-aggregate
+/// accumulator, so `compute_stats` still covers the whole run's history.
+pub const MAX_LOG_ENTRIES: usize = 10_000;
+
 pub mod complexity;
 pub mod confidence;
 pub mod context_tier;
@@ -68,10 +81,11 @@ pub use dashboard::{
 pub use dll::{DllCategory, DllInfo, Export, Import};
 pub use error::TypesError;
 pub use experiment_log::{
-    CategoryStats, PromptStrategyEntry, PromptStrategyLog, PromptStrategyStats, StrategyStats,
+    CategoryStats, PromptStrategyEntry, PromptStrategyLog, PromptStrategyStats, PromptStrategyTrim,
+    StrategyStats,
 };
 pub use fault::{
-    ContextWindowFault, FaultCategory, FaultEvent, FaultLog, FaultSeverity, FaultStats,
+    ContextWindowFault, FaultCategory, FaultEvent, FaultLog, FaultSeverity, FaultStats, FaultTrim,
     ResourceExhaustionFault, ResourceExhaustionKind,
 };
 pub use function::{ApiCategory, FunctionInfo, NodeCategory, WindowsApiCall};
@@ -91,7 +105,9 @@ pub use shim::{
     ShimSuggestion, ShimSuggestionReport, ShimVerificationResult, dll_to_module_name,
 };
 pub use test::{SideEffect, SideEffectKind, TestCase, TestResult};
-pub use token_usage::{BinaryTokenStats, TokenUsageEntry, TokenUsageLog, TokenUsageStats};
+pub use token_usage::{
+    BinaryTokenStats, TokenUsageEntry, TokenUsageLog, TokenUsageStats, TokenUsageTrim,
+};
 pub use translation::{ApiCategoryMapping, ApiMappingItem, TranslationRequest, TranslationResult};
 pub use verification::{FailedTest, VerificationResult};
 

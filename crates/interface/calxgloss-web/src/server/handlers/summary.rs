@@ -117,34 +117,67 @@ pub fn compute_quality_summary(units: &[UnitOfWork]) -> QualitySummary {
 /// fabricated zero.
 pub fn compute_token_usage(repo_path: &Path) -> Option<TokenUsageSummary> {
     let log = load_json_or_default::<TokenUsageLog>(&token_usage_log_path(repo_path));
-    if log.entries.is_empty() {
+    if log.entries.is_empty() && log.trimmed.entries == 0 {
         return None;
     }
 
-    let mut total_tokens = 0_u64;
-    let mut successful_tokens = 0_u64;
-    let mut failed_tokens = 0_u64;
-    for entry in &log.entries {
-        let used = entry.tokens_used as u64;
-        total_tokens += used;
-        if entry.success {
-            successful_tokens += used;
-        } else {
-            failed_tokens += used;
-        }
-    }
-
+    // `compute_stats` merges the retained window with the trimmed-away
+    // history (issue #82), so the dashboard totals keep covering the whole
+    // run even after the log has been capped.
+    let stats = log.compute_stats();
     Some(TokenUsageSummary {
-        total_tokens,
-        successful_tokens,
-        failed_tokens,
-        calls: log.entries.len(),
+        total_tokens: stats.total_tokens as u64,
+        successful_tokens: stats.successful_tokens as u64,
+        failed_tokens: stats.failed_tokens as u64,
+        calls: stats.total_entries,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_usage_summary_covers_trimmed_history() {
+        let ws = tempfile::tempdir().expect("temp workspace");
+        write_trimmed_token_log(ws.path());
+
+        let summary = compute_token_usage(ws.path()).expect("summary should exist");
+        assert_eq!(summary.calls, 4, "calls must cover trimmed entries");
+        assert_eq!(
+            summary.total_tokens, 1000,
+            "totals must cover trimmed entries"
+        );
+        assert_eq!(summary.successful_tokens, 700);
+        assert_eq!(summary.failed_tokens, 300);
+    }
+
+    /// Write a token-usage log whose retained window holds one entry while
+    /// the trimmed accumulator carries three more (900 tokens, 600 successful).
+    fn write_trimmed_token_log(repo_path: &std::path::Path) {
+        use calxgloss_types::{TokenUsageEntry, TokenUsageTrim};
+
+        let log_path = token_usage_log_path(repo_path);
+        std::fs::create_dir_all(log_path.parent().expect("log has a parent"))
+            .expect("create re/analysis");
+        let mut log = TokenUsageLog::new();
+        log.add_entry(TokenUsageEntry::new(
+            "a.dll", "Func", 1, "initial", 100, true,
+        ));
+        log.trimmed = TokenUsageTrim {
+            entries: 3,
+            total_tokens: 900,
+            successful_tokens: 600,
+            by_binary: Vec::new(),
+            duration_secs_sum: 0,
+            duration_count: 0,
+        };
+        std::fs::write(
+            &log_path,
+            serde_json::to_string(&log).expect("serialize log"),
+        )
+        .expect("write token usage log");
+    }
 
     #[test]
     fn category_order_covers_every_dll_category() {

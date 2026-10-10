@@ -171,49 +171,145 @@ pub struct BinaryTokenStats {
     pub total_tokens: usize,
 }
 
+/// Aggregate contribution of entries trimmed away by the [`MAX_LOG_ENTRIES`]
+/// cap (issue #82).
+///
+/// [`TokenUsageLog::add_entry`] folds each dropped entry into this
+/// accumulator so [`TokenUsageLog::compute_stats`] and
+/// [`TokenUsageLog::average_attempt_duration_secs`] keep covering the whole
+/// run's history even though the entries themselves are gone from the file.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TokenUsageTrim {
+    /// How many entries were trimmed away.
+    #[serde(default)]
+    pub entries: usize,
+
+    /// Total tokens consumed by trimmed entries.
+    #[serde(default)]
+    pub total_tokens: usize,
+
+    /// Tokens consumed by trimmed entries whose attempt succeeded.
+    #[serde(default)]
+    pub successful_tokens: usize,
+
+    /// Per-DLL totals for trimmed entries, sorted by binary.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub by_binary: Vec<BinaryTokenStats>,
+
+    /// Sum of recorded attempt durations across trimmed entries, in seconds.
+    #[serde(default)]
+    pub duration_secs_sum: u64,
+
+    /// How many trimmed entries recorded a duration.
+    #[serde(default)]
+    pub duration_count: usize,
+}
+
+impl TokenUsageTrim {
+    /// True when nothing has ever been trimmed — the state every fresh log
+    /// starts in, and the reason the accumulator can be skipped in JSON.
+    fn is_empty(&self) -> bool {
+        self.entries == 0
+    }
+
+    /// Fold one dropped entry into the running totals.
+    fn absorb(&mut self, entry: &TokenUsageEntry) {
+        self.entries += 1;
+        self.total_tokens += entry.tokens_used;
+        if entry.success {
+            self.successful_tokens += entry.tokens_used;
+        }
+        let idx = self.by_binary.partition_point(|b| b.binary < entry.binary);
+        match self.by_binary.get_mut(idx) {
+            Some(b) if b.binary == entry.binary => {
+                b.total_attempts += 1;
+                b.total_tokens += entry.tokens_used;
+            }
+            _ => self.by_binary.insert(
+                idx,
+                BinaryTokenStats {
+                    binary: entry.binary.clone(),
+                    total_attempts: 1,
+                    total_tokens: entry.tokens_used,
+                },
+            ),
+        }
+        if let Some(secs) = entry.duration_secs {
+            self.duration_secs_sum += secs;
+            self.duration_count += 1;
+        }
+    }
+}
+
 /// A complete token usage log collecting entries across all translation runs.
 ///
 /// This struct is the in-memory representation that the logger serializes
 /// to `re/analysis/token_usage.json`. It can also compute aggregate
 /// statistics via [`compute_stats`](Self::compute_stats).
+///
+/// The log is bounded: [`add_entry`](Self::add_entry) keeps at most
+/// [`MAX_LOG_ENTRIES`] newest entries and folds the trimmed-away ones into
+/// [`trimmed`](Self::trimmed), so aggregates still cover the whole run.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TokenUsageLog {
-    /// All recorded entries.
+    /// The retained entries — the newest window of at most
+    /// [`MAX_LOG_ENTRIES`] entries.
     pub entries: Vec<TokenUsageEntry>,
+
+    /// Aggregate totals for entries trimmed away by the cap.
+    #[serde(default, skip_serializing_if = "TokenUsageTrim::is_empty")]
+    pub trimmed: TokenUsageTrim,
 }
 
 impl TokenUsageLog {
     /// Create an empty log.
     pub fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-        }
+        Self::default()
     }
 
     /// Append an entry to the log.
+    ///
+    /// The log retains at most [`MAX_LOG_ENTRIES`] entries: once full, each
+    /// new entry drops the oldest one, keeping the file's size and the
+    /// per-entry rewrite cost bounded (issue #82). The dropped entry is
+    /// folded into [`trimmed`](Self::trimmed) so aggregates stay honest.
     pub fn add_entry(&mut self, entry: TokenUsageEntry) {
         self.entries.push(entry);
+        if self.entries.len() > crate::MAX_LOG_ENTRIES {
+            let dropped = self.entries.remove(0);
+            self.trimmed.absorb(&dropped);
+        }
     }
 
-    /// Compute aggregated token usage statistics across all entries.
+    /// Compute aggregated token usage statistics across the whole run.
+    ///
+    /// Covers both the retained entries and the trimmed-away history in
+    /// [`trimmed`](Self::trimmed).
     pub fn compute_stats(&self) -> TokenUsageStats {
-        let total = self.entries.len();
-        let total_tokens: usize = self.entries.iter().map(|e| e.tokens_used).sum();
-        let successful_tokens: usize = self
+        let total = self.entries.len() + self.trimmed.entries;
+        let retained_tokens: usize = self.entries.iter().map(|e| e.tokens_used).sum();
+        let total_tokens = retained_tokens + self.trimmed.total_tokens;
+        let retained_successful: usize = self
             .entries
             .iter()
             .filter(|e| e.success)
             .map(|e| e.tokens_used)
             .sum();
+        let successful_tokens = retained_successful + self.trimmed.successful_tokens;
         let failed_tokens = total_tokens.saturating_sub(successful_tokens);
 
-        // Group by DLL
+        // Group by DLL, merging the retained entries with the trimmed totals.
         let mut binary_map: std::collections::HashMap<BinaryIdentity, (usize, usize)> =
             std::collections::HashMap::new();
         for entry in &self.entries {
             let (attempts, tokens) = binary_map.entry(entry.binary.clone()).or_insert((0, 0));
             *attempts += 1;
             *tokens += entry.tokens_used;
+        }
+        for trimmed in &self.trimmed.by_binary {
+            let (attempts, tokens) = binary_map.entry(trimmed.binary.clone()).or_insert((0, 0));
+            *attempts += trimmed.total_attempts;
+            *tokens += trimmed.total_tokens;
         }
 
         let mut by_binary: Vec<BinaryTokenStats> = binary_map
@@ -241,18 +337,22 @@ impl TokenUsageLog {
     /// Returns `None` when no entry carries a duration — the honest answer
     /// when nothing has been measured yet — so callers hide time estimates
     /// rather than fabricating them. Entries written by older versions
-    /// (no `duration_secs`) are skipped, never counted as zero.
+    /// (no `duration_secs`) are skipped, never counted as zero. Trimmed-away
+    /// entries (issue #82) keep contributing through their recorded totals
+    /// in [`trimmed`](Self::trimmed).
     pub fn average_attempt_duration_secs(&self) -> Option<f64> {
-        let measured: Vec<u64> = self
-            .entries
-            .iter()
-            .filter_map(|e| e.duration_secs)
-            .collect();
-        if measured.is_empty() {
+        let mut total_secs = self.trimmed.duration_secs_sum;
+        let mut measured = self.trimmed.duration_count;
+        for entry in &self.entries {
+            if let Some(secs) = entry.duration_secs {
+                total_secs += secs;
+                measured += 1;
+            }
+        }
+        if measured == 0 {
             return None;
         }
-        let total: u64 = measured.iter().sum();
-        Some(total as f64 / measured.len() as f64)
+        Some(total_secs as f64 / measured as f64)
     }
 }
 
@@ -521,5 +621,127 @@ mod tests {
             .average_attempt_duration_secs()
             .expect("two measured entries should yield an average");
         assert_eq!(avg, 150.0);
+    }
+
+    #[test]
+    fn test_add_entry_caps_retained_entries_at_the_documented_max() {
+        let mut log = TokenUsageLog::new();
+        for i in 0..crate::MAX_LOG_ENTRIES {
+            log.add_entry(TokenUsageEntry::new(
+                "test.dll",
+                "entry",
+                i as u32 + 1,
+                "initial",
+                10,
+                true,
+            ));
+        }
+        // Exactly at the cap: nothing trimmed yet.
+        assert_eq!(log.entries.len(), crate::MAX_LOG_ENTRIES);
+        assert_eq!(log.entries[0].attempt, 1);
+
+        // One past the cap: oldest entry dropped, newest kept.
+        log.add_entry(TokenUsageEntry::new(
+            "test.dll",
+            "entry",
+            crate::MAX_LOG_ENTRIES as u32 + 1,
+            "initial",
+            10,
+            true,
+        ));
+        assert_eq!(log.entries.len(), crate::MAX_LOG_ENTRIES);
+        assert_eq!(log.entries[0].attempt, 2);
+    }
+
+    /// Build a varied entry for cap tests — binary, strategy, success and
+    /// token count all cycle so aggregates can't match by accident.
+    fn make_token_usage_entry(i: usize) -> TokenUsageEntry {
+        TokenUsageEntry::new(
+            if i.is_multiple_of(2) {
+                "a.dll"
+            } else {
+                "b.dll"
+            },
+            "entry",
+            i as u32 + 1,
+            if i.is_multiple_of(3) {
+                "initial"
+            } else {
+                "compile_fix"
+            },
+            i % 7 + 1,
+            !i.is_multiple_of(4),
+        )
+    }
+
+    #[test]
+    fn test_compute_stats_cover_trimmed_entries() {
+        let history = crate::MAX_LOG_ENTRIES + 25;
+
+        // Reference: the same history with no cap applied, built by
+        // pushing entries directly past `add_entry`.
+        let mut reference = TokenUsageLog::new();
+        reference.entries = (0..history).map(make_token_usage_entry).collect();
+
+        // Capped: same history through `add_entry`, oldest entries trimmed.
+        let mut capped = TokenUsageLog::new();
+        for i in 0..history {
+            capped.add_entry(make_token_usage_entry(i));
+        }
+        assert_eq!(capped.entries.len(), crate::MAX_LOG_ENTRIES);
+
+        assert_eq!(
+            serde_json::to_value(capped.compute_stats()).expect("serialize capped stats"),
+            serde_json::to_value(reference.compute_stats()).expect("serialize reference stats"),
+            "stats must cover the whole run's history, not just the retained window"
+        );
+    }
+
+    #[test]
+    fn test_average_attempt_duration_covers_trimmed_entries() {
+        let mut log = TokenUsageLog::new();
+        // The first 10 entries (all trimmed away) took 1000s each; the
+        // retained window is all 100s attempts.
+        for i in 0..crate::MAX_LOG_ENTRIES + 10 {
+            let duration = if i < 10 { 1000 } else { 100 };
+            log.add_entry(make_token_usage_entry(i).with_duration_secs(duration));
+        }
+        let avg = log
+            .average_attempt_duration_secs()
+            .expect("measured entries should yield an average");
+        // Whole-run average: (10 * 1000 + 10_000 * 100) / 10_010.
+        let expected = 1_010_000.0 / 10_010.0;
+        assert!(
+            (avg - expected).abs() < 1e-9,
+            "average must cover trimmed entries: got {avg}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn test_trimmed_log_round_trips_through_json() {
+        let mut log = TokenUsageLog::new();
+        for i in 0..crate::MAX_LOG_ENTRIES + 5 {
+            log.add_entry(make_token_usage_entry(i));
+        }
+
+        let json = serde_json::to_string(&log).expect("serialize trimmed log");
+        let back: TokenUsageLog = serde_json::from_str(&json).expect("deserialize trimmed log");
+
+        assert_eq!(back.entries.len(), crate::MAX_LOG_ENTRIES);
+        assert_eq!(back.trimmed.entries, 5);
+        assert_eq!(
+            serde_json::to_value(back.compute_stats()).expect("serialize restored stats"),
+            serde_json::to_value(log.compute_stats()).expect("serialize original stats"),
+            "a trimmed log must round-trip with its aggregates intact"
+        );
+    }
+
+    #[test]
+    fn test_log_without_trimmed_field_stays_compatible() {
+        // Logs written before the cap (issue #82) carry no `trimmed` field.
+        let json = r#"{"entries":[{"binary":"test.dll","function":"entry","attempt":1,"strategy":"initial","tokens_used":2048,"success":true,"timestamp":1700000000}]}"#;
+        let log: TokenUsageLog = serde_json::from_str(json).expect("old logs must still load");
+        assert_eq!(log.entries.len(), 1);
+        assert_eq!(log.trimmed.entries, 0);
     }
 }

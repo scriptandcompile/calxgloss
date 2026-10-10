@@ -620,30 +620,103 @@ impl std::fmt::Display for FaultEvent {
 // Fault log
 // ============================================================
 
+/// Aggregate contribution of entries trimmed away by the [`MAX_LOG_ENTRIES`]
+/// cap (issue #82).
+///
+/// [`FaultLog::add_entry`] folds each dropped event into this accumulator so
+/// [`FaultLog::compute_stats`] keeps covering the whole run's history even
+/// though the events themselves are gone from the file.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FaultTrim {
+    /// How many events were trimmed away.
+    #[serde(default)]
+    pub entries: usize,
+
+    /// Trimmed-event count per fault category.
+    #[serde(default)]
+    pub by_category: std::collections::HashMap<FaultCategory, usize>,
+
+    /// Trimmed-event count per DLL.
+    #[serde(default)]
+    pub by_binary: std::collections::HashMap<BinaryIdentity, usize>,
+
+    /// Trimmed events with warning severity.
+    #[serde(default)]
+    pub warnings: usize,
+
+    /// Trimmed events with error severity.
+    #[serde(default)]
+    pub errors: usize,
+
+    /// Trimmed events with critical severity.
+    #[serde(default)]
+    pub critical: usize,
+}
+
+impl FaultTrim {
+    /// True when nothing has ever been trimmed — the state every fresh log
+    /// starts in, and the reason the accumulator can be skipped in JSON.
+    fn is_empty(&self) -> bool {
+        self.entries == 0
+    }
+
+    /// Fold one dropped event into the running totals.
+    fn absorb(&mut self, entry: &FaultEvent) {
+        self.entries += 1;
+        *self.by_category.entry(entry.category.clone()).or_default() += 1;
+        *self.by_binary.entry(entry.binary.clone()).or_default() += 1;
+        match entry.severity {
+            FaultSeverity::Warning => self.warnings += 1,
+            FaultSeverity::Error => self.errors += 1,
+            FaultSeverity::Critical => self.critical += 1,
+        }
+    }
+}
+
 /// A persistent log of all detected faults.
 ///
 /// Stored at `<workspace>/re/analysis/fault_log.json`.  Supports appending
 /// new events and computing aggregate statistics (total faults per category,
 /// per-binary, etc.).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// The log is bounded: [`add_entry`](Self::add_entry) keeps at most
+/// [`MAX_LOG_ENTRIES`] newest events and folds the trimmed-away ones into
+/// [`trimmed`](Self::trimmed), so aggregates still cover the whole run.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FaultLog {
+    /// The retained events — the newest window of at most
+    /// [`MAX_LOG_ENTRIES`] entries.
     pub entries: Vec<FaultEvent>,
+
+    /// Aggregate totals for events trimmed away by the cap.
+    #[serde(default, skip_serializing_if = "FaultTrim::is_empty")]
+    pub trimmed: FaultTrim,
 }
 
 impl FaultLog {
     /// Create an empty fault log.
     pub fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-        }
+        Self::default()
     }
 
     /// Append a single fault event.
+    ///
+    /// The log retains at most [`MAX_LOG_ENTRIES`] events: once full, each
+    /// new event drops the oldest one, keeping the file's size and the
+    /// per-entry rewrite cost bounded (issue #82). The dropped event is
+    /// folded into [`trimmed`](Self::trimmed) so aggregates stay honest.
     pub fn add_entry(&mut self, entry: FaultEvent) {
         self.entries.push(entry);
+        if self.entries.len() > crate::MAX_LOG_ENTRIES {
+            let dropped = self.entries.remove(0);
+            self.trimmed.absorb(&dropped);
+        }
     }
 
-    /// Aggregate statistics across all logged faults.
+    /// Aggregate statistics across the whole run.
+    ///
+    /// Covers both the retained events and the trimmed-away history in
+    /// [`trimmed`](Self::trimmed).
     pub fn compute_stats(&self) -> FaultStats {
         let mut by_category: std::collections::HashMap<FaultCategory, usize> =
             std::collections::HashMap::new();
@@ -663,8 +736,18 @@ impl FaultLog {
             }
         }
 
+        for (category, count) in &self.trimmed.by_category {
+            *by_category.entry(category.clone()).or_default() += count;
+        }
+        for (binary, count) in &self.trimmed.by_binary {
+            *by_binary.entry(binary.clone()).or_default() += count;
+        }
+        total_warnings += self.trimmed.warnings;
+        total_errors += self.trimmed.errors;
+        total_critical += self.trimmed.critical;
+
         FaultStats {
-            total_entries: self.entries.len(),
+            total_entries: self.entries.len() + self.trimmed.entries,
             by_category,
             by_binary,
             total_warnings,
@@ -679,12 +762,6 @@ impl FaultLog {
             .iter()
             .filter(|e| &e.category == category)
             .collect()
-    }
-}
-
-impl Default for FaultLog {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -883,5 +960,100 @@ mod tests {
         let meta = deserialized.metadata.unwrap();
         assert_eq!(meta["fault_confidence"], 9);
         assert_eq!(meta["failing_edge_cases"].as_array().unwrap().len(), 3);
+    }
+
+    /// Build a varied fault event for cap tests — binary, category and
+    /// severity all cycle so aggregates can't match by accident.
+    fn make_fault_event(i: usize) -> FaultEvent {
+        FaultEvent {
+            binary: if i.is_multiple_of(2) {
+                "a.dll"
+            } else {
+                "b.dll"
+            }
+            .into(),
+            function: "entry".to_string(),
+            attempt: i as u32 + 1,
+            strategy: "initial".to_string(),
+            category: match i % 3 {
+                0 => FaultCategory::ContextWindowExceeded,
+                1 => FaultCategory::Hallucination,
+                _ => FaultCategory::InfiniteLoop,
+            },
+            severity: match i % 3 {
+                0 => FaultSeverity::Warning,
+                1 => FaultSeverity::Error,
+                _ => FaultSeverity::Critical,
+            },
+            description: "test fault".to_string(),
+            recovery: "test recovery".to_string(),
+            timestamp: 1_700_000_000,
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn test_add_entry_caps_retained_entries_at_the_documented_max() {
+        let mut log = FaultLog::new();
+        for i in 0..crate::MAX_LOG_ENTRIES {
+            log.add_entry(make_fault_event(i));
+        }
+        assert_eq!(log.entries.len(), crate::MAX_LOG_ENTRIES);
+        assert_eq!(log.entries[0].attempt, 1);
+
+        log.add_entry(make_fault_event(crate::MAX_LOG_ENTRIES));
+        assert_eq!(log.entries.len(), crate::MAX_LOG_ENTRIES);
+        assert_eq!(log.entries[0].attempt, 2);
+    }
+
+    #[test]
+    fn test_compute_stats_cover_trimmed_entries() {
+        let history = crate::MAX_LOG_ENTRIES + 25;
+
+        // Reference: the same history with no cap applied, built by
+        // assigning entries directly past `add_entry`.
+        let mut reference = FaultLog::new();
+        reference.entries = (0..history).map(make_fault_event).collect();
+
+        // Capped: same history through `add_entry`, oldest entries trimmed.
+        let mut capped = FaultLog::new();
+        for i in 0..history {
+            capped.add_entry(make_fault_event(i));
+        }
+        assert_eq!(capped.entries.len(), crate::MAX_LOG_ENTRIES);
+
+        assert_eq!(
+            serde_json::to_value(capped.compute_stats()).expect("serialize capped stats"),
+            serde_json::to_value(reference.compute_stats()).expect("serialize reference stats"),
+            "fault stats must cover the whole run's history, not just the retained window"
+        );
+    }
+
+    #[test]
+    fn test_trimmed_log_round_trips_through_json() {
+        let mut log = FaultLog::new();
+        for i in 0..crate::MAX_LOG_ENTRIES + 5 {
+            log.add_entry(make_fault_event(i));
+        }
+
+        let json = serde_json::to_string(&log).expect("serialize trimmed log");
+        let back: FaultLog = serde_json::from_str(&json).expect("deserialize trimmed log");
+
+        assert_eq!(back.entries.len(), crate::MAX_LOG_ENTRIES);
+        assert_eq!(back.trimmed.entries, 5);
+        assert_eq!(
+            serde_json::to_value(back.compute_stats()).expect("serialize restored stats"),
+            serde_json::to_value(log.compute_stats()).expect("serialize original stats"),
+            "a trimmed fault log must round-trip with its aggregates intact"
+        );
+    }
+
+    #[test]
+    fn test_log_without_trimmed_field_stays_compatible() {
+        // Fault logs written before the cap (issue #82) carry no `trimmed` field.
+        let json = r#"{"entries":[{"binary":"test.dll","function":"entry","attempt":1,"strategy":"initial","category":"context_window_exceeded","severity":"error","description":"d","recovery":"r","timestamp":1700000000,"metadata":null}]}"#;
+        let log: FaultLog = serde_json::from_str(json).expect("old fault logs must still load");
+        assert_eq!(log.entries.len(), 1);
+        assert_eq!(log.trimmed.entries, 0);
     }
 }
