@@ -63,7 +63,7 @@ use calxgloss_typeinfer::engine::TypeInferEngine;
 use calxgloss_typeinfer::persist::TypeInferPersistor;
 use calxgloss_types::{
     BinaryIdentity, ContextTier, Export, FunctionInfo, PipelineControl, PipelineState,
-    ProgressEvent, StopSignal, TestCase, TranslationEvents, TranslationRequest,
+    ProgressEvent, StopSignal, TestCase, TranslationEvents, TranslationRequest, UnitCancellation,
 };
 use calxgloss_typesdb::engine::TypesDBEngine;
 use calxgloss_typesdb::persist::TypeDatabasePersistor;
@@ -194,6 +194,15 @@ pub struct TranslationPipeline {
     /// completed and been reported to the caller (which persists it and
     /// cleans up its branch). Driven by the web control endpoints.
     pipeline_control: Option<PipelineControl>,
+
+    /// Shared unit-cancellation handle (issue #91, W2.2).
+    ///
+    /// When set, each unit is registered in-flight while the batch loop
+    /// works on it; the web server's cancel-current endpoint cancels
+    /// whatever unit is in flight, and the loop aborts it at the earliest
+    /// safe point — mid-LLM-call included — records the attempt as a
+    /// failure, and continues with the next unit.
+    unit_cancellation: Option<UnitCancellation>,
 }
 
 impl TranslationPipeline {
@@ -224,6 +233,7 @@ impl TranslationPipeline {
             callgraph_cache_dir: None,
             stop: None,
             pipeline_control: None,
+            unit_cancellation: None,
         }
     }
 
@@ -289,6 +299,19 @@ impl TranslationPipeline {
         self
     }
 
+    /// Attach the shared [`UnitCancellation`] handle (issue #91, W2.2).
+    ///
+    /// The web server's cancel-current endpoint drives it; the batch loop
+    /// registers each unit in-flight while it works on it and aborts the
+    /// unit as soon as a cancellation lands — the earliest safe point is
+    /// mid-LLM-call, since nothing an aborted attempt produced is
+    /// persisted. The cancelled unit is recorded as a failure and the run
+    /// continues with the next unit.
+    pub fn with_unit_cancellation(mut self, cancellation: UnitCancellation) -> Self {
+        self.unit_cancellation = Some(cancellation);
+        self
+    }
+
     /// Whether an attached stop signal has been requested.
     fn stop_requested(&self) -> bool {
         self.stop.as_ref().is_some_and(|s| s.is_stopped())
@@ -316,6 +339,25 @@ impl TranslationPipeline {
                 state if state.is_halted() => return false,
                 _ => return true,
             }
+        }
+    }
+
+    /// Resolves once a cancellation has landed on the named unit (issue #91,
+    /// W2.2). With no cancellation handle attached it never resolves, so the
+    /// `select!` in the batch loop simply never takes the abort branch.
+    ///
+    /// The poll interval is short (50 ms) because the point of cancel-current
+    /// is to stop a runaway unit burning tokens *now* — unlike pause, which
+    /// only matters at unit boundaries.
+    async fn wait_for_unit_cancel(&self, binary: &str, function: &str) {
+        match self.unit_cancellation.as_ref() {
+            None => std::future::pending::<()>().await,
+            Some(cancellation) => loop {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                if cancellation.is_cancelled_for(binary, function) {
+                    break;
+                }
+            },
         }
     }
 
@@ -2325,70 +2367,132 @@ impl TranslationPipeline {
                 "Translating function in batch"
             );
 
-            let mut result = match self
-                .try_translate_with_retry(binary, function, config, verifier)
-                .await
-            {
-                Ok(retry_result) => {
-                    if retry_result.success {
-                        info!(
-                            binary,
-                            function,
-                            attempts = retry_result.attempts.len(),
-                            "Batch function succeeded"
-                        );
-                        let rust_code = retry_result.rust_code.clone().unwrap_or_default();
-                        batch::FunctionResult::success(
-                            binary.to_string(),
-                            function.clone(),
-                            rust_code,
-                            retry_result,
-                            None, // git handled by caller via callback
-                        )
-                    } else {
-                        warn!(
-                            binary,
-                            function,
-                            attempts = retry_result.attempts.len(),
-                            "Batch function exhausted all retries"
-                        );
-                        batch::FunctionResult::failure(
-                            binary.to_string(),
-                            function.clone(),
-                            retry_result,
-                        )
-                    }
+            // Register the unit in-flight so the web server's cancel-current
+            // endpoint has something to name (issue #91, W2.2).
+            if let Some(cancellation) = self.unit_cancellation.as_ref() {
+                cancellation.begin_unit(binary, function);
+            }
+
+            // The unit races the cancellation watch: a cancellation that
+            // lands mid-unit drops the in-flight future — the earliest safe
+            // point, since nothing an attempt produced is persisted until
+            // the unit completes — and the unit is recorded as a failed
+            // attempt while the batch continues with the next unit.
+            let (mut result, mut aborted) = tokio::select! {
+                outcome = self.try_translate_with_retry(binary, function, config, verifier) => {
+                    let result = match outcome {
+                        Ok(retry_result) => {
+                            if retry_result.success {
+                                info!(
+                                    binary,
+                                    function,
+                                    attempts = retry_result.attempts.len(),
+                                    "Batch function succeeded"
+                                );
+                                let rust_code = retry_result.rust_code.clone().unwrap_or_default();
+                                batch::FunctionResult::success(
+                                    binary.to_string(),
+                                    function.clone(),
+                                    rust_code,
+                                    retry_result,
+                                    None, // git handled by caller via callback
+                                )
+                            } else {
+                                warn!(
+                                    binary,
+                                    function,
+                                    attempts = retry_result.attempts.len(),
+                                    "Batch function exhausted all retries"
+                                );
+                                batch::FunctionResult::failure(
+                                    binary.to_string(),
+                                    function.clone(),
+                                    retry_result,
+                                )
+                            }
+                        }
+                        Err(e) => {
+                            warn!(
+                                binary,
+                                function,
+                                error = %e,
+                                "Batch function translation failed (pipeline error)"
+                            );
+                            // Create a minimal failed result so the caller sees it
+                            let empty_result = retry::RetryResult::new();
+                            batch::FunctionResult::failure(
+                                binary.to_string(),
+                                function.clone(),
+                                empty_result,
+                            )
+                        }
+                    };
+                    (result, false)
                 }
-                Err(e) => {
+                _ = self.wait_for_unit_cancel(binary, function) => {
                     warn!(
                         binary,
                         function,
-                        error = %e,
-                        "Batch function translation failed (pipeline error)"
+                        "Operator cancelled the in-flight unit — aborting at earliest safe point"
                     );
-                    // Create a minimal failed result so the caller sees it
                     let empty_result = retry::RetryResult::new();
-                    batch::FunctionResult::failure(
-                        binary.to_string(),
-                        function.clone(),
-                        empty_result,
+                    (
+                        batch::FunctionResult::failure(
+                            binary.to_string(),
+                            function.clone(),
+                            empty_result,
+                        ),
+                        true,
                     )
                 }
             };
 
+            // The unit is no longer in flight — a cancel-current arriving
+            // from here to the next unit's start is rejected, not absorbed.
+            // The release is also the race-free check for a cancellation
+            // that landed while the unit's own work was finishing: the
+            // operator's cancel still wins over the completion it raced,
+            // so the unit is recorded cancelled, not completed.
+            if let Some(cancellation) = self.unit_cancellation.as_ref()
+                && cancellation.end_unit_was_cancelled()
+            {
+                if result.success {
+                    warn!(
+                        binary,
+                        function,
+                        "Operator cancelled as the unit completed — recording it cancelled"
+                    );
+                    let empty_result = retry::RetryResult::new();
+                    result = batch::FunctionResult::failure(
+                        binary.to_string(),
+                        function.clone(),
+                        empty_result,
+                    );
+                }
+                aborted = true;
+            }
+
             let success = result.success;
             batch_result.add(result.clone());
 
-            // Emit progress event for real-time tracking
-            self.emit(ProgressEvent::FunctionCompleted {
-                binary: binary.to_string().into(),
-                function: function.clone(),
-                success,
-                attempts: 0,  // filled by caller after git branch creation
-                branch: None, // filled by caller after git branch creation
-            });
+            // Emit progress event for real-time tracking. A cancelled unit
+            // already got its terminal `UnitCancelled` event from the
+            // cancellation handle the moment it landed — no completion on
+            // top of it.
+            if !aborted {
+                self.emit(ProgressEvent::FunctionCompleted {
+                    binary: binary.to_string().into(),
+                    function: function.clone(),
+                    success,
+                    attempts: 0,  // filled by caller after git branch creation
+                    branch: None, // filled by caller after git branch creation
+                });
+            }
 
-            // Invoke the caller's callback (e.g., for incremental git commits)
+            // Invoke the caller's callback (e.g., for incremental git
+            // commits). Cancelled units go through it too — the caller owns
+            // git cleanup, and per the Archive rule a cancelled unit's
+            // branch is archived under the archive refs, never deleted.
             let continue_batch = if let Some(ref mut cb) = on_function_completed {
                 cb(binary, function, &mut result)
             } else {
@@ -3014,6 +3118,110 @@ mod tests {
             result.results.len(),
             1,
             "the parked loop ended at the boundary on the stop signal"
+        );
+    }
+
+    /// A stand-in LLM server that accepts connections and never answers —
+    /// a unit that reaches it stays in flight until something ends it.
+    /// Returns the base URL to point a client at.
+    async fn hanging_llm() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake server should bind");
+        let addr = listener.local_addr().expect("fake server address");
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    // Hold the connection open without ever responding.
+                    let _stream = stream;
+                    std::future::pending::<()>().await;
+                });
+            }
+        });
+        format!("http://{addr}/v1")
+    }
+
+    /// Cancel-current on the unit in flight (issue #91, W2.2): the unit is
+    /// aborted at the earliest safe point — mid-LLM-call, against an LLM
+    /// that never answers, so without the abort the batch would sit until
+    /// the client timeout — the cancelled attempt is recorded as a failure,
+    /// its callback still runs so the caller can archive its branch, and
+    /// the run continues with the next unit.
+    #[tokio::test]
+    async fn batch_translate_cancel_current_aborts_in_flight_unit_and_continues() {
+        let dir = TempDir::new().expect("temp workspace");
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        // The fake Ghidra answers the pre-batch scans and resolves the
+        // first unit's fetch, so that unit reaches the hanging LLM and
+        // stays in flight; the second unit fails fast at the fetch.
+        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("fake ghidra client");
+        let llm = LlmClient::from_url(&hanging_llm().await, "qwen3").expect("llm config");
+        let cancellation = UnitCancellation::new();
+        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default())
+            .with_workspace(dir.path().to_path_buf())
+            .with_unit_cancellation(cancellation.clone());
+
+        // The "operator" side: as soon as a unit is registered in flight,
+        // cancel it — what the cancel-current endpoint does.
+        let watched = cancellation.clone();
+        let cancel_task = tokio::spawn(async move {
+            while watched.current_unit().is_none() {
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
+            watched
+                .cancel_current()
+                .expect("the in-flight unit can be cancelled")
+        });
+
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<(String, bool)>>> = std::sync::Arc::default();
+        let seen_cb = seen.clone();
+        let result = pipeline
+            .batch_translate(
+                "game_logic.dll",
+                &["FUN_18003e750".to_string(), "UpdateScene".to_string()],
+                &retry::RetryConfig::default(),
+                &verifier,
+                Some(&mut |_dll, function, func_result| {
+                    seen_cb
+                        .lock()
+                        .expect("callback lock is never poisoned")
+                        .push((function.to_string(), func_result.success));
+                    true
+                }),
+            )
+            .await
+            .expect("a cancelled unit never fails the batch itself");
+        let cancelled_unit = cancel_task.await.expect("the cancel task ran");
+
+        assert_eq!(
+            cancelled_unit.function(),
+            "FUN_18003e750",
+            "the cancellation lands on the unit that was in flight"
+        );
+        assert_eq!(
+            result.results.len(),
+            2,
+            "the cancelled unit is recorded and the run continued to the next unit"
+        );
+        let cancelled = &result.results[0];
+        assert_eq!(cancelled.function, "FUN_18003e750");
+        assert!(
+            !cancelled.success,
+            "the cancelled attempt is recorded as failed"
+        );
+        assert!(
+            cancelled.retry_result.attempts.is_empty(),
+            "the aborted attempt left no completed attempt behind — nothing half-written"
+        );
+        assert_eq!(
+            *seen.lock().expect("callback lock is never poisoned"),
+            vec![
+                ("FUN_18003e750".to_string(), false),
+                ("UpdateScene".to_string(), false),
+            ],
+            "the caller's callback ran for the cancelled unit (nothing is \
+             discarded) and the next unit was attempted"
         );
     }
 

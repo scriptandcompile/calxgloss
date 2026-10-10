@@ -27,7 +27,7 @@ use axum::{
 use calxgloss_reports::dashboard::DashboardBuilder;
 use calxgloss_types::{
     BinaryActivity, BinaryIdentity, PhaseRecord, PipelineControl, ProgressEvent, ReviewDashboard,
-    StopSignal, TranslationPhase, UnitKey,
+    StopSignal, TranslationPhase, UnitCancellation, UnitKey,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -60,6 +60,11 @@ pub struct ServerState {
     /// and `/api/server/status` derives the reported pipeline status from
     /// it when attached.
     pipeline_control: Option<PipelineControl>,
+    /// The live run's [`UnitCancellation`] handle (issue #91, W2.2) —
+    /// `None` on plain `serve` routers, which have no unit in flight to
+    /// cancel. The cancel-current endpoint cancels whatever unit the
+    /// pipeline registered on it.
+    unit_cancellation: Option<UnitCancellation>,
     /// Graceful-shutdown trigger watched by `serve`/`serve_with_listener`.
     shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
 }
@@ -78,6 +83,7 @@ impl ServerState {
             metrics: Arc::new(metrics::ProcessMetrics::for_current_process()),
             stop_signal: StopSignal::new(),
             pipeline_control: None,
+            unit_cancellation: None,
             shutdown_tx: Arc::new(tokio::sync::watch::channel(false).0),
         }
     }
@@ -113,6 +119,14 @@ impl ServerState {
     /// drive the run and `/api/server/status` can report its true state.
     pub fn with_pipeline_control(mut self, control: PipelineControl) -> Self {
         self.pipeline_control = Some(control);
+        self
+    }
+
+    /// Attach the [`UnitCancellation`] handle the live pipeline shares with
+    /// this server, so the cancel-current endpoint (issue #91) can abort
+    /// whatever unit is in flight.
+    pub fn with_unit_cancellation(mut self, cancellation: UnitCancellation) -> Self {
+        self.unit_cancellation = Some(cancellation);
         self
     }
 
@@ -174,6 +188,13 @@ impl ServerState {
     /// no live pipeline to control.
     pub fn pipeline_control(&self) -> Option<PipelineControl> {
         self.pipeline_control.clone()
+    }
+
+    /// Clone of the unit-cancellation handle attached via
+    /// [`ServerState::with_unit_cancellation`] — `None` when this server
+    /// has no live pipeline whose unit could be cancelled.
+    pub fn unit_cancellation(&self) -> Option<UnitCancellation> {
+        self.unit_cancellation.clone()
     }
 
     /// Request graceful shutdown: stop accepting new requests and let
@@ -369,7 +390,8 @@ impl ProgressState {
             | ProgressEvent::HallucinationDetected { .. }
             | ProgressEvent::InfiniteLoopDetected { .. }
             | ProgressEvent::BehaviorDivergenceDetected { .. }
-            | ProgressEvent::ResourceExhaustionDetected { .. } => {
+            | ProgressEvent::ResourceExhaustionDetected { .. }
+            | ProgressEvent::UnitCancelled { .. } => {
                 self.on_translation_event(event).await;
             }
             ProgressEvent::ClassificationComplete {
@@ -591,6 +613,15 @@ impl ProgressState {
                         "batch_failed".to_string()
                     };
                 }
+                ProgressEvent::UnitCancelled { .. } => {
+                    // The operator cancelled the in-flight unit (issue #91):
+                    // terminal and failed like any other unfinished attempt,
+                    // but the strategy names why — the dashboard can tell a
+                    // cancelled unit from one that simply failed.
+                    entry.finished = true;
+                    entry.succeeded = Some(false);
+                    entry.strategy = "cancelled".to_string();
+                }
                 _ => {}
             }
         }
@@ -787,6 +818,13 @@ fn live_only_routes() -> Router<CombinedState> {
         .route("/api/pipeline/pause", post(handlers::api_pause_pipeline))
         .route("/api/pipeline/resume", post(handlers::api_resume_pipeline))
         .route("/api/pipeline/stop", post(handlers::api_stop_pipeline))
+        // Cancel the unit in flight (issue #91, W2.2): aborts the runaway
+        // unit at the earliest safe point while the run continues. Live-only
+        // for the same reason as the other lifecycle endpoints.
+        .route(
+            "/api/pipeline/cancel-current",
+            post(handlers::api_cancel_current_unit),
+        )
 }
 
 /// Apply the middleware layers every router shares.

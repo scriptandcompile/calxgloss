@@ -99,8 +99,8 @@ pub use pipeline_phase::{
     BinaryActivity, BinaryProgress, PhaseProgress, PhaseState, PipelinePhase,
 };
 pub use progress::{
-    PhaseRecord, PipelineControl, PipelineState, PipelineTransitionError, ProgressEvent,
-    StopSignal, TranslationEvents, TranslationPhase,
+    NoUnitInFlight, PhaseRecord, PipelineControl, PipelineState, PipelineTransitionError,
+    ProgressEvent, StopSignal, TranslationEvents, TranslationPhase, UnitCancellation,
 };
 pub use scan::ScanMetadata;
 pub use shim::{

@@ -8,7 +8,8 @@
 
 use calxgloss_git::{GitManager, InitConfig};
 use calxgloss_types::{
-    GitBranch, PipelineControl, ProgressEvent, TestCase, TestResult, TranslationEvents,
+    GitBranch, PipelineControl, PipelineState, ProgressEvent, TestCase, TestResult,
+    TranslationEvents, UnitCancellation,
 };
 use calxgloss_web::{
     ActionsState, LlmIoLog, ProgressState, ServerState, SessionManager, build_dashboard,
@@ -710,6 +711,9 @@ async fn test_pipeline_lifecycle_endpoints_503_without_control() {
         "/api/pipeline/pause",
         "/api/pipeline/resume",
         "/api/pipeline/stop",
+        // Issue #91: cancel-current is honest the same way — no control
+        // attached means no pipeline whose unit could be cancelled.
+        "/api/pipeline/cancel-current",
     ] {
         let (status, body) = post_lifecycle(fixture.port(), path).await;
         assert_eq!(status, 503, "{path} without a control should be 503");
@@ -721,6 +725,134 @@ async fn test_pipeline_lifecycle_endpoints_503_without_control() {
             "503 explains why, got: {body}"
         );
     }
+}
+
+/// The live router's cancel-current endpoint (issue #91, W2.2) drives the
+/// shared UnitCancellation: 409 when no unit is in flight (a stale UI
+/// cannot drive the run inconsistent), 200 naming the cancelled unit when
+/// one is, the cancellation on the WS stream like every other lifecycle
+/// operation, the progress state recording the unit cancelled/failed —
+/// and the run itself untouched: still running, moving on to the next unit.
+#[tokio::test]
+async fn test_pipeline_cancel_current_cancels_unit_and_run_continues() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let fixture = TestFixture::new();
+    let events = TranslationEvents::new(128);
+    let control = PipelineControl::new().with_events(events.clone());
+    control.start().expect("idle -> running");
+    let cancellation = UnitCancellation::new().with_events(events.clone());
+    let state = ServerState::new(fixture.repo_path())
+        .with_pipeline_control(control.clone())
+        .with_unit_cancellation(cancellation.clone());
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress.clone());
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!(
+        "ws://127.0.0.1:{}/api/events/upgrade",
+        fixture.port()
+    ))
+    .await
+    .expect("websocket upgrade succeeds");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Nothing in flight yet — the request is rejected, not silently absorbed.
+    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/cancel-current").await;
+    assert_eq!(status, 409, "cancelling with no unit in flight is rejected");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no unit is in flight to cancel"),
+        "409 explains why, got: {body}"
+    );
+
+    // A unit in flight — fed exactly how live mode feeds it: the pipeline
+    // emits TranslationStarted and registers the unit on the handle.
+    events.emit(ProgressEvent::TranslationStarted {
+        binary: "game_logic.dll".into(),
+        function: "DrawPrimitive".into(),
+    });
+    cancellation.begin_unit("game_logic.dll", "DrawPrimitive");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Cancel it: 200 naming the unit that was in flight.
+    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/cancel-current").await;
+    assert_eq!(status, 200, "a unit in flight can be cancelled");
+    assert_eq!(body["binary"], "game_logic.dll");
+    assert_eq!(body["function"], "DrawPrimitive");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("continues with the next unit"),
+        "the response confirms the run continues, got: {body}"
+    );
+    assert!(
+        cancellation.is_cancelled_for("game_logic.dll", "DrawPrimitive"),
+        "the pipeline side sees the cancellation the endpoint made"
+    );
+
+    // The cancellation lands on the WS stream like every other lifecycle
+    // operation — a raw unit_cancelled event naming the unit.
+    let mut saw_cancelled = false;
+    for _ in 0..20 {
+        if saw_cancelled {
+            break;
+        }
+        let msg = match tokio::time::timeout(Duration::from_millis(500), ws.next()).await {
+            Ok(Some(Ok(m))) => m,
+            _ => continue,
+        };
+        if let Message::Text(text) = msg {
+            let v: serde_json::Value =
+                serde_json::from_str(text.as_str()).expect("wire message is JSON");
+            if v["event"].as_str() == Some("unit_cancelled") {
+                assert_eq!(v["binary"], "game_logic.dll");
+                assert_eq!(v["function"], "DrawPrimitive");
+                saw_cancelled = true;
+            }
+        }
+    }
+    assert!(saw_cancelled, "WS clients must see the cancellation");
+
+    // Progress state records the cancelled unit as finished and failed,
+    // named as cancelled so the dashboard can tell it from a plain failure.
+    let snapshot = progress.snapshot().await;
+    let entry = snapshot
+        .get("game_logic.dll/DrawPrimitive")
+        .expect("the cancelled unit is tracked");
+    assert!(entry.finished, "the cancelled unit is terminal");
+    assert_eq!(entry.succeeded, Some(false), "recorded as failed");
+    assert_eq!(entry.strategy, "cancelled", "recorded as cancelled");
+
+    // The run itself is untouched — still running, and it moves on: the
+    // pipeline ends the unit, starts the next, and that one can be
+    // cancelled too.
+    assert_eq!(
+        control.state(),
+        PipelineState::Running,
+        "the run keeps going"
+    );
+    cancellation.end_unit_was_cancelled();
+    events.emit(ProgressEvent::TranslationStarted {
+        binary: "game_logic.dll".into(),
+        function: "UpdateScene".into(),
+    });
+    cancellation.begin_unit("game_logic.dll", "UpdateScene");
+    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/cancel-current").await;
+    assert_eq!(status, 200, "the next in-flight unit can be cancelled");
+    assert_eq!(body["function"], "UpdateScene");
+
+    // And once the run is between units again, cancel is rejected anew.
+    cancellation.end_unit_was_cancelled();
+    let (status, _) = post_lifecycle(fixture.port(), "/api/pipeline/cancel-current").await;
+    assert_eq!(status, 409, "nothing in flight between units to cancel");
 }
 
 /// WS phase events (issue #55, W0 Phase 2 tail): after applying each
@@ -3813,6 +3945,7 @@ async fn test_live_only_endpoints_absent_from_non_live_routers() {
             "/api/pipeline/pause",
             "/api/pipeline/resume",
             "/api/pipeline/stop",
+            "/api/pipeline/cancel-current",
         ] {
             let resp = reqwest::Client::new()
                 .post(format!("http://127.0.0.1:{}{}", fixture.port(), path))

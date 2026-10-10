@@ -425,6 +425,7 @@ fn main() -> Result<()> {
                     callgraph_verbose,
                     None, // no stop signal — plain auto runs to completion
                     None, // no pipeline control — plain auto has no web server
+                    None, // no unit cancellation — plain auto has no web server
                 ))
         }
         Command::AutoShim { binary, skip_git } => {

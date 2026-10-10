@@ -1213,6 +1213,19 @@ pub struct PipelineLifecycleResponse {
     pub message: String,
 }
 
+/// Response body of `POST /api/pipeline/cancel-current` (issue #91, W2.2).
+/// Names the unit that was cancelled — the operator sees exactly which
+/// in-flight attempt the run just dropped — and confirms the run continues.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UnitCancelResponse {
+    /// The binary of the cancelled unit.
+    pub binary: String,
+    /// The function of the cancelled unit.
+    pub function: String,
+    /// Human-readable confirmation for the operator.
+    pub message: String,
+}
+
 /// Response body of `GET /api/llm-io` (issue #77) — the retained window of
 /// the server-side LLM I/O log, oldest first. A workspace that has never
 /// run live honestly reports an empty `entries`, never a 404.

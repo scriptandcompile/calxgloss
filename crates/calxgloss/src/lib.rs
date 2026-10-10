@@ -32,8 +32,8 @@ pub use calxgloss_types::context_tier::ContextTier;
 // Progress event types
 pub use calxgloss_types::confidence::Confidence;
 pub use calxgloss_types::progress::{
-    PipelineControl, PipelineState, PipelineTransitionError, ProgressEvent, StopSignal,
-    TranslationEvents,
+    NoUnitInFlight, PipelineControl, PipelineState, PipelineTransitionError, ProgressEvent,
+    StopSignal, TranslationEvents, UnitCancellation,
 };
 pub use calxgloss_types::scan::ScanMetadata;
 

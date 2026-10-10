@@ -330,6 +330,17 @@ pub enum ProgressEvent {
         /// The state the pipeline entered.
         state: PipelineState,
     },
+    /// The unit in flight was cancelled by the operator (issue #91, W2.2).
+    ///
+    /// Emitted by [`UnitCancellation::cancel_current`] the moment the
+    /// cancellation lands, so the WebSocket broadcast and progress state
+    /// reflect it immediately — the pipeline then aborts the unit at the
+    /// earliest safe point and continues with the next one. The cancelled
+    /// attempt is kept as a failed record; nothing is discarded.
+    UnitCancelled {
+        binary: BinaryIdentity,
+        function: String,
+    },
 }
 
 impl ProgressEvent {
@@ -392,7 +403,10 @@ impl ProgressEvent {
             }
             | ProgressEvent::ResourceExhaustionDetected {
                 binary, function, ..
-            } => Some(UnitKey::new(binary, function.as_str())),
+            }
+            | ProgressEvent::UnitCancelled { binary, function } => {
+                Some(UnitKey::new(binary, function.as_str()))
+            }
             ProgressEvent::ClassificationComplete { .. }
             | ProgressEvent::BatchStarted { .. }
             | ProgressEvent::QueuePlanned { .. }
@@ -683,6 +697,9 @@ impl std::fmt::Display for ProgressEvent {
             }
             ProgressEvent::PipelineStateChanged { previous, state } => {
                 write!(f, "Pipeline state: {previous} → {state}")
+            }
+            ProgressEvent::UnitCancelled { binary, function } => {
+                write!(f, "Cancelled in-flight unit {function} ({binary})")
             }
         }
     }
@@ -1069,6 +1086,145 @@ impl PipelineControl {
         }
     }
 }
+
+/// The unit a [`UnitCancellation`] currently holds in flight, and whether
+/// a cancellation has landed on it.
+#[derive(Debug, Clone)]
+struct InFlightUnit {
+    unit: UnitKey,
+    cancelled: bool,
+}
+
+/// A shared handle for cancelling the unit currently in flight (issue #91,
+/// W2.2).
+///
+/// Modeled on [`StopSignal`] and [`PipelineControl`]: `Arc`-backed and
+/// cheaply cloneable, so the live pipeline and the web server hold separate
+/// clones of one handle. The pipeline registers each unit it starts
+/// ([`Self::begin_unit`]) and clears it at the boundary
+/// ([`Self::end_unit_was_cancelled`]); the web server's cancel-current endpoint fires
+/// [`Self::cancel_current`] at whatever unit is in flight. The pipeline
+/// observes the cancellation with [`Self::is_cancelled_for`] and aborts the
+/// unit at the earliest safe point — the run then continues with the next
+/// unit, and the cancelled attempt stays recorded as a failure.
+///
+/// Cancelling with no unit in flight is rejected with [`NoUnitInFlight`]
+/// rather than silently doing nothing, so a stale dashboard button can
+/// never drive the run inconsistent. When built `with_events`, the first
+/// cancellation of a unit emits [`ProgressEvent::UnitCancelled`] on the
+/// shared channel the moment it lands, so the WebSocket broadcast and
+/// progress state reflect it like every other lifecycle operation.
+///
+/// # Example
+///
+/// ```
+/// use calxgloss_types::UnitCancellation;
+///
+/// let cancellation = UnitCancellation::new();
+///
+/// // No unit in flight yet — the request is rejected, not ignored.
+/// assert!(cancellation.cancel_current().is_err());
+///
+/// cancellation.begin_unit("game_logic.dll", "DrawPrimitive");
+/// let cancelled = cancellation.cancel_current().expect("a unit is in flight");
+/// assert_eq!(cancelled.function(), "DrawPrimitive");
+/// assert!(cancellation.is_cancelled_for("game_logic.dll", "DrawPrimitive"));
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct UnitCancellation {
+    in_flight: std::sync::Arc<std::sync::Mutex<Option<InFlightUnit>>>,
+    events: Option<TranslationEvents>,
+}
+
+impl UnitCancellation {
+    /// Create a new handle with no unit in flight, emitting no events.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Emit a [`ProgressEvent::UnitCancelled`] on `events` when a
+    /// cancellation lands (once per unit — repeat cancels are idempotent).
+    pub fn with_events(mut self, events: TranslationEvents) -> Self {
+        self.events = Some(events);
+        self
+    }
+
+    /// Register the unit the pipeline is about to start as in flight,
+    /// clearing any previous unit's cancellation.
+    pub fn begin_unit(&self, binary: impl Into<BinaryIdentity>, function: impl Into<String>) {
+        let unit = UnitKey::new(&binary.into(), function);
+        *self.lock() = Some(InFlightUnit {
+            unit,
+            cancelled: false,
+        });
+    }
+
+    /// Clear the in-flight registration at the unit boundary, reporting
+    /// whether the unit was cancelled. This is the pipeline's race-free
+    /// check when its unit finished on its own: a cancellation landing
+    /// between the unit's work completing and this call still counts, so
+    /// the operator's cancel is never silently lost.
+    pub fn end_unit_was_cancelled(&self) -> bool {
+        self.lock().take().is_some_and(|flight| flight.cancelled)
+    }
+
+    /// The unit in flight right now, if any.
+    pub fn current_unit(&self) -> Option<UnitKey> {
+        self.lock().as_ref().map(|flight| flight.unit.clone())
+    }
+
+    /// Whether a cancellation has landed on the named unit while it is in
+    /// flight — the check the pipeline makes at its safe points.
+    pub fn is_cancelled_for(
+        &self,
+        binary: impl Into<BinaryIdentity>,
+        function: impl Into<String>,
+    ) -> bool {
+        let target = UnitKey::new(&binary.into(), function);
+        self.lock()
+            .as_ref()
+            .is_some_and(|flight| flight.cancelled && flight.unit == target)
+    }
+
+    /// Cancel the unit in flight and return it. While the same unit stays
+    /// in flight, repeat calls are idempotent — the lifecycle event is
+    /// emitted once, by the cancellation that first lands.
+    pub fn cancel_current(&self) -> Result<UnitKey, NoUnitInFlight> {
+        let unit = {
+            let mut slot = self.lock();
+            let Some(flight) = slot.as_mut() else {
+                return Err(NoUnitInFlight);
+            };
+            let first_cancellation = !flight.cancelled;
+            flight.cancelled = true;
+            let unit = flight.unit.clone();
+            drop(slot);
+            if first_cancellation && let Some(events) = &self.events {
+                events.emit(ProgressEvent::UnitCancelled {
+                    binary: unit.binary().clone(),
+                    function: unit.function().to_string(),
+                });
+            }
+            unit
+        };
+        Ok(unit)
+    }
+
+    /// Lock the shared slot, treating poisoning as recoverable — nothing a
+    /// holder does while locked can leave the slot inconsistent.
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<InFlightUnit>> {
+        self.in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// A cancel-current request rejected because no unit is in flight (issue
+/// #91, W2.2) — the run is idle, paused, or between units. The web layer
+/// turns this into a 409 rather than silently ignoring the request.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("no unit is in flight to cancel")]
+pub struct NoUnitInFlight;
 
 #[cfg(test)]
 mod tests {
@@ -1603,6 +1759,127 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "a rejected transition emits no event"
+        );
+    }
+
+    // ── UnitCancellation (issue #91, W2.2) ────────────────────────────
+
+    #[test]
+    fn unit_cancellation_without_in_flight_unit_is_rejected() {
+        let cancellation = UnitCancellation::new();
+        assert_eq!(
+            cancellation.cancel_current().err(),
+            Some(NoUnitInFlight),
+            "cancelling with nothing in flight is rejected, not ignored"
+        );
+        cancellation.begin_unit("game_logic.dll", "DrawPrimitive");
+        assert!(
+            !cancellation.end_unit_was_cancelled(),
+            "an untouched unit ends uncancelled"
+        );
+        assert!(
+            cancellation.cancel_current().is_err(),
+            "the boundary clears the registration — nothing left to cancel"
+        );
+        assert!(cancellation.current_unit().is_none());
+    }
+
+    #[test]
+    fn unit_cancellation_end_unit_reports_a_cancelled_unit() {
+        let cancellation = UnitCancellation::new();
+        cancellation.begin_unit("game_logic.dll", "DrawPrimitive");
+        cancellation
+            .cancel_current()
+            .expect("the unit is in flight to cancel");
+        assert!(
+            cancellation.end_unit_was_cancelled(),
+            "a cancellation that landed just as the unit finished still counts"
+        );
+        assert!(
+            !cancellation.end_unit_was_cancelled(),
+            "the boundary is cleared — a second release sees nothing"
+        );
+    }
+
+    #[test]
+    fn unit_cancellation_is_shared_across_clones() {
+        let cancellation = UnitCancellation::new();
+        let pipeline_side = cancellation.clone();
+
+        cancellation.begin_unit("game_logic.dll", "DrawPrimitive");
+        let cancelled = pipeline_side
+            .cancel_current()
+            .expect("the clone sees the in-flight unit");
+        assert_eq!(cancelled.to_string(), "game_logic.dll/DrawPrimitive");
+        assert!(
+            cancellation.is_cancelled_for("game_logic.dll", "DrawPrimitive"),
+            "the pipeline side observes the cancellation the clone made"
+        );
+        assert!(
+            !cancellation.is_cancelled_for("game_logic.dll", "UpdateScene"),
+            "the cancellation is scoped to the unit that was in flight"
+        );
+
+        // Repeat cancels while the same unit is in flight are idempotent.
+        pipeline_side
+            .cancel_current()
+            .expect("the unit is still in flight");
+
+        // A new unit starts clean — the previous cancellation does not leak.
+        cancellation.begin_unit("game_logic.dll", "UpdateScene");
+        assert!(
+            !cancellation.is_cancelled_for("game_logic.dll", "UpdateScene"),
+            "begin_unit clears the previous unit's cancellation"
+        );
+    }
+
+    #[test]
+    fn unit_cancellation_emits_event_once_when_it_lands() {
+        let events = TranslationEvents::new(16);
+        let mut rx = events.subscribe();
+        let cancellation = UnitCancellation::new().with_events(events);
+
+        // Rejected requests emit nothing.
+        assert!(cancellation.cancel_current().is_err());
+        assert!(rx.try_recv().is_err(), "a rejected cancel emits no event");
+
+        cancellation.begin_unit("game_logic.dll", "DrawPrimitive");
+        cancellation.cancel_current().expect("unit in flight");
+        let event = rx.try_recv().expect("the landing emits");
+        assert!(
+            matches!(event, ProgressEvent::UnitCancelled { .. }),
+            "the cancellation emits UnitCancelled, got: {event}"
+        );
+        assert_eq!(
+            event.unit_key().unwrap().to_string(),
+            "game_logic.dll/DrawPrimitive"
+        );
+        assert!(
+            TranslationPhase::from_event(&event).is_none(),
+            "a cancellation derives no new unit phase"
+        );
+
+        // The idempotent repeat does not emit a second event.
+        cancellation.cancel_current().expect("still in flight");
+        assert!(
+            rx.try_recv().is_err(),
+            "the event is emitted once, by the cancellation that lands"
+        );
+    }
+
+    #[test]
+    fn unit_cancelled_event_serde_round_trip() {
+        let event = ProgressEvent::UnitCancelled {
+            binary: "game_logic.dll".into(),
+            function: "DrawPrimitive".into(),
+        };
+        let json = serde_json::to_value(&event).expect("serializes");
+        assert_eq!(json["event"], "unit_cancelled");
+        assert_eq!(json["binary"], "game_logic.dll");
+        assert_eq!(json["function"], "DrawPrimitive");
+        assert!(
+            event.to_string().contains("DrawPrimitive"),
+            "display names the cancelled unit: {event}"
         );
     }
 }

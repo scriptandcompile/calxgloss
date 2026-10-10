@@ -3,7 +3,7 @@
 use super::super::{
     BatchInfo, ClassificationInfo, CombinedState, PipelineControl, PipelineDllProgress,
     PipelineLifecycleResponse, PipelineProgressResponse, PipelineTimeEstimate, ProgressEntry,
-    ProgressInfo, ProgressResponse, ServerError,
+    ProgressInfo, ProgressResponse, ServerError, UnitCancelResponse,
 };
 
 use axum::{Json, extract::State};
@@ -637,4 +637,33 @@ pub async fn api_stop_pipeline(
     State(combined): State<CombinedState>,
 ) -> Result<Json<PipelineLifecycleResponse>, ServerError> {
     control_pipeline(&combined, "stop", |c| c.stop())
+}
+
+/// Cancel the unit currently in flight (issue #91, W2.2): the pipeline
+/// aborts it at the earliest safe point — mid-LLM-call included — records
+/// the attempt as cancelled/failed, and continues with the next unit.
+/// With no unit in flight (idle, paused, or between units) the request is
+/// rejected with a 409 rather than silently doing nothing, so a stale
+/// dashboard button cannot drive the run inconsistent. Live router only.
+pub async fn api_cancel_current_unit(
+    State(combined): State<CombinedState>,
+) -> Result<Json<UnitCancelResponse>, ServerError> {
+    let cancellation = combined.server.unit_cancellation().ok_or_else(|| {
+        ServerError::unavailable("this server has no live pipeline control attached")
+    })?;
+    let unit = cancellation
+        .cancel_current()
+        .map_err(|e| ServerError::conflict(&e.to_string()))?;
+    info!(
+        binary = %unit.binary(),
+        function = %unit.function(),
+        "unit cancelled via API — run continues with the next unit"
+    );
+    Ok(Json(UnitCancelResponse {
+        binary: unit.binary().to_string(),
+        function: unit.function().to_string(),
+        message: format!(
+            "Cancelled the in-flight unit {unit}; the run continues with the next unit."
+        ),
+    }))
 }

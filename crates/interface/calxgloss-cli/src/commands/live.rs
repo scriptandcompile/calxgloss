@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use calxgloss::{PipelineControl, PipelineState, StopSignal, TranslationEvents};
+use calxgloss::{PipelineControl, PipelineState, StopSignal, TranslationEvents, UnitCancellation};
 use calxgloss_web::{
     LogLevelControl, ServerState, SessionManager, build_router_with_ws, serve_with_listener,
 };
@@ -84,10 +84,18 @@ pub async fn handle_live(
     // the shared channel, so WS clients see the run's state change live.
     let control = PipelineControl::new().with_events(events.clone());
 
+    // Unit-cancellation handle (issue #91, W2.2) — the pipeline registers
+    // each unit it starts, and the cancel-current endpoint cancels whatever
+    // unit is in flight. The cancellation emits a UnitCancelled event on
+    // the shared channel the moment it lands, so WS clients and the
+    // progress state see it like any other lifecycle operation.
+    let cancellation = UnitCancellation::new().with_events(events.clone());
+
     let serve_workspace = workspace.clone();
     let serve_progress = progress.clone();
     let serve_stop = stop_signal.clone();
     let serve_control = control.clone();
+    let serve_cancellation = cancellation.clone();
 
     let serve_handle = tokio::spawn(async move {
         let workspace = serve_workspace;
@@ -110,7 +118,8 @@ pub async fn handle_live(
             .with_log_level(log_level)
             .with_log_filter(log_filter)
             .with_stop_signal(serve_stop)
-            .with_pipeline_control(serve_control);
+            .with_pipeline_control(serve_control)
+            .with_unit_cancellation(serve_cancellation);
 
         // Build the router with WebSocket support so the frontend can stream
         // progress events over the upgrade endpoint.
@@ -169,8 +178,9 @@ pub async fn handle_live(
         no_callgraph,
         callgraph_cache,
         callgraph_verbose,
-        Some(&stop_signal), // shutdown/restart endpoints pause at unit boundaries
-        Some(&control),     // pause/resume/stop endpoints drive the run
+        Some(&stop_signal),  // shutdown/restart endpoints pause at unit boundaries
+        Some(&control),      // pause/resume/stop endpoints drive the run
+        Some(&cancellation), // cancel-current endpoint aborts the in-flight unit
     )
     .await;
 

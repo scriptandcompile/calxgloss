@@ -11,6 +11,7 @@ use calxgloss::PipelineControl;
 use calxgloss::ProgressEvent;
 use calxgloss::StopSignal;
 use calxgloss::TranslationEvents;
+use calxgloss::UnitCancellation;
 use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use calxgloss_git::BranchCreationPolicy;
 use calxgloss_git::DependencyPolicy;
@@ -44,6 +45,7 @@ pub async fn run_translation_for_dll(
     callgraph_verbose: bool,
     stop: Option<&StopSignal>,
     control: Option<&PipelineControl>,
+    cancellation: Option<&UnitCancellation>,
 ) -> Result<()> {
     // The workspace — git, src/, scratch all live here.
 
@@ -143,6 +145,9 @@ pub async fn run_translation_for_dll(
     }
     if let Some(control) = control {
         pipeline = pipeline.with_pipeline_control(control.clone());
+    }
+    if let Some(cancellation) = cancellation {
+        pipeline = pipeline.with_unit_cancellation(cancellation.clone());
     }
     pipeline = pipeline.with_workspace(workspace);
 
@@ -334,6 +339,7 @@ pub async fn handle_auto(
     callgraph_verbose: bool,
     stop: Option<&StopSignal>,
     control: Option<&PipelineControl>,
+    cancellation: Option<&UnitCancellation>,
 ) -> Result<()> {
     info!("Auto mode: detecting project state");
 
@@ -510,6 +516,7 @@ pub async fn handle_auto(
                 callgraph_verbose,
                 stop,
                 control,
+                cancellation,
             )
             .await?;
         }
@@ -557,6 +564,7 @@ pub async fn handle_auto(
             callgraph_verbose,
             stop,
             control,
+            cancellation,
         )
         .await?;
     }
