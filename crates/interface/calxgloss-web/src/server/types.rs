@@ -162,6 +162,44 @@ pub struct UnitResponseInner {
     pub queue_position: QueuePosition,
     /// Run-process telemetry: context tier, faults, tokens, retry strategies.
     pub process: UnitProcess,
+    /// Windows API mappings and caller/callee context for the unit's function.
+    pub analysis: UnitAnalysis,
+}
+
+// ─── Unit analysis context types (issue #73) ─────────────────────────
+
+/// Windows API mappings and call-graph context for a unit's function, read
+/// from the per-function analysis artifact and the per-binary call-graph
+/// record already stored under `re/analysis/`. Missing or corrupt artifacts
+/// degrade to empty sections.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UnitAnalysis {
+    /// Windows API calls identified for this function, with category and PAL mapping.
+    pub api_mappings: Vec<ApiMappingRecord>,
+    /// Who calls this function and what it calls, by name.
+    pub call_graph: CallGraphContext,
+}
+
+/// A Windows API call identified for a function, with its PAL/crate mapping.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiMappingRecord {
+    /// API name (e.g., "CreateFileA").
+    pub name: String,
+    /// API category (shared `ApiCategory` vocabulary, as recorded in the artifact).
+    pub category: String,
+    /// PAL/crate mapping target (e.g., "std::fs::File::open").
+    pub pal_mapping: String,
+}
+
+/// Caller/callee names for a function, resolved from the per-binary call-graph
+/// record. Caller addresses that no function in the graph owns render as hex
+/// addresses rather than being dropped.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CallGraphContext {
+    /// Names of functions that call this function, in graph order.
+    pub callers: Vec<String>,
+    /// Names of functions this function calls, in graph order.
+    pub callees: Vec<String>,
 }
 
 // ─── Unit process telemetry types (issue #62) ────────────────────────

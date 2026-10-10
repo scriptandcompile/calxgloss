@@ -267,6 +267,7 @@ pub async fn api_get_unit(
     let revision_count = super::ghidra::compute_revision_count(&state, unit);
     let queue_position = super::queue::compute_queue_position(&dashboard, unit);
     let process = super::process::build_unit_process(state.repo_path(), unit);
+    let analysis = super::analysis::build_unit_analysis(state.repo_path(), unit);
 
     Ok(Json(UnitResponse {
         success: true,
@@ -296,6 +297,7 @@ pub async fn api_get_unit(
             revision_count,
             queue_position,
             process,
+            analysis,
         },
     }))
 }

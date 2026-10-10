@@ -1402,6 +1402,63 @@ svg {
 .strategy-rate.partial { color: var(--accent-yellow); }
 .strategy-rate.fail { color: var(--accent-red); }
 
+/* ─── Analysis Context (issue #73) ──────────────────────────────────── */
+.api-mapping-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.api-mapping-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
+    font-size: 12px;
+}
+
+.api-mapping-name {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.api-mapping-category {
+    padding: 1px 8px;
+    border-radius: 10px;
+    background: var(--bg-secondary);
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.api-mapping-target {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.call-graph-group {
+    margin-top: 8px;
+}
+
+.call-graph-group:first-of-type {
+    margin-top: 0;
+}
+
+.call-graph-group-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 6px;
+}
+
 /* ─── Confidence Bar ─────────────────────────────────────────────────── */
 .confidence-bar-container {
     width: 100%;

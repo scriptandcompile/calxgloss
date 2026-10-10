@@ -3448,6 +3448,176 @@ async fn test_unit_process_corrupt_artifacts_degrade() {
     assert!(process["strategies"].as_array().unwrap().is_empty());
 }
 
+// ─────────────────────────────────────────────────────────────
+// Unit analysis context tests (issue #73)
+// ─────────────────────────────────────────────────────────────
+
+/// Writes canned analysis artifacts for game_logic.dll/DrawPrimitive: a
+/// function analysis artifact with two identified Windows APIs, and a
+/// per-binary call-graph record where DrawPrimitive is called by GameLoop
+/// (caller stored as an address) and calls BlitSurface (named edge) and
+/// InternalFlush (edge with no recorded name, resolved via target address).
+fn write_canned_analysis_context(fixture: &TestFixture) {
+    let analysis_dir = fixture.repo_path().join("re").join("analysis");
+    std::fs::create_dir_all(&analysis_dir).expect("create analysis dir");
+
+    let dll_dir = analysis_dir.join("game_logic.dll");
+    std::fs::create_dir_all(&dll_dir).expect("create binary dir");
+    std::fs::write(
+        dll_dir.join("DrawPrimitive.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "name": "DrawPrimitive",
+            "address": 4198400,
+            "binary": "game_logic.dll",
+            "disassembly": "push rbp\ncall Present\nret",
+            "decompiler_output": "void DrawPrimitive() { Present(); }",
+            "windows_apis": [
+                { "name": "Present", "category": "DirectX", "pal_mapping": "wgpu::Surface::present" },
+                { "name": "CreateFileA", "category": "Win32Core", "pal_mapping": "std::fs::File::open" }
+            ],
+            "call_graph": []
+        }))
+        .expect("serialize function artifact"),
+    )
+    .expect("write DrawPrimitive.json");
+
+    std::fs::write(
+        analysis_dir.join("game_logic.dll_call_graph.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "binary": "game_logic.dll",
+            "functions": [
+                {
+                    "name": "DrawPrimitive",
+                    "address": 4198400,
+                    "callers": [4198656],
+                    "callees": [
+                        { "source": 4198400, "target": 4198912, "call_site": 4198410, "call_type": "Direct", "callee_name": "BlitSurface" },
+                        { "source": 4198400, "target": 4199168, "call_site": 4198420, "call_type": "Direct", "callee_name": "" }
+                    ],
+                    "node_category": "Middle"
+                },
+                { "name": "GameLoop", "address": 4198656, "callers": [], "callees": [], "node_category": "Root" },
+                { "name": "BlitSurface", "address": 4198912, "callers": [], "callees": [], "node_category": "Leaf" },
+                { "name": "InternalFlush", "address": 4199168, "callers": [], "callees": [], "node_category": "Leaf" }
+            ]
+        }))
+        .expect("serialize call graph"),
+    )
+    .expect("write call graph artifact");
+}
+
+#[tokio::test]
+async fn test_unit_detail_analysis_from_canned_artifacts() {
+    let fixture = TestFixture::new();
+    write_canned_analysis_context(&fixture);
+    let body = fetch_unit_detail(&fixture, "game_logic.dll/DrawPrimitive/v2").await;
+
+    assert_eq!(body["success"], true);
+    let analysis = body["unit"]["analysis"]
+        .as_object()
+        .expect("unit detail should include an analysis object");
+
+    // Windows API mappings: name, category, and PAL mapping, in artifact order.
+    let api_mappings = analysis["api_mappings"]
+        .as_array()
+        .expect("api_mappings array");
+    assert_eq!(api_mappings.len(), 2);
+    assert_eq!(api_mappings[0]["name"], "Present");
+    assert_eq!(api_mappings[0]["category"], "DirectX");
+    assert_eq!(api_mappings[0]["pal_mapping"], "wgpu::Surface::present");
+    assert_eq!(api_mappings[1]["name"], "CreateFileA");
+    assert_eq!(api_mappings[1]["category"], "Win32Core");
+    assert_eq!(api_mappings[1]["pal_mapping"], "std::fs::File::open");
+
+    // Call graph context: caller addresses resolve to names; unnamed callee
+    // edges resolve through the graph's function list.
+    let call_graph = &analysis["call_graph"];
+    let callers = call_graph["callers"].as_array().expect("callers array");
+    assert_eq!(callers.len(), 1);
+    assert_eq!(
+        callers[0], "GameLoop",
+        "caller address should resolve to its name"
+    );
+    let callees = call_graph["callees"].as_array().expect("callees array");
+    assert_eq!(callees.len(), 2);
+    assert_eq!(callees[0], "BlitSurface");
+    assert_eq!(
+        callees[1], "InternalFlush",
+        "unnamed edge should resolve via target address"
+    );
+}
+
+#[tokio::test]
+async fn test_unit_detail_analysis_degrades_to_empty() {
+    let fixture = TestFixture::new();
+    let body = fetch_unit_detail(&fixture, "game_logic.dll/DrawPrimitive/v2").await;
+
+    // No analysis artifacts exist — both sections must be present but empty,
+    // and the response must still be a success.
+    assert_eq!(body["success"], true);
+    let analysis = body["unit"]["analysis"]
+        .as_object()
+        .expect("unit detail should include an analysis object");
+    assert!(
+        analysis["api_mappings"]
+            .as_array()
+            .expect("api_mappings array")
+            .is_empty()
+    );
+    assert!(
+        analysis["call_graph"]["callers"]
+            .as_array()
+            .expect("callers array")
+            .is_empty()
+    );
+    assert!(
+        analysis["call_graph"]["callees"]
+            .as_array()
+            .expect("callees array")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn test_unit_detail_analysis_corrupt_artifacts_degrade() {
+    let fixture = TestFixture::new();
+    let analysis_dir = fixture.repo_path().join("re").join("analysis");
+    let dll_dir = analysis_dir.join("game_logic.dll");
+    std::fs::create_dir_all(&dll_dir).expect("create binary dir");
+    std::fs::write(dll_dir.join("DrawPrimitive.json"), "{{{ not json")
+        .expect("write corrupt function artifact");
+    std::fs::write(
+        analysis_dir.join("game_logic.dll_call_graph.json"),
+        "also not json",
+    )
+    .expect("write corrupt call graph artifact");
+
+    let body = fetch_unit_detail(&fixture, "game_logic.dll/DrawPrimitive/v2").await;
+
+    assert_eq!(body["success"], true, "corrupt artifacts must not error");
+    let analysis = body["unit"]["analysis"]
+        .as_object()
+        .expect("unit detail should include an analysis object");
+    assert!(
+        analysis["api_mappings"]
+            .as_array()
+            .expect("api_mappings array")
+            .is_empty()
+    );
+    assert!(
+        analysis["call_graph"]["callers"]
+            .as_array()
+            .expect("callers array")
+            .is_empty()
+    );
+    assert!(
+        analysis["call_graph"]["callees"]
+            .as_array()
+            .expect("callees array")
+            .is_empty()
+    );
+}
+
 /// Test that build_dashboard API (exposed at crate root) builds correctly from the fixture.
 #[tokio::test]
 async fn test_build_dashboard_api() {
@@ -4330,6 +4500,108 @@ async fn test_headless_unit_process_sections() {
     assert!(
         strategy_text.contains("initial") && strategy_text.contains("compile_fix"),
         "strategy section should list both strategies, got: {strategy_text}"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for the unit analysis detail sections (issue #73):
+/// clicking a unit backed by a canned function analysis artifact and a
+/// canned per-binary call-graph record must render the Windows API mappings
+/// and call graph context sections with the artifact's names.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_unit_analysis_sections() {
+    let fixture = TestFixture::new();
+    write_canned_analysis_context(&fixture);
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+    let eval_text = |expr: &str| -> String {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default()
+    };
+
+    // Switch to the queue view so the full queue list renders.
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click queue tab");
+
+    // Wait for the artifact-backed unit to appear in the queue list.
+    let mut listed = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "!!document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]')",
+        ) {
+            listed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        listed,
+        "queue list should contain the DrawPrimitive v2 unit"
+    );
+
+    // Click the unit to render its inline detail panel.
+    tab.evaluate(
+        "document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]').click() === undefined",
+        false,
+    )
+    .expect("click queue item");
+
+    // The two analysis sections render asynchronously once the unit fetch
+    // settles; poll until both are present (up to ~5 seconds).
+    let all_sections = "!!document.getElementById('api-mappings-section') && \
+         !!document.getElementById('call-graph-section')";
+    let mut rendered = false;
+    for _ in 0..25 {
+        if eval_bool(all_sections) {
+            rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        rendered,
+        "detail panel should render the API mappings and call graph sections"
+    );
+
+    // The API mappings section lists the canned APIs with category and PAL mapping.
+    let api_text = eval_text("document.getElementById('api-mappings-section')?.textContent || ''");
+    assert!(
+        api_text.contains("Present")
+            && api_text.contains("DirectX")
+            && api_text.contains("wgpu::Surface::present"),
+        "API mappings section should show name, category, and PAL mapping, got: {api_text}"
+    );
+
+    // The call graph section lists resolved caller and callee names.
+    let cg_text = eval_text("document.getElementById('call-graph-section')?.textContent || ''");
+    assert!(
+        cg_text.contains("GameLoop") && cg_text.contains("BlitSurface"),
+        "call graph section should list caller and callee names, got: {cg_text}"
     );
 
     tab.close_target().ok();

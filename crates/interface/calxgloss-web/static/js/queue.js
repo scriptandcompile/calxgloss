@@ -285,6 +285,7 @@ function renderDetailOverview(u) {
         ` : ""}
 
         ${renderProcessSections(u)}
+        ${renderAnalysisSections(u)}
     `;
 }
 
@@ -456,6 +457,71 @@ function renderProcessStrategies(strategies) {
     return `
         <div class="detail-section" id="process-strategies-section">
             <div class="detail-section-title">Retry Strategies (${strategies.length})</div>
+            ${body}
+        </div>
+    `;
+}
+
+// ─── Analysis context sections (issue #73) ─────────────────────────
+
+function renderAnalysisSections(u) {
+    const a = u.analysis;
+    if (!a) return "";
+
+    return `
+        ${renderApiMappings(a.api_mappings)}
+        ${renderCallGraphContext(a.call_graph)}
+    `;
+}
+
+function renderApiMappings(mappings) {
+    const list = mappings || [];
+    const body = list.length === 0
+        ? `<div class="process-empty">No Windows API mappings identified for this function.</div>`
+        : `
+            <div class="api-mapping-list">
+                ${list.map(m => `
+                    <div class="api-mapping-item">
+                        <span class="api-mapping-name">${escapeHtml(m.name)}</span>
+                        <span class="api-mapping-category">${escapeHtml(m.category)}</span>
+                        <span class="api-mapping-target">${escapeHtml(m.pal_mapping)}</span>
+                    </div>
+                `).join("")}
+            </div>
+        `;
+
+    return `
+        <div class="detail-section" id="api-mappings-section">
+            <div class="detail-section-title">Windows API Mappings (${list.length})</div>
+            ${body}
+        </div>
+    `;
+}
+
+function renderCallGraphContext(cg) {
+    const callers = (cg && cg.callers) || [];
+    const callees = (cg && cg.callees) || [];
+
+    const body = callers.length === 0 && callees.length === 0
+        ? `<div class="process-empty">No call graph data available for this function.</div>`
+        : `
+            <div class="call-graph-group">
+                <div class="call-graph-group-label">Called by (${callers.length})</div>
+                <div class="dependency-list">
+                    ${callers.map(n => `<span class="dependency-tag">${escapeHtml(n)}</span>`).join("")}
+                </div>
+            </div>
+            <div class="call-graph-group">
+                <div class="call-graph-group-label">Calls (${callees.length})</div>
+                <div class="dependency-list">
+                    ${callees.map(n => `<span class="dependency-tag">${escapeHtml(n)}</span>`).join("")}
+                </div>
+            </div>
+        `;
+
+    return `
+        <div class="detail-section" id="call-graph-section">
+            <div class="detail-section-title">Call Graph Context</div>
             ${body}
         </div>
     `;

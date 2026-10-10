@@ -2,6 +2,7 @@
 //!
 //! Handlers are organized into feature-based submodules for readability.
 
+mod analysis;
 mod api;
 mod diff;
 mod gc;
