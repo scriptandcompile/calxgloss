@@ -20,7 +20,11 @@ export function switchView(viewName) {
     if (viewName === "graph" && State.graphRendererFull) {
         setTimeout(() => {
             State.graphRendererFull._resize();
-            State.graphRendererFull.resetZoom();
+            // A camera restored from a shared URL (issue #79) survives the
+            // view switch — only a plain entry refits the graph.
+            if (!State.graphRendererFull._restoredCamera) {
+                State.graphRendererFull.resetZoom();
+            }
         }, 50);
     }
 

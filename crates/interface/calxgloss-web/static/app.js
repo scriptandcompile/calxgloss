@@ -30,6 +30,12 @@ import {
     runBatchAction,
 } from "./js/queue.js";
 import { GraphRenderer } from "./js/graph.js";
+import { exportGraphSVG, exportGraphPNG } from "./js/graph-export.js";
+import {
+    buildGraphShareUrl,
+    readGraphShareState,
+    applyGraphShareFilters,
+} from "./js/graph-share.js";
 import { WSManager } from "./js/ws.js";
 import { addLlmLogEntry, clearLlmLog } from "./js/llm-log.js";
 import { loadGcCandidates, archiveSelectedGc } from "./js/gc.js";
@@ -170,6 +176,28 @@ function setupEventListeners() {
         });
     });
 
+    // Graph export buttons (issue #79) — SVG/PNG of the current, filtered graph.
+    document.getElementById("btn-export-graph-svg")?.addEventListener("click", () => {
+        if (State.graphRendererFull) exportGraphSVG(State.graphRendererFull);
+    });
+    document.getElementById("btn-export-graph-png")?.addEventListener("click", async () => {
+        if (!State.graphRendererFull) return;
+        const ok = await exportGraphPNG(State.graphRendererFull);
+        if (!ok) showToast("PNG export failed — try SVG instead", "error");
+    });
+
+    // Share button (issue #79) — copy a URL encoding the active filters and
+    // the zoom/pan viewport. Clipboard access can be denied (insecure origin,
+    // permissions), so fall back to showing the URL in a toast.
+    document.getElementById("btn-share-graph")?.addEventListener("click", async () => {
+        const url = buildGraphShareUrl(State.graphRendererFull);
+        try {
+            await navigator.clipboard.writeText(url);
+            showToast("Graph share URL copied to clipboard", "success");
+        } catch {
+            showToast(`Share URL: ${url}`, "info");
+        }
+    });
     // LLM I/O log clear button
     document.getElementById("btn-clear-llm-log")?.addEventListener("click", clearLlmLog);
 
@@ -386,6 +414,20 @@ async function init() {
     // Debug/test handle — lets the headless e2e tests inspect node geometry
     // and drive filters without simulating canvas interaction.
     window.calxglossGraph = State.graphRendererFull;
+    // Test handles for export + share (issue #79) — build the share URL and
+    // run the PNG pipeline without triggering real downloads.
+    window.calxglossShareUrl = () => buildGraphShareUrl(State.graphRendererFull);
+    window.calxglossExportPNG = () => exportGraphPNG(State.graphRendererFull);
+
+    // Shared graph URL (issue #79) — restore filters and camera before the
+    // first data load so the graph opens exactly as the sharer left it, and
+    // open the graph view regardless of the saved landing preference.
+    const shared = readGraphShareState();
+    if (shared) {
+        applyGraphShareFilters(shared.filters);
+        if (shared.camera) State.graphRendererFull.restoreCamera(shared.camera);
+        switchView("graph");
+    }
 
     // Initialize WebSocket for live updates
     console.log("[WS] Initializing WebSocket manager");

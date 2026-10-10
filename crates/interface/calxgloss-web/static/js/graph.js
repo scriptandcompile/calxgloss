@@ -23,6 +23,10 @@ export class GraphRenderer {
         this.scale = 1;
         this.offsetX = 0;
         this.offsetY = 0;
+        // Camera restored from a shared URL (issue #79). While set, layout
+        // passes honor it instead of fitting to view; any explicit camera
+        // action (reset, zoom, pan, double-click) releases it.
+        this._restoredCamera = null;
 
         // Interaction state
         this.dragging = false;
@@ -287,8 +291,117 @@ export class GraphRenderer {
             });
         });
 
-        // Initial fit-to-view
-        this._fitView();
+        // Initial fit-to-view — unless a camera was restored from a shared
+        // URL (issue #79), which survives data loads and refreshes until the
+        // user takes the camera back.
+        if (this._restoredCamera) {
+            this._applyCamera(this._restoredCamera);
+        } else {
+            this._fitView();
+        }
+    }
+
+    // ── View state — share/restore (issue #79)
+
+    // Restore a camera encoded in a shared URL. It pins the view: layouts
+    // keep re-applying it (instead of fitting) until an explicit camera
+    // action releases the pin.
+    restoreCamera(camera) {
+        if (!camera || !Number.isFinite(camera.scale)) return;
+        this._restoredCamera = {
+            scale: Math.min(3, Math.max(0.2, camera.scale)),
+            offsetX: Number(camera.offsetX) || 0,
+            offsetY: Number(camera.offsetY) || 0,
+        };
+        this._applyCamera(this._restoredCamera);
+    }
+
+    _applyCamera({ scale, offsetX, offsetY }) {
+        this.scale = scale;
+        this.offsetX = offsetX;
+        this.offsetY = offsetY;
+        this.draw();
+        if (this.onZoomChange) this.onZoomChange(this.scale);
+    }
+
+    // ── SVG export (issue #79)
+
+    // Serialize the *visible* (post-filter) graph as a standalone SVG
+    // document, mirroring the canvas drawing: same node shapes, kind
+    // accents, confidence tint, status dots, edge curves, arrowheads, and
+    // labels. Transient hover/selection dimming is deliberately not exported.
+    toSVG() {
+        const PAD = 40;
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (const n of this.nodes) {
+            if (n._x == null) continue;
+            minX = Math.min(minX, n._x);
+            minY = Math.min(minY, n._y);
+            maxX = Math.max(maxX, n._x + n._w);
+            maxY = Math.max(maxY, n._y + n._h);
+        }
+        if (minX === Infinity) {
+            minX = 0; minY = 0; maxX = 800; maxY = 600;
+        }
+        const x = minX - PAD, y = minY - PAD;
+        const w = maxX - minX + PAD * 2, h = maxY - minY + PAD * 2;
+
+        const parts = [];
+        parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="${x} ${y} ${w} ${h}">`);
+        parts.push(`<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#1e1f38"/>`);
+
+        // Edges — same bezier geometry, arrowheads, and midpoint labels as
+        // _drawEdges.
+        for (const edge of this.edges) {
+            const src = this.nodes.find(n => n.id === edge.from);
+            const tgt = this.nodes.find(n => n.id === edge.to);
+            if (!src || !tgt || src._x == null || tgt._x == null) continue;
+
+            const sc = { x: src._x + src._w, y: src._y + src._h / 2 };
+            const tc = { x: tgt._x, y: tgt._y + tgt._h / 2 };
+            const dx = Math.abs(tc.x - sc.x);
+            const c1 = { x: sc.x + Math.max(30, dx * 0.3), y: sc.y };
+            const c2 = { x: tc.x - Math.max(30, dx * 0.3), y: tc.y };
+
+            parts.push(`<path d="M ${sc.x} ${sc.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${tc.x} ${tc.y}" fill="none" stroke="rgba(108,140,255,0.25)" stroke-width="1.5"/>`);
+
+            const angle = Math.atan2(tc.y - c2.y, tc.x - c2.x);
+            const L = 7;
+            parts.push(`<path d="M ${tc.x} ${tc.y} L ${tc.x - L * Math.cos(angle - 0.4)} ${tc.y - L * Math.sin(angle - 0.4)} M ${tc.x} ${tc.y} L ${tc.x - L * Math.cos(angle + 0.4)} ${tc.y - L * Math.sin(angle + 0.4)}" stroke="rgba(108,140,255,0.4)" stroke-width="2"/>`);
+
+            const lx = (sc.x + 3 * c1.x + 3 * c2.x + tc.x) / 8;
+            const ly = (sc.y + 3 * c1.y + 3 * c2.y + tc.y) / 8;
+            parts.push(`<text x="${lx}" y="${ly}" font-family="monospace" font-size="8" fill="rgba(108,140,255,0.45)" text-anchor="middle" dominant-baseline="middle">${escapeHtml(edge.type || "dependency")}</text>`);
+        }
+
+        // Nodes — same layering as _drawNodes; each group carries its unit
+        // id so the export stays machine-readable.
+        for (const node of this.nodes) {
+            if (node._x == null) continue;
+
+            const color = KIND_COLORS[node.kind] || "#6c8cff";
+            const statusColor = STATUS_COLORS[node.status] || STATUS_COLORS.queued;
+            const hue = node._confidenceHue;
+            const label = node.name || node.id;
+            const truncated = label.length > 16 ? label.slice(0, 15) + "…" : label;
+            const kindLabel = KIND_LABELS[node.kind] || node.kind;
+
+            parts.push(`<g data-id="${escapeHtml(node.id)}">`);
+            parts.push(`<rect x="${node._x}" y="${node._y}" width="${node._w}" height="${node._h}" rx="8" fill="#2a2b4a"/>`);
+            if (hue != null) {
+                parts.push(`<rect x="${node._x}" y="${node._y}" width="${node._w}" height="${node._h}" rx="8" fill="hsla(${hue}, 45%, 30%, 0.55)"/>`);
+            }
+            parts.push(`<rect x="${node._x}" y="${node._y + 5}" width="3" height="${node._h - 10}" rx="1.5" fill="${color}"/>`);
+            const border = hue != null ? `hsla(${hue}, 60%, 55%, 0.6)` : "rgba(108,140,255,0.3)";
+            parts.push(`<rect x="${node._x}" y="${node._y}" width="${node._w}" height="${node._h}" rx="8" fill="none" stroke="${border}" stroke-width="1"/>`);
+            parts.push(`<circle cx="${node._x + node._w - 10}" cy="${node._y + 8}" r="4" fill="${statusColor}"/>`);
+            parts.push(`<text x="${node._x + 12}" y="${node._y + node._h / 2 - 5}" font-family="sans-serif" font-size="11" fill="#e8e9f0" dominant-baseline="middle">${escapeHtml(truncated)}</text>`);
+            parts.push(`<text x="${node._x + 12}" y="${node._y + node._h - 7}" font-family="monospace" font-size="9" fill="${color}">${escapeHtml(kindLabel)}</text>`);
+            parts.push(`</g>`);
+        }
+
+        parts.push("</svg>");
+        return parts.join("\n");
     }
 
     // ── Coordinate transforms
@@ -324,6 +437,7 @@ export class GraphRenderer {
 
     _handleWheel(e) {
         e.preventDefault();
+        this._restoredCamera = null; // user takes the camera back
         const rect = this.canvas.getBoundingClientRect();
         const mx = e.clientX - rect.left;
         const my = e.clientY - rect.top;
@@ -350,6 +464,7 @@ export class GraphRenderer {
 
     _handleMouseMove(e) {
         if (this.dragging) {
+            this._restoredCamera = null; // user takes the camera back
             const dx = e.clientX - this.dragStart.x;
             const dy = e.clientY - this.dragStart.y;
             this.offsetX += dx;
@@ -379,8 +494,7 @@ export class GraphRenderer {
     }
 
     _handleDblClick() {
-        this._fitView();
-        this.draw();
+        this.resetZoom();
     }
 
     // ── Tooltip
@@ -698,6 +812,7 @@ export class GraphRenderer {
     // ── Public controls
 
     resetZoom() {
+        this._restoredCamera = null;
         this._fitView();
         this.draw();
         if (this.onZoomChange) this.onZoomChange(this.scale);
@@ -769,6 +884,7 @@ export class GraphRenderer {
         }
 
         if (handled) {
+            if (e.key !== "Escape") this._restoredCamera = null; // user takes the camera back
             e.preventDefault();
         }
     }

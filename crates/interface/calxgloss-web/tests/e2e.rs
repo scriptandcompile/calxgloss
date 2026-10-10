@@ -6160,6 +6160,162 @@ async fn test_headless_graph_filters_and_encoding() {
     drop(browser);
 }
 
+/// Headless-browser test for graph export + shareable URLs (issue #79):
+/// `toSVG()` serializes the filtered view (visible nodes only, each carrying
+/// its unit id), the PNG export runs the same SVG through rasterization, the
+/// share URL encodes the active filters and the zoom/pan camera, and opening
+/// that URL in a fresh tab restores the same filters and viewport.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_graph_export_and_share_url() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+    let eval_str = |expr: &str| -> Option<String> {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+    };
+
+    // Wait for the graph renderer to load the fixture's units.
+    let mut loaded = false;
+    for _ in 0..25 {
+        if eval_bool("!!window.calxglossGraph && window.calxglossGraph.totalNodeCount >= 5") {
+            loaded = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(loaded, "graph renderer should load the fixture nodes");
+
+    // Narrow to one binary — export and share must both follow the
+    // filtered view, not the full graph.
+    tab.evaluate(
+        "(() => { const sel = document.getElementById('graph-filter-binary'); \
+            sel.value = 'd3d9.dll'; \
+            sel.dispatchEvent(new Event('change')); })()",
+        false,
+    )
+    .expect("set binary filter");
+
+    let mut filtered = false;
+    for _ in 0..25 {
+        if eval_bool("!!window.calxglossGraph && window.calxglossGraph.visibleNodeCount === 2") {
+            filtered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        filtered,
+        "binary filter should leave the two d3d9.dll nodes"
+    );
+
+    // SVG export mirrors the filtered view: the d3d9 nodes are in (their
+    // unit ids appear as data-id attributes), game_logic nodes are out.
+    let svg = eval_str("window.calxglossGraph.toSVG()").unwrap_or_default();
+    assert!(
+        svg.contains("<svg"),
+        "toSVG should produce an SVG document, got: {svg}"
+    );
+    assert!(
+        svg.contains("d3d9.dll"),
+        "SVG export should include the visible d3d9.dll nodes"
+    );
+    assert!(
+        !svg.contains("game_logic.dll"),
+        "SVG export should exclude nodes filtered out of the view"
+    );
+
+    // PNG export runs the same SVG through rasterization and reports success.
+    let png_ok = tab
+        .evaluate("window.calxglossExportPNG()", true)
+        .ok()
+        .and_then(|r| r.value)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    assert!(
+        png_ok,
+        "PNG export should rasterize the SVG and produce a blob"
+    );
+
+    // Move the camera, then build the share URL — it must encode the
+    // active filter and the viewport state.
+    tab.evaluate(
+        "(() => { const g = window.calxglossGraph; \
+            g.scale = 1.5; g.offsetX = 120; g.offsetY = -40; g.draw(); })()",
+        false,
+    )
+    .expect("move camera");
+
+    let share_url = eval_str("window.calxglossShareUrl()").unwrap_or_default();
+    for fragment in ["view=graph", "gb=d3d9.dll", "gz=1.5", "gx=120", "gy=-40"] {
+        assert!(
+            share_url.contains(fragment),
+            "share URL {share_url} should encode {fragment}"
+        );
+    }
+
+    // Opening the shared URL in a fresh tab restores the filter (select and
+    // visible node count) and the exact camera.
+    let shared_tab = browser.new_tab().expect("open new tab for share URL");
+    shared_tab
+        .navigate_to(&share_url)
+        .expect("navigate to share URL");
+    shared_tab
+        .wait_until_navigated()
+        .expect("wait for share URL navigation");
+    shared_tab.enable_runtime().expect("enable runtime");
+
+    let mut restored = false;
+    for _ in 0..25 {
+        if shared_tab
+            .evaluate(
+                "(() => { const g = window.calxglossGraph; if (!g) return false; \
+                    const sel = document.getElementById('graph-filter-binary'); \
+                    return sel.value === 'd3d9.dll' && g.visibleNodeCount === 2 \
+                        && Math.abs(g.scale - 1.5) < 0.001 \
+                        && Math.abs(g.offsetX - 120) < 0.001 \
+                        && Math.abs(g.offsetY + 40) < 0.001; })()",
+                false,
+            )
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            restored = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        restored,
+        "opening the shared URL should restore the encoded filters and viewport"
+    );
+
+    shared_tab.close_target().ok();
+    tab.close_target().ok();
+    drop(browser);
+}
+
 /// Headless-browser test for the live translation view (issue #65): in live
 /// mode the Live tab must render one progress bar per in-flight unit, labeled
 /// with its current phase and the evidence the live stream reported — tier,
