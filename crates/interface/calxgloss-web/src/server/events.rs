@@ -117,14 +117,19 @@ impl SessionManager {
         }
     }
 
-    pub async fn register_client(&self) -> (WebSocketHandler, mpsc::Sender<WsMessage>) {
+    /// Register a new WebSocket session and return its handler. The manager
+    /// keeps the *only* sender for the session: pruning the client from the
+    /// broadcast list is what closes its connection (see
+    /// [`forward_to_clients`]), so the sender is deliberately not handed back
+    /// to the caller — a stray clone would keep a pruned session half-open.
+    pub async fn register_client(&self) -> WebSocketHandler {
         let (tx, rx) = mpsc::channel::<WsMessage>(128);
-        let _ = self.commands.send(WsCommand::Register(tx.clone())).await;
+        let _ = self.commands.send(WsCommand::Register(tx)).await;
         // Async-safe count — `client_count()` blocks and must never run on a
         // runtime thread (it would panic under a DEBUG-enabled filter).
         let total = self.clients.lock().await.len();
         debug!("WS client registered, total clients: {total}");
-        (WebSocketHandler::new(rx), tx)
+        WebSocketHandler::new(rx)
     }
 
     /// Inject a server-derived message (e.g. a `unit_phase` record) to every
@@ -157,15 +162,34 @@ impl SessionManager {
     }
 }
 
-/// Prune disconnected clients and forward one message to the rest.
+/// Prune dead clients and hand a clone of `msg` to every live client's
+/// buffer **without ever waiting on one**. A hidden or background-throttled
+/// tab stops draining its socket; an awaited send into its full buffer would
+/// stall the loop for every other client — and for the server's own progress
+/// state, which flows through the same loop — eventually overflowing the
+/// upstream event channel. So delivery is non-blocking: a client whose buffer
+/// is full is pruned instead. Dropping its sender closes the channel, its
+/// handler's send loop ends, and the connection closes; the browser then
+/// reconnects and resyncs from a fresh snapshot like after any other drop.
 async fn forward_to_clients(
     clients: &std::sync::Arc<Mutex<Vec<mpsc::Sender<WsMessage>>>>,
     msg: WsMessage,
 ) {
     let mut clients = clients.lock().await;
-    clients.retain(|tx| !tx.is_closed());
-    for tx in clients.iter() {
-        let _ = tx.send(msg.clone()).await;
+    let mut evicted = 0usize;
+    clients.retain(|tx| match tx.try_send(msg.clone()) {
+        Ok(()) => true,
+        // Handler already gone — prune silently, as before.
+        Err(mpsc::error::TrySendError::Closed(_)) => false,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            evicted += 1;
+            false
+        }
+    });
+    if evicted > 0 {
+        warn!(evicted, "dropping WS clients whose send buffers are full");
+    } else {
+        debug!("Forwarded WS message to {} clients", clients.len());
     }
 }
 
@@ -177,11 +201,7 @@ async fn broadcast_loop(
     loop {
         tokio::select! {
             Some(event) = events.recv() => {
-                let mut clients = clients.lock().await;
-                clients.retain(|tx| !tx.is_closed());
-                for tx in clients.iter() {
-                    let _ = tx.send(WsMessage::Event(event.clone())).await;
-                }
+                forward_to_clients(&clients, WsMessage::Event(event)).await;
             }
             Some(cmd) = commands.recv() => match cmd {
                 WsCommand::Register(tx) => {
@@ -218,16 +238,7 @@ async fn broadcast_loop_from_broadcast(
                         }
 
                         debug!("Broadcast loop received event: {}", event);
-                        let mut clients = clients.lock().await;
-                        clients.retain(|tx| !tx.is_closed());
-                        if clients.is_empty() {
-                            debug!("No WS clients connected, dropping event: {}", event);
-                        } else {
-                            debug!("Forwarding event {} to {} clients", event, clients.len());
-                            for tx in clients.iter() {
-                                let _ = tx.send(WsMessage::Event(event.clone())).await;
-                            }
-                        }
+                        forward_to_clients(&clients, WsMessage::Event(event)).await;
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         warn!(lagged = n, "Event subscriber lagged; dropping events");
@@ -263,7 +274,7 @@ impl WebSocketHandler {
         let (mut ws_tx, mut ws_rx) = ws.split();
         let mut rx = self.rx;
 
-        let events_task = tokio::spawn(async move {
+        let mut events_task = tokio::spawn(async move {
             while let Some(msg) = rx.recv().await {
                 let json = match serde_json::to_string(&msg) {
                     Ok(json) => json,
@@ -282,16 +293,22 @@ impl WebSocketHandler {
             }
         });
 
-        let keepalive_task = tokio::spawn(async move {
+        let mut keepalive_task = tokio::spawn(async move {
             while let Some(Ok(_msg)) = ws_rx.next().await {
                 // Keep-alive
             }
         });
 
         tokio::select! {
-            _ = events_task => {},
-            _ = keepalive_task => {},
+            _ = &mut events_task => {},
+            _ = &mut keepalive_task => {},
         }
+        // Whichever task is still running holds a half of the split socket,
+        // keeping the TCP connection half-open — abort both so dropping the
+        // handler actually closes the connection (e.g. after the broadcast
+        // loop pruned this client for a full send buffer).
+        events_task.abort();
+        keepalive_task.abort();
 
         info!("WebSocket client disconnected");
     }

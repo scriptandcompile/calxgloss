@@ -815,7 +815,7 @@ async fn api_events_upgrade_ws(
 ) -> axum::response::Response {
     let manager = combined.manager.expect("SessionManager not configured");
     ws.on_upgrade(move |ws| async move {
-        let (handler, _sender) = manager.register_client().await;
+        let handler = manager.register_client().await;
         handler.process(ws).await;
     })
 }

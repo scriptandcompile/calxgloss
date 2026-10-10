@@ -477,7 +477,7 @@ async fn test_server_status_live_router() {
 
     // A live WebSocket session (registered through the same path the upgrade
     // handler uses) and an in-flight unit.
-    let (_handler, _sender) = manager.register_client().await;
+    let _handler = manager.register_client().await;
     events.emit(ProgressEvent::TranslationStarted {
         binary: "game_logic.dll".into(),
         function: "DrawPrimitive".into(),
@@ -665,6 +665,95 @@ async fn test_ws_pushes_unit_phase_records() {
         ["ghidra_fetch", "context_tier", "llm_call", "review"],
         "phase history reaches the client in event order"
     );
+}
+
+/// Audit-6 (issue #85): one stalled WS client must never hold up the others.
+/// The second client connects but never reads a frame; its 128-slot send
+/// buffer fills and the server drops its connection. Meanwhile the fast
+/// client receives **every** message — proof the broadcast loop never waited
+/// on the stalled peer and the upstream event channel never overflowed.
+#[tokio::test]
+async fn test_stalled_ws_client_is_evicted() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+
+    const EVENTS: usize = 400;
+
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(1024);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let ws_url = format!("ws://127.0.0.1:{}/api/events/upgrade", fixture.port());
+    let (mut fast, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("fast client websocket upgrade succeeds");
+    let (mut stalled, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("stalled client websocket upgrade succeeds");
+    // Let both Register commands drain before any event is emitted.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Drain the fast client in its own task so the test itself is never the
+    // slow consumer; a cheap substring check tells raw events (tagged
+    // `translation_started`) from the `unit_phase` records interleaved with
+    // them.
+    let fast_task = tokio::spawn(async move {
+        let mut raw_started = 0usize;
+        while raw_started < EVENTS {
+            match tokio::time::timeout(Duration::from_secs(10), fast.next()).await {
+                Ok(Some(Ok(Message::Text(text)))) => {
+                    if text.as_str().contains("\"translation_started\"") {
+                        raw_started += 1;
+                    }
+                }
+                Ok(Some(Ok(_))) => {}
+                Ok(Some(Err(e))) => panic!("fast client errored: {e}"),
+                Ok(None) => panic!("fast client connection closed early"),
+                Err(_) => panic!("fast client went silent after {raw_started} of {EVENTS} events"),
+            }
+        }
+        raw_started
+    });
+
+    // Payloads are deliberately large and emitted in paced bursts: the total
+    // (400 events × 2 messages × ~16 KB) comfortably exceeds the 128-slot
+    // per-client buffer plus both sockets' kernel buffers, so the stalled
+    // client's buffer is guaranteed to fill while the test runs, while the
+    // bursts leave the fast client room to keep draining.
+    for i in 0..EVENTS {
+        events.emit(ProgressEvent::TranslationStarted {
+            binary: "game_logic.dll".into(),
+            function: format!("DrawPrimitive_{i}_{}", "x".repeat(16384)),
+        });
+        if i % 25 == 24 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    // The fast client saw every raw event despite the stalled peer.
+    let raw_started = tokio::time::timeout(Duration::from_secs(15), fast_task)
+        .await
+        .expect("fast client receives every event")
+        .expect("fast client task does not panic");
+    assert_eq!(raw_started, EVENTS);
+
+    // The stalled client never read a frame; the server must have closed its
+    // connection once its buffer filled. Reading now drains whatever the
+    // kernel still holds, then surfaces the close.
+    let mut closed = false;
+    while !closed {
+        match tokio::time::timeout(Duration::from_secs(5), stalled.next()).await {
+            Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Err(_))) | Ok(None) => closed = true,
+            Ok(Some(Ok(_))) => {}
+            Err(_) => panic!("stalled client was never disconnected"),
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────
