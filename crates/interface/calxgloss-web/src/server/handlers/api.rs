@@ -439,9 +439,11 @@ pub async fn api_send_back_unit(
 ///
 /// This is the real implementation (step 5.7): it delegates to
 /// [`calxgloss_web::server::actions::request_patch`] which:
-/// 1. Creates a new version branch (v{N+1}) via `calxgloss-git`.
-/// 2. Persists the patch request record to `re/patches/`.
-/// 3. Spawns an async retry translation via `calxgloss-translator`.
+/// 1. Returns the existing in-progress patch if the unit's next attempt
+///    already has one (`action: "patch_already_in_progress"`, issue #84).
+/// 2. Creates a new version branch (v{N+1}) via `calxgloss-git`.
+/// 3. Persists the patch request record to `re/patches/`.
+/// 4. Spawns an async retry translation via `calxgloss-translator`.
 pub async fn api_request_patch(
     State(combined): State<super::super::CombinedState>,
     Path(unit_id): Path<String>,

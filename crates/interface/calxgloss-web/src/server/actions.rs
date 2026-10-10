@@ -11,12 +11,18 @@
 //! | Accept | `accept_branch` — merge to main, write `re/accepts/` record | none |
 //! | Send-back | `reject_branch` — write `re/rejections/` record | none (LLM is told via rejection file) |
 //! | Patch | `next_attempt_branch` — create v{N+1} branch, write `re/patches/` record | enqueue retry translation for the new branch |
+//!
+//! Patch requests are idempotent while a retry is in flight: a second request
+//! for a unit whose next attempt already has a patch request returns the
+//! existing one instead of starting a second retry (issue #84).
 
 use calxgloss_git::{GitManager, ShimDependencyMap};
 use calxgloss_translator::{RetryConfig, TranslationPipeline};
 use calxgloss_types::{GitBranch, ReviewStatus, TypesError};
 use chrono::Utc;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use tracing::{info, warn};
 
 // ============================================================
@@ -56,6 +62,17 @@ pub struct ReviewActionRecord {
     pub branch_name: Option<String>,
 }
 
+/// Path of the persisted action record for a unit.
+///
+/// `unit_id` carries slashes (`{binary}/{function}/v{attempt}`), so the
+/// joined path nests under the actions dir rather than being one flat file.
+fn action_record_path(repo_path: &Path, unit_id: &str) -> PathBuf {
+    repo_path
+        .join("re")
+        .join("actions")
+        .join(format!("{unit_id}.json"))
+}
+
 /// Writes a review action record to disk so the dashboard stays in sync.
 fn persist_action_state(
     repo_path: &Path,
@@ -65,9 +82,7 @@ fn persist_action_state(
     std::fs::create_dir_all(&actions_dir)
         .map_err(|e| TypesError::InvalidBranchName(format!("Failed to create actions dir: {e}")))?;
 
-    let action_file = actions_dir.join(format!("{}.json", record.unit_id));
-    // unit_id carries slashes (`{binary}/{function}/v{attempt}`), so the joined
-    // path nests under actions_dir — create those parents before writing.
+    let action_file = action_record_path(repo_path, &record.unit_id);
     if let Some(parent) = action_file.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             TypesError::InvalidBranchName(format!("Failed to create action dir: {e}"))
@@ -79,6 +94,16 @@ fn persist_action_state(
     })?;
 
     Ok(action_file)
+}
+
+/// Reads the persisted action record for a unit, if one exists.
+///
+/// A missing or unreadable record yields `None` — the caller treats it as
+/// "no action recorded" rather than failing the request.
+fn read_action_state(repo_path: &Path, unit_id: &str) -> Option<ReviewActionRecord> {
+    std::fs::read_to_string(action_record_path(repo_path, unit_id))
+        .ok()
+        .and_then(|json| serde_json::from_str(&json).ok())
 }
 
 // ============================================================
@@ -185,10 +210,33 @@ pub async fn send_back_unit(
 
 /// Request a patch: create the next-attempt branch, persist action, and
 /// kick off an async retry translation via the translator pipeline.
+///
+/// Idempotent while a retry is in flight (issue #84): if the unit's persisted
+/// action record already records a patch request for the next attempt, the
+/// existing request is returned (`action: "patch_already_in_progress"`) —
+/// no second branch, record, or racing retry task is created.
 pub async fn request_patch(
     state: &ActionsState,
     unit_id: &str,
     issue: &str,
+) -> Result<ActionResult, anyhow::Error> {
+    request_patch_spawning(state, unit_id, issue, |task| {
+        tokio::spawn(task);
+    })
+    .await
+}
+
+/// The detached background retry task a patch request hands to the spawner.
+type PatchRetryTask = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+/// `request_patch` with the background retry spawn behind a seam, so tests
+/// can count how many retry tasks a request starts without running the real
+/// translation pipeline.
+async fn request_patch_spawning(
+    state: &ActionsState,
+    unit_id: &str,
+    issue: &str,
+    spawn_retry: impl FnOnce(PatchRetryTask),
 ) -> Result<ActionResult, anyhow::Error> {
     let unit = lookup_unit(state, unit_id)?;
     let git = GitManager::open(state.repo_path())?;
@@ -199,6 +247,34 @@ pub async fn request_patch(
         unit.function.as_deref().unwrap_or(""),
         unit.attempt,
     )?;
+
+    // Idempotency guard (issue #84): while a retry is in flight, the unit's
+    // action record already names this next-attempt branch. Return the
+    // existing request instead of creating the branch, record, and a second
+    // retry task racing on the same branch. A finished patch moves the unit
+    // to the new attempt's id, so its record never matches here and a fresh
+    // request still starts a fresh attempt.
+    if let Some(existing) = read_action_state(state.repo_path(), unit_id)
+        && existing.action == ReviewStatus::PatchRequested
+        && existing.branch_name.as_deref() == Some(next_branch.name.as_str())
+    {
+        info!(
+            "Patch already in progress for {unit_id} on {} — ignoring duplicate request",
+            next_branch.name
+        );
+        return Ok(ActionResult {
+            unit_id: unit_id.to_string(),
+            action: "patch_already_in_progress".to_string(),
+            merge_hash: None,
+            message: format!(
+                "Patch already in progress for attempt {} on branch {}",
+                next_branch.attempt, next_branch.name
+            ),
+            branch_name: Some(next_branch.name),
+            rejection_path: None,
+            translated_code: None,
+        });
+    }
 
     // Create the branch in git (from main)
     let policy = match unit.kind.clone() {
@@ -273,11 +349,11 @@ pub async fn request_patch(
     let branch_name = next_branch.name.clone();
     let branch_name_for_log = branch_name.clone();
 
-    tokio::task::spawn(async move {
+    spawn_retry(Box::pin(async move {
         if let Err(e) = run_patch_retry(&repo_path, &issue_str, &binary, &function, attempt).await {
             warn!("Patch retry failed for {branch_name_for_log}: {e}");
         }
-    });
+    }));
 
     info!("Unit {unit_id} patch requested for attempt {attempt} — issue: {issue:?}");
 
@@ -526,4 +602,153 @@ fn lookup_unit(
         .find(|u| u.id == unit_id)
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("Unit not found: {unit_id}"))
+}
+
+// ============================================================
+// Tests
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A repo with one review unit: branch `re/game_logic.dll/DrawSpritev1`.
+    fn make_repo_with_unit() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = GitManager::init_repo(dir.path(), None).expect("init git repo");
+        git.create_branch("game_logic.dll", "DrawSprite", 1, None)
+            .expect("create v1 branch");
+        dir
+    }
+
+    /// A spawner that counts retry tasks instead of running them, dropping
+    /// the task future so the translation pipeline never executes.
+    fn counting_spawner(counts: &Arc<AtomicUsize>) -> impl FnOnce(PatchRetryTask) {
+        let counts = counts.clone();
+        move |_task: PatchRetryTask| {
+            counts.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn patch_record_path(root: &Path, attempt: u32) -> PathBuf {
+        root.join("re")
+            .join("patches")
+            .join("game_logic.dll")
+            .join("DrawSprite")
+            .join(format!("v{attempt}.json"))
+    }
+
+    #[tokio::test]
+    async fn double_click_starts_one_branch_and_one_retry() {
+        let dir = make_repo_with_unit();
+        let state = ActionsState::new(dir.path().to_path_buf());
+        let spawns = Arc::new(AtomicUsize::new(0));
+
+        let first = request_patch_spawning(
+            &state,
+            "game_logic.dll/DrawSprite/v1",
+            "off-by-one in loop bound",
+            counting_spawner(&spawns),
+        )
+        .await
+        .expect("first patch request succeeds");
+        assert_eq!(first.action, "patch_requested");
+        assert_eq!(
+            first.branch_name.as_deref(),
+            Some("re/game_logic.dll/DrawSpritev2")
+        );
+        assert_eq!(
+            spawns.load(Ordering::SeqCst),
+            1,
+            "first click starts one retry"
+        );
+
+        let second = request_patch_spawning(
+            &state,
+            "game_logic.dll/DrawSprite/v1",
+            "off-by-one in loop bound",
+            counting_spawner(&spawns),
+        )
+        .await
+        .expect("second patch request succeeds");
+
+        // The response distinguishes the duplicate from a fresh start.
+        assert_eq!(second.action, "patch_already_in_progress");
+        assert_eq!(second.branch_name.as_deref(), first.branch_name.as_deref());
+
+        // No second retry task was spawned.
+        assert_eq!(
+            spawns.load(Ordering::SeqCst),
+            1,
+            "second click must not start another retry"
+        );
+
+        // Exactly one next-attempt branch exists.
+        let git = GitManager::open(dir.path()).expect("open git");
+        let v2_branches: Vec<_> = git
+            .list_translation_branches()
+            .expect("list branches")
+            .into_iter()
+            .filter(|b| b.ends_with("v2"))
+            .collect();
+        assert_eq!(v2_branches, ["re/game_logic.dll/DrawSpritev2"]);
+
+        // Exactly one patch record was written.
+        let patch_dir = dir.path().join("re").join("patches").join("game_logic.dll");
+        let record_count = std::fs::read_dir(patch_dir.join("DrawSprite"))
+            .expect("patch dir")
+            .count();
+        assert_eq!(record_count, 1, "second click must not write a record");
+    }
+
+    #[tokio::test]
+    async fn patch_after_previous_attempt_finished_starts_fresh() {
+        let dir = make_repo_with_unit();
+        let state = ActionsState::new(dir.path().to_path_buf());
+        let spawns = Arc::new(AtomicUsize::new(0));
+
+        request_patch_spawning(
+            &state,
+            "game_logic.dll/DrawSprite/v1",
+            "off-by-one in loop bound",
+            counting_spawner(&spawns),
+        )
+        .await
+        .expect("first patch request succeeds");
+
+        // The retry finishes: the success path rewrites the v2 patch record
+        // without a `patch_request`, landing v2 back in review.
+        let v2_record = patch_record_path(dir.path(), 2);
+        let mut record: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&v2_record).expect("v2 record"))
+                .expect("v2 record json");
+        record["patch_request"] = serde_json::Value::Null;
+        std::fs::write(
+            &v2_record,
+            serde_json::to_string(&record).expect("serialize"),
+        )
+        .expect("write");
+
+        // A patch request on the unit now in review (v2) starts a fresh attempt.
+        let fresh = request_patch_spawning(
+            &state,
+            "game_logic.dll/DrawSprite/v2",
+            "still wrong",
+            counting_spawner(&spawns),
+        )
+        .await
+        .expect("fresh patch request succeeds");
+        assert_eq!(fresh.action, "patch_requested");
+        assert_eq!(
+            fresh.branch_name.as_deref(),
+            Some("re/game_logic.dll/DrawSpritev3")
+        );
+        assert_eq!(
+            spawns.load(Ordering::SeqCst),
+            2,
+            "fresh attempt starts a retry"
+        );
+    }
 }
