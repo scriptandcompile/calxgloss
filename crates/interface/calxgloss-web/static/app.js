@@ -25,6 +25,9 @@ import {
     setupQueueDragAndDrop,
     cycleQueuePriority,
     toggleQueueSkip,
+    toggleQueueSelect,
+    setAllQueueSelected,
+    runBatchAction,
 } from "./js/queue.js";
 import { GraphRenderer } from "./js/graph.js";
 import { WSManager } from "./js/ws.js";
@@ -66,19 +69,41 @@ function setupEventListeners() {
             cycleQueuePriority(item.dataset.unitId);
             return;
         }
-        if (e.target.closest(".qi-skip-check")) return;
+        if (e.target.closest(".qi-skip-check") || e.target.closest(".qi-select")) return;
         State.selectedUnitId = item.dataset.unitId;
         renderInlineDetail(item.dataset.unitId);
         renderFullQueue(State.dashboard, State.selectedUnitId);
     });
 
     // Skip checkbox (issue #75): checking skips the unit, unchecking
-    // restores it to the active queue.
+    // restores it to the active queue. The select checkbox (issue #78)
+    // instead marks the unit for a batch action.
     fullQueueList.addEventListener("change", (e) => {
-        const box = e.target.closest(".qi-skip-check");
-        if (!box) return;
-        const item = box.closest(".queue-item-full");
-        if (item) toggleQueueSkip(item.dataset.unitId, box.checked);
+        const skipBox = e.target.closest(".qi-skip-check");
+        if (skipBox) {
+            const item = skipBox.closest(".queue-item-full");
+            if (item) toggleQueueSkip(item.dataset.unitId, skipBox.checked);
+            return;
+        }
+        const selectBox = e.target.closest(".qi-select");
+        if (selectBox) {
+            const item = selectBox.closest(".queue-item-full");
+            if (item) toggleQueueSelect(item.dataset.unitId, selectBox.checked);
+        }
+    });
+
+    // Select-all (issue #78): marks every visible queue item.
+    document.getElementById("queue-select-all").addEventListener("change", (e) => {
+        setAllQueueSelected(e.target.checked);
+    });
+
+    // Batch action dropdown (issue #78): applies the chosen action to the
+    // selected units, then resets to the placeholder.
+    const batchSelect = document.getElementById("batch-action");
+    batchSelect.addEventListener("change", () => {
+        const action = batchSelect.value;
+        batchSelect.value = "";
+        if (action) runBatchAction(action);
     });
 
     // Drag-and-drop reordering of the queue (issue #74).

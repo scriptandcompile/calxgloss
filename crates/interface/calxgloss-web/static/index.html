@@ -130,6 +130,14 @@
                         <option value="blocked">Blocked</option>
                         <option value="skipped">Skipped</option>
                     </select>
+                    <!-- Batch actions (issue #78): applied to the units checked
+                         in the list; the select resets to the placeholder. -->
+                    <select id="batch-action" aria-label="Batch action" title="Apply an action to all selected queue items">
+                        <option value="">Batch Actions</option>
+                        <option value="accept">Accept All</option>
+                        <option value="skip">Skip All</option>
+                        <option value="send-back">Send Back All</option>
+                    </select>
                 </div>
             </div>
             <div id="queue-columns" class="queue-columns">
@@ -144,6 +152,8 @@
                 </div>
                 <div class="queue-column queue-list-column">
                     <div class="column-header">
+                        <input type="checkbox" id="queue-select-all" class="queue-select-all"
+                            aria-label="Select all queue items" title="Select all visible queue items">
                         <h2>Queue Items</h2>
                         <span id="queue-count" class="badge"></span>
                     </div>

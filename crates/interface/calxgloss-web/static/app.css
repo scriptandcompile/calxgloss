@@ -672,7 +672,9 @@ svg {
 
 .queue-item-full {
     display: grid;
-    grid-template-columns: 8px 1fr 70px 100px 80px 100px;
+    /* icon, select checkbox (issue #78), skip checkbox (issue #75), name,
+       priority, status, attempt, effort */
+    grid-template-columns: 8px 16px 16px 1fr 70px 100px 80px 100px;
     align-items: center;
     gap: 12px;
     padding: 10px 14px;
@@ -782,6 +784,27 @@ svg {
     flex-shrink: 0;
     cursor: pointer;
     accent-color: var(--status-skipped);
+}
+
+/* Multi-select checkbox in full queue rows (issue #78) */
+.qi-select {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    cursor: pointer;
+    accent-color: var(--accent-blue);
+}
+
+/* Select-all affordance in the queue list header (issue #78) */
+.queue-select-all {
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
+    accent-color: var(--accent-blue);
+}
+
+.queue-list-column .column-header h2 {
+    margin-right: auto;
 }
 
 /* ─── Graph View ────────────────────────────────────────────────────── */
@@ -1710,7 +1733,7 @@ svg {
     }
 
     .queue-item-full {
-        grid-template-columns: 8px 1fr 80px 80px;
+        grid-template-columns: 8px 16px 16px 1fr 80px 80px;
     }
 
     .queue-item-full .qi-dll {

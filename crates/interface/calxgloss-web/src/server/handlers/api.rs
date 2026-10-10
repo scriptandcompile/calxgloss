@@ -339,25 +339,36 @@ pub async fn api_accept_unit(
     State(combined): State<super::super::CombinedState>,
     Path(unit_id): Path<String>,
 ) -> Result<Json<ActionResponse>, ServerError> {
+    let result = perform_accept(&combined, &unit_id).await?;
+    Ok(Json(result))
+}
+
+/// The per-unit accept logic, shared by the single-unit endpoint and the
+/// batch endpoint (issue #78) so a batch accept is exactly N accepts — same
+/// conflict checks, same persistence, no duplicated state transitions.
+pub(crate) async fn perform_accept(
+    combined: &super::super::CombinedState,
+    unit_id: &str,
+) -> Result<ActionResponse, ServerError> {
     // If ActionsState is present, use it — it provides richer side-effects
     // (persistent action state, translator integration).
-    if let Some(actions) = combined.actions {
-        let result = super::super::actions::accept_unit(&actions, &unit_id)
+    if let Some(actions) = &combined.actions {
+        let result = super::super::actions::accept_unit(actions, unit_id)
             .await
             .map_err(action_error)?;
-        return Ok(Json(ActionResponse {
+        return Ok(ActionResponse {
             unit_id: result.unit_id,
             action: result.action,
             merge_hash: result.merge_hash,
             branch_name: result.branch_name,
             message: result.message,
             rejection_path: result.rejection_path,
-        }));
+        });
     }
 
     // Legacy path: direct Git operation (basic router, no actions backend)
-    let state = combined.server;
-    let unit = super::queue::find_unit(&state, &unit_id)?;
+    let state = &combined.server;
+    let unit = super::queue::find_unit(state, unit_id)?;
 
     let branch = calxgloss_types::GitBranch::new(
         &unit.binary,
@@ -391,14 +402,14 @@ pub async fn api_accept_unit(
 
     info!("Unit {unit_id} accepted — branch {} merged", branch.name);
 
-    Ok(Json(ActionResponse {
-        unit_id,
+    Ok(ActionResponse {
+        unit_id: unit_id.to_string(),
         action: "accept".to_string(),
         merge_hash,
         branch_name: Some(branch.name),
         message: "Unit accepted and merged to main".to_string(),
         rejection_path: None,
-    }))
+    })
 }
 
 // ─── POST /api/units/:id/send-back ───────────────────────────────────
@@ -414,25 +425,36 @@ pub async fn api_send_back_unit(
     let reason = body
         .map(|b| b.reason)
         .unwrap_or_else(|| "Needs revision".to_string());
+    let result = perform_send_back(&combined, &unit_id, &reason).await?;
+    Ok(Json(result))
+}
 
+/// The per-unit send-back logic, shared by the single-unit endpoint and the
+/// batch endpoint (issue #78) so a batch send-back is exactly N send-backs —
+/// same conflict checks, same persistence, no duplicated state transitions.
+pub(crate) async fn perform_send_back(
+    combined: &super::super::CombinedState,
+    unit_id: &str,
+    reason: &str,
+) -> Result<ActionResponse, ServerError> {
     // If ActionsState is present, use it
-    if let Some(actions) = combined.actions {
-        let result = super::super::actions::send_back_unit(&actions, &unit_id, &reason)
+    if let Some(actions) = &combined.actions {
+        let result = super::super::actions::send_back_unit(actions, unit_id, reason)
             .await
             .map_err(action_error)?;
-        return Ok(Json(ActionResponse {
+        return Ok(ActionResponse {
             unit_id: result.unit_id,
             action: result.action,
             merge_hash: result.merge_hash,
             branch_name: result.branch_name,
             message: result.message,
             rejection_path: result.rejection_path,
-        }));
+        });
     }
 
     // Legacy path
-    let state = combined.server;
-    let unit = super::queue::find_unit(&state, &unit_id)?;
+    let state = &combined.server;
+    let unit = super::queue::find_unit(state, unit_id)?;
 
     let branch = calxgloss_types::GitBranch::new(
         &unit.binary,
@@ -445,19 +467,19 @@ pub async fn api_send_back_unit(
         .map_err(|e| ServerError::internal(&format!("Failed to open repo: {e}")))?;
 
     let rejection_path = git
-        .reject_branch(&branch, &reason)
+        .reject_branch(&branch, reason)
         .map_err(|e| ServerError::internal(&format!("Failed to reject branch: {e}")))?;
 
     info!("Unit {unit_id} send back — reason: {reason:?}");
 
-    Ok(Json(ActionResponse {
-        unit_id,
+    Ok(ActionResponse {
+        unit_id: unit_id.to_string(),
         action: "send_back".to_string(),
         merge_hash: None,
         branch_name: Some(branch.name),
         message: format!("Unit sent back: {reason}"),
         rejection_path: Some(rejection_path.to_string_lossy().to_string()),
-    }))
+    })
 }
 
 // ─── POST /api/units/:id/patch ──────────────────────────────────────

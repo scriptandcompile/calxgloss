@@ -684,6 +684,23 @@ fn shared_routes() -> Router<CombinedState> {
             post(handlers::api_send_back_unit),
         )
         .route("/api/units/{id}/patch", post(handlers::api_request_patch))
+        // Batch review actions (issue #78): apply the per-unit accept/
+        // send-back/skip logic to a set of units, reporting per-item
+        // results. Registered in every router, like the per-unit actions.
+        // The id list grows with the queue, so these routes lift the
+        // global 16 KB body limit the way the overlay PUT does.
+        .route(
+            "/api/batch/accept",
+            post(handlers::api_batch_accept).layer(DefaultBodyLimit::max(256 * 1024)),
+        )
+        .route(
+            "/api/batch/send-back",
+            post(handlers::api_batch_send_back).layer(DefaultBodyLimit::max(256 * 1024)),
+        )
+        .route(
+            "/api/batch/skip",
+            post(handlers::api_batch_skip).layer(DefaultBodyLimit::max(256 * 1024)),
+        )
         // Skip state (issue #75): persisted in every mode — it reads/writes
         // `re/review/skips.json`, never live pipeline state.
         .route("/api/units/{id}/skip", post(handlers::api_skip_unit))

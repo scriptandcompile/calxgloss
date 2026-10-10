@@ -1909,6 +1909,174 @@ async fn test_skip_unit_round_trip_and_queue_exclusion() {
     );
 }
 
+/// Batch review actions (issue #78): `POST /api/batch/{skip,accept,send-back}`
+/// apply the per-unit action logic to every requested unit and report
+/// per-item results in request order — a failing unit (unknown id, already
+/// accepted) is recorded as a failure while the rest of the batch lands,
+/// with the same persistence and conflict rules as the single-unit endpoints.
+#[tokio::test]
+async fn test_batch_actions_report_per_item_results() {
+    let fixture = TestFixture::new();
+    add_pending_translation(&fixture, "RenderHUD");
+    add_pending_translation(&fixture, "PlaySound");
+    let state = ServerState::new(fixture.repo_path());
+    let actions = ActionsState::new(fixture.repo_path());
+    let router = build_router_with_actions(state.clone(), actions);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+    let client = reqwest::Client::new();
+
+    let hud = "game_logic.dll/RenderHUD/v1";
+    let sound = "game_logic.dll/PlaySound/v1";
+    let ghost = "game_logic.dll/NoSuchFunction/v1";
+    let sound_enc = urlencoding::encode(sound);
+
+    async fn post_batch(
+        base: &str,
+        client: &reqwest::Client,
+        path: &str,
+        body: serde_json::Value,
+    ) -> (reqwest::StatusCode, serde_json::Value) {
+        let resp = client
+            .post(format!("{base}{path}"))
+            .json(&body)
+            .send()
+            .await
+            .expect("batch request succeeds");
+        let status = resp.status();
+        let body: serde_json::Value = resp.json().await.expect("batch body is JSON");
+        (status, body)
+    }
+
+    // An empty selection is a client error, not an honest no-op.
+    let (status, _) =
+        post_batch(&base, &client, "/api/batch/skip", serde_json::json!({ "unit_ids": [] })).await;
+    assert_eq!(status, 400, "empty batch selection is rejected");
+
+    // Batch skip: both real units land, the unknown one fails per-item.
+    let (status, body) = post_batch(
+        &base,
+        &client,
+        "/api/batch/skip",
+        serde_json::json!({ "unit_ids": [hud, ghost, sound] }),
+    )
+    .await;
+    assert_eq!(status, 200, "partial failure still answers 200 with results");
+    assert_eq!(body["action"], "skip");
+    assert_eq!(body["success"], false, "one unit failed, so not all succeeded");
+    assert_eq!(body["succeeded"], 2);
+    assert_eq!(body["failed"], 1);
+    let results = body["results"].as_array().expect("results is an array");
+    assert_eq!(results.len(), 3, "one result per requested unit");
+    assert_eq!(results[0]["unit_id"], hud);
+    assert_eq!(results[0]["success"], true);
+    assert_eq!(
+        results[1]["unit_id"], ghost,
+        "results keep the request order"
+    );
+    assert_eq!(results[1]["success"], false);
+    assert!(
+        results[1]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("not found")),
+        "the failure names the reason: {}",
+        results[1]["message"]
+    );
+    assert_eq!(results[2]["unit_id"], sound);
+    assert_eq!(results[2]["success"], true);
+
+    // The skips persisted through the per-unit skip logic (issue #75).
+    let skips_file = fixture
+        .repo_path()
+        .join("re")
+        .join("review")
+        .join("skips.json");
+    let raw = std::fs::read_to_string(&skips_file).expect("skips persisted");
+    let value: serde_json::Value = serde_json::from_str(&raw).expect("skips is JSON");
+    assert_eq!(value["skipped"], serde_json::json!([hud, sound]));
+
+    // Batch accept: the real unit merges, the unknown one fails per-item.
+    let (status, body) = post_batch(
+        &base,
+        &client,
+        "/api/batch/accept",
+        serde_json::json!({ "unit_ids": [hud, ghost] }),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["action"], "accept");
+    assert_eq!(body["succeeded"], 1);
+    assert_eq!(body["failed"], 1);
+    let git = GitManager::open(&fixture.repo_path()).expect("open fixture repo");
+    assert!(
+        git.is_branch_merged_into_main("re/game_logic.dll/RenderHUDv1")
+            .expect("merged check"),
+        "batch accept merged the unit's branch to main"
+    );
+
+    // Batch send-back reuses the per-unit conflict rules: the unit the batch
+    // just accepted (persisted Accepted record) refuses the send-back.
+    let (status, body) = post_batch(
+        &base,
+        &client,
+        "/api/batch/send-back",
+        serde_json::json!({ "unit_ids": [sound, hud], "reason": "batch review pass" }),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["action"], "send_back");
+    assert_eq!(body["succeeded"], 1);
+    assert_eq!(body["failed"], 1);
+    let results = body["results"].as_array().expect("results is an array");
+    assert_eq!(results[0]["unit_id"], sound);
+    assert_eq!(results[0]["success"], true);
+    assert_eq!(results[1]["unit_id"], hud);
+    assert_eq!(
+        results[1]["success"], false,
+        "an accepted unit refuses batch send-back, like per-unit"
+    );
+    assert!(
+        results[1]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("accepted")),
+        "the conflict names the landed state: {}",
+        results[1]["message"]
+    );
+
+    // The dashboard reflects every landed action: RenderHUD stays accepted,
+    // and PlaySound's send-back verdict is there once the skip is lifted —
+    // the reviewer skip outranks artifact-derived verdicts (issue #75).
+    let resp = client
+        .post(format!("{base}/api/units/{sound_enc}/unskip"))
+        .send()
+        .await
+        .expect("unskip request succeeds");
+    assert_eq!(resp.status(), 200);
+    let resp = reqwest::get(format!("{base}/api/dashboard"))
+        .await
+        .expect("dashboard request succeeds");
+    let body: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+    let status_of = |id: &str| {
+        body["dashboard"]["review_queue"]
+            .as_array()
+            .expect("review_queue is an array")
+            .iter()
+            .chain(
+                body["dashboard"]["recent_activity"]
+                    .as_array()
+                    .expect("recent_activity is an array")
+                    .iter(),
+            )
+            .find(|u| u["id"] == id)
+            .map(|u| u["status"].as_str().unwrap_or_default().to_string())
+            .unwrap_or_default()
+    };
+    assert_eq!(status_of(hud), "Accepted");
+    assert_eq!(status_of(sound), "SendBack");
+}
+
 /// Verify that the dependency graph endpoint returns valid graph data.
 #[tokio::test]
 async fn test_dependency_graph_endpoint() {
@@ -5629,6 +5797,154 @@ async fn test_headless_queue_skip_checkbox() {
     assert!(
         restored_rendered,
         "unskipped unit should re-render unchecked"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for issue #78: queue rows carry a multi-select
+/// checkbox, the list header has a select-all that marks every visible row,
+/// and the batch dropdown applies the chosen action (Skip All here) to all
+/// selected units — persisted through the per-unit skip logic, after which
+/// the selection clears.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_queue_multiselect_batch_actions() {
+    let fixture = TestFixture::new();
+    add_pending_translation(&fixture, "RenderHUD");
+
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+
+    // Switch to the queue view so the full queue list renders.
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click queue tab");
+
+    let draw = "game_logic.dll/DrawPrimitive/v2";
+    let hud = "game_logic.dll/RenderHUD/v1";
+    let draw_sel = format!("#full-queue-list [data-unit-id=\"{draw}\"]");
+    let hud_sel = format!("#full-queue-list [data-unit-id=\"{hud}\"]");
+
+    // Each row renders an (unchecked) select checkbox beside the skip one.
+    let mut selects_rendered = false;
+    for _ in 0..25 {
+        if eval_bool(&format!(
+            "(() => {{ const a = document.querySelector('{draw_sel} .qi-select'); \
+                    const b = document.querySelector('{hud_sel} .qi-select'); \
+                    return !!a && !a.checked && !!b && !b.checked; }})()"
+        )) {
+            selects_rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        selects_rendered,
+        "queue rows should render unchecked select checkboxes"
+    );
+
+    // The batch dropdown offers the three batch actions.
+    assert!(
+        eval_bool(
+            "(() => {{ const sel = document.getElementById('batch-action'); \
+                    const values = [...sel.options].map(o => o.value); \
+                    return values.includes('accept') && values.includes('skip') \
+                        && values.includes('send-back'); }})()"
+        ),
+        "batch dropdown should offer Accept All, Skip All, and Send Back All"
+    );
+
+    // Select-all marks every visible row.
+    tab.evaluate(
+        "document.getElementById('queue-select-all')?.click() === undefined",
+        false,
+    )
+    .expect("click select-all");
+    assert!(
+        eval_bool(&format!(
+            "(() => {{ const a = document.querySelector('{draw_sel} .qi-select'); \
+                    const b = document.querySelector('{hud_sel} .qi-select'); \
+                    return !!a && a.checked && !!b && b.checked; }})()"
+        )),
+        "select-all should check every visible row"
+    );
+
+    // Choose Skip All from the dropdown: both units land in the persisted
+    // skip set through the per-unit skip logic.
+    tab.evaluate(
+        "(() => { const sel = document.getElementById('batch-action'); \
+                sel.value = 'skip'; \
+                sel.dispatchEvent(new Event('change')); })() === undefined",
+        false,
+    )
+    .expect("trigger batch skip");
+
+    let skips_file = fixture
+        .repo_path()
+        .join("re")
+        .join("review")
+        .join("skips.json");
+    let mut persisted = serde_json::Value::Null;
+    for _ in 0..25 {
+        if let Ok(raw) = std::fs::read_to_string(&skips_file) {
+            let value: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+            let skipped = value["skipped"].as_array().cloned().unwrap_or_default();
+            if skipped.iter().any(|id| id == draw) && skipped.iter().any(|id| id == hud) {
+                persisted = value;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let skipped = persisted["skipped"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        skipped.iter().any(|id| id == draw) && skipped.iter().any(|id| id == hud),
+        "batch skip persists both selected units, got {skipped:?}"
+    );
+
+    // After the dashboard reload the selection is cleared — rows come back
+    // with unchecked select checkboxes (and checked skip checkboxes).
+    let mut selection_cleared = false;
+    for _ in 0..25 {
+        if eval_bool(&format!(
+            "(() => {{ const a = document.querySelector('{draw_sel} .qi-select'); \
+                    const b = document.querySelector('{hud_sel} .qi-select'); \
+                    const sa = document.querySelector('{draw_sel} .qi-skip-check'); \
+                    const sb = document.querySelector('{hud_sel} .qi-skip-check'); \
+                    return !!a && !a.checked && !!b && !b.checked \
+                        && !!sa && sa.checked && !!sb && sb.checked; }})()"
+        )) {
+            selection_cleared = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        selection_cleared,
+        "selection should clear after the batch lands, with skips rendered"
     );
 
     tab.close_target().ok();

@@ -14,36 +14,22 @@ export function renderFullQueue(dashboard, selectedId = null) {
     const empty = document.getElementById("full-queue-empty");
     if (!list || !empty) return;
 
-    let units = dashboard.review_queue.filter(u => !u.accepted);
+    const units = visibleQueueUnits(dashboard);
 
-    // Apply status filter
-    const filter = State.statusFilter;
-    if (filter !== "all") {
-        const statusMap = {
-            queued: "queued",
-            pending_review: "pending_review",
-            in_progress: "in_progress",
-            blocked: "blocked",
-            skipped: "skipped",
-        };
-        units = units.filter(u => u.status.toLowerCase().replace(/\s+/g, "_") === statusMap[filter]);
+    // Selection only ever covers visible units (issue #78): one that leaves
+    // the list — filtered out, or acted on individually — loses its
+    // selection, so the checkboxes always describe what a batch will touch.
+    const visibleIds = new Set(units.map(u => u.id));
+    for (const id of [...State.queueSelected]) {
+        if (!visibleIds.has(id)) State.queueSelected.delete(id);
     }
 
     if (units.length === 0) {
         list.innerHTML = "";
         empty.style.display = "flex";
+        updateSelectAllState(units);
         return;
     }
-
-    // Effective queue order (issue #74): the server's dependency order with
-    // the persisted overlay breaking same-depth ties. Units missing from the
-    // order keep their relative position at the end (the sort is stable).
-    const orderIndex = new Map((State.queueOrder || []).map((id, i) => [id, i]));
-    units.sort((a, b) => {
-        const ai = orderIndex.has(a.id) ? orderIndex.get(a.id) : Number.MAX_SAFE_INTEGER;
-        const bi = orderIndex.has(b.id) ? orderIndex.get(b.id) : Number.MAX_SAFE_INTEGER;
-        return ai - bi;
-    });
 
     empty.style.display = "none";
     list.innerHTML = units.map(u => {
@@ -68,6 +54,8 @@ export function renderFullQueue(dashboard, selectedId = null) {
         return `
             <div class="queue-item-full ${u.id === selectedId ? "selected" : ""}" data-unit-id="${u.id}" draggable="true">
                 <div class="queue-item-icon ${iconClass}"></div>
+                <input type="checkbox" class="qi-select" ${State.queueSelected.has(u.id) ? "checked" : ""}
+                    title="Select for batch actions" aria-label="Select ${u.id} for batch actions">
                 <input type="checkbox" class="qi-skip-check" ${isSkipped ? "checked" : ""}
                     title="${isSkipped ? "Unskip this unit" : "Skip this unit"}"
                     aria-label="${isSkipped ? "Unskip" : "Skip"} ${u.id}">
@@ -79,6 +67,40 @@ export function renderFullQueue(dashboard, selectedId = null) {
             </div>
         `;
     }).join("");
+
+    updateSelectAllState(units);
+}
+
+// The units the queue view shows: unaccepted, matching the status filter,
+// in effective queue order (issue #74). Shared by the renderer and the
+// select-all affordance (issue #78) so both agree on what is visible.
+function visibleQueueUnits(dashboard) {
+    let units = dashboard.review_queue.filter(u => !u.accepted);
+
+    // Apply status filter
+    const filter = State.statusFilter;
+    if (filter !== "all") {
+        const statusMap = {
+            queued: "queued",
+            pending_review: "pending_review",
+            in_progress: "in_progress",
+            blocked: "blocked",
+            skipped: "skipped",
+        };
+        units = units.filter(u => u.status.toLowerCase().replace(/\s+/g, "_") === statusMap[filter]);
+    }
+
+    // Effective queue order (issue #74): the server's dependency order with
+    // the persisted overlay breaking same-depth ties. Units missing from the
+    // order keep their relative position at the end (the sort is stable).
+    const orderIndex = new Map((State.queueOrder || []).map((id, i) => [id, i]));
+    units.sort((a, b) => {
+        const ai = orderIndex.has(a.id) ? orderIndex.get(a.id) : Number.MAX_SAFE_INTEGER;
+        const bi = orderIndex.has(b.id) ? orderIndex.get(b.id) : Number.MAX_SAFE_INTEGER;
+        return ai - bi;
+    });
+
+    return units;
 }
 
 // ─── Manual order & priority (issue #74) ──────────────────────────────
@@ -212,6 +234,90 @@ export async function toggleQueueSkip(unitId, skip) {
         showToast(`Skip toggle failed: ${err.message}`, "error");
         // Re-render from the unchanged state so the checkbox snaps back.
         if (State.dashboard) renderFullQueue(State.dashboard, State.selectedUnitId);
+    }
+}
+
+// ─── Multi-select & batch actions (issue #78) ──────────────────────────
+
+// Reflect the selection over the visible units in the header checkbox:
+// checked when all are selected, indeterminate when only some are.
+function updateSelectAllState(units) {
+    const selectAll = document.getElementById("queue-select-all");
+    if (!selectAll) return;
+    const selected = units.filter(u => State.queueSelected.has(u.id)).length;
+    selectAll.checked = units.length > 0 && selected === units.length;
+    selectAll.indeterminate = selected > 0 && selected < units.length;
+}
+
+// Select or deselect one queue item for batch actions.
+export function toggleQueueSelect(unitId, selected) {
+    if (selected) {
+        State.queueSelected.add(unitId);
+    } else {
+        State.queueSelected.delete(unitId);
+    }
+    if (State.dashboard) updateSelectAllState(visibleQueueUnits(State.dashboard));
+}
+
+// Select-all / deselect-all over the units the queue view currently shows —
+// hidden (filtered-out) units are never selected (renders prune them).
+export function setAllQueueSelected(selected) {
+    if (!State.dashboard) return;
+    for (const u of visibleQueueUnits(State.dashboard)) {
+        if (selected) {
+            State.queueSelected.add(u.id);
+        } else {
+            State.queueSelected.delete(u.id);
+        }
+    }
+    renderFullQueue(State.dashboard, State.selectedUnitId);
+}
+
+const BATCH_ACTIONS = {
+    accept: { label: "Accept", run: ids => API.batchAccept(ids) },
+    skip: { label: "Skip", run: ids => API.batchSkip(ids) },
+    "send-back": { label: "Send back", run: (ids, reason) => API.batchSendBack(ids, reason) },
+};
+
+// Apply a batch action to every selected unit. The server runs the exact
+// per-unit logic for each and answers with per-item results; the summary
+// toast names the failure count and the first failure reason so a partial
+// batch is visible, never silent. Send-back asks for the reason through
+// the same modal the per-unit action uses — cancelling just closes it.
+export function runBatchAction(action) {
+    const spec = BATCH_ACTIONS[action];
+    const unitIds = [...State.queueSelected];
+    if (!spec || unitIds.length === 0) return;
+
+    if (action === "send-back") {
+        showModal("Send Back", "Send Back", (reason) => {
+            if (!reason) {
+                showToast("Reason is required", "warning");
+                return;
+            }
+            executeBatch(action, spec, unitIds, reason);
+        });
+        return;
+    }
+    executeBatch(action, spec, unitIds, null);
+}
+
+async function executeBatch(action, spec, unitIds, reason) {
+    try {
+        const res = await spec.run(unitIds, reason);
+        const failures = (res.results || []).filter(r => !r.success);
+        if (failures.length === 0) {
+            showToast(`${spec.label}: ${res.succeeded} unit(s)`, "success");
+        } else {
+            showToast(
+                `${spec.label}: ${res.succeeded} ok, ${failures.length} failed — ${failures[0].unit_id}: ${failures[0].message}`,
+                "warning",
+            );
+        }
+        State.queueSelected.clear();
+        await loadDashboard();
+    } catch (err) {
+        showToast(`Batch ${action} failed: ${err.message}`, "error");
     }
 }
 

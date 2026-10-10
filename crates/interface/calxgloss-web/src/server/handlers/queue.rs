@@ -135,7 +135,8 @@ pub async fn api_unskip_unit(
 /// Shared skip/unskip body: the unit must exist and not be accepted (merged
 /// branch state is authoritative), the persisted skip set is updated
 /// idempotently, and the result is reported like the other review actions.
-fn set_unit_skipped(
+/// Also the per-unit body behind the batch skip endpoint (issue #78).
+pub(crate) fn set_unit_skipped(
     state: &ServerState,
     unit_id: &str,
     skipped: bool,

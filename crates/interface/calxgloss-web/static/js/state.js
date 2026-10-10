@@ -15,5 +15,6 @@ export const State = {
     queueEffort: {},
     queueOrder: [],
     queueOverlay: { order: [], priorities: {} },
+    queueSelected: new Set(),
     graphFilters: { kind: "all", status: "all", binary: "all" },
 };

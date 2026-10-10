@@ -695,6 +695,47 @@ pub struct PatchRequest {
     pub issue: String,
 }
 
+/// Request body for the batch review-action endpoints (issue #78). The same
+/// shape serves accept, send-back, and skip — only send-back reads `reason`.
+#[derive(Debug, Deserialize)]
+pub struct BatchActionRequest {
+    /// The units the batch action applies to, in the order results come back.
+    pub unit_ids: Vec<String>,
+    /// Reason recorded on each send-back; omitted means "Needs revision",
+    /// matching the per-unit endpoint's default.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// Outcome of applying a batch action to one unit. A unit that fails (not
+/// found, already accepted, merge conflict) is reported here rather than
+/// aborting the batch — the other units still get their action.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchItemResult {
+    /// The unit this result belongs to.
+    pub unit_id: String,
+    /// Whether the action landed on this unit.
+    pub success: bool,
+    /// The action's message on success, the failure reason otherwise.
+    pub message: String,
+}
+
+/// Response for the batch review-action endpoints: one result per requested
+/// unit in request order, plus the success/failure tally.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchActionResponse {
+    /// True when every requested unit got its action.
+    pub success: bool,
+    /// The batch action performed ("accept", "send_back", "skip").
+    pub action: String,
+    /// Per-unit outcomes, in the order the units were requested.
+    pub results: Vec<BatchItemResult>,
+    /// How many units the action landed on.
+    pub succeeded: usize,
+    /// How many units the action failed on.
+    pub failed: usize,
+}
+
 // ─── Error types ───────────────────────────────────────────────────────
 
 /// Server error type for API responses.
