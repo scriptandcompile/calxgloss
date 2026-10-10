@@ -1942,6 +1942,94 @@ async fn test_dependency_graph_endpoint() {
         first_node
     );
     assert!(first_node["name"].as_str().is_some());
+
+    // Enrichment (issue #76): every fixture unit belongs to a binary, so
+    // every node carries one; edges carry their relationship type.
+    for node in nodes {
+        assert!(
+            node["binary"].as_str().is_some(),
+            "graph node has binary: {:?}",
+            node
+        );
+    }
+    for edge in edges {
+        assert!(
+            edge["edge_type"].as_str().is_some(),
+            "graph edge has edge_type: {:?}",
+            edge
+        );
+    }
+}
+
+/// Issue #76: the graph endpoint enriches nodes with token usage joined from
+/// `re/analysis/token_usage.json` (same binary + function join as the unit
+/// detail), and leaves units with no recorded entries honestly `null`.
+#[tokio::test]
+async fn test_dependency_graph_token_usage_enrichment() {
+    let fixture = TestFixture::new();
+
+    let analysis_dir = fixture.repo_path().join("re").join("analysis");
+    std::fs::create_dir_all(&analysis_dir).expect("create analysis dir");
+    std::fs::write(
+        analysis_dir.join("token_usage.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "entries": [
+                {
+                    "timestamp": 1767225600,
+                    "binary": "game_logic.dll",
+                    "function": "DrawPrimitive",
+                    "attempt": 1,
+                    "strategy": "initial",
+                    "context_tier": "disassembly",
+                    "tokens_used": 4096,
+                    "success": false
+                },
+                {
+                    "timestamp": 1767225900,
+                    "binary": "game_logic.dll",
+                    "function": "DrawPrimitive",
+                    "attempt": 2,
+                    "strategy": "compile_fix",
+                    "context_tier": "with_tests",
+                    "tokens_used": 3072,
+                    "success": true
+                }
+            ]
+        }))
+        .expect("serialize token log"),
+    )
+    .expect("write token_usage.json");
+
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/graph", fixture.port()))
+        .await
+        .expect("graph request succeeds");
+    let body: serde_json::Value = resp.json().await.expect("graph body is JSON");
+    let nodes = body["graph"]["nodes"].as_array().expect("nodes is array");
+
+    let draw = nodes
+        .iter()
+        .find(|n| n["unit_id"].as_str() == Some("game_logic.dll/DrawPrimitive/v2"))
+        .expect("DrawPrimitive node in graph");
+    assert_eq!(
+        draw["token_usage"], 7168,
+        "DrawPrimitive node carries the summed token usage"
+    );
+
+    let update = nodes
+        .iter()
+        .find(|n| n["unit_id"].as_str() == Some("game_logic.dll/UpdateScene/v1"))
+        .expect("UpdateScene node in graph");
+    assert_eq!(
+        update["token_usage"],
+        serde_json::Value::Null,
+        "unit with no usage entries stays null, not zero"
+    );
 }
 
 /// Verify the frontend HTML page loads and contains expected content.
@@ -5423,6 +5511,215 @@ async fn test_headless_queue_skip_checkbox() {
     assert!(
         restored_rendered,
         "unskipped unit should re-render unchecked"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for issue #76: the graph view loads enriched nodes
+/// into the canvas renderer, node height encodes token usage, confidence
+/// maps to a red→green hue (null stays neutral), and the kind/status/binary
+/// selects combine with AND — the summary reports how many nodes survive.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_graph_filters_and_encoding() {
+    let fixture = TestFixture::new();
+
+    // Canned usage so DrawPrimitive renders taller than units with none.
+    let analysis_dir = fixture.repo_path().join("re").join("analysis");
+    std::fs::create_dir_all(&analysis_dir).expect("create analysis dir");
+    std::fs::write(
+        analysis_dir.join("token_usage.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "entries": [
+                {
+                    "timestamp": 1767225600,
+                    "binary": "game_logic.dll",
+                    "function": "DrawPrimitive",
+                    "attempt": 1,
+                    "strategy": "initial",
+                    "context_tier": "disassembly",
+                    "tokens_used": 4096,
+                    "success": false
+                },
+                {
+                    "timestamp": 1767225900,
+                    "binary": "game_logic.dll",
+                    "function": "DrawPrimitive",
+                    "attempt": 2,
+                    "strategy": "compile_fix",
+                    "context_tier": "with_tests",
+                    "tokens_used": 3072,
+                    "success": true
+                }
+            ]
+        }))
+        .expect("serialize token log"),
+    )
+    .expect("write token_usage.json");
+
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+    let eval_str = |expr: &str| -> Option<String> {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+    };
+
+    // Switch to the graph view.
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"graph\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click graph tab");
+
+    // The renderer loads the fixture's five units.
+    let mut loaded = false;
+    for _ in 0..25 {
+        if eval_bool("!!window.calxglossGraph && window.calxglossGraph.totalNodeCount >= 5") {
+            loaded = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(loaded, "graph renderer should load the fixture nodes");
+
+    // Size encoding: DrawPrimitive (7168 tokens) is taller than UpdateScene
+    // (no recorded usage — base size, never zero).
+    let mut size_encoded = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "(() => { const g = window.calxglossGraph; if (!g) return false; \
+                const draw = g._allNodes.find(n => n.id === 'game_logic.dll/DrawPrimitive/v2'); \
+                const update = g._allNodes.find(n => n.id === 'game_logic.dll/UpdateScene/v1'); \
+                return !!draw && draw.token_usage === 7168 && !!update \
+                    && update.token_usage == null && draw._h > update._h; })()",
+        ) {
+            size_encoded = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        size_encoded,
+        "node height should encode token usage (DrawPrimitive taller, UpdateScene base)"
+    );
+
+    // Color encoding: real nodes stay honest (null confidence → neutral),
+    // and the 0.0→1.0 range maps to hues 0→140 (red→green).
+    let confidence_encoded = eval_bool(
+        "(() => { const g = window.calxglossGraph; if (!g) return false; \
+            const honest = g._allNodes.every(n => n._confidenceHue === null \
+                || (n._confidenceHue >= 0 && n._confidenceHue <= 140)); \
+            const all = g._allNodes, edges = g._allEdges; \
+            g.setData([ \
+                { id: 'lo', name: 'Low', kind: 'function_translation', status: 'queued', confidence: 0.0 }, \
+                { id: 'hi', name: 'High', kind: 'function_translation', status: 'queued', confidence: 1.0 } \
+            ], []); \
+            const lo = g.nodes.find(n => n.id === 'lo'); \
+            const hi = g.nodes.find(n => n.id === 'hi'); \
+            const mapped = !!lo && lo._confidenceHue === 0 \
+                && !!hi && hi._confidenceHue === 140; \
+            g.setData(all, edges); \
+            return honest && mapped; })()",
+    );
+    assert!(
+        confidence_encoded,
+        "confidence should map to hues 0..140 with null staying neutral"
+    );
+
+    // Filters combine with AND: binary=d3d9.dll leaves the shim node…
+    tab.evaluate(
+        "(() => { const sel = document.getElementById('graph-filter-binary'); \
+            sel.value = 'd3d9.dll'; \
+            sel.dispatchEvent(new Event('change')); })()",
+        false,
+    )
+    .expect("set binary filter");
+
+    let mut binary_filtered = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "(() => { const g = window.calxglossGraph; \
+                const sum = document.getElementById('graph-filter-summary'); \
+                return !!g && g.visibleNodeCount === 2 && g.totalNodeCount >= 7 \
+                    && sum.textContent.includes('2 of'); })()",
+        ) {
+            binary_filtered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        binary_filtered,
+        "binary filter should leave only the d3d9.dll nodes"
+    );
+
+    // …and adding kind=shim_layer empties the view (AND, not OR — the two
+    // d3d9.dll nodes are a classification and a function translation).
+    tab.evaluate(
+        "(() => { const sel = document.getElementById('graph-filter-kind'); \
+            sel.value = 'shim_layer'; \
+            sel.dispatchEvent(new Event('change')); })()",
+        false,
+    )
+    .expect("set kind filter");
+
+    let mut combined_filtered = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "(() => { const g = window.calxglossGraph; \
+                return !!g && g.visibleNodeCount === 0; })()",
+        ) {
+            combined_filtered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        combined_filtered,
+        "kind × binary filters must combine with AND"
+    );
+
+    // Resetting both selects restores every node, and the summary follows.
+    tab.evaluate(
+        "(() => { for (const id of ['graph-filter-binary', 'graph-filter-kind']) { \
+                const sel = document.getElementById(id); \
+                sel.value = 'all'; \
+                sel.dispatchEvent(new Event('change')); } })()",
+        false,
+    )
+    .expect("reset filters");
+
+    let summary = eval_str(
+        "(() => { const g = window.calxglossGraph; \
+            const sum = document.getElementById('graph-filter-summary'); \
+            return (g && g.visibleNodeCount === g.totalNodeCount) ? sum.textContent : ''; })()",
+    );
+    let restored = summary
+        .as_deref()
+        .is_some_and(|s| s.contains("nodes") && !s.contains(" of "));
+    assert!(
+        restored,
+        "reset filters should restore all nodes, summary reads 'N nodes': {summary:?}"
     );
 
     tab.close_target().ok();

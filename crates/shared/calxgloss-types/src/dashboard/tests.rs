@@ -1,4 +1,4 @@
-use crate::dashboard::graph::{DependencyEdge, DependencyGraph, DependencyNode};
+use crate::dashboard::graph::{DependencyEdge, DependencyGraph, DependencyNode, EdgeType};
 use crate::dashboard::review::ReviewDashboard;
 use crate::dashboard::status::StatusCounts;
 use crate::dashboard::types::{ReviewStatus, Staleness, WorkKind, WorkLevel};
@@ -20,14 +20,8 @@ fn dependency_graph_roots() {
             DependencyNode::new("func_draw", "func_DrawPrimitive", ReviewStatus::Queued),
         ],
         edges: vec![
-            DependencyEdge {
-                from: "shim_wgpu".into(),
-                to: "dll_classify".into(),
-            },
-            DependencyEdge {
-                from: "func_draw".into(),
-                to: "shim_wgpu".into(),
-            },
+            DependencyEdge::new("shim_wgpu", "dll_classify"),
+            DependencyEdge::new("func_draw", "shim_wgpu"),
         ],
     };
 
@@ -49,10 +43,7 @@ fn dependency_graph_dependents() {
                 WorkLevel::ShimLayer,
             ),
         ],
-        edges: vec![DependencyEdge {
-            from: "shim_wgpu".into(),
-            to: "dll_classify".into(),
-        }],
+        edges: vec![DependencyEdge::new("shim_wgpu", "dll_classify")],
     };
 
     let dependents = graph.dependents("dll_classify");
@@ -72,10 +63,7 @@ fn dependency_graph_dependencies() {
                 WorkLevel::ShimLayer,
             ),
         ],
-        edges: vec![DependencyEdge {
-            from: "func_draw".into(),
-            to: "shim_wgpu".into(),
-        }],
+        edges: vec![DependencyEdge::new("func_draw", "shim_wgpu")],
     };
 
     let deps = graph.dependencies("func_draw");
@@ -499,18 +487,9 @@ fn topological_order_respects_dependencies() {
             DependencyNode::new("func_present", "func_Present", ReviewStatus::Queued),
         ],
         edges: vec![
-            DependencyEdge {
-                from: "shim_wgpu".into(),
-                to: "dll_classify".into(),
-            },
-            DependencyEdge {
-                from: "func_draw".into(),
-                to: "shim_wgpu".into(),
-            },
-            DependencyEdge {
-                from: "func_present".into(),
-                to: "shim_wgpu".into(),
-            },
+            DependencyEdge::new("shim_wgpu", "dll_classify"),
+            DependencyEdge::new("func_draw", "shim_wgpu"),
+            DependencyEdge::new("func_present", "shim_wgpu"),
         ],
     };
 
@@ -711,22 +690,10 @@ fn level_respects_pipeline_order() {
             ),
         ],
         edges: vec![
-            DependencyEdge {
-                from: "shim_wgpu".into(),
-                to: "dll_cls".into(),
-            },
-            DependencyEdge {
-                from: "pal_graphics".into(),
-                to: "dll_cls".into(),
-            },
-            DependencyEdge {
-                from: "func_draw".into(),
-                to: "shim_wgpu".into(),
-            },
-            DependencyEdge {
-                from: "func_draw".into(),
-                to: "pal_graphics".into(),
-            },
+            DependencyEdge::new("shim_wgpu", "dll_cls"),
+            DependencyEdge::new("pal_graphics", "dll_cls"),
+            DependencyEdge::new("func_draw", "shim_wgpu"),
+            DependencyEdge::new("func_draw", "pal_graphics"),
         ],
     };
 
@@ -791,34 +758,13 @@ fn full_pipeline_order() {
             ),
         ],
         edges: vec![
-            DependencyEdge {
-                from: "shim_wgpu".into(),
-                to: "dll_cls".into(),
-            },
-            DependencyEdge {
-                from: "pal_graphics".into(),
-                to: "shim_wgpu".into(),
-            },
-            DependencyEdge {
-                from: "func_present".into(),
-                to: "pal_graphics".into(),
-            },
-            DependencyEdge {
-                from: "func_draw".into(),
-                to: "shim_wgpu".into(),
-            },
-            DependencyEdge {
-                from: "func_draw".into(),
-                to: "pal_graphics".into(),
-            },
-            DependencyEdge {
-                from: "integrate_batch".into(),
-                to: "func_present".into(),
-            },
-            DependencyEdge {
-                from: "integrate_batch".into(),
-                to: "func_draw".into(),
-            },
+            DependencyEdge::new("shim_wgpu", "dll_cls"),
+            DependencyEdge::new("pal_graphics", "shim_wgpu"),
+            DependencyEdge::new("func_present", "pal_graphics"),
+            DependencyEdge::new("func_draw", "shim_wgpu"),
+            DependencyEdge::new("func_draw", "pal_graphics"),
+            DependencyEdge::new("integrate_batch", "func_present"),
+            DependencyEdge::new("integrate_batch", "func_draw"),
         ],
     };
 
@@ -853,14 +799,8 @@ fn cycle_detection() {
             DependencyNode::new("unit_b", "Unit B", ReviewStatus::Queued),
         ],
         edges: vec![
-            DependencyEdge {
-                from: "unit_a".into(),
-                to: "unit_b".into(),
-            },
-            DependencyEdge {
-                from: "unit_b".into(),
-                to: "unit_a".into(),
-            },
+            DependencyEdge::new("unit_a", "unit_b"),
+            DependencyEdge::new("unit_b", "unit_a"),
         ],
     };
 
@@ -882,18 +822,9 @@ fn partial_cycle() {
             DependencyNode::new("bad_d", "Bad D", ReviewStatus::Queued),
         ],
         edges: vec![
-            DependencyEdge {
-                from: "good_b".into(),
-                to: "good_a".into(),
-            },
-            DependencyEdge {
-                from: "bad_c".into(),
-                to: "bad_d".into(),
-            },
-            DependencyEdge {
-                from: "bad_d".into(),
-                to: "bad_c".into(),
-            },
+            DependencyEdge::new("good_b", "good_a"),
+            DependencyEdge::new("bad_c", "bad_d"),
+            DependencyEdge::new("bad_d", "bad_c"),
         ],
     };
 
@@ -965,6 +896,103 @@ fn dependency_node_constructors() {
 }
 
 #[test]
+fn node_enrichment_defaults_none_and_setters_fill() {
+    let node = DependencyNode::new("id1", "Name 1", ReviewStatus::Queued);
+    assert_eq!(node.binary, None, "binary is honest-None by default");
+    assert_eq!(
+        node.token_usage, None,
+        "token usage is honest-None by default"
+    );
+    assert_eq!(
+        node.confidence, None,
+        "confidence is honest-None by default"
+    );
+
+    let node = node
+        .with_binary("game_logic.dll")
+        .with_token_usage(7168)
+        .with_confidence(0.8);
+    assert_eq!(node.binary.as_deref(), Some("game_logic.dll"));
+    assert_eq!(node.token_usage, Some(7168));
+    assert_eq!(node.confidence, Some(0.8));
+
+    // The opt-setter leaves None honest when no value exists.
+    let node = DependencyNode::new("id2", "Name 2", ReviewStatus::Queued).with_confidence_opt(None);
+    assert_eq!(node.confidence, None);
+}
+
+#[test]
+fn edge_type_defaults_to_dependency_and_survives_serde() {
+    let edge = DependencyEdge::new("a", "b");
+    assert_eq!(edge.edge_type, EdgeType::Dependency);
+
+    let call = edge.clone().with_type(EdgeType::Call);
+    assert_eq!(call.edge_type, EdgeType::Call);
+
+    let json = serde_json::to_string(&call).expect("edge serializes");
+    let back: DependencyEdge = serde_json::from_str(&json).expect("edge round-trips");
+    assert_eq!(back.edge_type, EdgeType::Call);
+}
+
+#[test]
+fn edge_without_type_deserializes_as_dependency() {
+    // Artifacts written before edge typing existed carry only from/to;
+    // every such edge *is* a scheduling dependency.
+    let edge: DependencyEdge =
+        serde_json::from_str(r#"{"from": "a", "to": "b"}"#).expect("legacy edge deserializes");
+    assert_eq!(edge.edge_type, EdgeType::Dependency);
+}
+
+#[test]
+fn node_enrichment_survives_serde_and_legacy_artifacts() {
+    let node = DependencyNode::new("id1", "Name 1", ReviewStatus::Queued)
+        .with_binary("d3d9.dll")
+        .with_token_usage(4096)
+        .with_confidence(0.5);
+    let json = serde_json::to_string(&node).expect("node serializes");
+    let back: DependencyNode = serde_json::from_str(&json).expect("node round-trips");
+    assert_eq!(back.binary.as_deref(), Some("d3d9.dll"));
+    assert_eq!(back.token_usage, Some(4096));
+    assert_eq!(back.confidence, Some(0.5));
+
+    // Nodes persisted before enrichment existed still load, with None fields.
+    let legacy = r#"{"unit_id": "id1", "name": "Name 1", "status": "Queued"}"#;
+    let legacy: DependencyNode = serde_json::from_str(legacy).expect("legacy node deserializes");
+    assert_eq!(legacy.binary, None);
+    assert_eq!(legacy.token_usage, None);
+    assert_eq!(legacy.confidence, None);
+}
+
+#[test]
+fn dashboard_nodes_carry_binary_and_confidence() {
+    let mut confident = make_unit("func_a", ReviewStatus::Queued, vec![]);
+    confident.unit_confidence = Some(0.75);
+
+    let dashboard = ReviewDashboard::new(vec![
+        confident,
+        make_unit("func_b", ReviewStatus::Queued, vec![]),
+    ]);
+
+    let node_a = dashboard
+        .dependency_graph
+        .nodes
+        .iter()
+        .find(|n| n.unit_id == "func_a")
+        .expect("node for func_a");
+    assert_eq!(node_a.binary.as_deref(), Some("test.dll"));
+    assert_eq!(node_a.confidence, Some(0.75));
+
+    // A unit without confidence keeps the node's confidence honestly None.
+    let node_b = dashboard
+        .dependency_graph
+        .nodes
+        .iter()
+        .find(|n| n.unit_id == "func_b")
+        .expect("node for func_b");
+    assert_eq!(node_b.confidence, None);
+}
+
+#[test]
 fn empty_graph_topological_order() {
     let graph = DependencyGraph {
         nodes: Vec::new(),
@@ -1019,18 +1047,9 @@ fn level_tiebreaks_same_depth() {
             DependencyNode::with_level("pal_z", "PAL Z", ReviewStatus::Queued, WorkLevel::PalTrait),
         ],
         edges: vec![
-            DependencyEdge {
-                from: "func_x".into(),
-                to: "binary".into(),
-            },
-            DependencyEdge {
-                from: "shim_y".into(),
-                to: "binary".into(),
-            },
-            DependencyEdge {
-                from: "pal_z".into(),
-                to: "binary".into(),
-            },
+            DependencyEdge::new("func_x", "binary"),
+            DependencyEdge::new("shim_y", "binary"),
+            DependencyEdge::new("pal_z", "binary"),
         ],
     };
 

@@ -9,6 +9,12 @@ use super::types::{ReviewStatus, WorkLevel};
 // ============================================================
 
 /// A node in the dependency graph of units of work.
+///
+/// Beyond identity and status, a node carries display enrichment derived
+/// from the unit it represents: the associated binary, the unit's token
+/// usage, and its confidence. Each enrichment is optional — artifacts
+/// written before these fields existed, or units with no recorded value,
+/// leave them `None` rather than fabricating one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DependencyNode {
     /// ID of the unit of work.
@@ -24,6 +30,23 @@ pub struct DependencyNode {
     /// at depth 1 is returned before a function translation at depth 1.
     #[serde(default)]
     pub level: WorkLevel,
+    /// The binary (DLL) this node's unit belongs to.
+    ///
+    /// `None` when the node predates binary attribution or no binary is
+    /// associated with the unit.
+    #[serde(default)]
+    pub binary: Option<String>,
+    /// Total tokens consumed by this unit across all recorded attempts.
+    ///
+    /// `None` when the token-usage log has no entries for this unit —
+    /// consumers must not read that as "zero tokens".
+    #[serde(default)]
+    pub token_usage: Option<usize>,
+    /// Unit confidence score (0.0 to 1.0).
+    ///
+    /// `None` when the unit has no recorded confidence.
+    #[serde(default)]
+    pub confidence: Option<f32>,
 }
 
 impl DependencyNode {
@@ -34,6 +57,9 @@ impl DependencyNode {
             name: name.into(),
             status,
             level: WorkLevel::FunctionTranslation, // default: treat as function translation
+            binary: None,
+            token_usage: None,
+            confidence: None,
         }
     }
 
@@ -49,7 +75,71 @@ impl DependencyNode {
             name: name.into(),
             status,
             level,
+            binary: None,
+            token_usage: None,
+            confidence: None,
         }
+    }
+
+    /// Sets the binary this node belongs to.
+    pub fn with_binary(mut self, binary: impl Into<String>) -> Self {
+        self.binary = Some(binary.into());
+        self
+    }
+
+    /// Sets the total token usage recorded for this node's unit.
+    pub fn with_token_usage(mut self, token_usage: usize) -> Self {
+        self.token_usage = Some(token_usage);
+        self
+    }
+
+    /// Sets the confidence score for this node's unit.
+    pub fn with_confidence(mut self, confidence: f32) -> Self {
+        self.confidence = Some(confidence);
+        self
+    }
+
+    /// Sets the confidence when a value exists, leaving `None` honest.
+    pub fn with_confidence_opt(mut self, confidence: Option<f32>) -> Self {
+        self.confidence = confidence;
+        self
+    }
+}
+
+// ============================================================
+// EdgeType
+// ============================================================
+
+/// The kind of relationship an edge represents.
+///
+/// The vocabulary is closed so the UI can label edges consistently:
+/// scheduling dependencies, observed calls from call-graph data, and
+/// data-flow relationships (produced by analyses that record them).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum EdgeType {
+    /// One unit of work must be completed before the other can start.
+    #[default]
+    Dependency,
+    /// The source function calls the target function (from call-graph data).
+    Call,
+    /// The source function consumes data produced by the target.
+    DataFlow,
+}
+
+impl EdgeType {
+    /// Returns a short snake_case label for display.
+    pub fn label(&self) -> &'static str {
+        match self {
+            EdgeType::Dependency => "dependency",
+            EdgeType::Call => "call",
+            EdgeType::DataFlow => "data_flow",
+        }
+    }
+}
+
+impl std::fmt::Display for EdgeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.label())
     }
 }
 
@@ -64,6 +154,30 @@ pub struct DependencyEdge {
     pub from: String,
     /// The unit that is depended upon.
     pub to: String,
+    /// The kind of relationship this edge encodes.
+    ///
+    /// Defaults to [`EdgeType::Dependency`] so artifacts written before
+    /// edge typing existed still deserialize honestly — every old edge
+    /// *is* a scheduling dependency.
+    #[serde(default)]
+    pub edge_type: EdgeType,
+}
+
+impl DependencyEdge {
+    /// Creates a plain scheduling-dependency edge.
+    pub fn new(from: impl Into<String>, to: impl Into<String>) -> Self {
+        Self {
+            from: from.into(),
+            to: to.into(),
+            edge_type: EdgeType::Dependency,
+        }
+    }
+
+    /// Sets the relationship kind of this edge.
+    pub fn with_type(mut self, edge_type: EdgeType) -> Self {
+        self.edge_type = edge_type;
+        self
+    }
 }
 
 // ============================================================

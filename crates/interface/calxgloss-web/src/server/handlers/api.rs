@@ -523,14 +523,61 @@ pub async fn api_request_patch(
 // ─── GET /api/graph ──────────────────────────────────────────────────
 
 /// Returns the dependency graph for visualization in the web UI.
+///
+/// Nodes carry their binary and confidence from the dashboard units; this
+/// handler additionally enriches each node with its total token usage from
+/// `re/analysis/token_usage.json` (issue #76). A unit with no recorded
+/// attempts keeps `token_usage: null` — absence is reported honestly, never
+/// as zero.
 pub async fn api_get_dependency_graph(
     State(state): State<ServerState>,
 ) -> Result<Json<super::super::DependencyGraphResponse>, ServerError> {
     let dashboard = super::super::build_dashboard(state.repo_path())
         .map_err(|e| ServerError::internal(&e.to_string()))?;
-    Ok(Json(super::super::DependencyGraphResponse::ok(
-        dashboard.dependency_graph,
-    )))
+    let mut graph = dashboard.dependency_graph;
+    enrich_graph_token_usage(&mut graph, state.repo_path());
+    Ok(Json(super::super::DependencyGraphResponse::ok(graph)))
+}
+
+/// Attaches per-node token totals to the graph from the token-usage log.
+///
+/// A node's total is the sum of `tokens_used` over the log entries whose
+/// (binary, function) pair matches the node's unit — the same join the unit
+/// detail process section uses. The pair is read from the node's own unit
+/// reference (`{binary}/{function}/v{N}`, parsed by the shared grammar), so
+/// every graph node is joined regardless of which dashboard list its status
+/// routes it into. A missing or corrupt log, or no entries for the unit,
+/// leaves the node at `None`; entries that sum to zero are a real total.
+fn enrich_graph_token_usage(
+    graph: &mut calxgloss_types::DependencyGraph,
+    repo_path: &std::path::Path,
+) {
+    let entries = super::process::load_json_or_default::<calxgloss_types::TokenUsageLog>(
+        &super::process::token_usage_log_path(repo_path),
+    )
+    .entries;
+    if entries.is_empty() {
+        return;
+    }
+
+    for node in &mut graph.nodes {
+        let Some(parts) = calxgloss_types::parse_branch_name(&node.unit_id) else {
+            continue;
+        };
+        let Some(function) = parts.function.as_deref() else {
+            continue;
+        };
+        let matched: Vec<&calxgloss_types::TokenUsageEntry> = entries
+            .iter()
+            .filter(|e| {
+                super::process::binary_matches(&e.binary, parts.binary.as_str())
+                    && e.function == function
+            })
+            .collect();
+        if !matched.is_empty() {
+            node.token_usage = Some(matched.iter().map(|e| e.tokens_used).sum());
+        }
+    }
 }
 
 // ─── GET /health ─────────────────────────────────────────────────────

@@ -12,6 +12,7 @@ import {
     loadDashboard,
     renderQueueList,
     loadPipelineProgress,
+    updateGraphFilterSummary,
 } from "./js/dashboard.js";
 import {
     renderFullQueue,
@@ -127,6 +128,21 @@ function setupEventListeners() {
         if (State.graphRendererFull) {
             State.graphRendererFull.resetZoom();
         }
+    });
+
+    // Graph filter selects (issue #76) — kind × status × binary, combined
+    // with AND inside the renderer.
+    const filterSelects = {
+        "graph-filter-kind": "kind",
+        "graph-filter-status": "status",
+        "graph-filter-binary": "binary",
+    };
+    Object.entries(filterSelects).forEach(([id, key]) => {
+        document.getElementById(id)?.addEventListener("change", (e) => {
+            State.graphFilters[key] = e.target.value;
+            State.graphRendererFull?.applyFilters();
+            updateGraphFilterSummary();
+        });
     });
 
     // LLM I/O log clear button
@@ -342,6 +358,9 @@ async function init() {
     State.graphRendererFull = new GraphRenderer(document.getElementById("graph-canvas-full"), {
         onZoomChange: updateZoomIndicator,
     });
+    // Debug/test handle — lets the headless e2e tests inspect node geometry
+    // and drive filters without simulating canvas interaction.
+    window.calxglossGraph = State.graphRendererFull;
 
     // Initialize WebSocket for live updates
     console.log("[WS] Initializing WebSocket manager");

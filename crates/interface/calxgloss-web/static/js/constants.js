@@ -8,6 +8,8 @@ export const STATUS_COLORS = {
     in_progress: "#22d3ee",
     accepted: "#4ade80",
     sendback: "#f87171",
+    send_back: "#f87171",
+    patch_requested: "#fb923c",
     blocked: "#fb923c",
     skipped: "#9ca3af",
 };
@@ -18,6 +20,8 @@ export const STATUS_LABELS = {
     in_progress: "⟳ In Progress",
     accepted: "Accepted",
     sendback: "Send Back",
+    send_back: "Send Back",
+    patch_requested: "Patch Requested",
     blocked: "Blocked",
     skipped: "⊘ Skipped",
 };

@@ -67,20 +67,28 @@ impl ReviewDashboard {
             // Count statuses
             *counts.tally_mut(&unit.status) += 1;
 
-            // Add node to dependency graph with the correct processing level
-            graph.nodes.push(super::graph::DependencyNode::with_level(
-                unit.id.clone(),
-                unit.name.clone(),
-                unit.status.clone(),
-                unit.kind.level(),
-            ));
+            // Add node to dependency graph with the correct processing level,
+            // carrying the unit's binary and confidence so the graph payload
+            // can encode them (issue #76). Token usage is not visible here —
+            // it lives in the token-usage log, and consumers that read it
+            // enrich the node later; absent values stay `None`.
+            graph.nodes.push(
+                super::graph::DependencyNode::with_level(
+                    unit.id.clone(),
+                    unit.name.clone(),
+                    unit.status.clone(),
+                    unit.kind.level(),
+                )
+                .with_binary(unit.binary.to_string())
+                .with_confidence_opt(unit.unit_confidence),
+            );
 
             // Add edges for dependencies
             for dep in &unit.dependencies {
-                graph.edges.push(super::graph::DependencyEdge {
-                    from: unit.id.clone(),
-                    to: dep.clone(),
-                });
+                graph.edges.push(super::graph::DependencyEdge::new(
+                    unit.id.clone(),
+                    dep.clone(),
+                ));
             }
         }
 
@@ -396,9 +404,8 @@ impl ReviewDashboard {
                 .collect(),
             edges: edges
                 .into_iter()
-                .map(|(from, to)| super::graph::DependencyEdge {
-                    from: from.to_string(),
-                    to: to.to_string(),
+                .map(|(from, to)| {
+                    super::graph::DependencyEdge::new(from.to_string(), to.to_string())
                 })
                 .collect(),
         };

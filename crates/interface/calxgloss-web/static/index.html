@@ -161,6 +161,44 @@
         <section id="view-graph" class="view">
             <div class="view-header">
                 <h2>Dependency Graph</h2>
+                <div class="view-controls graph-filters">
+                    <label class="graph-filter-label">Kind
+                        <select id="graph-filter-kind" aria-label="Filter graph by kind">
+                            <option value="all">All kinds</option>
+                            <option value="dll_classification">Classify</option>
+                            <option value="shim_layer">Shim</option>
+                            <option value="pal_trait">PAL Trait</option>
+                            <option value="test_case_addition">Test Case</option>
+                            <option value="function_translation">Function</option>
+                            <option value="integration_step">Integration</option>
+                            <option value="bug_fix">Bug Fix</option>
+                        </select>
+                    </label>
+                    <label class="graph-filter-label">Status
+                        <select id="graph-filter-status" aria-label="Filter graph by status">
+                            <option value="all">All statuses</option>
+                            <option value="queued">Queued</option>
+                            <option value="pending_review">Pending Review</option>
+                            <option value="in_progress">In Progress</option>
+                            <option value="accepted">Accepted</option>
+                            <option value="send_back">Send Back</option>
+                            <option value="patch_requested">Patch Requested</option>
+                            <option value="blocked">Blocked</option>
+                            <option value="skipped">Skipped</option>
+                        </select>
+                    </label>
+                    <label class="graph-filter-label">Binary
+                        <select id="graph-filter-binary" aria-label="Filter graph by binary">
+                            <option value="all">All binaries</option>
+                        </select>
+                    </label>
+                    <span id="graph-filter-summary" class="graph-filter-summary"></span>
+                </div>
+            </div>
+            <div class="graph-legend" aria-label="Visual encoding legend">
+                <span class="graph-legend-item">node size = token usage</span>
+                <span class="graph-legend-item graph-legend-confidence">node color = confidence (red low → green high)</span>
+                <span class="graph-legend-item">edge labels = relationship type</span>
             </div>
             <div class="graph-container">
                 <canvas id="graph-canvas-full"></canvas>

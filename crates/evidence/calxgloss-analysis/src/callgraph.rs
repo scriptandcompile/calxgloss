@@ -391,10 +391,10 @@ pub fn build_dependency_graph_from_call_graph(
                     ReviewStatus::Queued,
                     WorkLevel::ShimLayer,
                 ));
-                graph.edges.push(DependencyEdge {
-                    from: shim_id.clone(),
-                    to: dll_node_ids[&cls.binary].clone(),
-                });
+                graph.edges.push(DependencyEdge::new(
+                    shim_id.clone(),
+                    dll_node_ids[&cls.binary].clone(),
+                ));
                 shim_node_id = Some(shim_id);
             }
             break;
@@ -427,18 +427,16 @@ pub fn build_dependency_graph_from_call_graph(
     // Depend on shim layer or DLL classification
     if let Some(ref shim_id) = shim_node_id {
         for func_id in function_node_ids.values() {
-            graph.edges.push(DependencyEdge {
-                from: func_id.clone(),
-                to: shim_id.clone(),
-            });
+            graph
+                .edges
+                .push(DependencyEdge::new(func_id.clone(), shim_id.clone()));
         }
     } else {
         let dll_id = &dll_node_ids[&call_graph.binary];
         for func_id in function_node_ids.values() {
-            graph.edges.push(DependencyEdge {
-                from: func_id.clone(),
-                to: dll_id.clone(),
-            });
+            graph
+                .edges
+                .push(DependencyEdge::new(func_id.clone(), dll_id.clone()));
         }
     }
 
@@ -453,10 +451,10 @@ pub fn build_dependency_graph_from_call_graph(
             if let Some(callee_name) = helpers::find_function_by_address(call_graph, edge.target)
                 && let Some(callee_id) = function_node_ids.get(callee_name)
             {
-                graph.edges.push(DependencyEdge {
-                    from: func_id.clone(),
-                    to: callee_id.clone(),
-                });
+                graph.edges.push(
+                    DependencyEdge::new(func_id.clone(), callee_id.clone())
+                        .with_type(calxgloss_types::EdgeType::Call),
+                );
             }
         }
     }

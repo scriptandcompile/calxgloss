@@ -775,8 +775,12 @@ mod tests {
             "pub fn draw_sprite() {}\n",
         )
         .expect("write translation");
-        git.commit(&branch, "Translate DrawSprite", &["src/modules/game_logic.rs"])
-            .expect("commit translation");
+        git.commit(
+            &branch,
+            "Translate DrawSprite",
+            &["src/modules/game_logic.rs"],
+        )
+        .expect("commit translation");
         dir
     }
 

@@ -419,10 +419,7 @@ mod tests {
                 .collect(),
             edges: edges
                 .iter()
-                .map(|(from, to)| DependencyEdge {
-                    from: (*from).into(),
-                    to: (*to).into(),
-                })
+                .map(|(from, to)| DependencyEdge::new(*from, *to))
                 .collect(),
         }
     }

@@ -414,10 +414,10 @@ impl DependencyTracker {
                     WorkLevel::ShimLayer,
                 ));
                 shim_node_ids.insert(cls.binary.clone(), shim_id.clone());
-                graph.edges.push(DependencyEdge {
-                    from: shim_id,
-                    to: dll_node_ids[&cls.binary].clone(),
-                });
+                graph.edges.push(DependencyEdge::new(
+                    shim_id,
+                    dll_node_ids[&cls.binary].clone(),
+                ));
             }
         }
 
@@ -482,17 +482,15 @@ impl DependencyTracker {
             if let Some(ref func_binary_str) = func_binary {
                 // Depend on shim layer if available
                 if let Some(shim_id) = shim_node_ids.get(func_binary_str.as_str()) {
-                    graph.edges.push(DependencyEdge {
-                        from: func_id.clone(),
-                        to: shim_id.clone(),
-                    });
+                    graph
+                        .edges
+                        .push(DependencyEdge::new(func_id.clone(), shim_id.clone()));
                 } else {
                     // Depend on DLL classification directly
                     if let Some(dll_id) = dll_node_ids.get(func_binary_str.as_str()) {
-                        graph.edges.push(DependencyEdge {
-                            from: func_id.clone(),
-                            to: dll_id.clone(),
-                        });
+                        graph
+                            .edges
+                            .push(DependencyEdge::new(func_id.clone(), dll_id.clone()));
                     }
                 }
             }
@@ -500,10 +498,10 @@ impl DependencyTracker {
             // Dependencies from call graph neighbors
             for neighbor in neighbors {
                 if let Some(neighbor_func_id) = function_node_ids.get(neighbor.as_str()) {
-                    graph.edges.push(DependencyEdge {
-                        from: func_id.clone(),
-                        to: neighbor_func_id.clone(),
-                    });
+                    graph.edges.push(DependencyEdge::new(
+                        func_id.clone(),
+                        neighbor_func_id.clone(),
+                    ));
                 }
             }
         }
@@ -550,10 +548,10 @@ impl DependencyTracker {
                 ReviewStatus::Queued,
                 WorkLevel::ShimLayer,
             ));
-            edges.push(DependencyEdge {
-                from: sid.clone(),
-                to: Self::dll_node_id(&classification.binary),
-            });
+            edges.push(DependencyEdge::new(
+                sid.clone(),
+                Self::dll_node_id(&classification.binary),
+            ));
             shim_id = Some(sid);
         }
 
@@ -577,15 +575,12 @@ impl DependencyTracker {
 
             // Depend on shim layer or DLL classification
             if let Some(ref sid) = shim_id {
-                edges.push(DependencyEdge {
-                    from: func_id.clone(),
-                    to: sid.clone(),
-                });
+                edges.push(DependencyEdge::new(func_id.clone(), sid.clone()));
             } else {
-                edges.push(DependencyEdge {
-                    from: func_id.clone(),
-                    to: Self::dll_node_id(&classification.binary),
-                });
+                edges.push(DependencyEdge::new(
+                    func_id.clone(),
+                    Self::dll_node_id(&classification.binary),
+                ));
             }
 
             // Depend on call graph neighbors (skip self-references)
@@ -593,10 +588,7 @@ impl DependencyTracker {
                 if neighbor != func_name
                     && let Some(neighbor_id) = func_map.get(neighbor.as_str())
                 {
-                    edges.push(DependencyEdge {
-                        from: func_id.clone(),
-                        to: neighbor_id.clone(),
-                    });
+                    edges.push(DependencyEdge::new(func_id.clone(), neighbor_id.clone()));
                 }
             }
         }

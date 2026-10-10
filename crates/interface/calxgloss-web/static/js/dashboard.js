@@ -5,7 +5,7 @@
 
 import { API } from "./api.js";
 import { State } from "./state.js";
-import { CATEGORY_LABELS, KIND_LABELS, STATUS_LABELS } from "./constants.js";
+import { CATEGORY_LABELS, KIND_LABELS } from "./constants.js";
 import { fmtTime, fmtUptime, escapeHtml } from "./utils.js";
 import { showToast } from "./ui.js";
 import { renderFullQueue } from "./queue.js";
@@ -40,7 +40,11 @@ export async function loadDashboard() {
         const graph = graphRes.graph;
 
         const nodes = (graph.nodes || []).map(n => mapGraphNode(n));
-        const edges = graph.edges || [];
+        const edges = (graph.edges || []).map(e => ({
+            from: e.from,
+            to: e.to,
+            type: toSnakeKey(e.edge_type || "dependency"),
+        }));
 
         if (State.graphRenderer) {
             State.graphRenderer.setData(nodes, edges);
@@ -48,6 +52,8 @@ export async function loadDashboard() {
         if (State.graphRendererFull) {
             State.graphRendererFull.setData(nodes, edges);
         }
+        populateGraphBinaryFilter(nodes);
+        updateGraphFilterSummary();
 
         // Load pipeline progress in parallel
         loadPipelineProgress();
@@ -523,35 +529,71 @@ function renderPipelineTimeEstimate(estimate) {
         `(${estimate.remaining_units} functions × ~${fmtUptime(Math.round(estimate.avg_attempt_secs))}/attempt)`;
 }
 
-// Map API graph node to frontend format (handles old and new API formats)
+// Map API graph node to frontend format. The API sends serde variant names
+// ("DllClassification", "PendingReview"); the display constants are keyed by
+// snake_case, so both are normalized here. Enrichment fields (binary, token
+// usage, confidence — issue #76) pass through, with absent values kept null
+// rather than defaulted to zero.
 function mapGraphNode(n) {
-    let kind = n.kind || null;
-    let kindLabel = n.kind_label || null;
-
-    // New API: sends "kind" field directly
-    if (!kind) {
-        // Old API: infer from level field
-        const level = n.level || n.kind || "function_translation";
-        const levelMap = {
-            dll_classification: "dll_classification",
-            shim_layer: "shim_layer",
-            pal_trait: "pal_trait",
-            test_case_addition: "test_case_addition",
-            function_translation: "function_translation",
-            integration_step: "integration_step",
-            bug_fix: "bug_fix",
-        };
-        kind = levelMap[level] || "function_translation";
-    }
-    if (!kindLabel) {
-        kindLabel = KIND_LABELS[kind] || kind;
-    }
+    const kind = toSnakeKey(n.kind || n.level || "FunctionTranslation");
+    const kindLabel = n.kind_label || KIND_LABELS[kind] || kind;
 
     return {
         id: n.id || n.unit_id,
         name: n.label || n.name || n.unit_id,
         kind: kind,
         kind_label: kindLabel,
-        status: n.status || STATUS_LABELS[n.kind] || "queued",
+        status: toSnakeKey(n.status || "Queued"),
+        binary: n.binary ?? null,
+        token_usage: n.token_usage ?? null,
+        confidence: n.confidence ?? null,
     };
+}
+
+// "DllClassification" → "dll_classification" — the snake_case key the
+// display constants and filter controls use.
+function toSnakeKey(s) {
+    return String(s).replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+}
+
+// Rebuild the binary filter's options from the current graph nodes,
+// preserving the current selection when it still exists.
+function populateGraphBinaryFilter(nodes) {
+    const select = document.getElementById("graph-filter-binary");
+    if (!select) return;
+
+    const binaries = [...new Set(nodes.map(n => n.binary).filter(b => b != null))].sort();
+    const current = State.graphFilters.binary;
+    if (current !== "all" && !binaries.includes(current)) {
+        State.graphFilters.binary = "all";
+    }
+
+    select.innerHTML = "";
+    const all = document.createElement("option");
+    all.value = "all";
+    all.textContent = "All binaries";
+    select.appendChild(all);
+    binaries.forEach(b => {
+        const opt = document.createElement("option");
+        opt.value = b;
+        opt.textContent = b;
+        select.appendChild(opt);
+    });
+    select.value = State.graphFilters.binary;
+}
+
+// Report how many nodes the combined filters leave visible.
+export function updateGraphFilterSummary() {
+    const el = document.getElementById("graph-filter-summary");
+    if (!el) return;
+    const renderer = State.graphRendererFull;
+    if (!renderer) {
+        el.textContent = "";
+        return;
+    }
+    const total = renderer.totalNodeCount;
+    const visible = renderer.visibleNodeCount;
+    el.textContent = visible === total
+        ? `${total} nodes`
+        : `${visible} of ${total} nodes`;
 }

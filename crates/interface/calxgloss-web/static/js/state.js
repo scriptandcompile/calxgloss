@@ -15,4 +15,5 @@ export const State = {
     queueEffort: {},
     queueOrder: [],
     queueOverlay: { order: [], priorities: {} },
+    graphFilters: { kind: "all", status: "all", binary: "all" },
 };

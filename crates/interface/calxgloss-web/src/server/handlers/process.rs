@@ -308,7 +308,7 @@ fn sorted_entries(entries: &[TokenUsageEntry]) -> Vec<&TokenUsageEntry> {
 /// True when a log-entry DLL name refers to the same binary as a unit's
 /// DLL name. Both spell the binary identity verbatim, extension included
 /// (issue #68); the comparison only folds case.
-fn binary_matches(entry_binary: &str, unit_binary: &str) -> bool {
+pub(crate) fn binary_matches(entry_binary: &str, unit_binary: &str) -> bool {
     entry_binary.eq_ignore_ascii_case(unit_binary)
 }
 

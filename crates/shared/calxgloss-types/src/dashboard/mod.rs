@@ -8,7 +8,7 @@
 //!
 //! - [`types`] — `WorkLevel`, `WorkKind`, `ReviewStatus`, `Staleness`
 //! - [`work_unit`] — `UnitOfWork`
-//! - [`graph`] — `DependencyNode`, `DependencyEdge`, `DependencyGraph`
+//! - [`graph`] — `DependencyNode`, `DependencyEdge`, `EdgeType`, `DependencyGraph`
 //! - [`status`] — `StatusCounts`
 //! - [`review`] — `ReviewDashboard`
 //! - [`action`] — `ReviewAction`, `ReviewActionKind`, `ReviewSkips`
@@ -22,7 +22,7 @@ pub mod work_unit;
 
 // Re-export at module level for internal use
 pub use action::{ReviewAction, ReviewActionKind, ReviewSkips};
-pub use graph::{DependencyEdge, DependencyGraph, DependencyNode};
+pub use graph::{DependencyEdge, DependencyGraph, DependencyNode, EdgeType};
 pub use review::ReviewDashboard;
 pub use status::StatusCounts;
 pub use types::{ReviewStatus, Staleness, WorkKind, WorkLevel};

@@ -75,7 +75,7 @@ pub use cscan::{
     split_arguments, strip_casts,
 };
 pub use dashboard::{
-    DependencyEdge, DependencyGraph, DependencyNode, ReviewAction, ReviewActionKind,
+    DependencyEdge, DependencyGraph, DependencyNode, EdgeType, ReviewAction, ReviewActionKind,
     ReviewDashboard, ReviewSkips, ReviewStatus, StatusCounts, UnitOfWork, WorkKind,
 };
 pub use dll::{DllCategory, DllInfo, Export, Import};

@@ -14,6 +14,8 @@ export class GraphRenderer {
         // Data
         this.nodes = [];
         this.edges = [];
+        this._allNodes = [];
+        this._allEdges = [];
         this._totalWidth = 0;
         this._totalHeight = 0;
 
@@ -80,14 +82,51 @@ export class GraphRenderer {
     // ── Data
 
     setData(nodes, edges) {
-        this.nodes = nodes || [];
-        this.edges = edges || [];
+        this._allNodes = nodes || [];
+        this._allEdges = edges || [];
+        this._applyFilter();
         this._highlightedNodes.clear();
         this._dimmedNodes.clear();
         this.selectedNode = null;
         this._layout();
         this.draw();
         if (this.onZoomChange) this.onZoomChange(this.scale);
+    }
+
+    // ── Filters (issue #76) — kind × status × binary, combined with AND
+
+    get totalNodeCount() { return this._allNodes.length; }
+    get visibleNodeCount() { return this.nodes.length; }
+
+    // Re-run the current State.graphFilters against the loaded data.
+    applyFilters() {
+        this._applyFilter();
+        this._layout();
+        this.draw();
+        if (this.onZoomChange) this.onZoomChange(this.scale);
+    }
+
+    _applyFilter() {
+        const f = State.graphFilters || {};
+        const kind = f.kind || "all";
+        const status = f.status || "all";
+        const binary = f.binary || "all";
+
+        this.nodes = this._allNodes.filter(n =>
+            (kind === "all" || n.kind === kind) &&
+            (status === "all" || n.status === status) &&
+            (binary === "all" || n.binary === binary)
+        );
+        const visible = new Set(this.nodes.map(n => n.id));
+        this.edges = this._allEdges.filter(e => visible.has(e.from) && visible.has(e.to));
+
+        // Node color encodes confidence (issue #76): red at 0.0 through
+        // green at 1.0; units with no recorded confidence stay neutral.
+        this.nodes.forEach(n => {
+            n._confidenceHue = n.confidence != null
+                ? Math.round(Math.max(0, Math.min(1, n.confidence)) * 140)
+                : null;
+        });
     }
 
     // ── Sugiyama-style layered layout with crossing reduction
@@ -99,12 +138,26 @@ export class GraphRenderer {
 
         const NODE_W = 180;
         const NODE_H = 42;
+        const NODE_H_MAX = 72;
         const PAD_X = 40;
         const PAD_Y = 40;
         const LAYER_GAP = 100;
         const NODE_GAP = 20;
         const ROW_GAP = 10;
         const MAX_COLS = 4;
+
+        // Node size encodes token usage (issue #76): a sqrt scale keeps a
+        // 10× token outlier from dominating the canvas, and units with no
+        // recorded usage keep the base size — absence is never drawn as zero.
+        const tokenValues = this.nodes.map(n => n.token_usage).filter(v => v != null && v > 0);
+        const maxTokens = tokenValues.length ? Math.max(...tokenValues) : 0;
+        this.nodes.forEach(n => {
+            const t = n.token_usage != null && maxTokens > 0
+                ? Math.sqrt(Math.min(1, n.token_usage / maxTokens))
+                : 0;
+            n._w = NODE_W;
+            n._h = NODE_H + (NODE_H_MAX - NODE_H) * t;
+        });
 
         // Build adjacency maps
         const nodeSet = new Set(this.nodes.map(n => n.id));
@@ -183,43 +236,54 @@ export class GraphRenderer {
             }
         }
 
-        // Step 3: Compute content dimensions with multi-row wrapping per layer
-        let maxRowsInLayer = 1;
+        // Step 3: Split each layer into rows (up to MAX_COLS wide) and size
+        // each row by its tallest node, so variable node heights never overlap.
+        const layerRows = new Map();
+        layerGroups.forEach((group, layerNum) => {
+            const numCols = Math.min(group.length, MAX_COLS);
+            const rows = [];
+            for (let i = 0; i < group.length; i += numCols) {
+                rows.push(group.slice(i, i + numCols));
+            }
+            layerRows.set(layerNum, { rows, numCols });
+        });
+
         let maxNodesInLayer = 0;
         layerGroups.forEach(g => {
             if (g.length > maxNodesInLayer) maxNodesInLayer = g.length;
         });
         const totalWidth = Math.max(this._w || 800, maxNodesInLayer * (NODE_W + NODE_GAP) + PAD_X * 2);
 
-        // Calculate max rows needed by any layer
-        layerGroups.forEach(g => {
-            const rows = Math.ceil(g.length / MAX_COLS);
-            if (rows > maxRowsInLayer) maxRowsInLayer = rows;
-        });
-
-        // Each layer gets space for maxRowsInLayer rows, plus layer gap
-        const layerHeight = NODE_H * maxRowsInLayer + (maxRowsInLayer - 1) * ROW_GAP + LAYER_GAP;
-        const totalHeight = (maxLayer + 1) * layerHeight + PAD_Y * 2;
+        const layerTop = new Map();
+        let cursorY = PAD_Y;
+        for (let l = 0; l <= maxLayer; l++) {
+            layerTop.set(l, cursorY);
+            const entry = layerRows.get(l);
+            if (!entry) continue;
+            const layerHeight = entry.rows.reduce(
+                (h, row) => h + Math.max(...row.map(n => n._h)), 0
+            ) + (entry.rows.length - 1) * ROW_GAP;
+            cursorY += layerHeight + LAYER_GAP;
+        }
+        const totalHeight = cursorY - LAYER_GAP + PAD_Y;
 
         this._totalWidth = totalWidth;
         this._totalHeight = totalHeight;
 
         // Step 4: Position nodes in each layer as a grid (up to MAX_COLS columns)
-        layerGroups.forEach((group, layerNum) => {
-            const count = group.length;
-            const numCols = Math.min(count, MAX_COLS);
+        layerRows.forEach(({ rows, numCols }, layerNum) => {
             const groupWidth = numCols * NODE_W + (numCols - 1) * NODE_GAP;
             const startX = (totalWidth - groupWidth) / 2;
-            const layerTop = PAD_Y + layerNum * layerHeight;
+            let rowY = layerTop.get(layerNum);
 
-            group.forEach((node, idx) => {
-                const col = idx % numCols;
-                const row = Math.floor(idx / numCols);
-                node._x = startX + col * (NODE_W + NODE_GAP);
-                node._y = layerTop + row * (NODE_H + ROW_GAP);
-                node._w = NODE_W;
-                node._h = NODE_H;
-                node._layer = layerNum;
+            rows.forEach(row => {
+                const rowHeight = Math.max(...row.map(n => n._h));
+                row.forEach((node, col) => {
+                    node._x = startX + col * (NODE_W + NODE_GAP);
+                    node._y = rowY;
+                    node._layer = layerNum;
+                });
+                rowY += rowHeight + ROW_GAP;
             });
         });
 
@@ -330,6 +394,12 @@ export class GraphRenderer {
         const n = this.hoveredNode;
         const statusColor = STATUS_COLORS[n.status] || STATUS_COLORS.queued;
 
+        // Enrichment lines (issue #76) — only rendered when the value exists.
+        const extra = [];
+        if (n.binary) extra.push(`<span>${escapeHtml(n.binary)}</span>`);
+        if (n.token_usage != null) extra.push(`<span>${n.token_usage.toLocaleString()} tokens</span>`);
+        if (n.confidence != null) extra.push(`<span>${Math.round(n.confidence * 100)}% confidence</span>`);
+
         this._tooltip.innerHTML = `
             <div class="graph-tooltip-name">${escapeHtml(n.name || n.id)}</div>
             <div class="graph-tooltip-meta">
@@ -339,6 +409,7 @@ export class GraphRenderer {
                 </span>
                 <span>${KIND_LABELS[n.kind] || n.kind}</span>
             </div>
+            ${extra.length ? `<div class="graph-tooltip-meta">${extra.join("")}</div>` : ""}
         `;
         this._tooltip.classList.add("visible");
 
@@ -494,6 +565,20 @@ export class GraphRenderer {
                 ctx.lineTo(ax - arrowLen * Math.cos(angle + 0.4), ay - arrowLen * Math.sin(angle + 0.4));
                 ctx.stroke();
             }
+
+            // Edge label — relationship type at the bezier midpoint
+            // (B(0.5) = (P0 + 3C1 + 3C2 + P3) / 8).
+            if (this._dimmedNodes.size && !isHighlighted) continue;
+            const lx = (sc.x + 3 * c1x + 3 * c2x + tc.x) / 8;
+            const ly = (sc.y + 3 * c1y + 3 * c2y + tc.y) / 8;
+            ctx.font = "400 8px monospace";
+            ctx.fillStyle = isHighlighted
+                ? "rgba(108, 140, 255, 0.9)"
+                : "rgba(108, 140, 255, 0.45)";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(edge.type || "dependency", lx, ly);
+            ctx.textAlign = "start";
         }
     }
 
@@ -520,13 +605,19 @@ export class GraphRenderer {
             ctx.shadowBlur = isSelected ? 16 : isHovered ? 10 : 4;
             ctx.shadowOffsetY = 2;
 
-            // Node body
+            // Node body — tinted by confidence (red low → green high),
+            // neutral when confidence is unmeasured.
+            const hue = node._confidenceHue;
             ctx.beginPath();
             ctx.roundRect(node._x, node._y, node._w, node._h, r);
             ctx.fillStyle = dimmed
                 ? "#1a1b2e"
                 : (isSelected ? "#32335a" : "#2a2b4a");
             ctx.fill();
+            if (!dimmed && hue != null) {
+                ctx.fillStyle = `hsla(${hue}, 45%, 30%, 0.55)`;
+                ctx.fill();
+            }
 
             ctx.shadowColor = "transparent";
             ctx.shadowBlur = 0;
@@ -538,11 +629,12 @@ export class GraphRenderer {
             ctx.fillStyle = dimmed ? "rgba(108,140,255,0.3)" : color;
             ctx.fill();
 
-            // Border
+            // Border — confidence-tinted when measured, kind/status otherwise
             ctx.beginPath();
             ctx.roundRect(node._x, node._y, node._w, node._h, r);
             ctx.strokeStyle = isSelected ? color
                 : isHovered ? statusColor
+                : hue != null ? `hsla(${hue}, 60%, 55%, 0.6)`
                 : "rgba(108, 140, 255, 0.3)";
             ctx.lineWidth = isSelected ? 2 : isHovered ? 1.5 : 1;
             ctx.stroke();
