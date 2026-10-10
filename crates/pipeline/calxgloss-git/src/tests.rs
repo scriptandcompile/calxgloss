@@ -174,6 +174,173 @@ fn test_merge_already_ancestor() {
     assert!(matches!(result, MergeResult::AlreadyUpToDate));
 }
 
+/// Creates two attempt branches off the same base commit that edit the same
+/// file with different content — the shape that makes a later merge conflict.
+/// Returns (first branch, second branch); HEAD ends on the second branch.
+fn make_conflicting_branches(
+    manager: &GitManager,
+    tmp_dir: &std::path::Path,
+) -> (GitBranch, GitBranch) {
+    let branch_a = manager
+        .create_branch("game_logic.dll", "DrawSprite", 1, None)
+        .expect("create v1 branch")
+        .branch;
+    std::fs::write(tmp_dir.join("shared.rs"), "// version A").expect("write v1 file");
+    manager
+        .commit(&branch_a, "attempt 1 edits shared", &["shared.rs"])
+        .expect("commit v1");
+
+    let branch_b = manager
+        .create_branch("game_logic.dll", "DrawSprite", 2, None)
+        .expect("create v2 branch")
+        .branch;
+    std::fs::write(tmp_dir.join("shared.rs"), "// version B").expect("write v2 file");
+    manager
+        .commit(&branch_b, "attempt 2 edits shared", &["shared.rs"])
+        .expect("commit v2");
+
+    (branch_a, branch_b)
+}
+
+#[test]
+fn test_merge_three_way_clean() {
+    let (tmp_dir, manager) = temp_git_repo();
+
+    // v1 lands on main (fast-forward).
+    let branch_a = manager
+        .create_branch("game_logic.dll", "DrawSprite", 1, None)
+        .expect("create v1 branch")
+        .branch;
+    std::fs::write(tmp_dir.join("v1.rs"), "// v1").expect("write v1 file");
+    manager
+        .commit(&branch_a, "attempt 1", &["v1.rs"])
+        .expect("commit v1");
+    let result_a = manager.merge_to_main(&branch_a).expect("merge v1");
+    assert!(matches!(result_a, MergeResult::Merged { .. }));
+
+    // v2 branches off main, then main moves ahead on its own — the merge
+    // can no longer fast-forward and must produce a clean 3-way merge
+    // commit (issue #83: conflict detection must not break this path).
+    let branch_b = manager
+        .create_branch("game_logic.dll", "DrawSprite", 2, None)
+        .expect("create v2 branch")
+        .branch;
+    std::fs::write(tmp_dir.join("v2.rs"), "// v2").expect("write v2 file");
+    manager
+        .commit(&branch_b, "attempt 2", &["v2.rs"])
+        .expect("commit v2");
+
+    let mut checkout_opts = git2::build::CheckoutBuilder::new();
+    checkout_opts.force();
+    manager
+        .repo()
+        .set_head("refs/heads/main")
+        .expect("checkout main");
+    let main_ref = manager
+        .repo()
+        .find_branch("main", git2::BranchType::Local)
+        .expect("main branch");
+    let main_obj = main_ref.get().peel_to_commit().expect("peel main");
+    manager
+        .repo()
+        .reset(
+            main_obj.as_object(),
+            ResetType::Hard,
+            Some(&mut checkout_opts),
+        )
+        .expect("reset to main");
+    std::fs::write(tmp_dir.join("main_note.rs"), "// main moved on").expect("write main note");
+    manager
+        .commit_to_main("main note", &["main_note.rs".to_string()])
+        .expect("commit main note");
+
+    let result_b = manager.merge_to_main(&branch_b).expect("merge v2");
+    match result_b {
+        MergeResult::Merged { merge_hash } => {
+            let merge_commit = manager
+                .repo()
+                .find_commit(merge_hash.parse().expect("merge hash is an oid"))
+                .expect("merge commit exists");
+            assert_eq!(merge_commit.parent_count(), 2, "expected a merge commit");
+        }
+        other => panic!("expected a 3-way Merged result, got {other:?}"),
+    }
+
+    // All three files survive the merge.
+    for file in ["v1.rs", "v2.rs", "main_note.rs"] {
+        assert!(
+            tmp_dir.join(file).exists(),
+            "{file} should exist on main after the merge"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+#[test]
+fn test_merge_conflicts_detected() {
+    let (tmp_dir, manager) = temp_git_repo();
+    let (branch_a, branch_b) = make_conflicting_branches(&manager, &tmp_dir);
+
+    // Accept A first — fast-forward, so main now carries "// version A".
+    let result_a = manager.merge_to_main(&branch_a).expect("merge v1");
+    assert!(matches!(result_a, MergeResult::Merged { .. }));
+
+    // B edits the same file from the same base — the merge must report the
+    // conflict instead of dying at the tree-write step (issue #83).
+    let result_b = manager.merge_to_main(&branch_b).expect("merge v2");
+    match result_b {
+        MergeResult::Conflicts {
+            conflicted_files, ..
+        } => {
+            assert!(
+                conflicted_files.contains(&"shared.rs".to_string()),
+                "conflicted files should name shared.rs, got {conflicted_files:?}"
+            );
+        }
+        other => panic!("expected Conflicts, got {other:?}"),
+    }
+
+    // The failed merge must leave main exactly as it was: still A's content.
+    assert_eq!(
+        std::fs::read_to_string(tmp_dir.join("shared.rs")).expect("main file"),
+        "// version A"
+    );
+    assert_eq!(manager.current_branch().expect("current branch"), "main");
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+#[test]
+fn test_accept_branch_conflict_record() {
+    let (tmp_dir, manager) = temp_git_repo();
+    let (branch_a, branch_b) = make_conflicting_branches(&manager, &tmp_dir);
+    manager.merge_to_main(&branch_a).expect("merge v1");
+
+    let result = manager.accept_branch(&branch_b).expect("accept v2");
+    assert!(matches!(result, MergeResult::Conflicts { .. }));
+
+    // The accept record must say conflicts — it must never claim a merge
+    // happened for code that never landed on main (issue #83).
+    let record_path = tmp_dir
+        .join("re")
+        .join("accepts")
+        .join("game_logic.dll")
+        .join("DrawSprite")
+        .join("v2.json");
+    let record = std::fs::read_to_string(&record_path).expect("accept record should exist");
+    assert!(
+        record.contains("conflicts:shared.rs"),
+        "accept record should name the conflicted file: {record}"
+    );
+    assert!(
+        !record.contains("merged:"),
+        "accept record must not claim a merge: {record}"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
 #[test]
 fn test_current_branch() {
     let (_tmp_dir, manager) = temp_git_repo();

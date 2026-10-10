@@ -26,14 +26,42 @@ pub struct BranchResult {
 /// Result of a merge operation.
 #[derive(Debug)]
 pub enum MergeResult {
-    Merged {
-        merge_hash: String,
-    },
+    /// The branch landed on main; `merge_hash` is the commit main now points at.
+    Merged { merge_hash: String },
+    /// Main already contains the branch's commits — nothing to do.
     AlreadyUpToDate,
+    /// The branch cannot merge cleanly; `conflicted_files` names every file
+    /// with a content conflict and main is left untouched.
     Conflicts {
         conflicted_files: Vec<String>,
         error: String,
     },
+}
+
+/// Collects the paths of every conflicted entry in a merge index, sorted and
+/// deduplicated — libgit2 records one index entry per stage (ancestor, ours,
+/// theirs) for the same path, so a single conflicting file appears up to
+/// three times.
+fn conflicted_paths(index: &git2::Index) -> Result<Vec<String>, TypesError> {
+    let conflicts = index
+        .conflicts()
+        .map_err(|e| TypesError::InvalidBranchName(format!("Conflict scan failed: {}", e)))?;
+    let mut paths: Vec<String> = conflicts
+        .filter_map(|conflict| {
+            let conflict = conflict.ok()?;
+            // A path conflict always has at least one side; the ancestor
+            // covers the both-deleted case.
+            let entry = conflict
+                .our
+                .as_ref()
+                .or(conflict.their.as_ref())
+                .or(conflict.ancestor.as_ref())?;
+            Some(String::from_utf8_lossy(&entry.path).into_owned())
+        })
+        .collect();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 /// Stores failure details for a translation attempt.
@@ -532,7 +560,27 @@ impl GitManager {
             .merge_commits(&main_commit, &branch_commit, None)
             .map_err(|e| TypesError::InvalidBranchName(format!("Merge failed: {}", e)))?;
 
-        let merge_tree_id = merge_index.write_tree().map_err(|e| {
+        // Detect conflicts before committing: a conflicted merge index cannot
+        // produce a tree, and letting the tree-write fail surfaces as an
+        // opaque error while the reviewer believes the unit was accepted
+        // (issue #83).
+        if merge_index.has_conflicts() {
+            let conflicted_files = conflicted_paths(&merge_index)?;
+            warn!(
+                "Merge of '{}' into main conflicts in: {}",
+                branch.name,
+                conflicted_files.join(", ")
+            );
+            return Ok(MergeResult::Conflicts {
+                conflicted_files,
+                error: format!("branch '{}' does not merge cleanly into main", branch.name),
+            });
+        }
+
+        // The merge index from `merge_commits` is in-memory, so the tree must
+        // be written against the repo explicitly — `write_tree()` on an
+        // unbacked index always fails (issue #83).
+        let merge_tree_id = merge_index.write_tree_to(&self.repo).map_err(|e| {
             TypesError::InvalidBranchName(format!("Write merge tree failed: {}", e))
         })?;
         let merge_tree = self
@@ -583,6 +631,9 @@ impl GitManager {
     ///
     /// Returns the merge result and writes a timestamp to
     /// `re/accepts/{binary}/{function}/v{N}.json` for dashboard visibility.
+    /// When the merge conflicts, the record's `merge_result` says
+    /// `conflicts:{files}:{error}` instead of claiming a merge — callers must
+    /// still refuse to mark the unit accepted (issue #83).
     pub fn accept_branch(&self, branch: &GitBranch) -> Result<MergeResult, TypesError> {
         info!("Accepting branch '{}'", branch.name);
 

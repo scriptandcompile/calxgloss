@@ -349,7 +349,17 @@ pub async fn api_accept_unit(
     let merge_hash = match &result {
         calxgloss_git::MergeResult::Merged { merge_hash } => Some(merge_hash.clone()),
         calxgloss_git::MergeResult::AlreadyUpToDate => None,
-        calxgloss_git::MergeResult::Conflicts { .. } => None,
+        // A conflicted merge landed nothing on main — report the conflict
+        // instead of answering as if the unit had been accepted (issue #83).
+        calxgloss_git::MergeResult::Conflicts {
+            conflicted_files,
+            error,
+        } => {
+            return Err(ServerError::internal(&format!(
+                "Cannot accept unit {unit_id}: {error} — conflicted files: {}",
+                conflicted_files.join(", ")
+            )));
+        }
     };
 
     info!("Unit {unit_id} accepted — branch {} merged", branch.name);

@@ -86,6 +86,10 @@ fn persist_action_state(
 // ============================================================
 
 /// Accept a unit of work: merge the branch to main and persist the action.
+///
+/// When the branch cannot merge cleanly, the merge conflicts are reported as
+/// an error naming the conflicted files and no `Accepted` action state is
+/// persisted — the unit keeps its pre-accept status (issue #83).
 pub async fn accept_unit(
     state: &ActionsState,
     unit_id: &str,
@@ -103,7 +107,17 @@ pub async fn accept_unit(
     let merge_hash = match &merge_result {
         calxgloss_git::MergeResult::Merged { merge_hash } => Some(merge_hash.clone()),
         calxgloss_git::MergeResult::AlreadyUpToDate => None,
-        calxgloss_git::MergeResult::Conflicts { .. } => None,
+        // A conflicted merge landed nothing on main — fail before persisting
+        // any action state so the unit keeps its pre-accept status (issue #83).
+        calxgloss_git::MergeResult::Conflicts {
+            conflicted_files,
+            error,
+        } => {
+            return Err(anyhow::anyhow!(
+                "Cannot accept unit {unit_id}: {error} — conflicted files: {}",
+                conflicted_files.join(", ")
+            ));
+        }
     };
 
     // Persist action state
