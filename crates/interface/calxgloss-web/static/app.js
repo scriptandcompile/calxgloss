@@ -23,6 +23,7 @@ import {
     showPatchModal,
     setupQueueDragAndDrop,
     cycleQueuePriority,
+    toggleQueueSkip,
 } from "./js/queue.js";
 import { GraphRenderer } from "./js/graph.js";
 import { WSManager } from "./js/ws.js";
@@ -54,17 +55,29 @@ function setupEventListeners() {
     });
 
     // Full queue list clicks (queue view) — show inline detail; the
-    // priority chip cycles the unit's priority instead (issue #74).
-    document.getElementById("full-queue-list").addEventListener("click", (e) => {
+    // priority chip cycles the unit's priority instead (issue #74), and
+    // the skip checkbox toggles skip state instead (issue #75).
+    const fullQueueList = document.getElementById("full-queue-list");
+    fullQueueList.addEventListener("click", (e) => {
         const item = e.target.closest(".queue-item-full");
         if (!item) return;
         if (e.target.closest(".qi-priority")) {
             cycleQueuePriority(item.dataset.unitId);
             return;
         }
+        if (e.target.closest(".qi-skip-check")) return;
         State.selectedUnitId = item.dataset.unitId;
         renderInlineDetail(item.dataset.unitId);
         renderFullQueue(State.dashboard, State.selectedUnitId);
+    });
+
+    // Skip checkbox (issue #75): checking skips the unit, unchecking
+    // restores it to the active queue.
+    fullQueueList.addEventListener("change", (e) => {
+        const box = e.target.closest(".qi-skip-check");
+        if (!box) return;
+        const item = box.closest(".queue-item-full");
+        if (item) toggleQueueSkip(item.dataset.unitId, box.checked);
     });
 
     // Drag-and-drop reordering of the queue (issue #74).

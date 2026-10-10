@@ -53,7 +53,14 @@ impl ReviewDashboard {
 
             if is_accepted {
                 recent.push(unit.clone());
-            } else if is_pending || unit.status == ReviewStatus::Queued {
+            } else if is_pending
+                || unit.status == ReviewStatus::Queued
+                || unit.status == ReviewStatus::Skipped
+            {
+                // Skipped units stay in the queue (not the active section —
+                // `sorted_queue` and the counts treat them as inactive) so
+                // the queue view can render them and the reviewer can
+                // unskip them inline.
                 queue.push(unit.clone());
             }
 
@@ -290,13 +297,16 @@ impl ReviewDashboard {
             // Also skip units that *are* the failing dependency itself — those
             // should keep their original status (SendBack/PatchRequested) since
             // the whole point of auto-blocking is about *dependents* of failing
-            // units, not the failing units themselves.
+            // units, not the failing units themselves. A reviewer's explicit
+            // `Skipped` is likewise never overwritten — unskipping re-derives
+            // the state from the artifacts, where the cascade applies again.
             if matches!(
                 unit.status,
                 ReviewStatus::Blocked
                     | ReviewStatus::Accepted
                     | ReviewStatus::SendBack
                     | ReviewStatus::PatchRequested
+                    | ReviewStatus::Skipped
             ) {
                 continue;
             }
@@ -318,6 +328,7 @@ impl ReviewDashboard {
                     | ReviewStatus::Accepted
                     | ReviewStatus::SendBack
                     | ReviewStatus::PatchRequested
+                    | ReviewStatus::Skipped
             ) {
                 continue;
             }

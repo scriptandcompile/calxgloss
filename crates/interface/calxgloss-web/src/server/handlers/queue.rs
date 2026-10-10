@@ -4,12 +4,16 @@
 use std::collections::HashMap;
 
 use super::super::{
-    QueueEntry, QueueOverlay, QueueOverlayResponse, QueueOverlayUpdate, QueuePosition,
-    QueuePriority, QueueResponse, ServerError, ServerState,
+    ActionResponse, QueueEntry, QueueOverlay, QueueOverlayResponse, QueueOverlayUpdate,
+    QueuePosition, QueuePriority, QueueResponse, ServerError, ServerState,
 };
-use calxgloss_types::{DependencyGraph, ReviewStatus};
+use calxgloss_types::{DependencyGraph, ReviewSkips, ReviewStatus};
 
-use axum::{Json, extract::State};
+use axum::{
+    Json,
+    extract::{Path, State},
+};
+use tracing::info;
 
 // ─── GET /api/queue ──────────────────────────────────────────────────
 
@@ -105,6 +109,80 @@ fn overlay_response(
     }
 }
 
+// ─── /api/units/{id}/skip + /unskip (issue #75) ──────────────────────
+
+/// Skips a review unit: it leaves the active queue and the dependency-ordered
+/// queue until it is unskipped. The skip set is persisted at
+/// `re/review/skips.json` and applied by the dashboard builder, so the state
+/// survives rebuilds and shows in the CLI dashboard too. Registered in every
+/// router — skip is persisted review state, not live pipeline state.
+pub async fn api_skip_unit(
+    State(state): State<ServerState>,
+    Path(unit_id): Path<String>,
+) -> Result<Json<ActionResponse>, ServerError> {
+    set_unit_skipped(&state, &unit_id, true)
+}
+
+/// Unskips a previously skipped unit, restoring its artifact-derived status
+/// and queue position. Registered in every router (issue #75).
+pub async fn api_unskip_unit(
+    State(state): State<ServerState>,
+    Path(unit_id): Path<String>,
+) -> Result<Json<ActionResponse>, ServerError> {
+    set_unit_skipped(&state, &unit_id, false)
+}
+
+/// Shared skip/unskip body: the unit must exist and not be accepted (merged
+/// branch state is authoritative), the persisted skip set is updated
+/// idempotently, and the result is reported like the other review actions.
+fn set_unit_skipped(
+    state: &ServerState,
+    unit_id: &str,
+    skipped: bool,
+) -> Result<Json<ActionResponse>, ServerError> {
+    let unit = find_unit(state, unit_id)?;
+    if matches!(unit.status, ReviewStatus::Accepted) {
+        return Err(ServerError::Conflict(format!(
+            "Unit {unit_id} is already accepted — skipping does not apply"
+        )));
+    }
+
+    let mut skips = load_skips(state.repo_path());
+    if skipped {
+        if !skips.skipped.iter().any(|id| id == unit_id) {
+            skips.skipped.push(unit_id.to_string());
+        }
+    } else {
+        skips.skipped.retain(|id| id != unit_id);
+    }
+    save_skips(state.repo_path(), &skips)?;
+
+    let (action, message) = if skipped {
+        (
+            "skip",
+            format!("Unit {unit_id} skipped — it leaves the review queue until unskipped"),
+        )
+    } else {
+        (
+            "unskip",
+            format!("Unit {unit_id} unskipped — it is back in the review queue"),
+        )
+    };
+    info!(
+        "Unit {unit_id} {}",
+        if skipped { "skipped" } else { "unskipped" }
+    );
+
+    Ok(Json(ActionResponse {
+        unit_id: unit_id.to_string(),
+        action: action.to_string(),
+        merge_hash: None,
+        branch_name: None,
+        message,
+        rejection_path: None,
+    }))
+}
+
 // ─── Helper functions ─────────────────────────────────────────────────
 
 /// Find a unit by ID using the repository's review dashboard.
@@ -160,6 +238,29 @@ pub(crate) fn save_queue_overlay(
 ) -> Result<(), ServerError> {
     calxgloss_types::save_json(&queue_overlay_path(repo_path), overlay)
         .map_err(|e| ServerError::internal(&format!("Failed to save queue overlay: {e}")))
+}
+
+/// Path of the persisted skip set inside the repo (issue #75) — the shared
+/// [`ReviewSkips::path_in`] keeps the web writer and the builder reader
+/// pointed at the same file.
+pub(crate) fn skips_path(repo_path: &std::path::Path) -> std::path::PathBuf {
+    ReviewSkips::path_in(repo_path)
+}
+
+/// Loads the persisted skip set, degrading to an empty set when the file
+/// is missing or corrupt.
+pub(crate) fn load_skips(repo_path: &std::path::Path) -> ReviewSkips {
+    super::process::load_json_or_default(&skips_path(repo_path))
+}
+
+/// Writes the skip set atomically so a skip made in the UI survives a
+/// server restart.
+pub(crate) fn save_skips(
+    repo_path: &std::path::Path,
+    skips: &ReviewSkips,
+) -> Result<(), ServerError> {
+    calxgloss_types::save_json(&skips_path(repo_path), skips)
+        .map_err(|e| ServerError::internal(&format!("Failed to save skip state: {e}")))
 }
 
 /// Orders the review queue: dependency order governs, and the persisted
@@ -514,5 +615,59 @@ mod tests {
         std::fs::write(&path, "not json").expect("write corrupt overlay");
         let corrupt = load_queue_overlay(dir.path());
         assert!(corrupt.order.is_empty() && corrupt.priorities.is_empty());
+    }
+
+    #[test]
+    fn skips_round_trip_through_disk() {
+        let dir = tempfile::tempdir().expect("temp workspace");
+        let skips = ReviewSkips {
+            skipped: vec!["func_A".into(), "func_B".into()],
+        };
+
+        save_skips(dir.path(), &skips).expect("skips save");
+        let loaded = load_skips(dir.path());
+        assert_eq!(loaded.skipped, skips.skipped);
+    }
+
+    #[test]
+    fn load_skips_degrades_to_empty_when_missing_or_corrupt() {
+        let dir = tempfile::tempdir().expect("temp workspace");
+        assert!(load_skips(dir.path()).skipped.is_empty());
+
+        let path = skips_path(dir.path());
+        std::fs::create_dir_all(path.parent().expect("skips dir")).expect("create re/review");
+        std::fs::write(&path, "not json").expect("write corrupt skips");
+        assert!(load_skips(dir.path()).skipped.is_empty());
+    }
+
+    #[test]
+    fn queue_order_excludes_skipped_units_from_the_active_section() {
+        // A skipped unit stays in the dashboard's review queue (so the UI
+        // can unskip it) but leaves the active, dependency-ordered section
+        // that /api/queue and /api/queue/next serve from (issue #75).
+        let dashboard = make_dashboard(
+            vec![
+                make_unit(
+                    "func_A",
+                    WorkKind::FunctionTranslation,
+                    ReviewStatus::Queued,
+                ),
+                make_unit(
+                    "func_B",
+                    WorkKind::FunctionTranslation,
+                    ReviewStatus::Skipped,
+                ),
+            ],
+            make_graph(
+                &[
+                    ("func_A", WorkKind::FunctionTranslation),
+                    ("func_B", WorkKind::FunctionTranslation),
+                ],
+                &[("func_B", "func_A")],
+            ),
+        );
+
+        let order = ids(&queue_order(&dashboard, &QueueOverlay::default()));
+        assert_eq!(order, vec!["func_A"], "skipped unit leaves the queue order");
     }
 }

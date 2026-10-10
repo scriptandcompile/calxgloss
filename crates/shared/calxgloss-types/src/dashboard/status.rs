@@ -13,6 +13,7 @@ pub struct StatusCounts {
     pub send_back: usize,
     pub patch_requested: usize,
     pub blocked: usize,
+    pub skipped: usize,
 }
 
 impl StatusCounts {
@@ -25,6 +26,7 @@ impl StatusCounts {
             + self.send_back
             + self.patch_requested
             + self.blocked
+            + self.skipped
     }
 
     /// The tally for one status. The single status→field mapping shared by
@@ -39,6 +41,7 @@ impl StatusCounts {
             ReviewStatus::SendBack => &mut self.send_back,
             ReviewStatus::PatchRequested => &mut self.patch_requested,
             ReviewStatus::Blocked => &mut self.blocked,
+            ReviewStatus::Skipped => &mut self.skipped,
         }
     }
 }
@@ -47,7 +50,7 @@ impl std::fmt::Display for StatusCounts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "queued: {}, pending: {}, in_progress: {}, accepted: {}, send_back: {}, patch: {}, blocked: {}",
+            "queued: {}, pending: {}, in_progress: {}, accepted: {}, send_back: {}, patch: {}, blocked: {}, skipped: {}",
             self.queued,
             self.pending_review,
             self.in_progress,
@@ -55,6 +58,7 @@ impl std::fmt::Display for StatusCounts {
             self.send_back,
             self.patch_requested,
             self.blocked,
+            self.skipped,
         )
     }
 }

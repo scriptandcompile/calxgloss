@@ -177,6 +177,7 @@ fn review_status_display() {
     assert_eq!(ReviewStatus::SendBack.to_string(), "send_back");
     assert_eq!(ReviewStatus::PatchRequested.to_string(), "patch_requested");
     assert_eq!(ReviewStatus::Blocked.to_string(), "blocked");
+    assert_eq!(ReviewStatus::Skipped.to_string(), "skipped");
 }
 
 #[test]
@@ -206,13 +207,15 @@ fn status_counts_display() {
         send_back: 1,
         patch_requested: 0,
         blocked: 1,
+        skipped: 2,
     };
     let display = format!("{}", counts);
     assert!(display.contains("queued: 3"));
     assert!(display.contains("pending: 2"));
     assert!(display.contains("in_progress: 0"));
     assert!(display.contains("accepted: 5"));
-    assert_eq!(counts.total(), 12);
+    assert!(display.contains("skipped: 2"));
+    assert_eq!(counts.total(), 14);
 }
 
 #[test]
@@ -225,6 +228,7 @@ fn status_counts_serialization() {
         send_back: 4,
         patch_requested: 5,
         blocked: 6,
+        skipped: 7,
     };
     let json = serde_json::to_string(&counts).unwrap();
     let deserialized: StatusCounts = serde_json::from_str(&json).unwrap();
@@ -235,6 +239,7 @@ fn status_counts_serialization() {
     assert_eq!(deserialized.send_back, 4);
     assert_eq!(deserialized.patch_requested, 5);
     assert_eq!(deserialized.blocked, 6);
+    assert_eq!(deserialized.skipped, 7);
 }
 
 #[test]
@@ -247,12 +252,100 @@ fn review_status_serialization() {
         ReviewStatus::SendBack,
         ReviewStatus::PatchRequested,
         ReviewStatus::Blocked,
+        ReviewStatus::Skipped,
     ];
     for status in &statuses {
         let json = serde_json::to_string(status).unwrap();
         let deserialized: ReviewStatus = serde_json::from_str(&json).unwrap();
         assert_eq!(&deserialized, status);
     }
+}
+
+/// Minimal unit for the skip-state tests: only id/status/dependencies vary.
+fn make_unit(id: &str, status: ReviewStatus, dependencies: Vec<String>) -> UnitOfWork {
+    UnitOfWork {
+        id: id.into(),
+        name: id.into(),
+        kind: WorkKind::FunctionTranslation,
+        binary: "test.dll".into(),
+        function: Some(id.into()),
+        attempt: 1,
+        status,
+        accepted: false,
+        unit_confidence: None,
+        baseline_tests_passed: None,
+        baseline_tests_total: None,
+        verification_tests_passed: None,
+        verification_tests_total: None,
+        llm_model: None,
+        context_tier: None,
+        dependencies,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        known_gaps: vec![],
+        stale: Staleness::Fresh,
+    }
+}
+
+#[test]
+fn skipped_units_stay_in_review_queue_and_count_separately() {
+    let dashboard = ReviewDashboard::new(vec![
+        make_unit("func_a", ReviewStatus::Queued, vec![]),
+        make_unit("func_b", ReviewStatus::Skipped, vec![]),
+    ]);
+
+    // Skipped units remain in the review queue so the queue view can render
+    // them (and let the reviewer unskip inline)…
+    assert!(dashboard.review_queue.iter().any(|u| u.id == "func_b"));
+    // …but they are tallied separately, not in the active counts.
+    assert_eq!(dashboard.status_counts.skipped, 1);
+    assert_eq!(dashboard.status_counts.queued, 1);
+}
+
+#[test]
+fn skipped_units_leave_dependency_order_and_next_unit() {
+    let dashboard = ReviewDashboard::new(vec![
+        make_unit("func_b", ReviewStatus::Skipped, vec![]),
+        make_unit("func_a", ReviewStatus::Queued, vec![]),
+    ]);
+
+    // The dependency-ordered queue carries only active units — a skipped
+    // unit must not be picked as next or appear in the ordered list.
+    let ordered: Vec<&str> = dashboard
+        .sorted_queue()
+        .iter()
+        .map(|u| u.id.as_str())
+        .collect();
+    assert_eq!(ordered, vec!["func_a"]);
+    assert_eq!(dashboard.next_in_dependency_order().unwrap().id, "func_a");
+    let pending: Vec<&str> = dashboard
+        .pending_in_dependency_order()
+        .iter()
+        .map(|u| u.id.as_str())
+        .collect();
+    assert_eq!(pending, vec!["func_a"]);
+}
+
+#[test]
+fn auto_block_preserves_skipped_units() {
+    // func_b is skipped and depends on a sent-back unit. The blocking
+    // cascade must not overwrite the reviewer's explicit skip — unskipping
+    // later re-derives the state from the artifacts anyway.
+    let mut dashboard = ReviewDashboard::new(vec![
+        make_unit("dep", ReviewStatus::SendBack, vec![]),
+        make_unit("func_b", ReviewStatus::Skipped, vec!["dep".into()]),
+    ]);
+
+    dashboard.auto_block_units();
+
+    let func_b = dashboard
+        .review_queue
+        .iter()
+        .find(|u| u.id == "func_b")
+        .expect("skipped unit stays in the review queue");
+    assert_eq!(func_b.status, ReviewStatus::Skipped);
+    assert_eq!(dashboard.status_counts.skipped, 1);
+    assert_eq!(dashboard.status_counts.blocked, 0);
 }
 
 #[test]

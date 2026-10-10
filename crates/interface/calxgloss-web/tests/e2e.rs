@@ -1751,6 +1751,164 @@ async fn test_queue_overlay_breaks_ties_in_queue_endpoint() {
     );
 }
 
+/// Skip state round-trips through the API (issue #75): skipping a unit
+/// moves it to `Skipped` in the dashboard, excludes it from `/api/queue`
+/// and `/api/queue/next`, and persists to `re/review/skips.json`;
+/// unskipping restores its artifact-derived status. Accepted units refuse
+/// the skip with 409.
+#[tokio::test]
+async fn test_skip_unit_round_trip_and_queue_exclusion() {
+    let fixture = TestFixture::new();
+    add_pending_translation(&fixture, "RenderHUD");
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+    let client = reqwest::Client::new();
+
+    let draw = "game_logic.dll/DrawPrimitive/v2";
+    let hud = "game_logic.dll/RenderHUD/v1";
+    let draw_enc = urlencoding::encode(draw);
+    let accepted = "game_logic.dll/UpdateScene/v1";
+
+    let queue_ids = || async {
+        let resp = reqwest::get(format!("{base}/api/queue"))
+            .await
+            .expect("queue request succeeds");
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().await.expect("queue body is JSON");
+        body["queue"]
+            .as_array()
+            .expect("queue is an array")
+            .iter()
+            .map(|e| e["id"].as_str().expect("queue entry has an id").to_string())
+            .collect::<Vec<String>>()
+    };
+
+    // Both units start in the active queue.
+    let ids = queue_ids().await;
+    assert!(ids.iter().any(|id| id == draw), "DrawPrimitive queued");
+    assert!(ids.iter().any(|id| id == hud), "RenderHUD queued");
+
+    // Skip DrawPrimitive.
+    let resp = client
+        .post(format!("{base}/api/units/{draw_enc}/skip"))
+        .send()
+        .await
+        .expect("skip request succeeds");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("skip body is JSON");
+    assert_eq!(body["action"], "skip");
+    assert_eq!(body["unit_id"], draw);
+
+    // The dashboard reports it Skipped and tallies it separately.
+    let resp = reqwest::get(format!("{base}/api/dashboard"))
+        .await
+        .expect("dashboard request succeeds");
+    let body: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+    let skipped_unit = body["dashboard"]["review_queue"]
+        .as_array()
+        .expect("review_queue is an array")
+        .iter()
+        .find(|u| u["id"] == draw)
+        .expect("skipped unit stays in the review queue");
+    assert_eq!(
+        skipped_unit["status"], "Skipped",
+        "skipped unit reports Skipped"
+    );
+    assert_eq!(
+        body["dashboard"]["status_counts"]["skipped"].as_u64(),
+        Some(1),
+        "status counts tally the skipped unit"
+    );
+
+    // It leaves the dependency-ordered queue and can never be the next unit.
+    let ids = queue_ids().await;
+    assert!(
+        !ids.iter().any(|id| id == draw),
+        "skipped unit excluded from /api/queue, got {ids:?}"
+    );
+    let resp = reqwest::get(format!("{base}/api/queue/next"))
+        .await
+        .expect("next request succeeds");
+    let body: serde_json::Value = resp.json().await.expect("next body is JSON");
+    assert_ne!(
+        body["id"].as_str(),
+        Some(draw),
+        "skipped unit is never the next unit"
+    );
+
+    // The skip set lives in the repo, beside the other review records.
+    let skips_file = fixture
+        .repo_path()
+        .join("re")
+        .join("review")
+        .join("skips.json");
+    let raw = std::fs::read_to_string(&skips_file).expect("skips persisted");
+    let value: serde_json::Value = serde_json::from_str(&raw).expect("skips is JSON");
+    assert_eq!(value["skipped"], serde_json::json!([draw]));
+
+    // An accepted unit refuses the skip — merged branch state is
+    // authoritative.
+    let resp = client
+        .post(format!(
+            "{base}/api/units/{}/skip",
+            urlencoding::encode(accepted)
+        ))
+        .send()
+        .await
+        .expect("skip-accepted request succeeds");
+    assert_eq!(resp.status(), 409, "skipping an accepted unit conflicts");
+
+    // An unknown unit is a 404.
+    let resp = client
+        .post(format!(
+            "{base}/api/units/{}/skip",
+            urlencoding::encode("nope/nope/v1")
+        ))
+        .send()
+        .await
+        .expect("skip-unknown request succeeds");
+    assert_eq!(resp.status(), 404);
+
+    // Unskip restores the artifact-derived status and the queue position.
+    let resp = client
+        .post(format!("{base}/api/units/{draw_enc}/unskip"))
+        .send()
+        .await
+        .expect("unskip request succeeds");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("unskip body is JSON");
+    assert_eq!(body["action"], "unskip");
+
+    let ids = queue_ids().await;
+    assert!(
+        ids.iter().any(|id| id == draw),
+        "unskipped unit is back in /api/queue"
+    );
+    let resp = reqwest::get(format!("{base}/api/dashboard"))
+        .await
+        .expect("dashboard request succeeds");
+    let body: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+    assert_eq!(
+        body["dashboard"]["status_counts"]["skipped"].as_u64(),
+        Some(0),
+        "unskipped unit leaves the skipped tally"
+    );
+    let restored = body["dashboard"]["review_queue"]
+        .as_array()
+        .expect("review_queue is an array")
+        .iter()
+        .find(|u| u["id"] == draw)
+        .expect("unit still in the review queue");
+    assert_ne!(
+        restored["status"], "Skipped",
+        "status restored after unskip"
+    );
+}
+
 /// Verify that the dependency graph endpoint returns valid graph data.
 #[tokio::test]
 async fn test_dependency_graph_endpoint() {
@@ -5119,6 +5277,152 @@ async fn test_headless_queue_priority_and_reorder() {
         persisted["priorities"][draw].as_str(),
         Some("high"),
         "priority click persists to the overlay file"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for issue #75: the queue view renders a skip
+/// checkbox per unit, clicking it marks the unit `Skipped` — the row
+/// re-renders checked with a Skipped badge — and the skip persists to
+/// `re/review/skips.json`; unchecking restores the unit.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_queue_skip_checkbox() {
+    let fixture = TestFixture::new();
+
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+
+    // Switch to the queue view so the full queue list renders.
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click queue tab");
+
+    let draw = "game_logic.dll/DrawPrimitive/v2";
+    let row_sel = format!("#full-queue-list [data-unit-id=\"{draw}\"]");
+
+    // The skip checkbox column renders, unchecked for an active unit.
+    let mut checkbox_rendered = false;
+    for _ in 0..25 {
+        if eval_bool(&format!(
+            "(() => {{ const el = document.querySelector('{row_sel} .qi-skip-check'); \
+                    return !!el && el.checked === false; }})()"
+        )) {
+            checkbox_rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        checkbox_rendered,
+        "queue skip checkbox should render unchecked for the unit"
+    );
+
+    // Clicking the checkbox skips the unit.
+    tab.evaluate(
+        &format!("document.querySelector('{row_sel} .qi-skip-check')?.click() === undefined"),
+        false,
+    )
+    .expect("click skip checkbox");
+
+    // The skip lands in the repo's skip set (poll — the POST is not awaited).
+    let skips_file = fixture
+        .repo_path()
+        .join("re")
+        .join("review")
+        .join("skips.json");
+    let wanted = serde_json::json!([draw]);
+    let mut persisted = serde_json::Value::Null;
+    for _ in 0..25 {
+        if let Ok(raw) = std::fs::read_to_string(&skips_file) {
+            let value: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+            if value["skipped"] == wanted {
+                persisted = value;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert_eq!(
+        persisted["skipped"], wanted,
+        "skip click persists to re/review/skips.json"
+    );
+
+    // After the dashboard reload the row renders checked with a Skipped
+    // badge — the checkbox reflects persisted state, not just the click.
+    let mut skipped_rendered = false;
+    for _ in 0..25 {
+        if eval_bool(&format!(
+            "(() => {{ const row = document.querySelector('{row_sel}'); \
+                    const cb = row?.querySelector('.qi-skip-check'); \
+                    const st = row?.querySelector('.qi-status'); \
+                    return !!cb && cb.checked === true \
+                        && !!st && st.textContent.includes('Skipped'); }})()"
+        )) {
+            skipped_rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        skipped_rendered,
+        "skipped unit should re-render checked with a Skipped badge"
+    );
+
+    // Unchecking unskips: the skip set empties and the row comes back.
+    tab.evaluate(
+        &format!("document.querySelector('{row_sel} .qi-skip-check')?.click() === undefined"),
+        false,
+    )
+    .expect("click skip checkbox again");
+
+    let mut unskipped = false;
+    for _ in 0..25 {
+        if let Ok(raw) = std::fs::read_to_string(&skips_file) {
+            let value: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+            if value["skipped"].as_array().is_some_and(|a| a.is_empty()) {
+                unskipped = true;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(unskipped, "unchecking empties the persisted skip set");
+
+    let mut restored_rendered = false;
+    for _ in 0..25 {
+        if eval_bool(&format!(
+            "(() => {{ const el = document.querySelector('{row_sel} .qi-skip-check'); \
+                    return !!el && el.checked === false; }})()"
+        )) {
+            restored_rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        restored_rendered,
+        "unskipped unit should re-render unchecked"
     );
 
     tab.close_target().ok();

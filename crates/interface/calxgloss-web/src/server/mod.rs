@@ -682,6 +682,10 @@ fn shared_routes() -> Router<CombinedState> {
             post(handlers::api_send_back_unit),
         )
         .route("/api/units/{id}/patch", post(handlers::api_request_patch))
+        // Skip state (issue #75): persisted in every mode — it reads/writes
+        // `re/review/skips.json`, never live pipeline state.
+        .route("/api/units/{id}/skip", post(handlers::api_skip_unit))
+        .route("/api/units/{id}/unskip", post(handlers::api_unskip_unit))
         .route("/api/queue", get(handlers::api_get_queue))
         .route("/api/queue/next", get(handlers::api_get_next_unit))
         // Queue overlay (issue #74): persisted manual order + priority,

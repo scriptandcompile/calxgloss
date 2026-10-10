@@ -67,6 +67,7 @@ fn status_symbol(status: &ReviewStatus) -> &str {
         ReviewStatus::SendBack => " ✗",
         ReviewStatus::PatchRequested => " ⚑",
         ReviewStatus::Blocked => " ✖",
+        ReviewStatus::Skipped => " ⊘",
     }
 }
 
@@ -92,6 +93,7 @@ fn format_status_display(status: &ReviewStatus) -> String {
         ReviewStatus::SendBack => "send_back",
         ReviewStatus::PatchRequested => "patch",
         ReviewStatus::Blocked => "blocked",
+        ReviewStatus::Skipped => "skipped",
     };
     format!("{} {}", symbol, text)
 }

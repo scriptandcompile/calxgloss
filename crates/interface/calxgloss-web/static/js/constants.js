@@ -9,6 +9,7 @@ export const STATUS_COLORS = {
     accepted: "#4ade80",
     sendback: "#f87171",
     blocked: "#fb923c",
+    skipped: "#9ca3af",
 };
 
 export const STATUS_LABELS = {
@@ -18,6 +19,7 @@ export const STATUS_LABELS = {
     accepted: "Accepted",
     sendback: "Send Back",
     blocked: "Blocked",
+    skipped: "⊘ Skipped",
 };
 
 export const KIND_LABELS = {

@@ -20,7 +20,9 @@ use std::path::PathBuf;
 
 use calxgloss_git::{DependencyChecker, GitManager};
 use calxgloss_types::DllCategory;
-use calxgloss_types::dashboard::{ReviewDashboard, ReviewStatus, Staleness, UnitOfWork, WorkKind};
+use calxgloss_types::dashboard::{
+    ReviewDashboard, ReviewSkips, ReviewStatus, Staleness, UnitOfWork, WorkKind,
+};
 use calxgloss_types::{BinaryIdentity, work_kind_for_prefix};
 use chrono::Utc;
 
@@ -126,6 +128,9 @@ impl<'a> DashboardBuilder<'a> {
         // 2b. Scan send-back records for sent-back verdicts
         let sent_back_keys = self.read_all_send_back_records()?;
 
+        // 2c. Read the reviewer's skip set (issue #75)
+        let skipped_keys = self.read_skips();
+
         // 3. Read baseline data
         let baselines = self.read_all_baselines()?;
 
@@ -156,9 +161,13 @@ impl<'a> DashboardBuilder<'a> {
             // Branch state is authoritative for acceptance; failing verdicts
             // come from the durable records — a send-back at this attempt
             // outranks a patch request (send-back then re-patched lands the
-            // request on the *next* attempt's key, never this one).
+            // request on the *next* attempt's key, never this one). An
+            // explicit reviewer skip (issue #75) outranks the artifact-
+            // derived failing/pending states — unskipping restores them.
             unit.status = if merged {
                 ReviewStatus::Accepted
+            } else if skipped_keys.contains(key.as_str()) {
+                ReviewStatus::Skipped
             } else if sent_back {
                 ReviewStatus::SendBack
             } else if patch_requested {
@@ -302,6 +311,18 @@ impl<'a> DashboardBuilder<'a> {
             });
         }
         Ok(records)
+    }
+
+    /// Reads the reviewer skip set from `re/review/skips.json` (issue #75).
+    /// A missing or corrupt file degrades to an empty set — skip state is
+    /// advisory review data, never a build error.
+    fn read_skips(&self) -> std::collections::HashSet<String> {
+        let path = ReviewSkips::path_in(&self.repo_path);
+        let skips: ReviewSkips = match std::fs::read_to_string(&path) {
+            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+            Err(_) => ReviewSkips::default(),
+        };
+        skips.skipped.into_iter().collect()
     }
 
     /// Reads every send-back record under
@@ -872,6 +893,66 @@ mod tests {
             serde_json::to_string(&results).expect("serialize baseline"),
         )
         .expect("write baseline");
+    }
+
+    #[test]
+    fn skipped_units_keep_skipped_status_across_rebuilds() {
+        // The reviewer's skip set at `re/review/skips.json` (issue #75) is
+        // applied over the artifact-derived status for unmerged units, so a
+        // skipped unit stays out of the active queue after a rebuild.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = init_test_repo(dir.path());
+
+        let branch = git
+            .create_branch("game_logic.dll", "DrawPrimitive", 1, None)
+            .expect("translation branch")
+            .branch;
+        std::fs::write(dir.path().join("translation.c"), "// translated").expect("write source");
+        git.commit(&branch, "re: translate DrawPrimitive", &[])
+            .expect("commit on branch");
+
+        write_skips(&git, &["game_logic.dll/DrawPrimitive/v1"]);
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("dashboard builds");
+
+        let unit = find_unit(&dashboard, "game_logic.dll/DrawPrimitive/v1");
+        assert_eq!(unit.status, ReviewStatus::Skipped);
+    }
+
+    #[test]
+    fn merged_units_stay_accepted_despite_skip() {
+        // Branch state is authoritative for acceptance: a merged branch is
+        // Accepted even if the skip set still names the unit.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = init_test_repo(dir.path());
+
+        git.create_branch("game_logic.dll", "DrawPrimitive", 1, None)
+            .expect("translation branch");
+
+        write_skips(&git, &["game_logic.dll/DrawPrimitive/v1"]);
+
+        let dashboard = DashboardBuilder::new(&git)
+            .build()
+            .expect("dashboard builds");
+
+        let unit = find_unit(&dashboard, "game_logic.dll/DrawPrimitive/v1");
+        assert_eq!(unit.status, ReviewStatus::Accepted);
+    }
+
+    /// Writes a `re/review/skips.json` artifact naming the given unit ids.
+    fn write_skips(git: &GitManager, ids: &[&str]) {
+        let dir = git.repo_path().join("re").join("review");
+        std::fs::create_dir_all(&dir).expect("review dir");
+        let skips = ReviewSkips {
+            skipped: ids.iter().map(|s| s.to_string()).collect(),
+        };
+        std::fs::write(
+            dir.join("skips.json"),
+            serde_json::to_string(&skips).expect("serialize skips"),
+        )
+        .expect("write skips");
     }
 
     /// Fetches a built unit by id from either dashboard list.

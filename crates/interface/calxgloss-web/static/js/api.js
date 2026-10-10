@@ -55,6 +55,8 @@ export const API = {
     async acceptUnit(id) { return API.post(`/api/units/${encodeURIComponent(id)}/accept`); },
     async sendBackUnit(id, reason) { return API.post(`/api/units/${encodeURIComponent(id)}/send-back`, { reason }); },
     async patchUnit(id, issue) { return API.post(`/api/units/${encodeURIComponent(id)}/patch`, { issue }); },
+    async skipUnit(id) { return API.post(`/api/units/${encodeURIComponent(id)}/skip`); },
+    async unskipUnit(id) { return API.post(`/api/units/${encodeURIComponent(id)}/unskip`); },
     async queue() { return API.get("/api/queue"); },
     async nextUnit() { return API.get("/api/queue/next"); },
     async graph() { return API.get("/api/graph"); },

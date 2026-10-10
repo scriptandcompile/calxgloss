@@ -30,3 +30,25 @@ pub enum ReviewActionKind {
     /// View the original Ghidra context.
     ViewGhidraContext,
 }
+
+/// Persisted skip state for review units (issue #75).
+///
+/// Stored as a JSON file at `re/review/skips.json` in the repo, written by
+/// the web server when a unit is skipped/unskipped from the review queue,
+/// and read by the dashboard builder so skipped units keep their `Skipped`
+/// status across rebuilds (like send-back verdicts). A unit that has been
+/// merged (Accepted) is never reported as skipped.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ReviewSkips {
+    /// Unit IDs the reviewer has chosen to skip.
+    pub skipped: Vec<String>,
+}
+
+impl ReviewSkips {
+    /// Path of the persisted skip set inside the repo — review-UI state,
+    /// filed beside the queue overlay rather than under `re/analysis`
+    /// (which holds pipeline artifacts).
+    pub fn path_in(repo_path: &std::path::Path) -> std::path::PathBuf {
+        repo_path.join("re").join("review").join("skips.json")
+    }
+}

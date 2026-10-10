@@ -24,6 +24,7 @@ export function renderFullQueue(dashboard, selectedId = null) {
             pending_review: "pending_review",
             in_progress: "in_progress",
             blocked: "blocked",
+            skipped: "skipped",
         };
         units = units.filter(u => u.status.toLowerCase().replace(/\s+/g, "_") === statusMap[filter]);
     }
@@ -59,9 +60,17 @@ export function renderFullQueue(dashboard, selectedId = null) {
         // Manual priority (issue #74); click the chip to cycle it.
         const priority = (State.queueOverlay.priorities || {})[u.id] || "normal";
 
+        // Skip checkbox (issue #75): checked when the unit is skipped —
+        // the builder reports that status, so the box reflects persisted
+        // state across reloads.
+        const isSkipped = u.status === "Skipped";
+
         return `
             <div class="queue-item-full ${u.id === selectedId ? "selected" : ""}" data-unit-id="${u.id}" draggable="true">
                 <div class="queue-item-icon ${iconClass}"></div>
+                <input type="checkbox" class="qi-skip-check" ${isSkipped ? "checked" : ""}
+                    title="${isSkipped ? "Unskip this unit" : "Skip this unit"}"
+                    aria-label="${isSkipped ? "Unskip" : "Skip"} ${u.id}">
                 <div class="qi-name" title="${u.id}">${name}</div>
                 <div class="qi-priority prio-${priority}" title="Priority: ${priority.toUpperCase()} — click to change">${priority.toUpperCase()}</div>
                 <div class="qi-status ${iconClass}">${STATUS_LABELS[u.status] || u.status}</div>
@@ -182,6 +191,28 @@ export async function cycleQueuePriority(unitId) {
     if (State.dashboard) renderFullQueue(State.dashboard, State.selectedUnitId);
 
     await persistOverlayPatch({ priorities }, previous, "Priority update failed");
+}
+
+// ─── Skip toggle (issue #75) ────────────────────────────────────────────
+
+// Skip or unskip a unit: the server persists the skip set and the rebuild
+// moves the unit out of (or back into) the active queue, so the whole
+// dashboard is reloaded to reflect the new state.
+export async function toggleQueueSkip(unitId, skip) {
+    try {
+        if (skip) {
+            await API.skipUnit(unitId);
+            showToast(`Skipped: ${unitId}`, "info");
+        } else {
+            await API.unskipUnit(unitId);
+            showToast(`Unskipped: ${unitId}`, "info");
+        }
+        await loadDashboard();
+    } catch (err) {
+        showToast(`Skip toggle failed: ${err.message}`, "error");
+        // Re-render from the unchanged state so the checkbox snaps back.
+        if (State.dashboard) renderFullQueue(State.dashboard, State.selectedUnitId);
+    }
 }
 
 // ─── Detail Panel ───────────────────────────────────────────────────────

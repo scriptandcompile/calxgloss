@@ -147,6 +147,11 @@ pub enum ReviewStatus {
     PatchRequested,
     /// The unit is blocked because one or more dependencies are not in a passing state.
     Blocked,
+    /// The reviewer explicitly skipped this unit. It leaves the active queue
+    /// (counts and dependency order) but stays visible in the queue view so
+    /// it can be unskipped; the skip is a reviewer decision, not a pipeline
+    /// verdict, so it survives rebuilds from the persisted skip record.
+    Skipped,
 }
 
 impl std::fmt::Display for ReviewStatus {
@@ -159,6 +164,7 @@ impl std::fmt::Display for ReviewStatus {
             ReviewStatus::SendBack => write!(f, "send_back"),
             ReviewStatus::PatchRequested => write!(f, "patch_requested"),
             ReviewStatus::Blocked => write!(f, "blocked"),
+            ReviewStatus::Skipped => write!(f, "skipped"),
         }
     }
 }

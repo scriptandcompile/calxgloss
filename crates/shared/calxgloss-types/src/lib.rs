@@ -76,7 +76,7 @@ pub use cscan::{
 };
 pub use dashboard::{
     DependencyEdge, DependencyGraph, DependencyNode, ReviewAction, ReviewActionKind,
-    ReviewDashboard, ReviewStatus, StatusCounts, UnitOfWork, WorkKind,
+    ReviewDashboard, ReviewSkips, ReviewStatus, StatusCounts, UnitOfWork, WorkKind,
 };
 pub use dll::{DllCategory, DllInfo, Export, Import};
 pub use error::TypesError;
