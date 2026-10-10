@@ -7,7 +7,9 @@
 //! Run browser tests:   `cargo test --features server --test e2e headless -- --ignored`
 
 use calxgloss_git::{GitManager, InitConfig};
-use calxgloss_types::{GitBranch, ProgressEvent, TestCase, TestResult, TranslationEvents};
+use calxgloss_types::{
+    GitBranch, PipelineControl, ProgressEvent, TestCase, TestResult, TranslationEvents,
+};
 use calxgloss_web::{
     ActionsState, LlmIoLog, ProgressState, ServerState, SessionManager, build_dashboard,
     build_router, build_router_with_actions, build_router_with_ws, serve_with_listener,
@@ -527,6 +529,198 @@ async fn test_server_status_live_router_idle() {
     let body: serde_json::Value = resp.json().await.expect("status body is JSON");
     assert_eq!(body["pipeline_status"], "idle");
     assert_eq!(body["ws_connections"], 0);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Pipeline lifecycle control (issue #90, W2.1)
+// ─────────────────────────────────────────────────────────────
+
+/// POST helper for the lifecycle endpoints (they take no body).
+async fn post_lifecycle(port: u16, path: &str) -> (reqwest::StatusCode, serde_json::Value) {
+    let resp = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{port}{path}"))
+        .send()
+        .await
+        .expect("lifecycle request reaches server");
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.expect("lifecycle body is JSON");
+    (status, body)
+}
+
+/// The live router's pause/resume/stop endpoints drive the shared
+/// PipelineControl (issue #90): 200 with the transition in the body, 409
+/// when the state machine refuses the operation, and `/api/server/status`
+/// derived from the machine — "paused" even while a unit record is still
+/// in flight, which the old in-flight-count inference could not tell apart.
+#[tokio::test]
+async fn test_pipeline_lifecycle_control_endpoints() {
+    let fixture = TestFixture::new();
+    let events = TranslationEvents::new(128);
+    let control = PipelineControl::new().with_events(events.clone());
+    control.start().expect("idle -> running");
+    let state = ServerState::new(fixture.repo_path()).with_pipeline_control(control.clone());
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // A unit in flight — the point is that the reported status now follows
+    // the state machine, not the in-flight count.
+    events.emit(ProgressEvent::TranslationStarted {
+        binary: "game_logic.dll".into(),
+        function: "DrawPrimitive".into(),
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let get_status = |port: u16| {
+        let fixture_port = port;
+        async move {
+            let resp = reqwest::get(format!("http://127.0.0.1:{fixture_port}/api/server/status",))
+                .await
+                .expect("server status request succeeds");
+            assert_eq!(resp.status(), 200);
+            let body: serde_json::Value = resp.json().await.expect("status body is JSON");
+            body["pipeline_status"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        }
+    };
+    assert_eq!(get_status(fixture.port()).await, "running");
+
+    // Pause: 200, body reports the transition.
+    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/pause").await;
+    assert_eq!(status, 200);
+    assert_eq!(body["previous"], "running");
+    assert_eq!(body["state"], "paused");
+
+    // Status follows the machine even with the unit record still in flight.
+    assert_eq!(get_status(fixture.port()).await, "paused");
+
+    // Double pause: the machine refuses — 409, not a silent no-op.
+    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/pause").await;
+    assert_eq!(status, 409);
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("cannot pause a pipeline that is paused"),
+        "409 carries the machine's own message, got: {body}"
+    );
+
+    // Resume: back to running.
+    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/resume").await;
+    assert_eq!(status, 200);
+    assert_eq!(body["previous"], "paused");
+    assert_eq!(body["state"], "running");
+    assert_eq!(get_status(fixture.port()).await, "running");
+
+    // Stop: running -> stopping; resume from stopping is refused.
+    let (status, body) = post_lifecycle(fixture.port(), "/api/pipeline/stop").await;
+    assert_eq!(status, 200);
+    assert_eq!(body["state"], "stopping");
+    assert_eq!(get_status(fixture.port()).await, "stopping");
+    let (status, _) = post_lifecycle(fixture.port(), "/api/pipeline/resume").await;
+    assert_eq!(status, 409, "a stopping pipeline cannot resume");
+}
+
+/// Every lifecycle transition reaches WS clients as a raw
+/// `pipeline_state_changed` event on the shared broadcast (issue #90) —
+/// the dashboard reconciles its buttons from the pushed event, not from a
+/// refetch.
+#[tokio::test]
+async fn test_pipeline_state_changes_reach_ws_clients() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let fixture = TestFixture::new();
+    let events = TranslationEvents::new(128);
+    let control = PipelineControl::new().with_events(events.clone());
+    control.start().expect("idle -> running");
+    let state = ServerState::new(fixture.repo_path()).with_pipeline_control(control.clone());
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!(
+        "ws://127.0.0.1:{}/api/events/upgrade",
+        fixture.port()
+    ))
+    .await
+    .expect("websocket upgrade succeeds");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    for path in ["/api/pipeline/pause", "/api/pipeline/resume"] {
+        let (status, _) = post_lifecycle(fixture.port(), path).await;
+        assert_eq!(status, 200, "{path} should succeed");
+    }
+
+    // Collect wire messages and pull out the lifecycle events with their
+    // previous/state payloads.
+    let mut transitions: Vec<(String, String)> = Vec::new();
+    for _ in 0..20 {
+        if transitions.len() >= 2 {
+            break;
+        }
+        let msg = match tokio::time::timeout(Duration::from_millis(500), ws.next()).await {
+            Ok(Some(Ok(m))) => m,
+            _ => continue,
+        };
+        if let Message::Text(text) = msg {
+            let v: serde_json::Value =
+                serde_json::from_str(text.as_str()).expect("wire message is JSON");
+            if v["event"].as_str() == Some("pipeline_state_changed") {
+                transitions.push((
+                    v["previous"].as_str().unwrap_or_default().to_string(),
+                    v["state"].as_str().unwrap_or_default().to_string(),
+                ));
+            }
+        }
+    }
+    assert_eq!(
+        transitions,
+        vec![
+            ("running".to_string(), "paused".to_string()),
+            ("paused".to_string(), "running".to_string()),
+        ],
+        "WS clients should see each lifecycle transition in order"
+    );
+}
+
+/// A live router built **without** a control attached (the pre-W2.1 wiring)
+/// answers the lifecycle endpoints honestly with 503 rather than pretending
+/// to control a pipeline it does not hold.
+#[tokio::test]
+async fn test_pipeline_lifecycle_endpoints_503_without_control() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let (manager, _event_tx) = SessionManager::new();
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    for path in [
+        "/api/pipeline/pause",
+        "/api/pipeline/resume",
+        "/api/pipeline/stop",
+    ] {
+        let (status, body) = post_lifecycle(fixture.port(), path).await;
+        assert_eq!(status, 503, "{path} without a control should be 503");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("no live pipeline control"),
+            "503 explains why, got: {body}"
+        );
+    }
 }
 
 /// WS phase events (issue #55, W0 Phase 2 tail): after applying each
@@ -3606,6 +3800,28 @@ async fn test_live_only_endpoints_absent_from_non_live_routers() {
             assert_eq!(
                 resp.status(),
                 404,
+                "{path} must not be routed on the {kind} router"
+            );
+        }
+
+        // Issue #90: the pipeline lifecycle control endpoints are live-only
+        // too — a plain serve/actions router has no pipeline to control.
+        // Unrouted POST paths fall through to the GET-only static fallback,
+        // which rejects the method with 405 (a GET on them 404s, as above);
+        // either way the lifecycle handler never runs.
+        for path in [
+            "/api/pipeline/pause",
+            "/api/pipeline/resume",
+            "/api/pipeline/stop",
+        ] {
+            let resp = reqwest::Client::new()
+                .post(format!("http://127.0.0.1:{}{}", fixture.port(), path))
+                .send()
+                .await
+                .expect("request reaches server");
+            assert_eq!(
+                resp.status(),
+                405,
                 "{path} must not be routed on the {kind} router"
             );
         }

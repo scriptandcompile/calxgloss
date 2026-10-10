@@ -3,8 +3,8 @@
 use axum::http::StatusCode;
 use calxgloss_types::{
     BinaryIdentity, BinaryProgress, FaultCategory, FaultEvent, FaultSeverity, PhaseProgress,
-    PhaseRecord, PipelinePhase, ReviewDashboard, ReviewStatus, TokenUsageEntry, TranslationPhase,
-    UnitOfWork,
+    PhaseRecord, PipelinePhase, PipelineState, ReviewDashboard, ReviewStatus, TokenUsageEntry,
+    TranslationPhase, UnitOfWork,
 };
 use serde::{Deserialize, Serialize};
 
@@ -877,6 +877,12 @@ impl ServerError {
     pub fn unavailable(msg: &str) -> Self {
         Self::ServiceUnavailable(msg.to_string())
     }
+
+    /// Build a 409 — the request conflicts with the resource's current
+    /// state (e.g. pausing an already-paused pipeline).
+    pub fn conflict(msg: &str) -> Self {
+        Self::Conflict(msg.to_string())
+    }
 }
 
 impl From<super::lifecycle::LifecycleError> for ServerError {
@@ -1069,15 +1075,45 @@ impl PipelineProgressResponse {
 /// The web server only observes the pipeline when it was built with live
 /// state (`calxgloss live`); on plain `serve` routers the pipeline is
 /// [`PipelineStatus::Unavailable`] rather than a fabricated "idle".
+///
+/// Issue #90 (W2.1) widened this enum to mirror the shared
+/// [`PipelineState`] machine — the status is **derived from the state
+/// machine**, not inferred from in-flight unit counts, so the dashboard
+/// header and the pipeline always agree even while a paused run still has
+/// a unit record in flight.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PipelineStatus {
     /// No live translation state is attached to this server (plain `serve`).
     Unavailable,
-    /// A live pipeline is attached but no units are currently in flight.
+    /// A live pipeline is attached but its run has not started translating.
     Idle,
-    /// One or more units are currently being translated.
+    /// The run is translating (or between units of it).
     Running,
+    /// A pause was requested; the run is halted at a unit boundary.
+    Paused,
+    /// A stop was requested; the current unit is finishing before the halt.
+    Stopping,
+    /// The run finished — naturally or after a stop.
+    Complete,
+    /// The run failed.
+    Error,
+}
+
+/// The server-status mirror of the shared lifecycle machine (issue #90).
+/// Only `Unavailable` has no counterpart — it means "no pipeline attached",
+/// which the state machine itself never reports.
+impl From<PipelineState> for PipelineStatus {
+    fn from(state: PipelineState) -> Self {
+        match state {
+            PipelineState::Idle => PipelineStatus::Idle,
+            PipelineState::Running => PipelineStatus::Running,
+            PipelineState::Paused => PipelineStatus::Paused,
+            PipelineState::Stopping => PipelineStatus::Stopping,
+            PipelineState::Complete => PipelineStatus::Complete,
+            PipelineState::Error => PipelineStatus::Error,
+        }
+    }
 }
 
 /// Snapshot of the server's own health and resource usage, served by
@@ -1160,6 +1196,21 @@ pub struct ServerLifecycleResponse {
     /// True for restart: the process stops and the operator must restart
     /// it manually — the web server does not own the pipeline process.
     pub restart_required: bool,
+}
+
+/// Response body of the `POST /api/pipeline/pause`, `.../resume` and
+/// `.../stop` lifecycle control endpoints (issue #90, W2.1). Reports the
+/// transition that actually happened — the state the pipeline moved from
+/// and to — so the dashboard can reconcile its buttons without a second
+/// round-trip.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PipelineLifecycleResponse {
+    /// The state the pipeline was in when the request arrived.
+    pub previous: PipelineState,
+    /// The state the pipeline moved to.
+    pub state: PipelineState,
+    /// Human-readable confirmation for the operator.
+    pub message: String,
 }
 
 /// Response body of `GET /api/llm-io` (issue #77) — the retained window of

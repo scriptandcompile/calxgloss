@@ -29,7 +29,7 @@ targets, not exact requirements.
 |---|-------|-------|--------|--------|-----------|------|
 | W0 | Web UI Foundation & Phase Progress | `calxgloss-web` | 2–3 wk | ✅ done | closed — see epic [#55](https://github.com/scriptandcompile/calxgloss/issues/55) | [#55](https://github.com/scriptandcompile/calxgloss/issues/55) |
 | W1 | Web UI Status & Visibility | `calxgloss-web` | 1–2 wk | ✅ done | closed — see epic [#72](https://github.com/scriptandcompile/calxgloss/issues/72) | [#72](https://github.com/scriptandcompile/calxgloss/issues/72) |
-| W2 | Web UI Process Control | `calxgloss-web` + types/translator | 3–4 wk | 🔶 planned | spec published — `/to-tickets` next | [#88](https://github.com/scriptandcompile/calxgloss/issues/88) |
+| W2 | Web UI Process Control | `calxgloss-web` + types/translator | 3–4 wk | 🔶 in progress | W2.1 backend done — next: W2 controls UI | [#88](https://github.com/scriptandcompile/calxgloss/issues/88) |
 | W3 | Web UI Historical & Analytical Views | `calxgloss-web` | 2–3 wk | 🔶 planned | spec published — `/to-tickets` next | [#89](https://github.com/scriptandcompile/calxgloss/issues/89) |
 | W4 | Web UI New Views | `calxgloss-web` | 2–3 wk | ⬜ not started | after W0 P1, W1 P0–1 | — |
 | G1 | Ghidra Lifecycle Integration | `calxgloss-ghidra` + `calxgloss-cli` | 3–4 wk | ⬜ not started | spec from design doc (P0–P4 phasing) | — |

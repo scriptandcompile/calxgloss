@@ -5,6 +5,7 @@
 //! to the web UI during live translation.
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tokio::sync::broadcast;
 
 use crate::identity::{BinaryIdentity, UnitKey};
@@ -317,6 +318,18 @@ pub enum ProgressEvent {
         /// Recommended back-off time before retrying (in seconds).
         recommended_backoff_secs: u64,
     },
+    /// The pipeline's lifecycle state changed (issue #90, W2.1).
+    ///
+    /// Emitted by every successful [`PipelineControl`] transition — start,
+    /// pause, resume, stop, complete, fail — so the WebSocket broadcast and
+    /// any dashboard mirror the state machine in real time instead of
+    /// inferring it from unit traffic. Batch-level: it names no unit.
+    PipelineStateChanged {
+        /// The state the pipeline left.
+        previous: PipelineState,
+        /// The state the pipeline entered.
+        state: PipelineState,
+    },
 }
 
 impl ProgressEvent {
@@ -384,7 +397,8 @@ impl ProgressEvent {
             | ProgressEvent::BatchStarted { .. }
             | ProgressEvent::QueuePlanned { .. }
             | ProgressEvent::BatchProgress { .. }
-            | ProgressEvent::BatchSummary { .. } => None,
+            | ProgressEvent::BatchSummary { .. }
+            | ProgressEvent::PipelineStateChanged { .. } => None,
         }
     }
 }
@@ -667,6 +681,9 @@ impl std::fmt::Display for ProgressEvent {
                     "Resource exhaustion for {function} ({binary}) attempt #{attempt} [{strategy}]: {reason} ({elapsed_secs}s elapsed, backoff {recommended_backoff_secs}s)"
                 )
             }
+            ProgressEvent::PipelineStateChanged { previous, state } => {
+                write!(f, "Pipeline state: {previous} → {state}")
+            }
         }
     }
 }
@@ -809,6 +826,247 @@ impl StopSignal {
     /// Whether a stop has been requested.
     pub fn is_stopped(&self) -> bool {
         self.stopped.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// The lifecycle state of a live translation run (issue #90, W2.1).
+///
+/// The state machine (driven only through [`PipelineControl`]):
+///
+/// ```text
+/// Idle ──start()──> Running ──pause()──> Paused ──resume()──> Running
+///                 │                      │
+///                 │ stop()               │ stop()
+///                 ▼                      ▼
+///               Stopping ──complete()──> Complete
+///                 │
+///                 └───(error)──> Error
+/// ```
+///
+/// `complete()` is also legal directly from `Running` (the run ended
+/// naturally), and `fail()` from any live state. `Complete` and `Error`
+/// are terminal. The web server's server-status endpoint mirrors this
+/// enum, so the dashboard header and the pipeline always agree on what
+/// the run is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PipelineState {
+    /// No translation run has started yet.
+    Idle,
+    /// A run is translating (or between units of it).
+    Running,
+    /// A pause was requested; the run halts at the next unit boundary and
+    /// waits there until resumed or stopped.
+    Paused,
+    /// A stop was requested; the current unit finishes, then the run halts.
+    Stopping,
+    /// The run finished — naturally or after a stop. Terminal.
+    Complete,
+    /// The run failed. Terminal.
+    Error,
+}
+
+impl PipelineState {
+    /// Whether the run must not start another unit at its next boundary —
+    /// a stop was requested (`Stopping`) or the run has ended (`Complete`).
+    /// `Paused` is deliberately *not* halted: the run parks at the
+    /// boundary, waiting to resume.
+    pub fn is_halted(self) -> bool {
+        matches!(self, PipelineState::Stopping | PipelineState::Complete)
+    }
+
+    /// Stable numeric encoding for the control handle's atomic cell.
+    fn as_code(self) -> u8 {
+        match self {
+            PipelineState::Idle => 0,
+            PipelineState::Running => 1,
+            PipelineState::Paused => 2,
+            PipelineState::Stopping => 3,
+            PipelineState::Complete => 4,
+            PipelineState::Error => 5,
+        }
+    }
+
+    /// Decode a code written by [`Self::as_code`]. Unknown codes decode to
+    /// `Idle` — the cell is only ever written by `as_code`, so an unknown
+    /// code can only come from memory corruption, and `Idle` fails safe
+    /// (nothing in flight to disturb).
+    fn from_code(code: u8) -> Self {
+        match code {
+            1 => PipelineState::Running,
+            2 => PipelineState::Paused,
+            3 => PipelineState::Stopping,
+            4 => PipelineState::Complete,
+            5 => PipelineState::Error,
+            _ => PipelineState::Idle,
+        }
+    }
+}
+
+impl std::fmt::Display for PipelineState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            PipelineState::Idle => "idle",
+            PipelineState::Running => "running",
+            PipelineState::Paused => "paused",
+            PipelineState::Stopping => "stopping",
+            PipelineState::Complete => "complete",
+            PipelineState::Error => "error",
+        };
+        f.write_str(name)
+    }
+}
+
+/// A lifecycle operation rejected because the pipeline's current state does
+/// not allow it (e.g. pausing an already-paused pipeline). The web layer
+/// turns this into a 409 rather than silently ignoring the request.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("cannot {operation} a pipeline that is {current}")]
+pub struct PipelineTransitionError {
+    /// The lifecycle operation that was refused.
+    pub operation: &'static str,
+    /// The state the pipeline was in when the operation arrived.
+    pub current: PipelineState,
+}
+
+/// A shared handle on the live pipeline's [`PipelineState`] (issue #90, W2.1).
+///
+/// Modeled on [`StopSignal`]: `Arc`-backed and cheaply cloneable, so the
+/// web server and the translation pipeline hold separate clones of one
+/// state machine. Transitions are atomic compare-and-set against the state
+/// machine's legality table — an operation that the current state forbids
+/// fails with a typed [`PipelineTransitionError`] instead of silently
+/// doing nothing, so a stale dashboard button can never corrupt the run's
+/// state.
+///
+/// When built `with_events`, every successful transition emits a
+/// [`ProgressEvent::PipelineStateChanged`] on the shared event channel, so
+/// the WebSocket broadcast and progress state stay the single source of
+/// dashboard truth.
+///
+/// # Example
+///
+/// ```
+/// use calxgloss_types::{PipelineControl, PipelineState};
+///
+/// let control = PipelineControl::new();
+/// control.start().expect("idle -> running");
+/// control.pause().expect("running -> paused");
+///
+/// // Pausing again is rejected, not silently ignored.
+/// assert!(control.pause().is_err());
+/// control.resume().expect("paused -> running");
+/// assert_eq!(control.state(), PipelineState::Running);
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct PipelineControl {
+    state: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    events: Option<TranslationEvents>,
+}
+
+impl PipelineControl {
+    /// Create a new control sitting in [`PipelineState::Idle`], emitting no
+    /// lifecycle events.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Emit a [`ProgressEvent::PipelineStateChanged`] on `events` for every
+    /// successful transition.
+    pub fn with_events(mut self, events: TranslationEvents) -> Self {
+        self.events = Some(events);
+        self
+    }
+
+    /// The state the pipeline is in right now.
+    pub fn state(&self) -> PipelineState {
+        PipelineState::from_code(self.state.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    /// Idle → Running: begin the translation phase of a live session.
+    pub fn start(&self) -> Result<(), PipelineTransitionError> {
+        self.transition("start", &[PipelineState::Idle], PipelineState::Running)
+    }
+
+    /// Running → Paused: the pipeline observes this at the next **unit
+    /// boundary** — the unit in flight is never interrupted mid-LLM-call.
+    pub fn pause(&self) -> Result<(), PipelineTransitionError> {
+        self.transition("pause", &[PipelineState::Running], PipelineState::Paused)
+    }
+
+    /// Paused → Running: continue exactly where the pause stopped the run.
+    pub fn resume(&self) -> Result<(), PipelineTransitionError> {
+        self.transition("resume", &[PipelineState::Paused], PipelineState::Running)
+    }
+
+    /// Running | Paused → Stopping: finish the current unit, clean up, then
+    /// halt. The pipeline marks the halt with [`Self::complete`].
+    pub fn stop(&self) -> Result<(), PipelineTransitionError> {
+        self.transition(
+            "stop",
+            &[PipelineState::Running, PipelineState::Paused],
+            PipelineState::Stopping,
+        )
+    }
+
+    /// Running | Stopping → Complete: the run halted in a consistent state
+    /// — naturally at the end of the queue, or after a stop.
+    pub fn complete(&self) -> Result<(), PipelineTransitionError> {
+        self.transition(
+            "complete",
+            &[PipelineState::Running, PipelineState::Stopping],
+            PipelineState::Complete,
+        )
+    }
+
+    /// Running | Paused | Stopping → Error: the run failed.
+    pub fn fail(&self) -> Result<(), PipelineTransitionError> {
+        self.transition(
+            "fail",
+            &[
+                PipelineState::Running,
+                PipelineState::Paused,
+                PipelineState::Stopping,
+            ],
+            PipelineState::Error,
+        )
+    }
+
+    /// Atomically move the state machine if `current` is in `allowed`,
+    /// emitting the lifecycle event on success. A racing transition makes
+    /// this retry with the fresh state, so two operators clicking at once
+    /// produce exactly one winner and one typed rejection.
+    fn transition(
+        &self,
+        operation: &'static str,
+        allowed: &[PipelineState],
+        target: PipelineState,
+    ) -> Result<(), PipelineTransitionError> {
+        loop {
+            let current_code = self.state.load(std::sync::atomic::Ordering::SeqCst);
+            let current = PipelineState::from_code(current_code);
+            if !allowed.contains(&current) {
+                return Err(PipelineTransitionError { operation, current });
+            }
+            match self.state.compare_exchange(
+                current_code,
+                target.as_code(),
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            ) {
+                Ok(_) => {
+                    if let Some(events) = &self.events {
+                        events.emit(ProgressEvent::PipelineStateChanged {
+                            previous: current,
+                            state: target,
+                        });
+                    }
+                    return Ok(());
+                }
+                // Another transition won the race — re-read and re-decide.
+                Err(_) => continue,
+            }
+        }
     }
 }
 
@@ -1181,5 +1439,170 @@ mod tests {
 
         signal.stop();
         assert!(signal.is_stopped(), "stop is idempotent");
+    }
+
+    // ── Pipeline lifecycle state machine (issue #90, W2.1) ──────────────
+
+    #[test]
+    fn pipeline_state_serde_round_trip() {
+        for state in [
+            PipelineState::Idle,
+            PipelineState::Running,
+            PipelineState::Paused,
+            PipelineState::Stopping,
+            PipelineState::Complete,
+            PipelineState::Error,
+        ] {
+            let json = serde_json::to_value(state).expect("serializes");
+            let back: PipelineState = serde_json::from_value(json.clone()).expect("deserializes");
+            assert_eq!(back, state, "round trip preserves {state}");
+        }
+        assert_eq!(
+            serde_json::to_value(PipelineState::Paused).expect("serializes"),
+            "paused"
+        );
+    }
+
+    #[test]
+    fn pipeline_state_changed_event_serde_round_trip() {
+        let event = ProgressEvent::PipelineStateChanged {
+            previous: PipelineState::Running,
+            state: PipelineState::Paused,
+        };
+        let json = serde_json::to_value(&event).expect("serializes");
+        assert_eq!(json["event"], "pipeline_state_changed");
+        assert_eq!(json["previous"], "running");
+        assert_eq!(json["state"], "paused");
+        assert!(event.unit_key().is_none(), "lifecycle events name no unit");
+        assert!(
+            TranslationPhase::from_event(&event).is_none(),
+            "a lifecycle transition derives no unit phase"
+        );
+        assert!(
+            event.to_string().contains("paused"),
+            "display shows the transition: {event}"
+        );
+    }
+
+    #[test]
+    fn pipeline_control_valid_transitions_succeed() {
+        let control = PipelineControl::new();
+        assert_eq!(control.state(), PipelineState::Idle);
+
+        control.start().expect("idle -> running");
+        control.pause().expect("running -> paused");
+        control.resume().expect("paused -> running");
+        control.pause().expect("running -> paused (again)");
+        control.stop().expect("paused -> stopping");
+        control.complete().expect("stopping -> complete");
+        assert_eq!(control.state(), PipelineState::Complete);
+
+        // A run may also complete naturally, or fail from any live state.
+        let control = PipelineControl::new();
+        control.start().expect("idle -> running");
+        control
+            .complete()
+            .expect("running -> complete (natural end)");
+
+        let control = PipelineControl::new();
+        control.start().expect("idle -> running");
+        control.stop().expect("running -> stopping");
+        control.fail().expect("stopping -> error");
+        assert_eq!(control.state(), PipelineState::Error);
+    }
+
+    #[test]
+    fn pipeline_control_invalid_transitions_error() {
+        let control = PipelineControl::new();
+        // Nothing can be driven before start, and start is not re-entrant.
+        assert!(control.pause().is_err(), "idle cannot be paused");
+        assert!(control.resume().is_err(), "idle cannot be resumed");
+        assert!(control.stop().is_err(), "idle cannot be stopped");
+        control.start().expect("idle -> running");
+        assert!(control.start().is_err(), "running cannot start again");
+        control.pause().expect("running -> paused");
+        assert!(
+            control.pause().is_err(),
+            "pausing an already-paused pipeline is rejected"
+        );
+        control.stop().expect("paused -> stopping");
+        assert!(control.pause().is_err(), "stopping cannot be paused");
+        assert!(control.resume().is_err(), "stopping cannot be resumed");
+        control.complete().expect("stopping -> complete");
+        assert!(control.start().is_err(), "complete is terminal");
+        assert!(control.fail().is_err(), "complete is terminal");
+    }
+
+    #[test]
+    fn pipeline_control_error_names_the_operation_and_state() {
+        let control = PipelineControl::new();
+        control.start().expect("idle -> running");
+        control.pause().expect("running -> paused");
+        let err = control.pause().expect_err("already paused must error");
+        assert_eq!(err.operation, "pause");
+        assert_eq!(err.current, PipelineState::Paused);
+        assert_eq!(err.to_string(), "cannot pause a pipeline that is paused");
+    }
+
+    #[test]
+    fn pipeline_control_is_shared_across_clones() {
+        let control = PipelineControl::new();
+        let clone = control.clone();
+        assert_eq!(clone.state(), PipelineState::Idle);
+
+        clone.start().expect("idle -> running");
+        assert_eq!(
+            control.state(),
+            PipelineState::Running,
+            "clones share the state"
+        );
+
+        control.pause().expect("running -> paused");
+        assert_eq!(clone.state(), PipelineState::Paused);
+
+        assert!(
+            clone.start().is_err(),
+            "the clone sees the pause and rejects the start"
+        );
+    }
+
+    #[test]
+    fn pipeline_control_emits_state_changed_events_on_transition() {
+        let events = TranslationEvents::new(16);
+        let mut rx = events.subscribe();
+        let control = PipelineControl::new().with_events(events);
+
+        control.start().expect("idle -> running");
+        control.pause().expect("running -> paused");
+
+        let first = rx.try_recv().expect("start emitted");
+        assert!(
+            matches!(
+                first,
+                ProgressEvent::PipelineStateChanged {
+                    previous: PipelineState::Idle,
+                    state: PipelineState::Running,
+                }
+            ),
+            "start emits idle -> running, got: {first}"
+        );
+        let second = rx.try_recv().expect("pause emitted");
+        assert!(
+            matches!(
+                second,
+                ProgressEvent::PipelineStateChanged {
+                    previous: PipelineState::Running,
+                    state: PipelineState::Paused,
+                }
+            ),
+            "pause emits running -> paused, got: {second}"
+        );
+
+        // A rejected transition emits nothing — the stream only carries truth.
+        assert!(control.pause().is_err());
+        assert!(
+            rx.try_recv().is_err(),
+            "a rejected transition emits no event"
+        );
     }
 }

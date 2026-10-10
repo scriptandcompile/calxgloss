@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use calxgloss::{StopSignal, TranslationEvents};
+use calxgloss::{PipelineControl, PipelineState, StopSignal, TranslationEvents};
 use calxgloss_web::{
     LogLevelControl, ServerState, SessionManager, build_router_with_ws, serve_with_listener,
 };
@@ -77,9 +77,17 @@ pub async fn handle_live(
     // pipeline observes it at unit boundaries.
     let stop_signal = StopSignal::new();
 
+    // Pipeline lifecycle control (issue #90, W2.1) — one state machine
+    // shared between the pipeline (which observes it at unit boundaries)
+    // and the web server (whose pause/resume/stop endpoints drive it).
+    // Every successful transition emits a PipelineStateChanged event on
+    // the shared channel, so WS clients see the run's state change live.
+    let control = PipelineControl::new().with_events(events.clone());
+
     let serve_workspace = workspace.clone();
     let serve_progress = progress.clone();
     let serve_stop = stop_signal.clone();
+    let serve_control = control.clone();
 
     let serve_handle = tokio::spawn(async move {
         let workspace = serve_workspace;
@@ -101,7 +109,8 @@ pub async fn handle_live(
         let server_state = ServerState::new(workspace)
             .with_log_level(log_level)
             .with_log_filter(log_filter)
-            .with_stop_signal(serve_stop);
+            .with_stop_signal(serve_stop)
+            .with_pipeline_control(serve_control);
 
         // Build the router with WebSocket support so the frontend can stream
         // progress events over the upgrade endpoint.
@@ -140,6 +149,12 @@ pub async fn handle_live(
         }
     }
 
+    // The run is starting — move the shared state machine Idle → Running
+    // so the dashboard header and the control endpoints see a live run.
+    if let Err(e) = control.start() {
+        debug!("pipeline start transition refused: {e}");
+    }
+
     // Run the auto pipeline in the foreground (this blocks until complete).
     let auto_result = crate::commands::auto::handle_auto(
         target,
@@ -155,8 +170,28 @@ pub async fn handle_live(
         callgraph_cache,
         callgraph_verbose,
         Some(&stop_signal), // shutdown/restart endpoints pause at unit boundaries
+        Some(&control),     // pause/resume/stop endpoints drive the run
     )
     .await;
+
+    // Record the run's terminal state on the shared machine so the
+    // dashboard reflects how it ended (issue #90).
+    if auto_result.is_ok() {
+        // The shutdown/restart stop signal can release a pause park — the
+        // run then ends while the machine still says Paused. Walk it
+        // through Stopping so it reaches Complete like any other stopped
+        // run, rather than leaving the dashboard stuck on "paused".
+        if control.state() == PipelineState::Paused
+            && let Err(e) = control.stop()
+        {
+            debug!("pipeline stop transition refused: {e}");
+        }
+        if let Err(e) = control.complete() {
+            debug!("pipeline complete transition refused: {e}");
+        }
+    } else if let Err(e) = control.fail() {
+        debug!("pipeline fail transition refused: {e}");
+    }
 
     // Auto is done — shut down the server gracefully.
     // The server handle is a tokio::JoinHandle; we drop it which sends the

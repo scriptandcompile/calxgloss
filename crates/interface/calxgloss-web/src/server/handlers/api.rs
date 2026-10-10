@@ -629,15 +629,24 @@ pub async fn api_health(
 pub async fn api_server_status(State(combined): State<CombinedState>) -> Json<ServerStatus> {
     let server = &combined.server;
 
-    let pipeline_status = match &combined.progress {
-        None => PipelineStatus::Unavailable,
-        Some(progress) => {
-            if progress.read().await.in_flight_count().await > 0 {
-                PipelineStatus::Running
-            } else {
-                PipelineStatus::Idle
+    // Issue #90: when a live run shares its PipelineControl, the reported
+    // status is the state machine's own state — the dashboard header and
+    // the pipeline always agree, even while a paused run still holds a
+    // unit record in flight. Without a control (live router built without
+    // one, or plain live wiring predating W2.1) fall back to the old
+    // in-flight-unit inference.
+    let pipeline_status = match server.pipeline_control() {
+        Some(control) => PipelineStatus::from(control.state()),
+        None => match &combined.progress {
+            None => PipelineStatus::Unavailable,
+            Some(progress) => {
+                if progress.read().await.in_flight_count().await > 0 {
+                    PipelineStatus::Running
+                } else {
+                    PipelineStatus::Idle
+                }
             }
-        }
+        },
     };
     let ws_connections = match &combined.manager {
         Some(manager) => manager.connection_count().await,

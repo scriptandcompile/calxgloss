@@ -1,8 +1,9 @@
 //! Live translation progress and pipeline progress endpoints.
 
 use super::super::{
-    BatchInfo, ClassificationInfo, CombinedState, PipelineDllProgress, PipelineProgressResponse,
-    PipelineTimeEstimate, ProgressEntry, ProgressInfo, ProgressResponse,
+    BatchInfo, ClassificationInfo, CombinedState, PipelineControl, PipelineDllProgress,
+    PipelineLifecycleResponse, PipelineProgressResponse, PipelineTimeEstimate, ProgressEntry,
+    ProgressInfo, ProgressResponse, ServerError,
 };
 
 use axum::{Json, extract::State};
@@ -13,6 +14,7 @@ use calxgloss_types::{
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use tracing::info;
 
 /// Handle GET /api/progress — return in-flight translation units.
 pub async fn api_get_progress(State(combined): State<CombinedState>) -> Json<ProgressResponse> {
@@ -581,4 +583,58 @@ fn derive_binaries(
             }
         })
         .collect()
+}
+
+// ─── POST /api/pipeline/{pause,resume,stop} ──────────────────────────
+
+/// The three lifecycle control endpoints (issue #90, W2.1) share this:
+/// take the control handle attached to the server state (503 when this
+/// live router was built without one — honest rather than pretending an
+/// idle pipeline can be paused), run the transition, and report the
+/// state it moved from and to. A transition the state machine forbids
+/// (double pause, resuming a running run) is a 409 with the machine's
+/// own message, never a silent no-op.
+fn control_pipeline(
+    combined: &CombinedState,
+    op: &str,
+    apply: impl FnOnce(&PipelineControl) -> Result<(), calxgloss_types::PipelineTransitionError>,
+) -> Result<Json<PipelineLifecycleResponse>, ServerError> {
+    let control = combined.server.pipeline_control().ok_or_else(|| {
+        ServerError::unavailable("this server has no live pipeline control attached")
+    })?;
+    let previous = control.state();
+    apply(&control).map_err(|e| ServerError::conflict(&e.to_string()))?;
+    let state = control.state();
+    info!("pipeline {op}: {previous} -> {state} requested via API");
+    Ok(Json(PipelineLifecycleResponse {
+        previous,
+        state,
+        message: format!("Pipeline {op} requested."),
+    }))
+}
+
+/// Pause the live run (issue #90): the pipeline notices at the next **unit
+/// boundary** — the unit in flight is never interrupted mid-LLM-call — and
+/// parks there until resumed or stopped. Live router only.
+pub async fn api_pause_pipeline(
+    State(combined): State<CombinedState>,
+) -> Result<Json<PipelineLifecycleResponse>, ServerError> {
+    control_pipeline(&combined, "pause", |c| c.pause())
+}
+
+/// Resume a paused run exactly where the pause stopped it. Live router only.
+pub async fn api_resume_pipeline(
+    State(combined): State<CombinedState>,
+) -> Result<Json<PipelineLifecycleResponse>, ServerError> {
+    control_pipeline(&combined, "resume", |c| c.resume())
+}
+
+/// Stop the live run (issue #90): the current unit finishes and is saved,
+/// then the run halts in a consistent state. Distinct from
+/// `POST /api/server/shutdown`, which also takes the server down. Live
+/// router only.
+pub async fn api_stop_pipeline(
+    State(combined): State<CombinedState>,
+) -> Result<Json<PipelineLifecycleResponse>, ServerError> {
+    control_pipeline(&combined, "stop", |c| c.stop())
 }

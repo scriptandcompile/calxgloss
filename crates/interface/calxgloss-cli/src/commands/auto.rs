@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use calxgloss::DllCategory;
+use calxgloss::PipelineControl;
 use calxgloss::ProgressEvent;
 use calxgloss::StopSignal;
 use calxgloss::TranslationEvents;
@@ -42,6 +43,7 @@ pub async fn run_translation_for_dll(
     callgraph_cache: Option<PathBuf>,
     callgraph_verbose: bool,
     stop: Option<&StopSignal>,
+    control: Option<&PipelineControl>,
 ) -> Result<()> {
     // The workspace — git, src/, scratch all live here.
 
@@ -138,6 +140,9 @@ pub async fn run_translation_for_dll(
     }
     if let Some(stop) = stop {
         pipeline = pipeline.with_stop_signal(stop.clone());
+    }
+    if let Some(control) = control {
+        pipeline = pipeline.with_pipeline_control(control.clone());
     }
     pipeline = pipeline.with_workspace(workspace);
 
@@ -328,6 +333,7 @@ pub async fn handle_auto(
     callgraph_cache: Option<PathBuf>,
     callgraph_verbose: bool,
     stop: Option<&StopSignal>,
+    control: Option<&PipelineControl>,
 ) -> Result<()> {
     info!("Auto mode: detecting project state");
 
@@ -477,6 +483,16 @@ pub async fn handle_auto(
                 println_content("Work completed so far is saved; restart to continue.");
                 break;
             }
+            // Issue #90: a stop requested through the pipeline control (or a
+            // run that already reached a terminal state) also ends the queue
+            // between binaries — the pipeline itself halts at unit
+            // boundaries, this keeps us from starting the next pass.
+            if control.is_some_and(|c| c.state().is_halted()) {
+                println!();
+                println_content("Pipeline stop requested — skipping remaining binaries.");
+                println_content("Work completed so far is saved; restart to continue.");
+                break;
+            }
             println!(
                 "  {} Translating functions from {}…",
                 cyan_bold("→"),
@@ -493,6 +509,7 @@ pub async fn handle_auto(
                 callgraph_cache.clone(),
                 callgraph_verbose,
                 stop,
+                control,
             )
             .await?;
         }
@@ -539,6 +556,7 @@ pub async fn handle_auto(
             callgraph_cache,
             callgraph_verbose,
             stop,
+            control,
         )
         .await?;
     }

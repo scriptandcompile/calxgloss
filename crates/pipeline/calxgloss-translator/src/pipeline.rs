@@ -62,8 +62,8 @@ use calxgloss_testgen::TestGenerator;
 use calxgloss_typeinfer::engine::TypeInferEngine;
 use calxgloss_typeinfer::persist::TypeInferPersistor;
 use calxgloss_types::{
-    BinaryIdentity, ContextTier, Export, FunctionInfo, ProgressEvent, StopSignal, TestCase,
-    TranslationEvents, TranslationRequest,
+    BinaryIdentity, ContextTier, Export, FunctionInfo, PipelineControl, PipelineState,
+    ProgressEvent, StopSignal, TestCase, TranslationEvents, TranslationRequest,
 };
 use calxgloss_typesdb::engine::TypesDBEngine;
 use calxgloss_typesdb::persist::TypeDatabasePersistor;
@@ -185,6 +185,15 @@ pub struct TranslationPipeline {
     /// boundary** — the unit in flight completes and persists before the
     /// run stops. Set by the web server's shutdown/restart endpoints.
     stop: Option<StopSignal>,
+
+    /// Shared pipeline lifecycle control handle (issue #90, W2.1).
+    ///
+    /// When set, the batch loops observe it at each **unit boundary**:
+    /// `Paused` parks the loop until the run is resumed, and
+    /// `Stopping`/`Complete` end the batch after the unit in flight has
+    /// completed and been reported to the caller (which persists it and
+    /// cleans up its branch). Driven by the web control endpoints.
+    pipeline_control: Option<PipelineControl>,
 }
 
 impl TranslationPipeline {
@@ -214,6 +223,7 @@ impl TranslationPipeline {
             call_graph: None,
             callgraph_cache_dir: None,
             stop: None,
+            pipeline_control: None,
         }
     }
 
@@ -267,9 +277,46 @@ impl TranslationPipeline {
         self
     }
 
+    /// Attach the shared [`PipelineControl`] lifecycle handle (issue #90,
+    /// W2.1).
+    ///
+    /// The web server's pause/resume/stop endpoints drive it; the batch
+    /// loops observe it at each **unit boundary** — a pause parks the loop
+    /// (no unit is interrupted mid-LLM-call), a stop lets the unit in
+    /// flight finish and then halts the batch.
+    pub fn with_pipeline_control(mut self, control: PipelineControl) -> Self {
+        self.pipeline_control = Some(control);
+        self
+    }
+
     /// Whether an attached stop signal has been requested.
     fn stop_requested(&self) -> bool {
         self.stop.as_ref().is_some_and(|s| s.is_stopped())
+    }
+
+    /// Observe the lifecycle control at a unit boundary (issue #90, W2.1).
+    ///
+    /// Returns `false` when the batch must end: `Stopping` (a stop was
+    /// requested) or `Complete` (stop-current ended the run) halt after the
+    /// unit in flight, and a stop signal arriving while the loop is parked
+    /// in a pause releases the park the same way — shutdown must never hang
+    /// on a paused run. Returns `true` when the next unit may start.
+    async fn control_allows_next_unit(&self) -> bool {
+        let Some(control) = self.pipeline_control.as_ref() else {
+            return true;
+        };
+        loop {
+            match control.state() {
+                PipelineState::Paused => {
+                    if self.stop_requested() {
+                        return false;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                state if state.is_halted() => return false,
+                _ => return true,
+            }
+        }
     }
 
     /// Emit a progress event if an event emitter was attached.
@@ -2261,6 +2308,15 @@ impl TranslationPipeline {
                 break;
             }
 
+            if !self.control_allows_next_unit().await {
+                info!(
+                    binary,
+                    remaining = functions.len() - idx,
+                    "Pipeline control halt — ending batch at unit boundary"
+                );
+                break;
+            }
+
             info!(
                 binary,
                 function,
@@ -2499,6 +2555,15 @@ impl TranslationPipeline {
                     binary,
                     remaining = plan.len() - idx,
                     "Stop signal received — ending call-graph batch at unit boundary"
+                );
+                break;
+            }
+
+            if !self.control_allows_next_unit().await {
+                info!(
+                    binary,
+                    remaining = plan.len() - idx,
+                    "Pipeline control halt — ending call-graph batch at unit boundary"
                 );
                 break;
             }
@@ -2786,6 +2851,169 @@ mod tests {
             result.results.len(),
             1,
             "the second unit must not start after the stop signal"
+        );
+    }
+
+    /// A paused `PipelineControl` parks `batch_translate` at the next unit
+    /// boundary — the unit in flight is never interrupted — and the resume
+    /// continues exactly where it stopped (issue #90, W2.1).
+    #[tokio::test]
+    async fn batch_translate_pauses_at_unit_boundary_and_resumes_where_it_stopped() {
+        let dir = TempDir::new().expect("temp workspace");
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        let control = PipelineControl::new();
+        control.start().expect("idle -> running");
+
+        // The "operator" side: watch for the pause to land, record it, then
+        // resume — mirroring the pause/resume endpoints driving the handle.
+        let watched = control.clone();
+        let order = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let order_watch = order.clone();
+        let resume_task = tokio::spawn(async move {
+            while watched.state() != PipelineState::Paused {
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
+            order_watch
+                .lock()
+                .expect("order lock")
+                .push("paused".to_string());
+            watched.resume().expect("paused -> running");
+        });
+
+        let pipeline = pipeline_over(Some(dir.path())).with_pipeline_control(control.clone());
+        let order_cb = order.clone();
+        let result = pipeline
+            .batch_translate(
+                "game_logic.dll",
+                &[
+                    "DrawPrimitive".to_string(),
+                    "UpdateScene".to_string(),
+                    "SpawnEntity".to_string(),
+                ],
+                &retry::RetryConfig::default(),
+                &verifier,
+                Some(&mut |_dll, function, _func_result| {
+                    order_cb
+                        .lock()
+                        .expect("order lock")
+                        .push(function.to_string());
+                    // Pause requested right after the first unit completes.
+                    if function == "DrawPrimitive" {
+                        control.pause().expect("running -> paused");
+                    }
+                    true
+                }),
+            )
+            .await
+            .expect("batch over unreachable ghidra still reports per-function failures");
+        resume_task.await.expect("the resume task ran");
+
+        assert_eq!(
+            control.state(),
+            PipelineState::Running,
+            "the run resumed and finished running"
+        );
+        assert_eq!(result.results.len(), 3, "a pause never drops a queued unit");
+        assert_eq!(
+            *order.lock().expect("order lock"),
+            ["DrawPrimitive", "paused", "UpdateScene", "SpawnEntity"],
+            "the pause took effect at the boundary after unit 1, before unit 2 started"
+        );
+    }
+
+    /// A stopped `PipelineControl` ends `batch_translate` at the next unit
+    /// boundary: the unit in flight completes (its callback runs, so the
+    /// caller persists it and cleans up its branch), then the run halts in
+    /// `Stopping` (issue #90, W2.1).
+    #[tokio::test]
+    async fn batch_translate_halts_at_unit_boundary_when_control_is_stopped() {
+        let dir = TempDir::new().expect("temp workspace");
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        let control = PipelineControl::new();
+        control.start().expect("idle -> running");
+        let control_cb = control.clone();
+        let pipeline = pipeline_over(Some(dir.path())).with_pipeline_control(control.clone());
+
+        let mut completed = 0;
+        let result = pipeline
+            .batch_translate(
+                "game_logic.dll",
+                &["DrawPrimitive".to_string(), "UpdateScene".to_string()],
+                &retry::RetryConfig::default(),
+                &verifier,
+                Some(&mut |_dll, _function, _func_result| {
+                    completed += 1;
+                    // Stop requested right after the first unit completes.
+                    control_cb.stop().expect("running -> stopping");
+                    true
+                }),
+            )
+            .await
+            .expect("batch over unreachable ghidra still reports per-function failures");
+
+        assert_eq!(completed, 1, "the in-flight unit completed first");
+        assert_eq!(
+            result.results.len(),
+            1,
+            "the second unit must not start after the stop"
+        );
+        assert_eq!(
+            control.state(),
+            PipelineState::Stopping,
+            "the batch halts in the stopping state"
+        );
+    }
+
+    /// A stop signal arriving while the loop is parked at a pause boundary
+    /// releases the park and ends the batch — server shutdown must never
+    /// hang on a paused run (issue #90, W2.1).
+    #[tokio::test]
+    async fn batch_translate_stop_during_pause_releases_the_park() {
+        let dir = TempDir::new().expect("temp workspace");
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        let control = PipelineControl::new();
+        control.start().expect("idle -> running");
+        let stop = StopSignal::new();
+
+        // The "operator" side: once the run is parked in Paused, fire the
+        // stop signal (what the shutdown endpoint does).
+        let watched = control.clone();
+        let stop_signal = stop.clone();
+        let stop_task = tokio::spawn(async move {
+            while watched.state() != PipelineState::Paused {
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
+            stop_signal.stop();
+        });
+
+        let pipeline = pipeline_over(Some(dir.path()))
+            .with_pipeline_control(control.clone())
+            .with_stop_signal(stop.clone());
+        let control_cb = control.clone();
+        let result = pipeline
+            .batch_translate(
+                "game_logic.dll",
+                &["DrawPrimitive".to_string(), "UpdateScene".to_string()],
+                &retry::RetryConfig::default(),
+                &verifier,
+                Some(&mut |_dll, function, _func_result| {
+                    if function == "DrawPrimitive" {
+                        control_cb.pause().expect("running -> paused");
+                    }
+                    true
+                }),
+            )
+            .await
+            .expect("batch over unreachable ghidra still reports per-function failures");
+        stop_task.await.expect("the stop task ran");
+
+        assert_eq!(
+            result.results.len(),
+            1,
+            "the parked loop ended at the boundary on the stop signal"
         );
     }
 

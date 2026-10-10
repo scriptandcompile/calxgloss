@@ -26,8 +26,8 @@ use axum::{
 };
 use calxgloss_reports::dashboard::DashboardBuilder;
 use calxgloss_types::{
-    BinaryActivity, BinaryIdentity, PhaseRecord, ProgressEvent, ReviewDashboard, StopSignal,
-    TranslationPhase, UnitKey,
+    BinaryActivity, BinaryIdentity, PhaseRecord, PipelineControl, ProgressEvent, ReviewDashboard,
+    StopSignal, TranslationPhase, UnitKey,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -54,6 +54,12 @@ pub struct ServerState {
     /// Shared stop signal — the live pipeline observes it at unit
     /// boundaries when the shutdown/restart endpoints fire.
     stop_signal: StopSignal,
+    /// The live run's [`PipelineControl`] state machine — `None` on plain
+    /// `serve` routers, which have no pipeline to control. The lifecycle
+    /// control endpoints (issue #90) drive pause/resume/stop through it,
+    /// and `/api/server/status` derives the reported pipeline status from
+    /// it when attached.
+    pipeline_control: Option<PipelineControl>,
     /// Graceful-shutdown trigger watched by `serve`/`serve_with_listener`.
     shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
 }
@@ -71,6 +77,7 @@ impl ServerState {
             host: metrics::host_name(),
             metrics: Arc::new(metrics::ProcessMetrics::for_current_process()),
             stop_signal: StopSignal::new(),
+            pipeline_control: None,
             shutdown_tx: Arc::new(tokio::sync::watch::channel(false).0),
         }
     }
@@ -98,6 +105,14 @@ impl ServerState {
     /// boundary.
     pub fn with_stop_signal(mut self, stop: StopSignal) -> Self {
         self.stop_signal = stop;
+        self
+    }
+
+    /// Attach the [`PipelineControl`] state machine the live pipeline shares
+    /// with this server, so the pause/resume/stop endpoints (issue #90) can
+    /// drive the run and `/api/server/status` can report its true state.
+    pub fn with_pipeline_control(mut self, control: PipelineControl) -> Self {
+        self.pipeline_control = Some(control);
         self
     }
 
@@ -152,6 +167,13 @@ impl ServerState {
     /// Clone of the stop signal shared with the live pipeline.
     pub fn stop_signal(&self) -> StopSignal {
         self.stop_signal.clone()
+    }
+
+    /// Clone of the pipeline control handle attached via
+    /// [`ServerState::with_pipeline_control`] — `None` when this server has
+    /// no live pipeline to control.
+    pub fn pipeline_control(&self) -> Option<PipelineControl> {
+        self.pipeline_control.clone()
     }
 
     /// Request graceful shutdown: stop accepting new requests and let
@@ -429,6 +451,13 @@ impl ProgressState {
                 if activity.as_ref().is_some_and(|(d, _)| d == binary) {
                     *activity = None;
                 }
+            }
+            ProgressEvent::PipelineStateChanged { .. } => {
+                // Run-level lifecycle change (issue #90). ProgressState
+                // tracks per-unit and per-binary state, not the run's own
+                // state — the control handle is the source of truth, read
+                // by `/api/server/status` and echoed to WS clients by the
+                // broadcast. Nothing to fold into the per-unit view.
             }
         }
     }
@@ -752,6 +781,12 @@ fn live_only_routes() -> Router<CombinedState> {
             get(handlers::api_get_progress_enhanced),
         )
         .route("/api/events/upgrade", get(api_events_upgrade_ws))
+        // Pipeline lifecycle control (issue #90, W2.1): drive the live run's
+        // state machine. Live-only — a plain `serve` router has no pipeline
+        // to control, so these must 404 there rather than answer honestly.
+        .route("/api/pipeline/pause", post(handlers::api_pause_pipeline))
+        .route("/api/pipeline/resume", post(handlers::api_resume_pipeline))
+        .route("/api/pipeline/stop", post(handlers::api_stop_pipeline))
 }
 
 /// Apply the middleware layers every router shares.
