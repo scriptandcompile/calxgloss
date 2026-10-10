@@ -13,4 +13,6 @@ export const State = {
     gcCandidates: [],
     gcSelectedBranches: new Set(),
     queueEffort: {},
+    queueOrder: [],
+    queueOverlay: { order: [], priorities: {} },
 };

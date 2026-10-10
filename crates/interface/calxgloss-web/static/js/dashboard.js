@@ -19,6 +19,8 @@ export async function loadDashboard() {
         State.dashboard = res.dashboard;
         State.units = State.dashboard.review_queue;
         State.queueEffort = res.queue_effort || {};
+        State.queueOrder = res.queue_order || [];
+        State.queueOverlay = res.queue_overlay || { order: [], priorities: {} };
 
         renderStatusCards(State.dashboard);
         renderQueueList(State.dashboard, State.selectedUnitId);

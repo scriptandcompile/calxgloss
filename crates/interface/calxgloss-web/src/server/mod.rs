@@ -684,6 +684,17 @@ fn shared_routes() -> Router<CombinedState> {
         .route("/api/units/{id}/patch", post(handlers::api_request_patch))
         .route("/api/queue", get(handlers::api_get_queue))
         .route("/api/queue/next", get(handlers::api_get_next_unit))
+        // Queue overlay (issue #74): persisted manual order + priority,
+        // available in every mode — it reads/writes
+        // `re/review/queue_overlay.json`, never live pipeline state. The PUT
+        // body carries the full manual order, which grows with the queue, so
+        // this route lifts the global 16 KB body limit.
+        .route(
+            "/api/queue/overlay",
+            get(handlers::api_get_queue_overlay)
+                .put(handlers::api_update_queue_overlay)
+                .layer(DefaultBodyLimit::max(256 * 1024)),
+        )
         .route("/api/graph", get(handlers::api_get_dependency_graph))
         .route("/api/gc/candidates", get(handlers::api_get_gc_candidates))
         .route("/api/gc/archive", post(handlers::api_archive_gc))

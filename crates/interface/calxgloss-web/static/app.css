@@ -669,7 +669,7 @@ svg {
 
 .queue-item-full {
     display: grid;
-    grid-template-columns: 8px 1fr 100px 80px 100px;
+    grid-template-columns: 8px 1fr 70px 100px 80px 100px;
     align-items: center;
     gap: 12px;
     padding: 10px 14px;
@@ -726,6 +726,42 @@ svg {
     color: var(--text-muted);
     text-align: right;
     font-family: var(--font-mono);
+}
+
+/* Priority column (issue #74) — click the chip to cycle its priority. */
+.queue-item-full .qi-priority {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-align: center;
+    padding: 2px 6px;
+    border-radius: 10px;
+    border: 1px solid var(--border-subtle);
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+}
+
+.qi-priority.prio-high {
+    color: var(--accent-red);
+    border-color: var(--accent-red);
+}
+
+.qi-priority.prio-low {
+    opacity: 0.55;
+}
+
+/* Drag-and-drop reordering (issue #74). */
+.queue-item-full.dragging {
+    opacity: 0.45;
+}
+
+.queue-item-full.drop-above {
+    box-shadow: 0 -3px 0 0 var(--accent-blue);
+}
+
+.queue-item-full.drop-below {
+    box-shadow: 0 3px 0 0 var(--accent-blue);
 }
 
 /* Status badges in full queue */
@@ -1620,6 +1656,10 @@ svg {
     }
 
     .queue-item-full .qi-effort {
+        display: none;
+    }
+
+    .queue-item-full .qi-priority {
         display: none;
     }
 }

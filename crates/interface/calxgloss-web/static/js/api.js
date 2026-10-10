@@ -35,6 +35,19 @@ export const API = {
         return res.json();
     },
 
+    async put(path, body) {
+        const res = await fetch(path, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: body ? JSON.stringify(body) : undefined,
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ message: res.statusText }));
+            throw new Error(err.message || `API ${res.status}`);
+        }
+        return res.json();
+    },
+
     async dashboard() { return API.get("/api/dashboard"); },
     async unit(id) { return API.get(`/api/units/${encodeURIComponent(id)}`); },
     async unitDiff(id) { return API.get(`/api/units/${encodeURIComponent(id)}/diff`); },

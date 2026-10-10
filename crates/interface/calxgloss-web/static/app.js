@@ -21,6 +21,8 @@ import {
     acceptUnit,
     showSendBackModal,
     showPatchModal,
+    setupQueueDragAndDrop,
+    cycleQueuePriority,
 } from "./js/queue.js";
 import { GraphRenderer } from "./js/graph.js";
 import { WSManager } from "./js/ws.js";
@@ -51,14 +53,22 @@ function setupEventListeners() {
         renderInlineDetail(item.dataset.unitId);
     });
 
-    // Full queue list clicks (queue view) — show inline detail
+    // Full queue list clicks (queue view) — show inline detail; the
+    // priority chip cycles the unit's priority instead (issue #74).
     document.getElementById("full-queue-list").addEventListener("click", (e) => {
         const item = e.target.closest(".queue-item-full");
         if (!item) return;
+        if (e.target.closest(".qi-priority")) {
+            cycleQueuePriority(item.dataset.unitId);
+            return;
+        }
         State.selectedUnitId = item.dataset.unitId;
         renderInlineDetail(item.dataset.unitId);
         renderFullQueue(State.dashboard, State.selectedUnitId);
     });
+
+    // Drag-and-drop reordering of the queue (issue #74).
+    setupQueueDragAndDrop();
 
     // Detail panel close
     document.getElementById("detail-close").addEventListener("click", hideDetail);

@@ -1486,6 +1486,271 @@ async fn test_queue_endpoint() {
     assert!(first["id"].as_str().is_some(), "queue entry has an id");
 }
 
+// ─── Queue overlay: manual order & priority (issue #74) ──────────────
+
+/// Adds a second unmerged translation branch (`game_logic.dll/{function}`)
+/// so the queue holds two active units at the same dependency depth — a
+/// tie the overlay can break.
+fn add_pending_translation(fixture: &TestFixture, function: &str) {
+    let git = GitManager::open(&fixture.repo_path()).expect("open fixture repo");
+    let branch = GitBranch::new("game_logic.dll", function, 1).expect("branch name");
+    git.create_branch("game_logic.dll", function, 1, None)
+        .expect("create branch");
+
+    let src_file = format!("src/{}.rs", function.to_lowercase());
+    std::fs::create_dir_all(fixture.repo_path().join("src")).expect("create src dir");
+    std::fs::write(
+        fixture.repo_path().join(&src_file),
+        format!(
+            "/// {function} — pending translation\npub fn {}() {{}}\n",
+            function.to_lowercase()
+        ),
+    )
+    .expect("write translation file");
+    git.commit(
+        &branch,
+        &format!("Translate {function}"),
+        &[src_file.as_str()],
+    )
+    .expect("commit branch");
+}
+
+/// The overlay endpoints round-trip: an empty overlay degrades to pure
+/// dependency order, a PUT persists priorities and order, and a fresh
+/// router over the same repo (a server restart) reads them back.
+#[tokio::test]
+async fn test_queue_overlay_round_trip_and_persistence() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+
+    // No overlay yet: empty, but the effective order is still computed.
+    let resp = reqwest::get(format!("{base}/api/queue/overlay"))
+        .await
+        .expect("overlay request succeeds");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("overlay body is JSON");
+    assert_eq!(body["success"], true);
+    assert!(
+        body["overlay"]["order"].as_array().unwrap().is_empty(),
+        "no manual order recorded yet"
+    );
+    assert!(
+        !body["queue_order"].as_array().unwrap().is_empty(),
+        "effective order exists without an overlay"
+    );
+
+    // Record a manual order and a priority.
+    let client = reqwest::Client::new();
+    let resp = client
+        .put(format!("{base}/api/queue/overlay"))
+        .json(&serde_json::json!({
+            "order": ["game_logic.dll/DrawPrimitive/v2"],
+            "priorities": { "game_logic.dll/DrawPrimitive/v2": "high" },
+        }))
+        .send()
+        .await
+        .expect("overlay put succeeds");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("overlay put body is JSON");
+    assert_eq!(
+        body["overlay"]["priorities"]["game_logic.dll/DrawPrimitive/v2"],
+        "high"
+    );
+
+    // The overlay lives in the repo, beside the other review records.
+    let overlay_file = fixture
+        .repo_path()
+        .join("re")
+        .join("review")
+        .join("queue_overlay.json");
+    assert!(
+        overlay_file.exists(),
+        "overlay persisted to re/review/queue_overlay.json"
+    );
+
+    // A fresh router over the same repo — a server restart — reads it back.
+    let restart_port = TestFixture::find_free_port();
+    let restart_state = ServerState::new(fixture.repo_path());
+    let restart_router = build_router(restart_state);
+    let _restart_server = spawn_server(restart_router, restart_port).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{restart_port}/api/queue/overlay"))
+        .await
+        .expect("overlay request after restart succeeds");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("restart overlay is JSON");
+    assert_eq!(
+        body["overlay"]["priorities"]["game_logic.dll/DrawPrimitive/v2"], "high",
+        "priority survives a server restart"
+    );
+    assert_eq!(
+        body["overlay"]["order"],
+        serde_json::json!(["game_logic.dll/DrawPrimitive/v2"]),
+        "manual order survives a server restart"
+    );
+
+    // The dashboard response carries the overlay and the effective order.
+    let resp = reqwest::get(format!("http://127.0.0.1:{restart_port}/api/dashboard"))
+        .await
+        .expect("dashboard request succeeds");
+    let body: serde_json::Value = resp.json().await.expect("dashboard body is JSON");
+    assert_eq!(
+        body["queue_overlay"]["priorities"]["game_logic.dll/DrawPrimitive/v2"], "high",
+        "dashboard carries the persisted overlay"
+    );
+    assert!(
+        body["queue_order"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("game_logic.dll/DrawPrimitive/v2")),
+        "dashboard carries the effective queue order"
+    );
+}
+
+/// The overlay breaks ties between same-depth units in `/api/queue`, and an
+/// invalid priority name is rejected.
+#[tokio::test]
+async fn test_queue_overlay_breaks_ties_in_queue_endpoint() {
+    let fixture = TestFixture::new();
+    add_pending_translation(&fixture, "RenderHUD");
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+    let client = reqwest::Client::new();
+
+    let queue_ids = || async {
+        let resp = reqwest::get(format!("{base}/api/queue"))
+            .await
+            .expect("queue request succeeds");
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().await.expect("queue body is JSON");
+        body["queue"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].as_str().unwrap().to_string())
+            .collect::<Vec<String>>()
+    };
+
+    let draw = "game_logic.dll/DrawPrimitive/v2";
+    let hud = "game_logic.dll/RenderHUD/v1";
+
+    // Both units depend on the same classification, so the graph leaves
+    // them tied; the baseline order is the dependency order's own tie-break.
+    let ids = queue_ids().await;
+    assert!(ids.iter().any(|id| id == draw), "DrawPrimitive queued");
+    assert!(ids.iter().any(|id| id == hud), "RenderHUD queued");
+
+    // A manual order flips the tie.
+    let resp = client
+        .put(format!("{base}/api/queue/overlay"))
+        .json(&serde_json::json!({ "order": [hud, draw] }))
+        .send()
+        .await
+        .expect("overlay put succeeds");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("overlay put body is JSON");
+    let order = body["queue_order"].as_array().unwrap();
+    let hud_at_new = order
+        .iter()
+        .position(|id| id == hud)
+        .expect("RenderHUD ordered");
+    let draw_at_new = order
+        .iter()
+        .position(|id| id == draw)
+        .expect("DrawPrimitive ordered");
+    assert!(
+        hud_at_new < draw_at_new,
+        "manual order puts RenderHUD first, got {order:?}"
+    );
+
+    let ids = queue_ids().await;
+    let hud_at = ids
+        .iter()
+        .position(|id| id == hud)
+        .expect("RenderHUD queued");
+    let draw_at = ids
+        .iter()
+        .position(|id| id == draw)
+        .expect("DrawPrimitive queued");
+    assert!(hud_at < draw_at, "/api/queue follows the manual order");
+
+    // The "next unit" flow follows the same effective order.
+    let resp = reqwest::get(format!("{base}/api/queue/next"))
+        .await
+        .expect("next request succeeds");
+    let body: serde_json::Value = resp.json().await.expect("next body is JSON");
+    assert_eq!(
+        body["id"].as_str(),
+        Some(hud),
+        "/api/queue/next follows the manual order"
+    );
+
+    // A priority flips it back without touching the manual order.
+    let resp = client
+        .put(format!("{base}/api/queue/overlay"))
+        .json(&serde_json::json!({
+            "priorities": { "game_logic.dll/DrawPrimitive/v2": "high" },
+        }))
+        .send()
+        .await
+        .expect("priority put succeeds");
+    assert_eq!(resp.status(), 200);
+    let ids = queue_ids().await;
+    let hud_at = ids
+        .iter()
+        .position(|id| id == hud)
+        .expect("RenderHUD queued");
+    let draw_at = ids
+        .iter()
+        .position(|id| id == draw)
+        .expect("DrawPrimitive queued");
+    assert!(draw_at < hud_at, "HIGH priority sorts first, got {ids:?}");
+
+    let resp = reqwest::get(format!("{base}/api/queue/next"))
+        .await
+        .expect("next request succeeds");
+    let body: serde_json::Value = resp.json().await.expect("next body is JSON");
+    assert_eq!(
+        body["id"].as_str(),
+        Some(draw),
+        "/api/queue/next follows the HIGH priority"
+    );
+
+    // The order field was untouched by the priorities-only update.
+    let resp = reqwest::get(format!("{base}/api/queue/overlay"))
+        .await
+        .expect("overlay request succeeds");
+    let body: serde_json::Value = resp.json().await.expect("overlay body is JSON");
+    assert_eq!(
+        body["overlay"]["order"],
+        serde_json::json!([hud, draw]),
+        "priorities-only update keeps the persisted order"
+    );
+
+    // An unknown priority name is rejected, not silently accepted.
+    let resp = client
+        .put(format!("{base}/api/queue/overlay"))
+        .json(&serde_json::json!({ "priorities": { hud: "urgent" } }))
+        .send()
+        .await
+        .expect("invalid priority put request");
+    assert!(
+        resp.status().is_client_error(),
+        "invalid priority rejected, got {}",
+        resp.status()
+    );
+}
+
 /// Verify that the dependency graph endpoint returns valid graph data.
 #[tokio::test]
 async fn test_dependency_graph_endpoint() {
@@ -4694,6 +4959,166 @@ async fn test_headless_pipeline_estimate_and_queue_effort() {
     assert!(
         effort_rendered,
         "queue effort column should show an estimate for the unit, got: {effort_text:?}"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for issue #74: the queue view renders a priority
+/// column (default NORMAL), a synthetic drag through the real drag handlers
+/// reorders and persists the manual order, and clicking the chip cycles and
+/// persists the priority — both landing in `re/review/queue_overlay.json`.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_queue_priority_and_reorder() {
+    let fixture = TestFixture::new();
+    add_pending_translation(&fixture, "RenderHUD");
+
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+
+    // Switch to the queue view so the full queue list renders.
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click queue tab");
+
+    let draw = "game_logic.dll/DrawPrimitive/v2";
+    let hud = "game_logic.dll/RenderHUD/v1";
+
+    // The priority column renders with the default NORMAL for both units.
+    let mut priority_rendered = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "(() => { const el = document.querySelector('#full-queue-list \
+                [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"] .qi-priority'); \
+                return !!el && el.textContent === 'NORMAL'; })()",
+        ) {
+            priority_rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        priority_rendered,
+        "queue priority column should render NORMAL for the unit"
+    );
+
+    // Drag reordering through the real handlers: a synthetic drag of
+    // RenderHUD onto the top half of DrawPrimitive's row drops it above.
+    tab.evaluate(
+        &format!(
+            "(() => {{ \
+                const list = document.querySelector('#full-queue-list'); \
+                const hud = list.querySelector('[data-unit-id=\"{hud}\"]'); \
+                const draw = list.querySelector('[data-unit-id=\"{draw}\"]'); \
+                const y = draw.getBoundingClientRect().top + 1; \
+                const opts = (clientY) => ({{ bubbles: true, cancelable: true, clientY }}); \
+                hud.dispatchEvent(new DragEvent('dragstart', opts(0))); \
+                draw.dispatchEvent(new DragEvent('dragover', opts(y))); \
+                draw.dispatchEvent(new DragEvent('drop', opts(y))); \
+                return true; \
+            }})()"
+        ),
+        false,
+    )
+    .expect("synthetic drag reorder");
+
+    let mut reorder_rendered = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "(() => { const first = document.querySelector('#full-queue-list .queue-item-full'); \
+                return !!first && first.dataset.unitId === 'game_logic.dll/RenderHUD/v1'; })()",
+        ) {
+            reorder_rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        reorder_rendered,
+        "manual reorder should put RenderHUD first in the rendered queue"
+    );
+
+    // The drop fires the PUT without awaiting it, so poll the persisted
+    // overlay file until the new order lands (up to ~5 seconds).
+    let overlay_file = fixture
+        .repo_path()
+        .join("re")
+        .join("review")
+        .join("queue_overlay.json");
+    let wanted = serde_json::json!([hud, draw]);
+    let mut persisted = serde_json::Value::Null;
+    for _ in 0..25 {
+        if let Ok(raw) = std::fs::read_to_string(&overlay_file) {
+            let value: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+            if value["order"] == wanted {
+                persisted = value;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert_eq!(
+        persisted["order"], wanted,
+        "reorder persists to the overlay file"
+    );
+
+    // Clicking the chip cycles NORMAL → HIGH and persists it.
+    tab.evaluate(
+        "document.querySelector('#full-queue-list \
+            [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"] .qi-priority')?.click() === undefined",
+        false,
+    )
+    .expect("click priority chip");
+
+    let mut priority_updated = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "(() => { const el = document.querySelector('#full-queue-list \
+                [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"] .qi-priority'); \
+                return !!el && el.textContent === 'HIGH'; })()",
+        ) {
+            priority_updated = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(priority_updated, "clicking the chip should cycle to HIGH");
+
+    let mut persisted = serde_json::Value::Null;
+    for _ in 0..25 {
+        if let Ok(raw) = std::fs::read_to_string(&overlay_file) {
+            let value: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+            if value["priorities"][draw].as_str() == Some("high") {
+                persisted = value;
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert_eq!(
+        persisted["priorities"][draw].as_str(),
+        Some("high"),
+        "priority click persists to the overlay file"
     );
 
     tab.close_target().ok();

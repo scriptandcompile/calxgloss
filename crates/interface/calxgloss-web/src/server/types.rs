@@ -4,6 +4,7 @@ use axum::http::StatusCode;
 use calxgloss_types::{
     BinaryIdentity, BinaryProgress, FaultCategory, FaultEvent, FaultSeverity, PhaseProgress,
     PhaseRecord, PipelinePhase, ReviewDashboard, ReviewStatus, TokenUsageEntry, TranslationPhase,
+    UnitOfWork,
 };
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +34,14 @@ pub struct DashboardResponse {
     /// says so instead of showing a fabricated zero.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_usage: Option<TokenUsageSummary>,
+    /// The persisted manual queue overlay (issue #74): the reviewer's manual
+    /// order and per-unit priorities. Empty when nothing has been recorded.
+    #[serde(default)]
+    pub queue_overlay: QueueOverlay,
+    /// The effective queue order (issue #74): dependency order with the
+    /// overlay breaking ties — unit ids in the order the queue view renders.
+    #[serde(default)]
+    pub queue_order: Vec<String>,
 }
 
 impl DashboardResponse {
@@ -45,6 +54,8 @@ impl DashboardResponse {
             binary_categories: Vec::new(),
             quality_summary: QualitySummary::default(),
             token_usage: None,
+            queue_overlay: QueueOverlay::default(),
+            queue_order: Vec::new(),
         }
     }
 }
@@ -474,6 +485,59 @@ pub struct QueuePosition {
     pub total: usize,
 }
 
+/// Manual review priority for a queue unit (issue #74). The dependency
+/// ordering still governs; priority only breaks ties between units the
+/// dependency graph leaves at the same depth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QueuePriority {
+    /// Review this unit first among its tie group.
+    High,
+    /// The default — no manual preference recorded.
+    #[default]
+    Normal,
+    /// Review this unit last among its tie group.
+    Low,
+}
+
+/// The persisted manual layer over the dependency-ordered queue (issue #74).
+/// Stored at `re/review/queue_overlay.json` so both order and priorities
+/// survive a server restart.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct QueueOverlay {
+    /// Unit ids in the reviewer's manual order. Units missing from the list
+    /// keep their dependency-order position within their tie group.
+    #[serde(default)]
+    pub order: Vec<String>,
+    /// Per-unit priority; a unit with no entry is [`QueuePriority::Normal`].
+    #[serde(default)]
+    pub priorities: std::collections::HashMap<String, QueuePriority>,
+}
+
+/// Request body for `PUT /api/queue/overlay` (issue #74). Either field may
+/// be omitted — an omitted field keeps its persisted value, a present one
+/// replaces it wholesale (the frontend always sends the full current list).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct QueueOverlayUpdate {
+    /// The full manual order to persist, when present.
+    pub order: Option<Vec<String>>,
+    /// The full priority map to persist, when present.
+    pub priorities: Option<std::collections::HashMap<String, QueuePriority>>,
+}
+
+/// Response for the queue overlay endpoints (issue #74): the persisted
+/// overlay plus the effective queue order it produces, so the frontend can
+/// re-render from the server's answer (a drag that would violate a
+/// dependency snaps back to the legal position).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueueOverlayResponse {
+    pub success: bool,
+    /// The overlay as now persisted.
+    pub overlay: QueueOverlay,
+    /// Unit ids in effective queue order (dependency order, overlay ties).
+    pub queue_order: Vec<String>,
+}
+
 /// Response for the review queue endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueueResponse {
@@ -506,12 +570,13 @@ pub struct QueueEntry {
 }
 
 impl QueueResponse {
-    /// Builds a queue response from a [`ReviewDashboard`].
-    pub fn from_dashboard(dashboard: &ReviewDashboard) -> Self {
-        let sorted = dashboard.sorted_queue();
-        let total = sorted.len();
+    /// Builds a queue response from a [`ReviewDashboard`] and a pre-computed
+    /// effective order — dependency order with the queue overlay breaking
+    /// ties, as produced by `handlers::queue_order` (issue #74).
+    pub fn from_ordered(dashboard: &ReviewDashboard, ordered: &[&UnitOfWork]) -> Self {
+        let total = ordered.len();
 
-        let queue: Vec<QueueEntry> = sorted
+        let queue: Vec<QueueEntry> = ordered
             .iter()
             .map(|u| QueueEntry {
                 id: u.id.clone(),

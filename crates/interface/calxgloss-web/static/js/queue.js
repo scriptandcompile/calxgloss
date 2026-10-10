@@ -34,6 +34,16 @@ export function renderFullQueue(dashboard, selectedId = null) {
         return;
     }
 
+    // Effective queue order (issue #74): the server's dependency order with
+    // the persisted overlay breaking same-depth ties. Units missing from the
+    // order keep their relative position at the end (the sort is stable).
+    const orderIndex = new Map((State.queueOrder || []).map((id, i) => [id, i]));
+    units.sort((a, b) => {
+        const ai = orderIndex.has(a.id) ? orderIndex.get(a.id) : Number.MAX_SAFE_INTEGER;
+        const bi = orderIndex.has(b.id) ? orderIndex.get(b.id) : Number.MAX_SAFE_INTEGER;
+        return ai - bi;
+    });
+
     empty.style.display = "none";
     list.innerHTML = units.map(u => {
         const iconClass = u.status.toLowerCase().replace(/\s+/g, "_");
@@ -46,16 +56,132 @@ export function renderFullQueue(dashboard, selectedId = null) {
         const effort = State.queueEffort[u.id];
         const effortText = effort == null ? "—" : fmtUptime(effort);
 
+        // Manual priority (issue #74); click the chip to cycle it.
+        const priority = (State.queueOverlay.priorities || {})[u.id] || "normal";
+
         return `
-            <div class="queue-item-full ${u.id === selectedId ? "selected" : ""}" data-unit-id="${u.id}">
+            <div class="queue-item-full ${u.id === selectedId ? "selected" : ""}" data-unit-id="${u.id}" draggable="true">
                 <div class="queue-item-icon ${iconClass}"></div>
                 <div class="qi-name" title="${u.id}">${name}</div>
+                <div class="qi-priority prio-${priority}" title="Priority: ${priority.toUpperCase()} — click to change">${priority.toUpperCase()}</div>
                 <div class="qi-status ${iconClass}">${STATUS_LABELS[u.status] || u.status}</div>
                 <div class="qi-attempt">v${u.attempt}</div>
                 <div class="qi-effort" title="Estimated time per attempt">${effortText}</div>
             </div>
         `;
     }).join("");
+}
+
+// ─── Manual order & priority (issue #74) ──────────────────────────────
+
+let draggedUnitId = null;
+
+function clearDropMarkers(list) {
+    list.querySelectorAll(".queue-item-full.drop-above, .queue-item-full.drop-below")
+        .forEach(el => el.classList.remove("drop-above", "drop-below"));
+}
+
+// Wire drag-and-drop reordering onto the full queue list. The drop sends
+// the new manual order to the server; the response carries the effective
+// order, so a move that would violate a dependency snaps back to the
+// nearest legal position.
+export function setupQueueDragAndDrop() {
+    const list = document.getElementById("full-queue-list");
+    if (!list) return;
+
+    list.addEventListener("dragstart", (e) => {
+        const item = e.target.closest(".queue-item-full");
+        if (!item) return;
+        draggedUnitId = item.dataset.unitId;
+        item.classList.add("dragging");
+        if (e.dataTransfer) {
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", draggedUnitId);
+        }
+    });
+
+    list.addEventListener("dragend", () => {
+        draggedUnitId = null;
+        list.querySelectorAll(".queue-item-full.dragging")
+            .forEach(el => el.classList.remove("dragging"));
+        clearDropMarkers(list);
+    });
+
+    list.addEventListener("dragover", (e) => {
+        if (!draggedUnitId) return;
+        e.preventDefault();
+        clearDropMarkers(list);
+        const target = e.target.closest(".queue-item-full");
+        if (!target || target.dataset.unitId === draggedUnitId) return;
+        if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+        const rect = target.getBoundingClientRect();
+        target.classList.add(e.clientY > rect.top + rect.height / 2 ? "drop-below" : "drop-above");
+    });
+
+    list.addEventListener("drop", (e) => {
+        if (!draggedUnitId) return;
+        e.preventDefault();
+        clearDropMarkers(list);
+        const target = e.target.closest(".queue-item-full");
+        const dragged = draggedUnitId;
+        draggedUnitId = null;
+        if (!target || target.dataset.unitId === dragged) return;
+        const rect = target.getBoundingClientRect();
+        moveUnitInQueue(dragged, target.dataset.unitId, e.clientY > rect.top + rect.height / 2);
+    });
+}
+
+// PUT an overlay patch and adopt the server's answer (the persisted overlay
+// plus the effective order it produces). On failure the pre-mutation
+// snapshot is restored, so the view never keeps an order the server
+// rejected — the optimistic change snaps back.
+async function persistOverlayPatch(patch, previous, failureLabel) {
+    try {
+        const res = await API.put("/api/queue/overlay", patch);
+        State.queueOrder = res.queue_order || State.queueOrder;
+        State.queueOverlay = res.overlay || State.queueOverlay;
+    } catch (err) {
+        State.queueOrder = previous.order;
+        State.queueOverlay = previous.overlay;
+        showToast(`${failureLabel}: ${err.message}`, "error");
+    }
+    if (State.dashboard) renderFullQueue(State.dashboard, State.selectedUnitId);
+}
+
+// Move a unit next to another in the manual order and persist it. The
+// server re-applies the dependency ordering on top, so the caller must
+// adopt the returned effective order rather than the sent one.
+export async function moveUnitInQueue(draggedId, targetId, insertBelow = false) {
+    const previous = { order: State.queueOrder, overlay: State.queueOverlay };
+    const order = (State.queueOrder || []).filter(id => id !== draggedId);
+    let idx = order.indexOf(targetId);
+    if (idx < 0) {
+        idx = order.length;
+    } else if (insertBelow) {
+        idx += 1;
+    }
+    order.splice(idx, 0, draggedId);
+
+    State.queueOrder = order;
+    if (State.dashboard) renderFullQueue(State.dashboard, State.selectedUnitId);
+
+    await persistOverlayPatch({ order }, previous, "Reorder failed");
+}
+
+// Priority chip cycle: current → next, mirroring the server's rank order.
+const PRIORITY_CYCLE = { normal: "high", high: "low", low: "normal" };
+
+// Cycle a unit's priority: NORMAL → HIGH → LOW → NORMAL, persisted to the
+// overlay. Priority only reorders within the unit's dependency tie group.
+export async function cycleQueuePriority(unitId) {
+    const previous = { order: State.queueOrder, overlay: State.queueOverlay };
+    const priorities = { ...(State.queueOverlay.priorities || {}) };
+    priorities[unitId] = PRIORITY_CYCLE[priorities[unitId] || "normal"];
+
+    State.queueOverlay = { ...State.queueOverlay, priorities };
+    if (State.dashboard) renderFullQueue(State.dashboard, State.selectedUnitId);
+
+    await persistOverlayPatch({ priorities }, previous, "Priority update failed");
 }
 
 // ─── Detail Panel ───────────────────────────────────────────────────────

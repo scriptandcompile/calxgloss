@@ -167,6 +167,15 @@ pub async fn api_get_dashboard(
     let binary_categories = super::summary::compute_binary_categories(server_state.repo_path());
     let token_usage = super::summary::compute_token_usage(server_state.repo_path());
 
+    // Manual queue overlay (issue #74): the persisted manual order and
+    // priorities, plus the effective order they produce over this dashboard
+    // — dependency order with the overlay breaking same-depth ties.
+    let queue_overlay = super::queue::load_queue_overlay(server_state.repo_path());
+    let queue_order = super::queue::queue_order(&dashboard, &queue_overlay)
+        .into_iter()
+        .map(|u| u.id.clone())
+        .collect();
+
     Ok(Json(super::super::DashboardResponse {
         success: true,
         dashboard,
@@ -175,6 +184,8 @@ pub async fn api_get_dashboard(
         binary_categories,
         quality_summary,
         token_usage,
+        queue_overlay,
+        queue_order,
     }))
 }
 
@@ -265,7 +276,11 @@ pub async fn api_get_unit(
     let diff_summary = super::diff::compute_diff_summary(&state, unit);
     let attempt_history = super::ghidra::load_attempt_history(state.repo_path(), &unit_id);
     let revision_count = super::ghidra::compute_revision_count(&state, unit);
-    let queue_position = super::queue::compute_queue_position(&dashboard, unit);
+    let queue_position = super::queue::compute_queue_position(
+        &dashboard,
+        unit,
+        &super::queue::load_queue_overlay(state.repo_path()),
+    );
     let process = super::process::build_unit_process(state.repo_path(), unit);
     let analysis = super::analysis::build_unit_analysis(state.repo_path(), unit);
 
