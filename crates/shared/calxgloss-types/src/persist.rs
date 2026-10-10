@@ -66,10 +66,19 @@ pub fn analysis_dir(workspace: impl AsRef<Path>) -> PathBuf {
     workspace.as_ref().join("re").join("analysis")
 }
 
-/// Serializes `value` as pretty JSON and writes it to `path`.
+/// Monotonic counter keeping each [`save_json`] temp file name unique within
+/// this process; combined with the pid it is unique per writer, so concurrent
+/// saves (threads or processes) never collide on the same temp file.
+static SAVE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Serializes `value` as pretty JSON and writes it to `path` atomically.
 ///
-/// Creates the parent directory chain if it does not exist; a previous
-/// document at `path` is replaced.
+/// Creates the parent directory chain if it does not exist. The document is
+/// written to a uniquely-named hidden temp file beside the target and then
+/// renamed onto it — rename is atomic on the platform, so a failed or
+/// interrupted save (crash, Ctrl-C) can never leave a half-written document
+/// where a valid one used to be: readers see either the previous document or
+/// the new one, never a truncated mix. A failed save removes its temp file.
 pub fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<(), PersistError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| PersistError::Io {
@@ -82,10 +91,31 @@ pub fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<(), PersistErro
         path: path.to_path_buf(),
         source,
     })?;
-    std::fs::write(path, json).map_err(|source| PersistError::Io {
+
+    let file_name = path.file_name().ok_or_else(|| PersistError::Io {
         path: path.to_path_buf(),
-        source,
-    })
+        source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no file name"),
+    })?;
+    let seq = SAVE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_file_name(format!(
+        ".{}.tmp{}-{seq}",
+        file_name.to_string_lossy(),
+        std::process::id(),
+    ));
+
+    let written = (|| -> std::io::Result<()> {
+        std::fs::write(&tmp, &json)?;
+        std::fs::rename(&tmp, path)
+    })();
+    if let Err(source) = written {
+        // Best-effort: never leave temp residue behind on a failed save.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(PersistError::Io {
+            path: path.to_path_buf(),
+            source,
+        });
+    }
+    Ok(())
 }
 
 /// Reads the JSON document at `path` back into a `T`.
@@ -333,5 +363,129 @@ mod tests {
         store.save("eqmain.dll", &doc("eqmain.dll")).unwrap();
 
         assert!(nested.join("eqmain.dll.json").is_file());
+    }
+
+    // --- atomic save (issue #81) -----------------------------------------
+
+    /// A document big enough that a reader racing a save would reliably catch
+    /// a truncated write if the save were not atomic.
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct BigDoc {
+        round: u32,
+        entries: Vec<String>,
+    }
+
+    fn sample_big_doc(round: u32) -> BigDoc {
+        BigDoc {
+            round,
+            entries: vec![format!("entry {round}"); 20_000],
+        }
+    }
+
+    /// A document whose serialization always fails, to exercise the
+    /// failed-save path without touching the filesystem layer.
+    struct Unserializable;
+
+    impl Serialize for Unserializable {
+        fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom("test document never serializes"))
+        }
+    }
+
+    fn dir_entries(dir: &Path) -> Vec<std::ffi::OsString> {
+        std::fs::read_dir(dir)
+            .expect("directory should be readable")
+            .map(|entry| entry.expect("dir entry").file_name())
+            .collect()
+    }
+
+    #[test]
+    fn save_json_leaves_no_temp_file_residue() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("doc.json");
+
+        save_json(&path, &doc("eqmain.dll")).expect("first save should work");
+        save_json(&path, &doc("renderer.dll")).expect("overwrite save should work");
+
+        assert_eq!(dir_entries(dir.path()), vec!["doc.json"]);
+    }
+
+    #[test]
+    fn save_json_overwrite_keeps_a_valid_document_at_all_times() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("doc.json");
+        save_json(&path, &sample_big_doc(0)).expect("initial save should work");
+
+        let writing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let writer_flag = std::sync::Arc::clone(&writing);
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            for round in 1..=20u32 {
+                save_json(&writer_path, &sample_big_doc(round)).expect("writer save should work");
+            }
+            writer_flag.store(false, std::sync::atomic::Ordering::Release);
+        });
+
+        let mut reads = 0;
+        while writing.load(std::sync::atomic::Ordering::Acquire) {
+            let loaded: BigDoc =
+                load_json(&path).expect("target must always hold a parseable document");
+            assert_eq!(
+                loaded.entries.len(),
+                20_000,
+                "document must never be half-written"
+            );
+            reads += 1;
+        }
+        writer.join().expect("writer thread should not panic");
+
+        assert!(reads > 0, "reader should have raced the writer");
+        assert_eq!(
+            load_json::<BigDoc>(&path)
+                .expect("final document should parse")
+                .round,
+            20
+        );
+    }
+
+    #[test]
+    fn concurrent_saves_to_one_path_never_collide() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("doc.json");
+
+        let writers: Vec<_> = (0..8u32)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    save_json(&path, &doc(&format!("writer-{i}.dll"))).expect("concurrent save")
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().expect("writer thread should not panic");
+        }
+
+        let loaded: Doc = load_json(&path).expect("document should parse");
+        assert!(
+            loaded.binary.starts_with("writer-"),
+            "last writer's document should win: {loaded:?}"
+        );
+        assert_eq!(dir_entries(dir.path()), vec!["doc.json"]);
+    }
+
+    #[test]
+    fn failed_save_leaves_the_previous_document_intact() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("doc.json");
+        save_json(&path, &doc("eqmain.dll")).expect("initial save should work");
+
+        let err = save_json(&path, &Unserializable).expect_err("unserializable value must fail");
+
+        assert!(matches!(err, PersistError::Json { .. }));
+        assert_eq!(
+            load_json::<Doc>(&path).expect("previous document should still parse"),
+            doc("eqmain.dll")
+        );
+        assert_eq!(dir_entries(dir.path()), vec!["doc.json"]);
     }
 }
