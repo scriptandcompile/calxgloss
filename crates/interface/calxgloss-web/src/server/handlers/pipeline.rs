@@ -9,8 +9,8 @@ use super::super::{
 use axum::{Json, extract::State};
 use calxgloss_types::{
     BinaryIdentity, BinaryProgress, LiveTranslationState, LiveUnitProgress, PassStatus,
-    PhaseProgress, PhaseState, PipelinePhase, TokenUsageLog, TranslationPhase,
-    derive_unit_confidence,
+    PhaseProgress, PhaseState, PipelinePhase, PipelineRunRequest, RunRequestSignal, TokenUsageLog,
+    TranslationPhase, derive_unit_confidence,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -637,6 +637,82 @@ pub async fn api_stop_pipeline(
     State(combined): State<CombinedState>,
 ) -> Result<Json<PipelineLifecycleResponse>, ServerError> {
     control_pipeline(&combined, "stop", |c| c.stop())
+}
+
+// ─── POST /api/pipeline/{start,restart} ──────────────────────────────
+
+/// The control handle plus the run-request channel the start/restart
+/// endpoints (issue #92, W2.3) both need: 503 when this live router was
+/// built without them — honest rather than pretending a run can begin
+/// with no loop to run it.
+fn run_handles(
+    combined: &CombinedState,
+) -> Result<(PipelineControl, RunRequestSignal), ServerError> {
+    let control = combined.server.pipeline_control().ok_or_else(|| {
+        ServerError::unavailable("this server has no live pipeline control attached")
+    })?;
+    let run_requests = combined.server.run_requests().ok_or_else(|| {
+        ServerError::unavailable("this server has no live pipeline control attached")
+    })?;
+    Ok((control, run_requests))
+}
+
+/// Begin the translation phase of a live session that has not translated
+/// yet (issue #92, W2.3) — e.g. one launched `--classify-only`. The
+/// transition is driven first: a run already in flight is refused with
+/// 409 and no request is queued (a finished run restarts — that is the
+/// verb for it). Then the default full-scope request lands on the shared
+/// channel and the live loop starts translating. Live router only.
+pub async fn api_start_pipeline(
+    State(combined): State<CombinedState>,
+) -> Result<Json<PipelineLifecycleResponse>, ServerError> {
+    let (control, run_requests) = run_handles(&combined)?;
+    let previous = control.state();
+    control
+        .start()
+        .map_err(|e| ServerError::conflict(&e.to_string()))?;
+    run_requests.request(PipelineRunRequest::default());
+    let state = control.state();
+    info!("pipeline start: {previous} -> {state} requested via API");
+    Ok(Json(PipelineLifecycleResponse {
+        previous,
+        state,
+        message: "Pipeline start requested — translation begins.".to_string(),
+    }))
+}
+
+/// Re-run a stopped pipeline inside the live process (issue #92, W2.3):
+/// the body carries the phase, target, and scope selectors — all
+/// optional, and a missing or empty body re-runs everything. The
+/// transition is driven first, so a run that is not in a terminal state
+/// is refused with 409 and nothing is queued; only then does the request
+/// land on the shared channel for the live loop to re-run the pipeline
+/// with. Live router only.
+pub async fn api_restart_pipeline(
+    State(combined): State<CombinedState>,
+    body: Option<Json<PipelineRunRequest>>,
+) -> Result<Json<PipelineLifecycleResponse>, ServerError> {
+    let Json(request) = body.unwrap_or_default();
+    let (control, run_requests) = run_handles(&combined)?;
+    let previous = control.state();
+    control
+        .restart()
+        .map_err(|e| ServerError::conflict(&e.to_string()))?;
+    run_requests.request(request.clone());
+    let state = control.state();
+    info!(
+        "pipeline restart: {previous} -> {state} requested via API \
+         (phase {}, target {}, scope {})",
+        request.phase, request.target, request.scope
+    );
+    Ok(Json(PipelineLifecycleResponse {
+        previous,
+        state,
+        message: format!(
+            "Pipeline restart requested — phase {}, target {}, scope {}.",
+            request.phase, request.target, request.scope
+        ),
+    }))
 }
 
 /// Cancel the unit currently in flight (issue #91, W2.2): the pipeline

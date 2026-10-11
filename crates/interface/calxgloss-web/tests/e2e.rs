@@ -8,8 +8,9 @@
 
 use calxgloss_git::{GitManager, InitConfig};
 use calxgloss_types::{
-    GitBranch, PipelineControl, PipelineState, ProgressEvent, TestCase, TestResult,
-    TranslationEvents, UnitCancellation,
+    GitBranch, PipelineControl, PipelineRunRequest, PipelineState, ProgressEvent, RunPhase,
+    RunRequestSignal, RunScope, RunTarget, TestCase, TestResult, TranslationEvents,
+    UnitCancellation,
 };
 use calxgloss_web::{
     ActionsState, LlmIoLog, ProgressState, ServerState, SessionManager, build_dashboard,
@@ -725,6 +726,294 @@ async fn test_pipeline_lifecycle_endpoints_503_without_control() {
             "503 explains why, got: {body}"
         );
     }
+
+    // Issue #92: start/restart are honest the same way — with no run-request
+    // channel attached there is no live loop a request could wake. Restart
+    // carries a JSON body, so it is posted separately from the bodyless ones.
+    for (path, body) in [
+        ("/api/pipeline/start", serde_json::json!(null)),
+        ("/api/pipeline/restart", serde_json::json!({})),
+    ] {
+        let mut req =
+            reqwest::Client::new().post(format!("http://127.0.0.1:{}{path}", fixture.port()));
+        if !body.is_null() {
+            req = req.json(&body);
+        }
+        let resp = req.send().await.expect("request reaches server");
+        let status = resp.status();
+        let body: serde_json::Value = resp.json().await.expect("body is JSON");
+        assert_eq!(status, 503, "{path} without a control should be 503");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("no live pipeline control"),
+            "503 explains why, got: {body}"
+        );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// Pipeline start & restart (issue #92, W2.3)
+// ─────────────────────────────────────────────────────────────
+
+/// POST helper for the start/restart endpoints, which may carry a JSON
+/// run-request body (issue #92).
+async fn post_run(
+    port: u16,
+    path: &str,
+    body: serde_json::Value,
+) -> (reqwest::StatusCode, serde_json::Value) {
+    let mut req = reqwest::Client::new().post(format!("http://127.0.0.1:{port}{path}"));
+    if !body.is_null() {
+        req = req.json(&body);
+    }
+    let resp = req.send().await.expect("run request reaches server");
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().await.expect("run body is JSON");
+    (status, body)
+}
+
+/// The Start endpoint (issue #92) begins translation in a live session that
+/// has not translated yet: Idle → Running with 200, the default full-scope
+/// request queued on the shared channel for the live loop, the server status
+/// following the machine — and a second Start refused with 409 leaving no
+/// stale request behind.
+#[tokio::test]
+async fn test_pipeline_start_endpoint_begins_idle_run() {
+    let fixture = TestFixture::new();
+    let events = TranslationEvents::new(128);
+    let control = PipelineControl::new().with_events(events.clone());
+    let run_requests = RunRequestSignal::new();
+    let mut request_rx = run_requests.subscribe();
+    let state = ServerState::new(fixture.repo_path())
+        .with_pipeline_control(control.clone())
+        .with_run_requests(run_requests.clone());
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Start from Idle: 200, the transition in the body.
+    let (status, body) = post_run(
+        fixture.port(),
+        "/api/pipeline/start",
+        serde_json::json!(null),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["previous"], "idle");
+    assert_eq!(body["state"], "running");
+
+    // The default full-scope request landed on the shared channel — the
+    // live loop's subscription sees it.
+    request_rx.changed().await.expect("a request was queued");
+    let queued = request_rx.borrow_and_update().clone();
+    assert_eq!(queued, Some(PipelineRunRequest::default()));
+
+    // Server status follows the machine.
+    let resp = reqwest::get(format!(
+        "http://127.0.0.1:{}/api/server/status",
+        fixture.port()
+    ))
+    .await
+    .expect("server status request succeeds");
+    let body: serde_json::Value = resp.json().await.expect("status body is JSON");
+    assert_eq!(body["pipeline_status"], "running");
+
+    // A run already in flight cannot be started again — 409 with the
+    // machine's own message, and no second request queued.
+    let (status, body) = post_run(
+        fixture.port(),
+        "/api/pipeline/start",
+        serde_json::json!(null),
+    )
+    .await;
+    assert_eq!(status, 409);
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("cannot start a pipeline that is running"),
+        "409 carries the machine's own message, got: {body}"
+    );
+    assert!(
+        !request_rx.has_changed().expect("watch alive"),
+        "a rejected start must not queue a stale request"
+    );
+}
+
+/// The Restart endpoint (issue #92) re-runs a finished pipeline in-process:
+/// Complete → Running with 200, the body's phase/target/scope selectors
+/// recorded verbatim on the shared channel, and a run that is not terminal
+/// (still Running) refused with 409 — the operator stops it first.
+#[tokio::test]
+async fn test_pipeline_restart_endpoint_queues_selectors() {
+    let fixture = TestFixture::new();
+    let events = TranslationEvents::new(128);
+    let control = PipelineControl::new().with_events(events.clone());
+    control.start().expect("idle -> running");
+    let run_requests = RunRequestSignal::new();
+    let mut request_rx = run_requests.subscribe();
+    let state = ServerState::new(fixture.repo_path())
+        .with_pipeline_control(control.clone())
+        .with_run_requests(run_requests.clone());
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // A run still in flight cannot restart — the operator stops it first.
+    let (status, body) = post_run(
+        fixture.port(),
+        "/api/pipeline/restart",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, 409);
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("cannot restart a pipeline that is running"),
+        "409 carries the machine's own message, got: {body}"
+    );
+
+    // The run finishes (the live loop would walk this; here the test does).
+    control.complete().expect("running -> complete");
+
+    // Restart with the full selector set: 200, Complete → Running.
+    let selectors = serde_json::json!({
+        "phase": "classify",
+        "target": { "binary": "eqgame.dll" },
+        "scope": "only_failed",
+    });
+    let (status, body) = post_run(fixture.port(), "/api/pipeline/restart", selectors).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["previous"], "complete");
+    assert_eq!(body["state"], "running");
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("classify")
+            && message.contains("eqgame.dll")
+            && message.contains("failed"),
+        "the response message names the selectors the run will honor, got: {body}"
+    );
+
+    // The selectors landed on the shared channel exactly as sent.
+    request_rx.changed().await.expect("a request was queued");
+    let queued = request_rx
+        .borrow_and_update()
+        .clone()
+        .expect("Some request");
+    assert_eq!(queued.phase, RunPhase::Classify);
+    assert_eq!(
+        queued.target,
+        RunTarget::Binary(calxgloss_types::BinaryIdentity::new("eqgame.dll"))
+    );
+    assert_eq!(queued.scope, RunScope::OnlyFailed);
+
+    // A bodyless POST re-runs everything — the defaults.
+    control.complete().expect("running -> complete");
+    let (status, _) = post_run(
+        fixture.port(),
+        "/api/pipeline/restart",
+        serde_json::json!(null),
+    )
+    .await;
+    assert_eq!(status, 200);
+    request_rx.changed().await.expect("a request was queued");
+    let queued = request_rx
+        .borrow_and_update()
+        .clone()
+        .expect("Some request");
+    assert_eq!(queued, PipelineRunRequest::default());
+}
+
+/// Start and Restart emit their lifecycle transitions on the shared
+/// broadcast, so WS clients see the run begin without a refetch (issue #92)
+/// — idle→running from Start, complete→running from Restart.
+#[tokio::test]
+async fn test_pipeline_start_and_restart_reach_ws_clients() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let fixture = TestFixture::new();
+    let events = TranslationEvents::new(128);
+    let control = PipelineControl::new().with_events(events.clone());
+    let run_requests = RunRequestSignal::new();
+    let state = ServerState::new(fixture.repo_path())
+        .with_pipeline_control(control.clone())
+        .with_run_requests(run_requests.clone());
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!(
+        "ws://127.0.0.1:{}/api/events/upgrade",
+        fixture.port()
+    ))
+    .await
+    .expect("websocket upgrade succeeds");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Start the run from Idle over HTTP…
+    let (status, _) = post_run(
+        fixture.port(),
+        "/api/pipeline/start",
+        serde_json::json!(null),
+    )
+    .await;
+    assert_eq!(status, 200);
+    // …the run finishes (the live loop would do this walk)…
+    control.stop().expect("running -> stopping");
+    control.complete().expect("stopping -> complete");
+    // …and Restart begins it again in-process.
+    let (status, _) = post_run(
+        fixture.port(),
+        "/api/pipeline/restart",
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    let mut transitions: Vec<(String, String)> = Vec::new();
+    for _ in 0..20 {
+        if transitions.len() >= 4 {
+            break;
+        }
+        let msg = match tokio::time::timeout(Duration::from_millis(500), ws.next()).await {
+            Ok(Some(Ok(m))) => m,
+            _ => continue,
+        };
+        if let Message::Text(text) = msg {
+            let v: serde_json::Value =
+                serde_json::from_str(text.as_str()).expect("wire message is JSON");
+            if v["event"].as_str() == Some("pipeline_state_changed") {
+                transitions.push((
+                    v["previous"].as_str().unwrap_or_default().to_string(),
+                    v["state"].as_str().unwrap_or_default().to_string(),
+                ));
+            }
+        }
+    }
+    assert_eq!(
+        transitions,
+        vec![
+            ("idle".to_string(), "running".to_string()),
+            ("running".to_string(), "stopping".to_string()),
+            ("stopping".to_string(), "complete".to_string()),
+            ("complete".to_string(), "running".to_string()),
+        ],
+        "WS clients should see the start and the restart among the lifecycle transitions"
+    );
 }
 
 /// The live router's cancel-current endpoint (issue #91, W2.2) drives the
@@ -3946,6 +4235,9 @@ async fn test_live_only_endpoints_absent_from_non_live_routers() {
             "/api/pipeline/resume",
             "/api/pipeline/stop",
             "/api/pipeline/cancel-current",
+            // Issue #92: start/restart are live-only too.
+            "/api/pipeline/start",
+            "/api/pipeline/restart",
         ] {
             let resp = reqwest::Client::new()
                 .post(format!("http://127.0.0.1:{}{}", fixture.port(), path))

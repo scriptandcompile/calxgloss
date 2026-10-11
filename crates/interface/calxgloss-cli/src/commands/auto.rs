@@ -8,7 +8,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use calxgloss::DllCategory;
 use calxgloss::PipelineControl;
+use calxgloss::PipelineRunRequest;
 use calxgloss::ProgressEvent;
+use calxgloss::RunScope;
+use calxgloss::RunTarget;
 use calxgloss::StopSignal;
 use calxgloss::TranslationEvents;
 use calxgloss::UnitCancellation;
@@ -33,6 +36,12 @@ use crate::utils::*;
 /// This function encapsulates all the plumbing needed to translate one DLL:
 /// Ghidra setup, LLM client, test generator, pipeline, git operations, and
 /// result reporting.  Both `handle_auto` and `handle_live` call this.
+///
+/// `scope` restricts which functions re-enter the translation queue based on
+/// the recorded attempt history (see [`scope_functions`]);
+/// [`RunScope::AllFunctions`] keeps the plain behaviour.
+// The per-binary plumbing (Ghidra, LLM, git, live hooks) is one coherent
+// pass — bundling it into a struct would scatter the call site for no gain.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_translation_for_dll(
     binary: &str,
@@ -48,6 +57,7 @@ pub async fn run_translation_for_dll(
     stop: Option<&StopSignal>,
     control: Option<&PipelineControl>,
     cancellation: Option<&UnitCancellation>,
+    scope: RunScope,
 ) -> Result<()> {
     // The workspace — git, src/, scratch all live here.
 
@@ -87,6 +97,26 @@ pub async fn run_translation_for_dll(
         count = function_names.len(),
         "Enumerated functions from Ghidra"
     );
+
+    // W2.3 scope selectors: only-queued / only-failed restrict the queue plan
+    // to functions whose recorded attempt history matches, making the filter
+    // observable in the batch summary and per-unit events.
+    let function_names = scope_functions(binary, workspace, scope, function_names)?;
+    if function_names.is_empty() {
+        // Still emit the batch summary so the dashboard sees the pass happened.
+        if let Some(ev) = events {
+            ev.emit(ProgressEvent::BatchSummary {
+                binary: binary.to_string().into(),
+                total_functions: 0,
+                success_count: 0,
+                failure_count: 0,
+                total_attempts: 0,
+                total_tokens: 0,
+            });
+        }
+        info!("Skipping translation for {binary}: no functions match scope {scope}");
+        return Ok(());
+    }
 
     // Get LLM settings
     let llm_url = settings.require_llm_url()?;
@@ -333,6 +363,14 @@ pub async fn run_translation_for_dll(
 
 /// Handle the `auto` subcommand: detects project state and runs classification
 /// then batch translation.
+///
+/// `run` carries the W2.3 start/restart selectors: `target` restricts the run
+/// to one binary, `phase=Classify` forces re-classification, and `scope`
+/// restricts which functions re-enter the translation queue (see
+/// [`scope_functions`]). `None` keeps the plain `auto` behaviour.
+// Mirrors the CLI flag surface plus the live-mode hooks; every caller
+// passes the same settings-derived values, so a struct would only rename
+// the plumbing.
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_auto(
     target: Option<PathBuf>,
@@ -351,6 +389,7 @@ pub async fn handle_auto(
     stop: Option<&StopSignal>,
     control: Option<&PipelineControl>,
     cancellation: Option<&UnitCancellation>,
+    run: Option<&PipelineRunRequest>,
 ) -> Result<()> {
     info!("Auto mode: detecting project state");
 
@@ -390,6 +429,27 @@ pub async fn handle_auto(
         anyhow::bail!("No files found");
     }
 
+    // W2.3 target selector: restrict the run to one binary. A name that is
+    // not in the discovered set is a clear error, not a silent no-op.
+    let dlls = match run.map(|r| &r.target) {
+        None | Some(RunTarget::All) => dlls,
+        Some(RunTarget::Binary(id)) => {
+            let name = id.as_str();
+            if !dlls.iter().any(|d| d.eq_ignore_ascii_case(name)) {
+                anyhow::bail!(
+                    "run target {name} was not found in {}",
+                    target_dir.display()
+                );
+            }
+            dlls.into_iter()
+                .filter(|d| d.eq_ignore_ascii_case(name))
+                .collect()
+        }
+    };
+    // `phase=Classify` re-runs classification even for already-classified
+    // binaries; the default phase leaves the detection logic untouched.
+    let force_classify = run.is_some_and(|r| r.phase == calxgloss::RunPhase::Classify);
+
     println!();
     hsep_bold();
     println_content(format!(
@@ -414,12 +474,12 @@ pub async fn handle_auto(
     // Determine which DLLs are classified and which are not
     let mut classified: Vec<String> = dlls
         .iter()
-        .filter(|d| classification_record_exists(&workspace, d))
+        .filter(|d| !force_classify && classification_record_exists(&workspace, d))
         .cloned()
         .collect();
     let unclassified: Vec<String> = dlls
         .iter()
-        .filter(|d| !classification_record_exists(&workspace, d))
+        .filter(|d| force_classify || !classification_record_exists(&workspace, d))
         .cloned()
         .collect();
 
@@ -530,6 +590,7 @@ pub async fn handle_auto(
                 stop,
                 control,
                 cancellation,
+                run.map(|r| r.scope).unwrap_or_default(),
             )
             .await?;
         }
@@ -580,9 +641,178 @@ pub async fn handle_auto(
             stop,
             control,
             cancellation,
+            run.map(|r| r.scope).unwrap_or_default(),
         )
         .await?;
     }
 
     Ok(())
+}
+
+/// Filter the enumerated functions down to the ones the run scope admits.
+///
+/// The scope reads the recorded attempt history (`re/analysis/token_usage.json`):
+/// a function is *attempted* when it has any recorded attempt for this binary,
+/// and *succeeded* when any attempt succeeded.
+///
+/// * [`RunScope::AllFunctions`] — everything (the plain behaviour).
+/// * [`RunScope::OnlyQueued`] — never attempted: the backlog a first run left
+///   untouched (skipped by the call-graph plan or blocked by a stop).
+/// * [`RunScope::OnlyFailed`] — attempted but never succeeded: the retry set.
+///
+/// A missing history file means nothing was attempted, so `OnlyQueued` keeps
+/// the whole list and `OnlyFailed` keeps none.
+pub(crate) fn scope_functions(
+    binary: &str,
+    workspace: &Path,
+    scope: RunScope,
+    functions: Vec<String>,
+) -> Result<Vec<String>> {
+    if scope == RunScope::AllFunctions {
+        return Ok(functions);
+    }
+    let log = calxgloss_analysis::TokenUsageLogger::new(workspace)
+        .load()
+        .unwrap_or_default();
+    let identity = calxgloss_types::BinaryIdentity::new(binary);
+    Ok(functions
+        .into_iter()
+        .filter(|name| {
+            let entries: Vec<_> = log
+                .entries
+                .iter()
+                .filter(|e| e.binary == identity && e.function == *name)
+                .collect();
+            match scope {
+                RunScope::OnlyQueued => entries.is_empty(),
+                RunScope::OnlyFailed => !entries.is_empty() && !entries.iter().any(|e| e.success),
+                RunScope::AllFunctions => true,
+            }
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calxgloss_types::TokenUsageEntry;
+
+    fn sample_functions() -> Vec<String> {
+        ["DrawSprite", "DrawVertex", "UpdateGame"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
+
+    fn temp_workspace() -> tempfile::TempDir {
+        tempfile::tempdir().expect("temp workspace")
+    }
+
+    #[test]
+    fn scope_all_functions_keeps_everything_without_reading_history() {
+        let workspace = temp_workspace();
+        let kept = scope_functions(
+            "game_logic.dll",
+            workspace.path(),
+            RunScope::AllFunctions,
+            sample_functions(),
+        )
+        .expect("all-functions scope never fails");
+        assert_eq!(kept, sample_functions());
+    }
+
+    #[test]
+    fn scope_filters_follow_the_recorded_attempt_history() {
+        let workspace = temp_workspace();
+        let logger = calxgloss_analysis::TokenUsageLogger::new(workspace.path());
+        // DrawSprite: attempted and succeeded. DrawVertex: attempted, failed
+        // twice. UpdateGame: never attempted.
+        logger.record(TokenUsageEntry::new(
+            "game_logic.dll",
+            "DrawSprite",
+            1,
+            "initial",
+            100,
+            true,
+        ));
+        logger.record(TokenUsageEntry::new(
+            "game_logic.dll",
+            "DrawVertex",
+            1,
+            "initial",
+            100,
+            false,
+        ));
+        logger.record(TokenUsageEntry::new(
+            "game_logic.dll",
+            "DrawVertex",
+            2,
+            "compile_fix",
+            100,
+            false,
+        ));
+
+        let queued = scope_functions(
+            "game_logic.dll",
+            workspace.path(),
+            RunScope::OnlyQueued,
+            sample_functions(),
+        )
+        .expect("scope filter should succeed");
+        assert_eq!(queued, ["UpdateGame"]);
+
+        let failed = scope_functions(
+            "game_logic.dll",
+            workspace.path(),
+            RunScope::OnlyFailed,
+            sample_functions(),
+        )
+        .expect("scope filter should succeed");
+        assert_eq!(failed, ["DrawVertex"]);
+    }
+
+    #[test]
+    fn scope_without_history_file_keeps_all_for_queued_and_none_for_failed() {
+        let workspace = temp_workspace();
+        let queued = scope_functions(
+            "game_logic.dll",
+            workspace.path(),
+            RunScope::OnlyQueued,
+            sample_functions(),
+        )
+        .expect("missing history is not an error");
+        assert_eq!(queued, sample_functions());
+
+        let failed = scope_functions(
+            "game_logic.dll",
+            workspace.path(),
+            RunScope::OnlyFailed,
+            sample_functions(),
+        )
+        .expect("missing history is not an error");
+        assert!(failed.is_empty());
+    }
+
+    #[test]
+    fn scope_ignores_other_binaries_history() {
+        let workspace = temp_workspace();
+        let logger = calxgloss_analysis::TokenUsageLogger::new(workspace.path());
+        logger.record(TokenUsageEntry::new(
+            "other.dll",
+            "DrawSprite",
+            1,
+            "initial",
+            100,
+            true,
+        ));
+
+        let queued = scope_functions(
+            "game_logic.dll",
+            workspace.path(),
+            RunScope::OnlyQueued,
+            sample_functions(),
+        )
+        .expect("scope filter should succeed");
+        assert_eq!(queued, sample_functions());
+    }
 }

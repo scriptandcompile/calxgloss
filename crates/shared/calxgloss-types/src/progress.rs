@@ -862,9 +862,11 @@ impl StopSignal {
 ///
 /// `complete()` is also legal directly from `Running` (the run ended
 /// naturally), and `fail()` from any live state. `Complete` and `Error`
-/// are terminal. The web server's server-status endpoint mirrors this
-/// enum, so the dashboard header and the pipeline always agree on what
-/// the run is doing.
+/// are terminal for the *run* — `restart()` (issue #92, W2.3) begins a
+/// fresh run from either, moving the machine back to `Running` inside
+/// the same live process. The web server's server-status endpoint
+/// mirrors this enum, so the dashboard header and the pipeline always
+/// agree on what the run is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PipelineState {
@@ -1049,6 +1051,21 @@ impl PipelineControl {
         )
     }
 
+    /// Complete | Error → Running: begin a fresh run inside the same live
+    /// process (issue #92, W2.3). The restart endpoint drives this after
+    /// the previous run halted; what the fresh run covers travels on a
+    /// [`RunRequestSignal`]. A run that is still live (Running, Paused,
+    /// Stopping) or never started (Idle) refuses the restart — the
+    /// operator stops it first, or uses `start` for a session that has
+    /// not translated yet.
+    pub fn restart(&self) -> Result<(), PipelineTransitionError> {
+        self.transition(
+            "restart",
+            &[PipelineState::Complete, PipelineState::Error],
+            PipelineState::Running,
+        )
+    }
+
     /// Atomically move the state machine if `current` is in `allowed`,
     /// emitting the lifecycle event on success. A racing transition makes
     /// this retry with the fresh state, so two operators clicking at once
@@ -1084,6 +1101,143 @@ impl PipelineControl {
                 Err(_) => continue,
             }
         }
+    }
+}
+
+// ============================================================
+// Start & restart run requests (issue #92, W2.3)
+// ============================================================
+
+/// Which pipeline phase a start/restart request wants the run to begin
+/// from (issue #92, W2.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunPhase {
+    /// Re-classify the selected target binaries before translating —
+    /// the route when the operator wants fresh classification.
+    Classify,
+    /// Go straight to translation, honoring the classification records
+    /// already on disk. The default: a restart re-runs the work, not the
+    /// classification.
+    #[default]
+    Translate,
+}
+
+impl std::fmt::Display for RunPhase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            RunPhase::Classify => "classify",
+            RunPhase::Translate => "translate",
+        };
+        f.write_str(name)
+    }
+}
+
+/// Which target binaries a start/restart request covers (issue #92, W2.3).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunTarget {
+    /// Every target binary the run discovers.
+    #[default]
+    All,
+    /// Exactly one target binary, named by its identity.
+    Binary(BinaryIdentity),
+}
+
+impl std::fmt::Display for RunTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RunTarget::All => f.write_str("all binaries"),
+            RunTarget::Binary(id) => write!(f, "{id}"),
+        }
+    }
+}
+
+/// Which functions of the selected binaries re-enter the queue plan
+/// (issue #92, W2.3). The split is read from the workspace's own attempt
+/// record (`re/analysis/token_usage.json`), so it holds across process
+/// restarts — exactly what a restart needs to see.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunScope {
+    /// Every function the enumeration finds.
+    #[default]
+    AllFunctions,
+    /// Only functions never attempted — no token-usage entry names them.
+    OnlyQueued,
+    /// Only functions attempted but never translated — a token-usage
+    /// entry names them and none of their attempts succeeded.
+    OnlyFailed,
+}
+
+impl std::fmt::Display for RunScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            RunScope::AllFunctions => "all functions",
+            RunScope::OnlyQueued => "only queued functions",
+            RunScope::OnlyFailed => "only failed functions",
+        };
+        f.write_str(name)
+    }
+}
+
+/// What the next run should cover, carried from the web server's
+/// start/restart endpoints to the live loop (issue #92, W2.3). Every
+/// field defaults to the plain "run everything" request the Start
+/// endpoint sends, so an empty JSON body means exactly that.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PipelineRunRequest {
+    /// The phase to begin the run from.
+    #[serde(default)]
+    pub phase: RunPhase,
+    /// The target binaries the run covers.
+    #[serde(default)]
+    pub target: RunTarget,
+    /// The function scope selector.
+    #[serde(default)]
+    pub scope: RunScope,
+}
+
+/// A shared request slot between the web server and the live loop
+/// (issue #92, W2.3): the start/restart endpoints store the request the
+/// next run should honor, and the live loop waits on it to re-run the
+/// pipeline inside the same process.
+///
+/// Modeled on [`StopSignal`]: `Arc`-backed and cheaply cloneable, so the
+/// router handlers and the pipeline loop hold separate clones of one
+/// channel. The state-machine transition is driven at the endpoint
+/// **before** the request is stored, so a rejected operation never
+/// leaves a stale request for the loop to pick up. Each stored request
+/// wakes the waiting loop exactly once; the loop takes it with its
+/// [`Self::subscribe`]d receiver.
+#[derive(Debug, Clone)]
+pub struct RunRequestSignal {
+    sender: std::sync::Arc<tokio::sync::watch::Sender<Option<PipelineRunRequest>>>,
+}
+
+impl RunRequestSignal {
+    /// Create an empty signal — no run has been requested.
+    pub fn new() -> Self {
+        Self {
+            sender: std::sync::Arc::new(tokio::sync::watch::Sender::new(None)),
+        }
+    }
+
+    /// The live loop's subscription: `changed()` resolves on each stored
+    /// request, and `borrow_and_update` takes it.
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<Option<PipelineRunRequest>> {
+        self.sender.subscribe()
+    }
+
+    /// Store `request` as the next run's scope and wake the waiting loop.
+    pub fn request(&self, request: PipelineRunRequest) {
+        self.sender.send_replace(Some(request));
+    }
+}
+
+impl Default for RunRequestSignal {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -1759,6 +1913,110 @@ mod tests {
         assert!(
             rx.try_recv().is_err(),
             "a rejected transition emits no event"
+        );
+    }
+
+    // ── Start & restart (issue #92, W2.3) ─────────────────────────────
+
+    #[test]
+    fn pipeline_control_restart_from_terminal_states_succeeds() {
+        // A stopped run restarts into a fresh one inside the same process.
+        let control = PipelineControl::new();
+        control.start().expect("idle -> running");
+        control.stop().expect("running -> stopping");
+        control.complete().expect("stopping -> complete");
+        control.restart().expect("complete -> running");
+        assert_eq!(control.state(), PipelineState::Running);
+
+        // A failed run restarts too.
+        let control = PipelineControl::new();
+        control.start().expect("idle -> running");
+        control.fail().expect("running -> error");
+        control.restart().expect("error -> running");
+        assert_eq!(control.state(), PipelineState::Running);
+    }
+
+    #[test]
+    fn pipeline_control_restart_refuses_live_and_idle_states() {
+        // Idle has no run to restart — that is what start is for.
+        let control = PipelineControl::new();
+        let err = control.restart().expect_err("idle cannot restart");
+        assert_eq!(err.operation, "restart");
+        assert_eq!(err.current, PipelineState::Idle);
+
+        // A live run must be stopped before it can be restarted.
+        control.start().expect("idle -> running");
+        let err = control.restart().expect_err("running cannot restart");
+        assert_eq!(err.current, PipelineState::Running);
+        control.pause().expect("running -> paused");
+        let err = control.restart().expect_err("paused cannot restart");
+        assert_eq!(err.current, PipelineState::Paused);
+        control.stop().expect("paused -> stopping");
+        let err = control.restart().expect_err("stopping cannot restart");
+        assert_eq!(err.current, PipelineState::Stopping);
+    }
+
+    #[test]
+    fn run_request_serde_defaults_and_wire_shape() {
+        // An empty body is the plain "run everything" request.
+        let request: PipelineRunRequest = serde_json::from_str("{}").expect("empty body parses");
+        assert_eq!(request, PipelineRunRequest::default());
+        assert_eq!(request.phase, RunPhase::Translate);
+        assert_eq!(request.target, RunTarget::All);
+        assert_eq!(request.scope, RunScope::AllFunctions);
+
+        // The full selector set round-trips in its snake_case wire shape.
+        let json = serde_json::json!({
+            "phase": "classify",
+            "target": {"binary": "game_logic.dll"},
+            "scope": "only_failed",
+        });
+        let request: PipelineRunRequest = serde_json::from_value(json.clone()).expect("parses");
+        assert_eq!(request.phase, RunPhase::Classify);
+        assert_eq!(
+            request.target,
+            RunTarget::Binary(BinaryIdentity::new("game_logic.dll"))
+        );
+        assert_eq!(request.scope, RunScope::OnlyFailed);
+        assert_eq!(serde_json::to_value(&request).expect("serializes"), json);
+    }
+
+    #[test]
+    fn run_request_signal_is_shared_across_clones() {
+        let signal = RunRequestSignal::new();
+        let mut rx = signal.subscribe();
+        assert!(rx.borrow().is_none(), "a fresh signal carries no request");
+
+        let sender = signal.clone();
+        sender.request(PipelineRunRequest {
+            phase: RunPhase::Translate,
+            target: RunTarget::Binary(BinaryIdentity::new("game_logic.dll")),
+            scope: RunScope::OnlyQueued,
+        });
+
+        assert!(
+            rx.has_changed().expect("signal alive"),
+            "the clone's request wakes the loop"
+        );
+        let taken = rx
+            .borrow_and_update()
+            .clone()
+            .expect("the request is taken");
+        assert_eq!(taken.scope, RunScope::OnlyQueued);
+        assert!(
+            !rx.has_changed().expect("signal alive"),
+            "the taken request is consumed"
+        );
+
+        // The next request wakes it again.
+        signal.request(PipelineRunRequest::default());
+        assert!(
+            rx.has_changed().expect("signal alive"),
+            "the second request wakes the loop"
+        );
+        assert_eq!(
+            rx.borrow_and_update().clone().expect("taken again"),
+            PipelineRunRequest::default()
         );
     }
 

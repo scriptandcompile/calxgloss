@@ -27,7 +27,7 @@ use axum::{
 use calxgloss_reports::dashboard::DashboardBuilder;
 use calxgloss_types::{
     BinaryActivity, BinaryIdentity, PhaseRecord, PipelineControl, ProgressEvent, ReviewDashboard,
-    StopSignal, TranslationPhase, UnitCancellation, UnitKey,
+    RunRequestSignal, StopSignal, TranslationPhase, UnitCancellation, UnitKey,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -65,6 +65,11 @@ pub struct ServerState {
     /// cancel. The cancel-current endpoint cancels whatever unit the
     /// pipeline registered on it.
     unit_cancellation: Option<UnitCancellation>,
+    /// The start/restart request channel (issue #92, W2.3) — `None` on
+    /// plain `serve` routers, which have no live loop to receive a run
+    /// request. The start/restart endpoints store the request here for
+    /// the `calxgloss live` loop to pick up and re-run the pipeline.
+    run_requests: Option<RunRequestSignal>,
     /// Graceful-shutdown trigger watched by `serve`/`serve_with_listener`.
     shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
 }
@@ -84,6 +89,7 @@ impl ServerState {
             stop_signal: StopSignal::new(),
             pipeline_control: None,
             unit_cancellation: None,
+            run_requests: None,
             shutdown_tx: Arc::new(tokio::sync::watch::channel(false).0),
         }
     }
@@ -127,6 +133,14 @@ impl ServerState {
     /// whatever unit is in flight.
     pub fn with_unit_cancellation(mut self, cancellation: UnitCancellation) -> Self {
         self.unit_cancellation = Some(cancellation);
+        self
+    }
+
+    /// Attach the [`RunRequestSignal`] channel the live pipeline shares with
+    /// this server, so the start/restart endpoints (issue #92) can queue the
+    /// next run's scope for the `calxgloss live` loop to pick up.
+    pub fn with_run_requests(mut self, run_requests: RunRequestSignal) -> Self {
+        self.run_requests = Some(run_requests);
         self
     }
 
@@ -195,6 +209,13 @@ impl ServerState {
     /// has no live pipeline whose unit could be cancelled.
     pub fn unit_cancellation(&self) -> Option<UnitCancellation> {
         self.unit_cancellation.clone()
+    }
+
+    /// Clone of the run-request channel attached via
+    /// [`ServerState::with_run_requests`] — `None` when this server has no
+    /// live loop that a start/restart request could wake.
+    pub fn run_requests(&self) -> Option<RunRequestSignal> {
+        self.run_requests.clone()
     }
 
     /// Request graceful shutdown: stop accepting new requests and let
@@ -824,6 +845,15 @@ fn live_only_routes() -> Router<CombinedState> {
         .route(
             "/api/pipeline/cancel-current",
             post(handlers::api_cancel_current_unit),
+        )
+        // Start & restart (issue #92, W2.3): begin translation in a session
+        // that has not translated yet, or re-run a stopped pipeline in the
+        // same process. Live-only — a plain `serve` router has no live loop
+        // to receive the run request.
+        .route("/api/pipeline/start", post(handlers::api_start_pipeline))
+        .route(
+            "/api/pipeline/restart",
+            post(handlers::api_restart_pipeline),
         )
 }
 

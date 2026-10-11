@@ -429,6 +429,7 @@ fn main() -> Result<()> {
                     None, // no stop signal — plain auto runs to completion
                     None, // no pipeline control — plain auto has no web server
                     None, // no unit cancellation — plain auto has no web server
+                    None, // no run selectors — plain auto has no start/restart channel
                 ))
         }
         Command::AutoShim { binary, skip_git } => {

@@ -3,7 +3,10 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use calxgloss::{PipelineControl, PipelineState, StopSignal, TranslationEvents, UnitCancellation};
+use calxgloss::{
+    PipelineControl, PipelineRunRequest, PipelineState, RunRequestSignal, StopSignal,
+    TranslationEvents, UnitCancellation,
+};
 use calxgloss_web::{
     LogLevelControl, ServerState, SessionManager, build_router_with_ws, serve_with_listener,
 };
@@ -12,8 +15,41 @@ use tracing::{debug, error, info};
 use crate::Settings;
 use crate::utils::*;
 
+/// Walk the shared state machine to the run's terminal state once a run
+/// returns (issue #90): success completes the run — walking a pause park
+/// released by the stop signal through Stopping first — and failure fails
+/// it. Refusals are only debug-logged: the machine may already sit in a
+/// terminal state (the operator stopped the run through the control).
+fn finish_run(control: &PipelineControl, result: &Result<()>) {
+    if result.is_ok() {
+        // The shutdown/restart stop signal can release a pause park — the
+        // run then ends while the machine still says Paused. Walk it
+        // through Stopping so it reaches Complete like any other stopped
+        // run, rather than leaving the dashboard stuck on "paused".
+        if control.state() == PipelineState::Paused
+            && let Err(e) = control.stop()
+        {
+            debug!("pipeline stop transition refused: {e}");
+        }
+        if let Err(e) = control.complete() {
+            debug!("pipeline complete transition refused: {e}");
+        }
+    } else if let Err(e) = control.fail() {
+        debug!("pipeline fail transition refused: {e}");
+    }
+}
+
 /// Handle the `live` subcommand: start both the auto pipeline and the
 /// web review UI in the same process.
+///
+/// The pipeline runs inside a loop (issue #92, W2.3): when a run reaches a
+/// terminal state the process keeps serving, and the review UI's Start and
+/// Restart endpoints queue a [`PipelineRunRequest`] that wakes the loop to
+/// re-run the pipeline in-process — no process restart. A `--classify-only`
+/// launch runs classification with the state machine Idle and waits for the
+/// Start endpoint to begin translation.
+// Mirrors the CLI flag surface of `auto` plus the log controls; the flags
+// arrive straight from clap, so a struct would only rename the plumbing.
 #[allow(clippy::too_many_arguments)]
 pub async fn handle_live(
     target: Option<PathBuf>,
@@ -92,15 +128,29 @@ pub async fn handle_live(
     // progress state see it like any other lifecycle operation.
     let cancellation = UnitCancellation::new().with_events(events.clone());
 
-    let serve_workspace = workspace.clone();
+    // Run-request channel (issue #92, W2.3) — the Start/Restart endpoints
+    // store the next run's selectors here, and the run loop below waits on
+    // them to re-run the pipeline inside this same process.
+    let run_requests = RunRequestSignal::new();
+
+    // Build the server state here (not inside the serve task) so the run
+    // loop can also watch the server's shutdown flag and exit when the
+    // operator shuts the server down.
+    let server_state = ServerState::new(workspace.clone())
+        .with_log_level(log_level)
+        .with_log_filter(log_filter)
+        .with_stop_signal(stop_signal.clone())
+        .with_pipeline_control(control.clone())
+        .with_unit_cancellation(cancellation.clone())
+        .with_run_requests(run_requests.clone());
+    let server_shutdown = server_state.shutdown_signal();
+    // The loop below waits on this future across iterations — pin it so the
+    // select can borrow it repeatedly.
+    tokio::pin!(server_shutdown);
+
     let serve_progress = progress.clone();
-    let serve_stop = stop_signal.clone();
-    let serve_control = control.clone();
-    let serve_cancellation = cancellation.clone();
 
     let serve_handle = tokio::spawn(async move {
-        let workspace = serve_workspace;
-
         // Bind the listener and signal readiness — this happens outside of
         // serve() so we can report bind failures through the channel.
         let listener = match tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await {
@@ -114,13 +164,6 @@ pub async fn handle_live(
             .local_addr()
             .unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], port)));
         let _ = ready_tx.send(Ok(local_addr));
-
-        let server_state = ServerState::new(workspace)
-            .with_log_level(log_level)
-            .with_log_filter(log_filter)
-            .with_stop_signal(serve_stop)
-            .with_pipeline_control(serve_control)
-            .with_unit_cancellation(serve_cancellation);
 
         // Build the router with WebSocket support so the frontend can stream
         // progress events over the upgrade endpoint.
@@ -159,53 +202,110 @@ pub async fn handle_live(
         }
     }
 
-    // The run is starting — move the shared state machine Idle → Running
-    // so the dashboard header and the control endpoints see a live run.
-    if let Err(e) = control.start() {
-        debug!("pipeline start transition refused: {e}");
+    // Subscribe before queueing the launch request so the loop below never
+    // misses it — and so a Start request arriving later can't be mistaken
+    // for the launch request.
+    let mut request_rx = run_requests.subscribe();
+
+    // Initial launch. A non-classify-only launch drives the state machine
+    // Idle → Running and queues the default run request; a classify-only
+    // launch runs classification with the machine Idle and waits for the
+    // Start endpoint to begin translation (issue #92).
+    let mut classify_only_launch = classify_only;
+    if classify_only {
+        println_content("  Launch is classify-only — Start translation from the review UI.");
+        println!();
+    } else {
+        if let Err(e) = control.start() {
+            debug!("pipeline start transition refused: {e}");
+        }
+        run_requests.request(PipelineRunRequest::default());
     }
 
-    // Run the auto pipeline in the foreground (this blocks until complete).
-    let auto_result = crate::commands::auto::handle_auto(
-        target,
-        binaries,
-        all_functions,
-        classify_only,
-        skip_git,
-        settings,
-        true,          // continue mode — don't stop after classification, translate all
-        Some(&events), // pass event emitter for live progress streaming
-        workspace,     // resolved workspace (same value used by serve task)
-        no_callgraph,
-        callgraph_cache,
-        callgraph_verbose,
-        refresh_ghidra_cache,
-        Some(&stop_signal),  // shutdown/restart endpoints pause at unit boundaries
-        Some(&control),      // pause/resume/stop endpoints drive the run
-        Some(&cancellation), // cancel-current endpoint aborts the in-flight unit
-    )
-    .await;
+    // The run loop (issue #92, W2.3): each iteration runs one pipeline pass
+    // and walks the machine to its terminal state; the loop then waits for
+    // the next Start/Restart request, or exits when the server shuts down
+    // or the stop signal is set.
+    let mut auto_result: Result<()> = Ok(());
+    loop {
+        let run = if classify_only_launch {
+            // The classify-only launch pass: classification with the machine
+            // Idle, no run request involved.
+            classify_only_launch = false;
+            None
+        } else {
+            let next = tokio::select! {
+                changed = request_rx.changed() => {
+                    match changed {
+                        Ok(()) => request_rx.borrow_and_update().clone(),
+                        Err(_) => None,
+                    }
+                }
+                _ = &mut server_shutdown => None,
+            };
+            match next {
+                Some(run) => Some(run),
+                None => break,
+            }
+        };
 
-    // Record the run's terminal state on the shared machine so the
-    // dashboard reflects how it ended (issue #90).
-    if auto_result.is_ok() {
-        // The shutdown/restart stop signal can release a pause park — the
-        // run then ends while the machine still says Paused. Walk it
-        // through Stopping so it reaches Complete like any other stopped
-        // run, rather than leaving the dashboard stuck on "paused".
-        if control.state() == PipelineState::Paused
-            && let Err(e) = control.stop()
-        {
-            debug!("pipeline stop transition refused: {e}");
+        // The transition is driven at the endpoint before the request is
+        // queued, so a queued request always means the machine is already
+        // Running and ready for this run.
+        let is_launch_pass = run.is_none();
+        if let Some(run) = &run {
+            info!(
+                phase = %run.phase,
+                target = %run.target,
+                scope = %run.scope,
+                "Starting run requested from the review UI"
+            );
         }
-        if let Err(e) = control.complete() {
-            debug!("pipeline complete transition refused: {e}");
+
+        auto_result = crate::commands::auto::handle_auto(
+            target.clone(),
+            binaries.clone(),
+            all_functions,
+            // Only the classify-only launch pass classifies; a requested
+            // run translates (its phase selector drives re-classification
+            // through `run` instead).
+            is_launch_pass && classify_only,
+            skip_git,
+            settings,
+            true,              // continue mode — don't stop after classification, translate all
+            Some(&events),     // pass event emitter for live progress streaming
+            workspace.clone(), // resolved workspace (same value used by serve task)
+            no_callgraph,
+            callgraph_cache.clone(),
+            callgraph_verbose,
+            refresh_ghidra_cache,
+            Some(&stop_signal), // shutdown/restart endpoints pause at unit boundaries
+            Some(&control),     // pause/resume/stop endpoints drive the run
+            Some(&cancellation), // cancel-current endpoint aborts the in-flight unit
+            run.as_ref(),       // W2.3 start/restart selectors for this run
+        )
+        .await;
+
+        // Record the run's terminal state on the shared machine so the
+        // dashboard reflects how it ended (issue #90). The classify-only
+        // launch pass leaves the machine Idle for the Start endpoint.
+        if !(is_launch_pass && classify_only) {
+            finish_run(&control, &auto_result);
         }
-    } else if let Err(e) = control.fail() {
-        debug!("pipeline fail transition refused: {e}");
+
+        if let Err(e) = &auto_result {
+            error!(error = %e, "Pipeline run failed");
+        }
+
+        // A process-level stop (the shutdown/restart endpoints) ends the
+        // loop; a pipeline-control stop just ends the run, and the loop
+        // waits for a Restart.
+        if stop_signal.is_stopped() {
+            break;
+        }
     }
 
-    // Auto is done — shut down the server gracefully.
+    // The loop is done — shut down the server gracefully.
     // The server handle is a tokio::JoinHandle; we drop it which sends the
     // cancel signal to the spawned task.  Then wait for cleanup.
     serve_handle.abort();
