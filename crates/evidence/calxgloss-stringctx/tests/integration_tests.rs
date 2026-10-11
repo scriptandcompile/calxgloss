@@ -19,8 +19,10 @@
 
 use std::collections::HashMap;
 
-use calxgloss_ghidra::{DecompiledFunction, FunctionSummary, StringLiteral};
-use calxgloss_stringctx::Result;
+use calxgloss_ghidra::{
+    DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
+    Result, StringLiteral, StructLayout, Symbol, Xref,
+};
 use calxgloss_stringctx::engine::{ScanSource, StringContextEngine};
 use calxgloss_stringctx::persist::StringContextPersistor;
 use calxgloss_stringctx::types::StringFinding;
@@ -54,7 +56,7 @@ struct FakeProgram {
     listing: Vec<FunctionSummary>,
     bodies: HashMap<String, DecompiledFunction>,
     literals: Vec<StringLiteral>,
-    xrefs: HashMap<u64, Vec<calxgloss_ghidra::Xref>>,
+    xrefs: HashMap<u64, Vec<Xref>>,
 }
 
 impl ScanSource for FakeProgram {
@@ -63,21 +65,65 @@ impl ScanSource for FakeProgram {
     }
 
     async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
-        self.bodies.get(name).cloned().ok_or_else(|| {
-            calxgloss_ghidra::GhidraError::NotFound {
+        self.bodies
+            .get(name)
+            .cloned()
+            .ok_or_else(|| GhidraError::NotFound {
                 kind: "function",
                 query: name.to_string(),
-            }
-            .into()
-        })
+            })
     }
 
     async fn strings(&self) -> Result<Vec<StringLiteral>> {
         Ok(self.literals.clone())
     }
 
-    async fn xrefs_to(&self, address: u64) -> Result<Vec<calxgloss_ghidra::Xref>> {
+    async fn xrefs_to(&self, address: u64) -> Result<Vec<Xref>> {
         Ok(self.xrefs.get(&address).cloned().unwrap_or_default())
+    }
+
+    // The rest of the shared trait's reads: these tests never make
+    // them, so they answer with empty or not-found data.
+    async fn callers(&self, _address: u64) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    async fn data_types(&self, _category: Option<&str>) -> Result<Vec<DataTypeEntry>> {
+        Ok(Vec::new())
+    }
+
+    async fn struct_layout(&self, name: &str) -> Result<StructLayout> {
+        Err(GhidraError::NotFound {
+            kind: "struct",
+            query: name.to_string(),
+        })
+    }
+
+    async fn enum_values(&self, name: &str) -> Result<EnumDefinition> {
+        Err(GhidraError::NotFound {
+            kind: "enum",
+            query: name.to_string(),
+        })
+    }
+
+    async fn data_items(&self) -> Result<Vec<DataItem>> {
+        Ok(Vec::new())
+    }
+
+    async fn imports(&self) -> Result<Vec<Symbol>> {
+        Ok(Vec::new())
+    }
+
+    async fn exports(&self) -> Result<Vec<Symbol>> {
+        Ok(Vec::new())
+    }
+
+    async fn image_base(&self) -> Result<u64> {
+        Ok(0)
+    }
+
+    async fn read_memory(&self, _address: u64, _length: usize) -> Result<Vec<u8>> {
+        Ok(Vec::new())
     }
 }
 
@@ -111,7 +157,7 @@ fn program() -> FakeProgram {
     ];
     program.xrefs.insert(
         0x180128cf0,
-        vec![calxgloss_ghidra::Xref {
+        vec![Xref {
             address: 0x180006f04,
             function: Some("FUN_18003e750".to_string()),
             kind: Some("DATA".to_string()),

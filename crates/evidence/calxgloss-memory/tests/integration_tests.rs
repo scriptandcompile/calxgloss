@@ -20,8 +20,10 @@
 
 use std::collections::HashMap;
 
-use calxgloss_ghidra::{DecompiledFunction, FunctionSummary};
-use calxgloss_memory::Result;
+use calxgloss_ghidra::{
+    DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
+    Result, StringLiteral, StructLayout, Symbol, Xref,
+};
 use calxgloss_memory::engine::{MemoryEngine, ScanSource};
 use calxgloss_memory::persist::MemoryPersistor;
 use calxgloss_memory::types::{AllocationType, CountStyle, HandleType, MemoryFinding};
@@ -68,13 +70,65 @@ impl ScanSource for FakeProgram {
     }
 
     async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
-        self.bodies.get(name).cloned().ok_or_else(|| {
-            calxgloss_ghidra::GhidraError::NotFound {
+        self.bodies
+            .get(name)
+            .cloned()
+            .ok_or_else(|| GhidraError::NotFound {
                 kind: "function",
                 query: name.to_string(),
-            }
-            .into()
+            })
+    }
+
+    // The rest of the shared trait's reads: these tests never make
+    // them, so they answer with empty or not-found data.
+    async fn strings(&self) -> Result<Vec<StringLiteral>> {
+        Ok(Vec::new())
+    }
+
+    async fn callers(&self, _address: u64) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    async fn xrefs_to(&self, _address: u64) -> Result<Vec<Xref>> {
+        Ok(Vec::new())
+    }
+
+    async fn data_types(&self, _category: Option<&str>) -> Result<Vec<DataTypeEntry>> {
+        Ok(Vec::new())
+    }
+
+    async fn struct_layout(&self, name: &str) -> Result<StructLayout> {
+        Err(GhidraError::NotFound {
+            kind: "struct",
+            query: name.to_string(),
         })
+    }
+
+    async fn enum_values(&self, name: &str) -> Result<EnumDefinition> {
+        Err(GhidraError::NotFound {
+            kind: "enum",
+            query: name.to_string(),
+        })
+    }
+
+    async fn data_items(&self) -> Result<Vec<DataItem>> {
+        Ok(Vec::new())
+    }
+
+    async fn imports(&self) -> Result<Vec<Symbol>> {
+        Ok(Vec::new())
+    }
+
+    async fn exports(&self) -> Result<Vec<Symbol>> {
+        Ok(Vec::new())
+    }
+
+    async fn image_base(&self) -> Result<u64> {
+        Ok(0)
+    }
+
+    async fn read_memory(&self, _address: u64, _length: usize) -> Result<Vec<u8>> {
+        Ok(Vec::new())
     }
 }
 
