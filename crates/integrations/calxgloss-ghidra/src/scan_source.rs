@@ -6,8 +6,9 @@
 //! xrefs-to, the Type Manager reads (data types, struct layouts, enum values,
 //! data items), the import and export listings, and the raw reads the vtable
 //! scan makes (image base, memory bytes) — defined once so the planned read
-//! cache implements it once instead of eight times. Nothing migrates yet:
-//! the per-crate traits stay exactly where they are.
+//! cache implements it once instead of eight times. The algorithm, callback,
+//! consts, and control-flow engines already re-export this trait in place of
+//! their own; the remaining crates migrate onto it one batch at a time.
 //!
 //! Deliberately absent:
 //!

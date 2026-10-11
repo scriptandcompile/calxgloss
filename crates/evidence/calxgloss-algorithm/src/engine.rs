@@ -22,52 +22,19 @@ use crate::cfg_patterns::CfgPatternMatcher;
 use crate::error::Result;
 use crate::string_hints::StringHintEngine;
 use crate::types::{AlgorithmRecognitionResult, ScanMetadata};
-use calxgloss_ghidra::{DecompiledFunction, FunctionSummary, GhidraClient, StringLiteral};
+use calxgloss_ghidra::GhidraClient;
 use std::time::Instant;
 use tracing::{info, warn};
 
 /// The program reads a recognition scan performs.
 ///
-/// [`GhidraClient`] implements it directly; tests implement it over
-/// canned bodies so the orchestration runs without a server. The futures
-/// are `Send` so a scan can be driven from an orchestrating task.
-pub trait ScanSource {
-    /// Every function in the program, in listing order.
-    fn functions(&self) -> impl std::future::Future<Output = Result<Vec<FunctionSummary>>> + Send;
-
-    /// The pseudo-C for one function, by name.
-    fn decompile(
-        &self,
-        name: &str,
-    ) -> impl std::future::Future<Output = Result<DecompiledFunction>> + Send;
-
-    /// Every string literal defined in the program.
-    fn strings(&self) -> impl std::future::Future<Output = Result<Vec<StringLiteral>>> + Send;
-
-    /// The names of the functions that call the function at `address`.
-    fn callers(
-        &self,
-        address: u64,
-    ) -> impl std::future::Future<Output = Result<Vec<String>>> + Send;
-}
-
-impl ScanSource for GhidraClient {
-    async fn functions(&self) -> Result<Vec<FunctionSummary>> {
-        Ok(self.list_functions().await?)
-    }
-
-    async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
-        Ok(self.decompile_function_by_name(name).await?)
-    }
-
-    async fn strings(&self) -> Result<Vec<StringLiteral>> {
-        Ok(self.list_strings(None).await?)
-    }
-
-    async fn callers(&self, address: u64) -> Result<Vec<String>> {
-        Ok(self.callers(address).await?)
-    }
-}
+/// The shared trait from the Ghidra integration crate, re-exported here
+/// so the engine's generic shape names it where it always has;
+/// [`GhidraClient`] implements it over the live HTTP API, and tests
+/// implement it over canned bodies so the orchestration runs without a
+/// server. The futures are `Send` so a scan can be driven from an
+/// orchestrating task.
+pub use calxgloss_ghidra::ScanSource;
 
 /// Orchestrates the three detectors into one [`AlgorithmRecognitionResult`].
 ///
@@ -255,7 +222,10 @@ impl<S> AlgorithmEngine<S> {
 mod tests {
     use super::*;
     use crate::types::{AlgorithmCategory, AlgorithmHint, Confidence, DetectionMethod};
-    use calxgloss_ghidra::GhidraError;
+    use calxgloss_ghidra::{
+        DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
+        Result, StringLiteral, StructLayout, Symbol, Xref,
+    };
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -337,8 +307,7 @@ mod tests {
                 return Err(GhidraError::Reported {
                     status: Some(200),
                     message: "Ghidra is busy".into(),
-                }
-                .into());
+                });
             }
             Ok(self.listing.clone())
         }
@@ -349,16 +318,15 @@ mod tests {
                 return Err(GhidraError::NotFound {
                     kind: "function",
                     query: name.to_string(),
-                }
-                .into());
+                });
             }
-            self.bodies.get(name).cloned().ok_or_else(|| {
-                GhidraError::NotFound {
+            self.bodies
+                .get(name)
+                .cloned()
+                .ok_or_else(|| GhidraError::NotFound {
                     kind: "function",
                     query: name.to_string(),
-                }
-                .into()
-            })
+                })
         }
 
         async fn strings(&self) -> Result<Vec<StringLiteral>> {
@@ -367,8 +335,7 @@ mod tests {
                 return Err(GhidraError::Reported {
                     status: Some(200),
                     message: "Ghidra is busy".into(),
-                }
-                .into());
+                });
             }
             Ok(self.literals.clone())
         }
@@ -379,10 +346,53 @@ mod tests {
                 return Err(GhidraError::Reported {
                     status: Some(200),
                     message: "Ghidra is busy".into(),
-                }
-                .into());
+                });
             }
             Ok(self.callers.get(&address).cloned().unwrap_or_default())
+        }
+
+        // The rest of the shared trait's reads: this engine never makes
+        // them, so they answer with empty or not-found data.
+        async fn xrefs_to(&self, _address: u64) -> Result<Vec<Xref>> {
+            Ok(Vec::new())
+        }
+
+        async fn data_types(&self, _category: Option<&str>) -> Result<Vec<DataTypeEntry>> {
+            Ok(Vec::new())
+        }
+
+        async fn struct_layout(&self, name: &str) -> Result<StructLayout> {
+            Err(GhidraError::NotFound {
+                kind: "struct",
+                query: name.to_string(),
+            })
+        }
+
+        async fn enum_values(&self, name: &str) -> Result<EnumDefinition> {
+            Err(GhidraError::NotFound {
+                kind: "enum",
+                query: name.to_string(),
+            })
+        }
+
+        async fn data_items(&self) -> Result<Vec<DataItem>> {
+            Ok(Vec::new())
+        }
+
+        async fn imports(&self) -> Result<Vec<Symbol>> {
+            Ok(Vec::new())
+        }
+
+        async fn exports(&self) -> Result<Vec<Symbol>> {
+            Ok(Vec::new())
+        }
+
+        async fn image_base(&self) -> Result<u64> {
+            Ok(0)
+        }
+
+        async fn read_memory(&self, _address: u64, _length: usize) -> Result<Vec<u8>> {
+            Ok(Vec::new())
         }
     }
 
