@@ -1271,6 +1271,31 @@ pub struct ScopeFunctionRequest {
     pub function: String,
 }
 
+// ─── Per-unit reviewer overrides (issue #96, W2.7) ───────────────────
+
+/// Request body of `POST /api/units/{id}/override` — the reviewer's
+/// override record for this unit, replacing any previous one. Missing
+/// fields mean "not overridden"; an all-defaults record removes the
+/// override (the unit falls back to automatic behavior).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnitOverrideRequest {
+    /// The override record to apply.
+    #[serde(default, rename = "override")]
+    pub r#override: calxgloss_types::FunctionOverride,
+}
+
+/// Response body of the override endpoints: the unit the call addressed
+/// and the override now in force for it (`None` when none is set — after
+/// a removal, or a GET over a never-overridden unit).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnitOverrideResponse {
+    /// The unit id the call addressed, echoed back.
+    pub unit: String,
+    /// The override now in force, if any.
+    #[serde(default, rename = "override")]
+    pub r#override: Option<calxgloss_types::FunctionOverride>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use calxgloss::DllCategory;
+use calxgloss::OverrideControl;
 use calxgloss::PipelineControl;
 use calxgloss::PipelineRunRequest;
 use calxgloss::ProgressEvent;
@@ -60,6 +61,7 @@ pub async fn run_translation_for_dll(
     cancellation: Option<&UnitCancellation>,
     scope: RunScope,
     scope_control: Option<&ScopeControl>,
+    override_control: Option<&OverrideControl>,
 ) -> Result<()> {
     // The workspace — git, src/, scratch all live here.
 
@@ -185,6 +187,9 @@ pub async fn run_translation_for_dll(
     }
     if let Some(scope_control) = scope_control {
         pipeline = pipeline.with_scope(scope_control.clone());
+    }
+    if let Some(override_control) = override_control {
+        pipeline = pipeline.with_overrides(override_control.clone());
     }
     pipeline = pipeline.with_workspace(workspace);
     // The batch's shared Ghidra read cache keys on the target binary's
@@ -397,6 +402,7 @@ pub async fn handle_auto(
     cancellation: Option<&UnitCancellation>,
     run: Option<&PipelineRunRequest>,
     scope_control: Option<&ScopeControl>,
+    override_control: Option<&OverrideControl>,
 ) -> Result<()> {
     info!("Auto mode: detecting project state");
 
@@ -620,6 +626,7 @@ pub async fn handle_auto(
                 cancellation,
                 run.map(|r| r.scope).unwrap_or_default(),
                 scope_control,
+                override_control,
             )
             .await?;
         }
@@ -672,6 +679,7 @@ pub async fn handle_auto(
             cancellation,
             run.map(|r| r.scope).unwrap_or_default(),
             scope_control,
+            override_control,
         )
         .await?;
     }

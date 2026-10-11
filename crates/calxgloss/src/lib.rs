@@ -40,6 +40,9 @@ pub use calxgloss_types::scan::ScanMetadata;
 pub use calxgloss_types::scope::{
     FunctionRef, ScopeControl, TranslationConstraints, TranslationScope,
 };
+pub use calxgloss_types::{
+    FunctionOverride, OverrideControl, UnitOverrides, override_records_path, unit_override_key,
+};
 
 // ============================================================
 // calxgloss-ghidra — GhidraMCP HTTP client

@@ -2621,6 +2621,71 @@ svg {
     font-variant-numeric: tabular-nums;
 }
 
+/* ─── Per-unit overrides tab (issue #96) ──────────────────────────── */
+
+.override-unavailable {
+    padding: 12px;
+    font-size: 13px;
+    color: var(--text-muted);
+}
+
+.override-summary {
+    margin-bottom: 12px;
+}
+
+.override-empty {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.override-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.override-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.override-field label {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+}
+
+.override-field select,
+.override-field textarea {
+    padding: 6px 8px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: inherit;
+}
+
+.override-field-inline {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.override-buttons {
+    display: flex;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.reviewer-notes-text {
+    font-size: 13px;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+}
+
 /* ─── Pipeline Phase Bar (issue #61) ──────────────────────────────── */
 
 .pipeline-phase-bar {

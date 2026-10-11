@@ -246,6 +246,16 @@ pub struct TranslationPipeline {
     /// escalation, and the token budget stops the batch at the next unit
     /// boundary once spend reaches it. Driven by the web scope endpoints.
     scope: Option<ScopeControl>,
+
+    /// Shared per-unit reviewer-override handle (issue #96, W2.7).
+    ///
+    /// When set, the context builder honors it per unit: a forced tier
+    /// replaces the automatic selection, a forced retry strategy replaces
+    /// the configured one, and custom hints reach the unit's prompts. The
+    /// batch loops also drop override-skipped units at queue selection, so
+    /// one hopeless function never blocks the rest of its binary's pass.
+    /// Driven by the web override endpoints.
+    overrides: Option<calxgloss_types::OverrideControl>,
 }
 
 impl TranslationPipeline {
@@ -281,6 +291,7 @@ impl TranslationPipeline {
             pipeline_control: None,
             unit_cancellation: None,
             scope: None,
+            overrides: None,
         }
     }
 
@@ -371,6 +382,18 @@ impl TranslationPipeline {
         self
     }
 
+    /// Attach the shared [`OverrideControl`] handle (issue #96, W2.7).
+    ///
+    /// The web server's override endpoints drive it; the translation context
+    /// builder consults it per unit — a forced tier replaces the automatic
+    /// selection, a forced retry strategy replaces the configured one, and
+    /// custom hints reach the unit's prompts — while the batch loops drop
+    /// override-skipped units at queue selection.
+    pub fn with_overrides(mut self, overrides: calxgloss_types::OverrideControl) -> Self {
+        self.overrides = Some(overrides);
+        self
+    }
+
     /// Whether an attached stop signal has been requested.
     fn stop_requested(&self) -> bool {
         self.stop.as_ref().is_some_and(|s| s.is_stopped())
@@ -420,14 +443,16 @@ impl TranslationPipeline {
         }
     }
 
-    /// Apply the operator's function scope at queue selection (issue #93,
-    /// W2.5).
+    /// Apply the operator's function scope and the reviewer's per-unit
+    /// overrides at queue selection (issues #93, W2.5 and #96, W2.7).
     ///
     /// Skipped functions leave the plan before the first unit starts — they
     /// are never attempted — and priority functions sort ahead of the rest
     /// of the queue: the prioritized group keeps its relative order, and
     /// everything after it keeps its original order (a stable partition).
-    /// With no scope handle attached the list passes through untouched.
+    /// A reviewer override's skip flag removes its single unit the same way,
+    /// so one hopeless function never blocks the rest of its binary's pass.
+    /// With neither handle attached the list passes through untouched.
     ///
     /// `name_of` extracts the function name from a queue item, so the same
     /// filtering serves plain name lists and call-graph plan entries alike.
@@ -437,6 +462,26 @@ impl TranslationPipeline {
         items: Vec<T>,
         name_of: impl Fn(&T) -> &str,
     ) -> Vec<T> {
+        // W2.7: reviewer-skipped units leave the plan at the same selection
+        // point as operator-skipped functions.
+        let items = match self.overrides.as_ref() {
+            None => items,
+            Some(overrides) => {
+                let total = items.len();
+                let kept: Vec<T> = items
+                    .into_iter()
+                    .filter(|item| !overrides.is_skipped(binary, name_of(item)))
+                    .collect();
+                let skipped = total - kept.len();
+                if skipped > 0 {
+                    info!(
+                        binary,
+                        skipped, "Override filter — reviewer-skipped units leave the queue plan"
+                    );
+                }
+                kept
+            }
+        };
         let Some(scope) = self.scope.as_ref() else {
             return items;
         };
@@ -723,11 +768,26 @@ impl TranslationPipeline {
         // Select the context tier based on complexity and API call count.
         // Historical success rate tracking is reserved for a later integration.
         let api_call_count = tagged_apis.len();
-        let tier = calxgloss_types::select_context_tier(
+        let auto_tier = calxgloss_types::select_context_tier(
             &complexity,
             api_call_count,
             calxgloss_types::SuccessRate::default(),
         );
+        // W2.7: a reviewer override forces the tier — the automatic selector
+        // is bypassed for this unit (issue #96).
+        let tier = match self.forced_context_tier(binary, function) {
+            Some(forced) => {
+                info!(
+                    binary,
+                    function,
+                    tier = %forced,
+                    automatic = %auto_tier,
+                    "Reviewer override forces the context tier"
+                );
+                forced
+            }
+            None => auto_tier,
+        };
         let complexity_label = complexity.to_string();
         info!(
             binary,
@@ -899,6 +959,21 @@ impl TranslationPipeline {
                 );
                 calxgloss_prompts::build_full_module_prompt(&data)?
             }
+        };
+
+        // W2.7: the reviewer's custom hints ride into the prompt, so what
+        // the reviewer knows about this function reaches the LLM (issue #96).
+        let reviewer_hints = self.reviewer_hints_for(binary, function);
+        let prompt = if reviewer_hints.is_empty() {
+            prompt
+        } else {
+            info!(
+                binary,
+                function,
+                hints = reviewer_hints.len(),
+                "Reviewer override appends custom hints to the prompt"
+            );
+            Self::append_reviewer_hints(prompt, &reviewer_hints)
         };
 
         // Emit: LLM request (full prompt)
@@ -1116,7 +1191,20 @@ impl TranslationPipeline {
         let source = self.scan_source();
         // W2.5: operator constraints (max attempts, max context tier) cap the
         // retry policy before the loop runs.
-        let bounded_config = self.constrained_retry_config(config);
+        let mut bounded_config = self.constrained_retry_config(config);
+        // W2.7: a reviewer override forces the retry strategy and carries its
+        // custom hints into the loop's failure-informed prompts (issue #96).
+        if let Some(strategy) = self.forced_retry_strategy(binary, function) {
+            info!(
+                binary,
+                function,
+                strategy = %strategy,
+                configured = %config.strategy,
+                "Reviewer override forces the retry strategy"
+            );
+            bounded_config.strategy = strategy;
+        }
+        let reviewer_hints = self.reviewer_hints_for(binary, function);
         let ctx = retry::RetryLoopCtx {
             verifier,
             llm: &self.llm,
@@ -1126,6 +1214,7 @@ impl TranslationPipeline {
             events: self.events.as_ref(),
             resource_detector: None,
             fault_logger: None,
+            reviewer_hints: &reviewer_hints,
         };
         // Boxed for the same reason as above.
         let retry_loop: std::pin::Pin<
@@ -1284,6 +1373,71 @@ impl TranslationPipeline {
 
     /// The function's C signature, as Ghidra inferred it.
     ///
+    /// The reviewer's override record for a unit, if any (issue #96, W2.7).
+    fn unit_override(
+        &self,
+        binary: &str,
+        function: &str,
+    ) -> Option<calxgloss_types::FunctionOverride> {
+        self.overrides
+            .as_ref()
+            .and_then(|o| o.get(binary, function))
+    }
+
+    /// The context tier a reviewer forced for this unit, if any — the
+    /// context builder swaps it in for the automatic selection.
+    fn forced_context_tier(
+        &self,
+        binary: &str,
+        function: &str,
+    ) -> Option<calxgloss_types::ContextTier> {
+        self.unit_override(binary, function)
+            .and_then(|o| o.tier_override)
+    }
+
+    /// The retry strategy a reviewer forced for this unit, if any. An
+    /// unknown label is reported and ignored — the configured strategy
+    /// survives rather than the run failing on a typo.
+    fn forced_retry_strategy(&self, binary: &str, function: &str) -> Option<retry::RetryStrategy> {
+        let label = self
+            .unit_override(binary, function)
+            .and_then(|o| o.retry_strategy_override)?;
+        match retry::RetryStrategy::from_label(&label) {
+            Some(strategy) => Some(strategy),
+            None => {
+                warn!(
+                    binary,
+                    function,
+                    strategy = label,
+                    "Unknown retry strategy override; keeping the configured strategy"
+                );
+                None
+            }
+        }
+    }
+
+    /// The reviewer's custom hints for this unit — appended to its prompts.
+    fn reviewer_hints_for(&self, binary: &str, function: &str) -> Vec<String> {
+        self.unit_override(binary, function)
+            .map(|o| o.custom_hints)
+            .unwrap_or_default()
+    }
+
+    /// Append the reviewer's custom hints to a built prompt (issue #96, W2.7).
+    ///
+    /// The hints ride as a clearly-marked section at the end of the prompt —
+    /// the reviewer's knowledge of the function (what it really does, known
+    /// quirks) that the automatic context extraction cannot produce.
+    fn append_reviewer_hints(prompt: String, hints: &[String]) -> String {
+        let mut out = prompt;
+        out.push_str("\n\n## Reviewer hints\n\n");
+        out.push_str("Additional context supplied by the human reviewer steering this run:\n");
+        for hint in hints {
+            out.push_str(&format!("- {hint}\n"));
+        }
+        out
+    }
+
     /// The decompiler's first line is a real signature carrying real parameter
     /// types, so it is preferred. Only when that line is unusable — the
     /// decompilation failed, or the text is not pseudo-C — does this fall back
@@ -3325,6 +3479,155 @@ mod tests {
             vec!["UpdateScene", "DrawPrimitive", "LoadAssets"],
             "the prioritized function must run first, the rest keep their order"
         );
+    }
+
+    // ─── Per-unit reviewer overrides (issue #96, W2.7) ─────────────────
+
+    /// A unit the reviewer skipped never enters the queue plan — and the
+    /// rest of its binary's pass keeps running, so one hopeless function
+    /// does not block the batch.
+    #[tokio::test]
+    async fn batch_translate_never_queues_reviewer_skipped_units() {
+        let dir = TempDir::new().expect("temp workspace");
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        let overrides = calxgloss_types::OverrideControl::new();
+        overrides
+            .set(
+                "game_logic.dll",
+                "UpdateScene",
+                calxgloss_types::FunctionOverride {
+                    skip: true,
+                    ..Default::default()
+                },
+            )
+            .expect("in-memory skip");
+
+        let result = pipeline_over(Some(dir.path()))
+            .with_overrides(overrides)
+            .batch_translate(
+                "game_logic.dll",
+                &["DrawPrimitive".to_string(), "UpdateScene".to_string()],
+                &retry::RetryConfig::default(),
+                &verifier,
+                None,
+            )
+            .await
+            .expect("batch over unreachable ghidra still reports per-function failures");
+
+        let names: Vec<&str> = result.results.iter().map(|r| r.function.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["DrawPrimitive"],
+            "the reviewer-skipped unit must never enter the queue, the rest keep running"
+        );
+    }
+
+    /// A forced tier replaces the automatic selection for that unit only;
+    /// other units keep the automatic tier.
+    #[test]
+    fn reviewer_override_forces_the_context_tier() {
+        let overrides = calxgloss_types::OverrideControl::new();
+        overrides
+            .set(
+                "game_logic.dll",
+                "DrawPrimitive",
+                calxgloss_types::FunctionOverride {
+                    tier_override: Some(calxgloss_types::ContextTier::FullModule),
+                    ..Default::default()
+                },
+            )
+            .expect("in-memory set");
+        let pipeline = pipeline_over(None).with_overrides(overrides);
+
+        assert_eq!(
+            pipeline.forced_context_tier("game_logic.dll", "DrawPrimitive"),
+            Some(calxgloss_types::ContextTier::FullModule)
+        );
+        assert_eq!(
+            pipeline.forced_context_tier("game_logic.dll", "UpdateScene"),
+            None,
+            "units without an override keep the automatic tier"
+        );
+    }
+
+    /// A forced strategy label maps onto the translator's own strategy; an
+    /// unknown label is ignored rather than derailing the run.
+    #[test]
+    fn reviewer_override_forces_the_retry_strategy() {
+        let overrides = calxgloss_types::OverrideControl::new();
+        overrides
+            .set(
+                "game_logic.dll",
+                "DrawPrimitive",
+                calxgloss_types::FunctionOverride {
+                    retry_strategy_override: Some("escalate".into()),
+                    ..Default::default()
+                },
+            )
+            .expect("in-memory set");
+        overrides
+            .set(
+                "game_logic.dll",
+                "LoadAssets",
+                calxgloss_types::FunctionOverride {
+                    retry_strategy_override: Some("not-a-strategy".into()),
+                    ..Default::default()
+                },
+            )
+            .expect("in-memory set");
+        let pipeline = pipeline_over(None).with_overrides(overrides);
+
+        assert_eq!(
+            pipeline.forced_retry_strategy("game_logic.dll", "DrawPrimitive"),
+            Some(retry::RetryStrategy::Escalate)
+        );
+        assert_eq!(
+            pipeline.forced_retry_strategy("game_logic.dll", "LoadAssets"),
+            None,
+            "an unknown label keeps the configured strategy"
+        );
+        assert_eq!(
+            pipeline.forced_retry_strategy("game_logic.dll", "UpdateScene"),
+            None,
+            "units without an override keep the configured strategy"
+        );
+    }
+
+    /// The reviewer's custom hints reach the unit's prompt as a marked
+    /// section; units without hints keep the prompt untouched.
+    #[test]
+    fn reviewer_hints_ride_into_the_prompt() {
+        let overrides = calxgloss_types::OverrideControl::new();
+        overrides
+            .set(
+                "game_logic.dll",
+                "DrawPrimitive",
+                calxgloss_types::FunctionOverride {
+                    custom_hints: vec!["reads the palette table".into()],
+                    ..Default::default()
+                },
+            )
+            .expect("in-memory set");
+        let pipeline = pipeline_over(None).with_overrides(overrides);
+
+        assert_eq!(
+            pipeline.reviewer_hints_for("game_logic.dll", "DrawPrimitive"),
+            vec!["reads the palette table".to_string()]
+        );
+        assert!(
+            pipeline
+                .reviewer_hints_for("game_logic.dll", "UpdateScene")
+                .is_empty()
+        );
+
+        let with_hints = TranslationPipeline::append_reviewer_hints(
+            "BASE PROMPT".to_string(),
+            &["reads the palette table".to_string()],
+        );
+        assert!(with_hints.starts_with("BASE PROMPT"));
+        assert!(with_hints.contains("## Reviewer hints"));
+        assert!(with_hints.contains("- reads the palette table"));
     }
 
     /// With the run's token budget already spent, the batch ends at the very

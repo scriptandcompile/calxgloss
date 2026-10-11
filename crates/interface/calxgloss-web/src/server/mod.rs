@@ -26,8 +26,9 @@ use axum::{
 };
 use calxgloss_reports::dashboard::DashboardBuilder;
 use calxgloss_types::{
-    BinaryActivity, BinaryIdentity, PhaseRecord, PipelineControl, ProgressEvent, ReviewDashboard,
-    RunRequestSignal, ScopeControl, StopSignal, TranslationPhase, UnitCancellation, UnitKey,
+    BinaryActivity, BinaryIdentity, OverrideControl, PhaseRecord, PipelineControl, ProgressEvent,
+    ReviewDashboard, RunRequestSignal, ScopeControl, StopSignal, TranslationPhase,
+    UnitCancellation, UnitKey,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -75,6 +76,11 @@ pub struct ServerState {
     /// scope endpoints read and mutate the operator's translation scope
     /// and constraints through it.
     scope_control: Option<ScopeControl>,
+    /// The live run's [`OverrideControl`] handle (issue #96, W2.7) — `None`
+    /// on plain `serve` routers, which have no pipeline to steer. The unit
+    /// override endpoints read and mutate per-unit reviewer overrides
+    /// through it.
+    override_control: Option<OverrideControl>,
     /// Graceful-shutdown trigger watched by `serve`/`serve_with_listener`.
     shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
 }
@@ -96,6 +102,7 @@ impl ServerState {
             unit_cancellation: None,
             run_requests: None,
             scope_control: None,
+            override_control: None,
             shutdown_tx: Arc::new(tokio::sync::watch::channel(false).0),
         }
     }
@@ -155,6 +162,14 @@ impl ServerState {
     /// operator's translation scope and constraints.
     pub fn with_scope_control(mut self, scope: ScopeControl) -> Self {
         self.scope_control = Some(scope);
+        self
+    }
+
+    /// Attach the [`OverrideControl`] handle the live pipeline shares with
+    /// this server, so the unit override endpoints (issue #96) can read and
+    /// steer per-unit reviewer overrides.
+    pub fn with_override_control(mut self, overrides: OverrideControl) -> Self {
+        self.override_control = Some(overrides);
         self
     }
 
@@ -237,6 +252,13 @@ impl ServerState {
     /// router has no scope control (plain `serve`).
     pub fn scope_control(&self) -> Option<ScopeControl> {
         self.scope_control.clone()
+    }
+
+    /// Clone of the override-control handle attached via
+    /// [`with_override_control`](Self::with_override_control), or `None`
+    /// when this router has no override control (plain `serve`).
+    pub fn override_control(&self) -> Option<OverrideControl> {
+        self.override_control.clone()
     }
 
     /// Request graceful shutdown: stop accepting new requests and let
@@ -899,6 +921,15 @@ fn live_only_routes() -> Router<CombinedState> {
         .route(
             "/api/scope/constraints",
             post(handlers::api_scope_set_constraints),
+        )
+        // Per-unit reviewer overrides (issue #96, W2.7): steer one unit's
+        // next attempt — forced tier/strategy, custom hints, skip. Live-only
+        // — a plain `serve` router has no pipeline to steer.
+        .route(
+            "/api/units/{id}/override",
+            get(handlers::api_get_unit_override)
+                .post(handlers::api_apply_unit_override)
+                .delete(handlers::api_remove_unit_override),
         )
 }
 

@@ -139,6 +139,12 @@ pub async fn handle_live(
     // them for the next run.
     let scope_control = calxgloss::ScopeControl::open(&workspace);
 
+    // Per-unit reviewer-override handle (issue #96, W2.7) — opened over the
+    // workspace, so persisted override records are honored from the first
+    // context build and every endpoint mutation re-persists them for the
+    // next run.
+    let override_control = calxgloss::OverrideControl::open(&workspace);
+
     // Build the server state here (not inside the serve task) so the run
     // loop can also watch the server's shutdown flag and exit when the
     // operator shuts the server down.
@@ -149,7 +155,8 @@ pub async fn handle_live(
         .with_pipeline_control(control.clone())
         .with_unit_cancellation(cancellation.clone())
         .with_run_requests(run_requests.clone())
-        .with_scope_control(scope_control.clone());
+        .with_scope_control(scope_control.clone())
+        .with_override_control(override_control.clone());
     let server_shutdown = server_state.shutdown_signal();
     // The loop below waits on this future across iterations — pin it so the
     // select can borrow it repeatedly.
@@ -291,6 +298,7 @@ pub async fn handle_live(
             Some(&cancellation), // cancel-current endpoint aborts the in-flight unit
             run.as_ref(),       // W2.3 start/restart selectors for this run
             Some(&scope_control), // W2.5 scope endpoints steer this run
+            Some(&override_control), // W2.7 override endpoints steer this run
         )
         .await;
 

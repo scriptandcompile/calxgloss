@@ -57,6 +57,23 @@ impl std::fmt::Display for RetryStrategy {
     }
 }
 
+impl RetryStrategy {
+    /// Parse a strategy from its dashboard label (issue #96, W2.7: the
+    /// reviewer forces a strategy from the Overrides tab). Unknown labels
+    /// return `None` so callers can reject them. Inverse of the
+    /// [`std::fmt::Display`] impl above.
+    pub fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "default" => Some(Self::Default),
+            "compile_fix" => Some(Self::CompileFix),
+            "test_fix" => Some(Self::TestFix),
+            "escalate" => Some(Self::Escalate),
+            "edge_case_fix" => Some(Self::EdgeCaseFix),
+            _ => None,
+        }
+    }
+}
+
 /// The sequence of strategies to try when using auto mode.
 ///
 /// Each strategy is tried in order; on failure the next one in the cycle is used.

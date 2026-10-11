@@ -936,6 +936,180 @@ async fn test_scope_endpoints_drive_and_persist_the_operator_scope() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Per-unit reviewer overrides (issue #96, W2.7)
+// ─────────────────────────────────────────────────────────────
+
+/// A live router built **without** an override handle attached answers the
+/// override endpoints honestly with 503 rather than steering a pipeline it
+/// does not hold — the scope endpoints' honesty rule, same shape.
+#[tokio::test]
+async fn test_override_endpoints_503_without_control() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let (manager, _event_tx) = SessionManager::new();
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let client = reqwest::Client::new();
+    let url = format!(
+        "http://127.0.0.1:{}/api/units/game_logic.dll%2FDrawPrimitive%2Fv1/override",
+        fixture.port()
+    );
+
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .expect("request reaches server");
+    assert_eq!(resp.status(), 503, "GET override without a handle is 503");
+    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no unit override control"),
+        "503 explains why, got: {body}"
+    );
+
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({"override": {"skip": true}}))
+        .send()
+        .await
+        .expect("request reaches server");
+    assert_eq!(resp.status(), 503, "POST override without a handle is 503");
+
+    let resp = client
+        .delete(&url)
+        .send()
+        .await
+        .expect("request reaches server");
+    assert_eq!(
+        resp.status(),
+        503,
+        "DELETE override without a handle is 503"
+    );
+}
+
+/// The override endpoints drive the shared handle end to end: apply lands,
+/// GET reads it back, removal clears it, and a handle re-opened over the
+/// same workspace (a restarted run) honors the persisted records without
+/// re-entering anything (issue #96).
+#[tokio::test]
+async fn test_override_endpoints_apply_get_and_persist() {
+    let fixture = TestFixture::new();
+    let overrides = calxgloss_types::OverrideControl::open(fixture.repo_path());
+    let state = ServerState::new(fixture.repo_path()).with_override_control(overrides);
+    let (manager, _event_tx) = SessionManager::new();
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let client = reqwest::Client::new();
+    let url = format!(
+        "http://127.0.0.1:{}/api/units/game_logic.dll%2FDrawPrimitive%2Fv1/override",
+        fixture.port()
+    );
+
+    // A never-overridden unit reads back honestly: 200 with no override.
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .expect("request reaches server");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    assert_eq!(body["unit"], "game_logic.dll/DrawPrimitive/v1");
+    assert!(
+        body["override"].is_null(),
+        "no override set yet, got: {body}"
+    );
+
+    // Apply the full record.
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({"override": {
+            "tier_override": "FullModule",
+            "retry_strategy_override": "escalate",
+            "custom_hints": ["uses SSE registers"],
+            "skip": false,
+            "reviewer_notes": "looks like a blitter"
+        }}))
+        .send()
+        .await
+        .expect("request reaches server");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    assert_eq!(body["override"]["tier_override"], "FullModule");
+    assert_eq!(body["override"]["retry_strategy_override"], "escalate");
+    assert_eq!(body["override"]["custom_hints"][0], "uses SSE registers");
+    assert_eq!(body["override"]["reviewer_notes"], "looks like a blitter");
+
+    // A typo'd strategy label is rejected with 400 — a force that looks
+    // active but silently does nothing is worse than an honest refusal.
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({"override": {"retry_strategy_override": "escalatte"}}))
+        .send()
+        .await
+        .expect("request reaches server");
+    assert_eq!(resp.status(), 400, "unknown strategy label is rejected");
+    let stored = calxgloss_types::OverrideControl::open(fixture.repo_path())
+        .get("game_logic.dll", "DrawPrimitive");
+    assert_eq!(
+        stored.and_then(|o| o.retry_strategy_override).as_deref(),
+        Some("escalate"),
+        "the rejected request must not disturb the stored record"
+    );
+
+    // GET reads the same record back.
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .expect("request reaches server");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    assert_eq!(body["override"]["tier_override"], "FullModule");
+
+    // A restarted run: a fresh handle over the same workspace loads the
+    // persisted record — nothing re-entered.
+    let reopened = calxgloss_types::OverrideControl::open(fixture.repo_path());
+    let record = reopened
+        .get("game_logic.dll", "DrawPrimitive")
+        .expect("the override survives a restart");
+    assert_eq!(
+        record.tier_override,
+        Some(calxgloss_types::ContextTier::FullModule)
+    );
+    assert_eq!(record.retry_strategy_override.as_deref(), Some("escalate"));
+
+    // Removal clears it, and the removal survives the restart too.
+    let resp = client
+        .delete(&url)
+        .send()
+        .await
+        .expect("request reaches server");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    assert!(
+        body["override"].is_null(),
+        "removal leaves no record, got: {body}"
+    );
+
+    let reopened = calxgloss_types::OverrideControl::open(fixture.repo_path());
+    assert!(
+        reopened.get("game_logic.dll", "DrawPrimitive").is_none(),
+        "the removal survives a restart"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────
 // Pipeline start & restart (issue #92, W2.3)
 // ─────────────────────────────────────────────────────────────
 
@@ -4396,6 +4570,9 @@ async fn test_live_only_endpoints_absent_from_non_live_routers() {
             "/api/progress",
             "/api/progress/enhanced",
             "/api/events/upgrade",
+            // Issue #96: the override GET is live-only too — a GET on an
+            // unrouted path falls through to the static 404.
+            "/api/units/game_logic.dll%2FDrawPrimitive%2Fv1/override",
         ] {
             let resp = reqwest::get(format!("http://127.0.0.1:{}{}", fixture.port(), path))
                 .await
@@ -4427,6 +4604,8 @@ async fn test_live_only_endpoints_absent_from_non_live_routers() {
             "/api/scope/priority-function",
             "/api/scope/remove-priority-function",
             "/api/scope/constraints",
+            // Issue #96: the per-unit override endpoints are live-only too.
+            "/api/units/game_logic.dll%2FDrawPrimitive%2Fv1/override",
         ] {
             let resp = reqwest::Client::new()
                 .post(format!("http://127.0.0.1:{}{}", fixture.port(), path))
@@ -7015,6 +7194,185 @@ async fn test_headless_unit_process_sections() {
     assert!(
         strategy_text.contains("initial") && strategy_text.contains("compile_fix"),
         "strategy section should list both strategies, got: {strategy_text}"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for the Overrides tab in the unit detail panel
+/// (issue #96, W2.7): the tab renders the override seeded on the shared
+/// handle — summary rows, pre-filled form controls, and reviewer notes
+/// injected into the overview — and toggling skip and clicking Apply
+/// drives the endpoint end to end, with the rendered state following the
+/// record the server echoes back.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_unit_overrides_tab() {
+    let fixture = TestFixture::new();
+    write_canned_run_telemetry(&fixture);
+    // The unit is already steered — the tab must render exactly this on
+    // load, not defaults.
+    let overrides = calxgloss_types::OverrideControl::open(fixture.repo_path());
+    overrides
+        .set(
+            "game_logic.dll",
+            "DrawPrimitive",
+            calxgloss_types::FunctionOverride {
+                tier_override: Some(calxgloss_types::ContextTier::FullModule),
+                retry_strategy_override: Some("escalate".into()),
+                custom_hints: vec!["blitter routine".into()],
+                skip: false,
+                reviewer_notes: "looks like a blitter".into(),
+            },
+        )
+        .expect("seeded override persists");
+    let state = ServerState::new(fixture.repo_path()).with_override_control(overrides);
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+    let eval_text = |expr: &str| -> String {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default()
+    };
+
+    // Switch to the queue view and open the telemetry-backed unit's detail.
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click queue tab");
+    let mut listed = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "!!document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]')",
+        ) {
+            listed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        listed,
+        "queue list should contain the DrawPrimitive v2 unit"
+    );
+    tab.evaluate(
+        "document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]').click() === undefined",
+        false,
+    )
+    .expect("click queue item");
+
+    // Click the Overrides tab in the detail's tab bar.
+    tab.evaluate(
+        "document.querySelector('[data-diff-tab=\"overrides\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click overrides tab");
+
+    // The tab renders the seeded record: the summary spells out the forced
+    // tier and strategy, and the form controls come back pre-filled.
+    let mut rendered = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "document.getElementById('overrides-body')?.textContent?.includes('forced to FullModule') === true",
+        ) {
+            rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let summary = eval_text("document.getElementById('override-summary')?.textContent || ''");
+    assert!(
+        rendered,
+        "overrides tab should render the seeded summary, got: {summary}"
+    );
+    assert!(
+        summary.contains("forced to escalate") && summary.contains("1 appended to the prompt"),
+        "summary should name the forced strategy and hint count, got: {summary}"
+    );
+    assert_eq!(
+        eval_text("document.getElementById('override-tier')?.value || ''"),
+        "FullModule",
+        "the tier select should come back pre-filled"
+    );
+    assert_eq!(
+        eval_text("document.getElementById('override-strategy')?.value || ''"),
+        "escalate",
+        "the strategy select should come back pre-filled"
+    );
+    assert!(
+        eval_text("document.getElementById('override-hints')?.value || ''")
+            .contains("blitter routine"),
+        "the hints textarea should come back pre-filled"
+    );
+
+    // Reviewer notes display in the overview too, not only inside the tab.
+    let notes_text =
+        eval_text("document.getElementById('reviewer-notes-section')?.textContent || ''");
+    assert!(
+        notes_text.contains("looks like a blitter"),
+        "the overview should show the reviewer notes, got: {notes_text}"
+    );
+
+    // Toggling skip and clicking Apply drives the endpoint; the summary
+    // follows the record the server echoes back.
+    tab.evaluate(
+        "document.getElementById('override-skip')?.click() === undefined",
+        false,
+    )
+    .expect("toggle skip checkbox");
+    tab.evaluate(
+        "document.getElementById('override-apply')?.click() === undefined",
+        false,
+    )
+    .expect("click apply");
+    let mut skip_applied = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "document.getElementById('override-summary')?.textContent?.includes('skipped') === true",
+        ) {
+            skip_applied = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        skip_applied,
+        "the summary should show the skip after Apply, got: {}",
+        eval_text("document.getElementById('override-summary')?.textContent || ''")
+    );
+    let body = reqwest::get(format!(
+        "http://127.0.0.1:{}/api/units/game_logic.dll%2FDrawPrimitive%2Fv2/override",
+        fixture.port()
+    ))
+    .await
+    .expect("override endpoint reachable")
+    .json::<serde_json::Value>()
+    .await
+    .expect("override body is JSON");
+    assert_eq!(
+        body["override"]["skip"], true,
+        "the skip flag landed on the server, got: {body}"
     );
 
     tab.close_target().ok();

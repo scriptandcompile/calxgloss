@@ -48,6 +48,15 @@ export const API = {
         return res.json();
     },
 
+    async delete(path) {
+        const res = await fetch(path, { method: "DELETE" });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ message: res.statusText }));
+            throw new Error(err.message || `API ${res.status}`);
+        }
+        return res.json();
+    },
+
     async dashboard() { return API.get("/api/dashboard"); },
     async unit(id) { return API.get(`/api/units/${encodeURIComponent(id)}`); },
     async unitDiff(id) { return API.get(`/api/units/${encodeURIComponent(id)}/diff`); },
@@ -85,6 +94,11 @@ export const API = {
     async prioritizeScopeFunction(binary, fn) { return API.post("/api/scope/priority-function", { binary, function: fn }); },
     async removeScopePriorityFunction(binary, fn) { return API.post("/api/scope/remove-priority-function", { binary, function: fn }); },
     async setScopeConstraints(constraints) { return API.post("/api/scope/constraints", constraints); },
+    // Per-unit reviewer overrides (issue #96) — live router only; plain
+    // serve has no pipeline to steer.
+    async unitOverride(id) { return API.get(`/api/units/${encodeURIComponent(id)}/override`); },
+    async applyUnitOverride(id, record) { return API.post(`/api/units/${encodeURIComponent(id)}/override`, { override: record }); },
+    async removeUnitOverride(id) { return API.delete(`/api/units/${encodeURIComponent(id)}/override`); },
     async liveProgress() { return API.get("/api/progress/enhanced"); },
     async gcCandidates(days) { return API.get(`/api/gc/candidates?days=${days}`); },
     async gcArchive(branches) { return API.post("/api/gc/archive", branches.length > 0 ? { branches } : {}); },

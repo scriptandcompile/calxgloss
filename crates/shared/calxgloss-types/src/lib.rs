@@ -28,6 +28,9 @@
 //! - [`scope`] — Translation scope controls (`TranslationScope`,
 //!   `TranslationConstraints`, `ScopeControl`) — what a run is allowed to
 //!   touch, steered live and persisted under the record tree
+//! - [`overrides`] — Per-unit reviewer overrides (`FunctionOverride`,
+//!   `UnitOverrides`, `OverrideControl`) — how one unit's next attempt is
+//!   steered, persisted under the record tree
 //! - [`error`] — Unified error type (`TypesError`)
 
 // ============================================================
@@ -57,6 +60,7 @@ pub mod function;
 pub mod git;
 pub mod identity;
 pub mod live_translation;
+pub mod overrides;
 pub mod persist;
 pub mod pipeline_phase;
 pub mod progress;
@@ -97,6 +101,9 @@ pub use git::{GitBranch, GitCommit};
 pub use identity::{BinaryIdentity, BranchName, UnitKey, parse_branch_name, work_kind_for_prefix};
 pub use live_translation::{
     LiveTranslationState, LiveUnitProgress, PassState, PassStatus, derive_unit_confidence,
+};
+pub use overrides::{
+    FunctionOverride, OverrideControl, UnitOverrides, override_records_path, unit_override_key,
 };
 pub use persist::{JsonStore, PersistError, analysis_dir, load_json, save_json};
 pub use pipeline_phase::{

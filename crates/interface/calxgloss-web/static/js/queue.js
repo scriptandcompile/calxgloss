@@ -8,6 +8,7 @@ import { KIND_LABELS, STATUS_LABELS } from "./constants.js";
 import { fmtConfidence, fmtUptime, escapeHtml } from "./utils.js";
 import { showToast, showModal } from "./ui.js";
 import { loadDashboard } from "./dashboard.js";
+import { loadUnitOverrides } from "./unit-overrides.js";
 
 export function renderFullQueue(dashboard, selectedId = null) {
     const list = document.getElementById("full-queue-list");
@@ -355,9 +356,14 @@ export async function showDetail(unitId) {
             </div>
         `;
 
-        // Load diff data
+        // Tab switching must be bound as soon as the panes exist, before
+        // the async viewers fill in.
+        setupDiffTabs();
+
+        // Load tab data
         loadDiffView(unitId);
         loadGhidraView(unitId);
+        loadUnitOverrides(unitId);
 
     } catch (err) {
         body.innerHTML = `<div class="empty-state">Failed to load unit details: ${err.message}</div>`;
@@ -391,9 +397,14 @@ export async function renderInlineDetail(unitId) {
             </div>
         `;
 
-        // Load diff data
+        // Tab switching must be bound as soon as the panes exist, before
+        // the async viewers fill in.
+        setupDiffTabs();
+
+        // Load tab data
         loadDiffView(unitId);
         loadGhidraView(unitId);
+        loadUnitOverrides(unitId);
 
     } catch (err) {
         body.innerHTML = `<div class="empty-state">Failed to load unit details: ${err.message}</div>`;
@@ -823,6 +834,7 @@ function renderDiffTab(u) {
             <div class="diff-tabs">
                 <button class="diff-tab active" data-diff-tab="diff">Diff (${u.diff_summary.insertions}+ ${u.diff_summary.deletions}-)</button>
                 <button class="diff-tab" data-diff-tab="ghidra">Ghidra Context</button>
+                <button class="diff-tab" data-diff-tab="overrides">Overrides</button>
             </div>
             <div class="diff-content" id="diff-viewer">
                 ${hasDiff
@@ -832,6 +844,11 @@ function renderDiffTab(u) {
             </div>
             <div class="diff-content" id="ghidra-viewer" style="display:none">
                 <div id="ghidra-body" class="ghidra-viewer">
+                    <div class="spinner"></div>
+                </div>
+            </div>
+            <div class="diff-content" id="overrides-viewer" style="display:none">
+                <div id="overrides-body">
                     <div class="spinner"></div>
                 </div>
             </div>
@@ -889,9 +906,6 @@ async function loadDiffView(unitId) {
         }
 
         body.innerHTML = html;
-
-        // Set up diff tab switching
-        setupDiffTabs();
     } catch (err) {
         const body = document.getElementById("diff-body");
         if (body) body.innerHTML = `<div class="ghidra-empty">Failed to load diff: ${escapeHtml(err.message)}</div>`;
@@ -953,22 +967,24 @@ async function loadGhidraView(unitId) {
     }
 }
 
+// The tab bar switches between the diff, Ghidra-context, and overrides
+// panes; each tab's `data-diff-tab` names its viewer element.
+const DIFF_PANES = {
+    diff: "diff-viewer",
+    ghidra: "ghidra-viewer",
+    overrides: "overrides-viewer",
+};
+
 function setupDiffTabs() {
     const tabs = document.querySelectorAll(".diff-tab");
-    const diffViewer = document.getElementById("diff-viewer");
-    const ghidraViewer = document.getElementById("ghidra-viewer");
 
     tabs.forEach(tab => {
         tab.addEventListener("click", () => {
-            const tabName = tab.dataset.diffTab;
             tabs.forEach(t => t.classList.toggle("active", t === tab));
 
-            if (tabName === "diff") {
-                diffViewer.style.display = "";
-                ghidraViewer.style.display = "none";
-            } else {
-                diffViewer.style.display = "none";
-                ghidraViewer.style.display = "";
+            for (const [name, viewerId] of Object.entries(DIFF_PANES)) {
+                const viewer = document.getElementById(viewerId);
+                if (viewer) viewer.style.display = name === tab.dataset.diffTab ? "" : "none";
             }
         });
     });

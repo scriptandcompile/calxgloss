@@ -46,6 +46,10 @@ pub struct RetryLoopCtx<'a> {
     pub resource_detector: Option<&'a ResourceExhaustionDetector>,
     /// Optional fault logger for persisting detected faults to disk.
     pub fault_logger: Option<&'a FaultLogger>,
+    /// Reviewer's custom hints for this unit (issue #96, W2.7). When
+    /// non-empty they seed the failure history, so the reviewer's knowledge
+    /// reaches every failure-informed fix prompt from the first retry on.
+    pub reviewer_hints: &'a [String],
 }
 
 /// Execute a translation with retry logic.
@@ -81,8 +85,14 @@ pub async fn try_translate_with_retry(
         current_tier = cap;
     }
 
-    // Failure history for failure-informed prompting
-    let mut failure_history: Vec<FailureHint> = Vec::new();
+    // Failure history for failure-informed prompting. W2.7: the reviewer's
+    // custom hints seed it (attempt 0, "reviewer" strategy), so a steered
+    // unit's fix prompts carry the reviewer's knowledge from the first retry.
+    let mut failure_history: Vec<FailureHint> = ctx
+        .reviewer_hints
+        .iter()
+        .map(|hint| FailureHint::new(0, "reviewer", hint.clone()))
+        .collect();
 
     // Infinite-loop detector — tracks (prompt_hash, output_hash) pairs.
     // If the same bad output repeats 3+ times, the detector fires and the
@@ -1737,6 +1747,7 @@ mod tests {
             events: None,
             resource_detector: None,
             fault_logger: None,
+            reviewer_hints: &[],
         };
 
         let result = try_translate_with_retry(translation, &ctx).await;
