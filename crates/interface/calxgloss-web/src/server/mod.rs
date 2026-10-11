@@ -27,7 +27,7 @@ use axum::{
 use calxgloss_reports::dashboard::DashboardBuilder;
 use calxgloss_types::{
     BinaryActivity, BinaryIdentity, PhaseRecord, PipelineControl, ProgressEvent, ReviewDashboard,
-    RunRequestSignal, StopSignal, TranslationPhase, UnitCancellation, UnitKey,
+    RunRequestSignal, ScopeControl, StopSignal, TranslationPhase, UnitCancellation, UnitKey,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -70,6 +70,11 @@ pub struct ServerState {
     /// request. The start/restart endpoints store the request here for
     /// the `calxgloss live` loop to pick up and re-run the pipeline.
     run_requests: Option<RunRequestSignal>,
+    /// The live run's [`ScopeControl`] handle (issue #93, W2.5) — `None`
+    /// on plain `serve` routers, which have no pipeline to steer. The
+    /// scope endpoints read and mutate the operator's translation scope
+    /// and constraints through it.
+    scope_control: Option<ScopeControl>,
     /// Graceful-shutdown trigger watched by `serve`/`serve_with_listener`.
     shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
 }
@@ -90,6 +95,7 @@ impl ServerState {
             pipeline_control: None,
             unit_cancellation: None,
             run_requests: None,
+            scope_control: None,
             shutdown_tx: Arc::new(tokio::sync::watch::channel(false).0),
         }
     }
@@ -141,6 +147,14 @@ impl ServerState {
     /// next run's scope for the `calxgloss live` loop to pick up.
     pub fn with_run_requests(mut self, run_requests: RunRequestSignal) -> Self {
         self.run_requests = Some(run_requests);
+        self
+    }
+
+    /// Attach the [`ScopeControl`] handle the live pipeline shares with this
+    /// server, so the scope endpoints (issue #93) can read and steer the
+    /// operator's translation scope and constraints.
+    pub fn with_scope_control(mut self, scope: ScopeControl) -> Self {
+        self.scope_control = Some(scope);
         self
     }
 
@@ -216,6 +230,13 @@ impl ServerState {
     /// live loop that a start/restart request could wake.
     pub fn run_requests(&self) -> Option<RunRequestSignal> {
         self.run_requests.clone()
+    }
+
+    /// Clone of the scope-control handle attached via
+    /// [`with_scope_control`](Self::with_scope_control), or `None` when this
+    /// router has no scope control (plain `serve`).
+    pub fn scope_control(&self) -> Option<ScopeControl> {
+        self.scope_control.clone()
     }
 
     /// Request graceful shutdown: stop accepting new requests and let
@@ -854,6 +875,26 @@ fn live_only_routes() -> Router<CombinedState> {
         .route(
             "/api/pipeline/restart",
             post(handlers::api_restart_pipeline),
+        )
+        // Translation scope controls (issue #93, W2.5): steer what the run
+        // touches and bound what it consumes. Live-only — a plain `serve`
+        // router has no pipeline to steer.
+        .route("/api/scope", get(handlers::api_scope_status))
+        .route(
+            "/api/scope/binaries",
+            post(handlers::api_scope_set_binaries),
+        )
+        .route(
+            "/api/scope/skip-function",
+            post(handlers::api_scope_skip_function),
+        )
+        .route(
+            "/api/scope/priority-function",
+            post(handlers::api_scope_priority_function),
+        )
+        .route(
+            "/api/scope/constraints",
+            post(handlers::api_scope_set_constraints),
         )
 }
 

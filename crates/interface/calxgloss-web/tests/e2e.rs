@@ -754,6 +754,157 @@ async fn test_pipeline_lifecycle_endpoints_503_without_control() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Translation scope controls (issue #93, W2.5)
+// ─────────────────────────────────────────────────────────────
+
+/// A live router built **without** a scope handle attached answers the
+/// scope endpoints honestly with 503 rather than steering a pipeline it
+/// does not hold — the lifecycle endpoints' honesty rule, same shape.
+#[tokio::test]
+async fn test_scope_endpoints_503_without_control() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let (manager, _event_tx) = SessionManager::new();
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(format!("http://127.0.0.1:{}/api/scope", fixture.port()))
+        .send()
+        .await
+        .expect("request reaches server");
+    assert_eq!(resp.status(), 503, "GET /api/scope without a handle is 503");
+
+    for (path, body) in [
+        ("/api/scope/binaries", serde_json::json!({"binaries": []})),
+        (
+            "/api/scope/skip-function",
+            serde_json::json!({"binary": "a.dll", "function": "F"}),
+        ),
+        (
+            "/api/scope/priority-function",
+            serde_json::json!({"binary": "a.dll", "function": "F"}),
+        ),
+        ("/api/scope/constraints", serde_json::json!({})),
+    ] {
+        let resp = client
+            .post(format!("http://127.0.0.1:{}{path}", fixture.port()))
+            .json(&body)
+            .send()
+            .await
+            .expect("request reaches server");
+        let status = resp.status();
+        let resp_body: serde_json::Value = resp.json().await.expect("body is JSON");
+        assert_eq!(status, 503, "{path} without a handle should be 503");
+        assert!(
+            resp_body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("no scope control"),
+            "503 explains why, got: {resp_body}"
+        );
+    }
+}
+
+/// The scope endpoints drive the shared handle end to end: mutations land
+/// in the status payload, and a handle re-opened over the same workspace
+/// (a restarted run) honors the persisted records without re-entering
+/// anything (issue #93).
+#[tokio::test]
+async fn test_scope_endpoints_drive_and_persist_the_operator_scope() {
+    let fixture = TestFixture::new();
+    let scope = calxgloss_types::ScopeControl::open(fixture.repo_path());
+    let state = ServerState::new(fixture.repo_path()).with_scope_control(scope);
+    let (manager, _event_tx) = SessionManager::new();
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+
+    let resp = client
+        .post(format!("{base}/api/scope/binaries"))
+        .json(&serde_json::json!({"binaries": ["game_logic.dll"]}))
+        .send()
+        .await
+        .expect("request reaches server");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    assert_eq!(body["scope"]["binaries"][0], "game_logic.dll");
+
+    let resp = client
+        .post(format!("{base}/api/scope/skip-function"))
+        .json(&serde_json::json!({"binary": "game_logic.dll", "function": "UpdateScene"}))
+        .send()
+        .await
+        .expect("request reaches server");
+    assert_eq!(resp.status(), 200);
+
+    let resp = client
+        .post(format!("{base}/api/scope/priority-function"))
+        .json(&serde_json::json!({"binary": "game_logic.dll", "function": "DrawPrimitive"}))
+        .send()
+        .await
+        .expect("request reaches server");
+    assert_eq!(resp.status(), 200);
+
+    let resp = client
+        .post(format!("{base}/api/scope/constraints"))
+        .json(&serde_json::json!({
+            "max_attempts": 2,
+            "max_context_tier": "Disassembly",
+            "token_budget": 50000
+        }))
+        .send()
+        .await
+        .expect("request reaches server");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    assert_eq!(body["constraints"]["max_attempts"], 2);
+    assert_eq!(body["constraints"]["max_context_tier"], "Disassembly");
+    assert_eq!(body["constraints"]["token_budget"], 50000);
+
+    // Status read reflects every mutation.
+    let resp = client
+        .get(format!("{base}/api/scope"))
+        .send()
+        .await
+        .expect("request reaches server");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    assert_eq!(
+        body["scope"]["skipped_functions"][0]["function"],
+        "UpdateScene"
+    );
+    assert_eq!(
+        body["scope"]["priority_functions"][0]["function"],
+        "DrawPrimitive"
+    );
+
+    // A restarted run: a fresh handle over the same workspace loads the
+    // persisted records — nothing re-entered.
+    let reopened = calxgloss_types::ScopeControl::open(fixture.repo_path());
+    let persisted = reopened.scope();
+    assert_eq!(persisted.binaries.len(), 1);
+    assert!(persisted.is_skipped("game_logic.dll", "UpdateScene"));
+    assert!(persisted.is_priority("game_logic.dll", "DrawPrimitive"));
+    assert_eq!(reopened.constraints().max_attempts, Some(2));
+    assert_eq!(
+        reopened.constraints().max_context_tier,
+        Some(calxgloss_types::ContextTier::Disassembly)
+    );
+    assert_eq!(reopened.constraints().token_budget, Some(50000));
+}
+
+// ─────────────────────────────────────────────────────────────
 // Pipeline start & restart (issue #92, W2.3)
 // ─────────────────────────────────────────────────────────────
 
@@ -4238,6 +4389,12 @@ async fn test_live_only_endpoints_absent_from_non_live_routers() {
             // Issue #92: start/restart are live-only too.
             "/api/pipeline/start",
             "/api/pipeline/restart",
+            // Issue #93: the scope control endpoints are live-only too.
+            "/api/scope",
+            "/api/scope/binaries",
+            "/api/scope/skip-function",
+            "/api/scope/priority-function",
+            "/api/scope/constraints",
         ] {
             let resp = reqwest::Client::new()
                 .post(format!("http://127.0.0.1:{}{}", fixture.port(), path))

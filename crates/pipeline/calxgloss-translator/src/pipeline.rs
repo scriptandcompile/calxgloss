@@ -64,7 +64,8 @@ use calxgloss_typeinfer::engine::TypeInferEngine;
 use calxgloss_typeinfer::persist::TypeInferPersistor;
 use calxgloss_types::{
     BinaryIdentity, ContextTier, Export, FunctionInfo, PipelineControl, PipelineState,
-    ProgressEvent, StopSignal, TestCase, TranslationEvents, TranslationRequest, UnitCancellation,
+    ProgressEvent, ScopeControl, StopSignal, TestCase, TranslationEvents, TranslationRequest,
+    UnitCancellation,
 };
 use calxgloss_typesdb::engine::TypesDBEngine;
 use calxgloss_typesdb::persist::TypeDatabasePersistor;
@@ -235,6 +236,16 @@ pub struct TranslationPipeline {
     /// safe point — mid-LLM-call included — records the attempt as a
     /// failure, and continues with the next unit.
     unit_cancellation: Option<UnitCancellation>,
+
+    /// Shared translation-scope handle (issue #93, W2.5).
+    ///
+    /// When set, the batch loops apply it at **queue selection**: skipped
+    /// functions never enter the plan at all, and priority functions sort
+    /// ahead of the rest of the queue. Its constraints bound consumption —
+    /// max attempts caps the retry config, max context tier caps automatic
+    /// escalation, and the token budget stops the batch at the next unit
+    /// boundary once spend reaches it. Driven by the web scope endpoints.
+    scope: Option<ScopeControl>,
 }
 
 impl TranslationPipeline {
@@ -269,6 +280,7 @@ impl TranslationPipeline {
             stop: None,
             pipeline_control: None,
             unit_cancellation: None,
+            scope: None,
         }
     }
 
@@ -347,6 +359,18 @@ impl TranslationPipeline {
         self
     }
 
+    /// Attach the shared [`ScopeControl`] handle (issue #93, W2.5).
+    ///
+    /// The web server's scope endpoints drive it; the batch loops consult
+    /// it at **queue selection** — a skipped function never enters the plan,
+    /// a priority function sorts ahead of the rest of the queue — and its
+    /// constraints bound the retry config, tier escalation, and the run's
+    /// token budget.
+    pub fn with_scope(mut self, scope: ScopeControl) -> Self {
+        self.scope = Some(scope);
+        self
+    }
+
     /// Whether an attached stop signal has been requested.
     fn stop_requested(&self) -> bool {
         self.stop.as_ref().is_some_and(|s| s.is_stopped())
@@ -393,6 +417,110 @@ impl TranslationPipeline {
                     break;
                 }
             },
+        }
+    }
+
+    /// Apply the operator's function scope at queue selection (issue #93,
+    /// W2.5).
+    ///
+    /// Skipped functions leave the plan before the first unit starts — they
+    /// are never attempted — and priority functions sort ahead of the rest
+    /// of the queue: the prioritized group keeps its relative order, and
+    /// everything after it keeps its original order (a stable partition).
+    /// With no scope handle attached the list passes through untouched.
+    ///
+    /// `name_of` extracts the function name from a queue item, so the same
+    /// filtering serves plain name lists and call-graph plan entries alike.
+    fn apply_function_scope<T>(
+        &self,
+        binary: &str,
+        items: Vec<T>,
+        name_of: impl Fn(&T) -> &str,
+    ) -> Vec<T> {
+        let Some(scope) = self.scope.as_ref() else {
+            return items;
+        };
+        let plan = scope.scope();
+        if plan.skipped_functions.is_empty() && plan.priority_functions.is_empty() {
+            return items;
+        }
+        let total = items.len();
+        let kept: Vec<T> = items
+            .into_iter()
+            .filter(|item| !plan.is_skipped(binary, name_of(item)))
+            .collect();
+        let skipped = total - kept.len();
+        if skipped > 0 {
+            info!(
+                binary,
+                skipped, "Scope filter — skipped functions leave the queue plan"
+            );
+        }
+        let (mut front, rest): (Vec<T>, Vec<T>) = kept
+            .into_iter()
+            .partition(|item| plan.is_priority(binary, name_of(item)));
+        if !front.is_empty() {
+            info!(
+                binary,
+                prioritized = front.len(),
+                "Scope filter — priority functions sort ahead of the queue"
+            );
+        }
+        front.extend(rest);
+        front
+    }
+
+    /// Bound the retry config with the operator's constraints (issue #93,
+    /// W2.5).
+    ///
+    /// `max_attempts` can only lower the configured attempt count (a
+    /// constraint caps consumption, never raises the ceiling), and
+    /// `max_context_tier` rides into [`RetryLoopCtx`](retry::RetryLoopCtx)
+    /// where it caps automatic tier escalation. With no scope handle
+    /// attached the config passes through untouched.
+    fn constrained_retry_config(&self, config: &retry::RetryConfig) -> retry::RetryConfig {
+        let Some(scope) = self.scope.as_ref() else {
+            return config.clone();
+        };
+        let constraints = scope.constraints();
+        let mut capped = config.clone();
+        if let Some(max) = constraints.max_attempts {
+            capped.max_attempts = capped.max_attempts.min(max);
+        }
+        capped.max_context_tier = match (capped.max_context_tier, constraints.max_context_tier) {
+            (Some(existing), Some(cap)) => Some(if existing.number() <= cap.number() {
+                existing
+            } else {
+                cap
+            }),
+            (existing, cap) => existing.or(cap),
+        };
+        capped
+    }
+
+    /// Whether the attached scope's token budget has been reached (issue
+    /// #93). No handle or no budget means never exhausted — the batch runs
+    /// on. Checked at unit boundaries, like the stop signal and pause.
+    fn budget_exhausted(&self) -> bool {
+        self.scope.as_ref().is_some_and(|s| s.budget_exhausted())
+    }
+
+    /// Charge a completed unit's attempt tokens against the run's token
+    /// budget (issue #93). Attempts that never reported a token count
+    /// charge nothing.
+    fn record_unit_tokens(&self, result: &batch::FunctionResult) {
+        let Some(scope) = self.scope.as_ref() else {
+            return;
+        };
+        let spent: u64 = result
+            .retry_result
+            .attempts
+            .iter()
+            .filter_map(|a| a.tokens_used)
+            .map(|t| t as u64)
+            .sum();
+        if spent > 0 {
+            scope.record_tokens(spent);
         }
     }
 
@@ -986,11 +1114,14 @@ impl TranslationPipeline {
 
         // Step 2: Run the retry loop
         let source = self.scan_source();
+        // W2.5: operator constraints (max attempts, max context tier) cap the
+        // retry policy before the loop runs.
+        let bounded_config = self.constrained_retry_config(config);
         let ctx = retry::RetryLoopCtx {
             verifier,
             llm: &self.llm,
             source: &source,
-            config,
+            config: &bounded_config,
             workspace: self.workspace.as_deref(),
             events: self.events.as_ref(),
             resource_detector: None,
@@ -2472,6 +2603,10 @@ impl TranslationPipeline {
         self.ensure_const_detection(binary).await;
         self.ensure_serialize_detection(binary).await;
 
+        // W2.5: operator scope — skipped functions never enter the queue,
+        // priority functions sort to the front.
+        let functions = self.apply_function_scope(binary, functions.to_vec(), |f| f.as_str());
+
         let mut batch_result = batch::BatchTranslationResult::new(binary.to_string());
 
         for (idx, function) in functions.iter().enumerate() {
@@ -2480,6 +2615,15 @@ impl TranslationPipeline {
                     binary,
                     remaining = functions.len() - idx,
                     "Stop signal received — ending batch at unit boundary"
+                );
+                break;
+            }
+
+            if self.budget_exhausted() {
+                info!(
+                    binary,
+                    remaining = functions.len() - idx,
+                    "Token budget exhausted — ending batch at unit boundary"
                 );
                 break;
             }
@@ -2607,6 +2751,8 @@ impl TranslationPipeline {
             }
 
             let success = result.success;
+            // W2.5: charge the unit's token spend against the run budget.
+            self.record_unit_tokens(&result);
             batch_result.add(result.clone());
 
             // Emit progress event for real-time tracking. A cancelled unit
@@ -2785,6 +2931,11 @@ impl TranslationPipeline {
 
         let plan: Vec<_> = plan.into_iter().collect();
         let binary = &graph.binary;
+
+        // W2.5: operator scope — skipped functions leave the plan before the
+        // first unit starts, priority functions sort to the front.
+        let plan = self.apply_function_scope(binary, plan, |p| p.name.as_str());
+
         let mut batch_result = batch::BatchTranslationResult::new(binary.clone());
 
         for (idx, plan_func) in plan.iter().enumerate() {
@@ -2795,6 +2946,15 @@ impl TranslationPipeline {
                     binary,
                     remaining = plan.len() - idx,
                     "Stop signal received — ending call-graph batch at unit boundary"
+                );
+                break;
+            }
+
+            if self.budget_exhausted() {
+                info!(
+                    binary,
+                    remaining = plan.len() - idx,
+                    "Token budget exhausted — ending call-graph batch at unit boundary"
                 );
                 break;
             }
@@ -2937,6 +3097,8 @@ impl TranslationPipeline {
             };
 
             let success = result.success;
+            // W2.5: charge the unit's token spend against the run budget.
+            self.record_unit_tokens(&result);
             batch_result.add(result.clone());
 
             // Emit progress event for real-time tracking
@@ -3044,6 +3206,7 @@ mod tests {
     use calxgloss_sync::types::SyncResult;
     use calxgloss_typeinfer::persist::TypeInferPersistor;
     use calxgloss_typeinfer::types::TypeInferenceResult;
+    use calxgloss_types::TranslationConstraints;
     use calxgloss_typesdb::types::{ScanMetadata, TypeDatabase};
     use tempfile::TempDir;
 
@@ -3091,6 +3254,149 @@ mod tests {
             result.results.len(),
             1,
             "the second unit must not start after the stop signal"
+        );
+    }
+
+    // ─── Operator translation scope (issue #93, W2.5) ─────────────────
+
+    /// A function the operator skipped never enters the queue plan: it is
+    /// not attempted at all, so it never appears in the batch results.
+    #[tokio::test]
+    async fn batch_translate_never_queues_operator_skipped_functions() {
+        let dir = TempDir::new().expect("temp workspace");
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        let scope = ScopeControl::new();
+        scope
+            .skip_function("game_logic.dll", "UpdateScene")
+            .expect("skip should persist");
+
+        let result = pipeline_over(Some(dir.path()))
+            .with_scope(scope)
+            .batch_translate(
+                "game_logic.dll",
+                &["DrawPrimitive".to_string(), "UpdateScene".to_string()],
+                &retry::RetryConfig::default(),
+                &verifier,
+                None,
+            )
+            .await
+            .expect("batch over unreachable ghidra still reports per-function failures");
+
+        let names: Vec<&str> = result.results.iter().map(|r| r.function.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["DrawPrimitive"],
+            "the skipped function must never enter the queue"
+        );
+    }
+
+    /// A prioritized function sorts ahead of the rest of the queue, keeping
+    /// the remaining functions in their original order.
+    #[tokio::test]
+    async fn batch_translate_runs_priority_functions_first() {
+        let dir = TempDir::new().expect("temp workspace");
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        let scope = ScopeControl::new();
+        scope
+            .prioritize_function("game_logic.dll", "UpdateScene")
+            .expect("priority should persist");
+
+        let result = pipeline_over(Some(dir.path()))
+            .with_scope(scope)
+            .batch_translate(
+                "game_logic.dll",
+                &[
+                    "DrawPrimitive".to_string(),
+                    "UpdateScene".to_string(),
+                    "LoadAssets".to_string(),
+                ],
+                &retry::RetryConfig::default(),
+                &verifier,
+                None,
+            )
+            .await
+            .expect("batch over unreachable ghidra still reports per-function failures");
+
+        let names: Vec<&str> = result.results.iter().map(|r| r.function.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["UpdateScene", "DrawPrimitive", "LoadAssets"],
+            "the prioritized function must run first, the rest keep their order"
+        );
+    }
+
+    /// With the run's token budget already spent, the batch ends at the very
+    /// first unit boundary — no unit starts.
+    #[tokio::test]
+    async fn batch_translate_ends_before_any_unit_when_token_budget_is_spent() {
+        let dir = TempDir::new().expect("temp workspace");
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        let scope = ScopeControl::new();
+        scope
+            .set_constraints(TranslationConstraints {
+                max_attempts: None,
+                max_context_tier: None,
+                token_budget: Some(100),
+            })
+            .expect("constraints should persist");
+        scope.record_tokens(100);
+
+        let result = pipeline_over(Some(dir.path()))
+            .with_scope(scope)
+            .batch_translate(
+                "game_logic.dll",
+                &["DrawPrimitive".to_string()],
+                &retry::RetryConfig::default(),
+                &verifier,
+                None,
+            )
+            .await
+            .expect("batch over unreachable ghidra still reports per-function failures");
+
+        assert!(
+            result.results.is_empty(),
+            "no unit may start once the token budget is spent"
+        );
+    }
+
+    /// `max_attempts` only ever lowers the attempt ceiling and the context
+    /// tier cap rides into the retry config (issue #93).
+    #[test]
+    fn constraints_cap_retry_config_without_raising_it() {
+        let scope = ScopeControl::new();
+        scope
+            .set_constraints(TranslationConstraints {
+                max_attempts: Some(2),
+                max_context_tier: Some(calxgloss_types::ContextTier::Disassembly),
+                token_budget: None,
+            })
+            .expect("constraints should persist");
+
+        let pipeline = pipeline_over(None).with_scope(scope);
+
+        let default = retry::RetryConfig::default();
+        let capped = pipeline.constrained_retry_config(&default);
+        assert_eq!(capped.max_attempts, 2, "attempt ceiling must come down");
+        assert_eq!(
+            capped.max_context_tier,
+            Some(calxgloss_types::ContextTier::Disassembly)
+        );
+
+        // A stricter pipeline config is never raised by a looser constraint.
+        let strict = retry::RetryConfig {
+            max_attempts: 1,
+            max_context_tier: Some(calxgloss_types::ContextTier::Signature),
+            ..retry::RetryConfig::default()
+        };
+        let capped = pipeline.constrained_retry_config(&strict);
+        assert_eq!(capped.max_attempts, 1, "the tighter ceiling wins");
+        assert_eq!(
+            capped.max_context_tier,
+            Some(calxgloss_types::ContextTier::Signature),
+            "the tighter tier cap wins"
         );
     }
 

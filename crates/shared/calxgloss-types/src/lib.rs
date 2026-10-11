@@ -25,6 +25,9 @@
 //! - [`live_translation`] — Live translation records (`LiveTranslationState`,
 //!   `LiveUnitProgress`, `PassStatus`) for what the pipeline is doing to each
 //!   in-flight unit right now
+//! - [`scope`] — Translation scope controls (`TranslationScope`,
+//!   `TranslationConstraints`, `ScopeControl`) — what a run is allowed to
+//!   touch, steered live and persisted under the record tree
 //! - [`error`] — Unified error type (`TypesError`)
 
 // ============================================================
@@ -58,6 +61,7 @@ pub mod persist;
 pub mod pipeline_phase;
 pub mod progress;
 pub mod scan;
+pub mod scope;
 pub mod shim;
 pub mod test;
 pub mod token_usage;
@@ -104,6 +108,10 @@ pub use progress::{
     StopSignal, TranslationEvents, TranslationPhase, UnitCancellation,
 };
 pub use scan::ScanMetadata;
+pub use scope::{
+    FunctionRef, ScopeControl, TranslationConstraints, TranslationScope, constraints_record_path,
+    scope_record_path,
+};
 pub use shim::{
     ComplexityScore, ReturnMapping, ShimApiMapping, ShimLayer, ShimMappingTestResult,
     ShimSuggestion, ShimSuggestionReport, ShimVerificationResult, dll_to_module_name,

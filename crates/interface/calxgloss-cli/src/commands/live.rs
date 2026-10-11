@@ -133,6 +133,12 @@ pub async fn handle_live(
     // them to re-run the pipeline inside this same process.
     let run_requests = RunRequestSignal::new();
 
+    // Translation scope handle (issue #93, W2.5) — opened over the
+    // workspace, so persisted scope/constraint records are honored from
+    // the first queue selection and every endpoint mutation re-persists
+    // them for the next run.
+    let scope_control = calxgloss::ScopeControl::open(&workspace);
+
     // Build the server state here (not inside the serve task) so the run
     // loop can also watch the server's shutdown flag and exit when the
     // operator shuts the server down.
@@ -142,7 +148,8 @@ pub async fn handle_live(
         .with_stop_signal(stop_signal.clone())
         .with_pipeline_control(control.clone())
         .with_unit_cancellation(cancellation.clone())
-        .with_run_requests(run_requests.clone());
+        .with_run_requests(run_requests.clone())
+        .with_scope_control(scope_control.clone());
     let server_shutdown = server_state.shutdown_signal();
     // The loop below waits on this future across iterations — pin it so the
     // select can borrow it repeatedly.
@@ -283,6 +290,7 @@ pub async fn handle_live(
             Some(&control),     // pause/resume/stop endpoints drive the run
             Some(&cancellation), // cancel-current endpoint aborts the in-flight unit
             run.as_ref(),       // W2.3 start/restart selectors for this run
+            Some(&scope_control), // W2.5 scope endpoints steer this run
         )
         .await;
 

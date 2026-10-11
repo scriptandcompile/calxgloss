@@ -1235,6 +1235,42 @@ pub struct LlmIoLogResponse {
     pub entries: Vec<crate::server::llm_io_log::LlmIoEntry>,
 }
 
+// ─── Translation scope controls (issue #93, W2.5) ────────────────────
+
+/// Response body of the scope endpoints (`GET /api/scope` and the POST
+/// mutations): the operator's current scope, the active constraints, and
+/// the tokens the current run has spent against the budget. Every mutation
+/// echoes the full status so the caller sees the effect immediately.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScopeStatusResponse {
+    /// What the run is allowed to touch.
+    pub scope: calxgloss_types::TranslationScope,
+    /// The consumption caps in force.
+    pub constraints: calxgloss_types::TranslationConstraints,
+    /// Tokens charged to the run so far (per-run, never persisted).
+    pub tokens_spent: u64,
+}
+
+/// Request body of `POST /api/scope/binaries` — the full replacement list
+/// of target binaries. An empty list means every discovered binary is in
+/// scope again.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopeBinariesRequest {
+    /// Binaries to translate, filename verbatim.
+    #[serde(default)]
+    pub binaries: Vec<String>,
+}
+
+/// Request body of `POST /api/scope/skip-function` and
+/// `POST /api/scope/priority-function` — one function in one binary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopeFunctionRequest {
+    /// The target binary, filename verbatim.
+    pub binary: String,
+    /// The function name within that binary.
+    pub function: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

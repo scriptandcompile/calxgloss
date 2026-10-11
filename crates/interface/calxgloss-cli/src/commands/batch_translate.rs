@@ -181,6 +181,7 @@ pub async fn handle_batch_translate(
         max_attempts: max_retries,
         strategy: retry_strategy,
         escalate_on_failure: true,
+        max_context_tier: None,
     };
 
     // Run batch translation with an inline callback that handles git operations

@@ -73,6 +73,13 @@ pub async fn try_translate_with_retry(
     let max = ctx.config.max_attempts;
     let mut current_strategy = ctx.config.strategy.clone();
     let mut current_tier = initial_translation.context_tier;
+    // W2.5: an operator `max_context_tier` constraint also caps the starting
+    // tier — retries rebuild their prompts no higher than the cap.
+    if let Some(cap) = ctx.config.max_context_tier
+        && current_tier.number() > cap.number()
+    {
+        current_tier = cap;
+    }
 
     // Failure history for failure-informed prompting
     let mut failure_history: Vec<FailureHint> = Vec::new();
@@ -1306,7 +1313,9 @@ pub async fn try_translate_with_retry(
             // On the next loop iteration the tier-escalated prompt path will
             // be taken (tier_escalated stays false here; it's set when the
             // prompt is actually rebuilt at the top of the next iteration).
-            if let Some(next_tier) = current_tier.escalate() {
+            // W2.5: an operator `max_context_tier` constraint caps the walk —
+            // escalation stops at the cap instead of going past it.
+            if let Some(next_tier) = ctx.config.next_tier_within_cap(current_tier) {
                 warn!(
                     binary = %binary,
                     function,
@@ -1716,6 +1725,7 @@ mod tests {
             max_attempts: 2,
             strategy: RetryStrategy::CompileFix,
             escalate_on_failure: false,
+            max_context_tier: None,
         };
 
         let ctx = RetryLoopCtx {

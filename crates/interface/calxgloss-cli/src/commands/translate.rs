@@ -149,6 +149,7 @@ pub async fn handle_translate(
         max_attempts: max_retries,
         strategy: retry_strategy,
         escalate_on_failure: true,
+        max_context_tier: None,
     };
     let retry_result = pipeline
         .try_translate_with_retry(binary, function, &retry_config, &verifier)

@@ -11,6 +11,11 @@ pub struct RetryConfig {
 
     /// Whether to escalate context on subsequent failures.
     pub escalate_on_failure: bool,
+
+    /// Optional cap on context escalation (issue #93, W2.5). When set, the
+    /// retry loop never selects a context tier above this one — automatic
+    /// escalation stops at the cap. `None` means no cap (today's behaviour).
+    pub max_context_tier: Option<calxgloss_types::ContextTier>,
 }
 
 impl Default for RetryConfig {
@@ -19,6 +24,7 @@ impl Default for RetryConfig {
             max_attempts: 3,
             strategy: RetryStrategy::CompileFix,
             escalate_on_failure: true,
+            max_context_tier: None,
         }
     }
 }
@@ -60,6 +66,27 @@ pub const AUTO_STRATEGY_CYCLE: &[RetryStrategy] = &[
     RetryStrategy::Escalate,
     RetryStrategy::EdgeCaseFix,
 ];
+
+impl RetryConfig {
+    /// The next context tier to escalate to, honoring the operator's
+    /// `max_context_tier` cap (issue #93, W2.5). Returns `None` when the
+    /// tier is already at the maximum tier or the cap blocks the step —
+    /// escalation then stops at the current tier.
+    pub fn next_tier_within_cap(
+        &self,
+        current: calxgloss_types::ContextTier,
+    ) -> Option<calxgloss_types::ContextTier> {
+        let next = current.escalate()?;
+        if self
+            .max_context_tier
+            .is_some_and(|cap| next.number() > cap.number())
+        {
+            None
+        } else {
+            Some(next)
+        }
+    }
+}
 
 /// Details about a single translation attempt.
 #[derive(Debug, Clone)]
@@ -146,5 +173,62 @@ impl RetryResult {
             self.success_strategy = Some(attempt.strategy.clone());
         }
         self.attempts.push(attempt);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calxgloss_types::ContextTier;
+
+    // ─── Operator context-tier cap (issue #93, W2.5) ─────────────────
+
+    /// Without a cap the tier walk behaves exactly as before: one step up
+    /// until the maximum tier.
+    #[test]
+    fn tier_walk_without_cap_escalates_to_the_maximum() {
+        let config = RetryConfig::default();
+        assert_eq!(
+            config.next_tier_within_cap(ContextTier::Signature),
+            Some(ContextTier::Disassembly)
+        );
+        assert_eq!(
+            config.next_tier_within_cap(ContextTier::FullModule),
+            None,
+            "the built-in maximum still ends the walk"
+        );
+    }
+
+    /// An operator cap stops the walk at the cap — the retry loop may climb
+    /// to it but never past it.
+    #[test]
+    fn tier_walk_stops_at_the_operator_cap() {
+        let config = RetryConfig {
+            max_context_tier: Some(ContextTier::Disassembly),
+            ..RetryConfig::default()
+        };
+        assert_eq!(
+            config.next_tier_within_cap(ContextTier::Signature),
+            Some(ContextTier::Disassembly),
+            "climbing to the cap is allowed"
+        );
+        assert_eq!(
+            config.next_tier_within_cap(ContextTier::Disassembly),
+            None,
+            "the walk stops at the cap"
+        );
+    }
+
+    /// A cap at or above the built-in maximum changes nothing.
+    #[test]
+    fn tier_cap_at_or_above_the_maximum_is_a_no_op() {
+        let config = RetryConfig {
+            max_context_tier: Some(ContextTier::FullModule),
+            ..RetryConfig::default()
+        };
+        assert_eq!(
+            config.next_tier_within_cap(ContextTier::ModuleContext),
+            Some(ContextTier::FullModule)
+        );
     }
 }

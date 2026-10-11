@@ -12,6 +12,7 @@ use calxgloss::PipelineRunRequest;
 use calxgloss::ProgressEvent;
 use calxgloss::RunScope;
 use calxgloss::RunTarget;
+use calxgloss::ScopeControl;
 use calxgloss::StopSignal;
 use calxgloss::TranslationEvents;
 use calxgloss::UnitCancellation;
@@ -58,6 +59,7 @@ pub async fn run_translation_for_dll(
     control: Option<&PipelineControl>,
     cancellation: Option<&UnitCancellation>,
     scope: RunScope,
+    scope_control: Option<&ScopeControl>,
 ) -> Result<()> {
     // The workspace — git, src/, scratch all live here.
 
@@ -181,6 +183,9 @@ pub async fn run_translation_for_dll(
     if let Some(cancellation) = cancellation {
         pipeline = pipeline.with_unit_cancellation(cancellation.clone());
     }
+    if let Some(scope_control) = scope_control {
+        pipeline = pipeline.with_scope(scope_control.clone());
+    }
     pipeline = pipeline.with_workspace(workspace);
     // The batch's shared Ghidra read cache keys on the target binary's
     // file bytes (issue #105).
@@ -211,6 +216,7 @@ pub async fn run_translation_for_dll(
         max_attempts: max_retries,
         strategy: retry_strategy,
         escalate_on_failure: true,
+        max_context_tier: None,
     };
 
     // Run batch translation with an inline callback that handles git operations
@@ -390,6 +396,7 @@ pub async fn handle_auto(
     control: Option<&PipelineControl>,
     cancellation: Option<&UnitCancellation>,
     run: Option<&PipelineRunRequest>,
+    scope_control: Option<&ScopeControl>,
 ) -> Result<()> {
     info!("Auto mode: detecting project state");
 
@@ -535,6 +542,27 @@ pub async fn handle_auto(
     }
 
     if continue_mode {
+        // W2.5: the operator's binary scope filters the queue before the
+        // plan is published — an excluded binary never enters the queue,
+        // the dashboard, or a translation pass.
+        if let Some(sc) = scope_control {
+            let plan = sc.scope();
+            if !plan.binaries.is_empty() {
+                let total = classified.len();
+                classified.retain(|b| plan.admits_binary(b));
+                let excluded = total - classified.len();
+                if excluded > 0 {
+                    println_content(format!(
+                        "  Binary scope excludes {excluded} of {total} target(s).",
+                    ));
+                }
+                if classified.is_empty() {
+                    println_content("No targets left in scope; nothing to translate.");
+                    return Ok(());
+                }
+            }
+        }
+
         // Translate all classified files in sequence (non-interactive).
         println!();
         println!(
@@ -591,6 +619,7 @@ pub async fn handle_auto(
                 control,
                 cancellation,
                 run.map(|r| r.scope).unwrap_or_default(),
+                scope_control,
             )
             .await?;
         }
@@ -642,6 +671,7 @@ pub async fn handle_auto(
             control,
             cancellation,
             run.map(|r| r.scope).unwrap_or_default(),
+            scope_control,
         )
         .await?;
     }
