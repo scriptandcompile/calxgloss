@@ -46,6 +46,7 @@ import {
 import { loadGcCandidates, archiveSelectedGc } from "./js/gc.js";
 import { loadLiveProgress, applyUnitPhase } from "./js/live.js";
 import { setupPipelineControls, setPipelineState } from "./js/pipeline-controls.js";
+import { setupScopeControls, loadScopeControls, refreshScopeDisplay } from "./js/scope-controls.js";
 import { API } from "./js/api.js";
 import { showToast } from "./js/ui.js";
 
@@ -60,6 +61,10 @@ function setupEventListeners() {
     // Pipeline controls header (issue #94) — buttons drive the lifecycle
     // endpoints; the state badge follows the WS-pushed transitions.
     setupPipelineControls();
+
+    // Translation scope controls panel (issue #95) — checkboxes, priority
+    // list, and constraint inputs drive the live-only scope endpoints.
+    setupScopeControls();
 
 
     // Refresh button
@@ -482,9 +487,16 @@ async function init() {
 
     // Load initial data
     await loadDashboard();
+    // The scope panel reads the live scope once — it follows the server
+    // from its own mutations, not from the dashboard's refresh churn. The
+    // read-only display (summary, token remaining) does keep up, below.
+    loadScopeControls().catch((err) => console.warn("[scope] panel load failed:", err));
 
     // Auto-refresh every 30 seconds
-    setInterval(loadDashboard, 30000);
+    setInterval(() => {
+        loadDashboard();
+        refreshScopeDisplay().catch((err) => console.warn("[scope] display refresh failed:", err));
+    }, 30000);
 }
 
 // Start the app

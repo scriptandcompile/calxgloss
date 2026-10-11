@@ -78,6 +78,13 @@ export const API = {
     async stopPipeline() { return API.post("/api/pipeline/stop"); },
     async restartPipeline(options) { return API.post("/api/pipeline/restart", options); },
     async cancelCurrentUnit() { return API.post("/api/pipeline/cancel-current"); },
+    // Translation scope controls (issue #93, driven by the panel in issue
+    // #95) — live router only; plain serve has no pipeline to steer.
+    async scopeStatus() { return API.get("/api/scope"); },
+    async setScopeBinaries(binaries) { return API.post("/api/scope/binaries", { binaries }); },
+    async prioritizeScopeFunction(binary, fn) { return API.post("/api/scope/priority-function", { binary, function: fn }); },
+    async removeScopePriorityFunction(binary, fn) { return API.post("/api/scope/remove-priority-function", { binary, function: fn }); },
+    async setScopeConstraints(constraints) { return API.post("/api/scope/constraints", constraints); },
     async liveProgress() { return API.get("/api/progress/enhanced"); },
     async gcCandidates(days) { return API.get(`/api/gc/candidates?days=${days}`); },
     async gcArchive(branches) { return API.post("/api/gc/archive", branches.length > 0 ? { branches } : {}); },

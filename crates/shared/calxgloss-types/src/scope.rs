@@ -270,6 +270,24 @@ impl ScopeControl {
         Self::persist(&state)
     }
 
+    /// Drop one function from the priority list — the operator's remove
+    /// (issue #95, W2.6). Idempotent: removing a function that is not
+    /// prioritized is not an error. The next queue selection no longer
+    /// sorts it ahead.
+    pub fn remove_priority_function(
+        &self,
+        binary: &str,
+        function: &str,
+    ) -> Result<(), PersistError> {
+        let mut state = self.lock();
+        let reference = FunctionRef::new(binary, function);
+        state
+            .scope
+            .priority_functions
+            .retain(|f| !(f.binary == reference.binary && f.function == reference.function));
+        Self::persist(&state)
+    }
+
     /// Replace the run's constraints.
     pub fn set_constraints(&self, constraints: TranslationConstraints) -> Result<(), PersistError> {
         let mut state = self.lock();
@@ -394,6 +412,51 @@ mod tests {
             .expect("repeat priority is not an error");
         assert_eq!(control.scope().skipped_functions.len(), 1);
         assert_eq!(control.scope().priority_functions.len(), 1);
+    }
+
+    /// Removing a priority entry (issue #95, W2.6 — the panel's remove
+    /// button) drops exactly that function, is idempotent, and persists.
+    #[test]
+    fn remove_priority_function_drops_the_entry_and_persists() {
+        let ws = temp_workspace();
+        let control = ScopeControl::open(ws.path());
+        control
+            .prioritize_function("game_logic.dll", "DrawPrimitive")
+            .expect("first priority persists");
+        control
+            .prioritize_function("game_logic.dll", "UpdateScene")
+            .expect("second priority persists");
+
+        control
+            .remove_priority_function("game_logic.dll", "DrawPrimitive")
+            .expect("removal persists");
+        let after = control.scope();
+        assert!(
+            !after.is_priority("game_logic.dll", "DrawPrimitive"),
+            "the removed function leaves the priority list"
+        );
+        assert!(
+            after.is_priority("game_logic.dll", "UpdateScene"),
+            "the other priority entry is untouched"
+        );
+
+        control
+            .remove_priority_function("game_logic.dll", "NeverPrioritized")
+            .expect("removing an absent entry is not an error");
+
+        // A restarted run honors the removal — the record was rewritten.
+        let reopened = ScopeControl::open(ws.path());
+        assert!(
+            !reopened
+                .scope()
+                .is_priority("game_logic.dll", "DrawPrimitive"),
+            "the removal survives a restart"
+        );
+        assert!(
+            reopened
+                .scope()
+                .is_priority("game_logic.dll", "UpdateScene")
+        );
     }
 
     #[test]

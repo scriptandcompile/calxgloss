@@ -96,6 +96,80 @@
                 <div id="token-budget" class="token-budget"></div>
             </div>
 
+            <!-- Translation scope controls panel (issue #95, W2.6) — steers
+                 what the live run touches and what it may consume. Every
+                 control drives a live-only scope endpoint; the panel is
+                 honest when the server has no scope control attached. -->
+            <div class="panel" id="scope-controls">
+                <div class="column-header">
+                    <h2>Translation Controls</h2>
+                    <span id="scope-summary" class="badge"></span>
+                </div>
+                <div id="scope-unavailable" class="empty-state" style="display:none">
+                    <p id="scope-unavailable-message"></p>
+                </div>
+                <div id="scope-body" class="scope-controls">
+                    <div class="scope-section">
+                        <h3>Scope</h3>
+                        <label class="scope-check">
+                            <input type="checkbox" id="scope-skip-runtime"
+                                   title="Keep runtime-library binaries out of the run's queue plan">
+                            Skip runtime functions
+                        </label>
+                        <label class="scope-check">
+                            <input type="checkbox" id="scope-translate-project-specific"
+                                   title="Keep project-specific binaries in the run's queue plan">
+                            Translate project-specific
+                        </label>
+                        <label class="scope-check">
+                            <input type="checkbox" id="scope-translate-known-third-party"
+                                   title="Keep known third-party binaries in the run's queue plan">
+                            Translate known third-party
+                        </label>
+                        <label class="scope-check">
+                            <input type="checkbox" id="scope-skip-unknown-third-party"
+                                   title="Keep unknown third-party binaries out of the run's queue plan">
+                            Skip unknown third-party
+                        </label>
+                    </div>
+                    <div class="scope-section">
+                        <h3>Priority functions</h3>
+                        <div id="scope-priority-list" class="scope-priority-list"></div>
+                        <div class="scope-priority-add">
+                            <select id="scope-priority-binary" aria-label="Priority binary"></select>
+                            <input type="text" id="scope-priority-function" placeholder="Function name"
+                                   aria-label="Priority function name">
+                            <button id="scope-priority-add-btn" class="btn btn-sm"
+                                    title="Sort this function ahead of the rest of the queue">Add</button>
+                        </div>
+                    </div>
+                    <div class="scope-section">
+                        <h3>Constraints</h3>
+                        <div class="scope-constraint-fields">
+                            <label>Max LLM attempts
+                                <input type="number" id="scope-max-attempts" min="1" placeholder="no cap">
+                            </label>
+                            <label>Max context tier
+                                <select id="scope-max-tier">
+                                    <option value="">No cap</option>
+                                    <option value="Signature">Signature</option>
+                                    <option value="Disassembly">Disassembly</option>
+                                    <option value="WithTests">With Tests</option>
+                                    <option value="ModuleContext">Module Context</option>
+                                    <option value="FullModule">Full Module</option>
+                                </select>
+                            </label>
+                            <label>Token budget
+                                <input type="number" id="scope-token-budget" min="0" placeholder="no cap">
+                            </label>
+                            <button id="scope-constraints-apply" class="btn btn-sm btn-primary"
+                                    title="Replace the run's consumption caps">Apply constraints</button>
+                        </div>
+                        <div id="scope-token-remaining" class="scope-token-remaining"></div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Two-column layout: queue + activity -->
             <div class="dashboard-columns">
                 <div class="column queue-column">

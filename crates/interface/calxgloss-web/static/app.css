@@ -2500,6 +2500,127 @@ svg {
     margin-bottom: 6px;
 }
 
+/* ─── Translation scope controls panel (issue #95) ────────────────── */
+
+.scope-controls {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 16px;
+    padding: 4px 0;
+}
+
+.scope-section h3 {
+    margin: 0 0 8px;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+}
+
+.scope-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+    cursor: pointer;
+}
+
+.scope-priority-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.scope-priority-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    font-size: 12px;
+    color: var(--text-primary);
+}
+
+.scope-priority-binary {
+    color: var(--text-muted);
+}
+
+.scope-priority-remove {
+    border: none;
+    background: none;
+    color: var(--text-muted);
+    font-size: 14px;
+    line-height: 1;
+    padding: 0 2px;
+    cursor: pointer;
+}
+
+.scope-priority-remove:hover {
+    color: var(--accent-red);
+}
+
+.scope-empty {
+    margin: 0;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.scope-priority-add {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.scope-priority-add select,
+.scope-priority-add input[type="text"] {
+    min-width: 0;
+    flex: 1 1 0;
+    padding: 6px 8px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-size: 13px;
+}
+
+.scope-constraint-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.scope-constraint-fields label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.scope-constraint-fields input[type="number"],
+.scope-constraint-fields select {
+    width: 130px;
+    padding: 6px 8px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-size: 13px;
+}
+
+.scope-token-remaining {
+    margin-top: 10px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+
 /* ─── Pipeline Phase Bar (issue #61) ──────────────────────────────── */
 
 .pipeline-phase-bar {

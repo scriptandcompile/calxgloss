@@ -893,6 +893,10 @@ fn live_only_routes() -> Router<CombinedState> {
             post(handlers::api_scope_priority_function),
         )
         .route(
+            "/api/scope/remove-priority-function",
+            post(handlers::api_scope_remove_priority_function),
+        )
+        .route(
             "/api/scope/constraints",
             post(handlers::api_scope_set_constraints),
         )

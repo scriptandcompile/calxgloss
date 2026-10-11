@@ -790,6 +790,10 @@ async fn test_scope_endpoints_503_without_control() {
             "/api/scope/priority-function",
             serde_json::json!({"binary": "a.dll", "function": "F"}),
         ),
+        (
+            "/api/scope/remove-priority-function",
+            serde_json::json!({"binary": "a.dll", "function": "F"}),
+        ),
         ("/api/scope/constraints", serde_json::json!({})),
     ] {
         let resp = client
@@ -856,6 +860,29 @@ async fn test_scope_endpoints_drive_and_persist_the_operator_scope() {
         .expect("request reaches server");
     assert_eq!(resp.status(), 200);
 
+    // Issue #95: the panel's remove button drives the removal endpoint —
+    // a prioritized function drops out, the rest of the list stays.
+    let resp = client
+        .post(format!("{base}/api/scope/priority-function"))
+        .json(&serde_json::json!({"binary": "game_logic.dll", "function": "RenderFrame"}))
+        .send()
+        .await
+        .expect("request reaches server");
+    assert_eq!(resp.status(), 200);
+    let resp = client
+        .post(format!("{base}/api/scope/remove-priority-function"))
+        .json(&serde_json::json!({"binary": "game_logic.dll", "function": "RenderFrame"}))
+        .send()
+        .await
+        .expect("request reaches server");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    assert_eq!(
+        body["scope"]["priority_functions"].as_array().map(Vec::len),
+        Some(1),
+        "the removed priority is gone from the echoed status"
+    );
+
     let resp = client
         .post(format!("{base}/api/scope/constraints"))
         .json(&serde_json::json!({
@@ -896,6 +923,10 @@ async fn test_scope_endpoints_drive_and_persist_the_operator_scope() {
     assert_eq!(persisted.binaries.len(), 1);
     assert!(persisted.is_skipped("game_logic.dll", "UpdateScene"));
     assert!(persisted.is_priority("game_logic.dll", "DrawPrimitive"));
+    assert!(
+        !persisted.is_priority("game_logic.dll", "RenderFrame"),
+        "the priority removal survives a restart"
+    );
     assert_eq!(reopened.constraints().max_attempts, Some(2));
     assert_eq!(
         reopened.constraints().max_context_tier,
@@ -4394,6 +4425,7 @@ async fn test_live_only_endpoints_absent_from_non_live_routers() {
             "/api/scope/binaries",
             "/api/scope/skip-function",
             "/api/scope/priority-function",
+            "/api/scope/remove-priority-function",
             "/api/scope/constraints",
         ] {
             let resp = reqwest::Client::new()
@@ -6469,6 +6501,409 @@ async fn test_headless_shutdown_dialog_drives_endpoint() {
         "the server must refuse connections after the dialog's shutdown"
     );
 
+    drop(browser);
+}
+
+/// Headless-browser test for the translation scope controls panel
+/// (issue #95, W2.6): the panel renders the current scope and constraints
+/// from the status endpoint on load, and every control — category
+/// checkboxes, priority add/remove, constraint inputs — drives its scope
+/// endpoint end to end, with the rendered state following the server's
+/// answer rather than a local guess.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_scope_controls_panel() {
+    let fixture = TestFixture::new();
+    // The run is already steered: one priority function and constraints in
+    // force — the panel must render exactly this on load, not defaults.
+    let scope = calxgloss_types::ScopeControl::open(fixture.repo_path());
+    scope
+        .prioritize_function("engine.dll", "DrawPrimitive")
+        .expect("seeded priority persists");
+    scope
+        .set_constraints(calxgloss_types::TranslationConstraints {
+            max_attempts: Some(2),
+            max_context_tier: Some(calxgloss_types::ContextTier::Disassembly),
+            token_budget: Some(50_000),
+        })
+        .expect("seeded constraints persist");
+    scope.record_tokens(12_345);
+    let state = ServerState::new(fixture.repo_path()).with_scope_control(scope);
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // One binary per category the checkboxes speak about, so each checkbox
+    // has a real category to read.
+    for (binary, category) in [
+        ("engine.dll", "ProjectSpecific"),
+        ("zlib.dll", "KnownThirdParty"),
+        ("mystery.dll", "UnknownThirdParty"),
+        ("msvcrt.dll", "RuntimeLibrary"),
+        ("d3d9.dll", "WindowsOs"),
+    ] {
+        events.emit(ProgressEvent::ClassificationComplete {
+            binary: binary.into(),
+            category: category.into(),
+            strategy: "ReverseEngineer".into(),
+            crate_replacement: None,
+            exported_symbols: 1,
+            imported_symbols: 0,
+        });
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+    let eval_text = |expr: &str| -> String {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default()
+    };
+    let eval_len = |expr: &str| -> i64 {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_i64())
+            .unwrap_or(-1)
+    };
+    let checked = |id: &str| {
+        eval_bool(&format!(
+            "document.getElementById('{id}')?.checked === true"
+        ))
+    };
+    let chip_count = |fn_name: &str| {
+        eval_len(&format!(
+            "document.querySelectorAll('#scope-priority-list .scope-priority-chip[data-function=\"{fn_name}\"]').length"
+        ))
+    };
+    let get_scope = || async {
+        reqwest::get(format!("http://127.0.0.1:{}/api/scope", fixture.port()))
+            .await
+            .expect("scope status reachable")
+            .json::<serde_json::Value>()
+            .await
+            .expect("scope status is JSON")
+    };
+    let scope_binaries = || async {
+        let mut list: Vec<String> = get_scope().await["scope"]["binaries"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        list.sort();
+        list
+    };
+    let priority_count = || async {
+        get_scope().await["scope"]["priority_functions"]
+            .as_array()
+            .map(Vec::len)
+    };
+
+    // On load the panel renders the server's scope: the seeded priority
+    // chip is present and the checkboxes read the unsteered allow-list —
+    // every discovered binary is in scope, so translate boxes are on and
+    // skip boxes are off.
+    let mut chip_rendered = false;
+    for _ in 0..25 {
+        if chip_count("DrawPrimitive") == 1 {
+            chip_rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        chip_rendered,
+        "the seeded priority chip must render on load"
+    );
+    assert!(
+        checked("scope-translate-project-specific"),
+        "project-specific binaries are in scope — the box reads checked"
+    );
+    assert!(
+        checked("scope-translate-known-third-party"),
+        "known third-party binaries are in scope — the box reads checked"
+    );
+    assert!(
+        !checked("scope-skip-runtime"),
+        "runtime binaries are in scope — the skip box reads unchecked"
+    );
+    assert!(
+        !checked("scope-skip-unknown-third-party"),
+        "unknown third-party binaries are in scope — the skip box reads unchecked"
+    );
+
+    // Constraints render from the status endpoint, and the token display
+    // carries the budget minus the run's spend.
+    assert_eq!(
+        eval_text("document.getElementById('scope-max-attempts')?.value || ''"),
+        "2"
+    );
+    assert_eq!(
+        eval_text("document.getElementById('scope-max-tier')?.value || ''"),
+        "Disassembly"
+    );
+    assert_eq!(
+        eval_text("document.getElementById('scope-token-budget')?.value || ''"),
+        "50000"
+    );
+    assert!(
+        eval_text("document.getElementById('scope-token-remaining')?.textContent || ''")
+            .contains("37655"),
+        "the remaining-budget display follows the server's spend"
+    );
+
+    // Toggling "skip runtime functions" drives POST /api/scope/binaries —
+    // the exclusion lands server-side, and the panel keeps the box checked
+    // because it re-rendered from the server's answer.
+    tab.evaluate(
+        "document.getElementById('scope-skip-runtime').click() === undefined",
+        false,
+    )
+    .expect("toggle skip-runtime");
+    let mut binaries_landed = false;
+    for _ in 0..25 {
+        if scope_binaries().await
+            == vec![
+                "d3d9.dll".to_string(),
+                "engine.dll".to_string(),
+                "mystery.dll".to_string(),
+                "zlib.dll".to_string(),
+            ]
+        {
+            binaries_landed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        binaries_landed,
+        "the checkbox must drive POST /api/scope/binaries with the runtime binary excluded"
+    );
+    assert!(
+        checked("scope-skip-runtime"),
+        "the checkbox follows the server's answer, not a reverted local guess"
+    );
+
+    // Unchecking a translate-mode checkbox excludes that category: zlib's
+    // box off drops it from the allow-list, while the WindowsOs binary no
+    // checkbox speaks for keeps its place from the server's current list.
+    tab.evaluate(
+        "document.getElementById('scope-translate-known-third-party').click() === undefined",
+        false,
+    )
+    .expect("toggle translate-known-third-party");
+    let mut exclusion_landed = false;
+    for _ in 0..25 {
+        if scope_binaries().await
+            == vec![
+                "d3d9.dll".to_string(),
+                "engine.dll".to_string(),
+                "mystery.dll".to_string(),
+            ]
+        {
+            exclusion_landed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        exclusion_landed,
+        "unchecking a translate checkbox must drop that category from the allow-list"
+    );
+    assert!(
+        !checked("scope-translate-known-third-party"),
+        "the unchecked box follows the server's answer"
+    );
+
+    // Round-trip back: re-checking known third-party and un-checking the
+    // runtime skip covers every known binary again — sent as the empty
+    // unsteered list, and the checkboxes render from that echo.
+    tab.evaluate(
+        "document.getElementById('scope-translate-known-third-party').click() === undefined; \
+             document.getElementById('scope-skip-runtime').click() === undefined",
+        false,
+    )
+    .expect("restore both checkboxes");
+    let mut unsteered_restored = false;
+    for _ in 0..25 {
+        if scope_binaries().await.is_empty() {
+            unsteered_restored = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        unsteered_restored,
+        "covering every known binary again must return the scope to the unsteered empty list"
+    );
+    assert!(
+        !checked("scope-skip-runtime") && checked("scope-translate-known-third-party"),
+        "after the round-trip the checkboxes render the unsteered state honestly"
+    );
+
+    // Adding a priority function through the form drives the priority
+    // endpoint; the chip appears and the server agrees.
+    tab.evaluate(
+        "document.getElementById('scope-priority-binary').value = 'zlib.dll'; \
+             document.getElementById('scope-priority-function').value = 'InitZlib'; \
+             document.getElementById('scope-priority-add-btn').click() === undefined",
+        false,
+    )
+    .expect("add a priority function");
+    let mut chip_added = false;
+    for _ in 0..25 {
+        if chip_count("InitZlib") == 1 {
+            chip_added = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(chip_added, "the added priority chip must render");
+    assert_eq!(
+        priority_count().await,
+        Some(2),
+        "the added priority reached the server"
+    );
+
+    // Removing it drives the removal endpoint; the chip disappears and the
+    // server's list shrinks.
+    tab.evaluate(
+        "document.querySelector('#scope-priority-list .scope-priority-chip[data-function=\"InitZlib\"] .scope-priority-remove').click() === undefined",
+        false,
+    )
+    .expect("remove the priority function");
+    let mut chip_removed = false;
+    for _ in 0..25 {
+        if chip_count("InitZlib") == 0 {
+            chip_removed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(chip_removed, "the removed priority chip must disappear");
+    assert_eq!(
+        priority_count().await,
+        Some(1),
+        "the removal reached the server"
+    );
+    assert_eq!(
+        chip_count("DrawPrimitive"),
+        1,
+        "the untouched priority entry stays rendered"
+    );
+
+    // Applying new constraints replaces them wholesale; the display and
+    // the server both follow.
+    tab.evaluate(
+        "document.getElementById('scope-max-attempts').value = '3'; \
+             document.getElementById('scope-max-tier').value = ''; \
+             document.getElementById('scope-token-budget').value = '90000'; \
+             document.getElementById('scope-constraints-apply').click() === undefined",
+        false,
+    )
+    .expect("apply constraints");
+    let mut constraints_landed = false;
+    for _ in 0..25 {
+        let body = get_scope().await;
+        if body["constraints"]["max_attempts"] == serde_json::json!(3)
+            && body["constraints"]["max_context_tier"].is_null()
+            && body["constraints"]["token_budget"] == serde_json::json!(90000)
+        {
+            constraints_landed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        constraints_landed,
+        "the constraint inputs must drive POST /api/scope/constraints wholesale"
+    );
+    assert!(
+        eval_text("document.getElementById('scope-token-remaining')?.textContent || ''")
+            .contains("77655"),
+        "the remaining-budget display follows the new budget"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// The scope panel on a plain `serve` router (no scope control attached)
+/// says so honestly and disables itself — the controls header's honesty
+/// rule, same shape (issue #95, W2.6).
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_scope_controls_honest_without_control() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+    let eval_text = |expr: &str| -> String {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default()
+    };
+
+    let mut honest = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "!!document.getElementById('scope-unavailable') && \
+                 document.getElementById('scope-unavailable').style.display !== 'none' && \
+                 document.getElementById('scope-body').style.display === 'none'",
+        ) {
+            honest = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        honest,
+        "without a scope control the panel must show its honest unavailable state"
+    );
+    assert!(
+        eval_text("document.getElementById('scope-unavailable-message')?.textContent || ''")
+            .contains("calxgloss live"),
+        "the message names what the panel needs"
+    );
+
+    tab.close_target().ok();
     drop(browser);
 }
 

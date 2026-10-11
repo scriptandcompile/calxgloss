@@ -2,7 +2,7 @@
 //!
 //! The operator steers the live run over REST: which binaries to translate,
 //! which functions to skip or prioritize, and the constraints that bound
-//! consumption. All five endpoints are live-router only — a plain `serve`
+//! consumption. All six endpoints are live-router only — a plain `serve`
 //! router has no pipeline to steer — and each answers 503 when the live
 //! router was built without a scope handle attached, mirroring the
 //! lifecycle endpoints' honesty rule.
@@ -101,6 +101,26 @@ pub async fn api_scope_priority_function(
         binary = %request.binary,
         function = %request.function,
         "scope: function prioritized via API"
+    );
+    Ok(status(&scope))
+}
+
+/// Handle `POST /api/scope/remove-priority-function` — the function drops
+/// out of the priority list (issue #95, W2.6 panel's remove button); the
+/// next queue selection no longer sorts it ahead. Removing a function that
+/// is not prioritized is not an error. Live router only.
+pub async fn api_scope_remove_priority_function(
+    State(combined): State<CombinedState>,
+    Json(request): Json<ScopeFunctionRequest>,
+) -> Result<Json<ScopeStatusResponse>, ServerError> {
+    let scope = scope_handle(&combined)?;
+    scope
+        .remove_priority_function(&request.binary, &request.function)
+        .map_err(persist_error)?;
+    info!(
+        binary = %request.binary,
+        function = %request.function,
+        "scope: function priority removed via API"
     );
     Ok(status(&scope))
 }
