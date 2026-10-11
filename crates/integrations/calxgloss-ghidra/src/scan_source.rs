@@ -1,28 +1,30 @@
 //! The shared read seam for everything an evidence engine pulls from Ghidra.
 //!
-//! Each evidence-engine crate carries its own `ScanSource`-shaped trait today,
-//! and the copies have grown near-identical. This is their union — the
+//! Every evidence-engine crate once carried its own `ScanSource`-shaped
+//! trait, and the copies had grown near-identical. This is their union — the
 //! function listing, decompile-by-name, the string listing, callers,
 //! xrefs-to, the Type Manager reads (data types, struct layouts, enum values,
 //! data items), the import and export listings, and the raw reads the vtable
 //! scan makes (image base, memory bytes) — defined once so the planned read
-//! cache implements it once instead of eight times. All eight scan-based
+//! cache implements it once instead of eleven times. All eleven scan-based
 //! evidence engines — algorithm, callback, consts, control-flow, memory,
-//! serialization, string-context, and concurrency — already re-export this
-//! trait in place of their own; the types-database, type-inference, and
-//! API-detection engines fold onto it in the next batch.
+//! serialization, string-context, concurrency, types-database,
+//! type-inference, and API-detection — re-export this trait in place of
+//! their own.
 //!
 //! Deliberately absent:
 //!
 //! * **Write-side calls** (function tags, type write-back) — the cache only
-//!   ever serves read-only facts.
+//!   ever serves read-only facts. `calxgloss-typesdb`'s vtable scan keeps a
+//!   slim local `TagSink` trait for its one write.
 //! * **The string-listing filter** — only `calxgloss-typesdb`'s string
-//!   inference takes one, and no production caller sets it; the eight
-//!   engine-facing shapes carry an unfiltered listing, so this trait matches
-//!   them and a filtered consumer can filter the listing itself.
+//!   inference takes one, and no production caller sets it; the engine-facing
+//!   shape carries an unfiltered listing, so this trait matches it and the
+//!   inference engine filters the listing itself.
 //! * **The built call graph** — `calxgloss-apidetect`'s `call_graph` read is
 //!   a composite of these reads, assembled by the call-graph builder, which
-//!   will read through this seam itself.
+//!   will read through this seam itself; the engine keeps a slim local
+//!   `CallGraphSource` trait for it.
 
 use crate::client::{GhidraClient, Result};
 use crate::model::{

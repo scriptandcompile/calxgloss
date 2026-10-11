@@ -17,15 +17,17 @@
 //! - **Cache behavior** — the `exists` check decides whether a scan
 //!   runs, and a rescan replaces the cached document.
 //!
-//! The fake program implements [`ApiSource`], so the whole flow runs
-//! without a Ghidra server.
+//! The fake program implements [`ScanSource`] and [`CallGraphSource`], so
+//! the whole flow runs without a Ghidra server.
 
-use calxgloss_apidetect::Result;
-use calxgloss_apidetect::engine::{ApiEngine, ApiSource};
+use calxgloss_apidetect::engine::{ApiEngine, CallGraphSource, ScanSource};
 use calxgloss_apidetect::persist::ApiPersistor;
 use calxgloss_apidetect::types::ApiFinding;
 use calxgloss_callgraph::{CallGraphEdge, CallType, FunctionCallGraph};
-use calxgloss_ghidra::Symbol;
+use calxgloss_ghidra::{
+    DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
+    StringLiteral, StructLayout, Symbol, Xref,
+};
 use tempfile::TempDir;
 
 // ------------------------------------------------------------
@@ -59,7 +61,8 @@ fn node(name: &str, address: u64, callees: Vec<(&str, u64)>) -> FunctionCallGrap
     }
 }
 
-/// A canned program implementing [`ApiSource`]: imports covering an
+/// A canned program implementing [`ScanSource`] and [`CallGraphSource`]:
+/// imports covering an
 /// identified zlib call, an identified Win32 call, and an unidentified
 /// vendor function, and a call graph where `FUN_18003ab00` calls
 /// `inflate` directly and reaches `CreateFileA` through
@@ -71,12 +74,81 @@ struct FakeProgram {
     graph: Vec<FunctionCallGraph>,
 }
 
-impl ApiSource for FakeProgram {
-    async fn imports(&self) -> Result<Vec<Symbol>> {
+impl ScanSource for FakeProgram {
+    async fn functions(&self) -> calxgloss_ghidra::Result<Vec<FunctionSummary>> {
+        Ok(Vec::new())
+    }
+
+    async fn decompile(&self, name: &str) -> calxgloss_ghidra::Result<DecompiledFunction> {
+        Err(GhidraError::NotFound {
+            kind: "function",
+            query: name.to_string(),
+        })
+    }
+
+    async fn strings(&self) -> calxgloss_ghidra::Result<Vec<StringLiteral>> {
+        Ok(Vec::new())
+    }
+
+    async fn callers(&self, _address: u64) -> calxgloss_ghidra::Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    async fn xrefs_to(&self, _address: u64) -> calxgloss_ghidra::Result<Vec<Xref>> {
+        Ok(Vec::new())
+    }
+
+    async fn data_types(
+        &self,
+        _category: Option<&str>,
+    ) -> calxgloss_ghidra::Result<Vec<DataTypeEntry>> {
+        Ok(Vec::new())
+    }
+
+    async fn struct_layout(&self, name: &str) -> calxgloss_ghidra::Result<StructLayout> {
+        Err(GhidraError::NotFound {
+            kind: "struct",
+            query: name.to_string(),
+        })
+    }
+
+    async fn enum_values(&self, name: &str) -> calxgloss_ghidra::Result<EnumDefinition> {
+        Err(GhidraError::NotFound {
+            kind: "enum",
+            query: name.to_string(),
+        })
+    }
+
+    async fn data_items(&self) -> calxgloss_ghidra::Result<Vec<DataItem>> {
+        Ok(Vec::new())
+    }
+
+    async fn imports(&self) -> calxgloss_ghidra::Result<Vec<Symbol>> {
         Ok(self.imports.clone())
     }
 
-    async fn call_graph(&self, _binary: &str) -> Result<Vec<FunctionCallGraph>> {
+    async fn exports(&self) -> calxgloss_ghidra::Result<Vec<Symbol>> {
+        Ok(Vec::new())
+    }
+
+    async fn image_base(&self) -> calxgloss_ghidra::Result<u64> {
+        Ok(0)
+    }
+
+    async fn read_memory(
+        &self,
+        _address: u64,
+        _length: usize,
+    ) -> calxgloss_ghidra::Result<Vec<u8>> {
+        Ok(Vec::new())
+    }
+}
+
+impl CallGraphSource for FakeProgram {
+    async fn call_graph(
+        &self,
+        _binary: &str,
+    ) -> calxgloss_apidetect::Result<Vec<FunctionCallGraph>> {
         Ok(self.graph.clone())
     }
 }

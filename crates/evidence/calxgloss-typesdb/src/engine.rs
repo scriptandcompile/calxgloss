@@ -14,13 +14,21 @@
 //! built against different programs or different moments.
 
 use crate::error::Result;
-use crate::scanner::{TypeLibraryScanner, TypeLibrarySource};
-use crate::string_infer::{StringInferenceEngine, StringSource};
+use crate::scanner::TypeLibraryScanner;
+use crate::string_infer::StringInferenceEngine;
 use crate::types::{ScanMetadata, TypeDatabase};
-use crate::vtable::{VtableDetector, VtableSource};
+use crate::vtable::{TagSink, VtableDetector};
 use calxgloss_ghidra::GhidraClient;
 use std::time::Instant;
 use tracing::info;
+
+/// The shared trait from the Ghidra integration crate, re-exported here
+/// so the engine's generic shape names it where it always has;
+/// [`GhidraClient`] implements it over the live HTTP API, and tests
+/// implement it over canned listings so the orchestration runs without
+/// a server. The futures are `Send` so a scan can be driven from an
+/// orchestrating task.
+pub use calxgloss_ghidra::ScanSource;
 
 /// Orchestrates the three recovery engines into one [`TypeDatabase`].
 ///
@@ -111,7 +119,7 @@ impl<S> TypesDBEngine<S> {
     /// built and how long the concurrent run took.
     pub async fn scan(&self, binary: impl Into<String>) -> Result<TypeDatabase>
     where
-        S: TypeLibrarySource + VtableSource + StringSource,
+        S: ScanSource + TagSink,
     {
         let started = Instant::now();
         let (named_types, vtables, inferred_structs) = tokio::try_join!(
@@ -148,8 +156,8 @@ mod tests {
     use super::*;
     use crate::error::TypesDbError;
     use calxgloss_ghidra::{
-        DataItem, DataTypeEntry, EnumDefinition, FunctionSummary, GhidraError, StringLiteral,
-        StructFieldLayout, StructLayout, Xref,
+        DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
+        Result as GhidraResult, StringLiteral, StructFieldLayout, StructLayout, Symbol, Xref,
     };
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -207,10 +215,10 @@ mod tests {
         tags: Mutex<Vec<(u64, String)>>,
     }
 
-    /// A canned program implementing all three source traits, so the whole
-    /// orchestration runs without a server. Every source call yields, the
-    /// way a real HTTP call pends, which is what lets the concurrency test
-    /// observe the scans overlapping.
+    /// A canned program implementing [`ScanSource`] and [`TagSink`], so the
+    /// whole orchestration runs without a server. Every source call yields,
+    /// the way a real HTTP call pends, which is what lets the concurrency
+    /// test observe the scans overlapping.
     #[derive(Clone)]
     struct FakeProgram {
         listing: Vec<DataTypeEntry>,
@@ -362,8 +370,8 @@ mod tests {
         program
     }
 
-    impl TypeLibrarySource for FakeProgram {
-        async fn list_types(&self, category: Option<&str>) -> Result<Vec<DataTypeEntry>> {
+    impl ScanSource for FakeProgram {
+        async fn data_types(&self, category: Option<&str>) -> GhidraResult<Vec<DataTypeEntry>> {
             self.enter();
             yield_now().await;
             self.exit();
@@ -379,35 +387,33 @@ mod tests {
             }
         }
 
-        async fn struct_layout(&self, name: &str) -> Result<StructLayout> {
+        async fn struct_layout(&self, name: &str) -> GhidraResult<StructLayout> {
             self.enter();
             yield_now().await;
             self.exit();
-            self.layouts.get(name).cloned().ok_or_else(|| {
-                GhidraError::NotFound {
+            self.layouts
+                .get(name)
+                .cloned()
+                .ok_or_else(|| GhidraError::NotFound {
                     kind: "structure",
                     query: name.to_string(),
-                }
-                .into()
-            })
+                })
         }
 
-        async fn enum_values(&self, name: &str) -> Result<EnumDefinition> {
+        async fn enum_values(&self, name: &str) -> GhidraResult<EnumDefinition> {
             self.enter();
             yield_now().await;
             self.exit();
-            self.enums.get(name).cloned().ok_or_else(|| {
-                GhidraError::NotFound {
+            self.enums
+                .get(name)
+                .cloned()
+                .ok_or_else(|| GhidraError::NotFound {
                     kind: "enumeration",
                     query: name.to_string(),
-                }
-                .into()
-            })
+                })
         }
-    }
 
-    impl VtableSource for FakeProgram {
-        async fn data_items(&self) -> Result<Vec<DataItem>> {
+        async fn data_items(&self) -> GhidraResult<Vec<DataItem>> {
             self.enter();
             yield_now().await;
             self.exit();
@@ -415,39 +421,73 @@ mod tests {
                 return Err(GhidraError::Reported {
                     status: Some(200),
                     message: "Ghidra is busy".into(),
-                }
-                .into());
+                });
             }
             Ok(self.items.clone())
         }
 
-        async fn functions(&self) -> Result<Vec<FunctionSummary>> {
+        async fn functions(&self) -> GhidraResult<Vec<FunctionSummary>> {
             self.enter();
             yield_now().await;
             self.exit();
             Ok(self.functions.clone())
         }
 
-        async fn image_base(&self) -> Result<u64> {
+        async fn image_base(&self) -> GhidraResult<u64> {
             self.enter();
             yield_now().await;
             self.exit();
             Ok(self.image_base)
         }
 
-        async fn read_memory(&self, address: u64, _length: usize) -> Result<Vec<u8>> {
+        async fn read_memory(&self, address: u64, _length: usize) -> GhidraResult<Vec<u8>> {
             self.enter();
             yield_now().await;
             self.exit();
-            self.memory.get(&address).cloned().ok_or_else(|| {
-                GhidraError::NotFound {
+            self.memory
+                .get(&address)
+                .cloned()
+                .ok_or_else(|| GhidraError::NotFound {
                     kind: "memory",
                     query: format!("{address:x}"),
-                }
-                .into()
+                })
+        }
+
+        async fn strings(&self) -> GhidraResult<Vec<StringLiteral>> {
+            self.enter();
+            yield_now().await;
+            self.exit();
+            Ok(self.literals.clone())
+        }
+
+        async fn xrefs_to(&self, address: u64) -> GhidraResult<Vec<Xref>> {
+            self.enter();
+            yield_now().await;
+            self.exit();
+            Ok(self.xrefs.get(&address).cloned().unwrap_or_default())
+        }
+
+        async fn decompile(&self, name: &str) -> GhidraResult<DecompiledFunction> {
+            Err(GhidraError::NotFound {
+                kind: "function",
+                query: name.to_string(),
             })
         }
 
+        async fn callers(&self, _address: u64) -> GhidraResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        async fn imports(&self) -> GhidraResult<Vec<Symbol>> {
+            Ok(Vec::new())
+        }
+
+        async fn exports(&self) -> GhidraResult<Vec<Symbol>> {
+            Ok(Vec::new())
+        }
+    }
+
+    impl TagSink for FakeProgram {
         async fn add_function_tag(&self, address: u64, tag: &str) -> Result<()> {
             self.enter();
             yield_now().await;
@@ -458,22 +498,6 @@ mod tests {
                 .unwrap()
                 .push((address, tag.to_string()));
             Ok(())
-        }
-    }
-
-    impl StringSource for FakeProgram {
-        async fn strings(&self, _filter: Option<&str>) -> Result<Vec<StringLiteral>> {
-            self.enter();
-            yield_now().await;
-            self.exit();
-            Ok(self.literals.clone())
-        }
-
-        async fn xrefs_to(&self, address: u64) -> Result<Vec<Xref>> {
-            self.enter();
-            yield_now().await;
-            self.exit();
-            Ok(self.xrefs.get(&address).cloned().unwrap_or_default())
         }
     }
 

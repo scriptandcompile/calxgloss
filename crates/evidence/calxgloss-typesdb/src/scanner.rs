@@ -17,52 +17,11 @@
 //! never a structure or enumeration — the bridge classifies every one into
 //! its bucket — so it is recorded without probing.
 
-use crate::error::{Result, TypesDbError};
+use crate::error::Result;
 use crate::types::{NamedType, TypeKind};
-use calxgloss_ghidra::{DataTypeEntry, EnumDefinition, GhidraClient, GhidraError, StructLayout};
+use calxgloss_ghidra::{DataTypeEntry, GhidraClient, GhidraError, ScanSource};
 use std::collections::HashSet;
 use tracing::{debug, info};
-
-/// The Type Manager reads a named-type scan performs.
-///
-/// [`GhidraClient`] implements it directly; tests implement it over canned
-/// responses so the scan's classification and degradation logic runs without
-/// a server. The futures are `Send` so a scan can be driven from an
-/// orchestrating task.
-pub trait TypeLibrarySource {
-    /// Every named type in the Type Manager, optionally filtered by category
-    /// or classification, collected across pages.
-    fn list_types(
-        &self,
-        category: Option<&str>,
-    ) -> impl std::future::Future<Output = Result<Vec<DataTypeEntry>>> + Send;
-
-    /// Field layout of a structure.
-    fn struct_layout(
-        &self,
-        name: &str,
-    ) -> impl std::future::Future<Output = Result<StructLayout>> + Send;
-
-    /// Members of an enumeration.
-    fn enum_values(
-        &self,
-        name: &str,
-    ) -> impl std::future::Future<Output = Result<EnumDefinition>> + Send;
-}
-
-impl TypeLibrarySource for GhidraClient {
-    async fn list_types(&self, category: Option<&str>) -> Result<Vec<DataTypeEntry>> {
-        Ok(self.list_data_types(category).await?)
-    }
-
-    async fn struct_layout(&self, name: &str) -> Result<StructLayout> {
-        Ok(self.get_struct_layout(name).await?)
-    }
-
-    async fn enum_values(&self, name: &str) -> Result<EnumDefinition> {
-        Ok(self.get_enum_values(name).await?)
-    }
-}
 
 /// The classification words the bridge's `category` filter matches against
 /// each type's own kind, in probe-priority order.
@@ -189,7 +148,7 @@ impl KindHints {
 
 /// Named type recovery from Ghidra's Type Manager.
 ///
-/// The scanner is generic over [`TypeLibrarySource`] so tests can drive it
+/// The scanner is generic over [`ScanSource`] so tests can drive it
 /// with canned responses; [`new`](Self::new) builds one over a live
 /// [`GhidraClient`].
 #[derive(Debug, Clone)]
@@ -230,9 +189,9 @@ impl<S> TypeLibraryScanner<S> {
     /// type would hit it too.
     pub async fn scan_named_types(&self) -> Result<Vec<NamedType>>
     where
-        S: TypeLibrarySource,
+        S: ScanSource,
     {
-        let listing = self.source.list_types(self.category.as_deref()).await?;
+        let listing = self.source.data_types(self.category.as_deref()).await?;
         debug!(count = listing.len(), "Listed Type Manager entries");
         let hints = self.collect_kind_hints().await?;
 
@@ -252,11 +211,11 @@ impl<S> TypeLibraryScanner<S> {
     /// One filtered listing per classification word, bucketed by path.
     async fn collect_kind_hints(&self) -> Result<KindHints>
     where
-        S: TypeLibrarySource,
+        S: ScanSource,
     {
         let mut listings = Vec::with_capacity(KIND_BUCKETS.len());
         for (word, kind) in KIND_BUCKETS {
-            let entries = self.source.list_types(Some(word)).await?;
+            let entries = self.source.data_types(Some(word)).await?;
             listings.push((kind, entries));
         }
         Ok(KindHints::from_buckets(listings))
@@ -266,7 +225,7 @@ impl<S> TypeLibraryScanner<S> {
     /// promise one.
     async fn recover_type(&self, entry: &DataTypeEntry, hints: &KindHints) -> Result<NamedType>
     where
-        S: TypeLibrarySource,
+        S: ScanSource,
     {
         let hint = hints.hint_for(entry);
 
@@ -299,12 +258,12 @@ impl<S> TypeLibraryScanner<S> {
                 Probe::Struct => match self.source.struct_layout(&entry.name).await {
                     Ok(layout) => return Ok(NamedType::from_struct(entry, &layout)),
                     Err(miss) if is_layout_miss(&miss) => continue,
-                    Err(e) => return Err(e),
+                    Err(e) => return Err(e.into()),
                 },
                 Probe::Enum => match self.source.enum_values(&entry.name).await {
                     Ok(definition) => return Ok(NamedType::from_enum(entry, &definition)),
                     Err(miss) if is_layout_miss(&miss) => continue,
-                    Err(e) => return Err(e),
+                    Err(e) => return Err(e.into()),
                 },
             }
         }
@@ -329,10 +288,10 @@ enum Probe {
 /// still resolve the type, and if neither does the type degrades. Anything
 /// else — transport, a reported server failure — is a broken scan, not a
 /// broken type.
-fn is_layout_miss(error: &TypesDbError) -> bool {
+fn is_layout_miss(error: &GhidraError) -> bool {
     matches!(
         error,
-        TypesDbError::Ghidra(GhidraError::NotFound { .. } | GhidraError::Malformed { .. })
+        GhidraError::NotFound { .. } | GhidraError::Malformed { .. }
     )
 }
 
@@ -343,7 +302,11 @@ fn is_layout_miss(error: &TypesDbError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calxgloss_ghidra::{EnumMember, StructFieldLayout};
+    use crate::error::TypesDbError;
+    use calxgloss_ghidra::{
+        DataItem, DecompiledFunction, EnumDefinition, EnumMember, FunctionSummary,
+        Result as GhidraResult, StringLiteral, StructFieldLayout, StructLayout, Symbol, Xref,
+    };
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -467,8 +430,8 @@ mod tests {
         }
     }
 
-    impl TypeLibrarySource for MockSource {
-        async fn list_types(&self, category: Option<&str>) -> Result<Vec<DataTypeEntry>> {
+    impl ScanSource for MockSource {
+        async fn data_types(&self, category: Option<&str>) -> GhidraResult<Vec<DataTypeEntry>> {
             match category {
                 None => Ok(self.listing.clone()),
                 Some(word) => {
@@ -488,30 +451,71 @@ mod tests {
             }
         }
 
-        async fn struct_layout(&self, name: &str) -> Result<StructLayout> {
+        async fn struct_layout(&self, name: &str) -> GhidraResult<StructLayout> {
             self.probes.lock().unwrap().push(format!("struct:{name}"));
             match self.layouts.get(name) {
                 Some(Canned::Found(layout)) => Ok(layout.clone()),
-                Some(outcome) => Err(struct_error(name, outcome).into()),
+                Some(outcome) => Err(struct_error(name, outcome)),
                 None => Err(GhidraError::NotFound {
                     kind: "structure",
                     query: name.to_string(),
-                }
-                .into()),
+                }),
             }
         }
 
-        async fn enum_values(&self, name: &str) -> Result<EnumDefinition> {
+        async fn enum_values(&self, name: &str) -> GhidraResult<EnumDefinition> {
             self.probes.lock().unwrap().push(format!("enum:{name}"));
             match self.enums.get(name) {
                 Some(Canned::Found(definition)) => Ok(definition.clone()),
-                Some(outcome) => Err(enum_error(name, outcome).into()),
+                Some(outcome) => Err(enum_error(name, outcome)),
                 None => Err(GhidraError::NotFound {
                     kind: "enumeration",
                     query: name.to_string(),
-                }
-                .into()),
+                }),
             }
+        }
+
+        async fn functions(&self) -> GhidraResult<Vec<FunctionSummary>> {
+            Ok(Vec::new())
+        }
+
+        async fn decompile(&self, name: &str) -> GhidraResult<DecompiledFunction> {
+            Err(GhidraError::NotFound {
+                kind: "function",
+                query: name.to_string(),
+            })
+        }
+
+        async fn strings(&self) -> GhidraResult<Vec<StringLiteral>> {
+            Ok(Vec::new())
+        }
+
+        async fn callers(&self, _address: u64) -> GhidraResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        async fn xrefs_to(&self, _address: u64) -> GhidraResult<Vec<Xref>> {
+            Ok(Vec::new())
+        }
+
+        async fn data_items(&self) -> GhidraResult<Vec<DataItem>> {
+            Ok(Vec::new())
+        }
+
+        async fn imports(&self) -> GhidraResult<Vec<Symbol>> {
+            Ok(Vec::new())
+        }
+
+        async fn exports(&self) -> GhidraResult<Vec<Symbol>> {
+            Ok(Vec::new())
+        }
+
+        async fn image_base(&self) -> GhidraResult<u64> {
+            Ok(0)
+        }
+
+        async fn read_memory(&self, _address: u64, _length: usize) -> GhidraResult<Vec<u8>> {
+            Ok(Vec::new())
         }
     }
 

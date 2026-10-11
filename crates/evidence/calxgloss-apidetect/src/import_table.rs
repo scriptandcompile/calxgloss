@@ -1,6 +1,6 @@
 //! Import-table scanning: binary-level API identification.
 //!
-//! Reads the binary's import table via [`ApiSource::imports`], classifies
+//! Reads the binary's import table via [`ScanSource::imports`], classifies
 //! each entry against the [`MappingDatabase`], and produces [`ApiFinding`]s:
 //! identified imports carry their library and Rust crate suggestion, while
 //! unidentified and ordinal-only imports are kept as entries with no
@@ -8,7 +8,7 @@
 
 use tracing::debug;
 
-use crate::engine::ApiSource;
+use crate::engine::ScanSource;
 use crate::error::Result;
 use crate::lib_mapping::MappingDatabase;
 use crate::types::{ApiFinding, ApiSignature, Confidence};
@@ -48,7 +48,7 @@ impl ImportTableScanner {
     /// Every import entry becomes one finding, in listing order: identified
     /// entries with their library and crate suggestion, unidentified and
     /// ordinal-only entries as plain records.
-    pub async fn scan<S: ApiSource>(&self, source: &S, _binary: &str) -> Result<Vec<ApiFinding>> {
+    pub async fn scan<S: ScanSource>(&self, source: &S, _binary: &str) -> Result<Vec<ApiFinding>> {
         let imports = source.imports().await?;
         let mut findings = Vec::with_capacity(imports.len());
         for symbol in imports {
@@ -86,19 +86,81 @@ impl ImportTableScanner {
 mod tests {
     use super::*;
     use crate::lib_mapping::LibraryMapping;
-    use calxgloss_callgraph::FunctionCallGraph;
-    use calxgloss_ghidra::Symbol;
+    use calxgloss_ghidra::{
+        DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
+        StringLiteral, StructLayout, Symbol, Xref,
+    };
 
     struct FakeSource {
         imports: Vec<Symbol>,
     }
 
-    impl ApiSource for FakeSource {
-        async fn imports(&self) -> Result<Vec<Symbol>> {
+    impl ScanSource for FakeSource {
+        async fn functions(&self) -> calxgloss_ghidra::Result<Vec<FunctionSummary>> {
+            Ok(Vec::new())
+        }
+
+        async fn decompile(&self, name: &str) -> calxgloss_ghidra::Result<DecompiledFunction> {
+            Err(GhidraError::NotFound {
+                kind: "function",
+                query: name.to_string(),
+            })
+        }
+
+        async fn strings(&self) -> calxgloss_ghidra::Result<Vec<StringLiteral>> {
+            Ok(Vec::new())
+        }
+
+        async fn callers(&self, _address: u64) -> calxgloss_ghidra::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        async fn xrefs_to(&self, _address: u64) -> calxgloss_ghidra::Result<Vec<Xref>> {
+            Ok(Vec::new())
+        }
+
+        async fn data_types(
+            &self,
+            _category: Option<&str>,
+        ) -> calxgloss_ghidra::Result<Vec<DataTypeEntry>> {
+            Ok(Vec::new())
+        }
+
+        async fn struct_layout(&self, name: &str) -> calxgloss_ghidra::Result<StructLayout> {
+            Err(GhidraError::NotFound {
+                kind: "struct",
+                query: name.to_string(),
+            })
+        }
+
+        async fn enum_values(&self, name: &str) -> calxgloss_ghidra::Result<EnumDefinition> {
+            Err(GhidraError::NotFound {
+                kind: "enum",
+                query: name.to_string(),
+            })
+        }
+
+        async fn data_items(&self) -> calxgloss_ghidra::Result<Vec<DataItem>> {
+            Ok(Vec::new())
+        }
+
+        async fn imports(&self) -> calxgloss_ghidra::Result<Vec<Symbol>> {
             Ok(self.imports.clone())
         }
 
-        async fn call_graph(&self, _binary: &str) -> Result<Vec<FunctionCallGraph>> {
+        async fn exports(&self) -> calxgloss_ghidra::Result<Vec<Symbol>> {
+            Ok(Vec::new())
+        }
+
+        async fn image_base(&self) -> calxgloss_ghidra::Result<u64> {
+            Ok(0)
+        }
+
+        async fn read_memory(
+            &self,
+            _address: u64,
+            _length: usize,
+        ) -> calxgloss_ghidra::Result<Vec<u8>> {
             Ok(Vec::new())
         }
     }

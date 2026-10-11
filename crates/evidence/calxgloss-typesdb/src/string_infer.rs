@@ -12,42 +12,12 @@
 //! literal names. None of this was declared in the program — a candidate is a
 //! hypothesis, and its score says how strongly the evidence supports it.
 
-use crate::error::{Result, TypesDbError};
+use crate::error::Result;
 use crate::types::{Confidence, FieldType, InferredField, InferredStruct, NameOrigin};
-use calxgloss_ghidra::{GhidraClient, GhidraError, StringLiteral, Xref};
+use calxgloss_ghidra::{GhidraClient, GhidraError, ScanSource, StringLiteral};
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use tracing::{debug, info};
-
-/// The string reads an inference run performs.
-///
-/// [`GhidraClient`] implements it directly; tests implement it over canned
-/// responses so the filtering, clustering, and scoring logic runs without a
-/// server. The futures are `Send` so a run can be driven from an
-/// orchestrating task.
-pub trait StringSource {
-    /// Every defined string in the program, optionally regex-filtered,
-    /// collected across pages.
-    fn strings(
-        &self,
-        filter: Option<&str>,
-    ) -> impl std::future::Future<Output = Result<Vec<StringLiteral>>> + Send;
-
-    /// References to `address` — the instructions pointing at a literal, each
-    /// naming its enclosing function.
-    fn xrefs_to(&self, address: u64)
-    -> impl std::future::Future<Output = Result<Vec<Xref>>> + Send;
-}
-
-impl StringSource for GhidraClient {
-    async fn strings(&self, filter: Option<&str>) -> Result<Vec<StringLiteral>> {
-        Ok(self.list_strings(filter).await?)
-    }
-
-    async fn xrefs_to(&self, address: u64) -> Result<Vec<Xref>> {
-        Ok(self.xrefs_to(address, None).await?)
-    }
-}
+use tracing::{debug, info, warn};
 
 // ============================================================
 // Screening limits
@@ -409,10 +379,10 @@ fn score(cluster: &Cluster, origin: NameOrigin, clean_fields: usize, fields: usi
 /// A literal whose cross-references cannot be read simply fails to cluster,
 /// degrading one candidate. Anything else — transport, a reported server
 /// failure — is a broken run, because every later literal would hit it too.
-fn is_reference_miss(error: &TypesDbError) -> bool {
+fn is_reference_miss(error: &GhidraError) -> bool {
     matches!(
         error,
-        TypesDbError::Ghidra(GhidraError::NotFound { .. } | GhidraError::Malformed { .. })
+        GhidraError::NotFound { .. } | GhidraError::Malformed { .. }
     )
 }
 
@@ -422,7 +392,7 @@ fn is_reference_miss(error: &TypesDbError) -> bool {
 
 /// String-guided struct inference over the program's literals.
 ///
-/// The engine is generic over [`StringSource`] so tests can drive it with
+/// The engine is generic over [`ScanSource`] so tests can drive it with
 /// canned responses; [`new`](Self::new) builds one over a live
 /// [`GhidraClient`].
 #[derive(Debug, Clone)]
@@ -455,7 +425,8 @@ impl<S> StringInferenceEngine<S> {
         }
     }
 
-    /// Regex the bridge filters its string listing by.
+    /// Regex the string listing is narrowed by, applied to the listing after
+    /// it is read.
     pub fn with_string_filter(mut self, pattern: impl Into<String>) -> Self {
         self.filter = Some(pattern.into());
         self
@@ -490,7 +461,7 @@ impl<S> StringInferenceEngine<S> {
     /// evidence first.
     pub async fn infer_structures(&self) -> Result<Vec<InferredStruct>>
     where
-        S: StringSource,
+        S: ScanSource,
     {
         let shapes = Shapes::new();
         let literals = self.collect_literals(&shapes).await?;
@@ -528,9 +499,9 @@ impl<S> StringInferenceEngine<S> {
     /// stays bounded on a binary holding tens of thousands of literals.
     async fn collect_literals(&self, shapes: &Shapes) -> Result<Vec<StringLiteral>>
     where
-        S: StringSource,
+        S: ScanSource,
     {
-        let listing = self.source.strings(self.filter.as_deref()).await?;
+        let listing = self.apply_string_filter(self.source.strings().await?);
         let mut by_value: BTreeMap<String, StringLiteral> = BTreeMap::new();
         for literal in listing {
             if !is_useful_literal(&literal.value, shapes) {
@@ -551,13 +522,36 @@ impl<S> StringInferenceEngine<S> {
         Ok(literals)
     }
 
+    /// Narrow the listing by the configured regex, as the bridge's `filter`
+    /// parameter once did. A pattern that does not compile is warned about
+    /// and the listing passes through unfiltered.
+    fn apply_string_filter(&self, listing: Vec<StringLiteral>) -> Vec<StringLiteral> {
+        let Some(pattern) = &self.filter else {
+            return listing;
+        };
+        match Regex::new(pattern) {
+            Ok(re) => listing
+                .into_iter()
+                .filter(|literal| re.is_match(&literal.value))
+                .collect(),
+            Err(e) => {
+                warn!(
+                    pattern,
+                    error = %e,
+                    "String filter is not a valid regex; scanning unfiltered"
+                );
+                listing
+            }
+        }
+    }
+
     /// One cross-reference read per literal, then the grouping.
     ///
     /// A literal whose references cannot be read is dropped from clustering;
     /// a server failure aborts the run.
     async fn cluster(&self, literals: &[StringLiteral]) -> Result<Vec<Cluster>>
     where
-        S: StringSource,
+        S: ScanSource,
     {
         let mut referrers: Vec<BTreeSet<String>> = Vec::with_capacity(literals.len());
         for literal in literals {
@@ -570,7 +564,7 @@ impl<S> StringInferenceEngine<S> {
                     );
                     Vec::new()
                 }
-                Err(e) => return Err(e),
+                Err(e) => return Err(e.into()),
             };
             referrers.push(xrefs.into_iter().filter_map(|x| x.function).collect());
         }
@@ -643,6 +637,11 @@ impl<S> StringInferenceEngine<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::TypesDbError;
+    use calxgloss_ghidra::{
+        DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary,
+        Result as GhidraResult, StructLayout, Symbol, Xref,
+    };
     use std::sync::Mutex;
 
     fn literal(value: &str, address: u64) -> StringLiteral {
@@ -662,14 +661,13 @@ mod tests {
     }
 
     /// A source over canned listings and cross-references, recording every
-    /// listing filter and every address whose references were fetched.
+    /// address whose references were fetched.
     struct MockSource {
         literals: Vec<StringLiteral>,
         xrefs: HashMap<u64, Vec<Xref>>,
         unreadable: Vec<u64>,
         busy: Vec<u64>,
         listing_failure: bool,
-        filters: Mutex<Vec<Option<String>>>,
         reads: Mutex<Vec<u64>>,
     }
 
@@ -681,7 +679,6 @@ mod tests {
                 unreadable: Vec::new(),
                 busy: Vec::new(),
                 listing_failure: false,
-                filters: Mutex::new(Vec::new()),
                 reads: Mutex::new(Vec::new()),
             }
         }
@@ -706,48 +703,93 @@ mod tests {
             self.busy.push(address);
         }
 
-        fn filter_log(&self) -> Vec<Option<String>> {
-            self.filters.lock().unwrap().clone()
-        }
-
         fn read_log(&self) -> Vec<u64> {
             self.reads.lock().unwrap().clone()
         }
     }
 
-    impl StringSource for MockSource {
-        async fn strings(&self, filter: Option<&str>) -> Result<Vec<StringLiteral>> {
-            self.filters
-                .lock()
-                .unwrap()
-                .push(filter.map(str::to_string));
+    impl ScanSource for MockSource {
+        async fn strings(&self) -> GhidraResult<Vec<StringLiteral>> {
             if self.listing_failure {
                 return Err(GhidraError::Reported {
                     status: Some(200),
                     message: "Ghidra is busy".into(),
-                }
-                .into());
+                });
             }
             Ok(self.literals.clone())
         }
 
-        async fn xrefs_to(&self, address: u64) -> Result<Vec<Xref>> {
+        async fn xrefs_to(&self, address: u64) -> GhidraResult<Vec<Xref>> {
             self.reads.lock().unwrap().push(address);
             if self.busy.contains(&address) {
                 return Err(GhidraError::Reported {
                     status: Some(200),
                     message: "Ghidra is busy".into(),
-                }
-                .into());
+                });
             }
             if self.unreadable.contains(&address) {
                 return Err(GhidraError::NotFound {
                     kind: "cross-references",
                     query: format!("{address:x}"),
-                }
-                .into());
+                });
             }
             Ok(self.xrefs.get(&address).cloned().unwrap_or_default())
+        }
+
+        async fn functions(&self) -> GhidraResult<Vec<FunctionSummary>> {
+            Ok(Vec::new())
+        }
+
+        async fn decompile(&self, name: &str) -> GhidraResult<DecompiledFunction> {
+            Err(GhidraError::NotFound {
+                kind: "function",
+                query: name.to_string(),
+            })
+        }
+
+        async fn callers(&self, _address: u64) -> GhidraResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        async fn data_types(&self, _category: Option<&str>) -> GhidraResult<Vec<DataTypeEntry>> {
+            Ok(Vec::new())
+        }
+
+        async fn struct_layout(&self, name: &str) -> GhidraResult<StructLayout> {
+            Err(GhidraError::NotFound {
+                kind: "structure",
+                query: name.to_string(),
+            })
+        }
+
+        async fn enum_values(&self, name: &str) -> GhidraResult<EnumDefinition> {
+            Err(GhidraError::NotFound {
+                kind: "enumeration",
+                query: name.to_string(),
+            })
+        }
+
+        async fn data_items(&self) -> GhidraResult<Vec<DataItem>> {
+            Ok(Vec::new())
+        }
+
+        async fn imports(&self) -> GhidraResult<Vec<Symbol>> {
+            Ok(Vec::new())
+        }
+
+        async fn exports(&self) -> GhidraResult<Vec<Symbol>> {
+            Ok(Vec::new())
+        }
+
+        async fn image_base(&self) -> GhidraResult<u64> {
+            Ok(0)
+        }
+
+        async fn read_memory(&self, address: u64, _length: usize) -> GhidraResult<Vec<u8>> {
+            Err(GhidraError::NotFound {
+                kind: "memory",
+                query: format!("{address:x}"),
+            })
         }
     }
 
@@ -1045,11 +1087,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_string_filter_reaches_the_listing() {
+    async fn the_string_filter_narrows_the_listing() {
         let engine = engine_over(flow_fixture()).with_string_filter("flow");
         let candidates = engine.infer_structures().await.unwrap();
-        assert_eq!(engine.source.filter_log(), vec![Some("flow".to_string())]);
-        assert!(!candidates.is_empty());
+        // Only `startupflow`, `flowname`, and `nextflow` match, so the one
+        // candidate carries exactly those three fields and only their three
+        // literals get their references fetched.
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].fields.len(), 3);
+        assert_eq!(engine.source.read_log().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn an_invalid_string_filter_scans_unfiltered() {
+        let engine = engine_over(flow_fixture()).with_string_filter("[");
+        let candidates = engine.infer_structures().await.unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].fields.len(), 8);
     }
 
     #[tokio::test]

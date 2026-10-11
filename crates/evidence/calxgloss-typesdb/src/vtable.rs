@@ -11,35 +11,18 @@
 //! QueryInterface/AddRef/Release pattern, and tags the methods of confirmed
 //! vtables with `add_function_tag`.
 
-use crate::error::{Result, TypesDbError};
+use crate::error::Result;
 use crate::types::{Vtable, VtableMethod};
-use calxgloss_ghidra::{DataItem, FunctionSummary, GhidraClient, GhidraError};
+use calxgloss_ghidra::{DataItem, GhidraClient, GhidraError, ScanSource};
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, info, warn};
 
-/// The reads a vtable scan performs.
+/// The one write a vtable scan performs.
 ///
-/// [`GhidraClient`] implements it directly; tests implement it over canned
-/// responses so the detection, RTTI-walking, and degradation logic runs
-/// without a server. The futures are `Send` so a scan can be driven from an
-/// orchestrating task.
-pub trait VtableSource {
-    /// Every defined data object in the listing, collected across pages.
-    fn data_items(&self) -> impl std::future::Future<Output = Result<Vec<DataItem>>> + Send;
-
-    /// Every function in the program, for naming method pointers.
-    fn functions(&self) -> impl std::future::Future<Output = Result<Vec<FunctionSummary>>> + Send;
-
-    /// The base address the program is loaded at, for resolving RTTI RVAs.
-    fn image_base(&self) -> impl std::future::Future<Output = Result<u64>> + Send;
-
-    /// The raw bytes at `address`.
-    fn read_memory(
-        &self,
-        address: u64,
-        length: usize,
-    ) -> impl std::future::Future<Output = Result<Vec<u8>>> + Send;
-
+/// Deliberately separate from [`ScanSource`]: the shared seam is read-only,
+/// and the planned read cache never answers a write. [`GhidraClient`]
+/// implements it directly; tests record the tags they are given.
+pub trait TagSink {
     /// Attach `tag` to the function at `address`.
     fn add_function_tag(
         &self,
@@ -48,23 +31,7 @@ pub trait VtableSource {
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 }
 
-impl VtableSource for GhidraClient {
-    async fn data_items(&self) -> Result<Vec<DataItem>> {
-        Ok(self.list_data_items().await?)
-    }
-
-    async fn functions(&self) -> Result<Vec<FunctionSummary>> {
-        Ok(self.list_functions().await?)
-    }
-
-    async fn image_base(&self) -> Result<u64> {
-        Ok(self.image_base().await?)
-    }
-
-    async fn read_memory(&self, address: u64, length: usize) -> Result<Vec<u8>> {
-        Ok(self.read_memory(address, length).await?)
-    }
-
+impl TagSink for GhidraClient {
     async fn add_function_tag(&self, address: u64, tag: &str) -> Result<()> {
         Ok(self.add_function_tag(&format!("{address:x}"), tag).await?)
     }
@@ -199,10 +166,10 @@ fn looks_like_com_interface(methods: &[VtableMethod]) -> bool {
 /// A bad RTTI pointer produces `NotFound`/`Malformed` refusals from
 /// `read_memory`, which degrade one vtable's class information. Anything
 /// else — transport, a reported server failure — is a broken scan.
-fn is_read_miss(error: &TypesDbError) -> bool {
+fn is_read_miss(error: &GhidraError) -> bool {
     matches!(
         error,
-        TypesDbError::Ghidra(GhidraError::NotFound { .. } | GhidraError::Malformed { .. })
+        GhidraError::NotFound { .. } | GhidraError::Malformed { .. }
     )
 }
 
@@ -219,7 +186,7 @@ struct Rtti {
 
 /// Vtable detection over the program's defined data.
 ///
-/// The detector is generic over [`VtableSource`] so tests can drive it with
+/// The detector is generic over [`ScanSource`] and [`TagSink`] so tests can drive it with
 /// canned responses; [`new`](Self::new) builds one over a live
 /// [`GhidraClient`].
 #[derive(Debug, Clone)]
@@ -275,7 +242,7 @@ impl<S> VtableDetector<S> {
     /// whole scan, because every later table would hit it too.
     pub async fn detect_vtables(&self) -> Result<Vec<Vtable>>
     where
-        S: VtableSource,
+        S: ScanSource + TagSink,
     {
         let items = self.source.data_items().await?;
         let candidates: Vec<&DataItem> = items.iter().filter(|i| is_vtable_candidate(i)).collect();
@@ -357,7 +324,7 @@ impl<S> VtableDetector<S> {
         names: &HashMap<u64, String>,
     ) -> Result<Vec<VtableMethod>>
     where
-        S: VtableSource,
+        S: ScanSource,
     {
         let bytes = match self
             .source
@@ -372,7 +339,7 @@ impl<S> VtableDetector<S> {
                 );
                 return Ok(Vec::new());
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(e.into()),
         };
         Ok(bytes
             .chunks_exact(element)
@@ -393,12 +360,12 @@ impl<S> VtableDetector<S> {
     /// one vtable that followed it.
     async fn probe_read(&self, address: u64, length: usize) -> Result<Option<Vec<u8>>>
     where
-        S: VtableSource,
+        S: ScanSource,
     {
         match self.source.read_memory(address, length).await {
             Ok(bytes) => Ok(Some(bytes)),
             Err(miss) if is_read_miss(&miss) => Ok(None),
-            Err(e) => Err(e),
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -407,7 +374,7 @@ impl<S> VtableDetector<S> {
     /// bases). Every step degrades to what the earlier steps established.
     async fn read_rtti(&self, meta: &DataItem, image_base: u64) -> Result<Rtti>
     where
-        S: VtableSource,
+        S: ScanSource,
     {
         let mut rtti = Rtti::default();
         let Some(col_address) = self
@@ -435,7 +402,7 @@ impl<S> VtableDetector<S> {
     /// The base classes listed by a ClassHierarchyDescriptor.
     async fn read_base_classes(&self, chd: u64, image_base: u64) -> Result<Vec<String>>
     where
-        S: VtableSource,
+        S: ScanSource,
     {
         let Some(header) = self.probe_read(chd, CHD_SIZE).await? else {
             return Ok(Vec::new());
@@ -474,7 +441,7 @@ impl<S> VtableDetector<S> {
     /// not an MSVC class or structure descriptor.
     async fn read_type_descriptor(&self, address: u64) -> Result<Option<String>>
     where
-        S: VtableSource,
+        S: ScanSource,
     {
         let header = td_header(self.pointer_size);
         let Some(bytes) = self.probe_read(address, header + TD_NAME_LEN).await? else {
@@ -497,7 +464,7 @@ impl<S> VtableDetector<S> {
     /// Each function is tagged once however many vtables dispatch to it.
     async fn tag_methods(&self, methods: &[VtableMethod], tag: &str, tagged: &mut HashSet<u64>)
     where
-        S: VtableSource,
+        S: TagSink,
     {
         for method in methods.iter().filter(|m| m.name.is_some()) {
             if !tagged.insert(method.address) {
@@ -546,6 +513,11 @@ fn meta_pointer<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::TypesDbError;
+    use calxgloss_ghidra::{
+        DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, Result as GhidraResult,
+        StringLiteral, StructLayout, Xref,
+    };
     use std::sync::Mutex;
 
     fn le32(value: u32) -> Vec<u8> {
@@ -582,23 +554,20 @@ mod tests {
         Busy,
     }
 
-    fn failure(error: u64, kind: Failure) -> TypesDbError {
+    fn failure(error: u64, kind: Failure) -> GhidraError {
         match kind {
             Failure::Unreadable => GhidraError::NotFound {
                 kind: "memory",
                 query: format!("{error:x}"),
-            }
-            .into(),
+            },
             Failure::Garbage => GhidraError::Malformed {
                 kind: "memory bytes",
                 detail: "not a byte list".into(),
-            }
-            .into(),
+            },
             Failure::Busy => GhidraError::Reported {
                 status: Some(200),
                 message: "Ghidra is busy".into(),
-            }
-            .into(),
+            },
         }
     }
 
@@ -653,36 +622,83 @@ mod tests {
         }
     }
 
-    impl VtableSource for MockSource {
-        async fn data_items(&self) -> Result<Vec<DataItem>> {
+    impl ScanSource for MockSource {
+        async fn data_items(&self) -> GhidraResult<Vec<DataItem>> {
             match self.listing_failure {
                 Some(kind) => Err(failure(0, kind)),
                 None => Ok(self.items.clone()),
             }
         }
 
-        async fn functions(&self) -> Result<Vec<FunctionSummary>> {
+        async fn functions(&self) -> GhidraResult<Vec<FunctionSummary>> {
             Ok(self.functions.clone())
         }
 
-        async fn image_base(&self) -> Result<u64> {
+        async fn image_base(&self) -> GhidraResult<u64> {
             Ok(self.image_base)
         }
 
-        async fn read_memory(&self, address: u64, _length: usize) -> Result<Vec<u8>> {
+        async fn read_memory(&self, address: u64, _length: usize) -> GhidraResult<Vec<u8>> {
             self.reads.lock().unwrap().push(address);
             if let Some(kind) = self.failures.get(&address) {
                 return Err(failure(address, *kind));
             }
-            self.memory.get(&address).cloned().ok_or_else(|| {
-                GhidraError::NotFound {
+            self.memory
+                .get(&address)
+                .cloned()
+                .ok_or_else(|| GhidraError::NotFound {
                     kind: "memory",
                     query: format!("{address:x}"),
-                }
-                .into()
+                })
+        }
+
+        async fn decompile(&self, name: &str) -> GhidraResult<DecompiledFunction> {
+            Err(GhidraError::NotFound {
+                kind: "function",
+                query: name.to_string(),
             })
         }
 
+        async fn strings(&self) -> GhidraResult<Vec<StringLiteral>> {
+            Ok(Vec::new())
+        }
+
+        async fn callers(&self, _address: u64) -> GhidraResult<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        async fn xrefs_to(&self, _address: u64) -> GhidraResult<Vec<Xref>> {
+            Ok(Vec::new())
+        }
+
+        async fn data_types(&self, _category: Option<&str>) -> GhidraResult<Vec<DataTypeEntry>> {
+            Ok(Vec::new())
+        }
+
+        async fn struct_layout(&self, _name: &str) -> GhidraResult<StructLayout> {
+            Err(GhidraError::NotFound {
+                kind: "structure",
+                query: _name.to_string(),
+            })
+        }
+
+        async fn enum_values(&self, _name: &str) -> GhidraResult<EnumDefinition> {
+            Err(GhidraError::NotFound {
+                kind: "enumeration",
+                query: _name.to_string(),
+            })
+        }
+
+        async fn imports(&self) -> GhidraResult<Vec<calxgloss_ghidra::Symbol>> {
+            Ok(Vec::new())
+        }
+
+        async fn exports(&self) -> GhidraResult<Vec<calxgloss_ghidra::Symbol>> {
+            Ok(Vec::new())
+        }
+    }
+
+    impl TagSink for MockSource {
         async fn add_function_tag(&self, address: u64, tag: &str) -> Result<()> {
             self.tags.lock().unwrap().push((address, tag.to_string()));
             Ok(())

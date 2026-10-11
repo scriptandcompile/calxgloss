@@ -29,9 +29,10 @@
 //!   walks the built call graph and records the APIs each function
 //!   reaches directly or transitively, with the call path as evidence.
 //! - [`engine`] - Scan orchestration: `ApiEngine` runs both detectors
-//!   over one open Ghidra program through an `ApiSource` (import listing
-//!   and a built call graph), one sequential pass that keeps the findings
-//!   in scan order.
+//!   over one open Ghidra program through the shared `ScanSource` trait
+//!   (for the import listing) plus a `CallGraphSource` (for the built
+//!   call graph), one sequential pass that keeps the findings in scan
+//!   order.
 //! - [`persist`] - JSON persistence: `ApiPersistor` saves and loads the
 //!   per-binary detection results under `re/analysis/apidetect/`.
 //! - [`error`] - [`ApiError`] and the crate-wide [`Result`] alias.

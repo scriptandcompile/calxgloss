@@ -18,8 +18,8 @@
 //! - [`engine`] - Scan orchestration: `TypeInferEngine` decompiles each
 //!   function of a program exactly once, reads it with all three detectors,
 //!   and assembles their records into one `TypeInferenceResult`;
-//!   `DecompileSource` abstracts the decompiler reads so tests run the
-//!   orchestration over canned bodies.
+//!   the shared `ScanSource` trait abstracts the decompiler reads so tests
+//!   run the orchestration over canned bodies.
 //! - [`this_ptr`] - C++ this-pointer detection: `ThisPointerDetector`
 //!   parses decompiled output for `vtable[index]` call patterns and
 //!   first-parameter usage, extracts class names from vtable function

@@ -248,7 +248,10 @@ pub use calxgloss_serialize::types::{
 
 // The crate's `ScanMetadata` is deliberately not re-exported:
 // `calxgloss-types::scan::ScanMetadata` already owns that name here.
-pub use calxgloss_typeinfer::engine::{DecompileSource, TypeInferEngine};
+// Its `ScanSource` re-export is deliberately not re-exported either: the
+// shared trait already stands here under that name, from
+// `calxgloss_algorithm::engine`.
+pub use calxgloss_typeinfer::engine::TypeInferEngine;
 pub use calxgloss_typeinfer::error::{Result as TypeInferResult, TypeInferError};
 pub use calxgloss_typeinfer::known_type::{
     ExtractedCall, KNOWN_SIGNATURES, KnownSignature, KnownTypePropagationEngine, SignatureArg,

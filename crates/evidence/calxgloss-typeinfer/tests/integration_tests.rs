@@ -12,15 +12,17 @@
 //! - **Cache behavior** — the `exists` check decides whether a scan runs,
 //!   and a rescan replaces the cached document.
 //!
-//! The fake program implements [`DecompileSource`], so the whole flow runs
+//! The fake program implements [`ScanSource`], so the whole flow runs
 //! without a Ghidra server.
 
 use std::collections::HashMap;
 
-use calxgloss_ghidra::{DecompiledFunction, FunctionSummary};
+use calxgloss_ghidra::{
+    DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
+    Result, StringLiteral, StructLayout, Symbol, Xref,
+};
 use calxgloss_prompts::TypeInfo;
-use calxgloss_typeinfer::Result;
-use calxgloss_typeinfer::engine::{DecompileSource, TypeInferEngine};
+use calxgloss_typeinfer::engine::{ScanSource, TypeInferEngine};
 use calxgloss_typeinfer::persist::TypeInferPersistor;
 use calxgloss_typeinfer::types::{InferenceMethod, InferenceScope, InferredType};
 use tempfile::TempDir;
@@ -44,7 +46,7 @@ fn function(name: &str, signature: &str, body: &str) -> DecompiledFunction {
     }
 }
 
-/// A canned program implementing [`DecompileSource`]: one function whose
+/// A canned program implementing [`ScanSource`]: one function whose
 /// body carries a vtable dispatch, a `strlen` call, and a `CloseHandle`
 /// call — one reading family per detector — and one plain function that
 /// infers nothing.
@@ -60,19 +62,71 @@ impl FakeProgram {
     }
 }
 
-impl DecompileSource for FakeProgram {
+impl ScanSource for FakeProgram {
     async fn functions(&self) -> Result<Vec<FunctionSummary>> {
         Ok(self.listing.clone())
     }
 
     async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
-        self.bodies.get(name).cloned().ok_or_else(|| {
-            calxgloss_ghidra::GhidraError::NotFound {
+        self.bodies
+            .get(name)
+            .cloned()
+            .ok_or_else(|| GhidraError::NotFound {
                 kind: "function",
                 query: name.to_string(),
-            }
-            .into()
+            })
+    }
+
+    // The rest of the shared trait's reads: these tests never make
+    // them, so they answer with empty or not-found data.
+    async fn strings(&self) -> Result<Vec<StringLiteral>> {
+        Ok(Vec::new())
+    }
+
+    async fn callers(&self, _address: u64) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    async fn xrefs_to(&self, _address: u64) -> Result<Vec<Xref>> {
+        Ok(Vec::new())
+    }
+
+    async fn data_types(&self, _category: Option<&str>) -> Result<Vec<DataTypeEntry>> {
+        Ok(Vec::new())
+    }
+
+    async fn struct_layout(&self, name: &str) -> Result<StructLayout> {
+        Err(GhidraError::NotFound {
+            kind: "struct",
+            query: name.to_string(),
         })
+    }
+
+    async fn enum_values(&self, name: &str) -> Result<EnumDefinition> {
+        Err(GhidraError::NotFound {
+            kind: "enum",
+            query: name.to_string(),
+        })
+    }
+
+    async fn data_items(&self) -> Result<Vec<DataItem>> {
+        Ok(Vec::new())
+    }
+
+    async fn imports(&self) -> Result<Vec<Symbol>> {
+        Ok(Vec::new())
+    }
+
+    async fn exports(&self) -> Result<Vec<Symbol>> {
+        Ok(Vec::new())
+    }
+
+    async fn image_base(&self) -> Result<u64> {
+        Ok(0)
+    }
+
+    async fn read_memory(&self, _address: u64, _length: usize) -> Result<Vec<u8>> {
+        Ok(Vec::new())
     }
 }
 

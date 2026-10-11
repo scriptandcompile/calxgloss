@@ -12,22 +12,21 @@
 //! - **Cache behavior** — the `exists` check decides whether a scan runs, and
 //!   a rescan replaces the cached document.
 //!
-//! The fake program implements the three source traits, so the whole flow
-//! runs without a Ghidra server; `tests/live.rs` covers the real bridge.
+//! The fake program implements the shared `ScanSource` seam and the vtable
+//! scan's `TagSink`, so the whole flow runs without a Ghidra server;
+//! `tests/live.rs` covers the real bridge.
 
 use std::collections::HashMap;
 
 use calxgloss_ghidra::{
-    DataItem, DataTypeEntry, EnumDefinition, FunctionSummary, GhidraError, StringLiteral,
-    StructFieldLayout, StructLayout, Xref,
+    DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
+    StringLiteral, StructFieldLayout, StructLayout, Symbol, Xref,
 };
 use calxgloss_prompts::StructuredData;
-use calxgloss_typesdb::engine::TypesDBEngine;
+use calxgloss_typesdb::engine::{ScanSource, TypesDBEngine};
 use calxgloss_typesdb::persist::TypeDatabasePersistor;
-use calxgloss_typesdb::scanner::TypeLibrarySource;
-use calxgloss_typesdb::string_infer::StringSource;
 use calxgloss_typesdb::types::{TypeDatabase, TypeKind};
-use calxgloss_typesdb::vtable::VtableSource;
+use calxgloss_typesdb::vtable::TagSink;
 use tempfile::TempDir;
 
 // ------------------------------------------------------------
@@ -76,9 +75,10 @@ fn type_descriptor(name: &str) -> Vec<u8> {
     bytes
 }
 
-/// A canned program implementing all three source traits: one PE struct and
-/// one enum in the Type Manager, one RTTI-confirmed vtable with two methods,
-/// and a two-literal cluster that infers to a `Player` candidate.
+/// A canned program implementing [`ScanSource`] and [`TagSink`]: one PE
+/// struct and one enum in the Type Manager, one RTTI-confirmed vtable with
+/// two methods, and a two-literal cluster that infers to a `Player`
+/// candidate.
 #[derive(Clone)]
 struct FakeProgram {
     listing: Vec<DataTypeEntry>,
@@ -220,11 +220,11 @@ impl FakeProgram {
     }
 }
 
-impl TypeLibrarySource for FakeProgram {
-    async fn list_types(
+impl ScanSource for FakeProgram {
+    async fn data_types(
         &self,
         category: Option<&str>,
-    ) -> calxgloss_typesdb::Result<Vec<DataTypeEntry>> {
+    ) -> calxgloss_ghidra::Result<Vec<DataTypeEntry>> {
         match category {
             None => Ok(self.listing.clone()),
             Some(word) if self.buckets.contains_key(word) => Ok(self.buckets[word].clone()),
@@ -237,69 +237,79 @@ impl TypeLibrarySource for FakeProgram {
         }
     }
 
-    async fn struct_layout(&self, name: &str) -> calxgloss_typesdb::Result<StructLayout> {
-        self.layouts.get(name).cloned().ok_or_else(|| {
-            GhidraError::NotFound {
+    async fn struct_layout(&self, name: &str) -> calxgloss_ghidra::Result<StructLayout> {
+        self.layouts
+            .get(name)
+            .cloned()
+            .ok_or_else(|| GhidraError::NotFound {
                 kind: "structure",
                 query: name.to_string(),
-            }
-            .into()
-        })
+            })
     }
 
-    async fn enum_values(&self, name: &str) -> calxgloss_typesdb::Result<EnumDefinition> {
-        self.enums.get(name).cloned().ok_or_else(|| {
-            GhidraError::NotFound {
+    async fn enum_values(&self, name: &str) -> calxgloss_ghidra::Result<EnumDefinition> {
+        self.enums
+            .get(name)
+            .cloned()
+            .ok_or_else(|| GhidraError::NotFound {
                 kind: "enumeration",
                 query: name.to_string(),
-            }
-            .into()
-        })
+            })
     }
-}
 
-impl VtableSource for FakeProgram {
-    async fn data_items(&self) -> calxgloss_typesdb::Result<Vec<DataItem>> {
+    async fn data_items(&self) -> calxgloss_ghidra::Result<Vec<DataItem>> {
         Ok(self.items.clone())
     }
 
-    async fn functions(&self) -> calxgloss_typesdb::Result<Vec<FunctionSummary>> {
+    async fn functions(&self) -> calxgloss_ghidra::Result<Vec<FunctionSummary>> {
         Ok(self.functions.clone())
     }
 
-    async fn image_base(&self) -> calxgloss_typesdb::Result<u64> {
+    async fn image_base(&self) -> calxgloss_ghidra::Result<u64> {
         Ok(self.image_base)
     }
 
-    async fn read_memory(
-        &self,
-        address: u64,
-        _length: usize,
-    ) -> calxgloss_typesdb::Result<Vec<u8>> {
-        self.memory.get(&address).cloned().ok_or_else(|| {
-            GhidraError::NotFound {
+    async fn read_memory(&self, address: u64, _length: usize) -> calxgloss_ghidra::Result<Vec<u8>> {
+        self.memory
+            .get(&address)
+            .cloned()
+            .ok_or_else(|| GhidraError::NotFound {
                 kind: "memory",
                 query: format!("{address:x}"),
-            }
-            .into()
-        })
+            })
     }
 
-    async fn add_function_tag(&self, _address: u64, _tag: &str) -> calxgloss_typesdb::Result<()> {
-        Ok(())
-    }
-}
-
-impl StringSource for FakeProgram {
-    async fn strings(
-        &self,
-        _filter: Option<&str>,
-    ) -> calxgloss_typesdb::Result<Vec<StringLiteral>> {
+    async fn strings(&self) -> calxgloss_ghidra::Result<Vec<StringLiteral>> {
         Ok(self.literals.clone())
     }
 
-    async fn xrefs_to(&self, address: u64) -> calxgloss_typesdb::Result<Vec<Xref>> {
+    async fn xrefs_to(&self, address: u64) -> calxgloss_ghidra::Result<Vec<Xref>> {
         Ok(self.xrefs.get(&address).cloned().unwrap_or_default())
+    }
+
+    async fn decompile(&self, name: &str) -> calxgloss_ghidra::Result<DecompiledFunction> {
+        Err(GhidraError::NotFound {
+            kind: "function",
+            query: name.to_string(),
+        })
+    }
+
+    async fn callers(&self, _address: u64) -> calxgloss_ghidra::Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    async fn imports(&self) -> calxgloss_ghidra::Result<Vec<Symbol>> {
+        Ok(Vec::new())
+    }
+
+    async fn exports(&self) -> calxgloss_ghidra::Result<Vec<Symbol>> {
+        Ok(Vec::new())
+    }
+}
+
+impl TagSink for FakeProgram {
+    async fn add_function_tag(&self, _address: u64, _tag: &str) -> calxgloss_typesdb::Result<()> {
+        Ok(())
     }
 }
 
