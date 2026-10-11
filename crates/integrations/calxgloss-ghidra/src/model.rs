@@ -13,7 +13,7 @@ use std::fmt;
 /// Two endpoints render the same pair in different separators, so both are
 /// accepted: `/list_functions` writes `name at addr` while `/search_functions`
 /// writes `name @ addr`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FunctionSummary {
     /// The Ghidra function name, e.g. `FUN_18008ed50`.
     pub name: String,
@@ -51,7 +51,7 @@ impl FunctionBody {
 }
 
 /// A cross-reference between two addresses.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Xref {
     /// The address the reference runs between.
     pub address: u64,
@@ -77,7 +77,7 @@ impl Xref {
 }
 
 /// A named program symbol — an export, an import, or a plain symbol.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Symbol {
     /// The symbol name. Import-only names arrive as `Ordinal_N` when the
     /// module imports by ordinal, which carries no name to recover.
@@ -120,7 +120,7 @@ impl Segment {
 }
 
 /// A defined string literal and where it lives.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StringLiteral {
     /// Address of the string.
     pub address: u64,
@@ -150,7 +150,7 @@ pub struct OpenProgram {
 /// reports real parameter types. The `Signature:` line of
 /// `get_function_by_address` reads `undefined name(void)` for a function that
 /// actually takes arguments, so it cannot be used to recover one.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DecompiledFunction {
     /// The function's Ghidra name.
     pub name: String,
@@ -230,7 +230,7 @@ impl FunctionReport {
 /// The Type Manager holds every type Ghidra knows about — including types
 /// never applied to a symbol — which is what makes this listing the source
 /// for named-type recovery.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DataTypeEntry {
     /// The type name, e.g. `_EXCEPTION_DISPOSITION`. Pointer variants arrive
     /// as separate entries (`name *`).
@@ -244,7 +244,7 @@ pub struct DataTypeEntry {
 }
 
 /// A defined data object in the listing, as `/list_data_items` renders it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DataItem {
     /// The label Ghidra shows, e.g. `IMAGE_DOS_HEADER_180000000`, or a
     /// generated `DAT_...` name when the object carries no label.
@@ -273,7 +273,7 @@ impl fmt::Display for DataItem {
 /// `calxgloss-typesdb`'s `StructField`; the two stay deliberately split (wire
 /// vs. persisted ownership) and are mapped by its `From<&StructFieldLayout>`
 /// impl — the only place the shapes meet.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StructFieldLayout {
     /// Byte offset of the field from the start of the structure.
     pub offset: u64,
@@ -286,7 +286,7 @@ pub struct StructFieldLayout {
 }
 
 /// A structure's full field layout, as `/get_struct_layout` renders it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StructLayout {
     /// The structure name.
     pub name: String,
@@ -303,7 +303,7 @@ pub struct StructLayout {
 /// Wire shape for `/get_enum_values` only. The persisted recovered shape is
 /// `calxgloss-typesdb`'s `EnumMember`; the records are identical but stay
 /// split on purpose, mapped by its `From<&EnumMember>` impl.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EnumMember {
     /// Member name, e.g. `ExceptionContinueExecution`.
     pub name: String,
@@ -312,7 +312,7 @@ pub struct EnumMember {
 }
 
 /// An enumeration and its members, as `/get_enum_values` renders it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EnumDefinition {
     /// The enumeration name.
     pub name: String,

@@ -26,15 +26,17 @@
 //!
 //! On top of the raw client, [`ScanSource`] is the shared read-only seam the
 //! evidence engines pull their program facts through; [`GhidraClient`]
-//! implements it, and the planned read cache will implement it once for all
-//! of them.
+//! implements it, and [`CachedGhidraSource`] implements it once more as the
+//! two-tier read cache every engine will read through.
 
+mod cache;
 mod client;
 mod error;
 mod model;
 pub mod parse;
 mod scan_source;
 
+pub use cache::CachedGhidraSource;
 pub use client::{GhidraClient, GhidraConfig, GhidraError, ProgramInfo, Result, rva_from_va};
 pub use error::Classification;
 pub use model::{

@@ -34,9 +34,10 @@ use crate::model::{
 
 /// The read-only program facts every evidence engine pulls from Ghidra.
 ///
-/// [`GhidraClient`] implements it over the live HTTP API; tests and the
-/// planned read cache implement it over canned or memoized data. The futures
-/// are `Send` so a scan can be driven from an orchestrating task.
+/// [`GhidraClient`] implements it over the live HTTP API and
+/// [`CachedGhidraSource`](crate::CachedGhidraSource) implements it as the
+/// read cache; tests implement it over canned data. The futures are `Send`
+/// so a scan can be driven from an orchestrating task.
 pub trait ScanSource {
     /// Every function in the program, in listing order.
     fn functions(&self) -> impl std::future::Future<Output = Result<Vec<FunctionSummary>>> + Send;
