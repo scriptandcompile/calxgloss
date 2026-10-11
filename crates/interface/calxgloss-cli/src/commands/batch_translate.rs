@@ -149,6 +149,9 @@ pub async fn handle_batch_translate(
         pipeline = pipeline.with_callgraph_verbose();
     }
     pipeline = pipeline.with_workspace(&workspace);
+    // The batch's shared Ghidra read cache keys on the target binary's
+    // file bytes (issue #105) — hand the pipeline the file it was given.
+    pipeline = pipeline.with_binary_path(target);
 
     // Git setup
     let mut git = if !skip_git {

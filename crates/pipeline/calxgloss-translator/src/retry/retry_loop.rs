@@ -10,7 +10,6 @@ use crate::retry::{
     build_test_fix_prompt, log_prompt_variant_experiment, log_token_usage,
 };
 use calxgloss_analysis::FaultLogger;
-use calxgloss_ghidra::GhidraClient;
 use calxgloss_llm::{
     LlmClient, LlmError, LlmMessage,
     behavior_divergence::{BehaviorDivergenceDetector, EdgeCaseTest as DetEdgeCaseTest},
@@ -34,8 +33,9 @@ pub struct RetryLoopCtx<'a> {
     pub verifier: &'a Verifier,
     /// LLM client for sending fix prompts.
     pub llm: &'a LlmClient,
-    /// Ghidra client, used for context extraction during escalation.
-    pub ghidra: &'a GhidraClient,
+    /// Scan source, used for context extraction during escalation — the
+    /// batch's shared source (live client or read cache).
+    pub source: &'a calxgloss_ghidra::PipelineSource,
     /// Retry configuration.
     pub config: &'a RetryConfig,
     /// Optional workspace path for experiment logging.
@@ -250,7 +250,7 @@ pub async fn try_translate_with_retry(
             let escalated_prompt = match build_escalated_prompt(
                 &initial_translation,
                 current_tier,
-                ctx.ghidra,
+                ctx.source,
                 ctx.workspace,
             )
             .await
@@ -809,7 +809,7 @@ pub async fn try_translate_with_retry(
                     dll_name: binary.to_string(),
                     original_rust_code: initial_translation.rust_code.clone(),
                     failure_description: failure_desc,
-                    ghidra: ctx.ghidra.clone(),
+                    source: ctx.source.clone(),
                     address: addr,
                     call_graph,
                     history: failure_history.clone(),
@@ -1708,7 +1708,8 @@ mod tests {
 
         let llm_base = fake_llm().await;
         let llm = LlmClient::from_url(&llm_base, "test-model").expect("llm client");
-        let ghidra = GhidraClient::new("http://127.0.0.1:1").expect("ghidra client");
+        let ghidra = calxgloss_ghidra::GhidraClient::new("http://127.0.0.1:1").expect("ghidra client");
+        let source = calxgloss_ghidra::PipelineSource::Live(ghidra);
         let verifier = Verifier::new(&ws.path().join("verify")).expect("verifier");
         let config = RetryConfig {
             max_attempts: 2,
@@ -1719,7 +1720,7 @@ mod tests {
         let ctx = RetryLoopCtx {
             verifier: &verifier,
             llm: &llm,
-            ghidra: &ghidra,
+            source: &source,
             config: &config,
             workspace: Some(ws.path()),
             events: None,

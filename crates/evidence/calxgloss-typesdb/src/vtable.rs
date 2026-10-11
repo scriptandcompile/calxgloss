@@ -37,6 +37,18 @@ impl TagSink for GhidraClient {
     }
 }
 
+impl TagSink for calxgloss_ghidra::PipelineSource {
+    async fn add_function_tag(&self, address: u64, tag: &str) -> Result<()> {
+        let address = format!("{address:x}");
+        match self {
+            Self::Live(client) => Ok(client.add_function_tag(&address, tag).await?),
+            // Writes are never cached — the cache passes them straight to
+            // the client it wraps.
+            Self::Cached(cache) => Ok(cache.add_function_tag(&address, tag).await?),
+        }
+    }
+}
+
 // ============================================================
 // MSVC RTTI shapes
 // ============================================================

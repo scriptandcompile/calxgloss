@@ -44,4 +44,4 @@ pub use model::{
     FunctionReport, FunctionSummary, OpenProgram, Segment, StringLiteral, StructFieldLayout,
     StructLayout, Symbol, Xref,
 };
-pub use scan_source::ScanSource;
+pub use scan_source::{PipelineSource, ScanSource};

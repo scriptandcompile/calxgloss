@@ -57,6 +57,20 @@ impl CallGraphSource for GhidraClient {
     }
 }
 
+impl CallGraphSource for calxgloss_ghidra::PipelineSource {
+    async fn call_graph(&self, binary: &str) -> Result<Vec<FunctionCallGraph>> {
+        // The builder reads through the shared seam itself, so a cached
+        // pipeline source assembles the graph from cached reads.
+        let graph = CallGraphBuilder::with_source(self.clone(), binary)
+            .build()
+            .await
+            .map_err(|error| ApiError::CallGraph {
+                reason: error.to_string(),
+            })?;
+        Ok(graph.functions)
+    }
+}
+
 /// Orchestrates the import scanner and the summary detector into one
 /// [`ApiDetectionResult`].
 ///

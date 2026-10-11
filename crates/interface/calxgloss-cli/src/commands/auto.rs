@@ -36,6 +36,7 @@ use crate::utils::*;
 #[allow(clippy::too_many_arguments)]
 pub async fn run_translation_for_dll(
     binary: &str,
+    binary_path: &Path,
     workspace: &Path,
     skip_git: bool,
     settings: &Settings,
@@ -150,6 +151,9 @@ pub async fn run_translation_for_dll(
         pipeline = pipeline.with_unit_cancellation(cancellation.clone());
     }
     pipeline = pipeline.with_workspace(workspace);
+    // The batch's shared Ghidra read cache keys on the target binary's
+    // file bytes (issue #105).
+    pipeline = pipeline.with_binary_path(binary_path);
 
     // Git setup
     let mut git = if !skip_git {
@@ -507,6 +511,7 @@ pub async fn handle_auto(
             println!();
             run_translation_for_dll(
                 binary,
+                &target_dir.join(binary),
                 &workspace,
                 skip_git,
                 settings,
@@ -555,6 +560,7 @@ pub async fn handle_auto(
 
         run_translation_for_dll(
             binary,
+            &target_dir.join(binary),
             &workspace,
             skip_git,
             settings,

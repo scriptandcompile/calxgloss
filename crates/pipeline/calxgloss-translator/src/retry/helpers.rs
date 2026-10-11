@@ -2,7 +2,7 @@
 
 use crate::Translation;
 use calxgloss_callgraph::FunctionContext;
-use calxgloss_ghidra::GhidraClient;
+use calxgloss_ghidra::ScanSource;
 use calxgloss_prompts::{
     CallGraphNeighbor, NeighborFunction, PalTraitDef, PalTraitMethod, ShimCode,
 };
@@ -64,59 +64,74 @@ pub fn extract_call_graph_neighbors_from_enriched(
 
     neighbors
 }
-pub async fn extract_call_graph_neighbors(
-    ghidra: &GhidraClient,
+/// Extract call graph neighbor details from the scan source.
+///
+/// Resolves each neighbor name through the (cached) function listing and
+/// pulls its signature from the cached decompile, so a warm batch pays
+/// nothing for neighbor context.
+pub async fn extract_call_graph_neighbors<S: ScanSource>(
+    source: &S,
     call_graph: &[String],
     _target_address: u64,
 ) -> Vec<CallGraphNeighbor> {
+    // One (cached) function listing resolves every neighbor name to its
+    // address — no per-name search request.
+    let functions = source.functions().await.unwrap_or_default();
+    let address_of = |name: &str| {
+        functions
+            .iter()
+            .find(|f| f.name == name)
+            .map(|f| f.address)
+    };
+
     let mut neighbors = Vec::new();
     for name in call_graph {
-        // Search for the neighbor function to get its address
-        if let Ok(matches) = ghidra.search_functions(name, Some(5)).await
-            && let Some(found) = matches.iter().find(|m| m.name == *name)
-        {
-            // Try to get the signature from decompilation
-            let signature = match ghidra.decompile_function(found.address).await {
-                Ok(decompiled) => decompiled.signature,
-                Err(_) => String::new(),
-            };
-            neighbors.push(CallGraphNeighbor {
-                name: found.name.clone(),
-                address: found.address,
+        // Try to get the signature from decompilation
+        let signature = match source.decompile(name).await {
+            Ok(decompiled) => decompiled.signature,
+            Err(_) => String::new(),
+        };
+        match address_of(name) {
+            Some(address) => neighbors.push(CallGraphNeighbor {
+                name: name.clone(),
+                address,
                 signature,
                 role: "callee".to_string(), // simplified: most are callees
-            });
-            continue;
+            }),
+            // If not found, just add a stub
+            None => neighbors.push(CallGraphNeighbor {
+                name: name.clone(),
+                address: 0,
+                signature,
+                role: "unknown".to_string(),
+            }),
         }
-        // If not found, just add a stub
-        neighbors.push(CallGraphNeighbor {
-            name: name.clone(),
-            address: 0,
-            signature: String::new(),
-            role: "unknown".to_string(),
-        });
     }
     neighbors
 }
 
-/// Extract neighboring function context (full code) from Ghidra.
-pub async fn extract_neighboring_context(
-    ghidra: &GhidraClient,
+/// Extract neighboring function context (full code) from the scan source.
+///
+/// Bodies come from the cached decompile; the raw disassembly listing has no
+/// place in the read seam, so the disassembly field stays empty — the prompt
+/// templates render it as an empty block.
+pub async fn extract_neighboring_context<S: ScanSource>(
+    source: &S,
     call_graph: &[String],
 ) -> Vec<NeighborFunction> {
+    let functions = source.functions().await.unwrap_or_default();
     let mut neighbors = Vec::new();
     // Limit to a few neighbors to avoid context window bloat
     for name in call_graph.iter().take(3) {
-        if let Ok(matches) = ghidra.search_functions(name, Some(5)).await
-            && let Some(found) = matches.iter().find(|m| m.name == *name)
-            && let Ok(report) = ghidra.function_report(found.address).await
+        if let Some(found) = functions.iter().find(|f| f.name == *name)
+            && let Ok(decompiled) = source.decompile(name).await
         {
             neighbors.push(NeighborFunction {
-                name: report.name.clone(),
+                name: decompiled.name,
                 binary: String::new(),
-                address: report.address,
-                disassembly: report.disassembly.trim().to_string(),
-                decompiler_output: report.decompiled.body.trim().to_string(),
+                address: found.address,
+                disassembly: String::new(),
+                decompiler_output: decompiled.body.trim().to_string(),
             });
         }
     }
@@ -867,7 +882,8 @@ pub fn extract_pal_traits(windows_apis: &[WindowsApiCall]) -> Vec<PalTraitDef> {
 ///
 /// * `translation` — The initial [`Translation`] produced by the pipeline.
 /// * `tier` — The target context tier to build for.
-/// * `ghidra` — Ghidra client for fetching additional context.
+/// * `source` — scan source for fetching additional context (live client
+///   or the batch's read cache).
 /// * `workspace` — Optional workspace path for shim layer and type
 ///   database extraction.
 ///
@@ -875,10 +891,10 @@ pub fn extract_pal_traits(windows_apis: &[WindowsApiCall]) -> Vec<PalTraitDef> {
 ///
 /// A prompt string suitable for sending to the LLM, or an error string
 /// if prompt construction fails.
-pub async fn build_escalated_prompt(
+pub async fn build_escalated_prompt<S: ScanSource>(
     translation: &Translation,
     tier: ContextTier,
-    ghidra: &GhidraClient,
+    source: &S,
     workspace: Option<&std::path::Path>,
 ) -> Result<String, String> {
     let binary = &translation.binary;
@@ -975,13 +991,13 @@ pub async fn build_escalated_prompt(
             };
 
             let call_graph_neighbors = extract_call_graph_neighbors(
-                ghidra,
+                source,
                 &translation.call_graph,
                 translation.function_address.unwrap_or(0),
             )
             .await;
             let neighboring_functions =
-                extract_neighboring_context(ghidra, &translation.call_graph).await;
+                extract_neighboring_context(source, &translation.call_graph).await;
             let data_structures = extract_data_structures(workspace, binary, function);
 
             let control_flow_findings = extract_control_flow_hints(workspace, binary, function);
@@ -1018,13 +1034,13 @@ pub async fn build_escalated_prompt(
             };
 
             let call_graph_neighbors = extract_call_graph_neighbors(
-                ghidra,
+                source,
                 &translation.call_graph,
                 translation.function_address.unwrap_or(0),
             )
             .await;
             let neighboring_functions =
-                extract_neighboring_context(ghidra, &translation.call_graph).await;
+                extract_neighboring_context(source, &translation.call_graph).await;
             let data_structures = extract_data_structures(workspace, binary, function);
 
             let shim_layers = extract_shim_layers(workspace, binary);

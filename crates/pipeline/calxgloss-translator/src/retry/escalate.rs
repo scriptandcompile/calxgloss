@@ -13,8 +13,9 @@ pub struct EscalatePromptCtx {
     pub original_rust_code: String,
     /// Description of the failure that triggered escalation.
     pub failure_description: String,
-    /// Ghidra client for fetching neighbors and symbols.
-    pub ghidra: calxgloss_ghidra::GhidraClient,
+    /// Scan source for fetching neighbors and symbols — the batch's shared
+    /// source (live client or read cache), never a second live path.
+    pub source: calxgloss_ghidra::PipelineSource,
     /// Virtual address of the function.
     pub address: u64,
     /// Call graph neighbors (callers and callees).
@@ -44,9 +45,9 @@ async fn build_escalate_prompt_inner(
     history: Vec<calxgloss_types::FailureHint>,
 ) -> String {
     let call_graph_neighbors =
-        extract_call_graph_neighbors(&ctx.ghidra, &ctx.call_graph, ctx.address).await;
+        extract_call_graph_neighbors(&ctx.source, &ctx.call_graph, ctx.address).await;
 
-    let neighboring_functions = extract_neighboring_context(&ctx.ghidra, &ctx.call_graph).await;
+    let neighboring_functions = extract_neighboring_context(&ctx.source, &ctx.call_graph).await;
 
     let data_structures = super::helpers::extract_data_structures(
         ctx.workspace.as_deref(),

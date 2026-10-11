@@ -40,7 +40,7 @@
 use calxgloss_callgraph::{
     CallGraphBuilder, CallGraphPersistor, CallType, LeafDetector, RootDetector,
 };
-use calxgloss_ghidra::GhidraClient;
+use calxgloss_ghidra::ScanSource;
 use calxgloss_types::{
     DependencyEdge, DependencyGraph, DependencyNode, NodeCategory, ReviewStatus,
     dashboard::WorkLevel,
@@ -188,14 +188,15 @@ pub fn print_call_graph_stats(graph: &calxgloss_callgraph::CallGraph) {
 /// This is the primary integration point between the call graph analysis
 /// pipeline and the rest of the system. It:
 ///
-/// 1. Fetches all function metadata from Ghidra via [`CallGraphBuilder`].
+/// 1. Fetches all function metadata from the scan source via [`CallGraphBuilder`].
 /// 2. Classifies each function using [`RootDetector`] and [`LeafDetector`].
 /// 3. Updates each function's [`NodeCategory`].
 /// 4. Persists the enriched graph to the cache directory.
 ///
 /// # Arguments
 ///
-/// * `ghidra` — The Ghidra client used to fetch function data.
+/// * `source` — The scan source used to fetch function data: a live
+///   [`GhidraClient`](calxgloss_ghidra::GhidraClient) or a batch's cached source.
 /// * `dll_name` — The DLL filename (e.g., `"eqmain.dll"`).
 /// * `workspace` — The workspace root directory (used as base for cache path).
 /// * `cache_dir` — Explicit directory for call graph JSON files. If `None`,
@@ -221,16 +222,16 @@ pub fn print_call_graph_stats(graph: &calxgloss_callgraph::CallGraph) {
 /// TODO: Integrate with dependency tracker: use NodeCategory for translation ordering
 /// TODO: Add call graph data to `FunctionAnalysis` struct (callers, callees with metadata)
 /// ```
-pub async fn build_enriched_call_graph(
-    ghidra: &GhidraClient,
+pub async fn build_enriched_call_graph<S: ScanSource + Clone + Sync>(
+    source: &S,
     dll_name: &str,
     workspace: &std::path::Path,
     cache_dir: Option<&std::path::Path>,
 ) -> anyhow::Result<calxgloss_callgraph::CallGraph> {
     info!(%dll_name, "Building enriched call graph");
 
-    // 1. Build the call graph from Ghidra data.
-    let builder = CallGraphBuilder::new(ghidra.clone(), dll_name);
+    // 1. Build the call graph from the scan source.
+    let builder = CallGraphBuilder::with_source(source.clone(), dll_name);
     let mut graph = builder.build().await?;
 
     // 2. Classify each function.

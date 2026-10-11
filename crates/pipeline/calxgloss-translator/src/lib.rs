@@ -10,6 +10,11 @@
 //! 5. Send the prompt to the LLM for Rust code generation
 //! 6. Return the translated code along with metadata
 
+// The pipeline's `Send` inference descends through the generic `ScanSource`
+// delegation chain (translate → retry helpers → `PipelineSource::decompile` →
+// …), which overflows the default trait-resolution depth.
+#![recursion_limit = "256"]
+
 pub mod error;
 mod pipeline;
 pub mod retry;

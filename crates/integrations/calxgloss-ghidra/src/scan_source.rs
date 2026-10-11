@@ -26,6 +26,7 @@
 //!   will read through this seam itself; the engine keeps a slim local
 //!   `CallGraphSource` trait for it.
 
+use crate::cache::CachedGhidraSource;
 use crate::client::{GhidraClient, Result};
 use crate::model::{
     DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, StringLiteral,
@@ -155,5 +156,125 @@ impl ScanSource for GhidraClient {
 
     async fn read_memory(&self, address: u64, length: usize) -> Result<Vec<u8>> {
         self.read_memory(address, length).await
+    }
+}
+
+/// The one concrete read source a translation batch hands to every consumer.
+///
+/// The pipeline builds a [`CachedGhidraSource`] for the target binary at the
+/// top of a batch and every scan, the call-graph build, and the retry/escalation
+/// helpers read through this enum afterwards — `Live` until that cache exists,
+/// `Cached` once it does. Having one concrete type (rather than two call paths)
+/// keeps the pipeline's plumbing generic-free: the same `PipelineSource` value
+/// answers every consumer, and a warm second batch over the same workspace and
+/// unchanged binary costs no live reads at all.
+#[derive(Debug, Clone)]
+pub enum PipelineSource {
+    /// No cache active — every read goes straight to the server.
+    Live(GhidraClient),
+    /// The batch's shared two-tier cache, scoped to one target binary.
+    Cached(CachedGhidraSource),
+}
+
+impl From<GhidraClient> for PipelineSource {
+    fn from(client: GhidraClient) -> Self {
+        Self::Live(client)
+    }
+}
+
+impl ScanSource for PipelineSource {
+    // Each arm delegates to its own `ScanSource` implementation; the cache
+    // tier resolves memo → disk → live, the live tier is the raw client.
+    // The calls are trait-qualified so the client's inherent methods (which
+    // take limits and filters) never shadow the seam's unfiltered reads.
+    async fn functions(&self) -> Result<Vec<FunctionSummary>> {
+        match self {
+            Self::Live(client) => ScanSource::functions(client).await,
+            Self::Cached(cache) => ScanSource::functions(cache).await,
+        }
+    }
+
+    async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
+        match self {
+            Self::Live(client) => ScanSource::decompile(client, name).await,
+            Self::Cached(cache) => ScanSource::decompile(cache, name).await,
+        }
+    }
+
+    async fn strings(&self) -> Result<Vec<StringLiteral>> {
+        match self {
+            Self::Live(client) => ScanSource::strings(client).await,
+            Self::Cached(cache) => ScanSource::strings(cache).await,
+        }
+    }
+
+    async fn callers(&self, address: u64) -> Result<Vec<String>> {
+        match self {
+            Self::Live(client) => ScanSource::callers(client, address).await,
+            Self::Cached(cache) => ScanSource::callers(cache, address).await,
+        }
+    }
+
+    async fn xrefs_to(&self, address: u64) -> Result<Vec<Xref>> {
+        match self {
+            Self::Live(client) => ScanSource::xrefs_to(client, address).await,
+            Self::Cached(cache) => ScanSource::xrefs_to(cache, address).await,
+        }
+    }
+
+    async fn data_types(&self, category: Option<&str>) -> Result<Vec<DataTypeEntry>> {
+        match self {
+            Self::Live(client) => ScanSource::data_types(client, category).await,
+            Self::Cached(cache) => ScanSource::data_types(cache, category).await,
+        }
+    }
+
+    async fn struct_layout(&self, name: &str) -> Result<StructLayout> {
+        match self {
+            Self::Live(client) => ScanSource::struct_layout(client, name).await,
+            Self::Cached(cache) => ScanSource::struct_layout(cache, name).await,
+        }
+    }
+
+    async fn enum_values(&self, name: &str) -> Result<EnumDefinition> {
+        match self {
+            Self::Live(client) => ScanSource::enum_values(client, name).await,
+            Self::Cached(cache) => ScanSource::enum_values(cache, name).await,
+        }
+    }
+
+    async fn data_items(&self) -> Result<Vec<DataItem>> {
+        match self {
+            Self::Live(client) => ScanSource::data_items(client).await,
+            Self::Cached(cache) => ScanSource::data_items(cache).await,
+        }
+    }
+
+    async fn imports(&self) -> Result<Vec<Symbol>> {
+        match self {
+            Self::Live(client) => ScanSource::imports(client).await,
+            Self::Cached(cache) => ScanSource::imports(cache).await,
+        }
+    }
+
+    async fn exports(&self) -> Result<Vec<Symbol>> {
+        match self {
+            Self::Live(client) => ScanSource::exports(client).await,
+            Self::Cached(cache) => ScanSource::exports(cache).await,
+        }
+    }
+
+    async fn image_base(&self) -> Result<u64> {
+        match self {
+            Self::Live(client) => ScanSource::image_base(client).await,
+            Self::Cached(cache) => ScanSource::image_base(cache).await,
+        }
+    }
+
+    async fn read_memory(&self, address: u64, length: usize) -> Result<Vec<u8>> {
+        match self {
+            Self::Live(client) => ScanSource::read_memory(client, address, length).await,
+            Self::Cached(cache) => ScanSource::read_memory(cache, address, length).await,
+        }
     }
 }

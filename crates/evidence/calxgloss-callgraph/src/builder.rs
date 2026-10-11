@@ -1,18 +1,19 @@
 //! Call graph construction from Ghidra data.
 //!
 //! The [`CallGraphBuilder`] fetches function summaries, callers, and callee
-//! information from a GhidraMCP server, then assembles them into a
+//! information through the shared [`ScanSource`](calxgloss_ghidra::ScanSource)
+//! seam — a live client or the batch's read cache — then assembles them into a
 //! [`CallGraph`] with all functions initially categorized as
 //! `NodeCategory::Middle`.
 //!
 //! # Algorithm
 //!
-//! 1. Call `ghidra.list_functions()` to get every function and build a
+//! 1. Call `source.functions()` to get every function and build a
 //!    name→address lookup map.
-//! 2. For each function, call `ghidra.callers(address)` for incoming
+//! 2. For each function, call `source.callers(address)` for incoming
 //!    cross-references, mapping the returned names back to addresses via
 //!    the lookup map.
-//! 3. For callees, call `ghidra.decompile_function(address)` and parse
+//! 3. For callees, call `source.decompile(name)` and parse
 //!    call targets from the decompiled pseudo-C via
 //!    `calxgloss_ghidra::parse::callees_from_decompiled`.
 //! 4. Map callee names back to addresses using the lookup map.
@@ -27,11 +28,18 @@
 
 use anyhow::Result;
 use calxgloss_ghidra::parse;
+use calxgloss_ghidra::ScanSource;
 use tracing::{info, warn};
 
 use crate::{CallGraph, CallGraphEdge, CallType, FunctionCallGraph, NodeCategory};
 
 /// Fetches function metadata from Ghidra and constructs a call graph.
+///
+/// The builder reads through the shared [`ScanSource`] seam, so the same
+/// graph build runs against a live [`calxgloss_ghidra::GhidraClient`] or
+/// through the batch's [`calxgloss_ghidra::CachedGhidraSource`] without any
+/// change of behaviour — a warm cache makes the whole build cost no live
+/// reads.
 ///
 /// # Example
 ///
@@ -45,19 +53,32 @@ use crate::{CallGraph, CallGraphEdge, CallType, FunctionCallGraph, NodeCategory}
 /// # Ok(())
 /// # }
 /// ```
-pub struct CallGraphBuilder {
-    ghidra: calxgloss_ghidra::GhidraClient,
+pub struct CallGraphBuilder<S = calxgloss_ghidra::GhidraClient> {
+    source: S,
     dll_name: String,
 }
 
-impl CallGraphBuilder {
-    /// Creates a new builder for the given DLL.
+impl CallGraphBuilder<calxgloss_ghidra::GhidraClient> {
+    /// Creates a new builder for the given DLL, reading live from `ghidra`.
     pub fn new(ghidra: calxgloss_ghidra::GhidraClient, dll_name: impl Into<String>) -> Self {
         Self {
-            ghidra,
+            source: ghidra,
             dll_name: dll_name.into(),
         }
     }
+}
+
+impl<S> CallGraphBuilder<S> {
+    /// Creates a new builder for the given DLL over any shared scan source.
+    pub fn with_source(source: S, dll_name: impl Into<String>) -> Self {
+        Self {
+            source,
+            dll_name: dll_name.into(),
+        }
+    }
+}
+
+impl<S: ScanSource + Sync> CallGraphBuilder<S> {
 
     /// Builds the complete call graph by querying Ghidra for all functions
     /// and their caller/callee relationships.
@@ -79,7 +100,7 @@ impl CallGraphBuilder {
         info!(%dll_name, "Building call graph");
 
         // 1. Fetch all functions and build a name→address lookup map.
-        let functions = self.ghidra.list_functions().await?;
+        let functions = self.source.functions().await?;
         let mut name_to_addr: std::collections::HashMap<String, u64> =
             std::collections::HashMap::with_capacity(functions.len());
         for func in &functions {
@@ -94,11 +115,19 @@ impl CallGraphBuilder {
 
         // 2. Process each function sequentially for now; see TODO about
         //    batching with tokio::join_all.
+        //
+        // The per-function future is boxed to a `dyn Future + Send` so a
+        // caller's `Send` check stops at this boundary instead of descending
+        // through the source's whole read chain (the same #159228 recursion
+        // guard the pipeline applies to its own futures).
         let mut call_graph_functions = Vec::with_capacity(functions.len());
         let mut failures = 0usize;
 
         for summary in &functions {
-            match self.process_function(summary, &name_to_addr).await {
+            let processed: std::pin::Pin<
+                Box<dyn std::future::Future<Output = Result<FunctionCallGraph>> + Send + '_>,
+            > = Box::pin(self.process_function(summary, &name_to_addr));
+            match processed.await {
                 Ok(func_graph) => call_graph_functions.push(func_graph),
                 Err(e) => {
                     warn!(
@@ -137,7 +166,7 @@ impl CallGraphBuilder {
     }
 
     /// Processes a single function: fetches callers via
-    /// [`GhidraClient::callers`](calxgloss_ghidra::GhidraClient::callers),
+    /// [`ScanSource::callers`](calxgloss_ghidra::ScanSource::callers),
     /// fetches callees via decompiled output parsed with
     /// [`callees_from_decompiled`](calxgloss_ghidra::parse::callees_from_decompiled),
     /// and returns a [`FunctionCallGraph`] with `NodeCategory::Middle`.
@@ -159,7 +188,7 @@ impl CallGraphBuilder {
         let name = summary.name.clone();
 
         // 1. Fetch callers (cross-references to this function).
-        let caller_names = self.ghidra.callers(address).await.unwrap_or_default();
+        let caller_names = self.source.callers(address).await.unwrap_or_default();
 
         // 2. Map caller names to addresses using the lookup map.
         let callers: Vec<u64> = caller_names
@@ -176,7 +205,7 @@ impl CallGraphBuilder {
             .collect();
 
         // 3. Fetch decompiled output and parse callees.
-        let callees = match self.ghidra.decompile_function(address).await {
+        let callees = match self.source.decompile(&name).await {
             Ok(decompiled) => {
                 let callee_names = parse::callees_from_decompiled(&decompiled.body);
                 resolve_callees(address, &callee_names, name_to_addr)

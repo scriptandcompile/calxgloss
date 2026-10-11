@@ -29,6 +29,7 @@
 //! # }
 //! ```
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use calxgloss_algorithm::engine::AlgorithmEngine;
@@ -44,7 +45,7 @@ use calxgloss_consts::engine::ConstEngine;
 use calxgloss_consts::persist::ConstPersistor;
 use calxgloss_controlflow::engine::ControlFlowEngine;
 use calxgloss_controlflow::persist::ControlFlowPersistor;
-use calxgloss_ghidra::GhidraClient;
+use calxgloss_ghidra::{CachedGhidraSource, GhidraClient, PipelineSource};
 use calxgloss_llm::{
     LlmClient, LlmMessage, context::ContextWindowDetector, hallucination::HallucinationDetector,
 };
@@ -179,6 +180,25 @@ pub struct TranslationPipeline {
     /// users to customize the cache location via the `--callgraph-cache` CLI flag.
     callgraph_cache_dir: Option<std::path::PathBuf>,
 
+    /// Path to the target binary file on disk, used to build the batch's
+    /// shared [`CachedGhidraSource`] (issue #105).
+    ///
+    /// The cache's validity key includes the binary's file bytes, so the
+    /// pipeline needs the file itself — not just its name — to open the
+    /// cache at the top of a batch. Without it (or without a workspace to
+    /// file the cache under), batches read live, exactly as before the
+    /// cache existed.
+    binary_path: Option<std::path::PathBuf>,
+
+    /// The batch's shared cached Ghidra source, armed by
+    /// [`begin_cached_source`](Self::begin_cached_source) at the top of a
+    /// batch and read by every scan, the call-graph build, and the
+    /// retry/escalation helpers through [`scan_source`](Self::scan_source).
+    ///
+    /// A second batch over the same workspace and unchanged binary replays
+    /// from the disk tier with zero live reads.
+    cached_source: Mutex<Option<CachedGhidraSource>>,
+
     /// Shared stop signal for graceful shutdown of a live run.
     ///
     /// When set and stopped, the batch loops break at the next **unit
@@ -231,6 +251,8 @@ impl TranslationPipeline {
             callgraph_verbose: false,
             call_graph: None,
             callgraph_cache_dir: None,
+            binary_path: None,
+            cached_source: Mutex::new(None),
             stop: None,
             pipeline_control: None,
             unit_cancellation: None,
@@ -428,6 +450,18 @@ impl TranslationPipeline {
         self
     }
 
+    /// Set the path to the target binary file on disk (issue #105).
+    ///
+    /// With a workspace also set, a batch arms a shared
+    /// [`CachedGhidraSource`] for this binary at its top, and every scan,
+    /// the call-graph build, and the retry/escalation helpers read through
+    /// it — a second batch over the same workspace and unchanged binary
+    /// costs no live Ghidra reads. Without it, batches read live.
+    pub fn with_binary_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.binary_path = Some(path.into());
+        self
+    }
+
     /// Translate a function from the program open in Ghidra.
     ///
     /// This is the main pipeline entry point. It fetches all data from Ghidra,
@@ -582,10 +616,13 @@ impl TranslationPipeline {
                 .unwrap_or_else(|| std::path::Path::new("."));
             let cache_dir = self.callgraph_cache_dir.as_deref();
             self.begin_scan_pass(&function_info.binary, "call graph");
-            let built = self
-                .analyzer
-                .build_call_graph(&function_info.binary, workspace, cache_dir)
-                .await;
+            let built = calxgloss_analysis::build_enriched_call_graph(
+                &self.scan_source(),
+                &function_info.binary,
+                workspace,
+                cache_dir,
+            )
+            .await;
             self.end_scan_pass();
             match built {
                 Ok(call_graph) => {
@@ -638,7 +675,7 @@ impl TranslationPipeline {
                         function_info.address,
                     );
                 let neighboring_functions = crate::retry::helpers::extract_neighboring_context(
-                    &self.ghidra,
+                    &self.scan_source(),
                     &function_info.call_graph,
                 )
                 .await;
@@ -670,7 +707,7 @@ impl TranslationPipeline {
                         function_info.address,
                     );
                 let neighboring_functions = crate::retry::helpers::extract_neighboring_context(
-                    &self.ghidra,
+                    &self.scan_source(),
                     &function_info.call_graph,
                 )
                 .await;
@@ -921,10 +958,11 @@ impl TranslationPipeline {
         );
 
         // Step 2: Run the retry loop
+        let source = self.scan_source();
         let ctx = retry::RetryLoopCtx {
             verifier,
             llm: &self.llm,
-            ghidra: &self.ghidra,
+            source: &source,
             config,
             workspace: self.workspace.as_deref(),
             events: self.events.as_ref(),
@@ -1397,6 +1435,67 @@ impl TranslationPipeline {
     // Batch translation
     // =========================================================
 
+    /// Arm the batch's shared cached Ghidra source for `binary` (issue #105).
+    ///
+    /// Called at the top of both batch entry points. With a workspace and a
+    /// `binary_path` set, this builds one [`CachedGhidraSource`] for the
+    /// target binary — the binary's file bytes are hashed once and the
+    /// server probed once for the open program — and every later read made
+    /// through [`scan_source`](Self::scan_source) resolves memo → disk →
+    /// live, writing through as it goes.
+    ///
+    /// Degrades rather than fails: without a workspace or binary path the
+    /// batch simply reads live (the pre-cache behaviour), and a failed
+    /// construction — an unreachable server with the binary file present —
+    /// logs a warning and leaves the batch reading live too.
+    async fn begin_cached_source(&self, binary: &str) {
+        let (Some(workspace), Some(binary_path)) =
+            (self.workspace.as_deref(), self.binary_path.as_deref())
+        else {
+            return;
+        };
+
+        match CachedGhidraSource::new(self.ghidra.clone(), workspace, binary, binary_path).await {
+            Ok(source) => {
+                debug!(
+                    binary,
+                    cache_dir = source.cache_dir().map_or_else(
+                        || "(memo only)".to_string(),
+                        |d| d.display().to_string()
+                    ),
+                    "Batch Ghidra reads will go through the shared cache"
+                );
+                *self
+                    .cached_source
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(source);
+            }
+            Err(e) => {
+                warn!(
+                    binary,
+                    error = %e,
+                    "Could not open the batch Ghidra read cache — reads will pass through live"
+                );
+            }
+        }
+    }
+
+    /// The read source every batch consumer — the eleven `ensure_*` scans,
+    /// the call-graph build, and the retry/escalation helpers — pulls
+    /// Ghidra facts through: the batch's [`CachedGhidraSource`] once armed
+    /// by [`begin_cached_source`](Self::begin_cached_source), the raw
+    /// client otherwise.
+    fn scan_source(&self) -> PipelineSource {
+        let guard = self
+            .cached_source
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match guard.as_ref() {
+            Some(cache) => PipelineSource::Cached(cache.clone()),
+            None => PipelineSource::Live(self.ghidra.clone()),
+        }
+    }
+
     /// Arm the Ghidra client's heartbeat for one analysis pass so the
     /// dashboard can show which function the pass is on. Without an event
     /// channel there is nothing to beat to — the scan runs unchanged.
@@ -1446,7 +1545,7 @@ impl TranslationPipeline {
         }
 
         info!(binary, "Recovering type database before batch translation");
-        let engine = TypesDBEngine::new(&self.ghidra);
+        let engine = TypesDBEngine::with_source(self.scan_source());
         self.begin_scan_pass(binary, "type database");
         let scan = engine.scan(binary).await;
         self.end_scan_pass();
@@ -1512,7 +1611,7 @@ impl TranslationPipeline {
         }
 
         info!(binary, "Inferring parameter types before batch translation");
-        let engine = TypeInferEngine::new(&self.ghidra);
+        let engine = TypeInferEngine::with_source(self.scan_source());
         self.begin_scan_pass(binary, "type inference");
         let scan = engine.scan(binary).await;
         self.end_scan_pass();
@@ -1579,7 +1678,7 @@ impl TranslationPipeline {
         }
 
         info!(binary, "Recognizing algorithms before batch translation");
-        let engine = AlgorithmEngine::new(&self.ghidra);
+        let engine = AlgorithmEngine::with_source(self.scan_source());
         self.begin_scan_pass(binary, "algorithm recognition");
         let scan = engine.scan(binary).await;
         self.end_scan_pass();
@@ -1650,7 +1749,7 @@ impl TranslationPipeline {
             binary,
             "Detecting memory lifecycles before batch translation"
         );
-        let engine = MemoryEngine::new(&self.ghidra);
+        let engine = MemoryEngine::with_source(self.scan_source());
         self.begin_scan_pass(binary, "memory detection");
         let scan = engine.scan(binary).await;
         self.end_scan_pass();
@@ -1721,7 +1820,7 @@ impl TranslationPipeline {
             binary,
             "Detecting concurrency constructs before batch translation"
         );
-        let engine = SyncEngine::new(&self.ghidra);
+        let engine = SyncEngine::with_source(self.scan_source());
         self.begin_scan_pass(binary, "sync detection");
         let scan = engine.scan(binary).await;
         self.end_scan_pass();
@@ -1792,7 +1891,7 @@ impl TranslationPipeline {
             binary,
             "Detecting constant structures before batch translation"
         );
-        let engine = ConstEngine::new(&self.ghidra);
+        let engine = ConstEngine::with_source(self.scan_source());
         self.begin_scan_pass(binary, "constant detection");
         let scan = engine.scan(binary).await;
         self.end_scan_pass();
@@ -1860,7 +1959,7 @@ impl TranslationPipeline {
         }
 
         info!(binary, "Detecting callback tables before batch translation");
-        let engine = CallbackEngine::new(&self.ghidra);
+        let engine = CallbackEngine::with_source(self.scan_source());
         self.begin_scan_pass(binary, "callback detection");
         let scan = engine.scan(binary).await;
         self.end_scan_pass();
@@ -1931,7 +2030,7 @@ impl TranslationPipeline {
             binary,
             "Detecting control-flow patterns before batch translation"
         );
-        let engine = ControlFlowEngine::new(&self.ghidra);
+        let engine = ControlFlowEngine::with_source(self.scan_source());
         self.begin_scan_pass(binary, "control flow detection");
         let scan = engine.scan(binary).await;
         self.end_scan_pass();
@@ -2000,7 +2099,7 @@ impl TranslationPipeline {
         }
 
         info!(binary, "Mapping program strings before batch translation");
-        let engine = StringContextEngine::new(&self.ghidra);
+        let engine = StringContextEngine::with_source(self.scan_source());
         self.begin_scan_pass(binary, "string context");
         let scan = engine.scan(binary).await;
         self.end_scan_pass();
@@ -2068,7 +2167,7 @@ impl TranslationPipeline {
             binary,
             "Identifying libraries and APIs before batch translation"
         );
-        let engine = ApiEngine::new(&self.ghidra);
+        let engine = ApiEngine::with_source(self.scan_source());
         self.begin_scan_pass(binary, "API detection");
         let scan = engine.scan(binary).await;
         self.end_scan_pass();
@@ -2140,7 +2239,7 @@ impl TranslationPipeline {
             binary,
             "Detecting serialization patterns before batch translation"
         );
-        let engine = SerializeEngine::new(&self.ghidra);
+        let engine = SerializeEngine::with_source(self.scan_source());
         self.begin_scan_pass(binary, "serialization detection");
         let scan = engine.scan(binary).await;
         self.end_scan_pass();
@@ -2325,6 +2424,8 @@ impl TranslationPipeline {
             count = functions.len(),
             "Starting batch translation"
         );
+
+        self.begin_cached_source(binary).await;
 
         self.ensure_type_database(binary).await;
         self.ensure_type_inference(binary).await;
@@ -2628,6 +2729,8 @@ impl TranslationPipeline {
         >,
     ) -> Result<batch::BatchTranslationResult> {
         debug!(binary = %graph.binary, count = graph.functions.len(), "Starting call-graph batch translation");
+
+        self.begin_cached_source(&graph.binary).await;
 
         self.ensure_type_database(&graph.binary).await;
         self.ensure_type_inference(&graph.binary).await;
@@ -3941,5 +4044,298 @@ mod tests {
     async fn no_workspace_skips_the_api_scan() {
         let pipeline = pipeline_over(None);
         assert!(!pipeline.ensure_api_detection("eqmain.dll").await);
+    }
+
+    // ============================================================
+    // The cached Ghidra source through the batch pipeline (issue #105)
+    // ============================================================
+
+    const PROGRAM: &str = "LaunchPad.exe";
+    const KNOWN_FUNCTION: &str = "FUN_18003e750";
+
+    /// The read endpoints the batch's scans reach the server through; the
+    /// cached source must make a second batch's pass over them cost
+    /// nothing. Probe endpoints (`get_current_address`,
+    /// `get_current_function`) are exempt — every batch re-probes to
+    /// validate the cache manifest.
+    const READ_ENDPOINTS: &[&str] = &[
+        "list_functions",
+        "search_functions",
+        "decompile_function",
+        "list_strings",
+        "get_xrefs_to",
+        "list_data_types",
+        "get_struct_layout",
+        "get_enum_values",
+        "list_data_items",
+        "list_imports",
+        "list_exports",
+        "list_segments",
+        "read_memory",
+    ];
+
+    /// A stand-in GhidraMCP server answering every read endpoint the
+    /// pipeline's scans touch with one canned record each (the xref stays
+    /// inside `KNOWN_FUNCTION` so every name resolution in the batch
+    /// collapses onto the one function), counting how many times it served
+    /// each endpoint.
+    struct CountingGhidra {
+        base_url: String,
+        calls: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, usize>>>,
+    }
+
+    impl CountingGhidra {
+        async fn start() -> Self {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("fake server should bind");
+            let addr = listener.local_addr().expect("fake server address");
+            let calls: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, usize>>> =
+                std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+            let counted = std::sync::Arc::clone(&calls);
+            tokio::spawn(async move {
+                while let Ok((mut stream, _)) = listener.accept().await {
+                    let counted = std::sync::Arc::clone(&counted);
+                    tokio::spawn(async move {
+                        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                        let mut request = [0u8; 2048];
+                        let read = stream.read(&mut request).await.unwrap_or(0);
+                        let path = String::from_utf8_lossy(&request[..read])
+                            .split_whitespace()
+                            .nth(1)
+                            .unwrap_or_default()
+                            .to_string();
+                        let endpoint = path
+                            .split('?')
+                            .next()
+                            .unwrap_or_default()
+                            .trim_start_matches('/');
+                        if endpoint != "favicon.ico" {
+                            *counted
+                                .lock()
+                                .expect("counts lock")
+                                .entry(endpoint.to_string())
+                                .or_insert(0) += 1;
+                        }
+                        let body = if endpoint == "get_current_address"
+                            || endpoint == "get_current_function"
+                        {
+                            format!(
+                                "{{\"address\":\"180000000\",\"program\":\"{PROGRAM}\",\"function_name\":\"{KNOWN_FUNCTION}\"}}"
+                            )
+                        } else if endpoint == "list_functions"
+                            || endpoint == "search_functions"
+                        {
+                            format!("{KNOWN_FUNCTION} at 18003e750")
+                        } else if endpoint == "decompile_function" {
+                            format!("undefined {KNOWN_FUNCTION}(void)\n{{\n  void *pv = malloc(0x10);\n  free(pv);\n}}\n")
+                        } else if endpoint == "list_strings" {
+                            "180128d18: \"Journal.txt\"".to_string()
+                        } else if endpoint == "get_xrefs_to" {
+                            format!("From 18003e750 in {KNOWN_FUNCTION} [DATA]")
+                        } else if endpoint == "list_data_types" {
+                            "_EXCEPTION_DISPOSITION | excpt.h | 4 bytes | /excpt.h/_EXCEPTION_DISPOSITION"
+                                .to_string()
+                        } else if endpoint == "get_struct_layout" {
+                            "Structure: IMAGE_DOS_HEADER\nSize: 128 bytes\nAlignment: 1\n\nLayout:\nOffset | Size | Type | Name\n-------|------|------|-----\n     0 |    2 | char[2] | e_magic\n"
+                                .to_string()
+                        } else if endpoint == "get_enum_values" {
+                            "Enumeration: _EXCEPTION_DISPOSITION\nSize: 4 bytes\n\nValues:\nName | Value\n-----|------\nExceptionContinueExecution | 0 (0x0)\n"
+                                .to_string()
+                        } else if endpoint == "list_data_items" {
+                            "IMAGE_DOS_HEADER_180000000 @ 180000000 [IMAGE_DOS_HEADER] (128 bytes)"
+                                .to_string()
+                        } else if endpoint == "list_imports" {
+                            "malloc -> EXTERNAL:00000123\nfree -> EXTERNAL:00000124".to_string()
+                        } else if endpoint == "list_exports" {
+                            "DllMain -> 18000c690".to_string()
+                        } else if endpoint == "list_segments" {
+                            ".text: 180000000 - 1801261ff".to_string()
+                        } else if endpoint == "read_memory" {
+                            "{\"address\":\"1801306f0\",\"length\":8,\"data\":[0,171,3,128,1,0,0,0],\"hex\":\"00ab038001000000\"}"
+                                .to_string()
+                        } else if endpoint == "add_function_tag" {
+                            "Tag added".to_string()
+                        } else {
+                            "Error 404: No context found for request".to_string()
+                        };
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        );
+                        let _ = stream.write_all(response.as_bytes()).await;
+                    });
+                }
+            });
+            Self {
+                base_url: format!("http://{addr}"),
+                calls,
+            }
+        }
+
+        fn count(&self, endpoint: &str) -> usize {
+            *self
+                .calls
+                .lock()
+                .expect("counts lock")
+                .get(endpoint)
+                .unwrap_or(&0)
+        }
+
+        /// How many read-endpoint calls the server has served in total.
+        fn read_calls(&self) -> usize {
+            READ_ENDPOINTS.iter().map(|e| self.count(e)).sum()
+        }
+    }
+
+    /// A pipeline pointed at a fresh counting server, with a workspace and
+    /// a target-binary file whose bytes both batches hash identically —
+    /// the cache's validity key. Returns the pipeline and its server.
+    async fn cached_pipeline(dir: &std::path::Path) -> (TranslationPipeline, CountingGhidra) {
+        let binary_file = dir.join(PROGRAM);
+        std::fs::write(&binary_file, b"MZ\x90\x00 stand-in binary bytes").expect("write fake file");
+        let server = CountingGhidra::start().await;
+        let ghidra = GhidraClient::new(&server.base_url).expect("client config");
+        let pipeline = pipeline_with(ghidra, Some(dir)).with_binary_path(&binary_file);
+        (pipeline, server)
+    }
+
+    /// The marquee: a first batch reads live and writes through, and a
+    /// second batch over the same workspace with unchanged binary bytes
+    /// makes zero live Ghidra read calls — every scan replays from the
+    /// Ghidra cache. The engine-result documents are wiped between batches
+    /// so the scans genuinely re-run.
+    #[tokio::test]
+    async fn a_second_batch_over_unchanged_bytes_makes_no_live_ghidra_reads() {
+        let dir = TempDir::new().expect("temp workspace");
+        let (pipeline, server) = cached_pipeline(dir.path()).await;
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        // Batch 1, cold: the eleven scans read live and write through. With
+        // one shared source, the function listing is fetched once and the
+        // one function is decompiled at most once across all the scans.
+        pipeline
+            .batch_translate(
+                PROGRAM,
+                &[],
+                &retry::RetryConfig::default(),
+                &verifier,
+                None,
+            )
+            .await
+            .expect("cold batch over a live server");
+        assert!(
+            server.read_calls() > 0,
+            "the cold batch should have read live"
+        );
+        assert_eq!(
+            server.count("list_functions"),
+            1,
+            "the function listing should be fetched once per cold batch"
+        );
+        assert_eq!(
+            server.count("decompile_function"),
+            1,
+            "the one function should be decompiled at most once per cold batch"
+        );
+
+        // Wipe the engine-result documents so the second batch re-runs all
+        // eleven scans — only the Ghidra cache may answer them. (The Ghidra
+        // cache itself lives under re/ghidra-cache and stays.)
+        std::fs::remove_dir_all(dir.path().join("re").join("analysis"))
+            .expect("clear engine-result documents");
+
+        // Batch 2, warm: same workspace, same binary bytes — every scan
+        // replays from the Ghidra cache at zero live read cost. The only
+        // live calls the second batch makes are the two probes that
+        // validate the cache manifest before the pass.
+        let probes_before =
+            server.count("get_current_address") + server.count("get_current_function");
+        let reads_before = server.read_calls();
+        pipeline
+            .batch_translate(
+                PROGRAM,
+                &[],
+                &retry::RetryConfig::default(),
+                &verifier,
+                None,
+            )
+            .await
+            .expect("warm batch replays from the cache");
+        assert_eq!(
+            server.read_calls() - reads_before,
+            0,
+            "a second batch over unchanged bytes must make no live Ghidra reads"
+        );
+        assert_eq!(
+            server.count("get_current_address") + server.count("get_current_function")
+                - probes_before,
+            2,
+            "the warm batch's only live calls are its manifest-validation probes"
+        );
+    }
+
+    /// The heartbeat contract survives the cache: a scan pass armed on the
+    /// pipeline's client still beats when the cached source's inner client
+    /// serves a live miss.
+    #[tokio::test]
+    async fn pass_heartbeats_still_beat_on_live_cache_misses() {
+        let dir = TempDir::new().expect("temp workspace");
+        let (pipeline, _server) = cached_pipeline(dir.path()).await;
+        let events = TranslationEvents::new(64);
+        let mut rx = events.subscribe();
+        let pipeline = pipeline.with_events(events);
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        // The batch arms the cached source; the cache is cold, so the
+        // scans' decompiles go live through the cached source's inner
+        // client — the armed passes must still beat.
+        pipeline
+            .batch_translate(
+                PROGRAM,
+                &[],
+                &retry::RetryConfig::default(),
+                &verifier,
+                None,
+            )
+            .await
+            .expect("cold batch over a live server");
+
+        let beats: Vec<ProgressEvent> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter(|ev| matches!(ev, ProgressEvent::BatchProgress { .. }))
+            .collect();
+        assert!(
+            !beats.is_empty(),
+            "a live miss through the cached source must still beat the pass heartbeat"
+        );
+    }
+
+    /// Cache trouble degrades to today's behavior: with a binary file
+    /// present but the server unreachable, the cached source cannot be
+    /// built, and the batch reads live — failing the scans exactly as the
+    /// pre-cache pipeline did over an unreachable Ghidra.
+    #[tokio::test]
+    async fn a_failed_cache_build_degrades_to_live_reads() {
+        let dir = TempDir::new().expect("temp workspace");
+        std::fs::write(dir.path().join(PROGRAM), b"MZ\x90\x00 stand-in binary bytes")
+            .expect("write fake file");
+        let pipeline = pipeline_over(Some(dir.path())).with_binary_path(dir.path().join(PROGRAM));
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        let result = pipeline
+            .batch_translate(
+                PROGRAM,
+                &["DrawPrimitive".to_string()],
+                &retry::RetryConfig::default(),
+                &verifier,
+                None,
+            )
+            .await
+            .expect("a failed cache build degrades — the batch still reports per-function failures");
+        assert_eq!(
+            result.results.len(),
+            1,
+            "the unit ran and failed live, as it did before the cache"
+        );
     }
 }
