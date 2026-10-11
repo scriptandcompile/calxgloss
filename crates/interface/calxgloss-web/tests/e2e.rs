@@ -5668,8 +5668,9 @@ async fn test_headless_pipeline_phase_bar_live() {
 /// with its classification strategy, function counts (total, translated,
 /// in-progress, queued, failed), token consumption, and success rate —
 /// unknown values as em-dashes, never fabricated zeros. The quick-action
-/// buttons must be placeholders that announce only: clicking one fires no
-/// state-changing request and touches no pipeline state.
+/// buttons are real controls (issue #94): clicking one drives the
+/// lifecycle endpoint, and on a router with no live control attached the
+/// server's honest 503 reason surfaces as an error toast.
 ///
 /// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -5946,7 +5947,7 @@ async fn test_headless_pipeline_binary_rows() {
         );
     }
 
-    // ── Quick-action buttons: placeholders that announce, never control ──
+    // ── Quick-action buttons: real controls driving the lifecycle endpoints ──
     assert!(
         eval_bool(
             "[...document.querySelectorAll('#pipeline-binaries [data-binary=\"game_logic.dll\"] .pipeline-binary-actions button')].length === 3"
@@ -5970,31 +5971,504 @@ async fn test_headless_pipeline_binary_rows() {
         "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"start\"]').click() === undefined",
         false,
     )
-    .expect("click start-translation placeholder");
+    .expect("click the start-translation quick action");
 
-    // The click announces the placeholder via a toast…
-    let mut announced = false;
+    // The click is a real control: it fires a POST to the lifecycle endpoint…
+    let mut fired = false;
     for _ in 0..25 {
-        if eval_bool(
-            "[...document.querySelectorAll('#toast-container .toast')].some(t => t.textContent.includes('W2'))",
-        ) {
-            announced = true;
+        if eval_len("window.__nonGetFetches") >= 1 {
+            fired = true;
             break;
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
     assert!(
-        announced,
-        "placeholder button should announce that pipeline control arrives in W2"
+        fired,
+        "the quick action must drive POST /api/pipeline/start, not just announce"
     );
-    // …and touches no pipeline state: no state-changing request was fired.
-    assert_eq!(
-        eval_len("window.__nonGetFetches"),
-        0,
-        "placeholder buttons must not touch pipeline state"
+
+    // …and this plain router has no live control attached, so the server's
+    // own honest 503 reason surfaces as an error toast — never a silent
+    // no-op, never a locally-faked state change.
+    let mut surfaced = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "[...document.querySelectorAll('#toast-container .toast')].some(t => t.textContent.includes('no live pipeline control'))",
+        ) {
+            surfaced = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        surfaced,
+        "the server's 503 reason must surface as an error toast, got: {}",
+        eval_text(
+            "[...document.querySelectorAll('#toast-container .toast')].map(t => t.textContent).join(' | ')"
+        )
     );
 
     tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for the controls header (issue #94, W2.4): the
+/// state badge follows the pipeline's state machine — first from the
+/// server-status snapshot, then over the WebSocket as *another* client
+/// drives the lifecycle endpoints — and the buttons gate by the server's
+/// own transition table at every step.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_controls_header_tracks_live_state() {
+    let fixture = TestFixture::new();
+    let events = TranslationEvents::new(128);
+    let control = PipelineControl::new().with_events(events.clone());
+    let run_requests = RunRequestSignal::new();
+    let state = ServerState::new(fixture.repo_path())
+        .with_pipeline_control(control.clone())
+        .with_run_requests(run_requests.clone());
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+    let eval_text = |expr: &str| -> String {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default()
+    };
+    let header_state =
+        || eval_text("document.getElementById('pipeline-state')?.dataset.state || ''");
+    let btn_disabled = |id: &str| {
+        eval_bool(&format!(
+            "document.getElementById('{id}')?.disabled === true"
+        ))
+    };
+    let wait_for_state = |want: &'static str| async move {
+        for _ in 0..25 {
+            if header_state() == want {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        false
+    };
+
+    // The first server-status snapshot points the header at the machine's
+    // real state — idle, with only Start (and Shut Down Server) available.
+    assert!(
+        wait_for_state("idle").await,
+        "the header must follow the server-status snapshot to idle, got: {}",
+        header_state()
+    );
+    assert!(!btn_disabled("ctl-start"), "Start is available from idle");
+    for id in [
+        "ctl-pause",
+        "ctl-resume",
+        "ctl-stop",
+        "ctl-cancel",
+        "ctl-restart",
+    ] {
+        assert!(btn_disabled(id), "{id} must be disabled in idle");
+    }
+    assert!(
+        !btn_disabled("ctl-shutdown"),
+        "Shut Down Server is always available"
+    );
+
+    // Another client (the reqwest "other tab") drives the lifecycle — the
+    // header follows over the WebSocket with no interaction in this tab.
+    let (status, _) = post_lifecycle(fixture.port(), "/api/pipeline/start").await;
+    assert_eq!(status, 200, "start from idle should succeed");
+    assert!(
+        wait_for_state("running").await,
+        "the header must follow the WS pipeline_state_changed event to running"
+    );
+    assert!(
+        btn_disabled("ctl-start"),
+        "a running run cannot start again"
+    );
+    assert!(
+        !btn_disabled("ctl-pause"),
+        "Pause is available while running"
+    );
+    assert!(!btn_disabled("ctl-stop"), "Stop is available while running");
+    assert!(
+        !btn_disabled("ctl-cancel"),
+        "Cancel current is available while running"
+    );
+
+    // A stale button — force one enabled, as another tab's earlier state
+    // would have left it — issuing an operation the machine forbids: the
+    // server's own 409 reason surfaces as an error toast, and the header
+    // stays truthful rather than corrupting itself.
+    tab.evaluate(
+        "document.getElementById('ctl-start').disabled = false; \
+             document.getElementById('ctl-start').click() === undefined",
+        false,
+    )
+    .expect("force a stale start click");
+    let mut rejected = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "[...document.querySelectorAll('#toast-container .toast')].some(t => t.textContent.includes('cannot start a pipeline that is running'))",
+        ) {
+            rejected = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        rejected,
+        "a stale click must surface the server's 409 reason, got: {}",
+        eval_text(
+            "[...document.querySelectorAll('#toast-container .toast')].map(t => t.textContent).join(' | ')"
+        )
+    );
+    assert_eq!(
+        header_state(),
+        "running",
+        "the rejected click must not corrupt the header's state"
+    );
+
+    let (status, _) = post_lifecycle(fixture.port(), "/api/pipeline/pause").await;
+    assert_eq!(status, 200);
+    assert!(
+        wait_for_state("paused").await,
+        "the header must follow the pause over the WebSocket"
+    );
+    assert!(btn_disabled("ctl-pause"), "a paused run cannot pause again");
+    assert!(
+        !btn_disabled("ctl-resume"),
+        "Resume is available while paused"
+    );
+
+    let (status, _) = post_lifecycle(fixture.port(), "/api/pipeline/resume").await;
+    assert_eq!(status, 200);
+    assert!(
+        wait_for_state("running").await,
+        "the header must follow the resume"
+    );
+
+    let (status, _) = post_lifecycle(fixture.port(), "/api/pipeline/stop").await;
+    assert_eq!(status, 200);
+    assert!(
+        wait_for_state("stopping").await,
+        "the header must follow the stop over the WebSocket"
+    );
+    for id in [
+        "ctl-start",
+        "ctl-pause",
+        "ctl-resume",
+        "ctl-stop",
+        "ctl-restart",
+    ] {
+        assert!(btn_disabled(id), "{id} must be disabled while stopping");
+    }
+
+    // The run finishes (the live loop would do this) — Restart becomes the
+    // only lifecycle operation available.
+    control.complete().expect("stopping -> complete");
+    assert!(
+        wait_for_state("complete").await,
+        "the header must follow the completion over the WebSocket"
+    );
+    assert!(
+        !btn_disabled("ctl-restart"),
+        "Restart is available once the run is complete"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for the restart dialog (issue #94, W2.4): from a
+/// complete run the Restart button opens a dialog with phase / target /
+/// scope selectors and a safety explanation; confirming drives
+/// POST /api/pipeline/restart with the chosen selectors — the header moves
+/// back to running and the live loop's request slot carries the choices.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_restart_dialog_drives_endpoint() {
+    let fixture = TestFixture::new();
+    let events = TranslationEvents::new(128);
+    let control = PipelineControl::new().with_events(events.clone());
+    // A finished run — restart is only legal from Complete or Error.
+    control.start().expect("idle -> running");
+    control.stop().expect("running -> stopping");
+    control.complete().expect("stopping -> complete");
+    let run_requests = RunRequestSignal::new();
+    let mut run_rx = run_requests.subscribe();
+    let state = ServerState::new(fixture.repo_path())
+        .with_pipeline_control(control.clone())
+        .with_run_requests(run_requests.clone());
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+    let eval_text = |expr: &str| -> String {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default()
+    };
+
+    // The header settles on complete, which unlocks Restart.
+    let mut settled = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "document.getElementById('pipeline-state')?.dataset.state === 'complete' \
+                 && document.getElementById('ctl-restart')?.disabled === false",
+        ) {
+            settled = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        settled,
+        "the header must show complete and enable Restart, got: {}",
+        eval_text("document.getElementById('pipeline-state')?.dataset.state || ''")
+    );
+
+    tab.evaluate(
+        "document.getElementById('ctl-restart').click() === undefined",
+        false,
+    )
+    .expect("click Restart");
+
+    // The dialog opens with the three selectors and the safety explanation.
+    let mut opened = false;
+    for _ in 0..25 {
+        if eval_bool("!!document.getElementById('restart-dialog')") {
+            opened = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(opened, "Restart must open the options dialog");
+    assert!(
+        eval_bool(
+            "[...document.querySelectorAll('#restart-phase option')].map(o => o.value).join(',') === 'translate,classify'"
+        ),
+        "phase selector offers translate and classify"
+    );
+    assert!(
+        eval_bool(
+            "[...document.querySelectorAll('#restart-target option')].some(o => o.value === 'all')"
+        ),
+        "target selector offers all binaries"
+    );
+    assert!(
+        eval_bool(
+            "[...document.querySelectorAll('#restart-scope option')].map(o => o.value).join(',') === 'all_functions,only_queued,only_failed'"
+        ),
+        "scope selector offers all_functions, only_queued, and only_failed"
+    );
+    assert!(
+        eval_text("document.querySelector('#restart-dialog .dialog-safety')?.textContent || ''")
+            .contains("nothing in flight is discarded"),
+        "the dialog must explain the safety of restarting"
+    );
+
+    // Pick fresh classification of only the failed functions, then confirm.
+    tab.evaluate(
+        "document.getElementById('restart-phase').value = 'classify'; \
+             document.getElementById('restart-scope').value = 'only_failed'; true",
+        false,
+    )
+    .expect("choose restart selectors");
+    tab.evaluate(
+        "document.getElementById('restart-confirm').click() === undefined",
+        false,
+    )
+    .expect("confirm restart");
+
+    // The header follows the machine back to running…
+    let mut restarted = false;
+    for _ in 0..25 {
+        if eval_bool("document.getElementById('pipeline-state')?.dataset.state === 'running'") {
+            restarted = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        restarted,
+        "confirming the dialog must drive POST /api/pipeline/restart and move the header to running"
+    );
+
+    // …and the live loop's request slot carries the chosen selectors.
+    run_rx
+        .changed()
+        .await
+        .expect("a restart request was queued");
+    let request = run_rx.borrow_and_update().clone();
+    let request = request.expect("the dialog's restart request is stored");
+    assert_eq!(
+        request.phase,
+        RunPhase::Classify,
+        "the dialog's phase reached the endpoint"
+    );
+    assert_eq!(
+        request.scope,
+        RunScope::OnlyFailed,
+        "the dialog's scope reached the endpoint"
+    );
+    assert_eq!(
+        request.target,
+        RunTarget::All,
+        "the default target is all binaries"
+    );
+
+    // The success toast names the selectors it sent.
+    assert!(
+        eval_bool(
+            "[...document.querySelectorAll('#toast-container .toast')].some(t => t.textContent.includes('phase classify') && t.textContent.includes('only failed functions'))"
+        ),
+        "the toast must report the restart the server actually queued, got: {}",
+        eval_text(
+            "[...document.querySelectorAll('#toast-container .toast')].map(t => t.textContent).join(' | ')"
+        )
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for the shutdown dialog (issue #94, W2.4): Shut
+/// Down Server opens a confirmation listing exactly what it does — honest
+/// to the live mode — and confirming drives the existing
+/// POST /api/server/shutdown, taking the accept loop down.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_shutdown_dialog_drives_endpoint() {
+    let fixture = TestFixture::new();
+    let events = TranslationEvents::new(128);
+    let control = PipelineControl::new().with_events(events.clone());
+    let state = ServerState::new(fixture.repo_path()).with_pipeline_control(control.clone());
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state.clone(), manager, progress);
+    // The accept loop watches the state's shutdown flag — the production
+    // graceful-shutdown path, so the dialog visibly stops the server.
+    let server = spawn_server_with_shutdown(&state, router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+    let eval_text = |expr: &str| -> String {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default()
+    };
+
+    // Shut Down Server is available from the very first snapshot.
+    let mut ready = false;
+    for _ in 0..25 {
+        if eval_bool("document.getElementById('ctl-shutdown')?.disabled === false") {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        ready,
+        "Shut Down Server must be enabled once the status snapshot lands"
+    );
+
+    tab.evaluate(
+        "document.getElementById('ctl-shutdown').click() === undefined",
+        false,
+    )
+    .expect("click Shut Down Server");
+
+    let mut opened = false;
+    for _ in 0..25 {
+        if eval_bool("!!document.getElementById('shutdown-dialog')") {
+            opened = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(opened, "Shut Down Server must open the confirmation dialog");
+
+    // The dialog lists exactly what the shutdown does — honest to the live
+    // router: unit boundary, the in-flight unit is saved, then the process stops.
+    let listed =
+        eval_text("document.querySelector('#shutdown-dialog .dialog-list')?.textContent || ''");
+    assert!(
+        listed.contains("unit boundary")
+            && listed.contains("save its state")
+            && listed.contains("Stop the server"),
+        "the confirmation must list the shutdown's actions, got: {listed}"
+    );
+
+    tab.evaluate(
+        "document.getElementById('shutdown-confirm').click() === undefined",
+        false,
+    )
+    .expect("confirm shutdown");
+
+    // The accept loop exits gracefully — the production shutdown path ran.
+    server
+        .await
+        .expect("the dialog's POST takes the server down");
+    let after = reqwest::get(format!(
+        "http://127.0.0.1:{}/api/server/status",
+        fixture.port()
+    ))
+    .await;
+    assert!(
+        after.is_err(),
+        "the server must refuse connections after the dialog's shutdown"
+    );
+
     drop(browser);
 }
 

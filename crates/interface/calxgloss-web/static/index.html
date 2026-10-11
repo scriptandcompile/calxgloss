@@ -39,6 +39,34 @@
 
     <!-- Main content area -->
     <main id="main">
+        <!-- Pipeline controls header (issue #94, W2.4) — pinned to the top
+             of the dashboard; the state badge follows the pipeline's state
+             machine over the WebSocket, and the buttons drive the lifecycle
+             endpoints. Buttons start disabled — honest until the first
+             server-status snapshot says what this server actually holds. -->
+        <div id="pipeline-controls" class="pipeline-controls">
+            <div class="pipeline-controls-state">
+                <span class="pipeline-controls-label">Pipeline</span>
+                <span id="pipeline-state" class="pipeline-state" data-state="unavailable">No pipeline</span>
+            </div>
+            <div class="pipeline-control-buttons">
+                <button id="ctl-start" class="btn btn-sm btn-success" disabled
+                        title="Begin the translation phase of this live session">Start</button>
+                <button id="ctl-pause" class="btn btn-sm" disabled
+                        title="Pause the live run at the next unit boundary">Pause</button>
+                <button id="ctl-resume" class="btn btn-sm" disabled
+                        title="Resume the paused run exactly where it stopped">Resume</button>
+                <button id="ctl-stop" class="btn btn-sm btn-warning" disabled
+                        title="Stop the live run — the current unit finishes and is saved first">Stop</button>
+                <button id="ctl-cancel" class="btn btn-sm" disabled
+                        title="Cancel the unit in flight — the run continues with the next unit">Cancel current</button>
+                <button id="ctl-restart" class="btn btn-sm" disabled
+                        title="Re-run a finished pipeline with phase, target, and scope selectors">Restart</button>
+                <button id="ctl-shutdown" class="btn btn-sm btn-danger"
+                        title="Pause the pipeline, save state, and stop the server">Shut Down Server</button>
+            </div>
+        </div>
+
         <!-- Dashboard view -->
         <section id="view-dashboard" class="view view-active">
             <!-- Status cards row -->

@@ -45,6 +45,8 @@ import {
 } from "./js/llm-log.js";
 import { loadGcCandidates, archiveSelectedGc } from "./js/gc.js";
 import { loadLiveProgress, applyUnitPhase } from "./js/live.js";
+import { setupPipelineControls, setPipelineState } from "./js/pipeline-controls.js";
+import { API } from "./js/api.js";
 import { showToast } from "./js/ui.js";
 
 // ─── Event Handlers ─────────────────────────────────────────────────────
@@ -55,6 +57,9 @@ function setupEventListeners() {
         tab.addEventListener("click", () => switchView(tab.dataset.view));
     });
 
+    // Pipeline controls header (issue #94) — buttons drive the lifecycle
+    // endpoints; the state badge follows the WS-pushed transitions.
+    setupPipelineControls();
 
 
     // Refresh button
@@ -296,6 +301,22 @@ function handleWSMessage(event) {
         return;
     }
 
+    // Pipeline lifecycle transitions (issue #94) — the controls header
+    // follows the state machine in real time, including changes made in
+    // another browser tab. The server's own event is the truth; no refetch.
+    if (event.event === "pipeline_state_changed") {
+        setPipelineState(event.state);
+        showToast(`Pipeline ${event.state}`, "info");
+    }
+
+    // Unit cancellation (issue #91) — name the unit the run just dropped.
+    if (event.event === "unit_cancelled") {
+        showToast(
+            `Cancelled ${event.function} (${event.binary}) — the run continues with the next unit`,
+            "warning"
+        );
+    }
+
     // Handle translation start — show a toast notification
     if (event.event === "translation_started") {
         showToast(
@@ -447,6 +468,11 @@ async function init() {
         if (State.currentView === "live") {
             loadLiveProgress();
         }
+        // The controls header must be truthful after a gap too — transitions
+        // missed while disconnected are re-read from the server's own status.
+        API.serverStatus()
+            .then((s) => setPipelineState(s.pipeline_status))
+            .catch(() => {});
     };
     State.wsManager.connect();
 

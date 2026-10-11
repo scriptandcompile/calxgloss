@@ -70,6 +70,14 @@ export const API = {
     async restartServer() { return API.post("/api/server/restart"); },
     async setLogLevel(level) { return API.patch("/api/server/log-level", { level }); },
     async pipeline() { return API.get("/api/pipeline"); },
+    // Pipeline lifecycle control (issue #90/#91/#92, driven by the controls
+    // header in issue #94) — live router only; plain serve answers 503/404.
+    async startPipeline() { return API.post("/api/pipeline/start"); },
+    async pausePipeline() { return API.post("/api/pipeline/pause"); },
+    async resumePipeline() { return API.post("/api/pipeline/resume"); },
+    async stopPipeline() { return API.post("/api/pipeline/stop"); },
+    async restartPipeline(options) { return API.post("/api/pipeline/restart", options); },
+    async cancelCurrentUnit() { return API.post("/api/pipeline/cancel-current"); },
     async liveProgress() { return API.get("/api/progress/enhanced"); },
     async gcCandidates(days) { return API.get(`/api/gc/candidates?days=${days}`); },
     async gcArchive(branches) { return API.post("/api/gc/archive", branches.length > 0 ? { branches } : {}); },

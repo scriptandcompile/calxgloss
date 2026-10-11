@@ -11,6 +11,7 @@ import { showToast } from "./ui.js";
 import { renderFullQueue } from "./queue.js";
 import { renderPipelinePhaseBar } from "./phase-bar.js";
 import { renderPipelineBinaryRows } from "./binary-rows.js";
+import { setPipelineState } from "./pipeline-controls.js";
 import { switchView } from "./views.js";
 
 export async function loadDashboard() {
@@ -259,6 +260,9 @@ export async function renderServerStatusCard() {
         set("#server-status-cpu", `${status.cpu_percent}%`);
         set("#server-status-ws", `${status.ws_connections} WS`);
         set("#server-status-fd", `${status.open_file_handles} FD`);
+        // The controls header shares the snapshot — the server's state
+        // machine is the single truth the badge shows (issue #94).
+        setPipelineState(status.pipeline_status);
         return status;
     } catch {
         // Silently fail — server status card is non-critical

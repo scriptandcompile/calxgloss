@@ -9,18 +9,27 @@
    tokens, queued counts, and rates render as "—", never as fabricated
    zeros.
 
-   The quick-action buttons (Start Translation, Pause, Configure) are
-   placeholders that announce only — real pipeline control is W2's job
-   and must not be wired up here.
+   The quick-action buttons (Start Translation, Pause, Configure) are real
+   controls (issue #94): the first two drive the pipeline lifecycle
+   endpoints, Configure opens the restart dialog with this binary pre-
+   selected as the target. The server's own reason surfaces on rejection —
+   a stale click is never a silent no-op.
    ========================================================================== */
 
 import { escapeHtml } from "./utils.js";
-import { showToast } from "./ui.js";
+import { API } from "./api.js";
+import { runControl, showRestartDialog } from "./pipeline-controls.js";
 
 const ACTION_LABELS = {
     start: "Start Translation",
     pause: "Pause",
     configure: "Configure",
+};
+
+const ACTION_TITLES = {
+    start: "Start a pipeline run (POST /api/pipeline/start)",
+    pause: "Pause the live run at the current unit boundary (POST /api/pipeline/pause)",
+    configure: "Open restart options with this binary pre-selected",
 };
 
 // Classification strategies arrive as Debug-formatted strings (e.g.
@@ -131,7 +140,7 @@ function renderRow(b) {
     const dll = escapeHtml(b.binary || "unknown");
 
     return `
-        <div class="pipeline-binary-row" data-dll="${dll}" data-status="${status.cls}">
+        <div class="pipeline-binary-row" data-binary="${dll}" data-status="${status.cls}">
             <div class="pipeline-binary-head">
                 <span class="pipeline-binary-name" title="${dll}">${dll}</span>
             </div>
@@ -154,7 +163,7 @@ function renderRow(b) {
             <div class="pipeline-binary-actions">
                 ${Object.entries(ACTION_LABELS)
                     .map(
-                        ([action, label]) => `<button class="pipeline-action-btn" data-action="${action}" data-dll="${dll}" title="Placeholder — pipeline control arrives in W2">${label}</button>`
+                        ([action, label]) => `<button class="pipeline-action-btn" data-action="${action}" data-binary="${dll}" title="${ACTION_TITLES[action] || ""}">${label}</button>`
                     )
                     .join("")}
             </div>
@@ -171,18 +180,24 @@ export function renderPipelineBinaryRows(binaries) {
     const container = document.getElementById("pipeline-binaries");
     if (!container) return;
 
-    // One delegated listener survives innerHTML re-renders. Placeholders
-    // announce only — they must never call a state-changing endpoint.
-    if (!container.dataset.placeholderWired) {
-        container.dataset.placeholderWired = "1";
-        container.addEventListener("click", (e) => {
+    // One delegated listener survives innerHTML re-renders. Real controls:
+    // start/pause drive the lifecycle endpoints, configure opens the
+    // restart dialog for this binary.
+    if (!container.dataset.actionsWired) {
+        container.dataset.actionsWired = "1";
+        container.addEventListener("click", async (e) => {
             const btn = e.target.closest(".pipeline-action-btn");
             if (!btn) return;
-            const action = ACTION_LABELS[btn.dataset.action] || btn.dataset.action;
-            showToast(
-                `${action} (${btn.dataset.dll}) is a placeholder — pipeline control arrives in W2.`,
-                "info"
-            );
+            const { action, binary } = btn.dataset;
+            if (action === "configure") {
+                showRestartDialog({ target: binary });
+                return;
+            }
+            const call =
+                action === "start" ? () => API.startPipeline() : () => API.pausePipeline();
+            // Same driver as the header buttons: success adopts the server's
+            // state, rejection surfaces the server's own reason.
+            await runControl(action, call);
         });
     }
 
