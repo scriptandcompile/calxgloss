@@ -1708,7 +1708,8 @@ mod tests {
 
         let llm_base = fake_llm().await;
         let llm = LlmClient::from_url(&llm_base, "test-model").expect("llm client");
-        let ghidra = calxgloss_ghidra::GhidraClient::new("http://127.0.0.1:1").expect("ghidra client");
+        let ghidra =
+            calxgloss_ghidra::GhidraClient::new("http://127.0.0.1:1").expect("ghidra client");
         let source = calxgloss_ghidra::PipelineSource::Live(ghidra);
         let verifier = Verifier::new(&ws.path().join("verify")).expect("verifier");
         let config = RetryConfig {

@@ -27,6 +27,7 @@ pub async fn handle_live(
     no_callgraph: bool,
     callgraph_cache: Option<PathBuf>,
     callgraph_verbose: bool,
+    refresh_ghidra_cache: bool,
     log_level: &'static str,
     log_filter: LogLevelControl,
 ) -> Result<()> {
@@ -178,6 +179,7 @@ pub async fn handle_live(
         no_callgraph,
         callgraph_cache,
         callgraph_verbose,
+        refresh_ghidra_cache,
         Some(&stop_signal),  // shutdown/restart endpoints pause at unit boundaries
         Some(&control),      // pause/resume/stop endpoints drive the run
         Some(&cancellation), // cancel-current endpoint aborts the in-flight unit

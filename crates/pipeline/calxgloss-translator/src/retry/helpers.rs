@@ -77,12 +77,7 @@ pub async fn extract_call_graph_neighbors<S: ScanSource>(
     // One (cached) function listing resolves every neighbor name to its
     // address — no per-name search request.
     let functions = source.functions().await.unwrap_or_default();
-    let address_of = |name: &str| {
-        functions
-            .iter()
-            .find(|f| f.name == name)
-            .map(|f| f.address)
-    };
+    let address_of = |name: &str| functions.iter().find(|f| f.name == name).map(|f| f.address);
 
     let mut neighbors = Vec::new();
     for name in call_graph {

@@ -27,8 +27,8 @@
 //! failure aborts the build.
 
 use anyhow::Result;
-use calxgloss_ghidra::parse;
 use calxgloss_ghidra::ScanSource;
+use calxgloss_ghidra::parse;
 use tracing::{info, warn};
 
 use crate::{CallGraph, CallGraphEdge, CallType, FunctionCallGraph, NodeCategory};
@@ -79,7 +79,6 @@ impl<S> CallGraphBuilder<S> {
 }
 
 impl<S: ScanSource + Sync> CallGraphBuilder<S> {
-
     /// Builds the complete call graph by querying Ghidra for all functions
     /// and their caller/callee relationships.
     ///

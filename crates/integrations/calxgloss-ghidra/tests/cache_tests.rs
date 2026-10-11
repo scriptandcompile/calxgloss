@@ -415,6 +415,40 @@ async fn a_second_instance_over_the_same_workspace_replays_with_zero_live_reads(
 }
 
 #[tokio::test]
+async fn a_refresh_instance_goes_cold_and_rewrites_the_cache() {
+    let fake = FakeServer::start().await;
+    let (workspace, binary) = workspace_with_binary(b"the program's bytes");
+
+    let first = cached_over(&fake, workspace.path(), &binary).await;
+    drive_reads(&first).await;
+    let after_first_run = fake.read_calls();
+
+    // The refresh escape hatch (issue #106): same workspace, same bytes,
+    // warm disk tier — a refreshing instance ignores it, refetching every
+    // key live.
+    let client = GhidraClient::new(&fake.base_url).expect("fake ghidra client");
+    let refreshed = CachedGhidraSource::new_refresh(client, workspace.path(), PROGRAM, &binary)
+        .await
+        .expect("refreshing cached source");
+    drive_reads(&refreshed).await;
+    assert_eq!(
+        fake.read_calls() - after_first_run,
+        READ_ENDPOINTS.len() + 1,
+        "a refresh refetches every key live (callers rides the xrefs endpoint)"
+    );
+
+    // And the refresh rewrote the cache: a third plain instance over the
+    // same workspace replays warm again at zero live cost.
+    let third = cached_over(&fake, workspace.path(), &binary).await;
+    drive_reads(&third).await;
+    assert_eq!(
+        fake.read_calls(),
+        after_first_run * 2,
+        "the rewritten cache replays with no further live reads"
+    );
+}
+
+#[tokio::test]
 async fn concurrent_misses_of_one_item_fire_exactly_one_live_request() {
     let fake = FakeServer::start().await;
     let (workspace, binary) = workspace_with_binary(b"the program's bytes");

@@ -32,11 +32,13 @@ pub async fn handle_batch_translate(
         all_functions,
         skip_git,
         no_callgraph,
+        refresh_ghidra_cache,
         ..
     } = args;
     let (target, binary) = (target.as_path(), binary.as_str());
     let skip_git = *skip_git;
     let no_callgraph = *no_callgraph;
+    let refresh_ghidra_cache = *refresh_ghidra_cache;
 
     let llm_url = settings.require_llm_url()?;
     let llm_model = settings.require_llm_model()?;
@@ -152,6 +154,11 @@ pub async fn handle_batch_translate(
     // The batch's shared Ghidra read cache keys on the target binary's
     // file bytes (issue #105) — hand the pipeline the file it was given.
     pipeline = pipeline.with_binary_path(target);
+    // The refresh escape hatch (issue #106): force the cache cold when the
+    // operator says the Ghidra program changed under unchanged bytes.
+    if refresh_ghidra_cache {
+        pipeline = pipeline.with_refresh_ghidra_cache();
+    }
 
     // Git setup
     let mut git = if !skip_git {

@@ -167,6 +167,16 @@ pub(super) struct BatchTranslateArgs {
     /// distribution, and external API count.
     #[arg(long)]
     pub(super) callgraph_verbose: bool,
+
+    /// Force fresh Ghidra reads, ignoring and rewriting the batch's Ghidra
+    /// read cache (`re/ghidra-cache/`)
+    ///
+    /// Use it after the Ghidra program changed — re-analysis, applied
+    /// types, renames — while the binary's bytes stayed the same: the
+    /// cache's manifest cannot detect that case. Deleting the binary's
+    /// cache directory by hand does the same without a run.
+    #[arg(long)]
+    pub(super) refresh_ghidra_cache: bool,
 }
 
 /// Subcommands for the CLI.
@@ -645,6 +655,16 @@ pub(super) enum Command {
         /// distribution, and external API count.
         #[arg(long)]
         callgraph_verbose: bool,
+
+        /// Force fresh Ghidra reads, ignoring and rewriting the batch's
+        /// Ghidra read cache (`re/ghidra-cache/`)
+        ///
+        /// Use it after the Ghidra program changed — re-analysis, applied
+        /// types, renames — while the binary's bytes stayed the same: the
+        /// cache's manifest cannot detect that case. Deleting the binary's
+        /// cache directory by hand does the same without a run.
+        #[arg(long)]
+        refresh_ghidra_cache: bool,
     },
 
     /// Start the web review UI server
@@ -741,6 +761,16 @@ pub(super) enum Command {
         /// distribution, and external API count.
         #[arg(long)]
         callgraph_verbose: bool,
+
+        /// Force fresh Ghidra reads, ignoring and rewriting the batch's
+        /// Ghidra read cache (`re/ghidra-cache/`)
+        ///
+        /// Use it after the Ghidra program changed — re-analysis, applied
+        /// types, renames — while the binary's bytes stayed the same: the
+        /// cache's manifest cannot detect that case. Deleting the binary's
+        /// cache directory by hand does the same without a run.
+        #[arg(long)]
+        refresh_ghidra_cache: bool,
     },
 
     /// Generate shim layers for all crate-replacement DLLs automatically.

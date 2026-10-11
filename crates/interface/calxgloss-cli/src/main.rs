@@ -177,6 +177,7 @@ fn main() -> Result<()> {
         no_callgraph: false,
         callgraph_cache: None,
         callgraph_verbose: false,
+        refresh_ghidra_cache: false,
     });
     let result = match command {
         Command::Config => {
@@ -404,6 +405,7 @@ fn main() -> Result<()> {
             no_callgraph,
             callgraph_cache,
             callgraph_verbose,
+            refresh_ghidra_cache,
         } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
@@ -423,6 +425,7 @@ fn main() -> Result<()> {
                     no_callgraph,
                     callgraph_cache,
                     callgraph_verbose,
+                    refresh_ghidra_cache,
                     None, // no stop signal — plain auto runs to completion
                     None, // no pipeline control — plain auto has no web server
                     None, // no unit cancellation — plain auto has no web server
@@ -471,6 +474,7 @@ fn main() -> Result<()> {
             no_callgraph,
             callgraph_cache,
             callgraph_verbose,
+            refresh_ghidra_cache,
         } => {
             // live always uses CWD as the workspace — config / env overrides
             // are ignored because the workspace (where .git, src/, scratch/
@@ -492,6 +496,7 @@ fn main() -> Result<()> {
                     no_callgraph,
                     callgraph_cache,
                     callgraph_verbose,
+                    refresh_ghidra_cache,
                     log_level,
                     log_filter,
                 ))

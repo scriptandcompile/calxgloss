@@ -44,6 +44,7 @@ pub async fn run_translation_for_dll(
     no_callgraph: bool,
     callgraph_cache: Option<PathBuf>,
     callgraph_verbose: bool,
+    refresh_ghidra_cache: bool,
     stop: Option<&StopSignal>,
     control: Option<&PipelineControl>,
     cancellation: Option<&UnitCancellation>,
@@ -154,6 +155,11 @@ pub async fn run_translation_for_dll(
     // The batch's shared Ghidra read cache keys on the target binary's
     // file bytes (issue #105).
     pipeline = pipeline.with_binary_path(binary_path);
+    // The refresh escape hatch (issue #106): force the cache cold when the
+    // operator says the Ghidra program changed under unchanged bytes.
+    if refresh_ghidra_cache {
+        pipeline = pipeline.with_refresh_ghidra_cache();
+    }
 
     // Git setup
     let mut git = if !skip_git {
@@ -341,6 +347,7 @@ pub async fn handle_auto(
     no_callgraph: bool,
     callgraph_cache: Option<PathBuf>,
     callgraph_verbose: bool,
+    refresh_ghidra_cache: bool,
     stop: Option<&StopSignal>,
     control: Option<&PipelineControl>,
     cancellation: Option<&UnitCancellation>,
@@ -519,6 +526,7 @@ pub async fn handle_auto(
                 no_callgraph,
                 callgraph_cache.clone(),
                 callgraph_verbose,
+                refresh_ghidra_cache,
                 stop,
                 control,
                 cancellation,
@@ -568,6 +576,7 @@ pub async fn handle_auto(
             no_callgraph,
             callgraph_cache,
             callgraph_verbose,
+            refresh_ghidra_cache,
             stop,
             control,
             cancellation,

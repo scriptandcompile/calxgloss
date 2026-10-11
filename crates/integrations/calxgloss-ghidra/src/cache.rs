@@ -18,12 +18,16 @@
 //! mismatch on any field (or a corrupt manifest) treats the directory as
 //! cold: it is wiped and rewritten, so a stale entry is never served.
 //!
-//! **Forcing a cold cache:** delete the cache directory (or the binary's
-//! whole identity directory). The bridge reports no Ghidra version, so a
-//! re-analysis *inside* Ghidra over unchanged bytes cannot be detected —
-//! clearing the directory is the documented way to honor one. Bumping
-//! [`CACHE_FORMAT_VERSION`] invalidates every cache at once when the
-//! record shape changes.
+//! **Forcing a cold cache:** the `--refresh-ghidra-cache` CLI flag (on
+//! `batch-translate`, `auto`, and `live`) routes the run through
+//! [`CachedGhidraSource::new_refresh`] — the directory is wiped and
+//! rewritten, so every read goes live once and the next run replays warm
+//! again. Deleting the cache directory (or the binary's whole identity
+//! directory) does the same by hand. The bridge reports no Ghidra version,
+//! so a re-analysis *inside* Ghidra over unchanged bytes cannot be
+//! detected — the flag and the deletion are the documented ways to honor
+//! one. Bumping [`CACHE_FORMAT_VERSION`] invalidates every cache at once
+//! when the record shape changes.
 //!
 //! **Degradation, never failure:** a missing or unreadable binary file drops
 //! the disk tier entirely and reads pass straight through to the client; a
@@ -138,6 +142,39 @@ impl CachedGhidraSource {
         binary: impl Into<BinaryIdentity>,
         binary_path: impl AsRef<Path>,
     ) -> Result<Self> {
+        Self::build(client, workspace, binary, binary_path, false).await
+    }
+
+    /// Like [`new`](Self::new), but forces the disk tier cold first: the
+    /// directory for this binary's current bytes is wiped before the
+    /// manifest is opened, so every read goes live and the cache is
+    /// rewritten by write-through.
+    ///
+    /// This is the escape hatch for the one stale case the manifest cannot
+    /// detect — the Ghidra *program* changed (re-analysis, applied types,
+    /// renames) while the binary's bytes stayed the same, and the bridge
+    /// reports no Ghidra version to notice it with. The CLI's
+    /// `--refresh-ghidra-cache` flag routes a run through here (issue #106).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`new`](Self::new).
+    pub async fn new_refresh(
+        client: GhidraClient,
+        workspace: impl AsRef<Path>,
+        binary: impl Into<BinaryIdentity>,
+        binary_path: impl AsRef<Path>,
+    ) -> Result<Self> {
+        Self::build(client, workspace, binary, binary_path, true).await
+    }
+
+    async fn build(
+        client: GhidraClient,
+        workspace: impl AsRef<Path>,
+        binary: impl Into<BinaryIdentity>,
+        binary_path: impl AsRef<Path>,
+        refresh: bool,
+    ) -> Result<Self> {
         let binary = binary.into();
         let binary_path = binary_path.as_ref();
         let cache_dir = match sha256_of_file(binary_path) {
@@ -157,7 +194,7 @@ impl CachedGhidraSource {
                     format_version: CACHE_FORMAT_VERSION,
                     program,
                 };
-                match open_manifest(&dir, &manifest) {
+                match open_manifest(&dir, &manifest, refresh) {
                     Ok(()) => Some(dir),
                     Err(err) => {
                         warn!(
@@ -461,8 +498,30 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// entries cannot be trusted: it is wiped (so no stale entry can be served
 /// later) and rewritten with this run's facts, leaving a cold but writable
 /// directory.
-fn open_manifest(dir: &Path, manifest: &CacheManifest) -> std::result::Result<(), PersistError> {
+///
+/// `refresh` is the operator's escape hatch (issue #106): the manifest can
+/// match while the Ghidra program behind the entries has changed —
+/// re-analysis, applied types, renames over unchanged bytes — so a refresh
+/// wipes and rewrites regardless of what the manifest says.
+fn open_manifest(
+    dir: &Path,
+    manifest: &CacheManifest,
+    refresh: bool,
+) -> std::result::Result<(), PersistError> {
     let path = dir.join("manifest.json");
+    if refresh {
+        // A failed wipe must not leave warm entries behind: the refresh
+        // exists precisely to force live reads, so the directory is
+        // reported unusable and the run degrades to pass-through live
+        // reads rather than silently replaying stale ones.
+        if let Err(err) = std::fs::remove_dir_all(dir) {
+            return Err(PersistError::Io {
+                path: dir.to_path_buf(),
+                source: err,
+            });
+        }
+        return save_json(&path, manifest);
+    }
     match load_json::<CacheManifest>(&path) {
         Ok(existing) if existing == *manifest => Ok(()),
         Ok(existing) => {
@@ -570,13 +629,36 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let cache = dir.path().join("cache");
         let manifest = sample_manifest();
-        open_manifest(&cache, &manifest).expect("first open writes the manifest");
+        open_manifest(&cache, &manifest, false).expect("first open writes the manifest");
         save_json(&cache.join("functions.json"), &vec![1u8]).expect("entry written");
 
-        open_manifest(&cache, &manifest).expect("matching manifest stays warm");
+        open_manifest(&cache, &manifest, false).expect("matching manifest stays warm");
         assert!(
             cache.join("functions.json").is_file(),
             "warm entries survive"
+        );
+    }
+
+    #[test]
+    fn a_refresh_open_wipes_even_a_matching_manifest() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let cache = dir.path().join("cache");
+        let manifest = sample_manifest();
+        open_manifest(&cache, &manifest, false).expect("first open writes the manifest");
+        save_json(&cache.join("functions.json"), &vec![1u8]).expect("entry written");
+
+        // The refresh escape hatch (issue #106): the manifest can match while
+        // the Ghidra program behind the entries has been re-analyzed, so a
+        // refresh run must wipe and rewrite regardless.
+        open_manifest(&cache, &manifest, true).expect("refresh rewrites the manifest");
+        assert!(
+            !cache.join("functions.json").is_file(),
+            "a refresh goes cold even over a matching manifest"
+        );
+        assert_eq!(
+            load_json::<CacheManifest>(&cache.join("manifest.json")).expect("manifest rewritten"),
+            manifest,
+            "the refreshed directory still records this run's facts"
         );
     }
 
@@ -585,7 +667,7 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let cache = dir.path().join("cache");
         let manifest = sample_manifest();
-        open_manifest(&cache, &manifest).expect("first open writes the manifest");
+        open_manifest(&cache, &manifest, false).expect("first open writes the manifest");
         save_json(&cache.join("functions.json"), &vec![1u8]).expect("entry written");
 
         for stale in [
@@ -602,7 +684,7 @@ mod tests {
                 ..manifest.clone()
             },
         ] {
-            open_manifest(&cache, &stale).expect("mismatch rewrites the manifest");
+            open_manifest(&cache, &stale, false).expect("mismatch rewrites the manifest");
             assert!(
                 !cache.join("functions.json").is_file(),
                 "a mismatched directory must not keep entries that could be served stale"
@@ -622,7 +704,7 @@ mod tests {
         std::fs::write(cache.join("functions.json"), "{}").expect("entry written");
 
         let manifest = sample_manifest();
-        open_manifest(&cache, &manifest).expect("corrupt manifest is replaced");
+        open_manifest(&cache, &manifest, false).expect("corrupt manifest is replaced");
         assert!(!cache.join("functions.json").is_file(), "cold means empty");
         assert_eq!(
             load_json::<CacheManifest>(&cache.join("manifest.json")).expect("new manifest"),

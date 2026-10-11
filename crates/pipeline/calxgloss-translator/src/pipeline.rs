@@ -199,6 +199,18 @@ pub struct TranslationPipeline {
     /// from the disk tier with zero live reads.
     cached_source: Mutex<Option<CachedGhidraSource>>,
 
+    /// Force the batch's Ghidra read cache cold (issue #106).
+    ///
+    /// Set by the CLI's `--refresh-ghidra-cache` flag. When true,
+    /// [`begin_cached_source`](Self::begin_cached_source) opens the cache
+    /// through [`CachedGhidraSource::new_refresh`]: the disk tier for the
+    /// binary's current bytes is wiped before the run, every read goes
+    /// live, and the cache is rewritten. This is the escape hatch for a
+    /// Ghidra program that changed (re-analysis, applied types, renames)
+    /// under unchanged binary bytes — the manifest cannot detect that
+    /// case because the bridge reports no Ghidra version.
+    refresh_ghidra_cache: bool,
+
     /// Shared stop signal for graceful shutdown of a live run.
     ///
     /// When set and stopped, the batch loops break at the next **unit
@@ -253,6 +265,7 @@ impl TranslationPipeline {
             callgraph_cache_dir: None,
             binary_path: None,
             cached_source: Mutex::new(None),
+            refresh_ghidra_cache: false,
             stop: None,
             pipeline_control: None,
             unit_cancellation: None,
@@ -459,6 +472,20 @@ impl TranslationPipeline {
     /// costs no live Ghidra reads. Without it, batches read live.
     pub fn with_binary_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.binary_path = Some(path.into());
+        self
+    }
+
+    /// Force the batch's Ghidra read cache cold for this pipeline's batches
+    /// (issue #106).
+    ///
+    /// The CLI's `--refresh-ghidra-cache` flag sets it. Each batch then
+    /// wipes the disk tier for the binary's current bytes before reading:
+    /// every Ghidra read goes live once and is written back, honoring a
+    /// Ghidra program that changed (re-analysis, applied types, renames)
+    /// under unchanged bytes — the one staleness the manifest cannot
+    /// detect. Without this, warm batches replay from the cache unchanged.
+    pub fn with_refresh_ghidra_cache(mut self) -> Self {
+        self.refresh_ghidra_cache = true;
         self
     }
 
@@ -1455,14 +1482,20 @@ impl TranslationPipeline {
             return;
         };
 
-        match CachedGhidraSource::new(self.ghidra.clone(), workspace, binary, binary_path).await {
+        let opened = if self.refresh_ghidra_cache {
+            CachedGhidraSource::new_refresh(self.ghidra.clone(), workspace, binary, binary_path)
+                .await
+        } else {
+            CachedGhidraSource::new(self.ghidra.clone(), workspace, binary, binary_path).await
+        };
+        match opened {
             Ok(source) => {
                 debug!(
                     binary,
-                    cache_dir = source.cache_dir().map_or_else(
-                        || "(memo only)".to_string(),
-                        |d| d.display().to_string()
-                    ),
+                    refresh = self.refresh_ghidra_cache,
+                    cache_dir = source
+                        .cache_dir()
+                        .map_or_else(|| "(memo only)".to_string(), |d| d.display().to_string()),
                     "Batch Ghidra reads will go through the shared cache"
                 );
                 *self
@@ -4123,12 +4156,12 @@ mod tests {
                             format!(
                                 "{{\"address\":\"180000000\",\"program\":\"{PROGRAM}\",\"function_name\":\"{KNOWN_FUNCTION}\"}}"
                             )
-                        } else if endpoint == "list_functions"
-                            || endpoint == "search_functions"
-                        {
+                        } else if endpoint == "list_functions" || endpoint == "search_functions" {
                             format!("{KNOWN_FUNCTION} at 18003e750")
                         } else if endpoint == "decompile_function" {
-                            format!("undefined {KNOWN_FUNCTION}(void)\n{{\n  void *pv = malloc(0x10);\n  free(pv);\n}}\n")
+                            format!(
+                                "undefined {KNOWN_FUNCTION}(void)\n{{\n  void *pv = malloc(0x10);\n  free(pv);\n}}\n"
+                            )
                         } else if endpoint == "list_strings" {
                             "180128d18: \"Journal.txt\"".to_string()
                         } else if endpoint == "get_xrefs_to" {
@@ -4275,6 +4308,84 @@ mod tests {
         );
     }
 
+    /// The refresh escape hatch (issue #106): a batch with the flag set
+    /// ignores even a warm disk tier — every scan reads live again — and
+    /// rewrites the cache, so the next plain batch replays warm once more.
+    #[tokio::test]
+    async fn the_refresh_flag_forces_a_warm_batch_back_to_live_reads() {
+        let dir = TempDir::new().expect("temp workspace");
+        let (pipeline, server) = cached_pipeline(dir.path()).await;
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        // Batch 1, cold: reads live and writes the cache through.
+        pipeline
+            .batch_translate(
+                PROGRAM,
+                &[],
+                &retry::RetryConfig::default(),
+                &verifier,
+                None,
+            )
+            .await
+            .expect("cold batch over a live server");
+        let after_cold = server.read_calls();
+        assert!(after_cold > 0, "the cold batch should have read live");
+
+        // Wipe the engine-result documents so each later batch re-runs all
+        // eleven scans — only the Ghidra cache may answer them.
+        std::fs::remove_dir_all(dir.path().join("re").join("analysis"))
+            .expect("clear engine-result documents");
+
+        // Batch 2 with the refresh flag: same workspace, same bytes, warm
+        // cache — but the scans must read live again, honoring a Ghidra
+        // program that changed under unchanged bytes.
+        let ghidra = GhidraClient::new(&server.base_url).expect("client config");
+        let refreshed = pipeline_with(ghidra, Some(dir.path()))
+            .with_binary_path(dir.path().join(PROGRAM))
+            .with_refresh_ghidra_cache();
+        refreshed
+            .batch_translate(
+                PROGRAM,
+                &[],
+                &retry::RetryConfig::default(),
+                &verifier,
+                None,
+            )
+            .await
+            .expect("a refreshed batch reads live over a warm cache");
+        assert_eq!(
+            server.read_calls() - after_cold,
+            after_cold,
+            "the refresh must refetch live exactly what the cold batch fetched — \
+             a partial refresh would leave stale entries served"
+        );
+
+        std::fs::remove_dir_all(dir.path().join("re").join("analysis"))
+            .expect("clear engine-result documents");
+
+        // Batch 3, plain again: the refresh rewrote the cache, so the warm
+        // replay behavior is back.
+        let ghidra = GhidraClient::new(&server.base_url).expect("client config");
+        let replay =
+            pipeline_with(ghidra, Some(dir.path())).with_binary_path(dir.path().join(PROGRAM));
+        let reads_before = server.read_calls();
+        replay
+            .batch_translate(
+                PROGRAM,
+                &[],
+                &retry::RetryConfig::default(),
+                &verifier,
+                None,
+            )
+            .await
+            .expect("warm batch replays from the rewritten cache");
+        assert_eq!(
+            server.read_calls() - reads_before,
+            0,
+            "the refresh must rewrite the cache, not just bypass it"
+        );
+    }
+
     /// The heartbeat contract survives the cache: a scan pass armed on the
     /// pipeline's client still beats when the cached source's inner client
     /// serves a live miss.
@@ -4317,8 +4428,11 @@ mod tests {
     #[tokio::test]
     async fn a_failed_cache_build_degrades_to_live_reads() {
         let dir = TempDir::new().expect("temp workspace");
-        std::fs::write(dir.path().join(PROGRAM), b"MZ\x90\x00 stand-in binary bytes")
-            .expect("write fake file");
+        std::fs::write(
+            dir.path().join(PROGRAM),
+            b"MZ\x90\x00 stand-in binary bytes",
+        )
+        .expect("write fake file");
         let pipeline = pipeline_over(Some(dir.path())).with_binary_path(dir.path().join(PROGRAM));
         let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
 
@@ -4331,7 +4445,9 @@ mod tests {
                 None,
             )
             .await
-            .expect("a failed cache build degrades — the batch still reports per-function failures");
+            .expect(
+                "a failed cache build degrades — the batch still reports per-function failures",
+            );
         assert_eq!(
             result.results.len(),
             1,

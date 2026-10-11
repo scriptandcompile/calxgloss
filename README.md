@@ -132,6 +132,24 @@ print the three ways to set it. `workspace` defaults to the current directory �
 and `live`/`serve` always use the current directory, ignoring config and
 environment unless you pass `--workspace`.
 
+### Ghidra Read Cache
+
+Batch runs (`batch-translate`, `auto`, `live`) cache every Ghidra read under
+`re/ghidra-cache/<binary>/<sha256>/`, keyed on the target binary's file bytes,
+the Ghidra program name, and the cache format version. A second batch over
+unchanged bytes replays from the cache with zero live reads; changed bytes hash
+to a different directory, so stale entries never need invalidating.
+
+One case the cache cannot detect: the *program inside Ghidra* changed —
+re-analysis, applied types, renames — while the binary's bytes stayed the same
+(the bridge reports no Ghidra version to notice it with). Two ways out:
+
+- run with `--refresh-ghidra-cache` — the run wipes the cache directory for
+  that binary's current bytes (`re/ghidra-cache/<binary>/<sha256>/`), reads
+  everything live once, and rewrites the cache for the next run;
+- delete `re/ghidra-cache/<binary>/` by hand — every byte version of the
+  binary at once.
+
 ## Workspace Structure
 
 | Crate | Purpose |
