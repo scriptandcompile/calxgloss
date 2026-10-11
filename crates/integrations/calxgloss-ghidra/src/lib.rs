@@ -23,11 +23,17 @@
 //!   (`segments` → `list_segments`, `xrefs_to` → `get_xrefs_to`,
 //!   `searchFunctions` → `search_functions`, …). The paths below follow the
 //!   6.x bridge, which listens on port 8080 by default.
+//!
+//! On top of the raw client, [`ScanSource`] is the shared read-only seam the
+//! evidence engines pull their program facts through; [`GhidraClient`]
+//! implements it, and the planned read cache will implement it once for all
+//! of them.
 
 mod client;
 mod error;
 mod model;
 pub mod parse;
+mod scan_source;
 
 pub use client::{GhidraClient, GhidraConfig, GhidraError, ProgramInfo, Result, rva_from_va};
 pub use error::Classification;
@@ -36,3 +42,4 @@ pub use model::{
     FunctionReport, FunctionSummary, OpenProgram, Segment, StringLiteral, StructFieldLayout,
     StructLayout, Symbol, Xref,
 };
+pub use scan_source::ScanSource;
