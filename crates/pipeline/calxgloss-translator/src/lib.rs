@@ -19,6 +19,7 @@ pub mod error;
 mod pipeline;
 pub mod retry;
 mod translator;
+pub mod triage;
 
 pub mod batch;
 
@@ -29,6 +30,7 @@ pub use retry::{
     RetryConfig, RetryResult, RetryStrategy, TranslationAttempt, try_translate_with_retry,
 };
 pub use translator::{Translation, Translator};
+pub use triage::{UnrecoveredJumpTable, scan_unrecovered_jump_tables};
 
 // ============================================================
 // Tests

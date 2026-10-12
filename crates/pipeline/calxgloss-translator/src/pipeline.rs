@@ -728,6 +728,13 @@ impl TranslationPipeline {
         let function_info = self.fetch_function(binary, function).await?;
         info!(binary, function, "Fetched function metadata");
 
+        // Triage: Ghidra's analysis failures ride inside the pseudo-C as
+        // WARNING comments. Name them before the LLM sees the body — an
+        // unrecovered jump table otherwise becomes a plausible, hollow
+        // `return` in the generated Rust, with nothing marking the address
+        // that needs human recovery.
+        self.triage_decompiler_warnings(binary, function, &function_info.decompiler_output);
+
         // Emit: Ghidra fetch complete
         self.emit(ProgressEvent::GhidraFetchComplete {
             binary: binary.to_string().into(),
@@ -1085,6 +1092,12 @@ impl TranslationPipeline {
             ));
         }
 
+        self.triage_decompiler_warnings(
+            &request.binary,
+            &request.function,
+            &request.decompiler_output,
+        );
+
         let prompt = build_translate_prompt(&request)?;
         let response = self
             .send_to_llm(
@@ -1304,6 +1317,25 @@ impl TranslationPipeline {
             });
         }
         Ok(())
+    }
+
+    /// Log the decompiler warnings that change what a translation can mean.
+    ///
+    /// A warning is not a failure — the translation still runs — but an
+    /// unrecovered jump table means the body's dispatch is missing, and the
+    /// generated Rust will be hollow exactly there. Logging the address
+    /// turns "the Rust is just a `return`" into a pointer at the jump to
+    /// recover in Ghidra (or reconstruct from the disassembly's table).
+    fn triage_decompiler_warnings(&self, binary: &str, function: &str, decompiler_output: &str) {
+        for table in crate::triage::scan_unrecovered_jump_tables(decompiler_output) {
+            warn!(
+                binary,
+                function,
+                address = format!("{:#010x}", table.address),
+                reason = %table.reason,
+                "Ghidra could not recover this jump table — the indirect jump decompiles as a call; the dispatch needs human recovery before the translation can be trusted"
+            );
+        }
     }
 
     /// Fetch function metadata from GhidraMCP.
