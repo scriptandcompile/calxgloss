@@ -12,9 +12,11 @@ use crate::parse;
 
 /// Shared PAL stub content, embedded at compile time from `src/pal/src/stub_content.rs`.
 ///
-/// This file is kept in sync with `stubs.rs` by the build script.  The constant
-/// is written to `scratch/pal/src/stub_content.rs` when the first scratch project
-/// is created, so the scratch project can `include!` it.
+/// This file mirrors the stubs in `stubs.rs`.  The constant is written to
+/// `scratch/pal/src/stub_content.rs` when the first scratch project is
+/// created (and re-written whenever the embedded template has changed), so
+/// the scratch project can `include!` it — which is why it must not carry
+/// `//!` doc comments (E0753 inside a macro expansion).
 pub const PAL_STUB_CONTENT: &str = include_str!("pal/src/stub_content.rs");
 
 // ============================================================
@@ -191,7 +193,11 @@ impl Verifier {
     /// depend on it, so this only needs to run once before any scaffold.
     fn ensure_pal_crate(&self) {
         let pal_dir = self.work_dir.join("scratch").join("pal");
-        if pal_dir.join("src").join("stub_content.rs").is_file() {
+        // Compare content, not mere existence: an older scaffold may have
+        // written a stale (or uncompilable) template, and the scratch tree
+        // should self-heal to the embedded one.
+        let content_path = pal_dir.join("src").join("stub_content.rs");
+        if std::fs::read_to_string(&content_path).ok().as_deref() == Some(PAL_STUB_CONTENT) {
             return;
         }
 
@@ -215,11 +221,7 @@ include!("stub_content.rs");
         std::fs::write(pal_dir.join("src").join("lib.rs"), lib_rs).ok();
 
         // Copy stub content (embedded at compile time via include_str!)
-        let content_path = pal_dir.join("src").join("stub_content.rs");
-        let existing = std::fs::read_to_string(&content_path).ok();
-        if existing != Some(PAL_STUB_CONTENT.to_string()) {
-            let _ = std::fs::write(&content_path, PAL_STUB_CONTENT);
-        }
+        let _ = std::fs::write(&content_path, PAL_STUB_CONTENT);
     }
 
     /// Scaffold a minimal Cargo project for compilation verification.
@@ -677,6 +679,35 @@ mod tests {
         assert!(dir.exists());
         let _ = fs::remove_dir_all(&dir);
         let _ = verifier;
+    }
+
+    #[test]
+    fn pal_stub_content_carries_no_inner_doc_comments() {
+        // The scratch PAL crate splices this file in with `include!`, and
+        // inner doc comments inside a macro expansion fail to compile with
+        // E0753 — the shared crate would never build, and every verification
+        // would fail on scaffold code the LLM never wrote.
+        for line in PAL_STUB_CONTENT.lines() {
+            assert!(
+                !line.trim_start().starts_with("//!"),
+                "stub content carries an inner doc comment: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn ensure_pal_crate_rewrites_a_stale_stub_content() {
+        // An older scaffold's stub_content.rs must self-heal to the embedded
+        // template, not be kept just because it exists.
+        let dir = std::env::temp_dir().join("calxgloss_verify_test_pal_heal");
+        let _ = fs::remove_dir_all(&dir);
+        let verifier = Verifier::new(&dir).unwrap();
+        verifier.ensure_pal_crate();
+        let content = dir.join("scratch").join("pal").join("src").join("stub_content.rs");
+        fs::write(&content, "//! stale template").unwrap();
+        verifier.ensure_pal_crate();
+        assert_eq!(fs::read_to_string(&content).unwrap(), PAL_STUB_CONTENT);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -1,5 +1,9 @@
-//! Common type definitions and PAL (Platform Abstraction Layer) traits.
-//! Provides common type definitions and traits for platform abstraction.
+// Common type definitions and PAL (Platform Abstraction Layer) traits.
+// Provides common type definitions and traits for platform abstraction.
+//
+// Plain comments, not `//!` doc comments: this file is spliced into the
+// scratch PAL crate with `include!`, and inner doc comments inside a
+// macro expansion fail to compile (E0753).
 
 /// A color in RGBA format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
