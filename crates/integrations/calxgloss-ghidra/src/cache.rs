@@ -37,9 +37,11 @@
 //!
 //! **What is never cached:** write-side calls (function tags, type
 //! write-back) delegate straight through, and `begin_pass`/`end_pass`
-//! heartbeat control passes through to the wrapped client — beats then
-//! reflect cache misses, which is the correct progress semantics for a warm
-//! run. Concurrent misses of one key share a single live request.
+//! heartbeat control passes through to the wrapped client. The heartbeat
+//! counts *work items consumed*, not live round trips: a cached decompile
+//! beats through the wrapped client just like a live one, so a warm run's
+//! progress line keeps moving (issue #121). Concurrent misses of one key
+//! share a single live request.
 
 use crate::client::{GhidraClient, GhidraError, Result};
 use crate::model::{
@@ -57,6 +59,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::OnceCell;
 use tracing::warn;
@@ -243,9 +246,9 @@ impl CachedGhidraSource {
 
     /// Arm the wrapped client's heartbeat for one analysis pass.
     ///
-    /// Beats fire on live decompiles the client completes, so a warm run
-    /// beats only on cache misses — correct progress semantics, fewer
-    /// "work done" counts, as the spec expects.
+    /// Beats count work items consumed, not live round trips: a cached
+    /// decompile beats through the wrapped client's heartbeat just like a
+    /// live one, so a warm run's progress stays visible (issue #121).
     pub fn begin_pass(&self, binary: &str, pass: &str, events: &TranslationEvents) {
         self.inner.client.begin_pass(binary, pass, events);
     }
@@ -267,6 +270,23 @@ impl CachedGhidraSource {
         T: Serialize + DeserializeOwned,
         Fut: Future<Output = Result<T>> + Send,
     {
+        self.cached_hit(key, live).await.map(|(value, _)| value)
+    }
+
+    /// Like [`cached`](Self::cached), also reporting whether the value was
+    /// served without a live round trip — a memo or disk hit. Callers that
+    /// count consumed work items (the heartbeat) need the distinction: the
+    /// live path already beats inside the client, so only a hit must beat
+    /// here.
+    async fn cached_hit<T, Fut>(
+        &self,
+        key: CacheKey,
+        live: impl FnOnce() -> Fut + Send,
+    ) -> Result<(T, bool)>
+    where
+        T: Serialize + DeserializeOwned,
+        Fut: Future<Output = Result<T>> + Send,
+    {
         let cell = {
             let mut memo = self.inner.memo.lock().expect("memo lock poisoned");
             Arc::clone(
@@ -274,6 +294,7 @@ impl CachedGhidraSource {
                     .or_insert_with(|| Arc::new(OnceCell::new())),
             )
         };
+        let went_live = AtomicBool::new(false);
         let value = cell
             .get_or_try_init(|| async {
                 if let Some(disk) = self.read_disk(&key) {
@@ -287,6 +308,7 @@ impl CachedGhidraSource {
                         "Ghidra cache document does not match its endpoint — refetching live"
                     );
                 }
+                went_live.store(true, Ordering::Relaxed);
                 let value =
                     serde_json::to_value(live().await?).map_err(|err| GhidraError::Malformed {
                         kind: "a cache document",
@@ -296,10 +318,15 @@ impl CachedGhidraSource {
                 Ok(value)
             })
             .await?;
-        serde_json::from_value(value.clone()).map_err(|err| GhidraError::Malformed {
-            kind: "a cached read",
-            detail: err.to_string(),
-        })
+        // A memo hit never runs the init closure, and a disk hit stops
+        // before the live fetch — either way `went_live` stays false.
+        let from_cache = !went_live.load(Ordering::Relaxed);
+        serde_json::from_value(value.clone())
+            .map(|parsed| (parsed, from_cache))
+            .map_err(|err| GhidraError::Malformed {
+                kind: "a cached read",
+                detail: err.to_string(),
+            })
     }
 
     /// The disk tier's document for `key`, if there is a usable one.
@@ -334,15 +361,31 @@ impl CachedGhidraSource {
 
 impl ScanSource for CachedGhidraSource {
     async fn functions(&self) -> Result<Vec<FunctionSummary>> {
-        self.cached(CacheKey::Functions, || self.inner.client.list_functions())
-            .await
+        let (list, from_cache) = self
+            .cached_hit(CacheKey::Functions, || self.inner.client.list_functions())
+            .await?;
+        if from_cache {
+            // A warm listing never reaches the client, so an armed
+            // heartbeat would never learn the work list — forward it here
+            // to keep the pass's "n of m" honest on a warm run.
+            self.inner.client.note_worklist(&list);
+        }
+        Ok(list)
     }
 
     async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
-        self.cached(CacheKey::Decompile(name.to_string()), || {
-            self.inner.client.decompile_function_by_name(name)
-        })
-        .await
+        let (body, from_cache) = self
+            .cached_hit(CacheKey::Decompile(name.to_string()), || {
+                self.inner.client.decompile_function_by_name(name)
+            })
+            .await?;
+        if from_cache {
+            // The live path beats inside the client's decompile; a cached
+            // body never gets there, so count the consumed work item here
+            // (issue #121 — the dashboard's per-binary activity line).
+            self.inner.client.tick_name(name);
+        }
+        Ok(body)
     }
 
     async fn strings(&self) -> Result<Vec<StringLiteral>> {

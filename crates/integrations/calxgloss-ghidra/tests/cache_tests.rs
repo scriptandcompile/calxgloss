@@ -677,8 +677,10 @@ async fn write_calls_are_never_cached_and_heartbeats_pass_straight_through() {
         .expect("tag 2");
     assert_eq!(fake.count("add_function_tag"), 2, "writes are never cached");
 
-    // begin_pass/end_pass arm the wrapped client's heartbeat; beats fire
-    // on live decompiles only — a cached hit is not work done.
+    // begin_pass/end_pass arm the wrapped client's heartbeat. Beats count
+    // work items consumed — live or cached — but are throttled, so the
+    // second decompile (a memo hit, right behind the first beat) counts
+    // without emitting: nothing is due inside the throttle window.
     let events = calxgloss_types::TranslationEvents::new(64);
     let mut rx = events.subscribe();
     source.begin_pass(PROGRAM, "call graph", &events);
@@ -695,13 +697,86 @@ async fn write_calls_are_never_cached_and_heartbeats_pass_straight_through() {
         .decompile(KNOWN_FUNCTION)
         .await
         .expect("cached decompile");
-    assert!(rx.try_recv().is_err(), "a cached hit beats nothing");
+    // The memo hit counts as the second work item; whether it *emits*
+    // depends on the throttle clock, so accept at most its own beat.
+    let extra: Vec<calxgloss_types::ProgressEvent> =
+        std::iter::from_fn(|| rx.try_recv().ok()).collect();
+    assert!(
+        extra.len() <= 1
+            && extra.iter().all(|e| matches!(e,
+                calxgloss_types::ProgressEvent::BatchProgress { index, .. } if *index == 2)),
+        "the memo hit emits at most its own beat: {extra:?}"
+    );
     source.end_pass();
     source
         .decompile("FUN_other")
         .await
         .expect("live decompile, pass over");
     assert!(rx.try_recv().is_err(), "after end_pass nothing beats");
+}
+
+#[tokio::test]
+async fn a_warm_replay_still_beats_the_heartbeat_per_decompile() {
+    let fake = FakeServer::start().await;
+    let (workspace, binary) = workspace_with_binary(b"the program's bytes");
+
+    // A cold run fills the disk tier.
+    let first = cached_over(&fake, workspace.path(), &binary).await;
+    drive_reads(&first).await;
+    let after_first_run = fake.read_calls();
+
+    // A warm instance armed for a pass consumes work items without a live
+    // round trip — the heartbeat must still count them, or the dashboard's
+    // per-binary activity line goes silent on every warm run (issue #121).
+    let second = cached_over(&fake, workspace.path(), &binary).await;
+    let events = calxgloss_types::TranslationEvents::new(64);
+    let mut rx = events.subscribe();
+    second.begin_pass(PROGRAM, "type inference", &events);
+    let listed = second
+        .functions()
+        .await
+        .expect("warm function listing");
+    second
+        .decompile(KNOWN_FUNCTION)
+        .await
+        .expect("disk-hit decompile");
+    let beat = rx.try_recv().expect("a disk-hit decompile beats");
+    match &beat {
+        calxgloss_types::ProgressEvent::BatchProgress {
+            binary,
+            pass,
+            function,
+            index,
+            total,
+        } => {
+            assert_eq!(binary, PROGRAM);
+            assert_eq!(pass, "type inference");
+            assert_eq!(function, KNOWN_FUNCTION, "the warm worklist names the item");
+            assert_eq!(*index, 1);
+            assert_eq!(*total, listed.len(), "the warm worklist carries the total");
+        }
+        other => panic!("expected BatchProgress, got {other:?}"),
+    }
+
+    // Re-armed, the next decompile is a memo hit — it beats too.
+    second.begin_pass(PROGRAM, "call graph", &events);
+    second
+        .decompile(KNOWN_FUNCTION)
+        .await
+        .expect("memo-hit decompile");
+    let memo_beat = rx.try_recv().expect("a memo-hit decompile beats");
+    assert!(
+        matches!(&memo_beat, calxgloss_types::ProgressEvent::BatchProgress { pass, function, .. }
+            if pass == "call graph" && function == KNOWN_FUNCTION),
+        "the memo hit beats by name: {memo_beat:?}"
+    );
+    second.end_pass();
+
+    assert_eq!(
+        fake.read_calls(),
+        after_first_run,
+        "the whole warm pass never touched the server"
+    );
 }
 
 #[tokio::test]

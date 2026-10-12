@@ -439,7 +439,7 @@ impl GhidraClient {
 
     /// Record the pass's work list: its size is the total, and its names
     /// resolve address-based decompiles to function names.
-    fn note_worklist(&self, functions: &[FunctionSummary]) {
+    pub(crate) fn note_worklist(&self, functions: &[FunctionSummary]) {
         if let Some(hb) = self.active_heartbeat() {
             *hb.names.lock().expect("names lock") = functions
                 .iter()
@@ -455,6 +455,31 @@ impl GhidraClient {
         let Some(hb) = self.active_heartbeat() else {
             return;
         };
+        self.beat(&hb, || {
+            hb.names
+                .lock()
+                .expect("names lock")
+                .get(&address)
+                .cloned()
+                .unwrap_or_default()
+        });
+    }
+
+    /// Count one completed decompile the caller knows by name — the read
+    /// cache's shape: a cached body never reaches the address-based path,
+    /// but the pipeline still consumed the work item, so the pass's
+    /// progress must move (issue #121).
+    pub(crate) fn tick_name(&self, name: &str) {
+        let Some(hb) = self.active_heartbeat() else {
+            return;
+        };
+        self.beat(&hb, || name.to_string());
+    }
+
+    /// Advance the pass counter for one consumed work item and emit the
+    /// throttled `BatchProgress` beat. The function name is resolved only
+    /// when a beat is actually due.
+    fn beat(&self, hb: &Heartbeat, function: impl FnOnce() -> String) {
         let index = hb.index.fetch_add(1, Ordering::Relaxed) + 1;
         let total = hb.total.load(Ordering::Relaxed);
         let now = std::time::Instant::now();
@@ -470,17 +495,10 @@ impl GhidraClient {
             return;
         }
         *hb.last_beat.lock().expect("last_beat lock") = Some(now);
-        let function = hb
-            .names
-            .lock()
-            .expect("names lock")
-            .get(&address)
-            .cloned()
-            .unwrap_or_default();
         hb.events.emit(ProgressEvent::BatchProgress {
             binary: hb.binary.clone(),
             pass: hb.pass.clone(),
-            function,
+            function: function(),
             index,
             total,
         });
