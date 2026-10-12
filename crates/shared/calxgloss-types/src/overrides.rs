@@ -35,23 +35,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::context_tier::ContextTier;
 use crate::persist::{PersistError, analysis_dir, load_json, save_json};
+use crate::retry_strategy::RetryStrategy;
 
 /// One unit's reviewer override.
 ///
 /// Every field defaults to "not overridden" — the automatic behavior an
-/// un-steered unit runs under. The retry-strategy override is a strategy
-/// label (`default`, `compile_fix`, `test_fix`, `escalate`,
-/// `edge_case_fix`) rather than an enum: the labels are the crate's
-/// stringly-typed escape hatch (the experiment log spells them the same
-/// way), and the translator maps the label onto its own `RetryStrategy`.
+/// un-steered unit runs under. The retry-strategy override is the shared
+/// [`RetryStrategy`] enum: the persisted snake_case labels are its serde
+/// representation, so an unknown label is refused at deserialization and a
+/// typo'd force can never be stored.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionOverride {
     /// Forced context tier — the automatic selector is bypassed.
     #[serde(default)]
     pub tier_override: Option<ContextTier>,
-    /// Forced retry strategy label — the automatic selection is bypassed.
+    /// Forced retry strategy — the automatic selection is bypassed.
     #[serde(default)]
-    pub retry_strategy_override: Option<String>,
+    pub retry_strategy_override: Option<RetryStrategy>,
     /// Custom failure hints appended to the unit's prompts.
     #[serde(default)]
     pub custom_hints: Vec<String>,
@@ -258,7 +258,7 @@ mod tests {
     fn function_override_serde_round_trip() {
         let record = FunctionOverride {
             tier_override: Some(ContextTier::ModuleContext),
-            retry_strategy_override: Some("escalate".into()),
+            retry_strategy_override: Some(RetryStrategy::Escalate),
             custom_hints: vec!["reads the palette table".into()],
             skip: false,
             reviewer_notes: "looks like a blitter".into(),
@@ -294,6 +294,32 @@ mod tests {
         assert!(record.custom_hints.is_empty());
         let map: UnitOverrides = serde_json::from_str("{}").expect("empty map deserializes");
         assert!(map.overrides.is_empty());
+    }
+
+    #[test]
+    fn persisted_strategy_labels_load_unchanged() {
+        // Workspaces wrote these exact records while the field was a plain
+        // String — the typed field must read them byte-compatibly.
+        let record: FunctionOverride =
+            serde_json::from_str(r#"{"retry_strategy_override": "edge_case_fix"}"#)
+                .expect("a pre-typing record still deserializes");
+        assert_eq!(
+            record.retry_strategy_override,
+            Some(RetryStrategy::EdgeCaseFix)
+        );
+    }
+
+    #[test]
+    fn unknown_strategy_label_is_refused_at_deserialization() {
+        // The web boundary gets its 4xx for free: the record itself rejects
+        // a typo'd force, so nothing downstream has to re-check the label.
+        let err =
+            serde_json::from_str::<FunctionOverride>(r#"{"retry_strategy_override": "escalatte"}"#)
+                .expect_err("a typo'd strategy label must not deserialize");
+        assert!(
+            err.to_string().contains("escalatte"),
+            "error names the label: {err}"
+        );
     }
 
     #[test]

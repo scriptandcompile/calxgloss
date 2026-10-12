@@ -35,6 +35,9 @@
 //!   (`BinaryClassificationOverride`, `ClassificationOverrideControl`) —
 //!   one target binary's category corrected live, persisted under the
 //!   record tree
+//! - [`retry_strategy`] — The retry-strategy closed set (`RetryStrategy`) —
+//!   how a failed attempt gets fixed, shared by the retry loop, the
+//!   reviewer overrides, and the dashboard
 //! - [`error`] — Unified error type (`TypesError`)
 
 // ============================================================
@@ -69,6 +72,7 @@ pub mod overrides;
 pub mod persist;
 pub mod pipeline_phase;
 pub mod progress;
+pub mod retry_strategy;
 pub mod scan;
 pub mod scope;
 pub mod shim;
@@ -123,6 +127,7 @@ pub use progress::{
     PipelineTransitionError, ProgressEvent, RunPhase, RunRequestSignal, RunScope, RunTarget,
     StopSignal, TranslationEvents, TranslationPhase, UnitCancellation,
 };
+pub use retry_strategy::RetryStrategy;
 pub use scan::ScanMetadata;
 pub use scope::{
     FunctionRef, ScopeControl, TranslationConstraints, TranslationScope, constraints_record_path,

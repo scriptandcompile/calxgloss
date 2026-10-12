@@ -72,11 +72,11 @@ pub async fn api_get_unit_override(
 
 /// Handle `POST /api/units/{id}/override` — apply (replace) the reviewer's
 /// override record for this unit. An all-defaults record removes it. A
-/// forced retry strategy must name a strategy the translator knows — an
-/// unknown label is rejected with 400 rather than stored and silently
-/// ignored at build time. The translator honors the change on the unit's
-/// next attempt; a skip takes effect at the next queue selection. Live
-/// router only.
+/// forced retry strategy is the shared `RetryStrategy` enum, so an unknown
+/// label is refused by serde on the failed JSON extraction (422) rather
+/// than stored and silently ignored at build time (issue #120). The
+/// translator honors the change on the unit's next attempt; a skip takes
+/// effect at the next queue selection. Live router only.
 pub async fn api_apply_unit_override(
     State(combined): State<CombinedState>,
     Path(unit_id): Path<String>,
@@ -84,13 +84,6 @@ pub async fn api_apply_unit_override(
 ) -> Result<Json<UnitOverrideResponse>, ServerError> {
     let overrides = override_handle(&combined)?;
     let (binary, function) = parse_unit_id(&unit_id)?;
-    if let Some(label) = request.r#override.retry_strategy_override.as_deref()
-        && calxgloss_translator::RetryStrategy::from_label(label).is_none()
-    {
-        return Err(ServerError::bad_request(&format!(
-            "unknown retry strategy label '{label}'"
-        )));
-    }
     overrides
         .set(&binary, &function, request.r#override)
         .map_err(persist_error)?;

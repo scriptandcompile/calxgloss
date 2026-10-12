@@ -1395,25 +1395,14 @@ impl TranslationPipeline {
             .and_then(|o| o.tier_override)
     }
 
-    /// The retry strategy a reviewer forced for this unit, if any. An
-    /// unknown label is reported and ignored — the configured strategy
-    /// survives rather than the run failing on a typo.
+    /// The retry strategy a reviewer forced for this unit, if any. The
+    /// record's field is the shared [`calxgloss_types::RetryStrategy`]
+    /// enum, so a stored value is always a real strategy — an unknown
+    /// label was refused at the override boundary (issue #120) and never
+    /// reached the record.
     fn forced_retry_strategy(&self, binary: &str, function: &str) -> Option<retry::RetryStrategy> {
-        let label = self
-            .unit_override(binary, function)
-            .and_then(|o| o.retry_strategy_override)?;
-        match retry::RetryStrategy::from_label(&label) {
-            Some(strategy) => Some(strategy),
-            None => {
-                warn!(
-                    binary,
-                    function,
-                    strategy = label,
-                    "Unknown retry strategy override; keeping the configured strategy"
-                );
-                None
-            }
-        }
+        self.unit_override(binary, function)
+            .and_then(|o| o.retry_strategy_override)
     }
 
     /// The reviewer's custom hints for this unit — appended to its prompts.
@@ -3551,8 +3540,10 @@ mod tests {
         );
     }
 
-    /// A forced strategy label maps onto the translator's own strategy; an
-    /// unknown label is ignored rather than derailing the run.
+    /// A forced strategy reaches the retry loop as the translator's own
+    /// strategy. Unknown labels no longer need a pipeline-side guard: the
+    /// override record's typed field refuses them at deserialization
+    /// (issue #120), so a stored force is always a real strategy.
     #[test]
     fn reviewer_override_forces_the_retry_strategy() {
         let overrides = calxgloss_types::OverrideControl::new();
@@ -3561,17 +3552,7 @@ mod tests {
                 "game_logic.dll",
                 "DrawPrimitive",
                 calxgloss_types::FunctionOverride {
-                    retry_strategy_override: Some("escalate".into()),
-                    ..Default::default()
-                },
-            )
-            .expect("in-memory set");
-        overrides
-            .set(
-                "game_logic.dll",
-                "LoadAssets",
-                calxgloss_types::FunctionOverride {
-                    retry_strategy_override: Some("not-a-strategy".into()),
+                    retry_strategy_override: Some(calxgloss_types::RetryStrategy::Escalate),
                     ..Default::default()
                 },
             )
@@ -3581,11 +3562,6 @@ mod tests {
         assert_eq!(
             pipeline.forced_retry_strategy("game_logic.dll", "DrawPrimitive"),
             Some(retry::RetryStrategy::Escalate)
-        );
-        assert_eq!(
-            pipeline.forced_retry_strategy("game_logic.dll", "LoadAssets"),
-            None,
-            "an unknown label keeps the configured strategy"
         );
         assert_eq!(
             pipeline.forced_retry_strategy("game_logic.dll", "UpdateScene"),

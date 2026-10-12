@@ -1050,20 +1050,22 @@ async fn test_override_endpoints_apply_get_and_persist() {
     assert_eq!(body["override"]["custom_hints"][0], "uses SSE registers");
     assert_eq!(body["override"]["reviewer_notes"], "looks like a blitter");
 
-    // A typo'd strategy label is rejected with 400 — a force that looks
-    // active but silently does nothing is worse than an honest refusal.
+    // A typo'd strategy label is refused — the record's typed field rejects
+    // the unknown variant rather than storing a force that looks active but
+    // silently does nothing (axum answers the failed JSON extraction with
+    // 422, like the classification override's category, issue #120).
     let resp = client
         .post(&url)
         .json(&serde_json::json!({"override": {"retry_strategy_override": "escalatte"}}))
         .send()
         .await
         .expect("request reaches server");
-    assert_eq!(resp.status(), 400, "unknown strategy label is rejected");
+    assert_eq!(resp.status(), 422, "unknown strategy label is rejected");
     let stored = calxgloss_types::OverrideControl::open(fixture.repo_path())
         .get("game_logic.dll", "DrawPrimitive");
     assert_eq!(
-        stored.and_then(|o| o.retry_strategy_override).as_deref(),
-        Some("escalate"),
+        stored.and_then(|o| o.retry_strategy_override),
+        Some(calxgloss_types::RetryStrategy::Escalate),
         "the rejected request must not disturb the stored record"
     );
 
@@ -1087,7 +1089,10 @@ async fn test_override_endpoints_apply_get_and_persist() {
         record.tier_override,
         Some(calxgloss_types::ContextTier::FullModule)
     );
-    assert_eq!(record.retry_strategy_override.as_deref(), Some("escalate"));
+    assert_eq!(
+        record.retry_strategy_override,
+        Some(calxgloss_types::RetryStrategy::Escalate)
+    );
 
     // Removal clears it, and the removal survives the restart too.
     let resp = client
@@ -7433,7 +7438,7 @@ async fn test_headless_unit_overrides_tab() {
             "DrawPrimitive",
             calxgloss_types::FunctionOverride {
                 tier_override: Some(calxgloss_types::ContextTier::FullModule),
-                retry_strategy_override: Some("escalate".into()),
+                retry_strategy_override: Some(calxgloss_types::RetryStrategy::Escalate),
                 custom_hints: vec!["blitter routine".into()],
                 skip: false,
                 reviewer_notes: "looks like a blitter".into(),

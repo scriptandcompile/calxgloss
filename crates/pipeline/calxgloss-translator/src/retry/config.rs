@@ -29,50 +29,12 @@ impl Default for RetryConfig {
     }
 }
 
-/// The strategy for fixing a failed translation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RetryStrategy {
-    /// Default — re-send the same prompt (first attempt only).
-    Default,
-    /// Feed compilation errors back to the LLM for a targeted fix.
-    CompileFix,
-    /// Compilation passed but tests failed; feed failing test cases back.
-    TestFix,
-    /// Add more context from disassembly and try again.
-    Escalate,
-    /// Compilation passed but tests failed specifically on boundary values;
-    /// feed a boundary-aware fix prompt.
-    EdgeCaseFix,
-}
-
-impl std::fmt::Display for RetryStrategy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Default => write!(f, "default"),
-            Self::CompileFix => write!(f, "compile_fix"),
-            Self::TestFix => write!(f, "test_fix"),
-            Self::Escalate => write!(f, "escalate"),
-            Self::EdgeCaseFix => write!(f, "edge_case_fix"),
-        }
-    }
-}
-
-impl RetryStrategy {
-    /// Parse a strategy from its dashboard label (issue #96, W2.7: the
-    /// reviewer forces a strategy from the Overrides tab). Unknown labels
-    /// return `None` so callers can reject them. Inverse of the
-    /// [`std::fmt::Display`] impl above.
-    pub fn from_label(label: &str) -> Option<Self> {
-        match label {
-            "default" => Some(Self::Default),
-            "compile_fix" => Some(Self::CompileFix),
-            "test_fix" => Some(Self::TestFix),
-            "escalate" => Some(Self::Escalate),
-            "edge_case_fix" => Some(Self::EdgeCaseFix),
-            _ => None,
-        }
-    }
-}
+/// The strategy for fixing a failed translation attempt.
+///
+/// The closed set lives in [`calxgloss_types::RetryStrategy`] — the same
+/// enum the reviewer overrides store and the dashboard offers — and is
+/// re-exported here so the retry loop's namespace stays flat.
+pub use calxgloss_types::RetryStrategy;
 
 /// The sequence of strategies to try when using auto mode.
 ///

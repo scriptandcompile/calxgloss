@@ -75,7 +75,7 @@ pub async fn try_translate_with_retry(
 ) -> RetryResult {
     let mut result = RetryResult::new();
     let max = ctx.config.max_attempts;
-    let mut current_strategy = ctx.config.strategy.clone();
+    let mut current_strategy = ctx.config.strategy;
     let mut current_tier = initial_translation.context_tier;
     // W2.5: an operator `max_context_tier` constraint also caps the starting
     // tier — retries rebuild their prompts no higher than the cap.
@@ -1438,15 +1438,6 @@ mod tests {
         assert_eq!(config.max_attempts, 3);
         assert_eq!(config.strategy, RetryStrategy::CompileFix);
         assert!(config.escalate_on_failure);
-    }
-
-    #[test]
-    fn test_retry_strategy_display() {
-        assert_eq!(format!("{}", RetryStrategy::Default), "default");
-        assert_eq!(format!("{}", RetryStrategy::CompileFix), "compile_fix");
-        assert_eq!(format!("{}", RetryStrategy::TestFix), "test_fix");
-        assert_eq!(format!("{}", RetryStrategy::Escalate), "escalate");
-        assert_eq!(format!("{}", RetryStrategy::EdgeCaseFix), "edge_case_fix");
     }
 
     #[test]

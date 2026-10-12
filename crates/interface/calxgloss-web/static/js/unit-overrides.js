@@ -22,8 +22,9 @@ import { escapeHtml } from "./utils.js";
 import { showToast } from "./ui.js";
 
 // The context tiers and retry strategies the server understands — the
-// select options mirror the serde names of ContextTier and the strategy
-// labels accepted by RetryStrategy::from_label.
+// select options mirror the serde labels of ContextTier and of the shared
+// calxgloss-types RetryStrategy enum (a label the enum doesn't know is
+// refused at the API boundary).
 const TIER_OPTIONS = ["Signature", "Disassembly", "WithTests", "ModuleContext", "FullModule"];
 const STRATEGY_OPTIONS = ["default", "compile_fix", "test_fix", "escalate", "edge_case_fix"];
 
