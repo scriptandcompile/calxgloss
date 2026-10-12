@@ -27,6 +27,16 @@ pub struct Settings {
     pub ghidra_api_key: Option<Resolved<String>>,
     /// Where the Ghidra install lives, when configured; absent means discover.
     pub ghidra_install_dir: Option<Resolved<String>>,
+    /// Whether calxgloss may start a headless Ghidra server (G1-T7).
+    pub ghidra_auto_start: Resolved<bool>,
+    /// The GUI-vs-headless preference: `auto`, `always`, or `never`.
+    pub ghidra_headless: Resolved<String>,
+    /// The `.gpr` project override, when configured; absent means the default.
+    pub ghidra_project: Option<Resolved<String>>,
+    /// The minimum acceptable Ghidra install version, when configured.
+    pub ghidra_min_version: Option<Resolved<String>>,
+    /// Boot budget for a spawned headless server, in seconds.
+    pub ghidra_start_timeout_secs: Resolved<u64>,
     /// Where to reach the LLM server, if configured.
     pub llm_url: Option<Resolved<String>>,
     /// Which model to ask for, if configured.
@@ -71,6 +81,11 @@ impl Settings {
             url: flag_ghidra,
             api_key: flag_ghidra_key,
             install_dir: flag_ghidra_install,
+            auto_start: flag_ghidra_auto_start,
+            headless: flag_ghidra_headless,
+            project: flag_ghidra_project,
+            min_version: flag_ghidra_min_version,
+            start_timeout_secs: flag_ghidra_start_timeout,
         } = flags.ghidra;
 
         Self {
@@ -94,6 +109,42 @@ impl Settings {
                 layers.file.ghidra.install_dir.clone(),
                 None,
             ),
+            ghidra_auto_start: layers
+                .resolve(
+                    flag_ghidra_auto_start,
+                    layers.env.ghidra.auto_start,
+                    layers.file.ghidra.auto_start,
+                    Some(defaults::GHIDRA_AUTO_START),
+                )
+                .expect("auto_start has a default"),
+            ghidra_headless: layers
+                .resolve(
+                    flag_ghidra_headless,
+                    layers.env.ghidra.headless.clone(),
+                    layers.file.ghidra.headless.clone(),
+                    Some(defaults::GHIDRA_HEADLESS.to_string()),
+                )
+                .expect("headless has a default"),
+            ghidra_project: layers.resolve(
+                flag_ghidra_project,
+                layers.env.ghidra.project.clone(),
+                layers.file.ghidra.project.clone(),
+                None,
+            ),
+            ghidra_min_version: layers.resolve(
+                flag_ghidra_min_version,
+                layers.env.ghidra.min_version.clone(),
+                layers.file.ghidra.min_version.clone(),
+                None,
+            ),
+            ghidra_start_timeout_secs: layers
+                .resolve(
+                    flag_ghidra_start_timeout,
+                    layers.env.ghidra.start_timeout_secs,
+                    layers.file.ghidra.start_timeout_secs,
+                    Some(defaults::GHIDRA_START_TIMEOUT_SECS),
+                )
+                .expect("start_timeout_secs has a default"),
             llm_url: layers.resolve(
                 flag_url,
                 layers.env.llm.url.clone(),
@@ -319,6 +370,16 @@ pub fn render(s: &Settings) -> String {
         s.ghidra_install_dir.as_ref(),
         false,
     );
+    num(&mut out, "auto_start", &s.ghidra_auto_start);
+    row(&mut out, "headless", Some(&s.ghidra_headless), false);
+    row(&mut out, "project", s.ghidra_project.as_ref(), false);
+    row(
+        &mut out,
+        "min_version",
+        s.ghidra_min_version.as_ref(),
+        false,
+    );
+    num(&mut out, "start_timeout_secs", &s.ghidra_start_timeout_secs);
 
     out.push_str("\nllm\n");
     row(&mut out, "url", s.llm_url.as_ref(), false);
@@ -365,16 +426,14 @@ mod tests {
         let file = FileConfig {
             ghidra: GhidraSection {
                 url: Some("http://from-file:8080".into()),
-                api_key: None,
-                install_dir: None,
+                ..Default::default()
             },
             ..Default::default()
         };
         let flags = FileConfig {
             ghidra: GhidraSection {
                 url: Some("http://from-flag:8080".into()),
-                api_key: None,
-                install_dir: None,
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -405,6 +464,74 @@ mod tests {
         );
         let s = settings_from(FileConfig::default(), FileConfig::default());
         assert!(s.ghidra_install_dir.is_none());
+    }
+
+    #[test]
+    fn test_ghidra_lifecycle_settings_fall_back_to_their_defaults() {
+        // G1-T7: spawning is the norm, so the knobs default to "do the
+        // sensible thing" rather than demanding configuration.
+        let s = settings_from(FileConfig::default(), FileConfig::default());
+        assert!(s.ghidra_auto_start.value);
+        assert_eq!(s.ghidra_auto_start.source, Source::Default);
+        assert_eq!(s.ghidra_headless.value, "auto");
+        assert_eq!(s.ghidra_headless.source, Source::Default);
+        assert!(s.ghidra_project.is_none());
+        assert!(s.ghidra_min_version.is_none());
+        assert_eq!(
+            s.ghidra_start_timeout_secs.value,
+            defaults::GHIDRA_START_TIMEOUT_SECS
+        );
+        assert_eq!(s.ghidra_start_timeout_secs.source, Source::Default);
+    }
+
+    #[test]
+    fn test_ghidra_lifecycle_keys_come_from_the_file_layer() {
+        let file = FileConfig {
+            ghidra: GhidraSection {
+                auto_start: Some(false),
+                headless: Some("always".into()),
+                project: Some("/run/eq/ghidra/EverQuest.gpr".into()),
+                min_version: Some("12.1".into()),
+                start_timeout_secs: Some(120),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let s = settings_from(FileConfig::default(), file);
+        assert!(!s.ghidra_auto_start.value);
+        assert_eq!(s.ghidra_auto_start.source, Source::File);
+        assert_eq!(s.ghidra_headless.value, "always");
+        assert_eq!(s.ghidra_headless.source, Source::File);
+        assert_eq!(
+            s.ghidra_project.as_ref().expect("set").value,
+            "/run/eq/ghidra/EverQuest.gpr"
+        );
+        assert_eq!(s.ghidra_min_version.as_ref().expect("set").value, "12.1");
+        assert_eq!(s.ghidra_start_timeout_secs.value, 120);
+        assert_eq!(s.ghidra_start_timeout_secs.source, Source::File);
+    }
+
+    #[test]
+    fn test_no_autostart_flag_beats_a_file_that_allows_it() {
+        // `--no-ghidra-autostart` is the flag layer's only lifecycle input,
+        // and it only ever turns autostart off.
+        let file = FileConfig {
+            ghidra: GhidraSection {
+                auto_start: Some(true),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let flags = FileConfig {
+            ghidra: GhidraSection {
+                auto_start: Some(false),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let s = settings_from(flags, file);
+        assert!(!s.ghidra_auto_start.value);
+        assert_eq!(s.ghidra_auto_start.source, Source::Flag);
     }
 
     #[test]
@@ -466,6 +593,10 @@ mod tests {
         assert!(out.contains("(config file)"), "{out}");
         assert!(out.contains("(default)"), "{out}");
         assert!(out.contains("http://127.0.0.1:1919/v1"), "{out}");
+        // The G1-T7 lifecycle knobs are reported too, with their sources.
+        assert!(out.contains("auto_start"), "{out}");
+        assert!(out.contains("headless"), "{out}");
+        assert!(out.contains("start_timeout"), "{out}");
     }
 
     #[test]

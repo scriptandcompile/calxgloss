@@ -36,13 +36,15 @@ use tracing::{info, warn};
 
 use super::StackRequest;
 use super::discovery::{self, DiscoveredServer};
-use super::extension::{self, ExtensionDiscovery, ExtensionVerdict};
-use super::install::{self, InstallDiscovery};
+use super::extension::{self, ExtensionDiscovery, ExtensionVerdict, GhidraExtension};
+use super::install::{self, GhidraInstall, InstallDiscovery};
 use super::program::{self, ProgramMatch};
 use super::project::{self, ProjectSetup};
 use super::server::{self, OwnedServer};
-use crate::client::{GhidraClient, GhidraConfig, GhidraError, MIN_PLUGIN_VERSION, Result};
-use crate::model::ServerInfo;
+use crate::client::{
+    GhidraClient, GhidraConfig, GhidraError, MIN_PLUGIN_VERSION, Result, plugin_version_at_least,
+};
+use crate::model::{ServerInfo, ServerKind};
 
 /// The boot budget for a spawned headless server — JVM plus Ghidra startup
 /// is slow, and the design doc's proven budget is ~90 s.
@@ -60,6 +62,45 @@ pub enum Ownership {
     Attached,
 }
 
+/// The `ghidra.headless` preference (G1-T7): who serves a run when more
+/// than one shape of server is possible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HeadlessMode {
+    /// Attach to a running server when one answers, spawn a headless one
+    /// when nothing does — today's behavior, and the default.
+    #[default]
+    Auto,
+    /// Prefer a headless instance: spawn one even when a GUI is open and
+    /// answering. A headless server that is already running is still
+    /// attached to — it already is what `always` asks for.
+    Always,
+    /// GUI-only: attach to a running server, never spawn.
+    Never,
+}
+
+impl std::str::FromStr for HeadlessMode {
+    type Err = ();
+
+    fn from_str(s: &str) -> std::result::Result<Self, ()> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "always" => Ok(Self::Always),
+            "never" => Ok(Self::Never),
+            _ => Err(()),
+        }
+    }
+}
+
+impl std::fmt::Display for HeadlessMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => write!(f, "auto"),
+            Self::Always => write!(f, "always"),
+            Self::Never => write!(f, "never"),
+        }
+    }
+}
+
 /// The resolved inputs of a preflight, injectable so tests point every
 /// lookup at fixtures instead of the real machine — the same shape
 /// [`StackRequest`] established for `doctor`.
@@ -69,9 +110,9 @@ pub struct SessionRequest<'a> {
     pub url: &'a str,
     /// Optional bearer token for the client.
     pub api_key: Option<&'a str>,
-    /// The run's project path (`<workspace>/ghidra/<target>.gpr`): the log
-    /// and pid files live beside it, and an existing project is reopened by
-    /// the spawned server.
+    /// The run's project path (`<workspace>/ghidra/<target>.gpr`, or the
+    /// `ghidra.project` override): the log and pid files live beside it,
+    /// and an existing project is reopened by the spawned server.
     pub project: &'a Path,
     /// The bridge's runtime-socket directory (`$XDG_RUNTIME_DIR/ghidra-mcp`),
     /// when known: a configured port that nothing answers is reconciled
@@ -83,8 +124,17 @@ pub struct SessionRequest<'a> {
     pub fallback_port: u16,
     /// The filesystem discovery inputs for the install and extension checks.
     pub stack: StackRequest<'a>,
-    /// How long a spawned server may take to answer the probe.
+    /// How long a spawned server may take to answer the probe
+    /// (`ghidra.start_timeout_secs`).
     pub start_timeout: Duration,
+    /// Whether a spawn is allowed at all (`ghidra.auto_start` /
+    /// `--no-ghidra-autostart`): false makes the preflight check-only,
+    /// failing fast with what a spawn would need.
+    pub auto_start: bool,
+    /// The GUI-vs-headless preference (`ghidra.headless`).
+    pub headless: HeadlessMode,
+    /// The `ghidra.min_version` floor for the install check, when set.
+    pub min_version: Option<&'a str>,
 }
 
 /// A GhidraMCP client plus the ownership the preflight established for it.
@@ -113,6 +163,12 @@ impl GhidraSession {
     /// nothing did, to what the bridge's runtime-socket directory reports —
     /// or spawn a headless server under the checks the doctor reports.
     ///
+    /// The `ghidra.headless` preference (G1-T7) steers the attach-vs-spawn
+    /// decision: `always` spawns a headless server even when a GUI answers
+    /// (a headless server already running is still attached to), and
+    /// `never` — like `auto_start = false` — turns the preflight check-only,
+    /// failing with what is missing instead of spawning.
+    ///
     /// `events`, when given, receives a [`ProgressEvent::GhidraServerStarted`]
     /// the moment a spawned server answers its first probe.
     ///
@@ -121,8 +177,9 @@ impl GhidraSession {
     /// - [`GhidraError::NotGhidraMcp`] / [`GhidraError::VersionMismatch`] —
     ///   the configured port answered, but not as a usable GhidraMCP server;
     ///   nothing is spawned over it.
-    /// - [`GhidraError::CannotSpawn`] — a spawn was needed but the install
-    ///   or extension checks failed; the reason names what is missing.
+    /// - [`GhidraError::CannotSpawn`] — a spawn was needed but autostart is
+    ///   off, or the install or extension checks failed; the reason names
+    ///   what is missing.
     /// - [`GhidraError::PortBusy`] — a spawn was needed and nothing was
     ///   discovered, but neither the configured port nor the fallback is
     ///   free to bind.
@@ -136,6 +193,16 @@ impl GhidraSession {
 
         match client.check_connection().await {
             Ok(info) => {
+                // `headless = always` wants a headless instance even with a
+                // GUI open — but a headless server that already answers *is*
+                // one, so it is attached to like any other.
+                if request.headless == HeadlessMode::Always && info.kind == ServerKind::Gui {
+                    info!(
+                        url = %client.base_url(),
+                        "ghidra.headless = always: spawning a headless server instead of attaching to the GUI"
+                    );
+                    return Self::start_headless(client, request, events).await;
+                }
                 info!(
                     kind = %info.kind,
                     url = %client.base_url(),
@@ -153,8 +220,15 @@ impl GhidraSession {
             // before a spawn is even considered.
             Err(GhidraError::ServerUnreachable { .. }) => {
                 match Self::attach_discovered(&client, request).await {
-                    Some(session) => Ok(session),
-                    None => Self::start_headless(client, request, events).await,
+                    // A discovered GUI does not satisfy `headless = always`;
+                    // anything else attachable is taken as-is.
+                    Some(session)
+                        if !(request.headless == HeadlessMode::Always
+                            && session.info.kind == ServerKind::Gui) =>
+                    {
+                        Ok(session)
+                    }
+                    _ => Self::start_headless(client, request, events).await,
                 }
             }
             // A foreign port or an old plugin is a named failure to fix by
@@ -227,115 +301,42 @@ impl GhidraSession {
         }
     }
 
-    /// The spawn half: doctor's checks as preconditions, a free port, then
-    /// the supervised launch and boot poll.
+    /// The spawn half: the autostart controls, then doctor's checks as
+    /// preconditions, a free port, then the supervised launch and boot poll.
     async fn start_headless(
         client: GhidraClient,
         request: &SessionRequest<'_>,
         events: Option<&TranslationEvents>,
     ) -> Result<Self> {
-        let install = install::discover(
-            request.stack.env_install_dir,
-            request.stack.config_install_dir,
-            request.stack.home,
-        );
-        let install = match &install {
-            InstallDiscovery::Found { install, source } => {
-                info!(path = %install.path.display(), version = %install.version, %source, "Spawning against the discovered Ghidra install");
-                install.clone()
-            }
-            InstallDiscovery::Invalid { path, source } => {
-                return Err(GhidraError::CannotSpawn {
-                    reason: format!(
-                        "the Ghidra install named by {source} is not a valid install: {}",
-                        path.display()
-                    ),
-                });
-            }
-            InstallDiscovery::NotFound => {
-                return Err(GhidraError::CannotSpawn {
-                    reason: "no Ghidra install was found ($GHIDRA_INSTALL_DIR, \
-                             ghidra.install_dir, or a *ghidra_*_PUBLIC directory in the home \
-                             directory)"
-                        .to_string(),
-                });
-            }
+        // The autostart controls (G1-T7): `auto_start = false` /
+        // `--no-ghidra-autostart` and `headless = never` both make the
+        // preflight check-only — it reports what a spawn would need and
+        // fails, spawning nothing.
+        let off_knob = if !request.auto_start {
+            Some("`ghidra.auto_start = false` (or `--no-ghidra-autostart`)")
+        } else if request.headless == HeadlessMode::Never {
+            Some("`ghidra.headless = never`")
+        } else {
+            None
         };
+        if let Some(knob) = off_knob {
+            let state = match spawn_prerequisites(request) {
+                Ok(_) => "the install and extension checks pass — start a \
+                          GhidraMCP server yourself, or turn autostart back on"
+                    .to_string(),
+                Err(missing) => format!("what a spawn would need: {missing}"),
+            };
+            return Err(GhidraError::CannotSpawn {
+                reason: format!(
+                    "no GhidraMCP server answered at {}, and calxgloss will not start one \
+                     because of {knob}; {state}",
+                    client.base_url()
+                ),
+            });
+        }
 
-        let extension = match request.stack.home {
-            Some(home) => {
-                let root = home.join(".config").join("ghidra");
-                let discovery = extension::discover(&root, &install.version);
-                let verdict = extension::verdict(&discovery, &install.version);
-                match (discovery, verdict) {
-                    (ExtensionDiscovery::Found(ext), ExtensionVerdict::Ok { .. }) => ext,
-                    (_, ExtensionVerdict::Missing { extensions_dir }) => {
-                        return Err(GhidraError::CannotSpawn {
-                            reason: format!(
-                                "the GhidraMCP extension is not installed for Ghidra {}; \
-                                 install the v{} zip into {}",
-                                install.version,
-                                MIN_PLUGIN_VERSION,
-                                extensions_dir.display()
-                            ),
-                        });
-                    }
-                    (
-                        _,
-                        ExtensionVerdict::WrongBuild {
-                            built_for,
-                            ghidra,
-                            extensions_dir,
-                        },
-                    ) => {
-                        return Err(GhidraError::CannotSpawn {
-                            reason: format!(
-                                "the GhidraMCP extension was built for Ghidra {built_for} but \
-                                 {ghidra} is installed; reinstall the matching zip into {}",
-                                extensions_dir.display()
-                            ),
-                        });
-                    }
-                    (
-                        _,
-                        ExtensionVerdict::TooOld {
-                            plugin_version,
-                            required,
-                        },
-                    ) => {
-                        return Err(GhidraError::CannotSpawn {
-                            reason: format!(
-                                "the GhidraMCP extension is v{plugin_version} but v{required} \
-                                 is required (ADR-0001)"
-                            ),
-                        });
-                    }
-                    (_, ExtensionVerdict::Broken { dir }) => {
-                        return Err(GhidraError::CannotSpawn {
-                            reason: format!(
-                                "the GhidraMCP extension at {} is not loadable (no readable \
-                                 manifest or jar)",
-                                dir.display()
-                            ),
-                        });
-                    }
-                    (discovery, verdict) => {
-                        return Err(GhidraError::CannotSpawn {
-                            reason: format!(
-                                "the extension check failed: {verdict:?} ({discovery:?})"
-                            ),
-                        });
-                    }
-                }
-            }
-            None => {
-                return Err(GhidraError::CannotSpawn {
-                    reason: "no home directory is known, so the GhidraMCP extension for the \
-                             discovered Ghidra install cannot be found"
-                        .to_string(),
-                });
-            }
-        };
+        let (install, extension) =
+            spawn_prerequisites(request).map_err(|reason| GhidraError::CannotSpawn { reason })?;
 
         // The port the configured URL names, and a bind address: loopback
         // unless the URL itself names a literal address — the bridge's
@@ -359,11 +360,41 @@ impl GhidraSession {
                 ),
             });
         };
+        // Log and pid beside the project, per the design.
+        let beside = request.project.parent().unwrap_or(request.project);
+        let log = beside.join("headless.log");
+        let pid_file = beside.join("headless.pid");
+
+        // Pid-file reuse across runs (G1-T7): a crashed run leaves its pid
+        // file beside the project. Deal with the orphan — or the stale file
+        // — *before* choosing a port, so a live orphan holding the
+        // configured or fallback port is reaped first and the fresh spawn
+        // neither collides with it nor trusts a file whose process is gone.
+        server::reap_stale_pid_file(&pid_file).await;
+
         // Never bind a busy port (design risk 4): the configured port when
         // it is free, else the bridge default — and when neither is free,
-        // a named failure instead of a bind attempt.
+        // a named failure instead of a bind attempt. The one exception is
+        // `headless = always`: a GUI holding the configured port is exactly
+        // the case that preference exists for, so it takes any free port
+        // and the client follows.
         let port = match server::spawn_port(&bind, configured, request.fallback_port) {
             Some(port) => port,
+            None if request.headless == HeadlessMode::Always => match server::free_port(&bind) {
+                Some(port) => {
+                    info!(
+                        configured,
+                        spawn = port,
+                        "ghidra.headless = always: taking a free port past the busy ones"
+                    );
+                    port
+                }
+                None => {
+                    return Err(GhidraError::PortBusy {
+                        url: url.to_string(),
+                    });
+                }
+            },
             None => {
                 return Err(GhidraError::PortBusy {
                     url: url.to_string(),
@@ -397,12 +428,6 @@ impl GhidraSession {
                         extension.dir.display()
                     ),
                 })?;
-
-        // Log and pid beside the project, per the design: a crashed run
-        // leaves the pid file for the next run to clean up (G1-T7).
-        let beside = request.project.parent().unwrap_or(request.project);
-        let log = beside.join("headless.log");
-        let pid_file = beside.join("headless.pid");
 
         let mut server = server::spawn_server(&plan, &log, &pid_file)?;
         let info = match server::wait_for_boot(&mut server, &client, request.start_timeout).await {
@@ -498,6 +523,139 @@ fn client_at(url: &str, api_key: Option<&str>) -> Result<GhidraClient> {
     GhidraClient::from_config(config)
 }
 
+/// The doctor checks a spawn cannot run without — a valid install meeting the
+/// `ghidra.min_version` floor, paired with a loadable extension built for it
+/// (G1-T7). `Ok` hands back both so the launch plan can be built without
+/// rediscovering them; `Err` names what is missing in the same words the
+/// preflight has always used, so the check-only failure path and the spawn
+/// path report the same problem.
+fn spawn_prerequisites(
+    request: &SessionRequest<'_>,
+) -> std::result::Result<(GhidraInstall, GhidraExtension), String> {
+    let install = match install::discover(
+        request.stack.env_install_dir,
+        request.stack.config_install_dir,
+        request.stack.home,
+    ) {
+        InstallDiscovery::Found { install, source } => {
+            info!(path = %install.path.display(), version = %install.version, %source, "Spawning against the discovered Ghidra install");
+            install
+        }
+        InstallDiscovery::Invalid { path, source } => {
+            return Err(format!(
+                "the Ghidra install named by {source} is not a valid install: {}",
+                path.display()
+            ));
+        }
+        InstallDiscovery::NotFound => {
+            return Err(
+                "no Ghidra install was found ($GHIDRA_INSTALL_DIR, ghidra.install_dir, or a \
+                 *ghidra_*_PUBLIC directory in the home directory)"
+                    .to_string(),
+            );
+        }
+    };
+
+    // The `ghidra.min_version` floor (G1-T7): a too-old install fails the
+    // spawn preflight by name — doctor stays a pure report of what *is*.
+    // An unparseable floor fails the gate too: a typo must not silently
+    // disable the check the user asked for.
+    if let Some(min) = request.min_version {
+        if !version_parses(min) {
+            return Err(format!(
+                "ghidra.min_version = {min:?} is not a version; expected dotted numbers \
+                 like 12.1"
+            ));
+        }
+        if !plugin_version_at_least(&install.version, min) {
+            return Err(format!(
+                "the Ghidra install at {} is version {}, but ghidra.min_version requires at \
+                 least {min}",
+                install.path.display(),
+                install.version
+            ));
+        }
+    }
+
+    let extension = match request.stack.home {
+        Some(home) => {
+            let root = home.join(".config").join("ghidra");
+            let discovery = extension::discover(&root, &install.version);
+            let verdict = extension::verdict(&discovery, &install.version);
+            match (discovery, verdict) {
+                (ExtensionDiscovery::Found(ext), ExtensionVerdict::Ok { .. }) => ext,
+                (_, ExtensionVerdict::Missing { extensions_dir }) => {
+                    return Err(format!(
+                        "the GhidraMCP extension is not installed for Ghidra {}; \
+                         install the v{} zip into {}",
+                        install.version,
+                        MIN_PLUGIN_VERSION,
+                        extensions_dir.display()
+                    ));
+                }
+                (
+                    _,
+                    ExtensionVerdict::WrongBuild {
+                        built_for,
+                        ghidra,
+                        extensions_dir,
+                    },
+                ) => {
+                    return Err(format!(
+                        "the GhidraMCP extension was built for Ghidra {built_for} but \
+                         {ghidra} is installed; reinstall the matching zip into {}",
+                        extensions_dir.display()
+                    ));
+                }
+                (
+                    _,
+                    ExtensionVerdict::TooOld {
+                        plugin_version,
+                        required,
+                    },
+                ) => {
+                    return Err(format!(
+                        "the GhidraMCP extension is v{plugin_version} but v{required} \
+                         is required (ADR-0001)"
+                    ));
+                }
+                (_, ExtensionVerdict::Broken { dir }) => {
+                    return Err(format!(
+                        "the GhidraMCP extension at {} is not loadable (no readable \
+                         manifest or jar)",
+                        dir.display()
+                    ));
+                }
+                (discovery, verdict) => {
+                    return Err(format!(
+                        "the extension check failed: {verdict:?} ({discovery:?})"
+                    ));
+                }
+            }
+        }
+        None => {
+            return Err(
+                "no home directory is known, so the GhidraMCP extension for the discovered \
+                 Ghidra install cannot be found"
+                    .to_string(),
+            );
+        }
+    };
+
+    Ok((install, extension))
+}
+
+/// Whether a version string is the dotted-numeric form the comparison
+/// speaks (`12.1`, `12.1.2-rc1`); anything else is a typo, not a floor.
+fn version_parses(version: &str) -> bool {
+    version.split(['-', '+']).next().is_some_and(|core| {
+        !core.is_empty()
+            && core
+                .split('.')
+                .all(|part| !part.is_empty() && part.parse::<u64>().is_ok())
+    })
+}
+
 /// The project path a run defaults to: `<workspace>/ghidra/<binary>.gpr`,
 /// matching the existing output layout (`crates/`, `re/`, `scratch/`).
 pub fn default_project(workspace: &Path, binary: &str) -> PathBuf {
@@ -514,6 +672,22 @@ pub fn default_project(workspace: &Path, binary: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_headless_mode_parses_and_prints_its_three_values() {
+        // The config layer carries the mode as a string; the CLI parses it
+        // once and bails naming the valid values on anything else.
+        for (text, mode) in [
+            ("auto", HeadlessMode::Auto),
+            ("  Always ", HeadlessMode::Always),
+            ("NEVER", HeadlessMode::Never),
+        ] {
+            assert_eq!(text.parse::<HeadlessMode>().expect("valid mode"), mode);
+        }
+        assert_eq!(HeadlessMode::default(), HeadlessMode::Auto);
+        assert!("sometimes".parse::<HeadlessMode>().is_err());
+        assert_eq!(HeadlessMode::Always.to_string(), "always");
+    }
 
     #[test]
     fn the_default_project_sits_under_the_workspace() {

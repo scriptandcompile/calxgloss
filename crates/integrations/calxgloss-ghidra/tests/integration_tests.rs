@@ -960,7 +960,9 @@ async fn the_guard_surfaces_a_switch_the_server_refuses() {
 // The session preflight: attach vs. start decisions (issue #114, G1-T4)
 // ============================================================
 
-use calxgloss_ghidra::lifecycle::{BRIDGE_DEFAULT_PORT, GhidraSession, Ownership, SessionRequest};
+use calxgloss_ghidra::lifecycle::{
+    BRIDGE_DEFAULT_PORT, GhidraSession, HeadlessMode, Ownership, SessionRequest,
+};
 
 /// A session request pointed at `url` with a project beside a tempdir, so
 /// log and pid files could land somewhere writable without polluting
@@ -982,6 +984,9 @@ fn session_request<'a>(
             home: Some(home),
         },
         start_timeout: std::time::Duration::from_millis(200),
+        auto_start: true,
+        headless: HeadlessMode::Auto,
+        min_version: None,
     }
 }
 
@@ -1166,6 +1171,304 @@ async fn a_busy_port_refuses_the_spawn_by_name() {
     match err {
         GhidraError::PortBusy { url: named } => assert_eq!(named, format!("{url}/")),
         other => panic!("expected PortBusy, got {other:?}"),
+    }
+}
+
+// ============================================================
+// Lifecycle config + autostart controls (issue #117, G1-T7)
+// ============================================================
+
+#[tokio::test]
+async fn autostart_off_names_what_a_spawn_would_need() {
+    // `auto_start = false` turns the preflight check-only: it still runs the
+    // doctor's checks and fails fast naming what is missing, spawning nothing.
+    let url = unreachable_url();
+    let home = tempfile::tempdir().expect("tempdir");
+
+    let project = home.path().join("eqmain.gpr");
+    let request = SessionRequest {
+        auto_start: false,
+        ..session_request(&url, &project, home.path())
+    };
+    let err = GhidraSession::ensure(&request, None)
+        .await
+        .expect_err("autostart off means no spawn");
+    match err {
+        GhidraError::CannotSpawn { reason } => {
+            assert!(
+                reason.contains("auto_start = false")
+                    && reason.contains("no Ghidra install was found"),
+                "the reason names the knob and the missing piece: {reason}"
+            );
+        }
+        other => panic!("expected CannotSpawn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn autostart_off_with_a_complete_stack_says_start_a_server_yourself() {
+    // The same knob against a stack that *could* spawn: the failure still
+    // names the knob and tells the user what to do instead.
+    let url = unreachable_url();
+    let home = tempfile::tempdir().expect("tempdir");
+    sample_install(home.path(), "12.1.2");
+    sample_extension(home.path(), "12.1.2", "12.1.2", "6.0.0");
+
+    let project = home.path().join("eqmain.gpr");
+    let request = SessionRequest {
+        auto_start: false,
+        ..session_request(&url, &project, home.path())
+    };
+    let err = GhidraSession::ensure(&request, None)
+        .await
+        .expect_err("autostart off means no spawn even with a complete stack");
+    match err {
+        GhidraError::CannotSpawn { reason } => {
+            assert!(
+                reason.contains("auto_start = false")
+                    && reason.contains("start a GhidraMCP server yourself"),
+                "the reason names the knob and the remedy: {reason}"
+            );
+        }
+        other => panic!("expected CannotSpawn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn headless_never_still_attaches_to_a_running_server() {
+    // `headless = never` is GUI-only, not dead: an answering server attaches
+    // exactly as under `auto`.
+    let home = tempfile::tempdir().expect("tempdir");
+    let fake = ProbeFake::serving(&[("check_connection", GUI_CONNECTION)]).await;
+
+    let project = home.path().join("eqmain.gpr");
+    let request = SessionRequest {
+        headless: HeadlessMode::Never,
+        ..session_request(&fake.base_url, &project, home.path())
+    };
+    let session = GhidraSession::ensure(&request, None)
+        .await
+        .expect("a running server is attachable under headless = never");
+    assert_eq!(session.ownership(), Ownership::Attached);
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn headless_never_fails_fast_instead_of_spawning() {
+    let url = unreachable_url();
+    let home = tempfile::tempdir().expect("tempdir");
+    sample_install(home.path(), "12.1.2");
+    sample_extension(home.path(), "12.1.2", "12.1.2", "6.0.0");
+
+    let project = home.path().join("eqmain.gpr");
+    let request = SessionRequest {
+        headless: HeadlessMode::Never,
+        ..session_request(&url, &project, home.path())
+    };
+    let err = GhidraSession::ensure(&request, None)
+        .await
+        .expect_err("headless = never means no spawn");
+    match err {
+        GhidraError::CannotSpawn { reason } => {
+            assert!(
+                reason.contains("headless = never"),
+                "the reason names the knob: {reason}"
+            );
+        }
+        other => panic!("expected CannotSpawn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn headless_always_spawns_even_when_a_gui_answers() {
+    // A GUI answers on the configured port, but `always` wants a headless
+    // instance: the preflight goes to the spawn path instead of attaching —
+    // proven here by the spawn's own no-install failure, since the fixture
+    // has no Ghidra to spawn against.
+    let home = tempfile::tempdir().expect("tempdir");
+    let fake = ProbeFake::serving(&[("check_connection", GUI_CONNECTION)]).await;
+
+    let project = home.path().join("eqmain.gpr");
+    let request = SessionRequest {
+        headless: HeadlessMode::Always,
+        ..session_request(&fake.base_url, &project, home.path())
+    };
+    let err = GhidraSession::ensure(&request, None)
+        .await
+        .expect_err("headless = always does not attach to a GUI");
+    match err {
+        GhidraError::CannotSpawn { reason } => {
+            assert!(
+                reason.contains("no Ghidra install was found"),
+                "the spawn path ran, not an attach: {reason}"
+            );
+        }
+        other => panic!("expected CannotSpawn, got {other:?}"),
+    }
+    assert_eq!(
+        fake.count("close_project"),
+        0,
+        "the GUI that was stepped over stays untouched"
+    );
+}
+
+#[tokio::test]
+async fn headless_always_attaches_to_a_running_headless_server() {
+    // A headless server already answering *is* what `always` asks for —
+    // attaching to it is not a contradiction.
+    let home = tempfile::tempdir().expect("tempdir");
+    let fake = ProbeFake::serving(&[("check_connection", HEADLESS_CONNECTION)]).await;
+
+    let project = home.path().join("eqmain.gpr");
+    let request = SessionRequest {
+        headless: HeadlessMode::Always,
+        ..session_request(&fake.base_url, &project, home.path())
+    };
+    let session = GhidraSession::ensure(&request, None)
+        .await
+        .expect("a running headless server satisfies headless = always");
+    assert_eq!(session.ownership(), Ownership::Attached);
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn headless_always_steps_over_a_discovered_gui_too() {
+    // The reconciliation path obeys the same preference: a discovered GUI is
+    // not attachable under `always`, so the spawn path runs instead.
+    let fake = ProbeFake::serving(&[("check_connection", GUI_CONNECTION)]).await;
+    let sockets = tempfile::tempdir().expect("tempdir");
+    fake_registration(
+        sockets.path(),
+        std::process::id(),
+        port_of(&fake.base_url),
+        "EQ_Ghidra",
+    );
+    let home = tempfile::tempdir().expect("tempdir");
+    let url = unreachable_url();
+
+    let project = home.path().join("eqmain.gpr");
+    let request = SessionRequest {
+        socket_dir: Some(sockets.path()),
+        headless: HeadlessMode::Always,
+        ..session_request(&url, &project, home.path())
+    };
+    let err = GhidraSession::ensure(&request, None)
+        .await
+        .expect_err("a discovered GUI does not satisfy headless = always");
+    assert!(
+        matches!(err, GhidraError::CannotSpawn { .. }),
+        "the spawn path ran past the discovered GUI: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn headless_always_takes_a_free_port_when_the_gui_holds_both() {
+    // The headline `always` case: a GUI owns the configured port, and the
+    // fallback names that same port — failing with PortBusy there would
+    // defeat the whole preference, so the spawn takes any free port and the
+    // client follows. Proven here by the spawn's own no-install failure.
+    let home = tempfile::tempdir().expect("tempdir");
+    let fake = ProbeFake::serving(&[("check_connection", GUI_CONNECTION)]).await;
+    let held = port_of(&fake.base_url) as u16;
+
+    let project = home.path().join("eqmain.gpr");
+    let request = SessionRequest {
+        fallback_port: held,
+        headless: HeadlessMode::Always,
+        ..session_request(&fake.base_url, &project, home.path())
+    };
+    let err = GhidraSession::ensure(&request, None)
+        .await
+        .expect_err("the spawn path runs, not a PortBusy refusal");
+    assert!(
+        matches!(err, GhidraError::CannotSpawn { .. }),
+        "a free port was found and the spawn checks ran: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_nonsense_min_version_fails_the_gate_by_name() {
+    // A typo in the floor must not silently disable the gate: the failure
+    // names the bad value and the knob.
+    let url = unreachable_url();
+    let home = tempfile::tempdir().expect("tempdir");
+    sample_install(home.path(), "12.1.2");
+    sample_extension(home.path(), "12.1.2", "12.1.2", "6.0.0");
+
+    let project = home.path().join("eqmain.gpr");
+    let request = SessionRequest {
+        min_version: Some("12.x"),
+        ..session_request(&url, &project, home.path())
+    };
+    let err = GhidraSession::ensure(&request, None)
+        .await
+        .expect_err("an unparseable floor is a named failure, not a no-op");
+    match err {
+        GhidraError::CannotSpawn { reason } => {
+            assert!(
+                reason.contains("12.x") && reason.contains("ghidra.min_version"),
+                "the reason names the bad value and the knob: {reason}"
+            );
+        }
+        other => panic!("expected CannotSpawn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn min_version_gates_the_spawn_by_name() {
+    // The install is found and valid, but below the configured floor: the
+    // failure names the path, the found version, and the knob to fix.
+    let url = unreachable_url();
+    let home = tempfile::tempdir().expect("tempdir");
+    sample_install(home.path(), "12.1.2");
+    sample_extension(home.path(), "12.1.2", "12.1.2", "6.0.0");
+
+    let project = home.path().join("eqmain.gpr");
+    let request = SessionRequest {
+        min_version: Some("12.2"),
+        ..session_request(&url, &project, home.path())
+    };
+    let err = GhidraSession::ensure(&request, None)
+        .await
+        .expect_err("an install below min_version cannot be spawned against");
+    match err {
+        GhidraError::CannotSpawn { reason } => {
+            assert!(
+                reason.contains("12.1.2")
+                    && reason.contains("12.2")
+                    && reason.contains("ghidra.min_version"),
+                "the reason names the versions and the knob: {reason}"
+            );
+        }
+        other => panic!("expected CannotSpawn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn min_version_passing_lets_the_spawn_checks_continue() {
+    // The floor is met, so the gate is invisible: the next check — the
+    // missing extension — is what fails, proving min_version did not stop
+    // a passing install.
+    let url = unreachable_url();
+    let home = tempfile::tempdir().expect("tempdir");
+    sample_install(home.path(), "12.1.2");
+
+    let project = home.path().join("eqmain.gpr");
+    let request = SessionRequest {
+        min_version: Some("12.1"),
+        ..session_request(&url, &project, home.path())
+    };
+    let err = GhidraSession::ensure(&request, None)
+        .await
+        .expect_err("no extension means no spawn");
+    match err {
+        GhidraError::CannotSpawn { reason } => {
+            assert!(
+                reason.contains("extension is not installed"),
+                "the version gate passed and the extension check ran: {reason}"
+            );
+        }
+        other => panic!("expected CannotSpawn, got {other:?}"),
     }
 }
 

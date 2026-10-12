@@ -60,6 +60,18 @@ pub mod defaults {
 
     /// Attempts before a translation is abandoned.
     pub const LLM_MAX_RETRIES: u32 = 3;
+
+    /// Boot budget for a spawned headless Ghidra server, in seconds. JVM
+    /// plus Ghidra startup is slow; this is the design doc's proven budget.
+    pub const GHIDRA_START_TIMEOUT_SECS: u64 = 90;
+
+    /// Whether calxgloss may start a headless Ghidra server when none is
+    /// running (G1-T7): spawning is the norm, opting out is the exception.
+    pub const GHIDRA_AUTO_START: bool = true;
+
+    /// The GUI-vs-headless preference: attach to a running server when one
+    /// answers, spawn a headless one when nothing does.
+    pub const GHIDRA_HEADLESS: &str = "auto";
 }
 
 mod error;

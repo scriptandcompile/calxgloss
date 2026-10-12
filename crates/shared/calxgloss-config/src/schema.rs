@@ -38,6 +38,27 @@ pub struct GhidraSection {
     /// `$GHIDRA_INSTALL_DIR`, then this key, then a `*ghidra_*_PUBLIC` glob
     /// in the home directory (highest version wins).
     pub install_dir: Option<String>,
+
+    /// Whether calxgloss may start a headless Ghidra server when none is
+    /// running. `false` makes the preflight check-only: it fails fast naming
+    /// what is missing instead of spawning anything.
+    pub auto_start: Option<bool>,
+
+    /// GUI-vs-headless preference: `auto` attaches to a running server or
+    /// spawns a headless one, `always` spawns headless even when a GUI is
+    /// open, `never` only ever attaches (no spawn).
+    pub headless: Option<String>,
+
+    /// The Ghidra project (`.gpr`) a run uses, overriding the default
+    /// `<workspace>/ghidra/<target>.gpr`.
+    pub project: Option<String>,
+
+    /// The minimum acceptable Ghidra install version, e.g. `12.1`. A
+    /// discovered install below it fails the install check by name.
+    pub min_version: Option<String>,
+
+    /// How long a spawned headless server may take to boot, in seconds.
+    pub start_timeout_secs: Option<u64>,
 }
 
 /// The `[llm]` table.
@@ -87,6 +108,11 @@ pub const EXAMPLE: &str = r#"# Calxgloss configuration.
 url = "http://127.0.0.1:8080"
 # api_key = "..."
 # install_dir = "/path/to/ghidra_12.1.2_PUBLIC"  # empty → discover
+# auto_start = true            # false → preflight checks only, never spawns
+# headless = "auto"            # auto | always | never
+# project = "/path/to/run.gpr" # default: <workspace>/ghidra/<target>.gpr
+# min_version = "12.1"         # gate the discovered install by version
+# start_timeout_secs = 90      # boot budget for a spawned server
 
 [llm]
 url  = "http://127.0.0.1:1919/v1"

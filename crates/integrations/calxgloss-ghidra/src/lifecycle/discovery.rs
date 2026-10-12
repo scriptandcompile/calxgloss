@@ -108,8 +108,9 @@ fn socket_pid(name: &str) -> Option<u32> {
 }
 
 /// Whether `pid` still has a process behind it — the `/proc` form of the
-/// bridge's own `kill -0` liveness check.
-fn pid_alive(pid: u32) -> bool {
+/// bridge's own `kill -0` liveness check. Shared with [`server`]'s pid-file
+/// cleanup (G1-T7).
+pub(crate) fn pid_alive(pid: u32) -> bool {
     Path::new("/proc").join(pid.to_string()).exists()
 }
 

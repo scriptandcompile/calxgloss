@@ -1,9 +1,9 @@
 //! Utility functions for the CLI.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use calxgloss::TranslationEvents;
 use calxgloss_ghidra::lifecycle::{
-    BRIDGE_DEFAULT_PORT, DEFAULT_START_TIMEOUT, GhidraSession, SessionRequest, StackRequest,
+    BRIDGE_DEFAULT_PORT, GhidraSession, HeadlessMode, SessionRequest, StackRequest,
     default_project, socket_dir,
 };
 pub use calxgloss_reports::{
@@ -13,6 +13,7 @@ pub use calxgloss_reports::{
 pub use calxgloss_translator::RetryStrategy;
 pub use calxgloss_verify::Verifier;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 pub use tracing::{debug, warn};
 
 /// Open the session preflight (G1-T4) every Ghidra command starts from:
@@ -55,7 +56,22 @@ pub(super) async fn open_ghidra_session(
         .ghidra_install_dir
         .as_ref()
         .map(|r| PathBuf::from(&r.value));
-    let project = default_project(workspace, binary);
+    // The `ghidra.headless` mode is a config string, so a typo is named with
+    // the layer it came from — the same attribution `config` shows.
+    let headless: HeadlessMode = settings.ghidra_headless.value.parse().map_err(|_| {
+        anyhow!(
+            "ghidra.headless = {:?} (from {}) is not a valid mode; expected auto, always, \
+             or never",
+            settings.ghidra_headless.value,
+            settings.ghidra_headless.source,
+        )
+    })?;
+    // `ghidra.project` overrides the default `<workspace>/ghidra/<target>.gpr`.
+    let project = settings
+        .ghidra_project
+        .as_ref()
+        .map(|r| PathBuf::from(&r.value))
+        .unwrap_or_else(|| default_project(workspace, binary));
     let request = SessionRequest {
         url: &settings.ghidra_url.value,
         api_key: settings.ghidra_api_key.as_ref().map(|r| r.value.as_str()),
@@ -67,7 +83,13 @@ pub(super) async fn open_ghidra_session(
             config_install_dir: config_install.as_deref(),
             home: home.as_deref(),
         },
-        start_timeout: DEFAULT_START_TIMEOUT,
+        start_timeout: Duration::from_secs(settings.ghidra_start_timeout_secs.value),
+        auto_start: settings.ghidra_auto_start.value,
+        headless,
+        min_version: settings
+            .ghidra_min_version
+            .as_ref()
+            .map(|r| r.value.as_str()),
     };
     let session = GhidraSession::ensure(&request, events)
         .await

@@ -42,7 +42,7 @@ pub use project::{
 };
 pub use server::LaunchPlan;
 pub use session::{
-    DEFAULT_START_TIMEOUT, GhidraSession, Ownership, SessionRequest, default_project,
+    DEFAULT_START_TIMEOUT, GhidraSession, HeadlessMode, Ownership, SessionRequest, default_project,
 };
 
 use tracing::warn;

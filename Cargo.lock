@@ -519,6 +519,7 @@ name = "calxgloss-ghidra"
 version = "0.3.0"
 dependencies = [
  "calxgloss-types",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",

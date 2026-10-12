@@ -53,6 +53,13 @@ pub(super) struct Cli {
     #[arg(long, global = true)]
     pub(super) ghidra_api_key: Option<String>,
 
+    /// Never start a Ghidra server, even when none is running
+    ///
+    /// Overrides `ghidra.auto_start`. The preflight still runs the doctor's
+    /// checks and fails fast naming what is missing, but spawns nothing.
+    #[arg(long, global = true)]
+    pub(super) no_ghidra_autostart: bool,
+
     /// LLM server URL (OpenAI-compatible API)
     #[arg(long, global = true)]
     pub(super) llm_url: Option<String>,

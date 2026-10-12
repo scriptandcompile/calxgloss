@@ -579,6 +579,9 @@ async fn a_headless_server_spawns_attaches_and_shuts_down() {
             home: home.as_deref(),
         },
         start_timeout: std::time::Duration::from_secs(120),
+        auto_start: true,
+        headless: calxgloss_ghidra::lifecycle::HeadlessMode::Auto,
+        min_version: None,
     };
     let session = calxgloss_ghidra::lifecycle::GhidraSession::ensure(&request, None)
         .await

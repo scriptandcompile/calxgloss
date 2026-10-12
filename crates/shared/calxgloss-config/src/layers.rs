@@ -70,6 +70,11 @@ impl Layers {
                     url: var("CALXGLOSS_GHIDRA_URL"),
                     api_key: var("CALXGLOSS_GHIDRA_API_KEY"),
                     install_dir: var("CALXGLOSS_GHIDRA_INSTALL_DIR"),
+                    auto_start: bool_var("CALXGLOSS_GHIDRA_AUTO_START"),
+                    headless: var("CALXGLOSS_GHIDRA_HEADLESS"),
+                    project: var("CALXGLOSS_GHIDRA_PROJECT"),
+                    min_version: var("CALXGLOSS_GHIDRA_MIN_VERSION"),
+                    start_timeout_secs: u64_var("CALXGLOSS_GHIDRA_START_TIMEOUT_SECS"),
                 },
                 llm: LlmSection {
                     url: var("CALXGLOSS_LLM_URL"),
@@ -142,8 +147,27 @@ fn u32_var(name: &str) -> Option<u32> {
     numeric_var!(name, u32)
 }
 
+fn u64_var(name: &str) -> Option<u64> {
+    numeric_var!(name, u64)
+}
+
 fn f32_var(name: &str) -> Option<f32> {
     numeric_var!(name, f32)
+}
+
+/// Read a boolean environment variable: `true`/`false`, any case.
+///
+/// Like the numeric variables, a value that does not parse is skipped rather
+/// than fatal — a typo in a shell profile degrades to the next layer.
+fn bool_var(name: &str) -> Option<bool> {
+    var(name).and_then(|v| match v.trim().to_ascii_lowercase().as_str() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => {
+            debug!(variable = name, value = %v, "Ignoring unparseable environment variable");
+            None
+        }
+    })
 }
 
 #[cfg(test)]
@@ -246,6 +270,83 @@ max_retries = 5
         assert_eq!(c.llm.max_tokens, Some(4096));
         assert_eq!(c.llm.temperature, Some(0.7));
         assert_eq!(c.llm.max_retries, Some(5));
+    }
+
+    #[test]
+    fn test_the_lifecycle_keys_come_from_the_file_layer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            dir.path(),
+            "c.toml",
+            r#"
+[ghidra]
+auto_start = false
+headless = "always"
+project = "/run/eq/ghidra/EverQuest.gpr"
+min_version = "12.1"
+start_timeout_secs = 120
+"#,
+        );
+        let c = load(Some(&path)).unwrap().file;
+        assert_eq!(c.ghidra.auto_start, Some(false));
+        assert_eq!(c.ghidra.headless.as_deref(), Some("always"));
+        assert_eq!(
+            c.ghidra.project.as_deref(),
+            Some("/run/eq/ghidra/EverQuest.gpr")
+        );
+        assert_eq!(c.ghidra.min_version.as_deref(), Some("12.1"));
+        assert_eq!(c.ghidra.start_timeout_secs, Some(120));
+    }
+
+    #[test]
+    fn test_an_unknown_lifecycle_key_is_still_rejected() {
+        // The new keys must not loosen the deny list: a near-miss like
+        // `autostart` is a misconfiguration, not something to ignore.
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(dir.path(), "c.toml", "[ghidra]\nautostart = false\n");
+        assert!(matches!(
+            load(Some(&path)),
+            Err(ConfigError::Invalid { .. })
+        ));
+    }
+
+    #[test]
+    fn test_a_wrongly_typed_lifecycle_value_is_rejected() {
+        // `auto_start = "false"` is a string, not a bool — coercing it would
+        // hide the mistake, like the quoted max_tokens case.
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(dir.path(), "c.toml", "[ghidra]\nauto_start = \"false\"\n");
+        assert!(matches!(
+            load(Some(&path)),
+            Err(ConfigError::Invalid { .. })
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_the_lifecycle_env_vars_reach_the_env_layer() {
+        let mut guard = EnvGuard::new();
+        guard.set("CALXGLOSS_GHIDRA_AUTO_START", Some("false".into()));
+        guard.set("CALXGLOSS_GHIDRA_HEADLESS", Some("never".into()));
+        guard.set(
+            "CALXGLOSS_GHIDRA_PROJECT",
+            Some("/run/eq/EverQuest.gpr".into()),
+        );
+        guard.set("CALXGLOSS_GHIDRA_MIN_VERSION", Some("12.1".into()));
+        guard.set("CALXGLOSS_GHIDRA_START_TIMEOUT_SECS", Some("junk".into()));
+        let layers = Layers::from_env();
+        // Guard drops and restores the env here.
+        drop(guard);
+
+        assert_eq!(layers.env.ghidra.auto_start, Some(false));
+        assert_eq!(layers.env.ghidra.headless.as_deref(), Some("never"));
+        assert_eq!(
+            layers.env.ghidra.project.as_deref(),
+            Some("/run/eq/EverQuest.gpr")
+        );
+        assert_eq!(layers.env.ghidra.min_version.as_deref(), Some("12.1"));
+        // An unparseable number is skipped, like every other numeric var.
+        assert_eq!(layers.env.ghidra.start_timeout_secs, None);
     }
 
     #[test]

@@ -125,6 +125,13 @@ fn main() -> Result<()> {
             url: cli.ghidra_url.clone(),
             api_key: cli.ghidra_api_key.clone(),
             install_dir: None,
+            // The flag only turns autostart off; it cannot turn on a file's
+            // `auto_start = false` — that would need a tri-state flag.
+            auto_start: cli.no_ghidra_autostart.then_some(false),
+            headless: None,
+            project: None,
+            min_version: None,
+            start_timeout_secs: None,
         },
         llm: LlmSection {
             url: cli.llm_url.clone(),

@@ -12,12 +12,12 @@
 //! spawned, so the argv, the classpath globs, and the server args are unit-
 //! testable without a JVM. The spawn itself runs the child with
 //! `kill_on_drop`, sends its stdout/stderr to a log file beside the project,
-//! and writes a pid file so a crashed run leaves something the next run can
-//! clean up (pid-file *reuse* is G1-T7's job). Every spawned server carries
-//! `GHIDRA_MCP_REQUIRE_PROGRAM_SELECTORS=1` — the other half of the
-//! 2026-10-08 incident fix: with selectors required the bridge refuses any
-//! program-scoped call that omits its target, so an endpoint can never
-//! silently answer from the wrong program.
+//! and writes a pid file (pid plus port) so a crashed run leaves something
+//! the next run finds and reaps ([`reap_stale_pid_file`], G1-T7). Every
+//! spawned server carries `GHIDRA_MCP_REQUIRE_PROGRAM_SELECTORS=1` — the
+//! other half of the 2026-10-08 incident fix: with selectors required the
+//! bridge refuses any program-scoped call that omits its target, so an
+//! endpoint can never silently answer from the wrong program.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -26,7 +26,7 @@ use tracing::{info, warn};
 
 use super::extension::GhidraExtension;
 use super::install::GhidraInstall;
-use crate::client::{GhidraClient, GhidraError, Result};
+use crate::client::{GhidraClient, GhidraConfig, GhidraError, Result};
 use crate::model::ServerInfo;
 
 /// The headless server's main class, per the bridge's javadoc and the
@@ -190,6 +190,16 @@ pub(crate) fn spawn_port(bind: &str, configured: u16, fallback: u16) -> Option<u
     None
 }
 
+/// Any free port on `bind` — how `headless = always` finds somewhere to
+/// spawn when the configured port and the fallback are both held (a GUI on
+/// the configured port is exactly the case that preference exists for).
+pub(crate) fn free_port(bind: &str) -> Option<u16> {
+    let probe = std::net::TcpListener::bind((bind, 0)).ok()?;
+    let port = probe.local_addr().ok()?.port();
+    drop(probe);
+    Some(port)
+}
+
 /// A headless server process calxgloss started and therefore owns: killing
 /// it, and closing its project first, is calxgloss's job — and only ever
 /// calxgloss's job for a server it started (design risk 5).
@@ -241,6 +251,108 @@ fn remove_pid_file(path: &Path) {
         && err.kind() != std::io::ErrorKind::NotFound
     {
         warn!(path = %path.display(), error = %err, "Could not remove the Ghidra server pid file");
+    }
+}
+
+/// What a pid file beside the project records: the spawned pid, and — since
+/// G1-T7 — the port that server took, so the next run can prove the process
+/// behind the pid is its own orphan before touching it.
+#[derive(Debug, PartialEq, Eq)]
+struct PidRecord {
+    pid: u32,
+    port: Option<u16>,
+}
+
+/// Read a pid file tolerantly: `pid` alone (the G1-T4 spelling) or `pid port`
+/// (the G1-T7 spelling). A body that names no pid is no record at all.
+fn read_pid_file(path: &Path) -> Option<PidRecord> {
+    let body = std::fs::read_to_string(path).ok()?;
+    let mut fields = body.split_whitespace();
+    let pid = fields.next()?.parse().ok()?;
+    let port = fields.next().and_then(|field| field.parse().ok());
+    Some(PidRecord { pid, port })
+}
+
+/// Handle the pid file a previous run left beside the project (G1-T7),
+/// before a fresh spawn:
+///
+/// * no file, or a pid with nothing behind it — stale, removed;
+/// * a live pid whose recorded port answers the identity probe as
+///   GhidraMCP — the orphan of a crashed run (calxgloss died before its
+///   own shutdown could kill the child): killed, and the file removed, so
+///   the fresh spawn cannot collide with it;
+/// * a live pid that is *not* our server — the OS reused the pid, or the
+///   recorded port belongs to someone else — only the file is removed,
+///   never a process calxgloss did not start (design risk 5).
+pub(crate) async fn reap_stale_pid_file(pid_file: &Path) {
+    let Some(record) = read_pid_file(pid_file) else {
+        // A file that names no pid is garbage — a truncated write, a hand
+        // edit — and leaving it would only confuse the next run.
+        if pid_file.exists() {
+            remove_pid_file(pid_file);
+        }
+        return;
+    };
+    if !super::discovery::pid_alive(record.pid) {
+        info!(
+            path = %pid_file.display(),
+            pid = record.pid,
+            "Removed the pid file of a dead Ghidra headless server"
+        );
+        remove_pid_file(pid_file);
+        return;
+    }
+    // Alive: ours, or the OS handed the pid to someone else. The recorded
+    // port answering as GhidraMCP is the ownership proof — this pid file's
+    // writer was the only thing that ever bound that port as its own.
+    let ours = match record.port {
+        Some(port) => answers_as_ghidramcp(port).await,
+        None => false,
+    };
+    match (ours, record.port) {
+        (true, Some(port)) => {
+            info!(
+                pid = record.pid,
+                port, "Killing the orphaned Ghidra headless server a crashed run left behind"
+            );
+            // SAFETY: `kill(2)` with SIGKILL on a pid verified above to be
+            // the headless server this pid file records.
+            if unsafe { libc::kill(record.pid as i32, libc::SIGKILL) } != 0 {
+                warn!(
+                    pid = record.pid,
+                    "Killing the orphaned Ghidra headless server failed"
+                );
+            }
+        }
+        _ => {
+            warn!(
+                path = %pid_file.display(),
+                pid = record.pid,
+                "The Ghidra pid file names a live process that is not our server; removing the file only"
+            );
+        }
+    }
+    remove_pid_file(pid_file);
+}
+
+/// Whether `port` answers the identity probe as a GhidraMCP server — the
+/// ownership check for a live pid-file entry. An under-versioned plugin
+/// still counts: it identifies the shape of our bridge, and the crashed
+/// run's server is exactly the orphan most likely to collide. A short
+/// timeout: an orphan answers instantly, and anything slower than that is
+/// not worth waiting for before a spawn decision.
+async fn answers_as_ghidramcp(port: u16) -> bool {
+    let url = format!("http://127.0.0.1:{port}");
+    let config = match GhidraConfig::new(&url) {
+        Ok(config) => config.with_timeout(std::time::Duration::from_secs(2)),
+        Err(_) => return false,
+    };
+    match GhidraClient::from_config(config) {
+        Ok(client) => matches!(
+            client.check_connection().await,
+            Ok(_) | Err(GhidraError::VersionMismatch { .. })
+        ),
+        Err(_) => false,
     }
 }
 
@@ -296,13 +408,16 @@ pub(crate) fn spawn_server(plan: &LaunchPlan, log: &Path, pid_file: &Path) -> Re
 
     // The pid file goes up before the boot poll: a run that dies mid-boot
     // leaves the file, and the next run's cleanup (G1-T7) has something
-    // to find.
-    std::fs::write(pid_file, format!("{pid}\n")).map_err(|err| GhidraError::SpawnFailed {
-        detail: format!(
-            "started java (pid {pid}) but could not write the pid file {}: {err}",
-            pid_file.display()
-        ),
-        log: log.to_string_lossy().into_owned(),
+    // to find. The port rides along so the next run can verify the process
+    // behind the pid is actually this server before touching it.
+    std::fs::write(pid_file, format!("{pid} {}\n", plan.port)).map_err(|err| {
+        GhidraError::SpawnFailed {
+            detail: format!(
+                "started java (pid {pid}) but could not write the pid file {}: {err}",
+                pid_file.display()
+            ),
+            log: log.to_string_lossy().into_owned(),
+        }
     })?;
 
     info!(pid, port = plan.port, log = %log.display(), "Started a Ghidra headless server calxgloss owns");
@@ -554,5 +669,142 @@ mod tests {
         );
         // The degenerate case: the configured port *is* the fallback.
         assert_eq!(spawn_port("127.0.0.1", configured, configured), None);
+    }
+
+    // --- pid-file cleanup across runs (issue #117, G1-T7) --------------
+
+    /// A tiny HTTP stand-in answering every request with `body` — enough
+    /// for the identity probe that proves a live pid-file entry is ours.
+    fn fake_identity_server(body: &'static str) -> u16 {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("fake identity server should bind");
+        let port = listener.local_addr().expect("address").port();
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = listener.accept() {
+                use std::io::{Read as _, Write as _};
+                // Read the request before answering, as the bridge does.
+                let mut request = [0u8; 512];
+                let _ = stream.read(&mut request);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        port
+    }
+
+    /// A PID guaranteed dead: a short-lived child, reaped.
+    fn dead_pid() -> u32 {
+        let mut child = std::process::Command::new("/bin/true")
+            .spawn()
+            .expect("spawn /bin/true");
+        let pid = child.id();
+        child.wait().expect("reap /bin/true");
+        pid
+    }
+
+    #[test]
+    fn the_pid_file_is_read_in_both_spellings() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("headless.pid");
+
+        // G1-T7: pid plus the port the server took.
+        std::fs::write(&path, "4242 8089\n").expect("write pid file");
+        assert_eq!(
+            read_pid_file(&path),
+            Some(PidRecord {
+                pid: 4242,
+                port: Some(8089)
+            })
+        );
+
+        // G1-T4's spelling, left by an upgrade mid-run: pid alone.
+        std::fs::write(&path, "4242\n").expect("write pid file");
+        assert_eq!(
+            read_pid_file(&path),
+            Some(PidRecord {
+                pid: 4242,
+                port: None
+            })
+        );
+
+        // A body naming no pid is no record.
+        std::fs::write(&path, "not a pid\n").expect("write pid file");
+        assert_eq!(read_pid_file(&path), None);
+        assert_eq!(read_pid_file(&dir.path().join("absent.pid")), None);
+    }
+
+    #[tokio::test]
+    async fn a_pid_file_whose_process_is_gone_is_removed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("headless.pid");
+        std::fs::write(&path, format!("{} 8089\n", dead_pid())).expect("write pid file");
+
+        reap_stale_pid_file(&path).await;
+        assert!(!path.exists(), "the stale file is cleaned up");
+    }
+
+    #[tokio::test]
+    async fn a_malformed_pid_file_is_removed_too() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("headless.pid");
+        std::fs::write(&path, "truncated by a crash").expect("write pid file");
+
+        reap_stale_pid_file(&path).await;
+        assert!(!path.exists(), "garbage does not survive into the next run");
+    }
+
+    #[tokio::test]
+    async fn the_orphan_of_a_crashed_run_is_killed_and_the_file_removed() {
+        // Live pid, and its recorded port answers as GhidraMCP: that is the
+        // crashed run's own server, left when calxgloss died before its
+        // shutdown. The next run takes it down before spawning.
+        let mut orphan = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn the fake orphan");
+        let port = fake_identity_server("Connection OK - GhidraMCP Headless Server v6.0.0");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("headless.pid");
+        std::fs::write(&path, format!("{} {port}\n", orphan.id())).expect("write pid file");
+
+        reap_stale_pid_file(&path).await;
+
+        assert!(!path.exists(), "the pid file goes with its server");
+        let status = orphan.wait().expect("reap the killed orphan");
+        assert!(
+            status.code().is_none(),
+            "the orphan died by signal, not by finishing: {status}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_live_process_that_cannot_be_verified_is_left_alone() {
+        // The pid is alive but its recorded port answers as something else
+        // (here: nothing at all) — the OS may have handed the pid to a
+        // stranger. Only the file is removed; design risk 5 forbids killing
+        // a process calxgloss did not start.
+        let mut stranger = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn the stranger");
+        let spare = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a spare port");
+        let port = spare.local_addr().expect("address").port();
+        drop(spare);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("headless.pid");
+        std::fs::write(&path, format!("{} {port}\n", stranger.id())).expect("write pid file");
+
+        reap_stale_pid_file(&path).await;
+
+        assert!(!path.exists(), "the untrustworthy file is still removed");
+        assert!(
+            stranger.try_wait().expect("poll the stranger").is_none(),
+            "the unverified process is never killed"
+        );
+        stranger.kill().expect("clean up the stranger");
+        stranger.wait().expect("reap the stranger");
     }
 }
