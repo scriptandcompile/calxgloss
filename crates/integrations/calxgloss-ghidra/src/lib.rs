@@ -31,11 +31,13 @@
 //!
 //! The [`lifecycle`] module holds the read-only stack checks — Ghidra install
 //! discovery, the per-version GhidraMCP extension pairing, and the server
-//! identity probe — that `calxgloss doctor` reports, plus the wrong-program
+//! identity probe — that `calxgloss doctor` reports, and the runtime-socket
+//! scan that finds live servers and their real ports, plus the wrong-program
 //! guard that verifies the server is serving the scan target before any scan
 //! runs (the 2026-10-08 incident fix). On top of them,
 //! [`lifecycle::GhidraSession`] is the preflight every Ghidra-dependent
-//! command starts from: it attaches to a running server or spawns a headless
+//! command starts from: it attaches to a running server — reconciling a
+//! stale configured port against the discovered ones — or spawns a headless
 //! one under the same checks, tracking ownership so owned servers are shut
 //! down and attached ones are never touched.
 

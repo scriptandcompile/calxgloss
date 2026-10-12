@@ -122,16 +122,20 @@ pub enum GhidraError {
     )]
     WrongProgram { target: String, open: Vec<String> },
 
-    /// The configured port is held by something that is not a GhidraMCP
-    /// server, so a headless spawn cannot bind it.
+    /// Neither the configured port nor the fallback default is free, so a
+    /// headless spawn cannot bind either.
     ///
     /// calxgloss never binds a busy port (design risk 4): the usual holder
-    /// is a foreign local server (8080 is also the popular local-AI port)
-    /// or a stale instance discovery has not reconciled yet (G1-T5).
+    /// is a foreign local server (8080 is also the popular local-AI port).
+    /// A merely *stale* configured port no longer lands here — UDS
+    /// discovery reconciles it against the live servers the bridge
+    /// registers before a spawn is considered — so this failure means both
+    /// candidate ports are held.
     #[error(
-        "Cannot start a headless Ghidra server: the port at {url} is already in use by \
-            something that is not GhidraMCP.\nFree the port or point the configured Ghidra URL \
-            (`--ghidra-url`, `CALXGLOSS_GHIDRA_URL`, or `ghidra.url`) at a free one"
+        "Cannot start a headless Ghidra server: the configured port at {url} and the bridge \
+            default are both in use by something that is not GhidraMCP.\nFree one of them or \
+            point the configured Ghidra URL (`--ghidra-url`, `CALXGLOSS_GHIDRA_URL`, or \
+            `ghidra.url`) at a free one"
     )]
     PortBusy { url: String },
 

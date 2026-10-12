@@ -176,6 +176,20 @@ pub(crate) fn port_free(bind: &str, port: u16) -> bool {
     std::net::TcpListener::bind((bind, port)).is_ok()
 }
 
+/// The port a spawn takes: the configured one when it is free, else the
+/// bridge default — never a busy port (design risk 4). `None` when both
+/// are held, which the session reports as [`GhidraError::PortBusy`]
+/// instead of attempting a bind.
+pub(crate) fn spawn_port(bind: &str, configured: u16, fallback: u16) -> Option<u16> {
+    if port_free(bind, configured) {
+        return Some(configured);
+    }
+    if fallback != configured && port_free(bind, fallback) {
+        return Some(fallback);
+    }
+    None
+}
+
 /// A headless server process calxgloss started and therefore owns: killing
 /// it, and closing its project first, is calxgloss's job — and only ever
 /// calxgloss's job for a server it started (design risk 5).
@@ -345,6 +359,7 @@ pub(crate) async fn wait_for_boot(
 
 #[cfg(test)]
 mod tests {
+    use super::super::discovery::BRIDGE_DEFAULT_PORT;
     use super::*;
 
     /// A fake install with one jar per category's `*/lib/`, matching the
@@ -496,5 +511,48 @@ mod tests {
         assert!(!port_free("127.0.0.1", port), "a bound port is busy");
         drop(held);
         assert!(port_free("127.0.0.1", port), "a released port is free");
+    }
+
+    #[test]
+    fn the_spawn_takes_the_configured_port_when_it_is_free() {
+        let free = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a port");
+        let configured = free.local_addr().expect("address").port();
+        drop(free);
+        assert_eq!(
+            spawn_port("127.0.0.1", configured, BRIDGE_DEFAULT_PORT),
+            Some(configured),
+            "the configured port wins while it is free"
+        );
+    }
+
+    #[test]
+    fn a_busy_configured_port_falls_back_to_the_bridge_default() {
+        let held = std::net::TcpListener::bind("127.0.0.1:0").expect("hold a port");
+        let configured = held.local_addr().expect("address").port();
+        // A spare port stands in for the bridge default so the test never
+        // touches a real 8080.
+        let spare = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a port");
+        let fallback = spare.local_addr().expect("address").port();
+        drop(spare);
+        assert_eq!(
+            spawn_port("127.0.0.1", configured, fallback),
+            Some(fallback),
+            "a held configured port yields the fallback, never a bind over the holder"
+        );
+    }
+
+    #[test]
+    fn two_busy_ports_spawn_nowhere() {
+        let first = std::net::TcpListener::bind("127.0.0.1:0").expect("hold configured");
+        let second = std::net::TcpListener::bind("127.0.0.1:0").expect("hold fallback");
+        let configured = first.local_addr().expect("address").port();
+        let fallback = second.local_addr().expect("address").port();
+        assert_eq!(
+            spawn_port("127.0.0.1", configured, fallback),
+            None,
+            "calxgloss never binds a busy port"
+        );
+        // The degenerate case: the configured port *is* the fallback.
+        assert_eq!(spawn_port("127.0.0.1", configured, configured), None);
     }
 }

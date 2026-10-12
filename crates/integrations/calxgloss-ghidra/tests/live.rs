@@ -569,6 +569,10 @@ async fn a_headless_server_spawns_attaches_and_shuts_down() {
         url: &url,
         api_key: None,
         project: &project,
+        // No discovery: this test wants the spawn path specifically, not an
+        // attach to whatever GUI instance happens to be registered.
+        socket_dir: None,
+        fallback_port: calxgloss_ghidra::lifecycle::BRIDGE_DEFAULT_PORT,
         stack: calxgloss_ghidra::lifecycle::StackRequest {
             env_install_dir: install_dir.as_deref(),
             config_install_dir: None,

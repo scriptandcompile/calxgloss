@@ -1,14 +1,17 @@
 //! Read-only discovery of the whole Ghidra stack — install, extension,
-//! server — plus the wrong-program guard a preflight runs before any scan.
+//! running servers, server on the configured port — plus the wrong-program
+//! guard a preflight runs before any scan.
 //!
 //! This is the checking half of the lifecycle design (`docs/ghidra_integration.md`
-//! §3.2) — everything `calxgloss doctor` reports in one pass, and the same
-//! checks [`session`]'s preflight runs before spawning anything. The checks
-//! themselves spawn nothing and modify no process: discovery reads the
-//! filesystem, and the server check is one `check_connection` probe. The one
-//! exception is [`program`]'s guard, which may switch the server's *current
-//! program* — the incident fix (risk 7) — but never opens, closes, or kills
-//! anything.
+//! §3.2) — what `calxgloss doctor` reports in one pass (install, extension,
+//! server on the configured port) plus the [`discovery`] scan of the bridge's
+//! runtime-socket registrations, and the same checks [`session`]'s preflight
+//! runs before spawning anything. The checks
+//! themselves spawn nothing and modify no process: [`discovery`] reads the
+//! filesystem and queries the bridge's runtime-socket registrations, and the
+//! server check is one `check_connection` probe. The one exception is
+//! [`program`]'s guard, which may switch the server's *current program* — the
+//! incident fix (risk 7) — but never opens, closes, or kills anything.
 //!
 //! The acting half is G1-T4: [`session::GhidraSession::ensure`] attaches to a
 //! running server or spawns a headless one ([`server`]) under these same
@@ -19,12 +22,14 @@
 //! extension jar is compiled against exactly one Ghidra build, so the install
 //! and extension checks are judged *as a pair*, not independently.
 
+mod discovery;
 mod extension;
 mod install;
 mod program;
 mod server;
 mod session;
 
+pub use discovery::{BRIDGE_DEFAULT_PORT, DiscoveredServer, discover, socket_dir};
 pub use extension::{ExtensionDiscovery, ExtensionVerdict, GhidraExtension};
 pub use install::{GhidraInstall, InstallDiscovery, InstallSource};
 pub use program::{ProgramMatch, ensure_current_program};

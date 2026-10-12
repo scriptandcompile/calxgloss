@@ -932,10 +932,11 @@ async fn the_guard_surfaces_a_switch_the_server_refuses() {
 // The session preflight: attach vs. start decisions (issue #114, G1-T4)
 // ============================================================
 
-use calxgloss_ghidra::lifecycle::{GhidraSession, Ownership, SessionRequest};
+use calxgloss_ghidra::lifecycle::{BRIDGE_DEFAULT_PORT, GhidraSession, Ownership, SessionRequest};
 
 /// A session request pointed at `url` with a project beside a tempdir, so
-/// log and pid files could land somewhere writable without polluting anything.
+/// log and pid files could land somewhere writable without polluting
+/// anything, and no socket dir to discover through.
 fn session_request<'a>(
     url: &'a str,
     project: &'a std::path::Path,
@@ -945,6 +946,8 @@ fn session_request<'a>(
         url,
         api_key: None,
         project,
+        socket_dir: None,
+        fallback_port: BRIDGE_DEFAULT_PORT,
         stack: StackRequest {
             env_install_dir: None,
             config_install_dir: None,
@@ -1105,8 +1108,8 @@ async fn a_spawn_with_no_extension_names_the_extensions_dir() {
 async fn a_busy_port_refuses_the_spawn_by_name() {
     // Design risk 4: never bind a busy port. Something holds the configured
     // port but does not answer as GhidraMCP (it hangs up on every request),
-    // so the probe says unreachable, the stack checks pass — and the free-
-    // port check is what stops the spawn.
+    // discovery finds no live server to attach to instead, and the fallback
+    // is held too — so the free-port policy is what stops the spawn.
     let holder = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("port holder should bind");
@@ -1116,20 +1119,193 @@ async fn a_busy_port_refuses_the_spawn_by_name() {
             drop(stream); // answer nothing, hang up
         }
     });
+    let fallback_holder = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("fallback holder should bind");
+    let fallback = fallback_holder.local_addr().expect("address").port();
     let home = tempfile::tempdir().expect("tempdir");
     sample_install(home.path(), "12.1.2");
     sample_extension(home.path(), "12.1.2", "12.1.2", "6.0.0");
 
-    let err = GhidraSession::ensure(
-        &session_request(&url, &home.path().join("eqmain.gpr"), home.path()),
-        None,
-    )
-    .await
-    .expect_err("a held port must not be spawned onto");
+    let project = home.path().join("eqmain.gpr");
+    let request = SessionRequest {
+        fallback_port: fallback,
+        ..session_request(&url, &project, home.path())
+    };
+    let err = GhidraSession::ensure(&request, None)
+        .await
+        .expect_err("a held port must not be spawned onto");
     match err {
         GhidraError::PortBusy { url: named } => assert_eq!(named, format!("{url}/")),
         other => panic!("expected PortBusy, got {other:?}"),
     }
+}
+
+// ============================================================
+// UDS port discovery + reconciliation (issue #115, G1-T5)
+// ============================================================
+
+/// A fake bridge registration: a UDS named `ghidra-<pid>.sock` answering
+/// `GET /mcp/instance_info` with the bridge's own record shape, framed
+/// exactly as the bridge's UDS server frames it. A plain thread, because
+/// the session's scan is blocking and the test runtime must stay free.
+fn fake_registration(dir: &std::path::Path, pid: u32, tcp_port: i64, project: &str) {
+    let listener = std::os::unix::net::UnixListener::bind(dir.join(format!("ghidra-{pid}.sock")))
+        .expect("bind fake registration");
+    let body = format!(
+        "{{\"pid\":{pid},\"project\":\"{project}\",\"project_path\":\"/eq/{project}\",\
+         \"programs\":[],\"tcp_port\":{tcp_port},\"tools\":1}}"
+    );
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    std::thread::spawn(move || {
+        while let Ok((mut stream, _)) = listener.accept() {
+            use std::io::{Read as _, Write as _};
+            // Read the request before answering, as the bridge does —
+            // closing over an unread request earns an RST.
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request);
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+}
+
+/// The port a `ProbeFake`'s base URL names.
+fn port_of(base_url: &str) -> i64 {
+    base_url
+        .rsplit(':')
+        .next()
+        .and_then(|port| port.parse().ok())
+        .expect("the fake's URL names a port")
+}
+
+/// A PID guaranteed dead: a short-lived child, reaped.
+fn dead_pid() -> u32 {
+    let mut child = std::process::Command::new("/bin/true")
+        .spawn()
+        .expect("spawn /bin/true");
+    let pid = child.id();
+    child.wait().expect("reap /bin/true");
+    pid
+}
+
+/// A configured URL nothing answers: a bound-then-dropped spare port.
+fn unreachable_url() -> String {
+    let spare = std::net::TcpListener::bind("127.0.0.1:0").expect("spare port should bind");
+    let url = format!("http://{}", spare.local_addr().expect("address"));
+    drop(spare);
+    url
+}
+
+#[tokio::test]
+async fn a_stale_configured_port_attaches_to_a_discovered_server() {
+    // The reboot case: the configured port answers nothing, but the bridge's
+    // runtime-socket dir carries a live registration naming the port that
+    // *does* answer. The session corrects the URL, attaches, and owns
+    // nothing — no spawn, no install needed.
+    let fake = ProbeFake::serving(&[("check_connection", GUI_CONNECTION)]).await;
+    let sockets = tempfile::tempdir().expect("tempdir");
+    fake_registration(
+        sockets.path(),
+        std::process::id(),
+        port_of(&fake.base_url),
+        "EQ_Ghidra",
+    );
+    let home = tempfile::tempdir().expect("tempdir");
+
+    let url = unreachable_url();
+    let project = home.path().join("eqmain.gpr");
+    let request = SessionRequest {
+        socket_dir: Some(sockets.path()),
+        ..session_request(&url, &project, home.path())
+    };
+    let session = GhidraSession::ensure(&request, None)
+        .await
+        .expect("the stale port is corrected to the discovered server");
+    assert_eq!(
+        session.ownership(),
+        Ownership::Attached,
+        "a discovered server is someone else's process"
+    );
+    assert_eq!(session.server_info().kind, ServerKind::Gui);
+    assert_eq!(
+        fake.count("check_connection"),
+        1,
+        "the discovered port was probed"
+    );
+
+    session.shutdown().await;
+    assert_eq!(
+        fake.count("close_project"),
+        0,
+        "the attached server is left untouched"
+    );
+}
+
+#[tokio::test]
+async fn a_dead_registration_falls_through_to_the_spawn_decision() {
+    // Dead sockets are ignored: with nothing live discovered and no Ghidra
+    // install to spawn, the preflight fails exactly the way it did before
+    // discovery existed.
+    let sockets = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        sockets.path().join(format!("ghidra-{}.sock", dead_pid())),
+        "",
+    )
+    .expect("write stale registration");
+    let home = tempfile::tempdir().expect("tempdir");
+
+    let url = unreachable_url();
+    let project = home.path().join("eqmain.gpr");
+    let request = SessionRequest {
+        socket_dir: Some(sockets.path()),
+        ..session_request(&url, &project, home.path())
+    };
+    let err = GhidraSession::ensure(&request, None)
+        .await
+        .expect_err("a dead registration is not a server");
+    assert!(
+        matches!(err, GhidraError::CannotSpawn { .. }),
+        "the scan ignored the dead socket and the spawn check failed as before: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_discovered_port_that_is_not_ghidramcp_is_skipped() {
+    // A registration whose TCP port answers as something else (the probe's
+    // 404 form) is not attachable: reconciliation verifies identity, does
+    // not trust the socket alone, and falls through to the spawn decision.
+    let foreign =
+        ProbeFake::serving_status(&[("check_connection", 404, "<h1>404 Not Found</h1>")]).await;
+    let sockets = tempfile::tempdir().expect("tempdir");
+    fake_registration(
+        sockets.path(),
+        std::process::id(),
+        port_of(&foreign.base_url),
+        "EQ_Ghidra",
+    );
+    let home = tempfile::tempdir().expect("tempdir");
+
+    let url = unreachable_url();
+    let project = home.path().join("eqmain.gpr");
+    let request = SessionRequest {
+        socket_dir: Some(sockets.path()),
+        ..session_request(&url, &project, home.path())
+    };
+    let err = GhidraSession::ensure(&request, None)
+        .await
+        .expect_err("a foreign discovered port is not attachable");
+    assert!(
+        matches!(err, GhidraError::CannotSpawn { .. }),
+        "the session moved past the foreign port to the spawn decision: {err:?}"
+    );
+    assert_eq!(
+        foreign.count("check_connection"),
+        1,
+        "the discovered port was probed and rejected"
+    );
 }
 
 #[tokio::test]

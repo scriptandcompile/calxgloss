@@ -3,7 +3,8 @@
 use anyhow::{Context, Result};
 use calxgloss::TranslationEvents;
 use calxgloss_ghidra::lifecycle::{
-    DEFAULT_START_TIMEOUT, GhidraSession, SessionRequest, StackRequest, default_project,
+    BRIDGE_DEFAULT_PORT, DEFAULT_START_TIMEOUT, GhidraSession, SessionRequest, StackRequest,
+    default_project, socket_dir,
 };
 pub use calxgloss_reports::{
     print_batch_summary, print_classification_report, print_failure, print_git_status,
@@ -15,16 +16,18 @@ use std::path::{Path, PathBuf};
 pub use tracing::{debug, warn};
 
 /// Open the session preflight (G1-T4) every Ghidra command starts from:
-/// attach to a running GhidraMCP server, or spawn a supervised headless one
-/// under the doctor's install and extension checks.
+/// attach to a running GhidraMCP server — reconciling a stale configured
+/// port against the servers registered in the bridge's runtime-socket
+/// directory (G1-T5) — or spawn a supervised headless one under the
+/// doctor's install and extension checks.
 ///
 /// The discovery inputs — `$GHIDRA_INSTALL_DIR`, the layered
-/// `ghidra.install_dir` setting, and `$HOME` — are read here so the lifecycle
-/// checks stay pure and testable; the project path defaults to
-/// `<workspace>/ghidra/<binary>.gpr`, beside which a spawned server's log and
-/// pid files land. The returned session tracks ownership: an owned server is
-/// shut down by [`GhidraSession::shutdown`] (or killed on drop), an attached
-/// one is left untouched.
+/// `ghidra.install_dir` setting, `$HOME`, and `$XDG_RUNTIME_DIR` — are read
+/// here so the lifecycle checks stay pure and testable; the project path
+/// defaults to `<workspace>/ghidra/<binary>.gpr`, beside which a spawned
+/// server's log and pid files land. The returned session tracks ownership:
+/// an owned server is shut down by [`GhidraSession::shutdown`] (or killed on
+/// drop), an attached one is left untouched.
 pub(super) async fn open_ghidra_session(
     settings: &crate::Settings,
     workspace: &Path,
@@ -33,6 +36,11 @@ pub(super) async fn open_ghidra_session(
 ) -> Result<GhidraSession> {
     let env_install = std::env::var_os("GHIDRA_INSTALL_DIR").map(PathBuf::from);
     let home = std::env::var_os("HOME").map(PathBuf::from);
+    let xdg_runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+    let uid = std::fs::metadata("/proc/self")
+        .ok()
+        .map(|meta| std::os::unix::fs::MetadataExt::uid(&meta));
+    let sockets = socket_dir(xdg_runtime.as_deref(), uid);
     let config_install = settings
         .ghidra_install_dir
         .as_ref()
@@ -42,6 +50,8 @@ pub(super) async fn open_ghidra_session(
         url: &settings.ghidra_url.value,
         api_key: settings.ghidra_api_key.as_ref().map(|r| r.value.as_str()),
         project: &project,
+        socket_dir: sockets.as_deref(),
+        fallback_port: BRIDGE_DEFAULT_PORT,
         stack: StackRequest {
             env_install_dir: env_install.as_deref(),
             config_install_dir: config_install.as_deref(),
