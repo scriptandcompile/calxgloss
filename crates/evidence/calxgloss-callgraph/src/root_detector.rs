@@ -15,6 +15,7 @@
 //! | .NET CLR | `__managed_main`, `_CorExeMain` | Skip |
 //! | MinGW runtime | `_start`, `__libc_start_main` | Skip |
 //! | MSVC debug | `_RTC_Initialize` | Skip |
+//! | Import thunks | `DelayLoad_*` (delay-load), `_imp_*` (IAT), `thunk_*` (Ghidra) | Skip |
 //! | Runtime DLL functions | Functions in `msvcr*`, `msvbvm60`, `Qt5*`, `SDL2*` binaries | Skip |
 //!
 //! # Configurable Patterns
@@ -122,6 +123,7 @@ pub struct RootDetectorConfig {
 /// | .NET CLR | `^(__managed_main\|_CorExeMain)$` | `Skip` |
 /// | MinGW runtime | `^(_start\|__libc_start_main)$` | `Skip` |
 /// | MSVC debug | `^_RTC_Initialize$` | `Skip` |
+/// | Import thunks | `^(DelayLoad_\|_imp_\|thunk_)` | `Skip` |
 pub struct RootDetector {
     patterns: Vec<RootPattern>,
 }
@@ -139,6 +141,7 @@ impl RootDetector {
     /// | .NET CLR | `__managed_main`, `_CorExeMain` |
     /// | MinGW | `_start`, `__libc_start_main` |
     /// | MSVC debug | `_RTC_Initialize` |
+    /// | Import thunks | `DelayLoad_Foo`, `_imp_Foo`, `thunk_Foo` |
     pub fn new() -> Self {
         let patterns = vec![
             // C/C++ entry points (MSVC / MinGW)
@@ -185,6 +188,15 @@ impl RootDetector {
             RootPattern {
                 name_regex: Regex::new(r"^_RTC_Initialize$").expect("valid root pattern"),
                 description: "MSVC debug runtime initializer",
+                action: RootAction::Skip,
+            },
+            // Linker import thunks: delay-load stubs (`DelayLoad_Foo`), IAT
+            // symbols (`_imp_Foo`), and Ghidra-named thunks (`thunk_Foo`).
+            // They own no logic — just a jump to the real API, which the
+            // caller's translation reaches through the API mappings instead.
+            RootPattern {
+                name_regex: Regex::new(r"^(DelayLoad_|_imp_|thunk_)").expect("valid root pattern"),
+                description: "Linker import thunk (delay-load / IAT / Ghidra)",
                 action: RootAction::Skip,
             },
         ];
@@ -490,6 +502,23 @@ mod tests {
     }
 
     #[test]
+    fn test_import_thunks_are_roots() {
+        let detector = RootDetector::new();
+        // Delay-load thunks (MSVC /DELAYLOAD), IAT symbols, Ghidra thunks:
+        // one jump to the real API, no logic of their own to translate.
+        assert!(detector.is_root(&make_func("DelayLoad_ShellExecuteW")));
+        assert!(detector.is_root(&make_func("DelayLoad_cef_post_task")));
+        assert!(detector.is_root(&make_func("_imp_ShellExecuteW")));
+        assert!(detector.is_root(&make_func("thunk_FUN_180001000")));
+        // Anchored at the start: an app function merely *named* around a
+        // delay load still translates.
+        assert!(!detector.is_root(&make_func("initDelayLoad")));
+        assert!(!detector.is_root(&make_func("my_imp_helper")));
+        // And the action is a true skip, not a stub or a translation.
+        assert_eq!(detector.classify("DelayLoad_ShellExecuteW"), RootAction::Skip);
+    }
+
+    #[test]
     fn test_normal_function_not_root() {
         let detector = RootDetector::new();
         assert!(!detector.is_root(&make_func("some_function")));
@@ -535,10 +564,11 @@ mod tests {
     fn test_pattern_descriptions() {
         let detector = RootDetector::new();
         let descs: Vec<_> = detector.pattern_descriptions().collect();
-        assert_eq!(descs.len(), 7);
+        assert_eq!(descs.len(), 8);
         assert!(descs.contains(&"C/C++ entry point (MSVC/MinGW)"));
         assert!(descs.contains(&"VB6 runtime initializer"));
         assert!(descs.contains(&".NET CLR entry point"));
+        assert!(descs.contains(&"Linker import thunk (delay-load / IAT / Ghidra)"));
     }
 
     // ─── Configurable root detector tests ───
