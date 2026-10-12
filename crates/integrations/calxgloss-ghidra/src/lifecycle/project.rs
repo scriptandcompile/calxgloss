@@ -11,8 +11,8 @@
 //! * **opened** when it exists on disk but the server has none (or
 //!   another) open;
 //! * **created** when it does not exist at all — the first run — after
-//!   which `ghidra/` is ensured in the workspace `.gitignore` on every
-//!   route, since Ghidra project files are binary and large.
+//!   which `ghidra/` and `re/ghidra-cache/` are ensured in the workspace
+//!   `.gitignore` on every route, since Ghidra project files are binary and large.
 //!
 //! Then each needed binary is brought to *loaded and current* through the
 //! cheapest stage that works: already open (switch if not current) →
@@ -418,11 +418,17 @@ fn hash_of(binary: &Path) -> Option<String> {
 }
 
 // ============================================================
-// .gitignore: Ghidra project files are binary and large
+// .gitignore: Ghidra project files are binary and large, and the
+// Ghidra read cache is regenerable and huge
 // ============================================================
 
-/// Ensure the workspace `.gitignore` carries `ghidra/`, creating or
-/// appending as needed. Failure is logged, not raised — a missing ignore
+/// The rules the bootstrap ensures in every workspace `.gitignore`: the
+/// Ghidra project directory (binary and large) and the Ghidra read cache
+/// (regenerable via `--refresh-ghidra-cache`, tens of thousands of files).
+const ENSURED_IGNORES: &[&str] = &["ghidra/", "re/ghidra-cache/"];
+
+/// Ensure the workspace `.gitignore` carries [`ENSURED_IGNORES`], creating
+/// or appending as needed. Failure is logged, not raised — a missing ignore
 /// rule is an inconvenience, not a broken run.
 fn ensure_gitignore(workspace: &Path) {
     let path = workspace.join(".gitignore");
@@ -434,15 +440,23 @@ fn ensure_gitignore(workspace: &Path) {
             return;
         }
     };
-    if existing.lines().any(|line| line.trim() == "ghidra/") {
+    let missing: Vec<&str> = ENSURED_IGNORES
+        .iter()
+        .copied()
+        .filter(|rule| !existing.lines().any(|line| line.trim() == *rule))
+        .collect();
+    if missing.is_empty() {
         return;
     }
     let mut updated = existing;
     if !updated.is_empty() && !updated.ends_with('\n') {
         updated.push('\n');
     }
-    updated.push_str("ghidra/\n");
+    for rule in missing {
+        updated.push_str(rule);
+        updated.push('\n');
+    }
     if let Err(err) = std::fs::write(&path, updated) {
-        warn!(path = %path.display(), error = %err, "Could not add ghidra/ to the workspace .gitignore");
+        warn!(path = %path.display(), error = %err, "Could not update the workspace .gitignore");
     }
 }

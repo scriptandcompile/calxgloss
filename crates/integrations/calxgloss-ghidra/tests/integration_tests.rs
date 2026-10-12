@@ -1811,10 +1811,16 @@ async fn the_first_run_creates_the_project_imports_and_analyzes() {
         "the cache records the bytes the analysis ran on"
     );
 
-    // Ghidra project files are binary and large: the workspace keeps them out of git.
+    // Ghidra project files are binary and large, and the read cache is
+    // regenerable: the workspace keeps both out of git.
     let gitignore = std::fs::read_to_string(fixture.workspace.path().join(".gitignore"))
         .expect("gitignore written");
-    assert!(gitignore.lines().any(|line| line.trim() == "ghidra/"));
+    for rule in ["ghidra/", "re/ghidra-cache/"] {
+        assert!(
+            gitignore.lines().any(|line| line.trim() == rule),
+            "gitignore should carry {rule}"
+        );
+    }
 
     let seen = drain_events(&mut rx);
     assert!(
