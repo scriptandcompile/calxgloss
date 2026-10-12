@@ -5551,6 +5551,390 @@ async fn test_faults_api_corrupt_log_honest_empty() {
     assert_eq!(body["days"].as_array().expect("days array").len(), 0);
 }
 
+// ─────────────────────────────────────────────────────────────
+// Token usage analytics (issue #126, W3.2)
+// ─────────────────────────────────────────────────────────────
+
+/// One token-usage entry with every field spelled out — the fixture's
+/// exact values are what the endpoint assertions pin. An empty tier omits
+/// `context_tier` entirely, the shape entries written before tier tracking
+/// (and by older versions) carry on disk.
+// One parameter per fixture field — the whole point is spelling every
+// field out, so folding them into a struct would only hide the values.
+#[allow(clippy::too_many_arguments)]
+fn token_usage_entry(
+    binary: &str,
+    function: &str,
+    attempt: u32,
+    strategy: &str,
+    tokens: usize,
+    success: bool,
+    tier: &str,
+    timestamp: u64,
+) -> serde_json::Value {
+    let mut entry = serde_json::json!({
+        "binary": binary,
+        "function": function,
+        "attempt": attempt,
+        "strategy": strategy,
+        "tokens_used": tokens,
+        "success": success,
+        "timestamp": timestamp,
+    });
+    if !tier.is_empty() {
+        entry["context_tier"] = serde_json::Value::String(tier.into());
+    }
+    entry
+}
+
+/// Writes a deterministic token usage log fixture into the repo's analysis
+/// directory — the file the analytics endpoints read on demand.
+fn write_token_usage_fixture(repo_path: &std::path::Path, entries: &[serde_json::Value]) {
+    let dir = repo_path.join("re").join("analysis");
+    std::fs::create_dir_all(&dir).expect("analysis dir exists");
+    std::fs::write(
+        dir.join("token_usage.json"),
+        serde_json::to_string(&serde_json::json!({ "entries": entries }))
+            .expect("fixture serializes"),
+    )
+    .expect("fixture written");
+}
+
+/// The five-entry fixture the exact-JSON tests share: three attempts on
+/// `game_logic.dll/DrawSprite` on 2026-10-01 and two on
+/// `d3d9.dll/UpdateScene` on 2026-10-04. Token totals divide exactly
+/// (15000/5000 of 20000) so percentage shares pin as clean floats, and the
+/// 3000-token ties in the tier and strategy breakdowns pin the alphabetical
+/// tie rule.
+fn sample_token_usage_entries() -> Vec<serde_json::Value> {
+    vec![
+        token_usage_entry(
+            "game_logic.dll",
+            "DrawSprite",
+            1,
+            "initial",
+            4000,
+            false,
+            "stub",
+            FAULT_DAY_1 + 60,
+        ),
+        token_usage_entry(
+            "game_logic.dll",
+            "DrawSprite",
+            2,
+            "compile_fix",
+            3000,
+            true,
+            "disassembly",
+            FAULT_DAY_1 + 120,
+        ),
+        token_usage_entry(
+            "game_logic.dll",
+            "DrawSprite",
+            3,
+            "escalate",
+            8000,
+            false,
+            "module_context",
+            FAULT_DAY_1 + 180,
+        ),
+        token_usage_entry(
+            "d3d9.dll",
+            "UpdateScene",
+            1,
+            "initial",
+            2000,
+            true,
+            "stub",
+            FAULT_DAY_4 + 60,
+        ),
+        token_usage_entry(
+            "d3d9.dll",
+            "UpdateScene",
+            2,
+            "retry",
+            3000,
+            false,
+            "",
+            FAULT_DAY_4 + 120,
+        ),
+    ]
+}
+
+/// Issue #126 router contract: every token-usage analytics endpoint is
+/// registered in the shared routes — they read the persisted token usage
+/// log, never live pipeline state — so both the plain and the live router
+/// answer them. With no log on disk they serve honest empty payloads.
+#[tokio::test]
+async fn test_token_usage_analytics_registered_in_plain_and_live_routers() {
+    for kind in ["plain", "live"] {
+        let fixture = TestFixture::new();
+        let state = ServerState::new(fixture.repo_path());
+        let router = if kind == "plain" {
+            build_router(state)
+        } else {
+            let events = TranslationEvents::new(128);
+            let manager = SessionManager::new_with_broadcast(events.subscribe());
+            build_router_with_ws(state, manager, ProgressState::new())
+        };
+        let _server = spawn_server(router, fixture.port()).await;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let base = format!("http://127.0.0.1:{}", fixture.port());
+
+        let (status, body) = get_json(&format!("{base}/api/token-usage/summary")).await;
+        assert_eq!(status, 200, "{kind} router serves /api/token-usage/summary");
+        assert_eq!(
+            body["total_tokens"].as_u64().expect("total_tokens"),
+            0,
+            "{kind} router reports zero tokens with no log"
+        );
+        assert_eq!(
+            body["total_in_log"].as_u64().expect("total_in_log"),
+            0,
+            "{kind} router reports an empty log with no log"
+        );
+
+        for path in [
+            "/api/token-usage/by-binary",
+            "/api/token-usage/by-tier",
+            "/api/token-usage/by-strategy",
+        ] {
+            let (status, _) = get_json(&format!("{base}{path}")).await;
+            assert_eq!(status, 200, "{kind} router serves {path}");
+        }
+
+        let (_, body) = get_json(&format!("{base}/api/token-usage/by-binary")).await;
+        assert!(
+            body["binaries"]
+                .as_array()
+                .expect("binaries array")
+                .is_empty(),
+            "no log means no fabricated bars"
+        );
+        let (_, body) = get_json(&format!("{base}/api/token-usage/by-tier")).await;
+        assert!(
+            body["tiers"].as_array().expect("tiers array").is_empty(),
+            "no log means no fabricated tiers"
+        );
+        let (_, body) = get_json(&format!("{base}/api/token-usage/by-strategy")).await;
+        assert!(
+            body["strategies"]
+                .as_array()
+                .expect("strategies array")
+                .is_empty(),
+            "no log means no fabricated strategies"
+        );
+    }
+}
+
+/// Issue #126 exact-JSON contract: against a deterministic fixture log,
+/// each endpoint answers with exactly the totals, percentage shares, and
+/// per-strategy success rates the fixture implies — ordering highest first,
+/// ties alphabetical.
+#[tokio::test]
+async fn test_token_usage_api_exact_json_from_fixture_log() {
+    let fixture = TestFixture::new();
+    write_token_usage_fixture(&fixture.repo_path(), &sample_token_usage_entries());
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+
+    // Summary split: total tokens consumed, split into successful and
+    // failed attempts, plus the log's own size for the honest empty state.
+    let (status, body) = get_json(&format!("{base}/api/token-usage/summary")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "total_tokens": 20_000,
+            "successful_tokens": 5_000,
+            "failed_tokens": 15_000,
+            "total_attempts": 5,
+            "total_in_log": 5,
+        })
+    );
+
+    // Per-binary breakdown with percentage shares of the filtered total.
+    let (status, body) = get_json(&format!("{base}/api/token-usage/by-binary")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["binaries"],
+        serde_json::json!([
+            {"binary": "game_logic.dll", "tokens": 15_000, "share_percent": 75.0},
+            {"binary": "d3d9.dll", "tokens": 5_000, "share_percent": 25.0},
+        ])
+    );
+
+    // Per-tier breakdown — the untracked (no `context_tier`) entries form
+    // their own honest bucket; the 3000-token tie sorts alphabetically.
+    let (status, body) = get_json(&format!("{base}/api/token-usage/by-tier")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["tiers"],
+        serde_json::json!([
+            {"tier": "module_context", "tokens": 8_000, "attempts": 1},
+            {"tier": "stub", "tokens": 6_000, "attempts": 2},
+            {"tier": "", "tokens": 3_000, "attempts": 1},
+            {"tier": "disassembly", "tokens": 3_000, "attempts": 1},
+        ])
+    );
+
+    // Per-strategy breakdown with a success rate per strategy — the 3000-
+    // token tie between compile_fix and retry sorts alphabetically.
+    let (status, body) = get_json(&format!("{base}/api/token-usage/by-strategy")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["strategies"],
+        serde_json::json!([
+            {"strategy": "escalate", "tokens": 8_000, "attempts": 1, "successes": 0, "success_rate": 0.0},
+            {"strategy": "initial", "tokens": 6_000, "attempts": 2, "successes": 1, "success_rate": 50.0},
+            {"strategy": "compile_fix", "tokens": 3_000, "attempts": 1, "successes": 1, "success_rate": 100.0},
+            {"strategy": "retry", "tokens": 3_000, "attempts": 1, "successes": 0, "success_rate": 0.0},
+        ])
+    );
+}
+
+/// Issue #126 time-range contract: the `from`/`to` inclusive UTC date range
+/// narrows every endpoint the same way — summary, bars, tiers, and strategy
+/// rows always describe the same filtered set — while `total_in_log` keeps
+/// reporting the unfiltered log size. A malformed date is refused with 400.
+#[tokio::test]
+async fn test_token_usage_api_time_range_narrows_every_endpoint() {
+    let fixture = TestFixture::new();
+    write_token_usage_fixture(&fixture.repo_path(), &sample_token_usage_entries());
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+
+    // `from` alone keeps everything from that UTC day on: only the two
+    // 2026-10-04 d3d9.dll attempts survive.
+    let (status, body) = get_json(&format!("{base}/api/token-usage/summary?from=2026-10-04")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "total_tokens": 5_000,
+            "successful_tokens": 2_000,
+            "failed_tokens": 3_000,
+            "total_attempts": 2,
+            "total_in_log": 5,
+        })
+    );
+    let (status, body) =
+        get_json(&format!("{base}/api/token-usage/by-binary?from=2026-10-04")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["binaries"],
+        serde_json::json!([
+            {"binary": "d3d9.dll", "tokens": 5_000, "share_percent": 100.0},
+        ]),
+        "the share is of the filtered total, not the whole log"
+    );
+    let (status, body) = get_json(&format!("{base}/api/token-usage/by-tier?from=2026-10-04")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["tiers"],
+        serde_json::json!([
+            {"tier": "", "tokens": 3_000, "attempts": 1},
+            {"tier": "stub", "tokens": 2_000, "attempts": 1},
+        ])
+    );
+    let (status, body) = get_json(&format!(
+        "{base}/api/token-usage/by-strategy?from=2026-10-04"
+    ))
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["strategies"],
+        serde_json::json!([
+            {"strategy": "retry", "tokens": 3_000, "attempts": 1, "successes": 0, "success_rate": 0.0},
+            {"strategy": "initial", "tokens": 2_000, "attempts": 1, "successes": 1, "success_rate": 100.0},
+        ])
+    );
+
+    // An inclusive range holding no attempts answers with zeros and empty
+    // breakdowns — never a fabricated row of buckets.
+    let (status, body) = get_json(&format!(
+        "{base}/api/token-usage/summary?from=2026-10-02&to=2026-10-03"
+    ))
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["total_tokens"].as_u64().expect("total_tokens"), 0);
+    assert_eq!(
+        body["total_in_log"].as_u64().expect("total_in_log"),
+        5,
+        "the log's own size survives filtering"
+    );
+    let (_, body) = get_json(&format!(
+        "{base}/api/token-usage/by-binary?from=2026-10-02&to=2026-10-03"
+    ))
+    .await;
+    assert!(
+        body["binaries"]
+            .as_array()
+            .expect("binaries array")
+            .is_empty(),
+        "no matching attempts means no bars"
+    );
+
+    // Malformed dates are refused with 400 naming the accepted shape —
+    // an operator who typed a filter is never silently shown everything.
+    let (status, body) = get_json(&format!("{base}/api/token-usage/summary?from=not-a-date")).await;
+    assert_eq!(status, 400, "a malformed from date is refused");
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("not-a-date") && message.contains("YYYY-MM-DD"),
+        "the 400 names the bad value and the accepted shape, got: {message}"
+    );
+
+    let (status, _) = get_json(&format!("{base}/api/token-usage/by-strategy?to=2026-13-01")).await;
+    assert_eq!(status, 400, "an out-of-range to date is refused");
+}
+
+/// Issue #126 honest degradation: a corrupt token usage log loads as empty —
+/// the endpoints answer 200 with empty payloads so the view's empty state
+/// (driven by `total_in_log`) never renders a wall of zeros for a log it
+/// cannot read.
+#[tokio::test]
+async fn test_token_usage_api_corrupt_log_honest_empty() {
+    let fixture = TestFixture::new();
+    let dir = fixture.repo_path().join("re").join("analysis");
+    std::fs::create_dir_all(&dir).expect("analysis dir exists");
+    std::fs::write(dir.join("token_usage.json"), "{ not json").expect("corrupt log written");
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+
+    let (status, body) = get_json(&format!("{base}/api/token-usage/summary")).await;
+    assert_eq!(status, 200, "a corrupt log degrades, never errors");
+    assert_eq!(body["total_tokens"].as_u64().expect("total_tokens"), 0);
+    assert_eq!(body["total_in_log"].as_u64().expect("total_in_log"), 0);
+
+    let (status, body) = get_json(&format!("{base}/api/token-usage/by-binary")).await;
+    assert_eq!(status, 200);
+    assert!(
+        body["binaries"]
+            .as_array()
+            .expect("binaries array")
+            .is_empty(),
+        "a corrupt log means no bars, not zero bars"
+    );
+}
+
 // ── Headless browser test: Faults view (issue #125) ────────────────────
 
 /// The Faults tab renders the fixture log honestly: summary cards,
@@ -5728,6 +6112,259 @@ async fn test_headless_faults_view_honest_empty_state() {
         .unwrap_or(false),
         "the empty state should hide the body — no wall of zeros"
     );
+}
+
+// ── Headless browser tests: Token Usage view (issue #126) ──────────────
+
+/// The Token Usage tab renders the fixture log honestly: summary split
+/// cards, per-binary bars with shares, per-tier bars, the per-strategy
+/// table with success rates — and the time-range selector re-renders in
+/// place. The cost panel computes from the operator-typed price, persists
+/// it in localStorage, and survives a reload.
+///
+/// The fixture timestamps are relative to now so the 7-day window keeps
+/// holding exactly one attempt whenever the test runs.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_token_usage_view_renders_cost_and_time_range() {
+    let fixture = TestFixture::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock after epoch")
+        .as_secs();
+    write_token_usage_fixture(
+        &fixture.repo_path(),
+        &[
+            token_usage_entry(
+                "game_logic.dll",
+                "DrawSprite",
+                1,
+                "initial",
+                4_000,
+                true,
+                "stub",
+                now - 3_600,
+            ),
+            token_usage_entry(
+                "d3d9.dll",
+                "UpdateScene",
+                1,
+                "stale_strategy",
+                6_000,
+                false,
+                "module_context",
+                now - 40 * 86_400,
+            ),
+        ],
+    );
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_count = |expr: &str| -> i64 {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_i64())
+            .unwrap_or(-1)
+    };
+    let eval_text = |expr: &str| -> String {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default()
+    };
+
+    // Switch to the Token Usage tab.
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"token-usage\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click token usage tab");
+
+    // The fixture log renders: both attempts in the strategy table.
+    let mut loaded = false;
+    for _ in 0..25 {
+        if eval_count("document.querySelectorAll('#token-usage-strategy-body tr').length") == 2 {
+            loaded = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        loaded,
+        "token usage view should render both fixture attempts"
+    );
+
+    // Summary split, per-binary bars, per-tier bars all render.
+    assert_eq!(
+        eval_count("document.querySelectorAll('#token-usage-summary-cards .status-card').length"),
+        3,
+        "fixture log should render total + successful + failed cards"
+    );
+    assert_eq!(
+        eval_count("document.querySelectorAll('#token-usage-binary-bars .token-bar-row').length"),
+        2,
+        "fixture log should render 2 per-binary bars"
+    );
+    assert_eq!(
+        eval_count("document.querySelectorAll('#token-usage-tier-bars .token-bar-row').length"),
+        2,
+        "fixture log should render 2 per-tier bars"
+    );
+    assert!(
+        eval_text(
+            "document.querySelector('#token-usage-binary-bars .token-bar-share').textContent"
+        )
+        .contains('%'),
+        "per-binary bars should carry percentage shares"
+    );
+
+    // The cost panel: typing a price computes the estimate client-side
+    // from the fetched totals — 10 000 tokens at $100/1M is $1.00.
+    tab.evaluate(
+        r#"(() => {
+            const input = document.getElementById('token-usage-cost-price');
+            input.value = '100';
+            input.dispatchEvent(new Event('input'));
+        })()"#,
+        false,
+    )
+    .expect("type pricing");
+    assert_eq!(
+        eval_text("document.getElementById('token-usage-cost-total').textContent"),
+        "$1.00",
+        "the cost panel should compute the estimate from the typed price"
+    );
+
+    // The pricing persists in localStorage and survives a reload.
+    assert_eq!(
+        eval_text("localStorage.getItem('calxgloss_token_pricing')"),
+        "100",
+        "the typed price should persist in localStorage"
+    );
+    tab.reload(false, None).expect("reload dashboard");
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"token-usage\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click token usage tab after reload");
+    let mut cost_restored = false;
+    for _ in 0..25 {
+        if eval_text("document.getElementById('token-usage-cost-total')?.textContent") == "$1.00" {
+            cost_restored = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        cost_restored,
+        "the persisted price should re-estimate the cost after a reload"
+    );
+
+    // The time-range filter re-renders in place: 7 days keeps only the
+    // recent attempt.
+    tab.evaluate(
+        r#"(() => {
+            const select = document.getElementById('token-usage-filter-range');
+            select.value = '7d';
+            select.dispatchEvent(new Event('change'));
+        })()"#,
+        false,
+    )
+    .expect("set time range filter");
+    let mut narrowed = false;
+    for _ in 0..25 {
+        if eval_count("document.querySelectorAll('#token-usage-strategy-body tr').length") == 1 {
+            narrowed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        narrowed,
+        "the 7-day range should narrow the view to the recent attempt"
+    );
+    assert_eq!(
+        eval_text("document.getElementById('token-usage-cost-total').textContent"),
+        "$0.40",
+        "the cost estimate should follow the filtered totals without a reload"
+    );
+}
+
+/// With no token usage log at all — or a corrupt one — the Token Usage tab
+/// says so plainly: no wall of zeros, no error.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_token_usage_view_honest_empty_state() {
+    for kind in ["missing", "corrupt"] {
+        let fixture = TestFixture::new();
+        if kind == "corrupt" {
+            let dir = fixture.repo_path().join("re").join("analysis");
+            std::fs::create_dir_all(&dir).expect("analysis dir exists");
+            std::fs::write(dir.join("token_usage.json"), "{ not json")
+                .expect("corrupt log written");
+        }
+        let state = ServerState::new(fixture.repo_path());
+        let router = build_router(state);
+        let _server = spawn_server(router, fixture.port()).await;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let browser = launch_headless_browser();
+        let tab = open_dashboard_tab(&browser, fixture.port());
+
+        // Switch to the Token Usage tab.
+        tab.evaluate(
+            "document.querySelector('.nav-tab[data-view=\"token-usage\"]')?.click() === undefined",
+            false,
+        )
+        .expect("click token usage tab");
+
+        let mut empty_visible = false;
+        for _ in 0..25 {
+            if tab
+                .evaluate(
+                    "document.getElementById('token-usage-empty').style.display === 'flex'",
+                    false,
+                )
+                .ok()
+                .and_then(|r| r.value)
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                empty_visible = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        assert!(
+            empty_visible,
+            "a {kind} token usage log should show the honest empty state"
+        );
+
+        assert!(
+            tab.evaluate(
+                "document.getElementById('token-usage-body').style.display === 'none'",
+                false
+            )
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+            "the empty state should hide the body — no wall of zeros"
+        );
+    }
 }
 
 /// Integration test verifying that the full router with actions

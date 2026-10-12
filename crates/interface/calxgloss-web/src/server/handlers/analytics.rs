@@ -1,26 +1,26 @@
-//! Fault analytics handlers (issue #125, W3.1) — the first slice of the W3
-//! historical views, and the scaffolding the later analytics tickets reuse:
+//! Analytics handlers — the historical views over the persisted logs in
+//! `re/analysis/` (issues #125/#126, W3.1/W3.2): fault analytics and token
+//! usage analytics, plus the scaffolding the later analytics tickets reuse:
 //! this module, its registration on the shared router, and the analytics
 //! wire types in `types.rs`.
 //!
-//! Registered in the shared routes: the data is the persisted fault log at
-//! `re/analysis/fault_log.json`, never live pipeline state, so every router
-//! answers it. Aggregation is computed on demand — the log file is the only
-//! source of truth, nothing is maintained incrementally (the established
-//! `compute_stats` pattern).
+//! Registered in the shared routes: the data is the persisted logs, never
+//! live pipeline state, so every router answers it. Aggregation is computed
+//! on demand — the log file is the only source of truth, nothing is
+//! maintained incrementally (the established `compute_stats` pattern).
 //!
-//! Every endpoint honors the same optional filters — `category`, `binary`,
-//! and the `from`/`to` UTC date range (inclusive) — so the view's summary
-//! cards, bars, trend, and table always describe the same set of faults.
-//! A malformed filter value is refused with 400 and the accepted shape,
-//! never silently ignored: an operator who typed a filter must never be
-//! shown unfiltered data.
+//! Every endpoint honors its optional filters — faults: `category`,
+//! `binary`, and the `from`/`to` UTC date range (inclusive); token usage:
+//! the same `from`/`to` range — so a view's cards, bars, trend, and table
+//! always describe the same set. A malformed filter value is refused with
+//! 400 and the accepted shape, never silently ignored: an operator who
+//! typed a filter must never be shown unfiltered data.
 //!
-//! Counts cover the log's *retained* window. The log's trim accumulator
-//! keeps whole-run totals for `compute_stats`, but trimmed events carry no
+//! Counts cover the logs' *retained* windows. The trim accumulators keep
+//! whole-run totals for `compute_stats`, but trimmed events carry no
 //! timestamp, so they cannot take part in the date filter or the trend
-//! buckets — folding them into the cards would make the cards disagree with
-//! the table underneath them.
+//! buckets — folding them into the cards would make the cards disagree
+//! with the tables underneath them.
 
 use std::collections::HashMap;
 
@@ -31,14 +31,18 @@ use axum::{
 use chrono::{DateTime, NaiveDate};
 use std::collections::BTreeMap;
 
-use calxgloss_types::{FaultCategory, FaultEvent, FaultLog, FaultSeverity};
+use calxgloss_types::{
+    FaultCategory, FaultEvent, FaultLog, FaultSeverity, TokenUsageEntry, TokenUsageLog,
+};
 
 use super::super::types::{
     FaultAnalytics, FaultAnalyticsEntry, FaultBinaryCount, FaultByBinaryResponse, FaultCount,
-    FaultSummaryResponse, FaultTrendPoint, FaultTrendResponse,
+    FaultSummaryResponse, FaultTrendPoint, FaultTrendResponse, TokenUsageBinaryShare,
+    TokenUsageByBinaryResponse, TokenUsageByStrategyResponse, TokenUsageByTierResponse,
+    TokenUsageStrategyStats, TokenUsageSummaryResponse, TokenUsageTierStats,
 };
 use super::super::{ServerError, ServerState};
-use super::process::{fault_log_path, load_json_or_default};
+use super::process::{fault_log_path, load_json_or_default, token_usage_log_path};
 
 // ─── Filtering ─────────────────────────────────────────────────────────
 
@@ -92,24 +96,7 @@ impl FaultFilters {
         {
             return false;
         }
-        if self.from.is_some() || self.to.is_some() {
-            // A timestamp outside the representable range cannot be placed
-            // in the range — it only survives when no date filter is active.
-            let Some(day) = day_of(event.timestamp) else {
-                return false;
-            };
-            if let Some(from) = self.from
-                && day < from
-            {
-                return false;
-            }
-            if let Some(to) = self.to
-                && day > to
-            {
-                return false;
-            }
-        }
-        true
+        in_date_range(self.from, self.to, event.timestamp)
     }
 }
 
@@ -150,6 +137,19 @@ fn known_categories() -> String {
 /// timestamp is outside the representable range.
 fn day_of(timestamp: u64) -> Option<NaiveDate> {
     DateTime::from_timestamp(timestamp as i64, 0).map(|dt| dt.date_naive())
+}
+
+/// True when the timestamp falls inside the inclusive `from`/`to` UTC date
+/// range. A timestamp outside the representable range cannot be placed in
+/// the range — it only survives when no date filter is active.
+fn in_date_range(from: Option<NaiveDate>, to: Option<NaiveDate>, timestamp: u64) -> bool {
+    if from.is_none() && to.is_none() {
+        return true;
+    }
+    let Some(day) = day_of(timestamp) else {
+        return false;
+    };
+    from.is_none_or(|from| day >= from) && to.is_none_or(|to| day <= to)
 }
 
 // ─── Shared read ───────────────────────────────────────────────────────
@@ -346,4 +346,174 @@ pub async fn api_get_faults_trend(
     };
 
     Ok(Json(FaultTrendResponse { days }))
+}
+
+// ─── Token usage analytics (issue #126, W3.2) ──────────────────────────
+
+/// Loads the persisted token usage log and applies the date-range filter.
+///
+/// Returns the matching retained entries alongside the total the log holds
+/// *before* filtering. A missing or corrupt log loads as empty — the
+/// honest "no usage yet" shape, never an error.
+fn filtered_token_usage(
+    state: &ServerState,
+    params: &HashMap<String, String>,
+) -> Result<(Vec<TokenUsageEntry>, usize), ServerError> {
+    let from = parse_day(params, "from")?;
+    let to = parse_day(params, "to")?;
+    let log: TokenUsageLog = load_json_or_default(&token_usage_log_path(state.repo_path()));
+
+    let entries: Vec<TokenUsageEntry> = log
+        .entries
+        .iter()
+        .filter(|entry| in_date_range(from, to, entry.timestamp))
+        .cloned()
+        .collect();
+    Ok((entries, log.entries.len()))
+}
+
+// ─── GET /api/token-usage/summary ──────────────────────────────────────
+
+/// Serves the summary split: total tokens consumed, broken into successful
+/// and failed attempts, over the filtered set. Measured totals only — the
+/// token-budget indicator waits on the constraints concept.
+pub async fn api_get_token_usage_summary(
+    State(state): State<ServerState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<TokenUsageSummaryResponse>, ServerError> {
+    let (entries, total_in_log) = filtered_token_usage(&state, &params)?;
+
+    let total_tokens: usize = entries.iter().map(|e| e.tokens_used).sum();
+    let successful_tokens: usize = entries
+        .iter()
+        .filter(|e| e.success)
+        .map(|e| e.tokens_used)
+        .sum();
+    Ok(Json(TokenUsageSummaryResponse {
+        total_tokens,
+        successful_tokens,
+        failed_tokens: total_tokens - successful_tokens,
+        total_attempts: entries.len(),
+        total_in_log,
+    }))
+}
+
+// ─── GET /api/token-usage/by-binary ────────────────────────────────────
+
+/// Serves the per-target-binary token totals with percentage shares of
+/// the filtered total, for the bar chart.
+pub async fn api_get_token_usage_by_binary(
+    State(state): State<ServerState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<TokenUsageByBinaryResponse>, ServerError> {
+    let (entries, _) = filtered_token_usage(&state, &params)?;
+
+    let mut totals: HashMap<&str, usize> = HashMap::new();
+    for entry in &entries {
+        *totals.entry(entry.binary.as_str()).or_default() += entry.tokens_used;
+    }
+
+    let total_tokens: usize = totals.values().sum();
+    let mut binaries: Vec<TokenUsageBinaryShare> = totals
+        .iter()
+        .map(|(binary, tokens)| TokenUsageBinaryShare {
+            binary: (*binary).into(),
+            tokens: *tokens,
+            share_percent: share_percent(*tokens, total_tokens),
+        })
+        .collect();
+    // Highest first; ties alphabetical so the bars keep a stable order.
+    binaries.sort_by(|a, b| {
+        b.tokens
+            .cmp(&a.tokens)
+            .then_with(|| a.binary.as_str().cmp(b.binary.as_str()))
+    });
+
+    Ok(Json(TokenUsageByBinaryResponse { binaries }))
+}
+
+// ─── GET /api/token-usage/by-tier ──────────────────────────────────────
+
+/// Serves the per-context-tier token totals — the breakdown for judging
+/// whether tier escalation pays for itself. Entries written before tier
+/// tracking carry an empty label and form their own honest bucket.
+pub async fn api_get_token_usage_by_tier(
+    State(state): State<ServerState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<TokenUsageByTierResponse>, ServerError> {
+    let (entries, _) = filtered_token_usage(&state, &params)?;
+
+    let mut totals: HashMap<&str, (usize, usize)> = HashMap::new();
+    for entry in &entries {
+        let bucket = totals.entry(&entry.context_tier).or_default();
+        bucket.0 += entry.tokens_used;
+        bucket.1 += 1;
+    }
+
+    let mut tiers: Vec<TokenUsageTierStats> = totals
+        .iter()
+        .map(|(tier, (tokens, attempts))| TokenUsageTierStats {
+            tier: (*tier).into(),
+            tokens: *tokens,
+            attempts: *attempts,
+        })
+        .collect();
+    // Highest first; ties alphabetical so the bars keep a stable order.
+    tiers.sort_by(|a, b| b.tokens.cmp(&a.tokens).then_with(|| a.tier.cmp(&b.tier)));
+
+    Ok(Json(TokenUsageByTierResponse { tiers }))
+}
+
+// ─── GET /api/token-usage/by-strategy ──────────────────────────────────
+
+/// Serves the per-retry-strategy token totals with a success rate per
+/// strategy — which recovery paths burn tokens and which ones work.
+pub async fn api_get_token_usage_by_strategy(
+    State(state): State<ServerState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<TokenUsageByStrategyResponse>, ServerError> {
+    let (entries, _) = filtered_token_usage(&state, &params)?;
+
+    let mut totals: HashMap<&str, (usize, usize, usize)> = HashMap::new();
+    for entry in &entries {
+        let bucket = totals.entry(&entry.strategy).or_default();
+        bucket.0 += entry.tokens_used;
+        bucket.1 += 1;
+        if entry.success {
+            bucket.2 += 1;
+        }
+    }
+
+    let mut strategies: Vec<TokenUsageStrategyStats> = totals
+        .iter()
+        .map(
+            |(strategy, (tokens, attempts, successes))| TokenUsageStrategyStats {
+                strategy: (*strategy).into(),
+                tokens: *tokens,
+                attempts: *attempts,
+                successes: *successes,
+                // Every bucket holds at least one attempt, so the rate is
+                // always defined — never a fabricated zero over zero attempts.
+                success_rate: *successes as f64 * 100.0 / *attempts as f64,
+            },
+        )
+        .collect();
+    // Highest first; ties alphabetical so the rows keep a stable order.
+    strategies.sort_by(|a, b| {
+        b.tokens
+            .cmp(&a.tokens)
+            .then_with(|| a.strategy.cmp(&b.strategy))
+    });
+
+    Ok(Json(TokenUsageByStrategyResponse { strategies }))
+}
+
+/// One breakdown row's percentage share of the filtered total (0.0–100.0).
+fn share_percent(part: usize, whole: usize) -> f64 {
+    if whole == 0 {
+        // No matching attempts means no rows — a share is never asked for
+        // over an empty total; guard anyway so nothing divides by zero.
+        return 0.0;
+    }
+    part as f64 * 100.0 / whole as f64
 }

@@ -21,6 +21,7 @@
             <button class="nav-tab" data-view="gc">Branch Cleanup</button>
             <button class="nav-tab" data-view="llm-log">LLM I/O</button>
             <button class="nav-tab" data-view="faults">Faults</button>
+            <button class="nav-tab" data-view="token-usage">Token Usage</button>
         </nav>
         <div class="topbar-right">
             <span id="live-indicator" class="live-dot" title="Live updates active">●</span>
@@ -477,6 +478,72 @@
                             </tr>
                         </thead>
                         <tbody id="faults-table-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+        <!-- Token usage analytics view (issue #126, W3.2) — where the
+             token spend went, from the persisted token usage log: the
+             summary split, per-binary bars with percentage shares,
+             per-context-tier bars, and a per-strategy table with success
+             rates. The cost panel estimates client-side from operator-
+             typed pricing kept in localStorage. -->
+        <section id="view-token-usage" class="view">
+            <div class="view-header">
+                <h2>Token Usage</h2>
+                <div class="view-controls graph-filters">
+                    <label class="graph-filter-label">Time range
+                        <select id="token-usage-filter-range" aria-label="Token usage time range">
+                            <option value="">All time</option>
+                            <option value="7d">Last 7 days</option>
+                            <option value="30d">Last 30 days</option>
+                        </select>
+                    </label>
+                    <span id="token-usage-filter-summary" class="graph-filter-summary"></span>
+                </div>
+            </div>
+            <div id="token-usage-empty" class="empty-state" style="display:none">
+                <p id="token-usage-empty-message"></p>
+            </div>
+            <div id="token-usage-body" style="display:none">
+                <div id="token-usage-summary-cards" class="status-cards"></div>
+                <div class="panel">
+                    <div class="column-header">
+                        <h2>Estimated Cost</h2>
+                        <span class="token-cost-hint">USD per 1M tokens — kept in your browser</span>
+                    </div>
+                    <div class="token-cost-panel">
+                        <label class="graph-filter-label">Price
+                            <input id="token-usage-cost-price" type="number" min="0" step="0.01"
+                                   placeholder="e.g. 2.50" aria-label="USD per 1M tokens">
+                        </label>
+                        <div id="token-usage-cost-output" class="token-cost-output"></div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="column-header">
+                        <h2>Tokens per Binary</h2>
+                    </div>
+                    <div id="token-usage-binary-bars" class="token-bars"></div>
+                </div>
+                <div class="panel">
+                    <div class="column-header">
+                        <h2>Tokens per Context Tier</h2>
+                    </div>
+                    <div id="token-usage-tier-bars" class="token-bars"></div>
+                </div>
+                <div id="token-usage-table-wrap">
+                    <table id="token-usage-strategy-table" class="faults-table">
+                        <thead>
+                            <tr>
+                                <th>Strategy</th>
+                                <th>Tokens</th>
+                                <th>Attempts</th>
+                                <th>Successes</th>
+                                <th>Success rate</th>
+                            </tr>
+                        </thead>
+                        <tbody id="token-usage-strategy-body"></tbody>
                     </table>
                 </div>
             </div>

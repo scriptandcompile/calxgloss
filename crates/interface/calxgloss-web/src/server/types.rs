@@ -866,6 +866,89 @@ pub struct FaultTrendPoint {
     pub moving_average: f64,
 }
 
+// ─── Token usage analytics (issue #126, W3.2) ──────────────────────────
+
+/// `GET /api/token-usage/summary` response: total tokens consumed split
+/// into successful and failed attempts, computed over the filtered
+/// retained window. No budget indicator — token budgets are a deferred
+/// constraints concept, so the summary reports measured totals only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenUsageSummaryResponse {
+    /// Total tokens consumed after filtering.
+    pub total_tokens: usize,
+    /// Tokens consumed by attempts that ultimately succeeded.
+    pub successful_tokens: usize,
+    /// Tokens consumed by attempts that failed.
+    pub failed_tokens: usize,
+    /// Translation attempts in the filtered set.
+    pub total_attempts: usize,
+    /// How many attempts the log holds before filtering — lets the view
+    /// tell "no usage at all" from "no usage in the selected range".
+    pub total_in_log: usize,
+}
+
+/// Token usage for one target binary (the `by-binary` bar chart row).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenUsageBinaryShare {
+    /// The target binary, identity verbatim.
+    pub binary: BinaryIdentity,
+    /// Tokens consumed by this binary's attempts.
+    pub tokens: usize,
+    /// Its share of the filtered total, as a percentage (0.0–100.0).
+    pub share_percent: f64,
+}
+
+/// `GET /api/token-usage/by-binary` response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenUsageByBinaryResponse {
+    /// Token totals per target binary, highest first (ties alphabetical).
+    pub binaries: Vec<TokenUsageBinaryShare>,
+}
+
+/// Token usage for one context tier. The tier label is the entry's
+/// verbatim `context_tier`; entries written before tier tracking carry an
+/// empty label and form their own honest bucket.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenUsageTierStats {
+    /// The context tier label.
+    pub tier: String,
+    /// Tokens consumed at this tier.
+    pub tokens: usize,
+    /// Attempts made at this tier.
+    pub attempts: usize,
+}
+
+/// `GET /api/token-usage/by-tier` response — the breakdown the operator
+/// uses to judge whether tier escalation pays for itself.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenUsageByTierResponse {
+    /// Token totals per context tier, highest first (ties alphabetical).
+    pub tiers: Vec<TokenUsageTierStats>,
+}
+
+/// Token usage for one retry strategy, with the success rate that shows
+/// which recovery paths burn tokens and which ones work.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenUsageStrategyStats {
+    /// The retry strategy label.
+    pub strategy: String,
+    /// Tokens consumed by attempts using this strategy.
+    pub tokens: usize,
+    /// Attempts using this strategy.
+    pub attempts: usize,
+    /// Attempts using this strategy that ultimately succeeded.
+    pub successes: usize,
+    /// Success rate as a percentage (0.0–100.0): successes over attempts.
+    pub success_rate: f64,
+}
+
+/// `GET /api/token-usage/by-strategy` response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenUsageByStrategyResponse {
+    /// Token totals per retry strategy, highest first (ties alphabetical).
+    pub strategies: Vec<TokenUsageStrategyStats>,
+}
+
 // ─── Ghidra context types ──────────────────────────────────────────────
 
 /// Ghidra disassembly listing line.

@@ -3322,3 +3322,99 @@ svg {
     white-space: nowrap;
     color: var(--text-secondary);
 }
+
+/* ── Token usage analytics view (issue #126, W3.2) ────────────────────── */
+
+.status-card.token-total .status-card-value { color: var(--accent-blue); }
+.status-card.token-success .status-card-value { color: var(--status-accepted); }
+.status-card.token-failed .status-card-value { color: var(--accent-red); }
+
+.token-bars {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 14px;
+}
+
+.token-bar-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.token-bar-label {
+    flex: 0 0 180px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.token-bar-track {
+    flex: 1 1 auto;
+    height: 10px;
+    background: var(--bg-tertiary);
+    border-radius: 5px;
+    overflow: hidden;
+}
+
+.token-bar-fill {
+    height: 100%;
+    background: var(--accent-blue);
+    border-radius: 5px;
+}
+
+.token-bar-share {
+    flex: 0 0 84px;
+    text-align: right;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.token-bar-count {
+    flex: 0 0 72px;
+    text-align: right;
+    font-size: 12px;
+    color: var(--text-primary);
+}
+
+.token-cost-panel {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 12px 14px;
+}
+
+.token-cost-hint {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.token-cost-output {
+    display: flex;
+    gap: 18px;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.token-cost-item strong {
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+}
+
+#token-usage-table-wrap {
+    max-height: 60vh;
+    overflow: auto;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+}
+
+.token-col-strategy {
+    font-family: var(--font-mono, monospace);
+    font-size: 12px;
+}
+
+.token-col-rate {
+    font-variant-numeric: tabular-nums;
+}

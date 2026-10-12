@@ -85,6 +85,12 @@ export const API = {
     async faultsSummary(query) { return API.get(`/api/faults/summary${query}`); },
     async faultsByBinary(query) { return API.get(`/api/faults/by-binary${query}`); },
     async faultsTrend(query) { return API.get(`/api/faults/trend${query}`); },
+    // Token usage analytics (issue #126, W3.2) — all four endpoints take
+    // the same time-range query so cards, bars, and table stay in step.
+    async tokenUsageSummary(query) { return API.get(`/api/token-usage/summary${query}`); },
+    async tokenUsageByBinary(query) { return API.get(`/api/token-usage/by-binary${query}`); },
+    async tokenUsageByTier(query) { return API.get(`/api/token-usage/by-tier${query}`); },
+    async tokenUsageByStrategy(query) { return API.get(`/api/token-usage/by-strategy${query}`); },
     async health() { return API.get("/health"); },
     async serverStatus() { return API.get("/api/server/status"); },
     async shutdownServer() { return API.post("/api/server/shutdown"); },

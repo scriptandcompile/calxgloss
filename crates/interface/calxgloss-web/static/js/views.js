@@ -9,6 +9,7 @@ import { startLiveView, stopLiveView } from "./live.js";
 import { loadPipelineProgress } from "./dashboard.js";
 import { loadLlmLogHistory } from "./llm-log.js";
 import { loadFaults } from "./faults.js";
+import { loadTokenUsage } from "./token-usage.js";
 
 // The tab the operator was last on, persisted so a browser reload lands
 // back where they were instead of always opening on the dashboard.
@@ -66,6 +67,12 @@ export function switchView(viewName) {
     // the view always reflects the current fault log.
     if (viewName === "faults") {
         loadFaults().catch((err) => console.warn("[Faults] load failed:", err));
+    }
+
+    // Token usage analytics (issue #126): reload the filtered set on
+    // entry so the view always reflects the current token usage log.
+    if (viewName === "token-usage") {
+        loadTokenUsage().catch((err) => console.warn("[Token usage] load failed:", err));
     }
 
     // Live view: fetch on entry, tick elapsed clocks while visible.

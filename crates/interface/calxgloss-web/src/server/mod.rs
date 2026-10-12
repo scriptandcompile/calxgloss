@@ -928,6 +928,27 @@ fn shared_routes() -> Router<CombinedState> {
             get(handlers::api_get_faults_by_binary),
         )
         .route("/api/faults/trend", get(handlers::api_get_faults_trend))
+        // Token usage analytics (issue #126, W3.2): persisted-history reads
+        // — they aggregate `re/analysis/token_usage.json` on demand, never
+        // live pipeline state — so every router answers them. A workspace
+        // whose token log is missing or corrupt honestly answers empty
+        // payloads.
+        .route(
+            "/api/token-usage/summary",
+            get(handlers::api_get_token_usage_summary),
+        )
+        .route(
+            "/api/token-usage/by-binary",
+            get(handlers::api_get_token_usage_by_binary),
+        )
+        .route(
+            "/api/token-usage/by-tier",
+            get(handlers::api_get_token_usage_by_tier),
+        )
+        .route(
+            "/api/token-usage/by-strategy",
+            get(handlers::api_get_token_usage_by_strategy),
+        )
         .route("/api/graph", get(handlers::api_get_dependency_graph))
         .route("/api/gc/candidates", get(handlers::api_get_gc_candidates))
         .route("/api/gc/archive", post(handlers::api_archive_gc))

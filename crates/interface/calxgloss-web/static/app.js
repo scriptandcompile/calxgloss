@@ -48,6 +48,7 @@ import { loadLiveProgress, applyUnitPhase } from "./js/live.js";
 import { setupPipelineControls, setPipelineState } from "./js/pipeline-controls.js";
 import { setupScopeControls, loadScopeControls, refreshScopeDisplay } from "./js/scope-controls.js";
 import { setupFaultsControls, buildFaultsCsv } from "./js/faults.js";
+import { setupTokenUsageControls } from "./js/token-usage.js";
 import { API } from "./js/api.js";
 import { showToast } from "./js/ui.js";
 
@@ -221,6 +222,10 @@ function setupEventListeners() {
     // Faults analytics controls (issue #125) — filter selects and date
     // inputs re-render in place; the CSV button exports the filtered set.
     setupFaultsControls();
+
+    // Token usage analytics controls (issue #126) — the time-range select
+    // re-renders in place; the cost panel restores its localStorage price.
+    setupTokenUsageControls();
 
     // GC tab buttons
     document.getElementById("btn-scan-gc")?.addEventListener("click", loadGcCandidates);
