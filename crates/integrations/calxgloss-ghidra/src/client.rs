@@ -4,7 +4,8 @@ use crate::error;
 use crate::error::Classification;
 use crate::model::{
     DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionBody, FunctionReport,
-    FunctionSummary, OpenProgram, Segment, StringLiteral, StructLayout, Symbol, Xref,
+    FunctionSummary, OpenProgram, Segment, ServerInfo, ServerKind, StringLiteral, StructLayout,
+    Symbol, Xref,
 };
 use crate::parse;
 use calxgloss_types::{BinaryIdentity, ProgressEvent, TranslationEvents};
@@ -25,6 +26,13 @@ pub type Result<T> = std::result::Result<T, GhidraError>;
 /// for a large binary's listings; a larger page trades one bigger response
 /// for far fewer requests.
 const DATA_PAGE: usize = 1000;
+
+/// Oldest GhidraMCP plugin version the client will work against.
+///
+/// ADR-0001 pins the bethington bridge at v6.0.0: the endpoint names and
+/// response shapes this client speaks are that bridge's, so an older plugin
+/// is a configuration fault to name, not a shape to adapt to.
+pub const MIN_PLUGIN_VERSION: &str = "6.0.0";
 
 // ============================================================
 // Error types
@@ -67,6 +75,36 @@ pub enum GhidraError {
     /// The configured base URL could not be parsed.
     #[error("Server URL is invalid: {0}")]
     InvalidUrl(#[from] url::ParseError),
+
+    /// The port answered HTTP, but not as GhidraMCP.
+    ///
+    /// The usual cause is a configured URL pointing at some other local server
+    /// — 8080 is the bridge's default port and a popular one for local AI
+    /// assistants — so the hint points at the URL rather than at Ghidra.
+    #[error(
+        "The port at {url} answers, but it is not GhidraMCP.\n{hint}\nCheck the configured \
+            Ghidra URL (`--ghidra-url`, `CALXGLOSS_GHIDRA_URL`, or `ghidra.url`)"
+    )]
+    NotGhidraMcp { url: String, hint: String },
+
+    /// Nothing answered the connection probe at all.
+    ///
+    /// Distinct from [`Transport`](Self::Transport) because the probe is the
+    /// one request whose failure means "no server here" rather than "this call
+    /// did not land" — the usual cause is Ghidra not running.
+    #[error(
+        "No server answered at {url}: {source}\nStart Ghidra with the GhidraMCP extension \
+            loaded, or point the configured URL at a running server"
+    )]
+    ServerUnreachable { url: String, source: reqwest::Error },
+
+    /// The server identified itself but named a plugin older than the bridge
+    /// calxgloss is built against (ADR-0001 pins the bethington bridge).
+    #[error(
+        "GhidraMCP plugin v{found} is too old: calxgloss needs v{required} or newer.\nInstall \
+            the matching GhidraMCP release into this Ghidra (ADR-0001)"
+    )]
+    VersionMismatch { found: String, required: String },
 }
 
 // ============================================================
@@ -944,31 +982,96 @@ impl GhidraClient {
     // Availability and program selection
     // =========================================================
 
+    /// Ask the server *who are you*: which kind of GhidraMCP answers, and
+    /// which plugin version and program its answer names.
+    ///
+    /// This is the canonical identity check. Its failure modes are named by
+    /// cause: nothing answering at all is [`ServerUnreachable`](GhidraError::ServerUnreachable),
+    /// a port that answers HTTP but not as GhidraMCP (the local AI on 8080)
+    /// is [`NotGhidraMcp`](GhidraError::NotGhidraMcp) rather than a
+    /// malformed-response puzzle, and a plugin older than ADR-0001's bridge
+    /// is [`VersionMismatch`](GhidraError::VersionMismatch).
+    pub async fn check_connection(&self) -> Result<ServerInfo> {
+        let body = self
+            .get_text("check_connection", &[])
+            .await
+            .map_err(|err| match err {
+                GhidraError::Transport { url, source } => {
+                    GhidraError::ServerUnreachable { url, source }
+                }
+                GhidraError::InvalidUrl(source) => GhidraError::InvalidUrl(source),
+                other => GhidraError::NotGhidraMcp {
+                    url: self.config.base_url.to_string(),
+                    hint: format!("its answer was not GhidraMCP's: {other}"),
+                },
+            })?;
+        let info = parse::parse_connection(&body).ok_or_else(|| GhidraError::NotGhidraMcp {
+            url: self.config.base_url.to_string(),
+            hint: format!("it answered `{}` instead of naming GhidraMCP", body.trim()),
+        })?;
+        if let Some(version) = &info.version
+            && !plugin_version_at_least(version, MIN_PLUGIN_VERSION)
+        {
+            return Err(GhidraError::VersionMismatch {
+                found: version.clone(),
+                required: MIN_PLUGIN_VERSION.to_string(),
+            });
+        }
+        info!(
+            kind = %info.kind,
+            version = info.version.as_deref().unwrap_or("unnamed"),
+            program = info.program.as_deref().unwrap_or("none"),
+            "Identified the GhidraMCP server"
+        );
+        Ok(info)
+    }
+
     /// Whether the server is up and a program is open.
     ///
-    /// The bridge only serves requests while a CodeBrowser is open, so this is
-    /// the check to run before a long pipeline to fail early with a clear
-    /// reason.
+    /// The check branches on the server kind the identity probe reports: a
+    /// GUI instance is verified through its cursor endpoints, while a
+    /// headless server — which has no cursor at all — is verified through
+    /// `get_metadata`'s current-program block instead. This is the check to
+    /// run before a long pipeline to fail early with a clear reason.
     pub async fn probe(&self) -> Result<ProgramInfo> {
-        let body = self.get_text("get_current_address", &[]).await?;
-        let address =
-            parse::parse_current_address(&body).ok_or_else(|| GhidraError::Malformed {
-                kind: "the current address",
-                detail: body.trim().to_string(),
-            })?;
-        let program = parse::json_string(&body, "program").unwrap_or_default();
-        let function = self.current_function().await?;
-        info!(
-            program = %program,
-            function = %function.name,
-            address = format_args!("{address:#x}"),
-            "GhidraMCP is serving"
-        );
-        Ok(ProgramInfo {
-            program,
-            function: function.name,
-            address,
-        })
+        let server = self.check_connection().await?;
+        match server.kind {
+            ServerKind::Gui => {
+                let body = self.get_text("get_current_address", &[]).await?;
+                let address =
+                    parse::parse_current_address(&body).ok_or_else(|| GhidraError::Malformed {
+                        kind: "the current address",
+                        detail: body.trim().to_string(),
+                    })?;
+                let program = parse::json_string(&body, "program")
+                    .or(server.program)
+                    .unwrap_or_default();
+                let function = self.current_function().await?;
+                info!(
+                    program = %program,
+                    function = %function.name,
+                    address = format_args!("{address:#x}"),
+                    "GhidraMCP is serving"
+                );
+                Ok(ProgramInfo {
+                    program,
+                    function: Some(function.name),
+                    address: Some(address),
+                })
+            }
+            ServerKind::Headless => {
+                let body = self.get_text("get_metadata", &[]).await?;
+                let program = parse::parse_metadata_program(&body)
+                    .or(server.program)
+                    .unwrap_or_default();
+                info!(program = %program, "GhidraMCP headless server is serving");
+                Ok(ProgramInfo {
+                    program,
+                    function: None,
+                    address: None,
+                })
+            }
+        }
     }
 
     /// The programs currently open in the Ghidra instance.
@@ -1005,10 +1108,41 @@ impl GhidraClient {
 pub struct ProgramInfo {
     /// Name of the open program, as the server reports it.
     pub program: String,
-    /// Name of the function under Ghidra's cursor.
-    pub function: String,
-    /// Address of Ghidra's cursor.
-    pub address: u64,
+    /// Name of the function under Ghidra's cursor — a GUI concept, so a
+    /// headless server reports `None`.
+    pub function: Option<String>,
+    /// Address of Ghidra's cursor — `None` for the same reason.
+    pub address: Option<u64>,
+}
+
+/// Whether a plugin version the server named is at least `minimum`.
+///
+/// Versions are dot-separated numbers (`6.0.0`); a pre-release or build
+/// suffix (`6.0.0-rc1`) is compared on its numeric core, missing trailing
+/// components count as zero, and a version that will not parse at all is
+/// not treated as too old — the probe logs the raw string, and refusing a
+/// server over an unrecognised version spelling would be guessing in the
+/// wrong direction.
+pub fn plugin_version_at_least(found: &str, minimum: &str) -> bool {
+    let numbers = |version: &str| -> Option<Vec<u64>> {
+        let core = version.split(['-', '+']).next().unwrap_or(version);
+        core.split('.')
+            .map(|part| part.parse::<u64>().ok())
+            .collect()
+    };
+    match (numbers(found), numbers(minimum)) {
+        (Some(found), Some(minimum)) => {
+            let width = found.len().max(minimum.len());
+            for i in 0..width {
+                let (f, m) = (*found.get(i).unwrap_or(&0), *minimum.get(i).unwrap_or(&0));
+                if f != m {
+                    return f > m;
+                }
+            }
+            true
+        }
+        _ => true,
+    }
 }
 
 /// Convert a Ghidra virtual address into a file-relative one.
@@ -1125,5 +1259,23 @@ mod tests {
             message: "Function not found".to_string(),
         };
         assert!(err.to_string().contains("Function not found"));
+    }
+
+    #[test]
+    fn test_plugin_version_comparison() {
+        assert!(plugin_version_at_least("6.0.0", MIN_PLUGIN_VERSION));
+        assert!(plugin_version_at_least("6.1.2", MIN_PLUGIN_VERSION));
+        assert!(plugin_version_at_least("7.0.0", MIN_PLUGIN_VERSION));
+        assert!(!plugin_version_at_least("5.4.0", MIN_PLUGIN_VERSION));
+        assert!(!plugin_version_at_least("5.9.9", MIN_PLUGIN_VERSION));
+        assert!(!plugin_version_at_least("5.9", MIN_PLUGIN_VERSION));
+        // Missing trailing components count as zero, so `6.0` is `6.0.0`.
+        assert!(plugin_version_at_least("6.0", MIN_PLUGIN_VERSION));
+        assert!(plugin_version_at_least("6", MIN_PLUGIN_VERSION));
+        // A pre-release suffix compares on its numeric core.
+        assert!(plugin_version_at_least("6.0.0-rc1", MIN_PLUGIN_VERSION));
+        assert!(!plugin_version_at_least("5.4.0-rc1", MIN_PLUGIN_VERSION));
+        // An unrecognised spelling is not a reason to refuse the server.
+        assert!(plugin_version_at_least("nightly", MIN_PLUGIN_VERSION));
     }
 }

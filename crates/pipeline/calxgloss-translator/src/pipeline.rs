@@ -4759,7 +4759,9 @@ mod tests {
                                 .entry(endpoint.to_string())
                                 .or_insert(0) += 1;
                         }
-                        let body = if endpoint == "get_current_address"
+                        let body = if endpoint == "check_connection" {
+                            format!("Connected: GhidraMCP plugin running with program '{PROGRAM}'")
+                        } else if endpoint == "get_current_address"
                             || endpoint == "get_current_function"
                         {
                             format!(
@@ -4889,8 +4891,8 @@ mod tests {
 
         // Batch 2, warm: same workspace, same binary bytes — every scan
         // replays from the Ghidra cache at zero live read cost. The only
-        // live calls the second batch makes are the two probes that
-        // validate the cache manifest before the pass.
+        // live calls the second batch makes are the probes (identity plus
+        // cursor) that validate the cache manifest before the pass.
         let probes_before =
             server.count("get_current_address") + server.count("get_current_function");
         let reads_before = server.read_calls();

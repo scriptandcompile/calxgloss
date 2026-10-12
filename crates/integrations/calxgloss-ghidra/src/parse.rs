@@ -12,8 +12,8 @@
 
 use crate::model::{
     DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, EnumMember, FunctionBody,
-    FunctionSummary, OpenProgram, Segment, StringLiteral, StructFieldLayout, StructLayout, Symbol,
-    Xref,
+    FunctionSummary, OpenProgram, Segment, ServerInfo, ServerKind, StringLiteral,
+    StructFieldLayout, StructLayout, Symbol, Xref,
 };
 use serde_json::Value;
 
@@ -317,6 +317,52 @@ pub fn parse_open_programs(body: &str) -> Vec<OpenProgram> {
             })
         })
         .collect()
+}
+
+/// Parse a `check_connection` response into who the server claims to be.
+///
+/// The two server kinds answer with fixed sentences, verified live against
+/// v6.0.0: the headless server writes
+/// `Connection OK - GhidraMCP Headless Server v6.0.0`, and the GUI plugin
+/// writes `Connected: GhidraMCP plugin running with program '<name>'` (or
+/// `…running, but no program loaded` when none is open). Anything else is
+/// `None` — most often because the port belongs to a different HTTP server
+/// entirely, which the caller turns into a `NotGhidraMcp` failure.
+pub fn parse_connection(body: &str) -> Option<ServerInfo> {
+    let trimmed = body.trim();
+    if let Some(version) = trimmed.strip_prefix("Connection OK - GhidraMCP Headless Server v") {
+        let version = version.trim();
+        return Some(ServerInfo {
+            kind: ServerKind::Headless,
+            version: (!version.is_empty()).then(|| version.to_string()),
+            program: None,
+        });
+    }
+    if trimmed.starts_with("Connected: GhidraMCP plugin running") {
+        let program = trimmed
+            .split_once("with program '")
+            .and_then(|(_, rest)| rest.split_once('\''))
+            .map(|(name, _)| name.to_string());
+        return Some(ServerInfo {
+            kind: ServerKind::Gui,
+            version: None,
+            program,
+        });
+    }
+    None
+}
+
+/// Parse the current program's name out of a `get_metadata` response, the
+/// `Program Name:` line of its labelled block.
+///
+/// This is how a headless server's open program is identified: it has no
+/// cursor endpoints, and its `check_connection` answer names no program.
+pub fn parse_metadata_program(body: &str) -> Option<String> {
+    body.lines()
+        .find_map(|line| line.trim().strip_prefix("Program Name:"))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
 }
 
 /// Parse a segment record: `.text: 180001000 - 1801261ff`.
@@ -1118,5 +1164,58 @@ mod tests {
         assert!(parse_enum_values("Enumeration not found: NoSuchEnumXyz").is_none());
         assert!(parse_enum_values("Data type is not an enumeration: someStruct").is_none());
         assert!(parse_enum_values("Enum name is required").is_none());
+    }
+
+    #[test]
+    fn test_parses_the_headless_connection_form() {
+        // `GET /check_connection` on the v6.0.0 headless server, captured live.
+        let info = parse_connection("Connection OK - GhidraMCP Headless Server v6.0.0")
+            .expect("headless form should parse");
+        assert_eq!(info.kind, ServerKind::Headless);
+        assert_eq!(info.version.as_deref(), Some("6.0.0"));
+        assert_eq!(info.program, None);
+    }
+
+    #[test]
+    fn test_parses_the_gui_connection_form() {
+        // `GET /check_connection` on the v6.0.0 GUI plugin, captured live.
+        let info =
+            parse_connection("Connected: GhidraMCP plugin running with program 'eqmain.dll'")
+                .expect("GUI form should parse");
+        assert_eq!(info.kind, ServerKind::Gui);
+        assert_eq!(info.version, None);
+        assert_eq!(info.program.as_deref(), Some("eqmain.dll"));
+    }
+
+    #[test]
+    fn test_gui_connection_without_a_program_still_parses() {
+        // The GUI plugin's answer when the tool is up but nothing is open.
+        let info = parse_connection("Connected: GhidraMCP plugin running, but no program loaded")
+            .expect("no-program form is still GhidraMCP");
+        assert_eq!(info.kind, ServerKind::Gui);
+        assert_eq!(info.program, None);
+    }
+
+    #[test]
+    fn test_a_foreign_answer_is_not_a_connection_form() {
+        // What a wrong port looks like: an AI assistant's 404, a JSON error,
+        // or anything else that does not name GhidraMCP.
+        assert!(parse_connection("<h1>404 Not Found</h1>").is_none());
+        assert!(parse_connection("{\"error\":\"unknown endpoint\"}").is_none());
+        assert!(parse_connection("Connected: some other plugin").is_none());
+        assert!(parse_connection("").is_none());
+    }
+
+    #[test]
+    fn test_parses_the_program_from_metadata() {
+        // The opening lines of a live `GET /get_metadata` on eqmain.dll.
+        let body = "Program Name: eqmain.dll\nExecutable Path: C:\\eqmain.dll\nArchitecture: x86:LE:64:default\nCompiler: windows\nFunction Count: 21847\n";
+        assert_eq!(
+            parse_metadata_program(body).as_deref(),
+            Some("eqmain.dll"),
+            "the labelled Program Name line names the current program"
+        );
+        assert_eq!(parse_metadata_program("No program found"), None);
+        assert_eq!(parse_metadata_program("Program Name: "), None);
     }
 }

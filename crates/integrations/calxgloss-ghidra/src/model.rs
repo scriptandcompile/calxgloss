@@ -144,6 +144,46 @@ pub struct OpenProgram {
     pub function_count: Option<u64>,
 }
 
+/// Which flavour of GhidraMCP server answered the connection probe.
+///
+/// The two run the same HTTP API but not the same endpoint set: the cursor
+/// endpoints (`get_current_address`, `get_current_function`) are GUI-only, so
+/// what a probe can verify depends on which kind is on the other end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerKind {
+    /// The standalone headless server (`GhidraMCPHeadlessServer`).
+    Headless,
+    /// The plugin running inside a Ghidra GUI CodeBrowser.
+    Gui,
+}
+
+impl fmt::Display for ServerKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Headless => write!(f, "headless"),
+            Self::Gui => write!(f, "GUI"),
+        }
+    }
+}
+
+/// Who answered the `check_connection` probe: which kind of server, which
+/// plugin version it named, and which program it has open, as far as its
+/// answer form carries each.
+///
+/// The headless form names a version but no program; the GUI form names a
+/// program but no version — the plugin version rides on the Ghidra build it
+/// is installed into, which later lifecycle checks pin down.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerInfo {
+    /// Headless or GUI.
+    pub kind: ServerKind,
+    /// Plugin/server version the answer named, e.g. `6.0.0` — only the
+    /// headless form carries one.
+    pub version: Option<String>,
+    /// Program the server reports as current, when its answer named one.
+    pub program: Option<String>,
+}
+
 /// A decompiled function: the pseudo-C body plus the signature Ghidra inferred.
 ///
 /// The signature is taken from the body because it is the only place Ghidra

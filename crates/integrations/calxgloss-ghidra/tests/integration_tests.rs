@@ -351,3 +351,257 @@ impl ScanSource for CannedProgram {
 async fn a_test_double_outside_the_crate_can_implement_the_trait() {
     drive_all(&CannedProgram).await;
 }
+
+// ============================================================
+// The GhidraMCP identity probe (issue #111)
+// ============================================================
+
+use calxgloss_ghidra::{GhidraError, ServerKind};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+const GUI_CONNECTION: &str = "Connected: GhidraMCP plugin running with program 'eqmain.dll'";
+const HEADLESS_CONNECTION: &str = "Connection OK - GhidraMCP Headless Server v6.0.0";
+const HEADLESS_METADATA: &str = "Program Name: eqmain.dll\nExecutable Path: /bin/eqmain.dll\nArchitecture: x86:LE:64:default\nFunction Count: 21847\n";
+
+/// A stand-in server answering each named endpoint with a canned body and
+/// counting requests per endpoint, so a test can prove which endpoints a
+/// probe did — and did not — touch. Anything else gets the bridge's 404.
+struct ProbeFake {
+    base_url: String,
+    calls: Arc<Mutex<HashMap<String, usize>>>,
+}
+
+impl ProbeFake {
+    async fn serving(routes: &[(&'static str, &'static str)]) -> Self {
+        Self::serving_status(
+            &routes
+                .iter()
+                .map(|(p, b)| (*p, 200, *b))
+                .collect::<Vec<_>>(),
+        )
+        .await
+    }
+
+    /// As [`serving`](Self::serving), but each route also carries the HTTP
+    /// status to answer with — a foreign server's 404 is a different shape
+    /// from GhidraMCP's `200`-with-an-error-body.
+    async fn serving_status(routes: &[(&'static str, u16, &'static str)]) -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fake server should bind");
+        let addr = listener.local_addr().expect("fake server address");
+        let calls: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+        let counted = Arc::clone(&calls);
+        let routes: Vec<(&'static str, u16, &'static str)> = routes.to_vec();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let counted = Arc::clone(&counted);
+                let routes = routes.clone();
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut request = [0u8; 2048];
+                    let read = stream.read(&mut request).await.unwrap_or(0);
+                    let path = String::from_utf8_lossy(&request[..read])
+                        .split_whitespace()
+                        .nth(1)
+                        .unwrap_or_default()
+                        .to_string();
+                    let endpoint = path
+                        .split('?')
+                        .next()
+                        .unwrap_or_default()
+                        .trim_start_matches('/')
+                        .to_string();
+                    *counted
+                        .lock()
+                        .expect("counts lock")
+                        .entry(endpoint.clone())
+                        .or_insert(0) += 1;
+                    let (status, body) = routes
+                        .iter()
+                        .find(|(name, _, _)| endpoint == *name)
+                        .map(|(_, status, body)| (*status, (*body).to_string()))
+                        .unwrap_or((404, "Error 404: No context found for request".to_string()));
+                    let reason = if status == 404 { "Not Found" } else { "OK" };
+                    let response = format!(
+                        "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        Self {
+            base_url: format!("http://{addr}"),
+            calls,
+        }
+    }
+
+    fn count(&self, endpoint: &str) -> usize {
+        self.calls
+            .lock()
+            .expect("counts lock")
+            .get(endpoint)
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+#[tokio::test]
+async fn the_identity_probe_parses_the_gui_form() {
+    let fake = ProbeFake::serving(&[("check_connection", GUI_CONNECTION)]).await;
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+    let info = client.check_connection().await.expect("GUI identity");
+    assert_eq!(info.kind, ServerKind::Gui);
+    assert_eq!(info.program.as_deref(), Some("eqmain.dll"));
+    assert_eq!(info.version, None, "the GUI form carries no version");
+}
+
+#[tokio::test]
+async fn the_identity_probe_parses_the_headless_form() {
+    let fake = ProbeFake::serving(&[("check_connection", HEADLESS_CONNECTION)]).await;
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+    let info = client.check_connection().await.expect("headless identity");
+    assert_eq!(info.kind, ServerKind::Headless);
+    assert_eq!(info.version.as_deref(), Some("6.0.0"));
+}
+
+#[tokio::test]
+async fn a_headless_probe_never_touches_the_cursor_endpoints() {
+    // A headless server has no GUI cursor; its probe must verify via the
+    // connection answer plus `get_metadata`'s current-program block.
+    let fake = ProbeFake::serving(&[
+        ("check_connection", HEADLESS_CONNECTION),
+        ("get_metadata", HEADLESS_METADATA),
+    ])
+    .await;
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+    let info = client.probe().await.expect("headless probe");
+    assert_eq!(info.program, "eqmain.dll");
+    assert_eq!(
+        info.function, None,
+        "a headless server has no cursor function"
+    );
+    assert_eq!(
+        info.address, None,
+        "a headless server has no cursor address"
+    );
+    assert_eq!(
+        fake.count("get_current_address") + fake.count("get_current_function"),
+        0,
+        "the headless branch must not call GUI-only endpoints"
+    );
+}
+
+#[tokio::test]
+async fn a_gui_probe_still_reads_the_cursor() {
+    let fake = ProbeFake::serving(&[
+        ("check_connection", GUI_CONNECTION),
+        (
+            "get_current_address",
+            "{\"address\":\"18008ed50\",\"program\":\"eqmain.dll\"}",
+        ),
+        (
+            "get_current_function",
+            "{\"function_name\":\"FUN_18008ed50\",\"address\":\"18008ed50\"}",
+        ),
+    ])
+    .await;
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+    let info = client.probe().await.expect("GUI probe");
+    assert_eq!(info.program, "eqmain.dll");
+    assert_eq!(info.function.as_deref(), Some("FUN_18008ed50"));
+    assert_eq!(info.address, Some(0x18008ed50));
+}
+
+#[tokio::test]
+async fn a_port_answering_with_an_error_fails_as_not_ghidra_mcp() {
+    // The 8080-is-my-local-AI case: the port answers, but its answer is a
+    // foreign error shape, not GhidraMCP's — a named failure, not a
+    // malformed-response puzzle.
+    let fake =
+        ProbeFake::serving(&[("check_connection", "{\"error\":\"unknown endpoint\"}")]).await;
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+    let err = client
+        .probe()
+        .await
+        .expect_err("a foreign server must not pass as GhidraMCP");
+    assert!(
+        matches!(err, GhidraError::NotGhidraMcp { .. }),
+        "expected NotGhidraMcp, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_port_answering_with_foreign_content_fails_as_not_ghidra_mcp() {
+    // Same failure through the other door: a 200 whose body simply is not
+    // one of GhidraMCP's connection sentences.
+    let fake = ProbeFake::serving(&[("check_connection", "<h1>404 Not Found</h1>")]).await;
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+    let err = client
+        .check_connection()
+        .await
+        .expect_err("HTML is not a GhidraMCP identity");
+    assert!(
+        matches!(err, GhidraError::NotGhidraMcp { .. }),
+        "expected NotGhidraMcp, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_port_answering_with_a_real_404_fails_as_not_ghidra_mcp() {
+    // The realistic foreign-server shape: a plain HTTP server (the local AI
+    // on 8080) answers the endpoint it does not have with a real 404.
+    let fake =
+        ProbeFake::serving_status(&[("check_connection", 404, "<h1>404 Not Found</h1>")]).await;
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+    let err = client
+        .probe()
+        .await
+        .expect_err("a 404 from a foreign server must not pass as GhidraMCP");
+    assert!(
+        matches!(err, GhidraError::NotGhidraMcp { .. }),
+        "expected NotGhidraMcp, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_unreachable_server_fails_as_server_unreachable() {
+    // Bind, learn the address, drop the listener: nothing is home.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("port should bind");
+    let addr = listener.local_addr().expect("fake server address");
+    drop(listener);
+    let client = GhidraClient::new(&format!("http://{addr}")).expect("client");
+    let err = client
+        .check_connection()
+        .await
+        .expect_err("nothing is listening");
+    assert!(
+        matches!(err, GhidraError::ServerUnreachable { .. }),
+        "expected ServerUnreachable, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_under_versioned_plugin_fails_as_version_mismatch() {
+    let fake = ProbeFake::serving(&[(
+        "check_connection",
+        "Connection OK - GhidraMCP Headless Server v5.4.0",
+    )])
+    .await;
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+    let err = client
+        .check_connection()
+        .await
+        .expect_err("an old plugin must fail by name");
+    match err {
+        GhidraError::VersionMismatch { found, required } => {
+            assert_eq!(found, "5.4.0");
+            assert_eq!(required, "6.0.0");
+        }
+        other => panic!("expected VersionMismatch, got {other:?}"),
+    }
+}

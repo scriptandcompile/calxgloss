@@ -50,6 +50,35 @@ async fn server_is_reachable_and_serving() {
 }
 
 #[tokio::test]
+#[ignore = "needs a running GhidraMCP server"]
+async fn the_identity_probe_names_the_server() {
+    let Some(ghidra) = client() else {
+        eprintln!("CALXGLOSS_GHIDRA_URL not set; skipping");
+        return;
+    };
+    let info = ghidra
+        .check_connection()
+        .await
+        .expect("the port should answer as GhidraMCP");
+    eprintln!(
+        "server kind: {}, version: {}, program: {}",
+        info.kind,
+        info.version.as_deref().unwrap_or("unnamed"),
+        info.program.as_deref().unwrap_or("none"),
+    );
+    if let Some(version) = &info.version {
+        assert!(
+            calxgloss_ghidra::plugin_version_at_least(
+                version,
+                calxgloss_ghidra::MIN_PLUGIN_VERSION
+            ),
+            "the live plugin should be at least v{} per ADR-0001, got {version}",
+            calxgloss_ghidra::MIN_PLUGIN_VERSION,
+        );
+    }
+}
+
+#[tokio::test]
 #[ignore = "needs a running GhidraMCP server with eqmain.dll open"]
 async fn decompiled_signature_round_trips_into_the_pipeline() {
     let Some(ghidra) = client() else {

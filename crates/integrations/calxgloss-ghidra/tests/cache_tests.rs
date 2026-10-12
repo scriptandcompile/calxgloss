@@ -93,7 +93,9 @@ impl FakeServer {
                             .entry(endpoint.to_string())
                             .or_insert(0) += 1;
                     }
-                    let body = if endpoint == "get_current_address"
+                    let body = if endpoint == "check_connection" {
+                        format!("Connected: GhidraMCP plugin running with program '{program}'")
+                    } else if endpoint == "get_current_address"
                         || endpoint == "get_current_function"
                     {
                         format!(

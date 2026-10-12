@@ -37,11 +37,14 @@ pub mod parse;
 mod scan_source;
 
 pub use cache::CachedGhidraSource;
-pub use client::{GhidraClient, GhidraConfig, GhidraError, ProgramInfo, Result, rva_from_va};
+pub use client::{
+    GhidraClient, GhidraConfig, GhidraError, MIN_PLUGIN_VERSION, ProgramInfo, Result,
+    plugin_version_at_least, rva_from_va,
+};
 pub use error::Classification;
 pub use model::{
     DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, EnumMember, FunctionBody,
-    FunctionReport, FunctionSummary, OpenProgram, Segment, StringLiteral, StructFieldLayout,
-    StructLayout, Symbol, Xref,
+    FunctionReport, FunctionSummary, OpenProgram, Segment, ServerInfo, ServerKind, StringLiteral,
+    StructFieldLayout, StructLayout, Symbol, Xref,
 };
 pub use scan_source::{PipelineSource, ScanSource};

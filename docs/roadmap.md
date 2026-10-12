@@ -32,7 +32,7 @@ targets, not exact requirements.
 | W2 | Web UI Process Control | `calxgloss-web` + types/translator | 3–4 wk | ✅ done | closed — see epic [#88](https://github.com/scriptandcompile/calxgloss/issues/88) | [#88](https://github.com/scriptandcompile/calxgloss/issues/88) |
 | W3 | Web UI Historical & Analytical Views | `calxgloss-web` | 2–3 wk | 🔶 planned | spec published — `/to-tickets` next | [#89](https://github.com/scriptandcompile/calxgloss/issues/89) |
 | W4 | Web UI New Views | `calxgloss-web` | 2–3 wk | ⬜ not started | after W0 P1, W1 P0–1 | — |
-| G1 | Ghidra Lifecycle Integration | `calxgloss-ghidra` + `calxgloss-cli` | 3–4 wk | 🔶 planned | tickets published — `/implement` next | [#110](https://github.com/scriptandcompile/calxgloss/issues/110) |
+| G1 | Ghidra Lifecycle Integration | `calxgloss-ghidra` + `calxgloss-cli` | 3–4 wk | 🔶 in progress | T1 done (identity probe) — T2 next | [#110](https://github.com/scriptandcompile/calxgloss/issues/110) |
 | P1.5 | typesdb Phase 5: cross-reference clustering, heuristic struct naming, nested structs/unions, STL type detection, Rust codegen for recovered structs | `calxgloss-typesdb` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P2.5 | typeinfer Phase 5: cross-function call-site propagation, integer bit-pattern analysis, C++ mangling analysis, local-variable and return-type inference, **write inferred types back into Ghidra** | `calxgloss-typeinfer` + `calxgloss-ghidra` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P3.5 | algorithm Phase 5: confidence scoring improvements, dynamic (JSON) pattern database, multi-function correlation, parallelize across functions | `calxgloss-algorithm` | — | ⬜ not started | `/to-spec` when picked up | — |
