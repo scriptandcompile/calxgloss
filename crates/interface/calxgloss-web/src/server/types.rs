@@ -763,6 +763,109 @@ pub enum ServerError {
     Conflict(String),
 }
 
+// ─── Fault analytics (issue #125, W3.1) ────────────────────────────────
+
+/// One fault from the persisted log, verbatim, carrying the full attempt
+/// identity triple (binary, function, attempt) so a fault pattern can be
+/// traced straight to a unit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FaultAnalyticsEntry {
+    /// The DLL containing the affected function.
+    pub binary: BinaryIdentity,
+    /// The function name.
+    pub function: String,
+    /// Which translation attempt the fault was detected in (1-based).
+    pub attempt: u32,
+    /// Retry strategy active when the fault was detected.
+    pub strategy: String,
+    /// Fault category (shared `FaultCategory` vocabulary).
+    pub category: FaultCategory,
+    /// Fault severity ("warning", "error", "critical").
+    pub severity: FaultSeverity,
+    /// Human-readable description of what was detected.
+    pub description: String,
+    /// Recovery guidance attached to the fault, verbatim.
+    pub recovery: String,
+    /// When the fault was detected (Unix seconds).
+    pub timestamp: u64,
+}
+
+/// `GET /api/faults` response: the retained fault events after filtering.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FaultAnalytics {
+    /// The matching faults, oldest first.
+    pub entries: Vec<FaultAnalyticsEntry>,
+    /// How many faults the log holds before filtering — lets the view tell
+    /// "no faults at all" from "no faults match the filters".
+    pub total_in_log: usize,
+}
+
+/// A named count in a summary breakdown (one fault category or severity).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FaultCount {
+    /// The breakdown key (the category or severity name).
+    pub name: String,
+    /// How many faults carry it.
+    pub count: usize,
+}
+
+/// `GET /api/faults/summary` response: total faults broken down by
+/// category and severity, computed over the filtered retained window.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FaultSummaryResponse {
+    /// Total faults after filtering.
+    pub total: usize,
+    /// Counts per fault category, highest first (ties alphabetical).
+    /// Categories with no faults are omitted — the breakdown names what
+    /// actually happened.
+    pub by_category: Vec<FaultCount>,
+    /// Counts per severity in fixed warning → error → critical order,
+    /// always all three so the severity cards never shift shape.
+    pub by_severity: Vec<FaultCount>,
+}
+
+/// Fault count for one target binary (the `by-binary` bar chart row).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FaultBinaryCount {
+    /// The target binary, identity verbatim.
+    pub binary: BinaryIdentity,
+    /// How many faults name it.
+    pub count: usize,
+}
+
+/// `GET /api/faults/by-binary` response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FaultByBinaryResponse {
+    /// Fault counts per target binary, highest first (ties alphabetical).
+    pub binaries: Vec<FaultBinaryCount>,
+}
+
+/// `GET /api/faults/trend` response: the faults-per-day series with the
+/// 3-day moving average, bucketed server-side so the chart and the API
+/// report the same numbers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FaultTrendResponse {
+    /// One bucket per UTC day from the first to the last matching fault
+    /// date, gap days included with zero counts, oldest first. Empty when
+    /// nothing matches — the honest "no data" shape, not a fabricated run
+    /// of zeros.
+    pub days: Vec<FaultTrendPoint>,
+}
+
+/// One day bucket of the faults trend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FaultTrendPoint {
+    /// The bucket day as `YYYY-MM-DD` (UTC).
+    pub date: String,
+    /// Faults detected that day.
+    pub count: usize,
+    /// Trailing 3-day moving average ending at this day: the mean of this
+    /// day and the two preceding days *within the bucketed range*, so the
+    /// first two points average fewer days rather than inventing zeros
+    /// before the first fault.
+    pub moving_average: f64,
+}
+
 // ─── Ghidra context types ──────────────────────────────────────────────
 
 /// Ghidra disassembly listing line.

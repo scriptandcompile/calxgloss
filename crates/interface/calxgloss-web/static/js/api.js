@@ -79,6 +79,12 @@ export const API = {
     async graph() { return API.get("/api/graph"); },
     async llmIoLog() { return API.get("/api/llm-io"); },
     async clearLlmIoLog() { return API.post("/api/llm-io/clear"); },
+    // Faults analytics (issue #125, W3.1) — all four endpoints take the
+    // same filter query so cards, bars, trend, and table stay in step.
+    async faults(query) { return API.get(`/api/faults${query}`); },
+    async faultsSummary(query) { return API.get(`/api/faults/summary${query}`); },
+    async faultsByBinary(query) { return API.get(`/api/faults/by-binary${query}`); },
+    async faultsTrend(query) { return API.get(`/api/faults/trend${query}`); },
     async health() { return API.get("/health"); },
     async serverStatus() { return API.get("/api/server/status"); },
     async shutdownServer() { return API.post("/api/server/shutdown"); },

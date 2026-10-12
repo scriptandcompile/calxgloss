@@ -38,14 +38,12 @@ pub(crate) fn build_unit_process(
     .filter(|e| binary_matches(&e.binary, &unit.binary) && e.function == function)
     .collect::<Vec<_>>();
 
-    let faults = load_json_or_default::<FaultLog>(
-        &repo_path.join("re").join("analysis").join("fault_log.json"),
-    )
-    .entries
-    .iter()
-    .filter(|e| binary_matches(&e.binary, &unit.binary) && e.function == function)
-    .map(FaultRecord::from)
-    .collect();
+    let faults = load_json_or_default::<FaultLog>(&fault_log_path(repo_path))
+        .entries
+        .iter()
+        .filter(|e| binary_matches(&e.binary, &unit.binary) && e.function == function)
+        .map(FaultRecord::from)
+        .collect();
 
     UnitProcess {
         tier: build_tier_section(unit, &entries, repo_path),
@@ -253,6 +251,12 @@ pub(crate) fn token_usage_log_path(repo_path: &Path) -> std::path::PathBuf {
         .join("re")
         .join("analysis")
         .join("token_usage.json")
+}
+
+/// Path of the fault log artifact inside the repo — the single place the
+/// layout is spelled out, shared by every handler that reads it.
+pub(crate) fn fault_log_path(repo_path: &Path) -> std::path::PathBuf {
+    repo_path.join("re").join("analysis").join("fault_log.json")
 }
 
 /// Estimates the effort per queued unit from the token-usage log's recorded

@@ -3,6 +3,7 @@
 //! Handlers are organized into feature-based submodules for readability.
 
 mod analysis;
+mod analytics;
 mod api;
 mod batch;
 mod classification;
@@ -18,6 +19,7 @@ mod scope;
 mod r#static;
 mod summary;
 
+pub use self::analytics::*;
 pub use self::api::*;
 pub use self::batch::*;
 pub use self::classification::*;

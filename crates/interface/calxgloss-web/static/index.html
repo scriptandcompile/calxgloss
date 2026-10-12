@@ -20,6 +20,7 @@
             <button class="nav-tab" data-view="graph">Dependency Graph</button>
             <button class="nav-tab" data-view="gc">Branch Cleanup</button>
             <button class="nav-tab" data-view="llm-log">LLM I/O</button>
+            <button class="nav-tab" data-view="faults">Faults</button>
         </nav>
         <div class="topbar-right">
             <span id="live-indicator" class="live-dot" title="Live updates active">●</span>
@@ -404,6 +405,79 @@
                 </table>
                 <div id="gc-empty" class="empty-state" style="display:none">
                     <p>No stale branches found — all branches are recent.</p>
+                </div>
+            </div>
+        </section>
+        <!-- Faults analytics view (issue #125, W3.1) — the whole effort's
+             fault history from the persisted fault log: summary cards,
+             per-binary bars, the faults-per-day trend with a 3-day moving
+             average, and the fault table with the attached recovery
+             guidance. Filters re-render in place; CSV export is local. -->
+        <section id="view-faults" class="view">
+            <div class="view-header">
+                <h2>Faults</h2>
+                <div class="view-controls graph-filters">
+                    <label class="graph-filter-label">Category
+                        <select id="faults-filter-category" aria-label="Filter faults by category">
+                            <option value="">All</option>
+                            <option value="context_window_exceeded">Context window</option>
+                            <option value="hallucination">Hallucination</option>
+                            <option value="infinite_loop">Infinite loop</option>
+                            <option value="behavior_divergence">Behavior divergence</option>
+                            <option value="resource_exhaustion">Resource exhaustion</option>
+                            <option value="slow_response">Slow response</option>
+                            <option value="prompt_corruption">Prompt corruption</option>
+                        </select>
+                    </label>
+                    <label class="graph-filter-label">Binary
+                        <select id="faults-filter-binary" aria-label="Filter faults by binary">
+                            <option value="">All</option>
+                        </select>
+                    </label>
+                    <label class="graph-filter-label">From
+                        <input id="faults-filter-from" type="date" aria-label="Faults from date (UTC)">
+                    </label>
+                    <label class="graph-filter-label">To
+                        <input id="faults-filter-to" type="date" aria-label="Faults to date (UTC)">
+                    </label>
+                    <span id="faults-filter-summary" class="graph-filter-summary"></span>
+                    <button id="btn-export-faults-csv" class="btn btn-sm btn-secondary"
+                            title="Download the filtered fault list as CSV">CSV</button>
+                </div>
+            </div>
+            <div id="faults-empty" class="empty-state" style="display:none">
+                <p id="faults-empty-message"></p>
+            </div>
+            <div id="faults-body" style="display:none">
+                <div id="faults-summary-cards" class="status-cards"></div>
+                <div class="panel">
+                    <div class="column-header">
+                        <h2>Faults per Binary</h2>
+                    </div>
+                    <div id="faults-binary-bars" class="fault-bars"></div>
+                </div>
+                <div class="panel">
+                    <div class="column-header">
+                        <h2>Faults per Day</h2>
+                    </div>
+                    <div id="faults-trend" class="fault-trend"></div>
+                </div>
+                <div id="faults-table-wrap">
+                    <table id="faults-table" class="faults-table">
+                        <thead>
+                            <tr>
+                                <th>Category</th>
+                                <th>Severity</th>
+                                <th>Binary</th>
+                                <th>Function</th>
+                                <th>Attempt</th>
+                                <th>Strategy</th>
+                                <th>When (UTC)</th>
+                                <th>Recovery</th>
+                            </tr>
+                        </thead>
+                        <tbody id="faults-table-body"></tbody>
+                    </table>
                 </div>
             </div>
         </section>

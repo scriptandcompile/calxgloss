@@ -47,6 +47,7 @@ import { loadGcCandidates, archiveSelectedGc } from "./js/gc.js";
 import { loadLiveProgress, applyUnitPhase } from "./js/live.js";
 import { setupPipelineControls, setPipelineState } from "./js/pipeline-controls.js";
 import { setupScopeControls, loadScopeControls, refreshScopeDisplay } from "./js/scope-controls.js";
+import { setupFaultsControls, buildFaultsCsv } from "./js/faults.js";
 import { API } from "./js/api.js";
 import { showToast } from "./js/ui.js";
 
@@ -216,6 +217,10 @@ function setupEventListeners() {
     // LLM I/O log controls (issue #80) — filters, search, collapse, copy.
     setupLlmLogControls();
     document.getElementById("btn-clear-llm-log")?.addEventListener("click", clearLlmLog);
+
+    // Faults analytics controls (issue #125) — filter selects and date
+    // inputs re-render in place; the CSV button exports the filtered set.
+    setupFaultsControls();
 
     // GC tab buttons
     document.getElementById("btn-scan-gc")?.addEventListener("click", loadGcCandidates);
@@ -438,6 +443,9 @@ async function init() {
     // run the PNG pipeline without triggering real downloads.
     window.calxglossShareUrl = () => buildGraphShareUrl(State.graphRendererFull);
     window.calxglossExportPNG = () => exportGraphPNG(State.graphRendererFull);
+    // Test handle for the faults CSV export (issue #125) — build the CSV
+    // text without triggering a real download.
+    window.calxglossFaultsCsv = () => buildFaultsCsv();
 
     // Shared graph URL (issue #79) — restore filters and camera before the
     // first data load so the graph opens exactly as the sharer left it, and

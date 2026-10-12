@@ -917,6 +917,17 @@ fn shared_routes() -> Router<CombinedState> {
         // that has never run live honestly answers with an empty payload.
         .route("/api/llm-io", get(handlers::api_get_llm_io_log))
         .route("/api/llm-io/clear", post(handlers::api_clear_llm_io_log))
+        // Fault analytics (issue #125, W3.1): persisted-history reads — they
+        // aggregate `re/analysis/fault_log.json` on demand, never live
+        // pipeline state — so every router answers them. A workspace whose
+        // fault log is missing or corrupt honestly answers empty payloads.
+        .route("/api/faults", get(handlers::api_get_faults))
+        .route("/api/faults/summary", get(handlers::api_get_faults_summary))
+        .route(
+            "/api/faults/by-binary",
+            get(handlers::api_get_faults_by_binary),
+        )
+        .route("/api/faults/trend", get(handlers::api_get_faults_trend))
         .route("/api/graph", get(handlers::api_get_dependency_graph))
         .route("/api/gc/candidates", get(handlers::api_get_gc_candidates))
         .route("/api/gc/archive", post(handlers::api_archive_gc))

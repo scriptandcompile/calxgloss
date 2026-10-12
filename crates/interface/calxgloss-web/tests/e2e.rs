@@ -5120,6 +5120,616 @@ async fn test_llm_io_clear_empties_the_persisted_log() {
     );
 }
 
+// ─────────────────────────────────────────────────────────────
+// Fault analytics (issue #125, W3.1)
+// ─────────────────────────────────────────────────────────────
+
+/// UTC day boundaries the fault fixtures bucket against: 2026-10-01 through
+/// 2026-10-04, midnight. The trend endpoint buckets on these exact days.
+const FAULT_DAY_1: u64 = 1_790_812_800; // 2026-10-01T00:00:00Z
+const FAULT_DAY_4: u64 = 1_791_072_000; // 2026-10-04T00:00:00Z
+
+/// One fault-log entry with every field spelled out — the fixture's exact
+/// values are what the endpoint assertions pin.
+fn fault_entry(
+    binary: &str,
+    function: &str,
+    attempt: u32,
+    strategy: &str,
+    category: &str,
+    severity: &str,
+    timestamp: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "binary": binary,
+        "function": function,
+        "attempt": attempt,
+        "strategy": strategy,
+        "category": category,
+        "severity": severity,
+        "description": format!("{category} detected in {function}"),
+        "recovery": format!("recovery guidance for {function}"),
+        "timestamp": timestamp,
+    })
+}
+
+/// Writes a deterministic fault log fixture into the repo's analysis
+/// directory — the file the analytics endpoints read on demand.
+fn write_fault_log_fixture(repo_path: &std::path::Path, entries: &[serde_json::Value]) {
+    let dir = repo_path.join("re").join("analysis");
+    std::fs::create_dir_all(&dir).expect("analysis dir exists");
+    std::fs::write(
+        dir.join("fault_log.json"),
+        serde_json::to_string(&serde_json::json!({ "entries": entries }))
+            .expect("fixture serializes"),
+    )
+    .expect("fixture written");
+}
+
+/// The six-entry fixture both analytics tests share: three faults for
+/// `game_logic.dll/DrawSprite` on 2026-10-01 and three for
+/// `d3d9.dll/UpdateScene` on 2026-10-04 — leaving 10-02 and 10-03 as gap
+/// days the trend must fill with honest zeros.
+fn sample_fault_entries() -> Vec<serde_json::Value> {
+    vec![
+        fault_entry(
+            "game_logic.dll",
+            "DrawSprite",
+            1,
+            "initial",
+            "context_window_exceeded",
+            "error",
+            FAULT_DAY_1 + 60,
+        ),
+        fault_entry(
+            "game_logic.dll",
+            "DrawSprite",
+            2,
+            "compile_fix",
+            "hallucination",
+            "error",
+            FAULT_DAY_1 + 120,
+        ),
+        fault_entry(
+            "game_logic.dll",
+            "DrawSprite",
+            3,
+            "retry",
+            "resource_exhaustion",
+            "warning",
+            FAULT_DAY_1 + 180,
+        ),
+        fault_entry(
+            "d3d9.dll",
+            "UpdateScene",
+            1,
+            "initial",
+            "infinite_loop",
+            "critical",
+            FAULT_DAY_4 + 60,
+        ),
+        fault_entry(
+            "d3d9.dll",
+            "UpdateScene",
+            2,
+            "compile_fix",
+            "hallucination",
+            "error",
+            FAULT_DAY_4 + 120,
+        ),
+        fault_entry(
+            "d3d9.dll",
+            "UpdateScene",
+            3,
+            "retry",
+            "slow_response",
+            "warning",
+            FAULT_DAY_4 + 180,
+        ),
+    ]
+}
+
+/// GETs a URL and returns the status with the parsed body.
+async fn get_json(url: &str) -> (reqwest::StatusCode, serde_json::Value) {
+    let resp = reqwest::get(url).await.expect("request reaches server");
+    let status = resp.status();
+    let body = resp.json().await.unwrap_or(serde_json::Value::Null);
+    (status, body)
+}
+
+/// Issue #125 router contract: every faults analytics endpoint is
+/// registered in the shared routes — they read the persisted fault log,
+/// never live pipeline state — so both the plain and the live router
+/// answer them. With no log on disk they serve honest empty payloads,
+/// not 404s and not fabricated zeros.
+#[tokio::test]
+async fn test_faults_analytics_registered_in_plain_and_live_routers() {
+    for kind in ["plain", "live"] {
+        let fixture = TestFixture::new();
+        let state = ServerState::new(fixture.repo_path());
+        let router = if kind == "plain" {
+            build_router(state)
+        } else {
+            let events = TranslationEvents::new(128);
+            let manager = SessionManager::new_with_broadcast(events.subscribe());
+            build_router_with_ws(state, manager, ProgressState::new())
+        };
+        let _server = spawn_server(router, fixture.port()).await;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let base = format!("http://127.0.0.1:{}", fixture.port());
+        let (status, body) = get_json(&format!("{base}/api/faults")).await;
+        assert_eq!(status, 200, "{kind} router serves /api/faults");
+        assert_eq!(body["entries"].as_array().expect("entries array").len(), 0);
+        assert_eq!(body["total_in_log"].as_u64().expect("total_in_log"), 0);
+
+        let (status, body) = get_json(&format!("{base}/api/faults/summary")).await;
+        assert_eq!(status, 200, "{kind} router serves /api/faults/summary");
+        assert_eq!(body["total"].as_u64().expect("total"), 0);
+        assert_eq!(
+            body["by_category"]
+                .as_array()
+                .expect("by_category array")
+                .len(),
+            0
+        );
+        // Severity is a closed vocabulary — always all three cards.
+        assert_eq!(
+            body["by_severity"]
+                .as_array()
+                .expect("by_severity array")
+                .len(),
+            3
+        );
+
+        let (status, body) = get_json(&format!("{base}/api/faults/by-binary")).await;
+        assert_eq!(status, 200, "{kind} router serves /api/faults/by-binary");
+        assert_eq!(
+            body["binaries"].as_array().expect("binaries array").len(),
+            0
+        );
+
+        let (status, body) = get_json(&format!("{base}/api/faults/trend")).await;
+        assert_eq!(status, 200, "{kind} router serves /api/faults/trend");
+        assert_eq!(body["days"].as_array().expect("days array").len(), 0);
+    }
+}
+
+/// Issue #125 exact-JSON contract: against a deterministic fixture log,
+/// each endpoint answers with exactly the counts, breakdowns, and trend
+/// buckets the fixture implies — fields verbatim, ordering as documented.
+#[tokio::test]
+async fn test_faults_api_exact_json_from_fixture_log() {
+    let fixture = TestFixture::new();
+    write_fault_log_fixture(&fixture.repo_path(), &sample_fault_entries());
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+
+    // The fault list: every entry verbatim, oldest first, with the full
+    // attempt identity triple and the attached recovery guidance.
+    let (status, body) = get_json(&format!("{base}/api/faults")).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["total_in_log"].as_u64().expect("total_in_log"), 6);
+    assert_eq!(
+        body["entries"],
+        serde_json::Value::Array(sample_fault_entries()),
+        "the whole list is served verbatim, oldest first, with the full identity triple"
+    );
+
+    // Summary cards: exact counts by category (highest first, ties
+    // alphabetical) and by severity (fixed warning → error → critical).
+    let (status, body) = get_json(&format!("{base}/api/faults/summary")).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["total"].as_u64().expect("total"), 6);
+    assert_eq!(
+        body["by_category"],
+        serde_json::json!([
+            {"name": "hallucination", "count": 2},
+            {"name": "context_window_exceeded", "count": 1},
+            {"name": "infinite_loop", "count": 1},
+            {"name": "resource_exhaustion", "count": 1},
+            {"name": "slow_response", "count": 1},
+        ])
+    );
+    assert_eq!(
+        body["by_severity"],
+        serde_json::json!([
+            {"name": "warning", "count": 2},
+            {"name": "error", "count": 3},
+            {"name": "critical", "count": 1},
+        ])
+    );
+
+    // Per-binary bars: exact counts, highest first, ties alphabetical.
+    let (status, body) = get_json(&format!("{base}/api/faults/by-binary")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["binaries"],
+        serde_json::json!([
+            {"binary": "d3d9.dll", "count": 3},
+            {"binary": "game_logic.dll", "count": 3},
+        ])
+    );
+
+    // Trend: contiguous UTC day buckets from the first to the last fault
+    // day — gap days 10-02 and 10-03 carry honest zeros — plus the 3-day
+    // trailing moving average clipped to the bucketed range.
+    let (status, body) = get_json(&format!("{base}/api/faults/trend")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["days"],
+        serde_json::json!([
+            {"date": "2026-10-01", "count": 3, "moving_average": 3.0},
+            {"date": "2026-10-02", "count": 0, "moving_average": 1.5},
+            {"date": "2026-10-03", "count": 0, "moving_average": 1.0},
+            {"date": "2026-10-04", "count": 3, "moving_average": 1.0},
+        ]),
+        "per-day buckets and the 3-day moving average match the fixture exactly"
+    );
+}
+
+/// Issue #125 filter contract: category, binary, and the inclusive
+/// `from`/`to` UTC date range narrow every endpoint — the cards, bars,
+/// trend, and table always describe the same filtered set — while
+/// `total_in_log` keeps reporting the unfiltered log size.
+#[tokio::test]
+async fn test_faults_api_filters_narrow_every_endpoint() {
+    let fixture = TestFixture::new();
+    write_fault_log_fixture(&fixture.repo_path(), &sample_fault_entries());
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+
+    // Category filter: only the two hallucination faults survive.
+    let (status, body) = get_json(&format!("{base}/api/faults?category=hallucination")).await;
+    assert_eq!(status, 200);
+    let entries = body["entries"].as_array().expect("entries array");
+    assert_eq!(
+        entries.len(),
+        2,
+        "category filter leaves the two hallucinations"
+    );
+    assert!(
+        entries
+            .iter()
+            .all(|e| e["category"] == "hallucination" && e["severity"] == "error")
+    );
+    assert_eq!(
+        body["total_in_log"].as_u64().expect("total_in_log"),
+        6,
+        "the log's own size survives filtering"
+    );
+    let (status, body) =
+        get_json(&format!("{base}/api/faults/summary?category=hallucination")).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["total"].as_u64().expect("total"), 2);
+    assert_eq!(
+        body["by_category"],
+        serde_json::json!([{"name": "hallucination", "count": 2}])
+    );
+    let (status, body) = get_json(&format!("{base}/api/faults/trend?category=hallucination")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["days"],
+        serde_json::json!([
+            {"date": "2026-10-01", "count": 1, "moving_average": 1.0},
+            {"date": "2026-10-02", "count": 0, "moving_average": 0.5},
+            {"date": "2026-10-03", "count": 0, "moving_average": 0.3333333333333333},
+            {"date": "2026-10-04", "count": 1, "moving_average": 0.3333333333333333},
+        ]),
+        "the trend buckets the filtered set the same way"
+    );
+
+    // Binary filter: only the d3d9.dll faults.
+    let (status, body) = get_json(&format!("{base}/api/faults?binary=d3d9.dll")).await;
+    assert_eq!(status, 200);
+    let entries = body["entries"].as_array().expect("entries array");
+    assert_eq!(entries.len(), 3);
+    assert!(
+        entries
+            .iter()
+            .all(|e| e["binary"] == "d3d9.dll" && e["function"] == "UpdateScene")
+    );
+    let (status, body) = get_json(&format!("{base}/api/faults/by-binary?binary=d3d9.dll")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["binaries"],
+        serde_json::json!([{"binary": "d3d9.dll", "count": 3}])
+    );
+    let (status, body) = get_json(&format!("{base}/api/faults?binary=D3D9.DLL")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["entries"].as_array().expect("entries array").len(),
+        3,
+        "the binary filter matches case-insensitively, like every other binary comparison"
+    );
+
+    // Date range: inclusive on both ends, compared on UTC days. The gap
+    // days alone match nothing — the trend then honestly answers empty.
+    let (status, body) =
+        get_json(&format!("{base}/api/faults?from=2026-10-02&to=2026-10-03")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["entries"].as_array().expect("entries array").len(),
+        0,
+        "the gap days hold no faults"
+    );
+    let (status, body) = get_json(&format!(
+        "{base}/api/faults/trend?from=2026-10-02&to=2026-10-03"
+    ))
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["days"].as_array().expect("days array").len(),
+        0,
+        "no matching faults means no fabricated zero run"
+    );
+
+    // `from` alone keeps everything from that day on.
+    let (status, body) = get_json(&format!("{base}/api/faults?from=2026-10-04")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["entries"].as_array().expect("entries array").len(),
+        3,
+        "the inclusive from bound keeps the 10-04 faults"
+    );
+}
+
+/// Issue #125 filter honesty: a malformed filter value is refused with 400
+/// naming the accepted shape — an operator who typed a filter is never
+/// silently shown unfiltered data.
+#[tokio::test]
+async fn test_faults_api_bad_filter_answers_400() {
+    let fixture = TestFixture::new();
+    write_fault_log_fixture(&fixture.repo_path(), &sample_fault_entries());
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+
+    let (status, body) = get_json(&format!("{base}/api/faults?category=nonsense")).await;
+    assert_eq!(status, 400, "an unknown category is refused, not ignored");
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("nonsense") && message.contains("hallucination"),
+        "the 400 names the bad value and the vocabulary, got: {message}"
+    );
+
+    let (status, _) = get_json(&format!("{base}/api/faults/summary?from=not-a-date")).await;
+    assert_eq!(status, 400, "a malformed from date is refused");
+
+    let (status, _) = get_json(&format!("{base}/api/faults/trend?to=2026-13-01")).await;
+    assert_eq!(status, 400, "an out-of-range to date is refused");
+}
+
+/// Issue #125 honest degradation: a corrupt fault log loads as empty — the
+/// analytics endpoints answer 200 with empty payloads, and the view's
+/// empty state (driven by `total_in_log` and `total`) never renders a
+/// wall of zeros for a log it cannot read.
+#[tokio::test]
+async fn test_faults_api_corrupt_log_honest_empty() {
+    let fixture = TestFixture::new();
+    let dir = fixture.repo_path().join("re").join("analysis");
+    std::fs::create_dir_all(&dir).expect("analysis dir exists");
+    std::fs::write(dir.join("fault_log.json"), "{ not json").expect("corrupt log written");
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+
+    let (status, body) = get_json(&format!("{base}/api/faults")).await;
+    assert_eq!(status, 200, "a corrupt log degrades, never errors");
+    assert_eq!(body["entries"].as_array().expect("entries array").len(), 0);
+    assert_eq!(body["total_in_log"].as_u64().expect("total_in_log"), 0);
+
+    let (status, body) = get_json(&format!("{base}/api/faults/summary")).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["total"].as_u64().expect("total"), 0);
+    assert_eq!(
+        body["by_category"].as_array().expect("by_category").len(),
+        0
+    );
+
+    let (status, body) = get_json(&format!("{base}/api/faults/trend")).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["days"].as_array().expect("days array").len(), 0);
+}
+
+// ── Headless browser test: Faults view (issue #125) ────────────────────
+
+/// The Faults tab renders the fixture log honestly: summary cards,
+/// per-binary bars, a trend line, the table — and the category filter
+/// narrows everything. The CSV builder (exposed as
+/// `window.calxglossFaultsCsv`) is pinned against the same fixture.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_faults_view_renders_filters_and_exports() {
+    let fixture = TestFixture::new();
+    write_fault_log_fixture(&fixture.repo_path(), &sample_fault_entries());
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_count = |expr: &str| -> i64 {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_i64())
+            .unwrap_or(-1)
+    };
+    let eval_text = |expr: &str| -> String {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default()
+    };
+
+    // Switch to the Faults tab.
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"faults\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click faults tab");
+
+    // The fixture log renders: 6 rows in the table.
+    let mut loaded = false;
+    for _ in 0..25 {
+        if eval_count("document.querySelectorAll('#faults-table-body tr').length") == 6 {
+            loaded = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(loaded, "faults view should render the 6 fixture entries");
+
+    // Summary cards, per-binary bars, and the trend line all render.
+    assert_eq!(
+        eval_count("document.querySelectorAll('#faults-summary-cards .status-card').length"),
+        9,
+        "fixture log should render total + 5 category + 3 severity cards"
+    );
+    assert_eq!(
+        eval_count("document.querySelectorAll('#faults-binary-bars .fault-bar-row').length"),
+        2,
+        "fixture log should render 2 per-binary bars"
+    );
+    assert_eq!(
+        eval_count("document.querySelectorAll('#faults-trend polyline').length"),
+        2,
+        "trend should render a count line and a moving-average line"
+    );
+    assert_eq!(
+        eval_count(
+            "document.querySelector('#faults-trend polyline').getAttribute('points').split(' ').length"
+        ),
+        4,
+        "trend should span the 4 day buckets from 10-01 to 10-04"
+    );
+
+    // The CSV builder (the export button's data source) is pinned against
+    // the fixture: header + 6 rows, with the recovery verbatim.
+    let csv = eval_text("window.calxglossFaultsCsv()");
+    let lines: Vec<&str> = csv.lines().collect();
+    assert_eq!(
+        lines.first().copied().unwrap_or(""),
+        "category,severity,binary,function,attempt,strategy,timestamp,recovery",
+        "CSV header should name every fault field"
+    );
+    assert_eq!(lines.len(), 7, "CSV should carry header + 6 fault rows");
+    assert!(
+        lines.iter().any(|l| l.contains("hallucination")
+            && l.contains("1790812920")
+            && l.contains("recovery guidance for DrawSprite")),
+        "a CSV row should carry the attempt identity and recovery verbatim: {lines:?}"
+    );
+
+    // The category filter narrows the table to the two hallucinations.
+    tab.evaluate(
+        r#"(() => {
+            const select = document.getElementById('faults-filter-category');
+            select.value = 'hallucination';
+            select.dispatchEvent(new Event('change'));
+        })()"#,
+        false,
+    )
+    .expect("set category filter");
+    let mut filtered = false;
+    for _ in 0..25 {
+        if eval_count("document.querySelectorAll('#faults-table-body tr').length") == 2 {
+            filtered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        filtered,
+        "the category filter should narrow the table to the hallucinations"
+    );
+}
+
+/// With no fault log at all, the Faults tab says so plainly — no wall of
+/// zeros, no error.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_faults_view_honest_empty_state() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    // Switch to the Faults tab.
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"faults\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click faults tab");
+
+    let mut empty_visible = false;
+    for _ in 0..25 {
+        if tab
+            .evaluate(
+                "document.getElementById('faults-empty').style.display === 'flex'",
+                false,
+            )
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            empty_visible = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        empty_visible,
+        "a missing fault log should show the honest empty state"
+    );
+
+    assert!(
+        tab.evaluate(
+            "document.getElementById('faults-body').style.display === 'none'",
+            false
+        )
+        .ok()
+        .and_then(|r| r.value)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false),
+        "the empty state should hide the body — no wall of zeros"
+    );
+}
+
 /// Integration test verifying that the full router with actions
 /// can serve the dashboard.
 #[tokio::test]
@@ -9633,7 +10243,10 @@ async fn test_headless_reload_keeps_current_tab() {
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    assert!(pipeline_active, "pipeline view should be active after the tab click");
+    assert!(
+        pipeline_active,
+        "pipeline view should be active after the tab click"
+    );
 
     // Reload: the pipeline view must still be the active one.
     tab.reload(false, None).expect("reload");

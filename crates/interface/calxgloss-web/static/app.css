@@ -3142,3 +3142,183 @@ svg {
 .live-confidence {
     color: var(--text-primary);
 }
+
+/* ── Faults analytics view (issue #125, W3.1) ─────────────────────────── */
+
+.status-card.fault-total .status-card-value { color: var(--accent-blue); }
+.status-card.fault-sev-warning .status-card-value { color: var(--accent-yellow); }
+.status-card.fault-sev-error .status-card-value { color: var(--accent-orange); }
+.status-card.fault-sev-critical .status-card-value { color: var(--accent-red); }
+
+.fault-bars {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 14px;
+}
+
+.fault-bar-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.fault-bar-label {
+    flex: 0 0 180px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.fault-bar-track {
+    flex: 1 1 auto;
+    height: 10px;
+    background: var(--bg-tertiary);
+    border-radius: 5px;
+    overflow: hidden;
+}
+
+.fault-bar-fill {
+    height: 100%;
+    background: var(--accent-blue);
+    border-radius: 5px;
+}
+
+.fault-bar-count {
+    flex: 0 0 32px;
+    text-align: right;
+    font-size: 12px;
+    color: var(--text-primary);
+}
+
+.fault-trend {
+    padding: 12px 14px;
+}
+
+.fault-trend svg {
+    width: 100%;
+    height: 160px;
+}
+
+.fault-trend-count {
+    fill: none;
+    stroke: var(--accent-blue);
+    stroke-width: 2;
+}
+
+.fault-trend-ma {
+    fill: none;
+    stroke: var(--accent-purple);
+    stroke-width: 2;
+    stroke-dasharray: 5 4;
+}
+
+.fault-trend-legend {
+    display: flex;
+    gap: 16px;
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.fault-trend-legend-count::before,
+.fault-trend-legend-ma::before {
+    content: "";
+    display: inline-block;
+    width: 14px;
+    height: 2px;
+    margin-right: 6px;
+    vertical-align: middle;
+}
+
+.fault-trend-legend-count::before { background: var(--accent-blue); }
+.fault-trend-legend-ma::before { background: var(--accent-purple); }
+
+.fault-trend-range {
+    margin-left: auto;
+}
+
+#faults-table-wrap {
+    max-height: 60vh;
+    overflow: auto;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+}
+
+.faults-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.faults-table thead th {
+    padding: 10px 14px;
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-subtle);
+    position: sticky;
+    top: 0;
+}
+
+.faults-table tbody tr {
+    border-bottom: 1px solid var(--border-subtle);
+    transition: background var(--transition-fast);
+}
+
+.faults-table tbody tr:hover {
+    background: var(--bg-hover);
+}
+
+.faults-table tbody td {
+    padding: 10px 14px;
+    vertical-align: middle;
+}
+
+.fault-severity {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.fault-severity.warning {
+    background: var(--accent-yellow-dim);
+    color: var(--accent-yellow);
+}
+
+.fault-severity.error {
+    background: var(--accent-red-dim);
+    color: var(--accent-orange);
+}
+
+.fault-severity.critical {
+    background: var(--accent-red-dim);
+    color: var(--accent-red);
+}
+
+.fault-col-binary,
+.fault-col-function {
+    font-family: var(--font-mono, monospace);
+    font-size: 12px;
+}
+
+.fault-col-when {
+    white-space: nowrap;
+    color: var(--text-secondary);
+}
+
+.fault-col-recovery {
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-secondary);
+}

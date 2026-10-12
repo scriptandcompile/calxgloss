@@ -8,6 +8,7 @@ import { loadGcCandidates } from "./gc.js";
 import { startLiveView, stopLiveView } from "./live.js";
 import { loadPipelineProgress } from "./dashboard.js";
 import { loadLlmLogHistory } from "./llm-log.js";
+import { loadFaults } from "./faults.js";
 
 // The tab the operator was last on, persisted so a browser reload lands
 // back where they were instead of always opening on the dashboard.
@@ -59,6 +60,12 @@ export function switchView(viewName) {
     // Load GC candidates when switching to the GC view
     if (viewName === "gc") {
         loadGcCandidates();
+    }
+
+    // Faults analytics (issue #125): reload the filtered set on entry so
+    // the view always reflects the current fault log.
+    if (viewName === "faults") {
+        loadFaults().catch((err) => console.warn("[Faults] load failed:", err));
     }
 
     // Live view: fetch on entry, tick elapsed clocks while visible.
