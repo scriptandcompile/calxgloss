@@ -236,6 +236,35 @@ impl LlmIoLog {
         entries
     }
 
+    /// Delete the persisted log so a reload starts from an empty history —
+    /// the web view's Clear button must clear the file, not just the browser
+    /// buffer. A missing file is not an error: clearing an already-empty log
+    /// is idempotent. Returns how many entries were dropped.
+    ///
+    /// A live run's own [`LlmIoLog`] instance may keep a stale cached count
+    /// after this — harmless, it only makes that writer rotate (trim) a
+    /// little earlier than it strictly needs to.
+    pub fn clear(&self) -> Result<usize, PersistError> {
+        let dropped = read_lines(&self.path).map(|lines| lines.len()).unwrap_or(0);
+        match std::fs::remove_file(&self.path) {
+            Ok(()) => {}
+            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(PersistError::Io {
+                    path: self.path.clone(),
+                    source,
+                });
+            }
+        }
+        self.entries_in_file.store(0, Ordering::Relaxed);
+        debug!(
+            dropped,
+            path = %self.path.display(),
+            "cleared LLM I/O log"
+        );
+        Ok(dropped)
+    }
+
     /// The file's current entry count, counting the file once on first use
     /// so a previous run's entries count toward the cap without paying for
     /// a read on construction.
@@ -439,6 +468,39 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].function, "Fun1");
         assert_eq!(entries[1].function, "Fun2");
+    }
+
+    #[test]
+    fn clearing_the_log_empties_the_file_and_is_idempotent() {
+        let ws = tempfile::tempdir().expect("temp workspace");
+        let log = LlmIoLog::new(ws.path());
+        log.append(&sample_entry(1)).expect("append succeeds");
+        log.append(&sample_entry(2)).expect("append succeeds");
+
+        assert_eq!(log.clear().expect("clear succeeds"), 2);
+        assert!(log.read().is_empty());
+        assert!(!log.path.exists(), "the persisted file is gone");
+
+        // A fresh instance (what the GET handler builds after a reload)
+        // honestly sees nothing.
+        assert!(LlmIoLog::new(ws.path()).read().is_empty());
+        // Clearing an already-empty log is a no-op, not an error.
+        assert_eq!(log.clear().expect("re-clear succeeds"), 0);
+    }
+
+    #[test]
+    fn a_cleared_log_appends_fresh() {
+        let ws = tempfile::tempdir().expect("temp workspace");
+        let log = LlmIoLog::new(ws.path());
+        log.append(&sample_entry(1)).expect("append succeeds");
+        log.clear().expect("clear succeeds");
+
+        // A live run keeps recording after the clear.
+        log.append(&sample_entry(2))
+            .expect("append after clear succeeds");
+        let entries = log.read();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].function, "Fun2");
     }
 
     #[test]

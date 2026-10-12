@@ -916,6 +916,7 @@ fn shared_routes() -> Router<CombinedState> {
         // requests/responses happen, never live pipeline state. A workspace
         // that has never run live honestly answers with an empty payload.
         .route("/api/llm-io", get(handlers::api_get_llm_io_log))
+        .route("/api/llm-io/clear", post(handlers::api_clear_llm_io_log))
         .route("/api/graph", get(handlers::api_get_dependency_graph))
         .route("/api/gc/candidates", get(handlers::api_get_gc_candidates))
         .route("/api/gc/archive", post(handlers::api_archive_gc))

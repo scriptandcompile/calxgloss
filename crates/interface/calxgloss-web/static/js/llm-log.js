@@ -107,9 +107,16 @@ export function addLlmLogEntry(type, binary, func, attempt, strategy, content, t
     renderLlmLog();
 }
 
-/* Clears the view buffer only — the server-side log is append-only and
-   keeps its entries; re-entering the view (or reloading) brings them back. */
-export function clearLlmLog() {
+/* Clears the view buffer AND the server-side log, so a reload (or
+   re-entering the view) does not bring the history back. If the server
+   refuses, the view still clears but the operator is told — the entries
+   would return on the next reload. */
+export async function clearLlmLog() {
+    try {
+        await API.clearLlmIoLog();
+    } catch (err) {
+        showToast(`Failed to clear the server-side LLM I/O log: ${err.message}`, "error");
+    }
     llmLogEntries.length = 0;
     seenKeys.clear();
     refreshFilterOptions();

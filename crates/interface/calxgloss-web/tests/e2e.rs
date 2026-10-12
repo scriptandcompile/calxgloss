@@ -3608,7 +3608,10 @@ async fn test_pipeline_ingestion_lights_up_during_ghidra_preflight() {
     let p = ingestion(&body);
     assert_eq!(p["state"], "in_progress");
     assert_eq!(p["completed"], 0);
-    assert_eq!(p["total"], 1, "the analyzed binary is the honest denominator");
+    assert_eq!(
+        p["total"], 1,
+        "the analyzed binary is the honest denominator"
+    );
     let binaries: Vec<&str> = body["binaries"]
         .as_array()
         .unwrap()
@@ -5045,6 +5048,76 @@ async fn test_llm_io_log_round_trip_from_canned_events() {
     assert_eq!(failure["attempt"], 2);
     assert_eq!(failure["strategy"], "retry");
     assert_eq!(failure["content"], "connection reset");
+}
+
+/// The web view's Clear button must clear the persisted log, not just the
+/// browser buffer: `POST /api/llm-io/clear` empties the file so the next
+/// `GET /api/llm-io` honestly answers empty again instead of restoring the
+/// history on reload.
+#[tokio::test]
+async fn test_llm_io_clear_empties_the_persisted_log() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Seed the persisted log the way a live run would.
+    let log = LlmIoLog::new(fixture.repo_path());
+    log.record(&ProgressEvent::LlmRequest {
+        binary: "game_logic.dll".into(),
+        function: "DrawPrimitive".into(),
+        attempt: 1,
+        strategy: "direct".into(),
+        prompt: "translate DrawPrimitive".into(),
+    });
+    log.record(&ProgressEvent::LlmResponse {
+        binary: "game_logic.dll".into(),
+        function: "DrawPrimitive".into(),
+        attempt: 1,
+        strategy: "direct".into(),
+        content: "fn draw_primitive() {}".into(),
+        tokens_used: Some(4321),
+    });
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/llm-io", fixture.port()))
+        .await
+        .expect("request reaches server");
+    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    assert_eq!(body["entries"].as_array().expect("entries array").len(), 2);
+
+    let resp = reqwest::Client::new()
+        .post(format!(
+            "http://127.0.0.1:{}/api/llm-io/clear",
+            fixture.port()
+        ))
+        .send()
+        .await
+        .expect("clear request reaches server");
+    assert_eq!(resp.status(), 200, "clear succeeds on the shared router");
+    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    assert_eq!(body["dropped"].as_u64().expect("dropped count"), 2);
+
+    // The file is gone, and the reload payload is honestly empty.
+    let log_path = fixture
+        .repo_path()
+        .join("re")
+        .join("analysis")
+        .join("llm_io")
+        .join("log.jsonl");
+    assert!(!log_path.exists(), "the persisted log file is deleted");
+
+    let resp = reqwest::get(format!("http://127.0.0.1:{}/api/llm-io", fixture.port()))
+        .await
+        .expect("request reaches server");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    assert_eq!(
+        body["entries"].as_array().expect("entries array").len(),
+        0,
+        "a reload after clear restores nothing"
+    );
 }
 
 /// Integration test verifying that the full router with actions

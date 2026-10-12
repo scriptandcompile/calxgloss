@@ -1235,6 +1235,15 @@ pub struct LlmIoLogResponse {
     pub entries: Vec<crate::server::llm_io_log::LlmIoEntry>,
 }
 
+/// Response body of `POST /api/llm-io/clear` — confirmation of how many
+/// persisted entries the clear dropped. Idempotent: an already-empty log
+/// answers with zero, never an error.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmIoClearResponse {
+    /// Entries removed from the persisted log.
+    pub dropped: usize,
+}
+
 // ─── Translation scope controls (issue #93, W2.5) ────────────────────
 
 /// Response body of the scope endpoints (`GET /api/scope` and the POST
