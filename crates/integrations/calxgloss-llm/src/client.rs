@@ -332,11 +332,13 @@ impl LlmClient {
     ///
     /// Servers enforce `prompt_tokens + max_tokens ≤ context`, so the output
     /// cap is the window minus a deliberately pessimistic prompt estimate
-    /// (~4 chars/token plus 12.5% headroom). Floored at 256 so a degenerate
-    /// oversized prompt still produces a server-side error naming the real
-    /// numbers instead of a silent zero-token request.
+    /// (~3 chars/token plus 12.5% headroom — disassembly and code tokenize
+    /// denser than prose; the EverQuest run measured ~3.4 chars/token).
+    /// Floored at 256 so a degenerate oversized prompt still produces a
+    /// server-side error naming the real numbers instead of a silent
+    /// zero-token request.
     fn output_budget(&self, messages: &[LlmMessage]) -> usize {
-        const CHARS_PER_TOKEN: usize = 4;
+        const CHARS_PER_TOKEN: usize = 3;
         let prompt_chars: usize = messages.iter().map(|m| m.content().len()).sum();
         let prompt_tokens = prompt_chars * 9 / (CHARS_PER_TOKEN * 8) + 1;
         self.config.context_window.saturating_sub(prompt_tokens).max(256)
@@ -670,6 +672,29 @@ mod tests {
         // A prompt near the window leaves only the floor, never zero.
         let huge = vec![LlmMessage::user(&"x".repeat(172_000 * 4))];
         assert_eq!(client.output_budget(&huge), 256);
+    }
+
+    #[test]
+    fn test_output_budget_covers_dense_code_prompts() {
+        // Regression: the EverQuest run's T2 prompt (~12k chars) tokenized
+        // at ~3.4 chars/token — denser than the old 4 chars/token estimate —
+        // so prompt (3,561) + cap (168,632) overflowed the 172,000 window.
+        let client = LlmClient::new(
+            LlmConfig::new("http://localhost:11434/v1", "qwen3")
+                .unwrap()
+                .with_context_window(172_000),
+        )
+        .unwrap();
+
+        let incident = vec![LlmMessage::user(&"0x1800  mov eax, [rbx+0x10]\n".repeat(428))];
+        let chars: usize = incident.iter().map(|m| m.content().len()).sum();
+        assert!(chars > 11_900, "fixture matches the incident prompt size");
+
+        let budget = client.output_budget(&incident);
+        assert!(
+            3_561 + budget <= 172_000,
+            "the incident prompt's real token count must fit beside the cap"
+        );
     }
 
     #[test]
