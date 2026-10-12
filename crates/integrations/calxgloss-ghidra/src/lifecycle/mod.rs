@@ -1,10 +1,14 @@
-//! Read-only discovery of the whole Ghidra stack: install, extension, server.
+//! Read-only discovery of the whole Ghidra stack — install, extension,
+//! server — plus the wrong-program guard a preflight runs before any scan.
 //!
 //! This is the checking half of the lifecycle design (`docs/ghidra_integration.md`
 //! §3.2) — everything `calxgloss doctor` reports in one pass, and the same
 //! checks a later preflight will run before spawning anything. Nothing here
-//! spawns, installs, or modifies anything: discovery reads the filesystem, and
-//! the server check is one `check_connection` probe.
+//! spawns, installs, or modifies the filesystem or any process: discovery
+//! reads the filesystem, and the server check is one `check_connection`
+//! probe. The one exception is [`program`]'s guard, which may switch the
+//! server's *current program* — the incident fix (risk 7) — but never
+//! opens, closes, or kills anything.
 //!
 //! Version coupling is the load-bearing constraint throughout (ADR-0001): the
 //! extension jar is compiled against exactly one Ghidra build, so the install
@@ -12,9 +16,11 @@
 
 mod extension;
 mod install;
+mod program;
 
 pub use extension::{ExtensionDiscovery, ExtensionVerdict, GhidraExtension};
 pub use install::{GhidraInstall, InstallDiscovery, InstallSource};
+pub use program::{ProgramMatch, ensure_current_program};
 
 use tracing::warn;
 

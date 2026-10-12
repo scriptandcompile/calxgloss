@@ -105,6 +105,22 @@ pub enum GhidraError {
             the matching GhidraMCP release into this Ghidra (ADR-0001)"
     )]
     VersionMismatch { found: String, required: String },
+
+    /// The server is up, but it is not serving the program the run targets.
+    ///
+    /// The 2026-10-08 incident: with several CodeBrowser windows open, the
+    /// bridge answered listings and searches from *different* programs, and a
+    /// scan nearly persisted a phantom-clean record. The wrong-program guard
+    /// fails before any scan runs, naming the programs that *are* open so the
+    /// operator can fix the right window or point the URL at the right
+    /// instance.
+    #[error(
+        "The Ghidra server is not serving '{target}'.\nPrograms open in this instance: {}\nOpen \
+            '{target}' in this Ghidra instance, or point the configured URL at the instance \
+            that has it",
+        if open.is_empty() { "none".to_string() } else { open.join(", ") }
+    )]
+    WrongProgram { target: String, open: Vec<String> },
 }
 
 // ============================================================

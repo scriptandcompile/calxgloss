@@ -801,3 +801,129 @@ async fn the_stack_check_skips_the_extension_when_no_install_validates() {
     assert_eq!(report.extension, None);
     assert!(!report.all_ok());
 }
+
+// ============================================================
+// The wrong-program guard (issue #113, incident 2026-10-08)
+// ============================================================
+
+use calxgloss_ghidra::lifecycle::{ProgramMatch, ensure_current_program};
+
+const OPEN_PROGRAMS_TARGET_CURRENT: &str = "{\"programs\":[{\"name\":\"eqmain.dll\",\"path\":\"/eqmain.dll\",\"is_current\":true,\"function_count\":21847}],\"count\":1,\"current_program\":\"eqmain.dll\"}";
+const OPEN_PROGRAMS_TARGET_STALE: &str = "{\"programs\":[{\"name\":\"eqmain.dll\",\"path\":\"/eqmain.dll\",\"is_current\":false,\"function_count\":21847},{\"name\":\"shell32.dll\",\"path\":\"/shell32.dll\",\"is_current\":true,\"function_count\":1234}],\"count\":2,\"current_program\":\"shell32.dll\"}";
+const OPEN_PROGRAMS_ONLY_OTHER: &str = "{\"programs\":[{\"name\":\"shell32.dll\",\"path\":\"/shell32.dll\",\"is_current\":true,\"function_count\":1234}],\"count\":1,\"current_program\":\"shell32.dll\"}";
+const OPEN_PROGRAMS_NONE: &str = "{\"programs\":[],\"count\":0,\"current_program\":null}";
+const SWITCHED_TO_EQMAIN: &str = "{\"switched_to\":\"eqmain.dll\"}";
+
+#[tokio::test]
+async fn the_guard_passes_when_the_target_is_already_current() {
+    let fake = ProbeFake::serving(&[("list_open_programs", OPEN_PROGRAMS_TARGET_CURRENT)]).await;
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+
+    let matched = ensure_current_program(&client, "eqmain.dll")
+        .await
+        .expect("the target is current");
+    assert_eq!(matched, ProgramMatch::AlreadyCurrent);
+    assert_eq!(
+        fake.count("switch_program"),
+        0,
+        "a current target needs no switch"
+    );
+}
+
+#[tokio::test]
+async fn the_guard_switches_to_an_open_program_that_is_not_current() {
+    // The incident's shape: several programs open, the scan target among
+    // them but not the one answering queries. The guard switches and the
+    // run proceeds against it.
+    let fake = ProbeFake::serving(&[
+        ("list_open_programs", OPEN_PROGRAMS_TARGET_STALE),
+        ("switch_program", SWITCHED_TO_EQMAIN),
+    ])
+    .await;
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+
+    let matched = ensure_current_program(&client, "eqmain.dll")
+        .await
+        .expect("the target is open and gets switched to");
+    assert_eq!(matched, ProgramMatch::Switched);
+    assert_eq!(
+        fake.count("switch_program"),
+        1,
+        "the stale current program triggers exactly one switch"
+    );
+}
+
+#[tokio::test]
+async fn the_guard_fails_fast_naming_the_programs_that_are_open() {
+    // Target not open at all: fail before any scan endpoint is touched,
+    // and name the programs that *are* open so the operator can fix the
+    // right window.
+    let fake = ProbeFake::serving(&[("list_open_programs", OPEN_PROGRAMS_ONLY_OTHER)]).await;
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+
+    let err = ensure_current_program(&client, "eqmain.dll")
+        .await
+        .expect_err("a target that is not open must fail the run");
+    assert!(
+        matches!(err, GhidraError::WrongProgram { .. }),
+        "expected WrongProgram, got {err:?}"
+    );
+    let message = err.to_string();
+    assert!(
+        message.contains("eqmain.dll"),
+        "the message names the target: {message}"
+    );
+    assert!(
+        message.contains("shell32.dll"),
+        "the message lists the open programs: {message}"
+    );
+    assert_eq!(
+        fake.count("switch_program"),
+        0,
+        "a program that is not open cannot be switched to"
+    );
+    assert_eq!(
+        fake.count("list_functions"),
+        0,
+        "the guard fails before any scan endpoint is touched"
+    );
+}
+
+#[tokio::test]
+async fn the_guard_says_none_when_no_program_is_open() {
+    let fake = ProbeFake::serving(&[("list_open_programs", OPEN_PROGRAMS_NONE)]).await;
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+
+    let err = ensure_current_program(&client, "eqmain.dll")
+        .await
+        .expect_err("nothing open means nothing to scan");
+    let message = err.to_string();
+    assert!(
+        message.contains("none"),
+        "the message says honestly that nothing is open: {message}"
+    );
+}
+
+#[tokio::test]
+async fn the_guard_surfaces_a_switch_the_server_refuses() {
+    // The listing says the target is open, but the switch itself fails —
+    // the server's own reason must reach the caller, not a false success.
+    // The 6.x bridge reports switch failures as a JSON error body.
+    let fake = ProbeFake::serving(&[
+        ("list_open_programs", OPEN_PROGRAMS_TARGET_STALE),
+        (
+            "switch_program",
+            "{\"error\":\"Program not found: eqmain.dll\"}",
+        ),
+    ])
+    .await;
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+
+    let err = ensure_current_program(&client, "eqmain.dll")
+        .await
+        .expect_err("a refused switch fails the guard");
+    assert!(
+        matches!(err, GhidraError::Reported { .. }),
+        "the server's reason propagates: {err:?}"
+    );
+}

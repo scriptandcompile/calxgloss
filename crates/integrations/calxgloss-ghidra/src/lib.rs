@@ -31,7 +31,9 @@
 //!
 //! The [`lifecycle`] module holds the read-only stack checks — Ghidra install
 //! discovery, the per-version GhidraMCP extension pairing, and the server
-//! identity probe — that `calxgloss doctor` reports and later preflights run.
+//! identity probe — that `calxgloss doctor` reports and later preflights run,
+//! plus the wrong-program guard that verifies the server is serving the scan
+//! target before any scan runs (the 2026-10-08 incident fix).
 
 mod cache;
 mod client;
