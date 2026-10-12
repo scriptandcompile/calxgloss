@@ -378,6 +378,20 @@ pub async fn run_translation_for_dll(
 /// Handle the `auto` subcommand: detects project state and runs classification
 /// then batch translation.
 ///
+/// Ensure the workspace is a git repository before the run's slow steps
+/// begin (issue #123). A clean start otherwise leaves the dashboard — the
+/// only visible surface during the Ghidra preflight — reporting "Not a Git
+/// repository" until translation finally reaches its own git setup.
+/// Idempotent: `Repository::init` on an existing repo keeps its history.
+fn ensure_workspace_repo(workspace: &Path, skip_git: bool) -> Result<()> {
+    if skip_git {
+        return Ok(());
+    }
+    GitManager::init_repo(workspace, Some(calxgloss_git::InitConfig::default()))
+        .context("Failed to initialize git repository")?;
+    Ok(())
+}
+
 /// `run` carries the W2.3 start/restart selectors: `target` restricts the run
 /// to one binary, `phase=Classify` forces re-classification, and `scope`
 /// restricts which functions re-enter the translation queue (see
@@ -467,11 +481,21 @@ pub async fn handle_auto(
     // binaries; the default phase leaves the detection logic untouched.
     let force_classify = run.is_some_and(|r| r.phase == calxgloss::RunPhase::Classify);
 
+    // The workspace record tree comes first (issue #123): `.git` exists
+    // before the slow Ghidra preflight, so a clean start never leaves the
+    // dashboard warning about an uninitialized workspace.
+    ensure_workspace_repo(&workspace, skip_git)?;
+
     // The session preflight (G1-T4) runs once for the whole auto run: one
     // server — attached or spawned — serves every binary's pass, and the
     // `events` handle gets a `GhidraServerStarted` if one had to be started.
     // (The classify step opens its own preflight, which simply attaches to
     // the server already running here.)
+    println!(
+        "  {} Connecting to GhidraMCP at {}…",
+        cyan_bold("→"),
+        bold(&settings.ghidra_url.value)
+    );
     let session = open_ghidra_session(
         settings,
         &workspace,
@@ -768,6 +792,51 @@ mod tests {
 
     fn temp_workspace() -> tempfile::TempDir {
         tempfile::tempdir().expect("temp workspace")
+    }
+
+    #[test]
+    fn ensure_workspace_repo_creates_git_on_a_clean_start() {
+        let workspace = temp_workspace();
+        ensure_workspace_repo(workspace.path(), false).expect("init workspace repo");
+        assert!(workspace.path().join(".git").exists());
+        // The repo is usable: opening it back proves the initial commit landed.
+        calxgloss_git::GitManager::open(workspace.path()).expect("open initialized repo");
+    }
+
+    #[test]
+    fn ensure_workspace_repo_is_idempotent_and_keeps_history() {
+        let workspace = temp_workspace();
+        ensure_workspace_repo(workspace.path(), false).expect("first init");
+        // A commit made after the first init (e.g. a classification record)
+        // must still be reachable on main after a second ensure.
+        {
+            let repo = git2::Repository::open(workspace.path()).expect("open");
+            let sig = git2::Signature::now("t", "t@t").expect("sig");
+            let mut idx = repo.index().expect("index");
+            std::fs::write(workspace.path().join("record.json"), "{}").expect("write");
+            idx.add_path(Path::new("record.json")).expect("add");
+            idx.write().expect("write index");
+            let tree_oid = idx.write_tree().expect("tree oid");
+            let tree = repo.find_tree(tree_oid).expect("tree");
+            let parent = repo.head().expect("head").peel_to_commit().expect("parent");
+            repo.commit(Some("refs/heads/main"), &sig, &sig, "classification record", &tree, &[&parent])
+                .expect("commit");
+        }
+        ensure_workspace_repo(workspace.path(), false).expect("second init");
+        let repo = git2::Repository::open(workspace.path()).expect("open");
+        let main = repo.head().expect("head").peel_to_commit().expect("main tip");
+        assert!(
+            format!("{:?}", main.summary()).contains("classification"),
+            "re-ensure must not reset main past the intervening commit: tip is {:?}",
+            main.summary()
+        );
+    }
+
+    #[test]
+    fn ensure_workspace_repo_respects_skip_git() {
+        let workspace = temp_workspace();
+        ensure_workspace_repo(workspace.path(), true).expect("skip is not an error");
+        assert!(!workspace.path().join(".git").exists());
     }
 
     #[test]
