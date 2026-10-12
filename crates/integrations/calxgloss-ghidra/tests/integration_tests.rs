@@ -232,6 +232,9 @@ async fn fake_ghidra() -> String {
                 } else if path.starts_with("/decompile_function") {
                     "undefined FUN_18003e750(void)\n{\n  void *pv = malloc(0x10);\n  free(pv);\n}\n"
                         .to_string()
+                } else if path.starts_with("/disassemble_function") {
+                    // A thunk owns no instructions: the bridge answers 200 with an empty body.
+                    String::new()
                 } else if path.starts_with("/list_strings") {
                     "180128d18: \"Journal.txt\"".to_string()
                 } else if path.starts_with("/get_xrefs_to") {
@@ -275,6 +278,22 @@ async fn fake_ghidra() -> String {
 async fn ghidra_client_implements_the_trait_against_a_fake_server() {
     let client = GhidraClient::new(&fake_ghidra().await).expect("fake ghidra client");
     drive_all(&client).await;
+}
+
+/// A thunk or external function owns no instructions, and the bridge
+/// answers with a 200 and an empty body — the client reads that as "no
+/// disassembly", the same shape the xref endpoints use for "no results",
+/// rather than surfacing it as a server failure.
+#[tokio::test]
+async fn an_empty_disassembly_response_reads_as_no_disassembly() {
+    let client = GhidraClient::new(&fake_ghidra().await).expect("fake ghidra client");
+    assert_eq!(
+        client
+            .disassemble_function(0x18003e750)
+            .await
+            .expect("an empty body is a valid answer"),
+        ""
+    );
 }
 
 /// The trait's futures are `Send`, so a scan driven through it can move

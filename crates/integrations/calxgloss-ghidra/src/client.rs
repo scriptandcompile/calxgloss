@@ -774,10 +774,26 @@ impl GhidraClient {
     }
 
     /// The disassembly listing for the function at `address`.
+    ///
+    /// The server answers with a 200 and an empty body for functions that
+    /// own no instructions — thunks and external (imported) functions have
+    /// empty bodies, though the decompiler still follows them — which is a
+    /// valid "no disassembly" answer, the same shape the cross-reference
+    /// endpoints use for "no references", not a server failure.
     #[instrument(skip(self), fields(address = format_args!("{address:#x}")))]
     pub async fn disassemble_function(&self, address: u64) -> Result<String> {
-        self.get_text("disassemble_function", &[("address", Self::addr(address))])
+        match self
+            .get_text("disassemble_function", &[("address", Self::addr(address))])
             .await
+        {
+            Ok(body) => Ok(body),
+            Err(GhidraError::Reported { message: ref m, .. })
+                if m == "the server returned an empty response" =>
+            {
+                Ok(String::new())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Entry point and body range of the function at `address`.
