@@ -248,13 +248,23 @@ impl RootDetector {
     /// Iterates through all registered patterns and returns the action for the
     /// first matching pattern. If no pattern matches, returns `RootAction::Translate`.
     pub fn classify(&self, name: &str) -> RootAction {
-        for pattern in &self.patterns {
-            if pattern.name_regex.is_match(name) {
+        match self.matched_pattern(name) {
+            Some(pattern) => {
                 debug!(func_name = name, pattern = %pattern.description, "Root pattern matched");
-                return pattern.action;
+                pattern.action
             }
+            None => RootAction::Translate,
         }
-        RootAction::Translate
+    }
+
+    /// The first registered pattern whose regex matches `name`, if any.
+    ///
+    /// Where [`classify`](Self::classify) reports the action, this reports
+    /// the *rule* — so a caller can name why a function was classified
+    /// (the reason a translate request was refused, for instance) instead
+    /// of only what to do about it.
+    pub fn matched_pattern(&self, name: &str) -> Option<&RootPattern> {
+        self.patterns.iter().find(|p| p.name_regex.is_match(name))
     }
 
     /// Returns `true` if the given function is classified as a root function.
@@ -515,7 +525,10 @@ mod tests {
         assert!(!detector.is_root(&make_func("initDelayLoad")));
         assert!(!detector.is_root(&make_func("my_imp_helper")));
         // And the action is a true skip, not a stub or a translation.
-        assert_eq!(detector.classify("DelayLoad_ShellExecuteW"), RootAction::Skip);
+        assert_eq!(
+            detector.classify("DelayLoad_ShellExecuteW"),
+            RootAction::Skip
+        );
     }
 
     #[test]
@@ -558,6 +571,23 @@ mod tests {
         assert_eq!(detector.classify("__vbaInitialize"), RootAction::Skip);
         assert_eq!(detector.classify("__managed_main"), RootAction::Skip);
         assert_eq!(detector.classify("app_init"), RootAction::Translate);
+    }
+
+    /// `matched_pattern` names the rule behind the classification, so a
+    /// refusal can explain itself; unmatched names report no pattern.
+    #[test]
+    fn test_matched_pattern_names_the_matching_rule() {
+        let detector = RootDetector::new();
+        let thunk = detector
+            .matched_pattern("DelayLoad_cef_string_utf16_clear")
+            .expect("delay-load thunk should match a root pattern");
+        assert_eq!(thunk.action, RootAction::Skip);
+        assert!(
+            thunk.description.contains("import thunk"),
+            "description should name the category, got: {}",
+            thunk.description
+        );
+        assert!(detector.matched_pattern("DrawSprite").is_none());
     }
 
     #[test]
