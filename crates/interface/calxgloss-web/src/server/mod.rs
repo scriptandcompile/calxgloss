@@ -399,6 +399,20 @@ pub struct ProgressState {
     /// `BatchProgress`, cleared when a new `BatchStarted` replaces the
     /// pass or that DLL's `BatchSummary` lands.
     activity: Arc<RwLock<Option<(BinaryIdentity, BinaryActivity)>>>,
+    /// Startup ingestion state (issue #124) — `started` is set by the first
+    /// Ghidra preflight event, `analyzed` names the binaries whose Ghidra
+    /// auto-analysis finished during bootstrap. The pipeline view lights
+    /// `project_ingestion` from this while nothing else has named a binary.
+    ingestion: Arc<RwLock<IngestionState>>,
+}
+
+/// Startup ingestion state folded from the Ghidra preflight events
+/// (issue #124): whether the preflight has begun, and which binaries'
+/// auto-analysis has landed.
+#[derive(Debug, Default, Clone)]
+pub struct IngestionState {
+    pub started: bool,
+    pub analyzed: Vec<BinaryIdentity>,
 }
 
 #[derive(Debug, Clone)]
@@ -453,6 +467,7 @@ impl ProgressState {
             processing: Arc::new(RwLock::new(None)),
             queue: Arc::new(RwLock::new(Vec::new())),
             activity: Arc::new(RwLock::new(None)),
+            ingestion: Arc::new(RwLock::new(IngestionState::default())),
         }
     }
 
@@ -570,16 +585,28 @@ impl ProgressState {
             }
             ProgressEvent::GhidraServerStarted { .. } => {
                 // Preflight spawned a headless Ghidra server (issue #114).
-                // The event rides the broadcast so the activity feed shows
-                // it; nothing about it folds into the per-unit or per-binary
-                // view — the server belongs to the run, not to a binary.
+                // The event rides the broadcast for the activity feed, and
+                // it starts the ingestion phase (issue #124) — the server
+                // belongs to the run, not to a binary.
+                self.ingestion.write().await.started = true;
             }
-            ProgressEvent::GhidraProjectCreated { .. }
-            | ProgressEvent::GhidraProgramAnalyzed { .. } => {
-                // Startup project bootstrap (issue #116): the project and
-                // its analyses belong to the run, not to a translation
-                // unit, so they ride the broadcast for the activity feed
-                // without folding into the per-unit view.
+            ProgressEvent::GhidraProjectCreated { .. } => {
+                // Startup project bootstrap (issue #116): the project
+                // belongs to the run; it also says ingestion is underway
+                // (issue #124).
+                self.ingestion.write().await.started = true;
+            }
+            ProgressEvent::GhidraProgramAnalyzed { dll, .. } => {
+                // One binary's auto-analysis landed (issue #116) — it joins
+                // the analyzed set so the pipeline view can count ingestion
+                // progress and name the binary before any unit event does
+                // (issue #124).
+                let mut ingestion = self.ingestion.write().await;
+                ingestion.started = true;
+                let binary = BinaryIdentity::new(dll);
+                if !ingestion.analyzed.contains(&binary) {
+                    ingestion.analyzed.push(binary);
+                }
             }
         }
     }
@@ -784,6 +811,12 @@ impl ProgressState {
     /// while no pass is beating.
     pub async fn activity(&self) -> Option<(BinaryIdentity, BinaryActivity)> {
         self.activity.read().await.clone()
+    }
+
+    /// Startup ingestion state (issue #124) — whether the Ghidra preflight
+    /// has begun, and which binaries' auto-analysis has landed.
+    pub async fn ingestion(&self) -> IngestionState {
+        self.ingestion.read().await.clone()
     }
 
     /// Returns the number of currently in-flight units.

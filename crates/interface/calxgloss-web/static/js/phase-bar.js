@@ -45,8 +45,12 @@ export function renderPipelinePhaseBar(phases) {
         const state = p.state || "not_started";
         const label = PHASE_LABELS[phase] || phase;
         const stateLabel = STATE_LABELS[state] || state;
-        // No-data-source phases never show fabricated counts.
-        const count = state === "no_data_source" ? "—" : `${p.completed ?? 0}/${p.total ?? 0}`;
+        // No-data-source phases never show fabricated counts — and neither
+        // does an in-progress phase the run cannot count yet (issue #124).
+        const count =
+            state === "no_data_source" || (p.completed == null && p.total == null)
+                ? "—"
+                : `${p.completed ?? 0}/${p.total ?? 0}`;
 
         return `
             <div class="phase-segment state-${escapeHtml(state)}" data-phase="${escapeHtml(phase)}" title="${escapeHtml(label)}: ${escapeHtml(stateLabel)}">

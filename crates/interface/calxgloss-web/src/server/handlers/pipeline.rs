@@ -144,6 +144,7 @@ pub async fn api_get_pipeline(
     let processing = progress.read().await.processing_binary().await;
     let activity = progress.read().await.activity().await;
     let queue = progress.read().await.queue().await;
+    let ingestion = progress.read().await.ingestion().await;
 
     // Convert to owned HashMaps for O(1) lookups by binary identity
     let mut classifications: HashMap<BinaryIdentity, ClassificationInfo> = classifications_raw
@@ -194,6 +195,10 @@ pub async fn api_get_pipeline(
     // The run's queue plan names every binary it will process — the
     // table shows the whole plan, not just what has started.
     dll_names.extend(queue.iter().map(|q| BinaryIdentity::new(q.as_str())));
+    // A binary whose Ghidra auto-analysis landed is being ingested —
+    // the table shows it before any unit, classification, or plan event
+    // names it (issue #124).
+    dll_names.extend(ingestion.analyzed.iter().cloned());
 
     let total_dlls = dll_names.len();
     let dll_names_vec: Vec<BinaryIdentity> = {
@@ -265,6 +270,8 @@ pub async fn api_get_pipeline(
         &classifications,
         &batch_summaries,
         &entries_snapshot,
+        ingestion.started,
+        &ingestion.analyzed,
     );
 
     let time_estimate = compute_time_estimate(combined.server.repo_path(), &binaries);
@@ -448,11 +455,17 @@ fn dll_done_count(
 /// progress data. A binary counts as having completed a unit-level phase
 /// when at least one of its functions reached that phase (or its batch
 /// summary landed) — the counts are per binary, matching `total_dlls`.
+///
+/// `ingestion_started` and `analyzed` come from the Ghidra preflight
+/// (issue #124): they light up `project_ingestion` while the run is still
+/// bootstrapping the Ghidra project, before any classification exists.
 fn derive_phases(
     total_dlls: usize,
     classifications: &HashMap<BinaryIdentity, ClassificationInfo>,
     batch_summaries: &HashMap<BinaryIdentity, BatchInfo>,
     entries: &HashMap<String, ProgressEntry>,
+    ingestion_started: bool,
+    analyzed: &[BinaryIdentity],
 ) -> Vec<PhaseProgress> {
     // Phase 2.5 only covers binaries classified with the PAL strategy.
     let pal_binaries: Vec<&BinaryIdentity> = classifications
@@ -468,7 +481,29 @@ fn derive_phases(
         .iter()
         .map(|&phase| match phase {
             PipelinePhase::ProjectIngestion => {
-                counted_phase(phase, classifications.len(), total_dlls)
+                let completed = classifications.len();
+                if completed == 0 && !analyzed.is_empty() {
+                    // Binaries are already ingested into the Ghidra project
+                    // but none classified yet — ingestion is underway, and
+                    // the analyzed binaries give an honest denominator.
+                    PhaseProgress {
+                        phase,
+                        state: PhaseState::InProgress,
+                        completed: Some(0),
+                        total: Some(total_dlls),
+                    }
+                } else if completed == 0 && ingestion_started {
+                    // Preflight has begun but no binary is named yet —
+                    // in progress with no honest count (the bar renders —).
+                    PhaseProgress {
+                        phase,
+                        state: PhaseState::InProgress,
+                        completed: None,
+                        total: None,
+                    }
+                } else {
+                    counted_phase(phase, completed, total_dlls)
+                }
             }
             PipelinePhase::DisassemblyTagging => counted_phase(
                 phase,

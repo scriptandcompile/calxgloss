@@ -3545,6 +3545,98 @@ async fn test_pipeline_empty_progress() {
     );
 }
 
+/// Issue #124: the Ghidra preflight lights up the ingestion phase — a
+/// started preflight puts it `in_progress` with no count, an analyzed
+/// binary puts it at `0/N` and names that binary in the table, and the
+/// first classification completes it.
+#[tokio::test]
+async fn test_pipeline_ingestion_lights_up_during_ghidra_preflight() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let pipeline_body = || async {
+        let resp = reqwest::get(format!("http://127.0.0.1:{}/api/pipeline", fixture.port()))
+            .await
+            .expect("pipeline request succeeds");
+        assert_eq!(resp.status(), 200);
+        resp.json::<serde_json::Value>()
+            .await
+            .expect("pipeline body is JSON")
+    };
+    let ingestion = |body: &serde_json::Value| -> serde_json::Value {
+        body["phases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["phase"].as_str().unwrap_or("") == "project_ingestion")
+            .cloned()
+            .expect("project_ingestion phase present")
+    };
+
+    // Before any event: honest not_started.
+    let body = pipeline_body().await;
+    assert_eq!(ingestion(&body)["state"], "not_started");
+
+    // Preflight spawns the server — ingestion is underway, uncountable.
+    events.emit(ProgressEvent::GhidraServerStarted {
+        url: "http://127.0.0.1:8080".into(),
+        pid: 4242,
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let body = pipeline_body().await;
+    let p = ingestion(&body);
+    assert_eq!(p["state"], "in_progress", "preflight lights ingestion: {p}");
+    assert!(
+        p.get("completed").is_none() && p.get("total").is_none(),
+        "no fabricated count before any binary is named: {p}"
+    );
+
+    // A binary's auto-analysis lands — counted, and the table names it.
+    events.emit(ProgressEvent::GhidraProgramAnalyzed {
+        dll: "eqgame.dll".into(),
+        secs: 240,
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let body = pipeline_body().await;
+    let p = ingestion(&body);
+    assert_eq!(p["state"], "in_progress");
+    assert_eq!(p["completed"], 0);
+    assert_eq!(p["total"], 1, "the analyzed binary is the honest denominator");
+    let binaries: Vec<&str> = body["binaries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["binary"].as_str().unwrap_or(""))
+        .collect();
+    assert!(
+        binaries.contains(&"eqgame.dll"),
+        "the analyzed binary enters the table: {binaries:?}"
+    );
+
+    // Its classification lands — ingestion completes.
+    events.emit(ProgressEvent::ClassificationComplete {
+        binary: "eqgame.dll".into(),
+        category: "Game".into(),
+        strategy: "ReverseEngineer".into(),
+        crate_replacement: None,
+        exported_symbols: 10,
+        imported_symbols: 4,
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let body = pipeline_body().await;
+    let p = ingestion(&body);
+    assert_eq!(p["state"], "complete");
+    assert_eq!(p["completed"], 1);
+    assert_eq!(p["total"], 1);
+}
+
 /// Issue #61: feed canned `ProgressEvent`s through the live event channel
 /// and assert `/api/pipeline` derives honest per-phase and per-binary
 /// progress — including Phase 2.5 (PAL Design) and the two NoDataSource
