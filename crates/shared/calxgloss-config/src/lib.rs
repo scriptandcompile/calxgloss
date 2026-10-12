@@ -72,6 +72,11 @@ pub mod defaults {
     /// The GUI-vs-headless preference: attach to a running server when one
     /// answers, spawn a headless one when nothing does.
     pub const GHIDRA_HEADLESS: &str = "auto";
+
+    /// Whether `doctor --fix` may download a Ghidra + GhidraMCP pair without
+    /// the explicit `--install-ghidra` flag (G1-T8): a ~570 MB download never
+    /// happens without consent, and this default keeps consent explicit.
+    pub const GHIDRA_AUTO_INSTALL: bool = false;
 }
 
 mod error;

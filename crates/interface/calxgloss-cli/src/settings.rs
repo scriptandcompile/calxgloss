@@ -37,6 +37,12 @@ pub struct Settings {
     pub ghidra_min_version: Option<Resolved<String>>,
     /// Boot budget for a spawned headless server, in seconds.
     pub ghidra_start_timeout_secs: Resolved<u64>,
+    /// Whether `doctor --fix` may download without `--install-ghidra` (G1-T8).
+    pub ghidra_auto_install: Resolved<bool>,
+    /// The Ghidra version pinned for the bootstrap, when configured.
+    pub ghidra_pin_version: Option<Resolved<String>>,
+    /// The JDK home the bootstrap's Java gate runs, when configured.
+    pub ghidra_java_home: Option<Resolved<String>>,
     /// Where to reach the LLM server, if configured.
     pub llm_url: Option<Resolved<String>>,
     /// Which model to ask for, if configured.
@@ -86,6 +92,9 @@ impl Settings {
             project: flag_ghidra_project,
             min_version: flag_ghidra_min_version,
             start_timeout_secs: flag_ghidra_start_timeout,
+            auto_install: flag_ghidra_auto_install,
+            pin_version: flag_ghidra_pin_version,
+            java_home: flag_ghidra_java_home,
         } = flags.ghidra;
 
         Self {
@@ -145,6 +154,26 @@ impl Settings {
                     Some(defaults::GHIDRA_START_TIMEOUT_SECS),
                 )
                 .expect("start_timeout_secs has a default"),
+            ghidra_auto_install: layers
+                .resolve(
+                    flag_ghidra_auto_install,
+                    layers.env.ghidra.auto_install,
+                    layers.file.ghidra.auto_install,
+                    Some(defaults::GHIDRA_AUTO_INSTALL),
+                )
+                .expect("auto_install has a default"),
+            ghidra_pin_version: layers.resolve(
+                flag_ghidra_pin_version,
+                layers.env.ghidra.pin_version.clone(),
+                layers.file.ghidra.pin_version.clone(),
+                None,
+            ),
+            ghidra_java_home: layers.resolve(
+                flag_ghidra_java_home,
+                layers.env.ghidra.java_home.clone(),
+                layers.file.ghidra.java_home.clone(),
+                None,
+            ),
             llm_url: layers.resolve(
                 flag_url,
                 layers.env.llm.url.clone(),
@@ -380,6 +409,14 @@ pub fn render(s: &Settings) -> String {
         false,
     );
     num(&mut out, "start_timeout_secs", &s.ghidra_start_timeout_secs);
+    num(&mut out, "auto_install", &s.ghidra_auto_install);
+    row(
+        &mut out,
+        "pin_version",
+        s.ghidra_pin_version.as_ref(),
+        false,
+    );
+    row(&mut out, "java_home", s.ghidra_java_home.as_ref(), false);
 
     out.push_str("\nllm\n");
     row(&mut out, "url", s.llm_url.as_ref(), false);
@@ -482,6 +519,11 @@ mod tests {
             defaults::GHIDRA_START_TIMEOUT_SECS
         );
         assert_eq!(s.ghidra_start_timeout_secs.source, Source::Default);
+        // G1-T8: a ~570 MB download is never consented to by default.
+        assert!(!s.ghidra_auto_install.value);
+        assert_eq!(s.ghidra_auto_install.source, Source::Default);
+        assert!(s.ghidra_pin_version.is_none());
+        assert!(s.ghidra_java_home.is_none());
     }
 
     #[test]
@@ -493,6 +535,9 @@ mod tests {
                 project: Some("/run/eq/ghidra/EverQuest.gpr".into()),
                 min_version: Some("12.1".into()),
                 start_timeout_secs: Some(120),
+                auto_install: Some(true),
+                pin_version: Some("12.1.2".into()),
+                java_home: Some("/usr/lib/jvm/java-21".into()),
                 ..Default::default()
             },
             ..Default::default()
@@ -509,6 +554,12 @@ mod tests {
         assert_eq!(s.ghidra_min_version.as_ref().expect("set").value, "12.1");
         assert_eq!(s.ghidra_start_timeout_secs.value, 120);
         assert_eq!(s.ghidra_start_timeout_secs.source, Source::File);
+        assert!(s.ghidra_auto_install.value);
+        assert_eq!(s.ghidra_pin_version.as_ref().expect("set").value, "12.1.2");
+        assert_eq!(
+            s.ghidra_java_home.as_ref().expect("set").value,
+            "/usr/lib/jvm/java-21"
+        );
     }
 
     #[test]

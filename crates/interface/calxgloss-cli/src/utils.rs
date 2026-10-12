@@ -16,6 +16,23 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 pub use tracing::{debug, warn};
 
+/// The user's local state directory: `$XDG_STATE_HOME`, falling back to
+/// `~/.local/share` — the XDG base directory for data that survives between
+/// sessions but is not configuration.
+pub(super) fn state_dir(home: &Path) -> PathBuf {
+    std::env::var_os("XDG_STATE_HOME")
+        .filter(|value| !value.as_os_str().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".local/share"))
+}
+
+/// The install prefix `doctor --fix` installs into — and every discovery
+/// pass names, so a bootstrap's installs are found without env or config:
+/// `<state>/calxgloss/ghidra/`.
+pub(super) fn managed_install_prefix(home: &Path) -> PathBuf {
+    state_dir(home).join("calxgloss/ghidra")
+}
+
 /// Open the session preflight (G1-T4) every Ghidra command starts from:
 /// attach to a running GhidraMCP server — reconciling a stale configured
 /// port against the servers registered in the bridge's runtime-socket
@@ -56,6 +73,7 @@ pub(super) async fn open_ghidra_session(
         .ghidra_install_dir
         .as_ref()
         .map(|r| PathBuf::from(&r.value));
+    let managed_prefix = home.as_deref().map(managed_install_prefix);
     // The `ghidra.headless` mode is a config string, so a typo is named with
     // the layer it came from — the same attribution `config` shows.
     let headless: HeadlessMode = settings.ghidra_headless.value.parse().map_err(|_| {
@@ -82,6 +100,7 @@ pub(super) async fn open_ghidra_session(
             env_install_dir: env_install.as_deref(),
             config_install_dir: config_install.as_deref(),
             home: home.as_deref(),
+            managed_prefix: managed_prefix.as_deref(),
         },
         start_timeout: Duration::from_secs(settings.ghidra_start_timeout_secs.value),
         auto_start: settings.ghidra_auto_start.value,

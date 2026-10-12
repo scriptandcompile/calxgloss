@@ -186,6 +186,39 @@ pub(super) struct BatchTranslateArgs {
     pub(super) refresh_ghidra_cache: bool,
 }
 
+/// Arguments for `doctor`.
+#[derive(Args, Debug)]
+pub(super) struct DoctorArgs {
+    /// Install what the check finds missing
+    ///
+    /// Bootstraps a paired Ghidra + GhidraMCP stack under the calxgloss
+    /// install prefix (`<state>/calxgloss/ghidra/`): the plugin's
+    /// `extension.properties` decides which Ghidra build is fetched, every
+    /// download is sha256-verified against the releases API digest, and
+    /// nothing is installed without a JDK 21+ and explicit consent.
+    #[arg(long)]
+    pub(super) fix: bool,
+
+    /// Consent to the ~570 MB Ghidra download `--fix` performs
+    ///
+    /// The alternative is `ghidra.auto_install = true` in the config; one
+    /// channel or the other must say yes before anything is fetched.
+    #[arg(long)]
+    pub(super) install_ghidra: bool,
+
+    /// Fetch this Ghidra version instead of the one the plugin names
+    #[arg(long, value_name = "VERSION")]
+    pub(super) ghidra_version: Option<String>,
+
+    /// Install the GhidraMCP extension from this local zip instead of fetching
+    #[arg(long, value_name = "ZIP")]
+    pub(super) plugin_zip: Option<PathBuf>,
+
+    /// Install Ghidra from this local zip instead of downloading it
+    #[arg(long, value_name = "ZIP")]
+    pub(super) ghidra_zip: Option<PathBuf>,
+}
+
 /// Subcommands for the CLI.
 #[derive(Subcommand, Debug)]
 pub(super) enum Command {
@@ -198,20 +231,29 @@ pub(super) enum Command {
     /// Report the whole Ghidra stack in one read-only pass
     ///
     /// Checks the discovered Ghidra install (`$GHIDRA_INSTALL_DIR` →
-    /// `ghidra.install_dir` → a `*ghidra_*_PUBLIC` glob in the home
-    /// directory, highest version wins), the GhidraMCP extension against it
-    /// (strict version pairing per ADR-0001), and the server on the
-    /// configured port (kind, version, port — "none" when unreachable).
-    /// Nothing is spawned, installed, or modified. Every failure carries a
-    /// remediation hint, and any failure exits non-zero so CI can gate on
-    /// this command.
+    /// `ghidra.install_dir` → the calxgloss install prefix → a
+    /// `*ghidra_*_PUBLIC` glob in the home directory, highest version wins),
+    /// the GhidraMCP extension against it (strict version pairing per
+    /// ADR-0001), and the server on the configured port (kind, version,
+    /// port — "none" when unreachable). Without `--fix` nothing is spawned,
+    /// installed, or modified; every failure carries a remediation hint,
+    /// and any failure exits non-zero so CI can gate on this command.
+    ///
+    /// With `--fix` the missing pieces are bootstrapped: a JDK-21 gate runs
+    /// first, then the newest GhidraMCP release decides which Ghidra build
+    /// is fetched (plugin-first pairing), every download is sha256-verified,
+    /// and both land under the calxgloss install prefix. The ~570 MB Ghidra
+    /// download needs `--install-ghidra` (or `ghidra.auto_install = true`);
+    /// replacing an existing install asks for confirmation first. The full
+    /// read-only check runs again afterwards as verification.
     ///
     /// # Examples
     ///
     /// ```text
     /// calxgloss doctor
+    /// calxgloss doctor --fix --install-ghidra
     /// ```
-    Doctor,
+    Doctor(DoctorArgs),
 
     /// Classify DLLs, choosing how to treat each one
     Classify {

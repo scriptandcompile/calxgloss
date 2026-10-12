@@ -128,7 +128,7 @@ pub fn verdict(discovery: &ExtensionDiscovery, ghidra_version: &str) -> Extensio
 }
 
 /// Ghidra's per-version state directory: `<config_root>/ghidra_<version>_PUBLIC`.
-fn state_dir(config_root: &Path, ghidra_version: &str) -> PathBuf {
+pub(crate) fn state_dir(config_root: &Path, ghidra_version: &str) -> PathBuf {
     config_root.join(format!("ghidra_{ghidra_version}_PUBLIC"))
 }
 

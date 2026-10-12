@@ -7,7 +7,8 @@
 
 use calxgloss_ghidra::MIN_PLUGIN_VERSION;
 use calxgloss_ghidra::lifecycle::{
-    ExtensionVerdict, InstallDiscovery, ServerDiscovery, StackReport,
+    ExtensionVerdict, InstallDiscovery, InstallManifest, InstallSource, ServerDiscovery,
+    StackReport,
 };
 
 use crate::{cyan_bold, dim, green_bold, red_bold, white_bold, yellow_bold};
@@ -45,6 +46,9 @@ fn print_install(discovery: &InstallDiscovery) {
                 &format!("Ghidra {} at {}", install.version, install.path.display()),
             );
             note(&format!("discovered via {source}"));
+            if *source == InstallSource::ManagedPrefix {
+                note("calxgloss-managed install — `doctor --fix` upgrades it in place");
+            }
         }
         InstallDiscovery::Invalid { path, source } => {
             fail(
@@ -61,9 +65,10 @@ fn print_install(discovery: &InstallDiscovery) {
         InstallDiscovery::NotFound => {
             fail("Install", "no Ghidra install found");
             hint(
-                "install Ghidra (https://ghidra-sre.org) and extract it into your home \
-                 directory as ghidra_<version>_PUBLIC, or point $GHIDRA_INSTALL_DIR / \
-                 ghidra.install_dir at the install",
+                "run `calxgloss doctor --fix --install-ghidra` to install a paired \
+                 Ghidra + GhidraMCP stack, or install Ghidra (https://ghidra-sre.org) \
+                 and extract it into your home directory as ghidra_<version>_PUBLIC, \
+                 or point $GHIDRA_INSTALL_DIR / ghidra.install_dir at the install",
             );
         }
     }
@@ -104,7 +109,8 @@ fn print_extension(verdict: Option<&ExtensionVerdict>, install: &InstallDiscover
         Some(ExtensionVerdict::Missing { extensions_dir }) => {
             fail("Extension", "the GhidraMCP extension is not installed");
             hint(&format!(
-                "install the GhidraMCP {MIN_PLUGIN_VERSION} zip into {} (Ghidra: File → \
+                "run `calxgloss doctor --fix` to install the matching GhidraMCP release, \
+                 or install the GhidraMCP {MIN_PLUGIN_VERSION} zip into {} (Ghidra: File → \
                  Install Extensions)",
                 extensions_dir.display()
             ));
@@ -202,6 +208,31 @@ fn print_server(discovery: &ServerDiscovery) {
                 "install the GhidraMCP {required} release into this Ghidra (ADR-0001)"
             ));
         }
+    }
+}
+
+/// Print the install manifest: what calxgloss itself installed, read from
+/// `<state>/calxgloss/ghidra-install.json`. An empty manifest prints nothing.
+pub fn print_managed(manifest: &InstallManifest) {
+    if manifest.ghidra.is_none() && manifest.plugin.is_none() {
+        return;
+    }
+    println!();
+    println!("  {}", white_bold("Managed installs"));
+    if let Some(ghidra) = &manifest.ghidra {
+        note(&format!(
+            "Ghidra {} at {}",
+            ghidra.version,
+            ghidra.path.display()
+        ));
+    }
+    if let Some(plugin) = &manifest.plugin {
+        let version = plugin.version.as_deref().unwrap_or("unknown version");
+        note(&format!(
+            "GhidraMCP {version}, built for Ghidra {}, at {}",
+            plugin.built_for,
+            plugin.path.display()
+        ));
     }
 }
 

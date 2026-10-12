@@ -189,6 +189,79 @@ pub enum GhidraError {
         "Cannot start a headless Ghidra server: {reason}\nRun `calxgloss doctor` for the full stack report"
     )]
     CannotSpawn { reason: String },
+
+    /// The JDK-21 prerequisite for `doctor --fix` did not hold.
+    ///
+    /// Ghidra 12.x will not run without a Java 21 LTS runtime, and a
+    /// bootstrap that downloaded 570 MB only to fail at first launch is the
+    /// outcome this gate exists to prevent. calxgloss never installs a JDK
+    /// itself — the remediation is always the user's to run.
+    #[error(
+        "Java 21 is required before calxgloss can install Ghidra: {detail}\nInstall a JDK 21 \
+            or newer (on Debian/Ubuntu: `sudo apt install openjdk-21-jdk`), or point \
+            `ghidra.java_home` at an existing one. calxgloss never installs a JDK itself."
+    )]
+    JdkGate { detail: String },
+
+    /// The bootstrap stopped before a download because consent was not given.
+    ///
+    /// The Ghidra release is a ~570 MB download, so `ghidra.auto_install`
+    /// defaults to false and `--install-ghidra` opts in per run; this failure
+    /// is the consent request itself, not a malfunction.
+    #[error(
+        "{detail}\ncalxgloss will not download it without consent: re-run with \
+            `--install-ghidra`, or set `ghidra.auto_install = true` to consent on every run"
+    )]
+    ConsentRequired { detail: String },
+
+    /// The bootstrap would replace an existing install, which needs an
+    /// explicit old → new confirmation first.
+    ///
+    /// A working stack is never broken by a routine `doctor --fix`: the
+    /// confirmation names exactly what changes, and the CLI re-runs the
+    /// bootstrap with consent once the human has agreed.
+    #[error(
+        "calxgloss would replace the {what}: {from} → {to}.\nRe-run `calxgloss doctor --fix` \
+            and confirm the upgrade, or leave the existing install alone"
+    )]
+    UpgradeConfirmation {
+        what: String,
+        from: String,
+        to: String,
+    },
+
+    /// The GitHub releases API — the source of both artifacts and their
+    /// digests — answered with something unusable.
+    #[error("The GitHub releases API call for {url} failed: {detail}")]
+    ReleasesApi { url: String, detail: String },
+
+    /// A downloaded artifact's sha256 did not match the releases API digest,
+    /// so it was never unzipped.
+    ///
+    /// Verification happens before unzipping by design (design §3.5): a
+    /// corrupted or tampered download must never execute.
+    #[error(
+        "The download of {asset} failed sha256 verification: expected {expected}, got \
+            {found}.\nNothing was unzipped; delete the cached copy and retry, or check the \
+            connection"
+    )]
+    DigestMismatch {
+        asset: String,
+        expected: String,
+        found: String,
+    },
+
+    /// A release artifact did not have the layout its repository promises.
+    #[error("The Ghidra bootstrap artifact is not what it claims to be: {detail}")]
+    ArtifactInvalid { detail: String },
+
+    /// A bootstrap step stopped on a machine state the user must resolve.
+    ///
+    /// The prefix is not writable, a named install path does not validate,
+    /// or `$HOME` is unknown — never something calxgloss may work around by
+    /// escalating privileges or writing elsewhere.
+    #[error("The Ghidra bootstrap stopped: {reason}")]
+    BootstrapBlocked { reason: String },
 }
 
 // ============================================================

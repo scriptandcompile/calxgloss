@@ -1,23 +1,35 @@
-//! `calxgloss doctor` — a read-only report of the whole Ghidra stack.
+//! `calxgloss doctor` — a read-only report of the whole Ghidra stack, and
+//! with `--fix`, the bootstrap (G1-T8) that fills in what the report finds
+//! missing.
 //!
-//! Runs the lifecycle checks (install discovery, extension pairing, server
-//! identity probe) in one pass and prints them through the reports crate.
-//! Nothing is spawned, installed, or modified; any failing check exits
-//! non-zero so CI can gate on the command.
+//! Without `--fix` nothing is spawned, installed, or modified; any failing
+//! check exits non-zero so CI can gate on the command. With `--fix` the
+//! lifecycle bootstrap runs — JDK-21 gate, plugin-first pairing, sha256
+//! verification, install under the calxgloss prefix — behind the consent
+//! rules the ticket demands, and the full read-only check runs again
+//! afterwards as verification.
 
+use std::io::Write as _;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_ghidra::GhidraConfig;
-use calxgloss_ghidra::lifecycle::{self, StackRequest};
-use calxgloss_reports::doctor::print_stack_report;
+use calxgloss_ghidra::GhidraError;
+use calxgloss_ghidra::lifecycle::{self, BootstrapRequest, ReleasesApi, StackRequest, bootstrap};
+use calxgloss_reports::doctor::{print_managed, print_stack_report};
 use tracing::info;
 
+use crate::cli_types::DoctorArgs;
 use crate::settings::Settings;
+use crate::utils::{managed_install_prefix, state_dir};
+
+/// The GitHub API the bootstrap fetches releases from.
+const GITHUB_API: &str = "https://api.github.com";
 
 /// Check the whole stack and print the report; a failure is an error exit.
-pub async fn handle_doctor(settings: &Settings) -> Result<()> {
+/// With `--fix`, install what is missing first, then verify.
+pub async fn handle_doctor(settings: &Settings, args: &DoctorArgs) -> Result<()> {
     info!("Running the read-only Ghidra stack check");
 
     let mut config = GhidraConfig::new(&settings.ghidra_url.value).with_context(|| {
@@ -37,24 +49,147 @@ pub async fn handle_doctor(settings: &Settings) -> Result<()> {
     })?;
 
     // The discovery inputs: Ghidra's own env var, then the layered config
-    // value, then the home-directory glob — all read here so the lifecycle
-    // checks themselves stay pure and testable.
+    // value, then the calxgloss install prefix, then the home-directory
+    // glob — all read here so the lifecycle checks themselves stay pure
+    // and testable.
     let env_install = std::env::var_os("GHIDRA_INSTALL_DIR").map(PathBuf::from);
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let config_install = settings
         .ghidra_install_dir
         .as_ref()
         .map(|r| PathBuf::from(&r.value));
+    let managed_prefix = home.as_deref().map(managed_install_prefix);
     let request = StackRequest {
         env_install_dir: env_install.as_deref(),
         config_install_dir: config_install.as_deref(),
         home: home.as_deref(),
+        managed_prefix: managed_prefix.as_deref(),
     };
 
     let report = lifecycle::check_stack(&client, &request).await;
     print_stack_report(&report);
+    print_managed_installs(home.as_deref());
+
+    if args.fix {
+        run_fix(settings, args, &request).await?;
+        // The ticket's verification step: the full read-only check again,
+        // so what follows the install is the same report CI gates on.
+        println!("\nRe-running the stack check as verification:");
+        let report = lifecycle::check_stack(&client, &request).await;
+        print_stack_report(&report);
+        print_managed_installs(home.as_deref());
+        if !report.all_ok() {
+            bail!(
+                "the bootstrap finished but the stack still fails the check — \
+                 see the report above"
+            );
+        }
+        return Ok(());
+    }
+
     if !report.all_ok() {
         bail!("the Ghidra stack check failed — see the report above");
     }
     Ok(())
+}
+
+/// The install manifest section: what calxgloss itself installed, read from
+/// the manifest file the bootstrap wrote.
+fn print_managed_installs(home: Option<&std::path::Path>) {
+    let Some(state) = home.map(state_dir) else {
+        return;
+    };
+    let manifest = lifecycle::load_manifest(&lifecycle::manifest_path(&state));
+    print_managed(&manifest);
+}
+
+/// Run the bootstrap, asking for the one confirmation the rules require:
+/// an old → new replacement of an existing install or extension.
+async fn run_fix(settings: &Settings, args: &DoctorArgs, stack: &StackRequest<'_>) -> Result<()> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .context("no $HOME, so there is no user-writable place to install into")?;
+    let state = state_dir(&home);
+    let cache = std::env::var_os("XDG_CACHE_HOME")
+        .filter(|value| !value.as_os_str().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".cache"))
+        .join("calxgloss");
+    let mut api = ReleasesApi::new(GITHUB_API).context("the GitHub API base URL is invalid")?;
+    // The ~570 MB Ghidra stream must not look like a hang: progress rides on
+    // stderr so the report itself stays clean on stdout.
+    api = api.with_progress(|downloaded, total| match total {
+        Some(total) => eprintln!(
+            "  … {} MB of {} MB downloaded",
+            downloaded / 1_048_576,
+            total / 1_048_576
+        ),
+        None => eprintln!("  … {} MB downloaded", downloaded / 1_048_576),
+    });
+    // Optional: users hitting the anonymous rate limit can raise it with a token.
+    if let Some(token) = std::env::var("GHIDRA_MCP_GITHUB_TOKEN")
+        .ok()
+        .filter(|token| !token.trim().is_empty())
+    {
+        api = api.with_token(token);
+    }
+    let java = settings
+        .ghidra_java_home
+        .as_ref()
+        .map(|r| PathBuf::from(&r.value).join("bin/java"));
+    let pin = args.ghidra_version.as_deref().or(settings
+        .ghidra_pin_version
+        .as_ref()
+        .map(|r| r.value.as_str()));
+    let consent = args.install_ghidra || settings.ghidra_auto_install.value;
+
+    let mut upgrade_approved = false;
+    let report = loop {
+        let request = BootstrapRequest {
+            stack: *stack,
+            state_dir: &state,
+            cache_dir: &cache,
+            api: &api,
+            java: java.as_deref(),
+            pin_version: pin,
+            local_plugin_zip: args.plugin_zip.as_deref(),
+            local_ghidra_zip: args.ghidra_zip.as_deref(),
+            download_consent: consent,
+            upgrade_approved,
+        };
+        match bootstrap(&request).await {
+            Ok(report) => break report,
+            Err(GhidraError::UpgradeConfirmation { what, from, to }) => {
+                if upgrade_approved {
+                    return Err(GhidraError::UpgradeConfirmation { what, from, to })
+                        .context("the confirmation was granted but the bootstrap asked again");
+                }
+                if !confirm_replacement(&what, &from, &to)? {
+                    bail!("bootstrap cancelled — nothing was changed");
+                }
+                upgrade_approved = true;
+            }
+            Err(other) => {
+                return Err(other).context("the bootstrap stopped before installing anything");
+            }
+        }
+    };
+
+    for note in &report.notes {
+        println!("  {note}");
+    }
+    Ok(())
+}
+
+/// The old → new confirmation: y to proceed, anything else (default N) stops.
+fn confirm_replacement(what: &str, from: &str, to: &str) -> Result<bool> {
+    print!("\ncalxgloss would replace {what}: {from} → {to}. Continue? [y/N] ");
+    std::io::stdout()
+        .flush()
+        .context("could not write to the terminal")?;
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .context("could not read the answer from stdin")?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "YES"))
 }

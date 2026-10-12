@@ -577,6 +577,7 @@ async fn a_headless_server_spawns_attaches_and_shuts_down() {
             env_install_dir: install_dir.as_deref(),
             config_install_dir: None,
             home: home.as_deref(),
+            managed_prefix: None,
         },
         start_timeout: std::time::Duration::from_secs(120),
         auto_start: true,

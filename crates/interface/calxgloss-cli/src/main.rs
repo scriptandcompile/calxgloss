@@ -132,6 +132,11 @@ fn main() -> Result<()> {
             project: None,
             min_version: None,
             start_timeout_secs: None,
+            // The bootstrap knobs are `doctor` flags, not global ones; they
+            // reach the bootstrap through `DoctorArgs` directly.
+            auto_install: None,
+            pin_version: None,
+            java_home: None,
         },
         llm: LlmSection {
             url: cli.llm_url.clone(),
@@ -155,7 +160,7 @@ fn main() -> Result<()> {
     if let Some(ref target) = cli.command {
         match target {
             Command::Config
-            | Command::Doctor
+            | Command::Doctor { .. }
             | Command::Gc { .. }
             | Command::Typesdb { .. }
             | Command::Typeinfer { .. }
@@ -195,11 +200,11 @@ fn main() -> Result<()> {
             print!("{}", settings::render(&settings));
             Ok(())
         }
-        Command::Doctor => tokio::runtime::Builder::new_current_thread()
+        Command::Doctor(args) => tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .context("Failed to create tokio runtime")?
-            .block_on(handle_doctor(&settings)),
+            .block_on(handle_doctor(&settings, &args)),
         Command::Classify { binary } => {
             let target_dir = settings
                 .target_dir

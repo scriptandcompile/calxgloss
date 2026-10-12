@@ -24,21 +24,38 @@
 //! Version coupling is the load-bearing constraint throughout (ADR-0001): the
 //! extension jar is compiled against exactly one Ghidra build, so the install
 //! and extension checks are judged *as a pair*, not independently.
+//!
+//! The installing half is G1-T8: [`bootstrap`] takes a bare machine to a
+//! working pair behind the JDK-21 gate and explicit consent — plugin-first
+//! download (the plugin's `extension.properties` decides which Ghidra build
+//! is fetched), sha256 verification against the releases API digest, install
+//! under a user-writable prefix, and the [`manifest`] that records what
+//! calxgloss installed so the checks can tell managed from user-managed
+//! installs.
 
+mod bootstrap;
 mod discovery;
 mod extension;
 mod install;
+mod manifest;
 mod program;
 mod project;
+mod releases;
 mod server;
 mod session;
 
+pub use bootstrap::{BootstrapReport, BootstrapRequest, MIN_JDK_MAJOR, bootstrap};
 pub use discovery::{BRIDGE_DEFAULT_PORT, DiscoveredServer, discover, socket_dir};
 pub use extension::{ExtensionDiscovery, ExtensionVerdict, GhidraExtension};
 pub use install::{GhidraInstall, InstallDiscovery, InstallSource};
+pub use manifest::{InstallManifest, ManagedInstall, ManagedPlugin, load_manifest, manifest_path};
 pub use program::{ProgramMatch, ensure_current_program};
 pub use project::{
     ANALYSIS_POLL_INTERVAL, ProgramLoad, ProjectSetup, analysis_cache_path, ensure_project,
+};
+pub use releases::{
+    GHIDRA_REPO, PLUGIN_REPO, Release, ReleaseAsset, ReleasesApi, ghidra_tag,
+    nearest_release_at_least,
 };
 pub use server::LaunchPlan;
 pub use session::{
@@ -131,6 +148,10 @@ pub struct StackRequest<'a> {
     /// The user's home directory, when known: the install glob and Ghidra's
     /// `~/.config/ghidra` state root both hang off it.
     pub home: Option<&'a std::path::Path>,
+    /// The calxgloss install prefix (`<state>/calxgloss/ghidra/`), when a
+    /// state dir is known: installs `doctor --fix` made are discovered here,
+    /// above the home glob.
+    pub managed_prefix: Option<&'a std::path::Path>,
 }
 
 /// Run every read-only check in one pass: install discovery, the extension
@@ -140,6 +161,7 @@ pub async fn check_stack(client: &GhidraClient, request: &StackRequest<'_>) -> S
         request.env_install_dir,
         request.config_install_dir,
         request.home,
+        request.managed_prefix,
     );
 
     // The extension lives per Ghidra build, so it can only be judged against

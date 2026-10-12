@@ -75,6 +75,9 @@ impl Layers {
                     project: var("CALXGLOSS_GHIDRA_PROJECT"),
                     min_version: var("CALXGLOSS_GHIDRA_MIN_VERSION"),
                     start_timeout_secs: u64_var("CALXGLOSS_GHIDRA_START_TIMEOUT_SECS"),
+                    auto_install: bool_var("CALXGLOSS_GHIDRA_AUTO_INSTALL"),
+                    pin_version: var("CALXGLOSS_GHIDRA_PIN_VERSION"),
+                    java_home: var("CALXGLOSS_GHIDRA_JAVA_HOME"),
                 },
                 llm: LlmSection {
                     url: var("CALXGLOSS_LLM_URL"),
@@ -285,6 +288,9 @@ headless = "always"
 project = "/run/eq/ghidra/EverQuest.gpr"
 min_version = "12.1"
 start_timeout_secs = 120
+auto_install = true
+pin_version = "12.1.2"
+java_home = "/usr/lib/jvm/java-21"
 "#,
         );
         let c = load(Some(&path)).unwrap().file;
@@ -296,6 +302,9 @@ start_timeout_secs = 120
         );
         assert_eq!(c.ghidra.min_version.as_deref(), Some("12.1"));
         assert_eq!(c.ghidra.start_timeout_secs, Some(120));
+        assert_eq!(c.ghidra.auto_install, Some(true));
+        assert_eq!(c.ghidra.pin_version.as_deref(), Some("12.1.2"));
+        assert_eq!(c.ghidra.java_home.as_deref(), Some("/usr/lib/jvm/java-21"));
     }
 
     #[test]
@@ -334,6 +343,12 @@ start_timeout_secs = 120
         );
         guard.set("CALXGLOSS_GHIDRA_MIN_VERSION", Some("12.1".into()));
         guard.set("CALXGLOSS_GHIDRA_START_TIMEOUT_SECS", Some("junk".into()));
+        guard.set("CALXGLOSS_GHIDRA_AUTO_INSTALL", Some("true".into()));
+        guard.set("CALXGLOSS_GHIDRA_PIN_VERSION", Some("12.1.2".into()));
+        guard.set(
+            "CALXGLOSS_GHIDRA_JAVA_HOME",
+            Some("/usr/lib/jvm/java-21".into()),
+        );
         let layers = Layers::from_env();
         // Guard drops and restores the env here.
         drop(guard);
@@ -347,6 +362,12 @@ start_timeout_secs = 120
         assert_eq!(layers.env.ghidra.min_version.as_deref(), Some("12.1"));
         // An unparseable number is skipped, like every other numeric var.
         assert_eq!(layers.env.ghidra.start_timeout_secs, None);
+        assert_eq!(layers.env.ghidra.auto_install, Some(true));
+        assert_eq!(layers.env.ghidra.pin_version.as_deref(), Some("12.1.2"));
+        assert_eq!(
+            layers.env.ghidra.java_home.as_deref(),
+            Some("/usr/lib/jvm/java-21")
+        );
     }
 
     #[test]

@@ -33,6 +33,10 @@ git2 = "0.21.0"
 clap = { version = "4.6.7", features = ["derive"] }
 url = "2.5.8"
 sha2 = "0.10.9"
+# Only the deflate decompressor is needed: the bootstrap unzips the two
+# release artifacts, which are deflate-compressed. Everything else (the
+# default feature set) is dead weight.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 once_cell = "1.21.4"
 chrono = { version = "0.4.45", features = ["serde"] }
 parking_lot = "0.12.5"

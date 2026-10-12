@@ -59,6 +59,19 @@ pub struct GhidraSection {
 
     /// How long a spawned headless server may take to boot, in seconds.
     pub start_timeout_secs: Option<u64>,
+
+    /// Whether `doctor --fix` may download a Ghidra + GhidraMCP pair without
+    /// the explicit `--install-ghidra` flag. `false` (the default) keeps the
+    /// ~570 MB download behind consent.
+    pub auto_install: Option<bool>,
+
+    /// Pin the Ghidra version the bootstrap fetches, overriding the build the
+    /// plugin's `extension.properties` names.
+    pub pin_version: Option<String>,
+
+    /// The JDK the bootstrap's Java gate runs (`<java_home>/bin/java`).
+    /// Absent means `java` on PATH; calxgloss never installs a JDK itself.
+    pub java_home: Option<String>,
 }
 
 /// The `[llm]` table.
@@ -113,6 +126,9 @@ url = "http://127.0.0.1:8080"
 # project = "/path/to/run.gpr" # default: <workspace>/ghidra/<target>.gpr
 # min_version = "12.1"         # gate the discovered install by version
 # start_timeout_secs = 90      # boot budget for a spawned server
+# auto_install = false         # doctor --fix may download without --install-ghidra
+# pin_version = "12.1.2"       # pin the Ghidra build the bootstrap fetches
+# java_home = "/usr/lib/jvm/java-21"  # JDK for the bootstrap's Java gate
 
 [llm]
 url  = "http://127.0.0.1:1919/v1"

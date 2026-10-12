@@ -685,6 +685,7 @@ async fn the_stack_check_passes_against_a_complete_stack() {
         env_install_dir: None,
         config_install_dir: None,
         home: Some(home.path()),
+        managed_prefix: None,
     };
     let report = check_stack(&client, &request).await;
     assert!(report.all_ok(), "report: {report:?}");
@@ -733,6 +734,7 @@ async fn the_stack_check_reports_an_unreachable_server_as_none_not_a_crash() {
             env_install_dir: None,
             config_install_dir: None,
             home: Some(home.path()),
+            managed_prefix: None,
         },
     )
     .await;
@@ -758,6 +760,7 @@ async fn the_stack_check_flags_an_extension_built_for_another_ghidra_build() {
             env_install_dir: None,
             config_install_dir: None,
             home: Some(home.path()),
+            managed_prefix: None,
         },
     )
     .await;
@@ -797,6 +800,7 @@ async fn the_stack_check_names_a_foreign_port_as_not_ghidra_mcp() {
             env_install_dir: None,
             config_install_dir: None,
             home: Some(home.path()),
+            managed_prefix: None,
         },
     )
     .await;
@@ -822,6 +826,7 @@ async fn the_stack_check_skips_the_extension_when_no_install_validates() {
             env_install_dir: None,
             config_install_dir: None,
             home: Some(home.path()),
+            managed_prefix: None,
         },
     )
     .await;
@@ -982,6 +987,7 @@ fn session_request<'a>(
             env_install_dir: None,
             config_install_dir: None,
             home: Some(home),
+            managed_prefix: None,
         },
         start_timeout: std::time::Duration::from_millis(200),
         auto_start: true,

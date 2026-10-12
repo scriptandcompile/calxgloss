@@ -536,6 +536,7 @@ fn spawn_prerequisites(
         request.stack.env_install_dir,
         request.stack.config_install_dir,
         request.stack.home,
+        request.stack.managed_prefix,
     ) {
         InstallDiscovery::Found { install, source } => {
             info!(path = %install.path.display(), version = %install.version, %source, "Spawning against the discovered Ghidra install");

@@ -1,12 +1,15 @@
 //! Discovery of the Ghidra install on disk.
 //!
-//! The search order is fixed by the design doc (`docs/ghidra_integration.md`
-//! §3.2): `$GHIDRA_INSTALL_DIR` → the `ghidra.install_dir` config value → a
+//! The search order is the design doc's (`docs/ghidra_integration.md`
+//! §3.2) widened by one layer for the bootstrap: `$GHIDRA_INSTALL_DIR` →
+//! the `ghidra.install_dir` config value → the calxgloss install prefix
+//! (`<state>/calxgloss/ghidra/`, where `doctor --fix` installs) → a
 //! `*ghidra_*_PUBLIC` glob in the home directory, where the highest version
-//! wins. An install only counts as real when its layout validates — a bare
-//! `Ghidra/Framework` directory inside it — because a half-extracted or
-//! renamed directory otherwise discovers as a working stack and fails much
-//! later inside a run.
+//! wins. An explicitly named path outranks a deliberate calxgloss install,
+//! which outranks a guessed glob. An install only counts as real when its
+//! layout validates — a bare `Ghidra/Framework` directory inside it —
+//! because a half-extracted or renamed directory otherwise discovers as a
+//! working stack and fails much later inside a run.
 
 use std::path::{Path, PathBuf};
 
@@ -33,6 +36,8 @@ pub enum InstallSource {
     EnvVar,
     /// The `ghidra.install_dir` configuration value.
     Config,
+    /// The calxgloss install prefix (`doctor --fix` installs here).
+    ManagedPrefix,
     /// The `*ghidra_*_PUBLIC` glob over the home directory.
     HomeGlob,
 }
@@ -42,6 +47,7 @@ impl std::fmt::Display for InstallSource {
         match self {
             Self::EnvVar => write!(f, "$GHIDRA_INSTALL_DIR"),
             Self::Config => write!(f, "ghidra.install_dir"),
+            Self::ManagedPrefix => write!(f, "calxgloss install prefix"),
             Self::HomeGlob => write!(f, "home directory"),
         }
     }
@@ -76,13 +82,16 @@ pub enum InstallDiscovery {
 /// Discover the Ghidra install.
 ///
 /// `env_dir` is `$GHIDRA_INSTALL_DIR` and `config_dir` is the resolved
-/// `ghidra.install_dir`, each checked in that order; `home` supplies the glob,
-/// whose highest-version entry wins. Every input is a parameter rather than a
-/// process lookup so the whole search is testable against tempdir fixtures.
+/// `ghidra.install_dir`, each checked in that order; `managed_prefix` is the
+/// calxgloss install prefix (`<state>/calxgloss/ghidra/`), whose
+/// highest-version entry is next; `home` supplies the glob, also
+/// highest-version. Every input is a parameter rather than a process lookup
+/// so the whole search is testable against tempdir fixtures.
 pub fn discover(
     env_dir: Option<&Path>,
     config_dir: Option<&Path>,
     home: Option<&Path>,
+    managed_prefix: Option<&Path>,
 ) -> InstallDiscovery {
     // An empty named path counts as unset, like the config layers' `var()`.
     let env_dir = env_dir.filter(|p| !p.as_os_str().is_empty());
@@ -112,6 +121,16 @@ pub fn discover(
         };
     }
 
+    // A deliberate calxgloss install outranks the guessed glob: the prefix
+    // is where `doctor --fix` put a known-paired build, while a stray
+    // home-directory directory is only a candidate. A user whose own glob-
+    // matched install should win names it via env or config.
+    if let Some(found) = managed_prefix.and_then(glob_highest) {
+        return InstallDiscovery::Found {
+            install: found,
+            source: InstallSource::ManagedPrefix,
+        };
+    }
     if let Some(found) = home.and_then(glob_highest) {
         return InstallDiscovery::Found {
             install: found,
@@ -123,7 +142,7 @@ pub fn discover(
 
 /// Whether `path` looks like a Ghidra install: the `Ghidra/Framework` directory
 /// is what every launcher and the headless recipe expect inside it.
-fn layout_valid(path: &Path) -> bool {
+pub(crate) fn layout_valid(path: &Path) -> bool {
     path.join("Ghidra").join("Framework").is_dir()
 }
 
@@ -158,7 +177,7 @@ fn version_from_properties(path: &Path) -> Option<String> {
 /// Whether a version string is dot-separated numbers, the only spelling the
 /// highest-version tie rule can order. Every component must be numeric, so a
 /// junk name like `12.x` never outranks a real install.
-fn parses_as_version(version: &str) -> bool {
+pub(crate) fn parses_as_version(version: &str) -> bool {
     let mut components = version.split('.').peekable();
     components.peek().is_some()
         && components.all(|part| !part.is_empty() && part.parse::<u64>().is_ok())
@@ -212,7 +231,7 @@ mod tests {
         // A newer install sits in the home glob; the env var still wins,
         // because an explicitly named path outranks a guessed one.
         sample_install(dir.path(), "12.1.2");
-        let found = discover(Some(&from_env), None, Some(dir.path()));
+        let found = discover(Some(&from_env), None, Some(dir.path()), None);
         match found {
             InstallDiscovery::Found { install, source } => {
                 assert_eq!(install.version, "11.1.2");
@@ -227,7 +246,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let from_config = sample_install(dir.path(), "11.1.2");
         sample_install(dir.path(), "12.1.2");
-        let found = discover(None, Some(&from_config), Some(dir.path()));
+        let found = discover(None, Some(&from_config), Some(dir.path()), None);
         match found {
             InstallDiscovery::Found { install, source } => {
                 assert_eq!(install.version, "11.1.2");
@@ -243,7 +262,7 @@ mod tests {
         sample_install(dir.path(), "11.1.2");
         sample_install(dir.path(), "12.1.10");
         sample_install(dir.path(), "12.1.2");
-        let found = discover(None, None, Some(dir.path()));
+        let found = discover(None, None, Some(dir.path()), None);
         match found {
             InstallDiscovery::Found { install, source } => {
                 // Numeric component order, not lexical: 12.1.10 beats 12.1.2.
@@ -263,7 +282,7 @@ mod tests {
         // A perfectly good install sits in the glob — but the named path is
         // the misconfiguration the user needs to see, not a silent fallback.
         sample_install(dir.path(), "11.1.2");
-        let found = discover(Some(&hollow), None, Some(dir.path()));
+        let found = discover(Some(&hollow), None, Some(dir.path()), None);
         match found {
             InstallDiscovery::Invalid { path, source } => {
                 assert_eq!(path, hollow);
@@ -283,7 +302,7 @@ mod tests {
             "#generated\napplication.version=12.1.2\n",
         )
         .expect("write properties");
-        let found = discover(Some(&path), None, None);
+        let found = discover(Some(&path), None, None, None);
         match found {
             InstallDiscovery::Found { install, .. } => assert_eq!(install.version, "12.1.2"),
             other => panic!("expected a found install, got {other:?}"),
@@ -297,7 +316,7 @@ mod tests {
         // lenient first-component check — it must be skipped entirely.
         sample_install(dir.path(), "12.x");
         sample_install(dir.path(), "12.1.2");
-        let found = discover(None, None, Some(dir.path()));
+        let found = discover(None, None, Some(dir.path()), None);
         match found {
             InstallDiscovery::Found { install, .. } => assert_eq!(install.version, "12.1.2"),
             other => panic!("expected a found install, got {other:?}"),
@@ -310,7 +329,7 @@ mod tests {
         sample_install(dir.path(), "12.1.2");
         // `GHIDRA_INSTALL_DIR=""` is unset in spirit, not a path to report invalid.
         let empty = std::path::Path::new("");
-        let found = discover(Some(empty), Some(empty), Some(dir.path()));
+        let found = discover(Some(empty), Some(empty), Some(dir.path()), None);
         match found {
             InstallDiscovery::Found { source, .. } => assert_eq!(source, InstallSource::HomeGlob),
             other => panic!("expected a found install, got {other:?}"),
@@ -322,16 +341,56 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(dir.path().join("not-ghidra")).expect("create decoy");
         assert_eq!(
-            discover(None, None, Some(dir.path())),
+            discover(None, None, Some(dir.path()), None),
             InstallDiscovery::NotFound
         );
-        assert_eq!(discover(None, None, None), InstallDiscovery::NotFound);
+        assert_eq!(discover(None, None, None, None), InstallDiscovery::NotFound);
+    }
+
+    #[test]
+    fn test_the_managed_prefix_outranks_the_home_glob() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // A stray old install sits in the home; the deliberate calxgloss
+        // install under the prefix is the paired one and wins.
+        sample_install(dir.path(), "11.1.2");
+        let prefix = dir.path().join(".local/share/calxgloss/ghidra");
+        std::fs::create_dir_all(&prefix).expect("create prefix");
+        sample_install(&prefix, "12.1.2");
+        let found = discover(None, None, Some(dir.path()), Some(&prefix));
+        match found {
+            InstallDiscovery::Found { install, source } => {
+                assert_eq!(install.version, "12.1.2");
+                assert_eq!(source, InstallSource::ManagedPrefix);
+            }
+            other => panic!("expected a found install, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_a_named_path_still_outranks_the_managed_prefix() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let prefix = dir.path().join("prefix");
+        std::fs::create_dir_all(&prefix).expect("create prefix");
+        let named = sample_install(dir.path(), "11.1.2");
+        sample_install(&prefix, "12.1.2");
+        let found = discover(Some(&named), None, None, Some(&prefix));
+        match found {
+            InstallDiscovery::Found { install, source } => {
+                assert_eq!(install.version, "11.1.2");
+                assert_eq!(source, InstallSource::EnvVar);
+            }
+            other => panic!("expected a found install, got {other:?}"),
+        }
     }
 
     #[test]
     fn test_source_names_point_at_the_knob_to_turn() {
         assert_eq!(InstallSource::EnvVar.to_string(), "$GHIDRA_INSTALL_DIR");
         assert_eq!(InstallSource::Config.to_string(), "ghidra.install_dir");
+        assert_eq!(
+            InstallSource::ManagedPrefix.to_string(),
+            "calxgloss install prefix"
+        );
         assert_eq!(InstallSource::HomeGlob.to_string(), "home directory");
     }
 }
