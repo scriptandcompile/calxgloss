@@ -1266,7 +1266,7 @@ impl TranslationPipeline {
         let context = |source| TranslatorError::GhidraFetch {
             binary: binary.to_string(),
             function: function.to_string(),
-            source,
+            source: Box::new(source),
         };
 
         let matches = self
@@ -1278,13 +1278,13 @@ impl TranslationPipeline {
             TranslatorError::GhidraFetch {
                 binary: binary.to_string(),
                 function: function.to_string(),
-                source: calxgloss_ghidra::GhidraError::NotFound {
+                source: Box::new(calxgloss_ghidra::GhidraError::NotFound {
                     kind: "function",
                     query: format!(
                         "{function} (the search matched {:?})",
                         matches.iter().map(|m| &m.name).collect::<Vec<_>>()
                     ),
-                },
+                }),
             }
         })?;
 
@@ -1333,7 +1333,7 @@ impl TranslationPipeline {
             .map_err(|e| TranslatorError::GhidraFetch {
                 binary: binary.to_string(),
                 function: "<imports>".to_string(),
-                source: e,
+                source: Box::new(e),
             })
     }
 

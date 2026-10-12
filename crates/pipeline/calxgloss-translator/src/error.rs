@@ -6,11 +6,15 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum TranslatorError {
     /// Failed to fetch function information from Ghidra.
+    ///
+    /// The source is boxed: `GhidraError` carries fat variants (a reqwest
+    /// error beside a URL), and unboxed this variant alone pushed
+    /// `Result`'s `Err` half past clippy's `result_large_err` threshold.
     #[error("failed to get function '{function}' from DLL '{binary}': {source}")]
     GhidraFetch {
         binary: String,
         function: String,
-        source: calxgloss_ghidra::GhidraError,
+        source: Box<calxgloss_ghidra::GhidraError>,
     },
 
     /// Failed to call the LLM.
