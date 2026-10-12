@@ -24,7 +24,9 @@
 //! the installed Ghidra* (releases scanned backwards, the zip is small);
 //! plugin present and Ghidra missing → exactly the build the existing
 //! extension names; both missing → plugin-first. `ghidra.pin_version` /
-//! `--ghidra-version` overrides the version selection.
+//! `--ghidra-version` forces an exact pair: the newest plugin built for the
+//! pinned build plus exactly that Ghidra build — no nearest-≥ fallback, and
+//! a local zip contradicting the pin is refused.
 //!
 //! Safety, load-bearing:
 //! * consent — the ~570 MB download needs `--install-ghidra` (or
@@ -36,7 +38,11 @@
 //!   an old → new confirmation — the bootstrap reports
 //!   [`GhidraError::UpgradeConfirmation`] and the CLI asks;
 //! * never sudo: the install prefix must be user-writable, and an unwritable
-//!   one is a named failure, not a fallback.
+//!   one is a named failure, not a fallback;
+//! * downloads stream into the XDG cache dir, resume over HTTP `Range`, and
+//!   are reused by name; an optional `GHIDRA_MCP_GITHUB_TOKEN` raises the
+//!   API rate limit, and an exhausted one fails with that knob named rather
+//!   than a bare 403.
 //!
 //! Every input is a parameter — API base, cache, state dirs, java binary,
 //! consent — so the integration tests drive the whole flow against a fake
@@ -78,8 +84,10 @@ pub struct BootstrapRequest<'a> {
     /// The java binary for the JDK gate — `ghidra.java_home`'s `bin/java`,
     /// or `java` on PATH when unset.
     pub java: Option<&'a Path>,
-    /// `ghidra.pin_version` / `--ghidra-version`: override the Ghidra
-    /// version the plugin-first selection would pick.
+    /// `ghidra.pin_version` / `--ghidra-version`: force the exact pair —
+    /// the newest plugin built for this Ghidra build, and exactly this
+    /// build (no nearest ≥ fallback, and a local zip naming another build
+    /// is refused).
     pub pin_version: Option<&'a str>,
     /// `--plugin-zip`: install this local extension zip instead of fetching
     /// one (no download, no checksum path).
@@ -136,6 +144,21 @@ pub async fn bootstrap(request: &BootstrapRequest<'_>) -> Result<BootstrapReport
     match &install {
         // Ghidra present: the plugin is judged against it, strictly.
         InstallDiscovery::Found { install, source } => {
+            // A pin naming a different build than the discovered install is
+            // a contradiction: pairing against the installed version anyway
+            // would silently ignore the pin, and installing a second Ghidra
+            // beside a working one is not the bootstrap's call to make.
+            if let Some(pin) = request.pin_version && install.version != pin {
+                return Err(GhidraError::BootstrapBlocked {
+                    reason: format!(
+                        "ghidra.pin_version names Ghidra {pin}, but the discovered install \
+                         is {} at {} — point ghidra.install_dir at a {pin} install, or \
+                         drop the pin",
+                        install.version,
+                        install.path.display()
+                    ),
+                });
+            }
             let discovery = extension::discover(&config_root, &install.version);
             let verdict = extension::verdict(&discovery, &install.version);
             match verdict {
@@ -295,15 +318,32 @@ async fn plugin_first(
     manifest: &mut InstallManifest,
     report: &mut BootstrapReport,
 ) -> Result<()> {
-    let fetched = match request.local_plugin_zip {
-        Some(zip) => FetchedPlugin::from_local(zip)?,
-        None => {
-            require_download_consent(request, "the GhidraMCP extension zip")?;
-            let release = request.api.latest_release(PLUGIN_REPO).await?;
-            let asset = plugin_asset(&release)?;
-            FetchedPlugin::fetch(request, asset).await?
-        }
+    let fetched = if let Some(zip) = request.local_plugin_zip {
+        FetchedPlugin::from_local(zip)?
+    } else if let Some(pin) = request.pin_version {
+        // A pin forces the whole pair: the newest plugin built for the
+        // pinned build, never merely the newest plugin — the latest release
+        // may be compiled against a different Ghidra and would land in the
+        // pinned build's Extensions dir as a broken pairing.
+        fetch_plugin_matching(request, pin).await?
+    } else {
+        require_download_consent(request, "the GhidraMCP extension zip")?;
+        let release = request.api.latest_release(PLUGIN_REPO).await?;
+        let asset = plugin_asset(&release)?;
+        FetchedPlugin::fetch(request, asset).await?
     };
+    // A local plugin zip that contradicts the pin names a pair that cannot
+    // work; the strict pairing rule refuses it instead of installing a
+    // plugin the pinned build will not load.
+    if let Some(pin) = request.pin_version && fetched.built_for != pin {
+        return Err(GhidraError::BootstrapBlocked {
+            reason: format!(
+                "the plugin zip is built for Ghidra {}, not the pinned {pin} — pass a \
+                 plugin zip built for {pin}, or drop the pin",
+                fetched.built_for
+            ),
+        });
+    }
     let version = request.pin_version.unwrap_or(&fetched.built_for);
     let ghidra = install_ghidra(request, version, install_prefix, manifest).await?;
     // The plugin lands in the Extensions dir of the build actually
@@ -372,11 +412,18 @@ async fn fetch_plugin_matching(
         );
     }
     Err(GhidraError::BootstrapBlocked {
-        reason: format!(
-            "no {PLUGIN_REPO} release is built for Ghidra {ghidra_version}; calxgloss will \
-             not modify the existing install — upgrade Ghidra, or pin a version with \
-             ghidra.pin_version"
-        ),
+        reason: if request.pin_version == Some(ghidra_version) {
+            format!(
+                "no {PLUGIN_REPO} release is built for the pinned Ghidra {ghidra_version}; \
+                 pick a version the plugin actually supports, or drop the pin"
+            )
+        } else {
+            format!(
+                "no {PLUGIN_REPO} release is built for Ghidra {ghidra_version}; calxgloss \
+                 will not modify the existing install — upgrade Ghidra, or pin a version \
+                 with ghidra.pin_version"
+            )
+        },
     })
 }
 
@@ -457,6 +504,10 @@ async fn install_ghidra(
     install_prefix: &Path,
     manifest: &mut InstallManifest,
 ) -> Result<ManagedInstall> {
+    // A pin is a demand for the exact build: no nearest-≥ sideways step,
+    // because the plugin was built for the pinned version and any other
+    // build breaks the pair the pin exists to guarantee.
+    let pinned = request.pin_version == Some(version);
     let (zip, release_version) = match request.local_ghidra_zip {
         Some(zip) => (zip.to_path_buf(), None),
         None => {
@@ -464,18 +515,28 @@ async fn install_ghidra(
             let tag = releases::ghidra_tag(version);
             let release = match request.api.release_by_tag(GHIDRA_REPO, &tag).await? {
                 Some(release) => Some(release),
-                None => {
+                None if !pinned => {
                     // Nearest ≥ fallback: never a downgrade, never a silent
                     // jump past the build the plugin was compiled against
                     // when an exact match exists.
                     let releases = request.api.list_releases(GHIDRA_REPO).await?;
                     releases::nearest_release_at_least(&releases, version).cloned()
                 }
+                None => None,
             }
             .ok_or_else(|| GhidraError::BootstrapBlocked {
-                reason: format!(
-                    "{GHIDRA_REPO} has no release for Ghidra {version} or a nearer newer one"
-                ),
+                reason: if pinned {
+                    format!(
+                        "{GHIDRA_REPO} has no release tagged {tag}: the pinned Ghidra \
+                         {version} cannot be installed — pick a version the repository \
+                         actually releases"
+                    )
+                } else {
+                    format!(
+                        "{GHIDRA_REPO} has no release for Ghidra {version} or a nearer \
+                         newer one"
+                    )
+                },
             })?;
             let asset = release
                 .ghidra_asset()
@@ -498,7 +559,16 @@ async fn install_ghidra(
     let installed = release_version
         .or_else(|| zip_top_level_version(&zip))
         .unwrap_or_else(|| version.to_string());
-    if installed != version {
+    if pinned && installed != version {
+        // Only a local zip can miss the pin this way: the exact-tag fetch
+        // above already guarantees the match.
+        return Err(GhidraError::BootstrapBlocked {
+            reason: format!(
+                "the Ghidra zip holds build {installed}, not the pinned {version} — pass a \
+                 zip for {version}, or drop the pin"
+            ),
+        });
+    } else if installed != version {
         info!(
             requested = %version,
             installed = %installed,

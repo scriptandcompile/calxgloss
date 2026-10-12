@@ -197,7 +197,9 @@ Selection rules:
 - **Plugin present, Ghidra missing** → read its `extension.properties` and
   fetch exactly that Ghidra.
 - **Both missing** → plugin-first as above.
-- Pin with `ghidra.pin_version` / `--ghidra-version` to override.
+- Pin with `ghidra.pin_version` / `--ghidra-version` to force an exact pair:
+  the newest plugin built for the pinned build plus exactly that Ghidra
+  build (no nearest-≥ fallback; a local zip naming another build is refused).
 
 CLI + config:
 - `calxgloss doctor --fix` (or `calxgloss setup ghidra`) runs the bootstrap;

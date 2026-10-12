@@ -253,6 +253,24 @@ impl ReleasesApi {
             return Ok(None);
         }
         if !status.is_success() {
+            // GitHub's rate limits answer as 403 with the remaining budget
+            // at zero (primary) or 429; the secondary limit answers 403 with
+            // a `retry-after` instead. Either way the fix is a token or the
+            // clock — a bare "HTTP 403" would hide that.
+            let limited = status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                || (status == reqwest::StatusCode::FORBIDDEN
+                    && (response
+                        .headers()
+                        .get("x-ratelimit-remaining")
+                        .and_then(|value| value.to_str().ok())
+                        == Some("0")
+                        || response.headers().contains_key("retry-after")));
+            if limited {
+                return Err(GhidraError::RateLimited {
+                    url: url.to_string(),
+                    detail: format!("HTTP {status}"),
+                });
+            }
             return Err(GhidraError::ReleasesApi {
                 url: url.to_string(),
                 detail: format!("HTTP {status}"),
@@ -367,9 +385,10 @@ pub fn version_from_tag(tag: &str) -> Option<&str> {
 /// The release whose Ghidra version is the nearest at-or-above `version`.
 ///
 /// The exact-tag lookup is the first choice (design §3.5); this is its
-/// fallback, and "nearest ≥" keeps a pinned request from silently *down*grading
-/// to an older build the plugin may not even support. Releases whose tags do
-/// not name an orderable version are skipped.
+/// fallback, and "nearest ≥" keeps a request from silently *down*grading to
+/// an older build the plugin may not even support (a pinned request never
+/// falls back here at all — it demands the exact build). Releases whose
+/// tags do not name an orderable version are skipped.
 pub fn nearest_release_at_least<'a>(releases: &'a [Release], version: &str) -> Option<&'a Release> {
     releases
         .iter()

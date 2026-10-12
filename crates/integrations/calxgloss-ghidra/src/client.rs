@@ -235,6 +235,20 @@ pub enum GhidraError {
     #[error("The GitHub releases API call for {url} failed: {detail}")]
     ReleasesApi { url: String, detail: String },
 
+    /// The GitHub releases API refused the request because the caller's
+    /// rate limit is exhausted — the anonymous bucket, or a token's own.
+    ///
+    /// Named apart from a plain API failure because the remediation is
+    /// different: a token raises the limit immediately, and the clock
+    /// clears it on its own; anything already downloaded stays cached
+    /// either way, so a retry does not refetch.
+    #[error(
+        "The GitHub releases API rate limit is exhausted ({url}: {detail}).\nSet \
+            GHIDRA_MCP_GITHUB_TOKEN to a GitHub token to raise the limit, or wait for the \
+            window to reset and retry — downloaded artifacts stay cached"
+    )]
+    RateLimited { url: String, detail: String },
+
     /// A downloaded artifact's sha256 did not match the releases API digest,
     /// so it was never unzipped.
     ///
