@@ -28,6 +28,41 @@ use super::templates::{
 };
 
 // ============================================================
+// Render helper
+// ============================================================
+
+/// Renders a template and normalizes the blank lines its block tags leave
+/// behind, so sections always sit exactly one blank line apart and an
+/// omitted conditional section leaves no trace.
+fn render_prompt<T: Template>(template: &T) -> Result<String, PromptError> {
+    let rendered = template
+        .render()
+        .map_err(|e| PromptError::Render(e.to_string()))?;
+    Ok(collapse_blank_lines(&rendered))
+}
+
+/// Collapses runs of blank lines to a single blank line and trims the ends.
+fn collapse_blank_lines(rendered: &str) -> String {
+    let mut out = String::with_capacity(rendered.len());
+    let mut blanks = 0usize;
+    for line in rendered.lines() {
+        if line.trim().is_empty() {
+            blanks += 1;
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+            if blanks > 0 {
+                out.push('\n');
+            }
+        }
+        out.push_str(line);
+        blanks = 0;
+    }
+    out
+}
+
+// ============================================================
 // Standard translation prompt builder
 // ============================================================
 
@@ -61,9 +96,7 @@ pub fn build_translate_prompt(req: &TranslationRequest) -> Result<String, Prompt
         template.api_category_mappings = api_category_mappings;
     }
 
-    template
-        .render()
-        .map_err(|e| PromptError::Render(e.to_string()))
+    render_prompt(&template)
 }
 
 // ============================================================
@@ -165,9 +198,7 @@ pub fn build_escalate_prompt_with_context(
         call_graph_context,
     );
 
-    template
-        .render()
-        .map_err(|e| PromptError::Render(e.to_string()))
+    render_prompt(&template)
 }
 
 // ============================================================
@@ -196,9 +227,7 @@ pub fn build_edge_case_prompt(
         failure_history,
     );
 
-    template
-        .render()
-        .map_err(|e| PromptError::Render(e.to_string()))
+    render_prompt(&template)
 }
 
 // ============================================================
@@ -213,9 +242,7 @@ pub fn build_edge_case_prompt(
 pub fn build_signature_prompt(data: &SignaturePromptData) -> Result<String, PromptError> {
     let template = SignatureTemplate::from_data(data);
 
-    template
-        .render()
-        .map_err(|e| PromptError::Render(e.to_string()))
+    render_prompt(&template)
 }
 
 // ============================================================
@@ -239,9 +266,7 @@ pub fn build_disassembly_prompt(data: &DisassemblyPromptData) -> Result<String, 
     let mut template = TranslateTemplate::from_request(&req);
     template.no_windows_apis = data.no_windows_apis;
 
-    template
-        .render()
-        .map_err(|e| PromptError::Render(e.to_string()))
+    render_prompt(&template)
 }
 
 // ============================================================
@@ -255,9 +280,7 @@ pub fn build_disassembly_prompt(data: &DisassemblyPromptData) -> Result<String, 
 pub fn build_with_tests_prompt(data: &WithTestsPromptData) -> Result<String, PromptError> {
     let template = WithTestsTemplate::from_data(data);
 
-    template
-        .render()
-        .map_err(|e| PromptError::Render(e.to_string()))
+    render_prompt(&template)
 }
 
 // ============================================================
@@ -278,9 +301,7 @@ pub fn build_with_tests_prompt(data: &WithTestsPromptData) -> Result<String, Pro
 pub fn build_module_context_prompt(data: &ModuleContextPromptData) -> Result<String, PromptError> {
     let template = ModuleContextTemplate::from_data(data);
 
-    template
-        .render()
-        .map_err(|e| PromptError::Render(e.to_string()))
+    render_prompt(&template)
 }
 
 // ============================================================
@@ -302,9 +323,7 @@ pub fn build_module_context_prompt(data: &ModuleContextPromptData) -> Result<Str
 pub fn build_full_module_prompt(data: &FullModulePromptData) -> Result<String, PromptError> {
     let template = FullModuleTemplate::from_data(data);
 
-    template
-        .render()
-        .map_err(|e| PromptError::Render(e.to_string()))
+    render_prompt(&template)
 }
 
 // ============================================================
@@ -349,9 +368,7 @@ pub fn build_complexity_prompt(
             if !api_category_mappings.is_empty() {
                 template.api_category_mappings = api_category_mappings;
             }
-            template
-                .render()
-                .map_err(|e| PromptError::Render(e.to_string()))?
+            render_prompt(&template)?
         }
         FunctionComplexity::Standard => {
             let req = build_std_request(data);
@@ -360,9 +377,7 @@ pub fn build_complexity_prompt(
             if !api_category_mappings.is_empty() {
                 template.api_category_mappings = api_category_mappings;
             }
-            template
-                .render()
-                .map_err(|e| PromptError::Render(e.to_string()))?
+            render_prompt(&template)?
         }
         FunctionComplexity::Rich => {
             let req = build_std_request(data);
@@ -372,9 +387,7 @@ pub fn build_complexity_prompt(
                 template.api_category_mappings = api_category_mappings;
             }
             template.control_flow_findings = data.control_flow_findings.clone();
-            template
-                .render()
-                .map_err(|e| PromptError::Render(e.to_string()))?
+            render_prompt(&template)?
         }
         FunctionComplexity::Detailed => {
             let req = build_std_request(data);
@@ -384,9 +397,7 @@ pub fn build_complexity_prompt(
                 template.api_category_mappings = api_category_mappings;
             }
             template.control_flow_findings = data.control_flow_findings.clone();
-            template
-                .render()
-                .map_err(|e| PromptError::Render(e.to_string()))?
+            render_prompt(&template)?
         }
     };
 

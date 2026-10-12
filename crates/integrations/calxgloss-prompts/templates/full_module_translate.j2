@@ -4,60 +4,42 @@ You are a reverse engineering specialist. Translate the following function from 
 ## SOURCE DLL: {{ dll_name }}
 ## ADDRESS: {{ address }}
 
----
-
+{% if !test_results.is_empty() %}
 ## BASELINE TEST SUMMARY
 
-{% if test_results.is_empty() %}
-Baseline tests have not been executed yet. The tests below represent the behavioral contract your translation must satisfy.
-{% else %}
 **{{ test_results.len() }} test(s)** in the baseline.
+
 {% endif %}
-
----
-
 ## DISASSEMBLY
 
 {{ disassembly }}
-
----
 
 ## DECOMPILER OUTPUT (pseudo-C)
 
 {{ decompiler_output }}
 
----
-
+{% if !windows_apis.is_empty() %}
 ## WINDOWS API CALLS IDENTIFIED
 
 {% for api in windows_apis %}
 - {{ api.name }} → {{ api.category }} → {{ api.pal_mapping }}
 {% endfor %}
 
-{% if no_windows_apis %}
-No Windows API calls were identified in this function.
 {% endif %}
-
----
-
+{% if !call_graph_neighbors.is_empty() %}
 ## CALL GRAPH NEIGHBORS
 
-{% if !call_graph_neighbors.is_empty() %}
 Functions directly called by or calling this function.
 
 {% for neighbor in call_graph_neighbors %}
 - **{{ neighbor.name }}** ({{ neighbor.role }})
   {% if neighbor.signature != "" %}Signature: {{ neighbor.signature }}{% else %}Signature: (not available){% endif %}
 {% endfor %}
-{% else %}
-No call graph neighbors were available.
+
 {% endif %}
-
----
-
+{% if !call_graph_context.is_empty() %}
 ## CALL GRAPH CONTEXT
 
-{% if !call_graph_context.is_empty() %}
 {% for ctx in call_graph_context %}
 ### {{ ctx.name }} ({{ ctx.address }})
 
@@ -66,29 +48,26 @@ No call graph neighbors were available.
 {% for neigh in ctx.callers %}
 - `{{ neigh.node.name }}` ({{ neigh.call_type }})
 {% endfor %}
-{% endif %}
 
+{% endif %}
 {% if ctx.categorized_callees != [] %}
 **Categorized API Calls:**
 {% for group in ctx.categorized_callees %}
 - **{{ group.category }}**: {{ group.apis|join(", ") }}
 {% endfor %}
-{% endif %}
 
+{% endif %}
 {% if ctx.leaf_api_context != [] %}
 **Leaf API Suggestions:**
 {% for api in ctx.leaf_api_context %}
 - `{{ api.api_name }}` → [{{ api.rust_crate }}](https://crates.io/crates/{{ api.rust_crate }})
 {% endfor %}
-{% endif %}
 
+{% endif %}
 {% endfor %}
-{% else %}
-No enriched call graph context available.
+
 {% endif %}
-
----
-
+{% if !test_results.is_empty() %}
 ## BASELINE TESTS (translated Rust code must produce identical outputs)
 
 {% for test in test_results %}
@@ -102,16 +81,10 @@ Test #{{ test.index }}{% if test.passed %} — PASSED{% else %} — FAILED{% end
 
 {% endfor %}
 
-{% if test_results.is_empty() %}
-No baseline tests are available for this function yet. Generate tests by calling the original binary
-with boundary values (zero, max, negative, typical inputs) and record the expected outputs.
 {% endif %}
-
----
-
+{% if !neighboring_functions.is_empty() %}
 ## NEIGHBORING FUNCTION CONTEXT
 
-{% if !neighboring_functions.is_empty() %}
 The following functions share code patterns, data structures, or call conventions
 with this function. Review them for context when translating:
 
@@ -130,15 +103,11 @@ Pseudo-C:
 ```
 
 {% endfor %}
-{% else %}
-No neighboring function context available.
+
 {% endif %}
-
----
-
+{% if !data_structures.is_empty() %}
 ## SHARED DATA STRUCTURES
 
-{% if !data_structures.is_empty() %}
 The following data structures are used in or near this function:
 
 {% for ds in data_structures %}
@@ -150,15 +119,11 @@ Fields:
 {% endfor %}
 
 {% endfor %}
-{% else %}
-No data structure context available.
+
 {% endif %}
-
----
-
+{% if !control_flow_findings.is_empty() %}
 ## CONTROL FLOW PATTERNS
 
-{% if !control_flow_findings.is_empty() %}
 The following control-flow patterns were recognized in this function by static
 analysis. Where a finding is credible, express the construct with the suggested
 Rust pattern instead of transliterating the raw conditional chain or recursive
@@ -168,15 +133,11 @@ call:
 - **{{ finding.suggestion|safe }}** ({{ finding.kind }} construct, confidence {{ finding.confidence }})
   Evidence: `{{ finding.evidence|safe }}`
 {% endfor %}
-{% else %}
-No control-flow context available.
+
 {% endif %}
-
----
-
+{% if !shim_layers.is_empty() %}
 ## SHIM LAYER CODE (crate-replacement DLLs)
 
-{% if !shim_layers.is_empty() %}
 The following shim layers have been generated to replace Windows DLLs with
 Rust crate equivalents. The translated function should use the **Rust crate
 API** directly (via the shim or through PAL traits), NOT the original Windows API.
@@ -189,15 +150,11 @@ API** directly (via the shim or through PAL traits), NOT the original Windows AP
 ```
 
 {% endfor %}
-{% else %}
-No shim layers are associated with this function's DLL.
+
 {% endif %}
-
----
-
+{% if !pal_traits.is_empty() %}
 ## PAL TRAIT DEFINITIONS (platform abstraction layer)
 
-{% if !pal_traits.is_empty() %}
 The following PAL traits abstract platform-specific APIs. When translating
 Windows API calls, use the trait method that corresponds to the mapping
 shown in "WINDOWS API CALLS IDENTIFIED" above.
@@ -214,12 +171,8 @@ Methods:
 
 {% endfor %}
 {% endfor %}
-{% else %}
-No PAL trait definitions are available.
+
 {% endif %}
-
----
-
 ## EXTERNAL FUNCTION HANDLING RULES
 
 Every function the translated code calls falls into exactly one of these categories.
@@ -270,8 +223,6 @@ extern "C" {
 }
 ```
 
----
-
 ## TRANSLATION REQUIREMENTS
 
 1. **Output ONLY the Rust function — no explanations, no markdown fences, no code blocks.**
@@ -297,8 +248,6 @@ extern "C" {
     as the interface for platform-specific calls. This ensures consistency with other
     translated functions that use the same PAL traits.
 
----
-
 ## EXAMPLE OUTPUT FORMAT
 
 If the function calls both a known API and an internal function, the output should look like:
@@ -322,7 +271,5 @@ Note:
 - Known API calls replaced with std:: equivalents
 - Only the extern declarations and the translated function body are output
 - No mod declarations, no imports, no surrounding prose
-
----
 
 ## RUST CODE:

@@ -4,32 +4,23 @@ You are a reverse engineering specialist. Translate the following function from 
 ## SOURCE DLL: {{ dll_name }}
 ## ADDRESS: {{ address }}
 
----
-
 ## DISASSEMBLY
 
 {{ disassembly }}
-
----
 
 ## DECOMPILER OUTPUT (pseudo-C)
 
 {{ decompiler_output }}
 
----
-
+{% if !windows_apis.is_empty() %}
 ## WINDOWS API CALLS IDENTIFIED
 
 {% for api in windows_apis %}
 - {{ api.name }} → {{ api.category }} → {{ api.pal_mapping }}
 {% endfor %}
 
-{% if no_windows_apis %}
-No Windows API calls were identified in this function.
 {% endif %}
-
----
-
+{% if !api_category_mappings.is_empty() %}
 ## API MAPPING REFERENCE
 
 The tables below contain the full mapping table rows for the API categories this function touches.
@@ -47,12 +38,8 @@ Use these tables as your primary reference when deciding how to translate specif
 
 {% endfor %}
 
-{% if api_category_mappings.is_empty() %}
-No API category mapping reference is available for this function.
 {% endif %}
-
----
-
+{% if !test_cases.is_empty() %}
 ## BASELINE TESTS (translated Rust code must produce identical outputs)
 
 {% for test in test_cases %}
@@ -62,8 +49,7 @@ Test #{{ test.index }}:
   Side effects: {% if test.side_effects == "[]" %}none{% else %}{{ test.side_effects }}{% endif %}
 {% endfor %}
 
----
-
+{% endif %}
 ## EXTERNAL FUNCTION HANDLING RULES
 
 Every function the translated code calls falls into exactly one of these categories.
@@ -114,8 +100,6 @@ extern "C" {
 }
 ```
 
----
-
 ## TRANSLATION REQUIREMENTS
 
 1. **Output ONLY the Rust function — no explanations, no markdown fences, no code blocks.**
@@ -128,8 +112,6 @@ extern "C" {
    IDENTIFIED" section must be declared as an `extern "C"` stub at the top of the output (see rules above).
    This includes CRT internals (`__security_*`), DLL-internal dispatchers (`dllmain_dispatch`), and
    other project functions.
-
----
 
 ## EXAMPLE OUTPUT FORMAT
 
@@ -154,7 +136,5 @@ Note:
 - Known API calls replaced with std:: equivalents
 - Only the extern declarations and the translated function body are output
 - No mod declarations, no imports, no surrounding prose
-
----
 
 ## RUST CODE:

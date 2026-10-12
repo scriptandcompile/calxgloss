@@ -5,32 +5,23 @@ You are a reverse engineering specialist. Translate the following function from 
 ## ADDRESS: {{ address }}
 ## COMPLEXITY: rich
 
----
-
 ## DISASSEMBLY
 
 {{ disassembly }}
-
----
 
 ## DECOMPILER OUTPUT (pseudo-C)
 
 {{ decompiler_output }}
 
----
-
+{% if !windows_apis.is_empty() %}
 ## WINDOWS API CALLS IDENTIFIED
 
 {% for api in windows_apis %}
 - {{ api.name }} -> {{ api.category }} -> {{ api.pal_mapping }}
 {% endfor %}
 
-{% if no_windows_apis %}
-No Windows API calls were identified in this function.
 {% endif %}
-
----
-
+{% if !api_category_mappings.is_empty() %}
 ## API MAPPING REFERENCE
 
 The tables below provide detailed mapping context for the API categories this function touches.
@@ -47,12 +38,8 @@ Use these as your primary reference when translating specific API calls.
 
 {% endfor %}
 
-{% if api_category_mappings.is_empty() %}
-No API category mapping reference is available for this function.
 {% endif %}
-
----
-
+{% if !test_cases.is_empty() %}
 ## BASELINE TESTS (translated Rust code must produce identical outputs)
 
 {% for test in test_cases %}
@@ -62,11 +49,10 @@ Test #{{ test.index }}:
   Side effects: {% if test.side_effects == "[]" %}none{% else %}{{ test.side_effects }}{% endif %}
 {% endfor %}
 
----
-
+{% endif %}
+{% if !control_flow_findings.is_empty() %}
 ## CONTROL FLOW PATTERNS
 
-{% if !control_flow_findings.is_empty() %}
 The following control-flow patterns were recognized in this function by static
 analysis. Where a finding is credible, express the construct with the suggested
 Rust pattern instead of transliterating the raw conditional chain or recursive
@@ -76,12 +62,8 @@ call:
 - **{{ finding.suggestion|safe }}** ({{ finding.kind }} construct, confidence {{ finding.confidence }})
   Evidence: `{{ finding.evidence|safe }}`
 {% endfor %}
-{% else %}
-No control-flow context available.
+
 {% endif %}
-
----
-
 ## EXTERNAL FUNCTION HANDLING RULES
 
 Every function the translated code calls falls into exactly one of these categories.
@@ -110,8 +92,6 @@ Declare as extern stubs alongside CRT internals.
 
 ### 4. Self-translated functions in the same DLL
 Declare as extern stubs. They will be translated independently.
-
----
 
 ## ADVANCED TRANSLATION GUIDELINES (complex function)
 

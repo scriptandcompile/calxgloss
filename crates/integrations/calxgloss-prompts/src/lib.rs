@@ -140,11 +140,28 @@ mod tests {
     }
 
     #[test]
+    fn prompts_use_one_blank_line_between_sections_and_no_dash_rules() {
+        // Regression: block tags and `---` rules used to leave sections
+        // separated by runs of blank lines and horizontal rules.
+        let req = sample_request();
+        let prompt = build_translate_prompt(&req).unwrap();
+
+        assert!(
+            !prompt.lines().any(|line| line.trim() == "---"),
+            "no standalone --- separator lines"
+        );
+        assert!(
+            !prompt.contains("\n\n\n"),
+            "sections sit exactly one blank line apart"
+        );
+    }
+
+    #[test]
     fn test_prompt_with_no_apis() {
         let mut req = sample_request();
         req.windows_apis = vec![];
         let prompt = build_translate_prompt(&req).unwrap();
-        assert!(prompt.contains("No Windows API calls were identified"));
+        assert!(!prompt.contains("WINDOWS API CALLS IDENTIFIED"));
     }
 
     #[test]
@@ -172,10 +189,10 @@ mod tests {
 
         assert!(prompt.contains("DrawSprite"));
         assert!(prompt.contains("game_logic.dll"));
-        assert!(prompt.contains("No call graph neighbors identified"));
-        assert!(prompt.contains("No neighboring function context available"));
-        assert!(prompt.contains("No data structure context available"));
-        assert!(prompt.contains("No additional type information available"));
+        assert!(!prompt.contains("CALL GRAPH NEIGHBORS"));
+        assert!(!prompt.contains("NEIGHBORING FUNCTIONS"));
+        assert!(!prompt.contains("DATA STRUCTURES"));
+        assert!(!prompt.contains("TYPE INFORMATION"));
     }
 
     #[test]
@@ -642,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn test_escalate_template_without_memory_findings_says_so() {
+    fn test_escalate_template_without_memory_findings_omits_the_section() {
         let prompt = build_escalate_prompt(
             "DrawSprite".to_string(),
             "game_logic.dll".to_string(),
@@ -656,8 +673,7 @@ mod tests {
         )
         .expect("the escalate prompt should render");
 
-        assert!(prompt.contains("MEMORY LIFECYCLE"));
-        assert!(prompt.contains("No memory lifecycle context available."));
+        assert!(!prompt.contains("MEMORY LIFECYCLE"));
     }
 
     #[test]
@@ -701,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn test_escalate_template_without_concurrency_findings_says_so() {
+    fn test_escalate_template_without_concurrency_findings_omits_the_section() {
         let prompt = build_escalate_prompt(
             "DrawSprite".to_string(),
             "game_logic.dll".to_string(),
@@ -715,8 +731,7 @@ mod tests {
         )
         .expect("the escalate prompt should render");
 
-        assert!(prompt.contains("CONCURRENCY"));
-        assert!(prompt.contains("No concurrency context available."));
+        assert!(!prompt.contains("CONCURRENCY"));
     }
 
     #[test]
@@ -800,7 +815,7 @@ mod tests {
     }
 
     #[test]
-    fn test_escalate_template_without_control_flow_findings_says_so() {
+    fn test_escalate_template_without_control_flow_findings_omits_the_section() {
         let prompt = build_escalate_prompt(
             "DrawSprite".to_string(),
             "game_logic.dll".to_string(),
@@ -814,8 +829,7 @@ mod tests {
         )
         .expect("the escalate prompt should render");
 
-        assert!(prompt.contains("CONTROL FLOW"));
-        assert!(prompt.contains("No control-flow context available."));
+        assert!(!prompt.contains("CONTROL FLOW"));
     }
 
     #[test]
@@ -926,7 +940,7 @@ mod tests {
     }
 
     #[test]
-    fn test_escalate_template_without_api_findings_says_so() {
+    fn test_escalate_template_without_api_findings_omits_the_section() {
         let prompt = build_escalate_prompt(
             "DrawSprite".to_string(),
             "game_logic.dll".to_string(),
@@ -940,8 +954,7 @@ mod tests {
         )
         .expect("the escalate prompt should render");
 
-        assert!(prompt.contains("LIBRARIES AND APIS"));
-        assert!(prompt.contains("No library/API context available."));
+        assert!(!prompt.contains("LIBRARIES AND APIS"));
     }
 
     #[test]
@@ -1006,7 +1019,7 @@ mod tests {
     }
 
     #[test]
-    fn test_escalate_template_without_const_findings_says_so() {
+    fn test_escalate_template_without_const_findings_omits_the_section() {
         let prompt = build_escalate_prompt(
             "DrawSprite".to_string(),
             "game_logic.dll".to_string(),
@@ -1020,12 +1033,11 @@ mod tests {
         )
         .expect("the escalate prompt should render");
 
-        assert!(prompt.contains("CONSTANTS"));
-        assert!(prompt.contains("No constant context available."));
+        assert!(!prompt.contains("CONSTANTS"));
     }
 
     #[test]
-    fn test_escalate_template_without_string_findings_says_so() {
+    fn test_escalate_template_without_string_findings_omits_the_section() {
         let prompt = build_escalate_prompt(
             "DrawSprite".to_string(),
             "game_logic.dll".to_string(),
@@ -1039,8 +1051,7 @@ mod tests {
         )
         .expect("the escalate prompt should render");
 
-        assert!(prompt.contains("STRINGS"));
-        assert!(prompt.contains("No string context available."));
+        assert!(!prompt.contains("STRINGS"));
     }
 
     fn control_flow_fixture() -> ControlFlowInfo {
@@ -1075,14 +1086,13 @@ mod tests {
     }
 
     #[test]
-    fn test_module_context_template_without_control_flow_findings_says_so() {
+    fn test_module_context_template_without_control_flow_findings_omits_the_section() {
         let req = sample_request();
         let data = ModuleContextPromptData::from_request(&req);
 
         let prompt = build_module_context_prompt(&data).expect("the prompt should render");
 
-        assert!(prompt.contains("CONTROL FLOW PATTERNS"));
-        assert!(prompt.contains("No control-flow context available."));
+        assert!(!prompt.contains("CONTROL FLOW PATTERNS"));
     }
 
     #[test]
@@ -1108,14 +1118,13 @@ mod tests {
     }
 
     #[test]
-    fn test_full_module_template_without_control_flow_findings_says_so() {
+    fn test_full_module_template_without_control_flow_findings_omits_the_section() {
         let req = sample_request();
         let data = FullModulePromptData::from_request(&req);
 
         let prompt = build_full_module_prompt(&data).expect("the prompt should render");
 
-        assert!(prompt.contains("CONTROL FLOW PATTERNS"));
-        assert!(prompt.contains("No control-flow context available."));
+        assert!(!prompt.contains("CONTROL FLOW PATTERNS"));
     }
 
     #[test]
@@ -1146,7 +1155,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rich_template_without_control_flow_findings_says_so() {
+    fn test_rich_template_without_control_flow_findings_omits_the_section() {
         let data = ComplexityPromptData {
             function_name: "SimpleFunc".to_string(),
             dll_name: "test.dll".to_string(),
@@ -1166,8 +1175,7 @@ mod tests {
         let prompt = build_complexity_prompt(&FunctionComplexity::Rich, &data)
             .expect("the rich prompt should render");
 
-        assert!(prompt.contains("CONTROL FLOW PATTERNS"));
-        assert!(prompt.contains("No control-flow context available."));
+        assert!(!prompt.contains("CONTROL FLOW PATTERNS"));
     }
 
     #[test]
@@ -1198,7 +1206,7 @@ mod tests {
     }
 
     #[test]
-    fn test_detailed_template_without_control_flow_findings_says_so() {
+    fn test_detailed_template_without_control_flow_findings_omits_the_section() {
         let data = ComplexityPromptData {
             function_name: "SimpleFunc".to_string(),
             dll_name: "test.dll".to_string(),
@@ -1218,8 +1226,7 @@ mod tests {
         let prompt = build_complexity_prompt(&FunctionComplexity::Detailed, &data)
             .expect("the detailed prompt should render");
 
-        assert!(prompt.contains("CONTROL FLOW PATTERNS"));
-        assert!(prompt.contains("No control-flow context available."));
+        assert!(!prompt.contains("CONTROL FLOW PATTERNS"));
     }
 
     #[test]
@@ -1247,7 +1254,7 @@ mod tests {
     }
 
     #[test]
-    fn test_escalate_template_without_callback_findings_says_so() {
+    fn test_escalate_template_without_callback_findings_omits_the_section() {
         let prompt = build_escalate_prompt(
             "DrawSprite".to_string(),
             "game_logic.dll".to_string(),
@@ -1261,8 +1268,7 @@ mod tests {
         )
         .expect("the escalate prompt should render");
 
-        assert!(prompt.contains("CALLBACKS"));
-        assert!(prompt.contains("No callback context available."));
+        assert!(!prompt.contains("CALLBACKS"));
     }
 
     #[test]

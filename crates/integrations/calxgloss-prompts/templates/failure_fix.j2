@@ -7,14 +7,11 @@ You are a reverse engineering specialist. You previously translated a function t
 
 {{ original_rust_code }}
 
----
-
 ## VERIFICATION FAILURE
 
 {{ failure_description }}
 
 {% if !failure_history.is_empty() %}
-
 ## PREVIOUS ATTEMPT HISTORY
 
 {% for hint in failure_history %}
@@ -25,10 +22,8 @@ Fix attempted: {{ hint.fix_attempted.as_ref().unwrap() }}
 {% endif %}
 
 {% endfor %}
+
 {% endif %}
-
----
-
 ## TRANSLATION REQUIREMENTS
 
 1. **Output ONLY the corrected Rust code** — no explanations, no markdown fences, no code blocks.

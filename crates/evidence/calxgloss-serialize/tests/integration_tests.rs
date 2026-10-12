@@ -323,10 +323,9 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
 }
 
 #[tokio::test]
-async fn the_serialization_sentinel_renders_when_there_are_no_findings() {
-    // A function the scan said nothing about still gets the section —
-    // with the explicit sentinel, so the LLM knows the absence is a
-    // scanned absence, not a missing step.
+async fn the_serialization_section_is_omitted_when_there_are_no_findings() {
+    // A function the scan said nothing about gets no section at all —
+    // empty context costs prompt tokens and buys the model nothing.
     let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
         "FUN_18003e750".into(),
         "eqmain.dll".into(),
@@ -350,7 +349,7 @@ async fn the_serialization_sentinel_renders_when_there_are_no_findings() {
     )
     .expect("the escalate prompt should render");
 
-    assert!(prompt.contains("No serialization context available."));
+    assert!(!prompt.contains("SERIALIZATION"));
 }
 
 #[tokio::test]

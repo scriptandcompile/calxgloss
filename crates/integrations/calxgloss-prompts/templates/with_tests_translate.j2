@@ -4,60 +4,42 @@ You are a reverse engineering specialist. Translate the following function from 
 ## SOURCE DLL: {{ dll_name }}
 ## ADDRESS: {{ address }}
 
----
-
+{% if !test_results.is_empty() %}
 ## BASELINE TEST SUMMARY
 
-{% if test_results.is_empty() %}
-Baseline tests have not been executed yet. The tests below represent the behavioral contract your translation must satisfy.
-{% else %}
 **{{ test_results.len() }} test(s)** in the baseline.
+
 {% endif %}
-
----
-
 ## DISASSEMBLY
 
 {{ disassembly }}
-
----
 
 ## DECOMPILER OUTPUT (pseudo-C)
 
 {{ decompiler_output }}
 
----
-
+{% if !windows_apis.is_empty() %}
 ## WINDOWS API CALLS IDENTIFIED
 
 {% for api in windows_apis %}
 - {{ api.name }} → {{ api.category }} → {{ api.pal_mapping }}
 {% endfor %}
 
-{% if no_windows_apis %}
-No Windows API calls were identified in this function.
 {% endif %}
-
----
-
+{% if !call_graph_neighbors.is_empty() %}
 ## CALL GRAPH NEIGHBORS
 
-{% if !call_graph_neighbors.is_empty() %}
 Functions directly called by or calling this function.
 
 {% for neighbor in call_graph_neighbors %}
 - **{{ neighbor.name }}** ({{ neighbor.role }})
   {% if neighbor.signature != "" %}Signature: {{ neighbor.signature }}{% else %}Signature: (not available){% endif %}
 {% endfor %}
-{% else %}
-No call graph neighbors were available.
+
 {% endif %}
-
----
-
+{% if !call_graph_context.is_empty() %}
 ## CALL GRAPH CONTEXT
 
-{% if !call_graph_context.is_empty() %}
 {% for ctx in call_graph_context %}
 ### {{ ctx.name }} ({{ ctx.address }})
 
@@ -66,29 +48,26 @@ No call graph neighbors were available.
 {% for neigh in ctx.callers %}
 - `{{ neigh.node.name }}` ({{ neigh.call_type }})
 {% endfor %}
-{% endif %}
 
+{% endif %}
 {% if ctx.categorized_callees != [] %}
 **Categorized API Calls:**
 {% for group in ctx.categorized_callees %}
 - **{{ group.category }}**: {{ group.apis|join(", ") }}
 {% endfor %}
-{% endif %}
 
+{% endif %}
 {% if ctx.leaf_api_context != [] %}
 **Leaf API Suggestions:**
 {% for api in ctx.leaf_api_context %}
 - `{{ api.api_name }}` → [{{ api.rust_crate }}](https://crates.io/crates/{{ api.rust_crate }})
 {% endfor %}
-{% endif %}
 
+{% endif %}
 {% endfor %}
-{% else %}
-No enriched call graph context available.
+
 {% endif %}
-
----
-
+{% if !test_results.is_empty() %}
 ## BASELINE TESTS (translated Rust code must produce identical outputs)
 
 {% for test in test_results %}
@@ -102,13 +81,7 @@ Test #{{ test.index }}{% if test.passed %} — PASSED{% else %} — FAILED{% end
 
 {% endfor %}
 
-{% if test_results.is_empty() %}
-No baseline tests are available for this function yet. Generate tests by calling the original binary
-with boundary values (zero, max, negative, typical inputs) and record the expected outputs.
 {% endif %}
-
----
-
 ## EXTERNAL FUNCTION HANDLING RULES
 
 Every function the translated code calls falls into exactly one of these categories.
@@ -159,8 +132,6 @@ extern "C" {
 }
 ```
 
----
-
 ## TRANSLATION REQUIREMENTS
 
 1. **Output ONLY the Rust function — no explanations, no markdown fences, no code blocks.**
@@ -175,8 +146,6 @@ extern "C" {
    other project functions.
 8. **Pass all baseline tests.** Every test listed above must produce the expected return value.
    If tests are marked as FAILED, study the error message and adjust the translation to match.
-
----
 
 ## EXAMPLE OUTPUT FORMAT
 
@@ -201,7 +170,5 @@ Note:
 - Known API calls replaced with std:: equivalents
 - Only the extern declarations and the translated function body are output
 - No mod declarations, no imports, no surrounding prose
-
----
 
 ## RUST CODE:
