@@ -11,6 +11,7 @@ import { loadLlmLogHistory } from "./llm-log.js";
 import { loadFaults } from "./faults.js";
 import { loadTokenUsage } from "./token-usage.js";
 import { loadStrategyAnalytics } from "./strategy-analytics.js";
+import { loadLlmMetrics } from "./llm-metrics.js";
 
 // The tab the operator was last on, persisted so a browser reload lands
 // back where they were instead of always opening on the dashboard.
@@ -80,6 +81,12 @@ export function switchView(viewName) {
     // so the view always reflects the current prompt-strategy log.
     if (viewName === "strategy-analytics") {
         loadStrategyAnalytics().catch((err) => console.warn("[Strategy analytics] load failed:", err));
+    }
+
+    // LLM performance metrics (issue #128): reload the filtered set on
+    // entry so the view always reflects the current logs.
+    if (viewName === "llm-metrics") {
+        loadLlmMetrics().catch((err) => console.warn("[LLM metrics] load failed:", err));
     }
 
     // Live view: fetch on entry, tick elapsed clocks while visible.

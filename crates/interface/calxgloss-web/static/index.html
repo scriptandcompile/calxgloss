@@ -23,6 +23,7 @@
             <button class="nav-tab" data-view="faults">Faults</button>
             <button class="nav-tab" data-view="token-usage">Token Usage</button>
             <button class="nav-tab" data-view="strategy-analytics">Strategy Analytics</button>
+            <button class="nav-tab" data-view="llm-metrics">LLM Metrics</button>
         </nav>
         <div class="topbar-right">
             <span id="live-indicator" class="live-dot" title="Live updates active">●</span>
@@ -594,6 +595,59 @@
                     </div>
                     <div id="strategy-analytics-category-bars" class="token-bars"></div>
                 </div>
+            </div>
+        </section>
+        <!-- LLM performance metrics view (issue #128, W3.4) — attempt-level
+             performance from the persisted logs: P50/P95/P99 attempt
+             durations from the token usage log's recorded durations,
+             timeout frequency over time from resource-exhaustion faults of
+             the timeout kind, and attempt duration correlated by context
+             tier. Durations are attempt-level wall-clock (compile and
+             tests included), never per-LLM-call latency; unmeasured values
+             render as an em dash. The time-range filter re-renders in
+             place. -->
+        <section id="view-llm-metrics" class="view">
+            <div class="view-header">
+                <h2>LLM Metrics</h2>
+                <div class="view-controls graph-filters">
+                    <label class="graph-filter-label">Time range
+                        <select id="llm-metrics-filter-range" aria-label="LLM metrics time range">
+                            <option value="">All time</option>
+                            <option value="7d">Last 7 days</option>
+                            <option value="30d">Last 30 days</option>
+                        </select>
+                    </label>
+                    <span id="llm-metrics-filter-summary" class="graph-filter-summary"></span>
+                </div>
+            </div>
+            <div id="llm-metrics-empty" class="empty-state" style="display:none">
+                <p id="llm-metrics-empty-message"></p>
+            </div>
+            <div id="llm-metrics-body" style="display:none">
+                <div id="llm-metrics-summary-cards" class="status-cards"></div>
+                <p id="llm-metrics-measured-note" class="llm-metrics-note"></p>
+                <div class="panel">
+                    <div class="column-header">
+                        <h2>Timeouts per Day</h2>
+                        <span class="token-cost-hint">resource-exhaustion faults of the timeout kind</span>
+                    </div>
+                    <div id="llm-metrics-timeout-trend" class="fault-trend"></div>
+                </div>
+                <div id="llm-metrics-table-wrap">
+                    <table id="llm-metrics-tier-table" class="faults-table">
+                        <thead>
+                            <tr>
+                                <th>Context tier</th>
+                                <th>Attempts</th>
+                                <th>Measured</th>
+                                <th>P50 attempt wall-clock</th>
+                                <th>P95 attempt wall-clock</th>
+                            </tr>
+                        </thead>
+                        <tbody id="llm-metrics-tier-body"></tbody>
+                    </table>
+                </div>
+                <p class="llm-metrics-note">Attempt durations are wall-clock seconds per translation attempt — compile and tests included — never raw per-LLM-call latency. An em dash means the value was never measured.</p>
             </div>
         </section>
     </main>

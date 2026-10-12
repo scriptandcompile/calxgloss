@@ -1007,6 +1007,85 @@ pub struct StrategyAnalyticsCategoryStats {
     pub pass_rate: f64,
 }
 
+// ─── LLM performance metrics (issue #128, W3.4) ────────────────────────
+
+/// `GET /api/llm-metrics/summary` response: attempt-duration percentiles
+/// from the token usage log's recorded durations, and timeout frequency
+/// from the fault log — both computed over the filtered retained window.
+/// The durations are attempt-level wall-clock seconds (compile and tests
+/// included), never raw per-LLM-call latency; entries written before
+/// duration tracking existed are excluded from the percentile math, never
+/// imputed as zero.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmMetricsSummaryResponse {
+    /// Translation attempts in the filtered token-log window.
+    pub total_attempts: usize,
+    /// Of those, the attempts that recorded a wall-clock duration — the
+    /// only ones the percentiles are computed over.
+    pub measured_attempts: usize,
+    /// P50 attempt duration in whole seconds — `None` when nothing in the
+    /// filtered set was measured, so the view renders an em dash rather
+    /// than a fabricated number.
+    pub p50_secs: Option<u64>,
+    /// P95 attempt duration in whole seconds, same honesty rule.
+    pub p95_secs: Option<u64>,
+    /// P99 attempt duration in whole seconds, same honesty rule.
+    pub p99_secs: Option<u64>,
+    /// Timeout-kind resource-exhaustion faults in the filtered fault-log
+    /// window.
+    pub timeouts: usize,
+    /// The timeouts per UTC day, gap-filled between the first and last
+    /// timeout day, oldest first — bucketed server-side so the chart and
+    /// the API agree. Empty when no timeout matches the filters.
+    pub timeout_trend: Vec<LlmMetricsTimeoutPoint>,
+    /// How many attempts the token log holds before filtering — lets the
+    /// view tell "no attempts at all" from "no attempts in the selected
+    /// range".
+    pub total_in_log: usize,
+}
+
+/// One day bucket of the timeout trend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmMetricsTimeoutPoint {
+    /// The bucket day as `YYYY-MM-DD` (UTC).
+    pub date: String,
+    /// Timeout-kind faults detected that day.
+    pub count: usize,
+}
+
+/// `GET /api/llm-metrics/by-tier` response: attempt duration correlated
+/// by context tier — the evidence for whether tier escalation costs wall-
+/// clock time as well as tokens.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmMetricsByTierResponse {
+    /// Duration stats per context tier, most attempts first (ties
+    /// alphabetical).
+    pub tiers: Vec<LlmMetricsTierStats>,
+    /// How many attempts the token log holds before filtering.
+    pub total_in_log: usize,
+}
+
+/// Attempt duration for one context tier. The tier label is the entry's
+/// verbatim `context_tier`; entries written before tier tracking carry an
+/// empty label and form their own honest bucket. A tier whose attempts
+/// recorded no durations carries `None` percentiles — unmeasured, never
+/// imputed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmMetricsTierStats {
+    /// The context tier label.
+    pub tier: String,
+    /// Attempts made at this tier.
+    pub attempts: usize,
+    /// Attempts at this tier that recorded a wall-clock duration.
+    pub measured_attempts: usize,
+    /// P50 attempt duration in whole seconds at this tier, `None` when
+    /// nothing at the tier was measured.
+    pub p50_secs: Option<u64>,
+    /// P95 attempt duration in whole seconds at this tier — the timeout-
+    /// relevant tail — `None` when nothing at the tier was measured.
+    pub p95_secs: Option<u64>,
+}
+
 // ─── Ghidra context types ──────────────────────────────────────────────
 
 /// Ghidra disassembly listing line.

@@ -1,8 +1,9 @@
 //! Analytics handlers — the historical views over the persisted logs in
-//! `re/analysis/` (issues #125/#126/#127, W3.1/W3.2/W3.3): fault analytics,
-//! token usage analytics, and strategy analytics, plus the scaffolding the
-//! later analytics tickets reuse: this module, its registration on the
-//! shared router, and the analytics wire types in `types.rs`.
+//! `re/analysis/` (issues #125/#126/#127/#128, W3.1–W3.4): fault
+//! analytics, token usage analytics, strategy analytics, and LLM
+//! performance metrics, plus the scaffolding the later analytics tickets
+//! reuse: this module, its registration on the shared router, and the
+//! analytics wire types in `types.rs`.
 //!
 //! Registered in the shared routes: the data is the persisted logs, never
 //! live pipeline state, so every router answers it. Aggregation is computed
@@ -39,11 +40,12 @@ use calxgloss_types::{
 
 use super::super::types::{
     FaultAnalytics, FaultAnalyticsEntry, FaultBinaryCount, FaultByBinaryResponse, FaultCount,
-    FaultSummaryResponse, FaultTrendPoint, FaultTrendResponse, StrategyAnalyticsByCategoryResponse,
-    StrategyAnalyticsByStrategyResponse, StrategyAnalyticsCategoryStats,
-    StrategyAnalyticsStrategyStats, TokenUsageBinaryShare, TokenUsageByBinaryResponse,
-    TokenUsageByStrategyResponse, TokenUsageByTierResponse, TokenUsageStrategyStats,
-    TokenUsageSummaryResponse, TokenUsageTierStats,
+    FaultSummaryResponse, FaultTrendPoint, FaultTrendResponse, LlmMetricsByTierResponse,
+    LlmMetricsSummaryResponse, LlmMetricsTierStats, LlmMetricsTimeoutPoint,
+    StrategyAnalyticsByCategoryResponse, StrategyAnalyticsByStrategyResponse,
+    StrategyAnalyticsCategoryStats, StrategyAnalyticsStrategyStats, TokenUsageBinaryShare,
+    TokenUsageByBinaryResponse, TokenUsageByStrategyResponse, TokenUsageByTierResponse,
+    TokenUsageStrategyStats, TokenUsageSummaryResponse, TokenUsageTierStats,
 };
 use super::super::{ServerError, ServerState};
 use super::process::{
@@ -323,33 +325,18 @@ pub async fn api_get_faults_trend(
         }
     }
 
-    let days = match (
-        per_day.keys().next().copied(),
-        per_day.keys().next_back().copied(),
-    ) {
-        (Some(first), Some(last)) => {
-            let mut points: Vec<FaultTrendPoint> = Vec::new();
-            let mut day = first;
-            while day <= last {
-                let count = per_day.get(&day).copied().unwrap_or(0);
-                // Trailing 3-day window clipped to the bucketed range —
-                // the first points average the days that actually exist.
-                let window_sum: usize =
-                    points.iter().rev().take(2).map(|p| p.count).sum::<usize>() + count;
-                let window_days = points.len().min(2) + 1;
-                points.push(FaultTrendPoint {
-                    date: day.format("%Y-%m-%d").to_string(),
-                    count,
-                    moving_average: window_sum as f64 / window_days as f64,
-                });
-                day += chrono::Duration::days(1);
-            }
-            points
-        }
-        // Nothing matches: an honest empty series, not a fabricated run
-        // of zeros.
-        _ => Vec::new(),
-    };
+    let mut days: Vec<FaultTrendPoint> = Vec::new();
+    for (day, count) in gap_filled_days(&per_day) {
+        // Trailing 3-day window clipped to the bucketed range —
+        // the first points average the days that actually exist.
+        let window_sum: usize = days.iter().rev().take(2).map(|p| p.count).sum::<usize>() + count;
+        let window_days = days.len().min(2) + 1;
+        days.push(FaultTrendPoint {
+            date: day.format("%Y-%m-%d").to_string(),
+            count,
+            moving_average: window_sum as f64 / window_days as f64,
+        });
+    }
 
     Ok(Json(FaultTrendResponse { days }))
 }
@@ -633,6 +620,144 @@ pub async fn api_get_strategy_analytics_by_category(
     }))
 }
 
+// ─── LLM performance metrics (issue #128, W3.4) ────────────────────────
+
+/// True when the fault is a resource-exhaustion fault of the *timeout*
+/// kind — the vocabulary the pipeline's `ResourceExhaustionFault` writes
+/// into the event's `metadata.reason`. Overloaded faults and every other
+/// category stay out of the timeout count.
+fn is_timeout_fault(event: &FaultEvent) -> bool {
+    event.category == FaultCategory::ResourceExhaustion
+        && event
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("reason"))
+            .and_then(|reason| reason.as_str())
+            == Some("timeout")
+}
+
+/// Nearest-rank percentile over ascending-sorted durations, in whole
+/// seconds: the smallest observed value at or above `percent`% of the
+/// measurements. Always an actually recorded duration — never interpolated
+/// from a value no attempt ever took — and `None` over an empty set, so
+/// unmeasured history renders as an em dash rather than a fabricated zero.
+fn percentile_secs(sorted: &[u64], percent: f64) -> Option<u64> {
+    if sorted.is_empty() {
+        return None;
+    }
+    let rank = (percent / 100.0 * sorted.len() as f64).ceil() as usize;
+    Some(sorted[(rank - 1).min(sorted.len() - 1)])
+}
+
+/// Serves the attempt-duration percentiles and the timeout frequency:
+/// P50/P95/P99 over the token log's *recorded* attempt durations (entries
+/// written before duration tracking existed are excluded, never imputed),
+/// and timeouts counted from resource-exhaustion faults of the timeout
+/// kind, bucketed per UTC day server-side. Both logs honor the same
+/// `from`/`to` range so the cards and the trend describe the same window.
+pub async fn api_get_llm_metrics_summary(
+    State(state): State<ServerState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<LlmMetricsSummaryResponse>, ServerError> {
+    let (entries, total_in_log) = filtered_token_usage(&state, &params)?;
+
+    let mut durations: Vec<u64> = entries
+        .iter()
+        .filter_map(|entry| entry.duration_secs)
+        .collect();
+    durations.sort_unstable();
+
+    let from = parse_day(&params, "from")?;
+    let to = parse_day(&params, "to")?;
+    let fault_log: FaultLog = load_json_or_default(&fault_log_path(state.repo_path()));
+    let timeouts: Vec<&FaultEvent> = fault_log
+        .entries
+        .iter()
+        .filter(|event| is_timeout_fault(event) && in_date_range(from, to, event.timestamp))
+        .collect();
+
+    // Count per UTC day, keyed by day so gap days can be filled in — the
+    // same honest gap-fill the faults trend uses: zeros only between days
+    // that actually hold a timeout, never a fabricated run outside them.
+    let mut per_day: BTreeMap<NaiveDate, usize> = BTreeMap::new();
+    for event in &timeouts {
+        if let Some(day) = day_of(event.timestamp) {
+            *per_day.entry(day).or_default() += 1;
+        }
+    }
+    let timeout_trend = gap_filled_days(&per_day)
+        .into_iter()
+        .map(|(day, count)| LlmMetricsTimeoutPoint {
+            date: day.format("%Y-%m-%d").to_string(),
+            count,
+        })
+        .collect();
+
+    Ok(Json(LlmMetricsSummaryResponse {
+        total_attempts: entries.len(),
+        measured_attempts: durations.len(),
+        p50_secs: percentile_secs(&durations, 50.0),
+        p95_secs: percentile_secs(&durations, 95.0),
+        p99_secs: percentile_secs(&durations, 99.0),
+        timeouts: timeouts.len(),
+        timeout_trend,
+        total_in_log,
+    }))
+}
+
+/// Serves attempt duration correlated by context tier — whether the
+/// heavier tiers pay for themselves in wall-clock time as well as tokens.
+/// The issue asked for a breakdown by *model* tier; no model name or tier
+/// is persisted per attempt, so the honest axis is the context tier the
+/// logs do record — the same axis the token usage view breaks down by.
+/// Entries written before tier tracking carry an empty label and form
+/// their own honest bucket; a tier whose attempts recorded no durations
+/// answers with `None` percentiles, never an imputed zero.
+pub async fn api_get_llm_metrics_by_tier(
+    State(state): State<ServerState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<LlmMetricsByTierResponse>, ServerError> {
+    let (entries, total_in_log) = filtered_token_usage(&state, &params)?;
+
+    // (attempts, measured durations ascending) per tier — durations are
+    // pushed in entry order, so each bucket sorts before taking its
+    // percentile.
+    let mut buckets: HashMap<&str, (usize, Vec<u64>)> = HashMap::new();
+    for entry in &entries {
+        let bucket = buckets.entry(entry.context_tier.as_str()).or_default();
+        bucket.0 += 1;
+        if let Some(secs) = entry.duration_secs {
+            bucket.1.push(secs);
+        }
+    }
+
+    let mut tiers: Vec<LlmMetricsTierStats> = buckets
+        .into_iter()
+        .map(|(tier, (attempts, mut durations))| {
+            durations.sort_unstable();
+            LlmMetricsTierStats {
+                tier: tier.into(),
+                attempts,
+                measured_attempts: durations.len(),
+                p50_secs: percentile_secs(&durations, 50.0),
+                p95_secs: percentile_secs(&durations, 95.0),
+            }
+        })
+        .collect();
+    // Most attempts first; ties alphabetical so the rows keep a stable
+    // order (the untracked empty label sorts first, honestly).
+    tiers.sort_by(|a, b| {
+        b.attempts
+            .cmp(&a.attempts)
+            .then_with(|| a.tier.cmp(&b.tier))
+    });
+
+    Ok(Json(LlmMetricsByTierResponse {
+        tiers,
+        total_in_log,
+    }))
+}
+
 /// One breakdown row's percentage share of the filtered total (0.0–100.0).
 fn share_percent(part: usize, whole: usize) -> f64 {
     if whole == 0 {
@@ -641,4 +766,24 @@ fn share_percent(part: usize, whole: usize) -> f64 {
         return 0.0;
     }
     part as f64 * 100.0 / whole as f64
+}
+
+/// Gap-filled per-day buckets: one entry per UTC day from the first day
+/// that holds an event to the last, zero-count days filled in between —
+/// zeros only between days that actually hold events, never a fabricated
+/// run outside them. An empty input answers an empty series.
+fn gap_filled_days(per_day: &BTreeMap<NaiveDate, usize>) -> Vec<(NaiveDate, usize)> {
+    let (Some(first), Some(last)) = (
+        per_day.keys().next().copied(),
+        per_day.keys().next_back().copied(),
+    ) else {
+        return Vec::new();
+    };
+    let mut days = Vec::new();
+    let mut day = first;
+    while day <= last {
+        days.push((day, per_day.get(&day).copied().unwrap_or(0)));
+        day += chrono::Duration::days(1);
+    }
+    days
 }

@@ -95,6 +95,11 @@ export const API = {
     // Strategy analytics (issue #127, W3.3).
     async strategyAnalyticsByStrategy(query) { return API.get(`/api/strategy-analytics/by-strategy${query}`); },
     async strategyAnalyticsByCategory(query) { return API.get(`/api/strategy-analytics/by-category${query}`); },
+
+    // LLM performance metrics (issue #128, W3.4) — both endpoints take the
+    // same time-range query so cards, trend, and table stay in step.
+    async llmMetricsSummary(query) { return API.get(`/api/llm-metrics/summary${query}`); },
+    async llmMetricsByTier(query) { return API.get(`/api/llm-metrics/by-tier${query}`); },
     async health() { return API.get("/health"); },
     async serverStatus() { return API.get("/api/server/status"); },
     async shutdownServer() { return API.post("/api/server/shutdown"); },

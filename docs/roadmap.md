@@ -96,7 +96,7 @@ the WebSocket has no client→server command channel (`WsCommand` only has
 After W0 Phases 1–2. Faults view (`/api/faults*`, charts, CSV export); token
 usage view (`/api/token-usage*`, cost estimates); strategy analytics
 (`/api/strategy-analytics*`); LLM performance metrics (`/api/llm-metrics*`,
-latency percentiles). Archive §15 + §17.15.
+attempt-duration percentiles). Archive §15 + §17.15.
 **Tickets (2026-10-12):** spec #89 decomposed into four tracer-bullet tickets,
 one per view, chained linearly with native blocking links —
 [#125](https://github.com/scriptandcompile/calxgloss/issues/125) faults view ✅
@@ -104,7 +104,7 @@ one per view, chained linearly with native blocking links —
 [#126](https://github.com/scriptandcompile/calxgloss/issues/126) token usage
 view ✅ → [#127](https://github.com/scriptandcompile/calxgloss/issues/127)
 strategy analytics ✅ → [#128](https://github.com/scriptandcompile/calxgloss/issues/128)
-LLM performance metrics. All `ready-for-agent`; endpoints register on the
+LLM performance metrics ✅. All `ready-for-agent`; endpoints register on the
 shared router (serve + live).
 
 ## W4 — Web UI New Views (`calxgloss-web`)

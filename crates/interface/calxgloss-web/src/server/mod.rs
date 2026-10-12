@@ -962,6 +962,19 @@ fn shared_routes() -> Router<CombinedState> {
             "/api/strategy-analytics/by-category",
             get(handlers::api_get_strategy_analytics_by_category),
         )
+        // LLM performance metrics (issue #128, W3.4): persisted-history
+        // reads — they aggregate `re/analysis/token_usage.json` and
+        // `re/analysis/fault_log.json` on demand, never live pipeline
+        // state — so every router answers them. A workspace whose logs are
+        // missing or corrupt honestly answers empty payloads.
+        .route(
+            "/api/llm-metrics/summary",
+            get(handlers::api_get_llm_metrics_summary),
+        )
+        .route(
+            "/api/llm-metrics/by-tier",
+            get(handlers::api_get_llm_metrics_by_tier),
+        )
         .route("/api/graph", get(handlers::api_get_dependency_graph))
         .route("/api/gc/candidates", get(handlers::api_get_gc_candidates))
         .route("/api/gc/archive", post(handlers::api_archive_gc))

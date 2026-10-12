@@ -3404,7 +3404,8 @@ svg {
 }
 
 #token-usage-table-wrap,
-#strategy-analytics-table-wrap {
+#strategy-analytics-table-wrap,
+#llm-metrics-table-wrap {
     max-height: 60vh;
     overflow: auto;
     border: 1px solid var(--border-subtle);
@@ -3418,4 +3419,14 @@ svg {
 
 .token-col-rate {
     font-variant-numeric: tabular-nums;
+}
+
+/* LLM metrics (issue #128) — the timeout card reads red like a fault,
+   and the honesty notes sit quietly under the panels they qualify. */
+.status-card.llm-metrics-timeouts .status-card-value { color: var(--accent-red); }
+
+.llm-metrics-note {
+    margin: 8px 2px;
+    font-size: 12px;
+    color: var(--text-secondary);
 }

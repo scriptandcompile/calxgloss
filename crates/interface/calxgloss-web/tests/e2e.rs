@@ -6270,6 +6270,491 @@ async fn test_strategy_analytics_api_corrupt_log_honest_empty() {
     );
 }
 
+// ─────────────────────────────────────────────────────────────
+// LLM performance metrics (issue #128, W3.4)
+// ─────────────────────────────────────────────────────────────
+
+/// One token-usage entry carrying a recorded attempt duration — the same
+/// shape as `token_usage_entry` plus `duration_secs`. `duration: None`
+/// writes the pre-duration-tracking shape (the field omitted entirely),
+/// which the percentile math must exclude rather than impute as zero.
+// One parameter per fixture field — the whole point is spelling every
+// field out, so folding them into a struct would only hide the values.
+#[allow(clippy::too_many_arguments)]
+fn llm_metrics_token_entry(
+    binary: &str,
+    function: &str,
+    attempt: u32,
+    strategy: &str,
+    tokens: usize,
+    success: bool,
+    tier: &str,
+    timestamp: u64,
+    duration: Option<u64>,
+) -> serde_json::Value {
+    let mut entry = token_usage_entry(
+        binary, function, attempt, strategy, tokens, success, tier, timestamp,
+    );
+    if let Some(secs) = duration {
+        entry["duration_secs"] = serde_json::json!(secs);
+    }
+    entry
+}
+
+/// One resource-exhaustion fault carrying the `metadata.reason` the
+/// pipeline's `ResourceExhaustionFault` writes — the timeout kind is what
+/// the metrics endpoints count, and the overloaded kind is what they must
+/// leave out.
+fn resource_exhaustion_fault_entry(
+    binary: &str,
+    function: &str,
+    attempt: u32,
+    strategy: &str,
+    reason: &str,
+    timestamp: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "binary": binary,
+        "function": function,
+        "attempt": attempt,
+        "strategy": strategy,
+        "category": "resource_exhaustion",
+        "severity": "warning",
+        "description": format!("{reason} — resource exhaustion in {function}"),
+        "recovery": "switch to a smaller/faster model for this translation",
+        "timestamp": timestamp,
+        "metadata": { "reason": reason, "elapsed_secs": 300 },
+    })
+}
+
+/// Writes the deterministic fixture pair the metrics tests share: nine
+/// token-usage attempts (four on `game_logic.dll/DrawSprite` starting
+/// 2026-10-01, five on 2026-10-04) and four faults. Seven attempts
+/// recorded durations — 10/20/30/40/50/60/70 seconds, so nearest-rank
+/// P50/P95/P99 pin as 40/70/70 — and two predate duration tracking,
+/// excluded from the percentiles, never imputed. The faults hold exactly
+/// two timeout-kind resource-exhaustion events (one per fixture day),
+/// one overloaded resource-exhaustion event that must not count as a
+/// timeout, and one slow-response fault that must not count either.
+fn write_llm_metrics_fixtures(repo_path: &std::path::Path) {
+    write_token_usage_fixture(
+        repo_path,
+        &[
+            llm_metrics_token_entry(
+                "game_logic.dll",
+                "DrawSprite",
+                1,
+                "initial",
+                4000,
+                false,
+                "stub",
+                FAULT_DAY_1 + 60,
+                Some(10),
+            ),
+            llm_metrics_token_entry(
+                "game_logic.dll",
+                "DrawSprite",
+                2,
+                "compile_fix",
+                3000,
+                true,
+                "stub",
+                FAULT_DAY_1 + 120,
+                Some(30),
+            ),
+            llm_metrics_token_entry(
+                "game_logic.dll",
+                "DrawSprite",
+                3,
+                "escalate",
+                8000,
+                false,
+                "stub",
+                FAULT_DAY_1 + 180,
+                None,
+            ),
+            llm_metrics_token_entry(
+                "game_logic.dll",
+                "DrawSprite",
+                4,
+                "retry",
+                3000,
+                true,
+                "disassembly",
+                FAULT_DAY_1 + 240,
+                Some(50),
+            ),
+            llm_metrics_token_entry(
+                "game_logic.dll",
+                "DrawSprite",
+                5,
+                "initial",
+                2000,
+                true,
+                "disassembly",
+                FAULT_DAY_4 + 300,
+                None,
+            ),
+            llm_metrics_token_entry(
+                "d3d9.dll",
+                "UpdateScene",
+                1,
+                "initial",
+                2000,
+                true,
+                "",
+                FAULT_DAY_4 + 60,
+                Some(20),
+            ),
+            llm_metrics_token_entry(
+                "d3d9.dll",
+                "UpdateScene",
+                2,
+                "retry",
+                3000,
+                false,
+                "",
+                FAULT_DAY_4 + 120,
+                Some(40),
+            ),
+            llm_metrics_token_entry(
+                "d3d9.dll",
+                "UpdateScene",
+                3,
+                "initial",
+                5000,
+                true,
+                "module_context",
+                FAULT_DAY_4 + 180,
+                Some(60),
+            ),
+            llm_metrics_token_entry(
+                "d3d9.dll",
+                "UpdateScene",
+                4,
+                "compile_fix",
+                6000,
+                true,
+                "module_context",
+                FAULT_DAY_4 + 240,
+                Some(70),
+            ),
+        ],
+    );
+    write_fault_log_fixture(
+        repo_path,
+        &[
+            resource_exhaustion_fault_entry(
+                "game_logic.dll",
+                "DrawSprite",
+                3,
+                "escalate",
+                "timeout",
+                FAULT_DAY_1 + 200,
+            ),
+            resource_exhaustion_fault_entry(
+                "game_logic.dll",
+                "DrawSprite",
+                4,
+                "retry",
+                "overloaded",
+                FAULT_DAY_1 + 260,
+            ),
+            fault_entry(
+                "d3d9.dll",
+                "UpdateScene",
+                2,
+                "retry",
+                "slow_response",
+                "warning",
+                FAULT_DAY_4 + 150,
+            ),
+            resource_exhaustion_fault_entry(
+                "d3d9.dll",
+                "UpdateScene",
+                3,
+                "initial",
+                "timeout",
+                FAULT_DAY_4 + 210,
+            ),
+        ],
+    );
+}
+
+/// Issue #128 router contract: both llm-metrics endpoints are registered
+/// in the shared routes — they read the persisted logs, never live
+/// pipeline state — so both the plain and the live router answer them.
+/// With no logs on disk they serve honest empty payloads: null
+/// percentiles, not zeros.
+#[tokio::test]
+async fn test_llm_metrics_registered_in_plain_and_live_routers() {
+    for kind in ["plain", "live"] {
+        let fixture = TestFixture::new();
+        let state = ServerState::new(fixture.repo_path());
+        let router = if kind == "plain" {
+            build_router(state)
+        } else {
+            let events = TranslationEvents::new(128);
+            let manager = SessionManager::new_with_broadcast(events.subscribe());
+            build_router_with_ws(state, manager, ProgressState::new())
+        };
+        let _server = spawn_server(router, fixture.port()).await;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let base = format!("http://127.0.0.1:{}", fixture.port());
+
+        for path in ["/api/llm-metrics/summary", "/api/llm-metrics/by-tier"] {
+            let (status, _) = get_json(&format!("{base}{path}")).await;
+            assert_eq!(status, 200, "{kind} router serves {path}");
+        }
+
+        let (_, body) = get_json(&format!("{base}/api/llm-metrics/summary")).await;
+        assert_eq!(
+            body["total_in_log"].as_u64().expect("total_in_log"),
+            0,
+            "{kind} router reports an empty log with no log"
+        );
+        for key in ["p50_secs", "p95_secs", "p99_secs"] {
+            assert!(
+                body[key].is_null(),
+                "{kind} router answers {key} as unmeasured, never a fabricated zero"
+            );
+        }
+        assert!(
+            body["timeout_trend"]
+                .as_array()
+                .expect("timeout_trend array")
+                .is_empty(),
+            "no log means no fabricated trend buckets"
+        );
+        let (_, body) = get_json(&format!("{base}/api/llm-metrics/by-tier")).await;
+        assert!(
+            body["tiers"].as_array().expect("tiers array").is_empty(),
+            "no log means no fabricated tiers"
+        );
+    }
+}
+
+/// Issue #128 exact-JSON contract: against deterministic fixture logs,
+/// the summary pins exact nearest-rank P50/P95/P99 over the *recorded*
+/// durations — the two entries without a duration are excluded, never
+/// imputed — and counts exactly the two timeout-kind faults, bucketed
+/// per UTC day with the gap days filled. The by-tier endpoint pins the
+/// per-tier correlation, including the untracked empty-label bucket.
+#[tokio::test]
+async fn test_llm_metrics_api_exact_json_from_fixture_logs() {
+    let fixture = TestFixture::new();
+    write_llm_metrics_fixtures(&fixture.repo_path());
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+
+    let (status, body) = get_json(&format!("{base}/api/llm-metrics/summary")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "total_attempts": 9,
+            "measured_attempts": 7,
+            "p50_secs": 40,
+            "p95_secs": 70,
+            "p99_secs": 70,
+            "timeouts": 2,
+            "timeout_trend": [
+                {"date": "2026-10-01", "count": 1},
+                {"date": "2026-10-02", "count": 0},
+                {"date": "2026-10-03", "count": 0},
+                {"date": "2026-10-04", "count": 1},
+            ],
+            "total_in_log": 9,
+        }),
+        "percentiles cover only the measured durations; the overloaded and \
+         slow-response faults stay out of the timeout count"
+    );
+
+    // Most attempts first; the 2-attempt tie sorts alphabetically, with
+    // the untracked empty label honestly first. The disassembly tier has
+    // one measured and one unmeasured attempt; a tier with nothing
+    // measured would answer null percentiles.
+    let (status, body) = get_json(&format!("{base}/api/llm-metrics/by-tier")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "tiers": [
+                {"tier": "stub", "attempts": 3, "measured_attempts": 2, "p50_secs": 10, "p95_secs": 30},
+                {"tier": "", "attempts": 2, "measured_attempts": 2, "p50_secs": 20, "p95_secs": 40},
+                {"tier": "disassembly", "attempts": 2, "measured_attempts": 1, "p50_secs": 50, "p95_secs": 50},
+                {"tier": "module_context", "attempts": 2, "measured_attempts": 2, "p50_secs": 60, "p95_secs": 70},
+            ],
+            "total_in_log": 9,
+        })
+    );
+}
+
+/// Issue #128 time-range contract: the `from`/`to` inclusive UTC date
+/// range narrows both endpoints the same way — cards, trend, and tier
+/// table always describe the same window — while `total_in_log` keeps
+/// reporting the unfiltered log size. A malformed date is refused with
+/// 400 naming the accepted shape.
+#[tokio::test]
+async fn test_llm_metrics_api_time_range_narrows_every_endpoint() {
+    let fixture = TestFixture::new();
+    write_llm_metrics_fixtures(&fixture.repo_path());
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+
+    // `from` alone keeps everything from that UTC day on: only the five
+    // 2026-10-04 attempts survive — four measured (20/40/60/70, so P50
+    // pins at 40) and one unmeasured — and only the 2026-10-04 timeout.
+    let (status, body) = get_json(&format!("{base}/api/llm-metrics/summary?from=2026-10-04")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "total_attempts": 5,
+            "measured_attempts": 4,
+            "p50_secs": 40,
+            "p95_secs": 70,
+            "p99_secs": 70,
+            "timeouts": 1,
+            "timeout_trend": [
+                {"date": "2026-10-04", "count": 1},
+            ],
+            "total_in_log": 9,
+        }),
+        "the log's own size survives filtering"
+    );
+    let (status, body) = get_json(&format!("{base}/api/llm-metrics/by-tier?from=2026-10-04")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["tiers"],
+        serde_json::json!([
+            {"tier": "", "attempts": 2, "measured_attempts": 2, "p50_secs": 20, "p95_secs": 40},
+            {"tier": "module_context", "attempts": 2, "measured_attempts": 2, "p50_secs": 60, "p95_secs": 70},
+            {"tier": "disassembly", "attempts": 1, "measured_attempts": 0, "p50_secs": null, "p95_secs": null},
+        ]),
+        "the in-range disassembly attempt is unmeasured — percentiles stay \
+         null, never imputed"
+    );
+
+    // An inclusive range holding no attempts answers with null percentiles
+    // and empty breakdowns — never a fabricated run of zeros.
+    let (status, body) = get_json(&format!(
+        "{base}/api/llm-metrics/summary?from=2026-10-02&to=2026-10-03"
+    ))
+    .await;
+    assert_eq!(status, 200);
+    assert!(
+        body["p50_secs"].is_null(),
+        "nothing measured means no percentile"
+    );
+    assert_eq!(body["timeouts"].as_u64().expect("timeouts"), 0);
+    assert!(
+        body["timeout_trend"]
+            .as_array()
+            .expect("timeout_trend array")
+            .is_empty(),
+        "no matching timeouts means no buckets"
+    );
+    let (_, body) = get_json(&format!(
+        "{base}/api/llm-metrics/by-tier?from=2026-10-02&to=2026-10-03"
+    ))
+    .await;
+    assert!(
+        body["tiers"].as_array().expect("tiers array").is_empty(),
+        "no matching attempts means no rows"
+    );
+
+    // Malformed dates are refused with 400 naming the accepted shape —
+    // an operator who typed a filter is never silently shown everything.
+    let (status, body) = get_json(&format!("{base}/api/llm-metrics/summary?from=not-a-date")).await;
+    assert_eq!(status, 400, "a malformed from date is refused");
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("not-a-date") && message.contains("YYYY-MM-DD"),
+        "the 400 names the bad value and the accepted shape, got: {message}"
+    );
+
+    let (status, _) = get_json(&format!("{base}/api/llm-metrics/by-tier?to=2026-13-01")).await;
+    assert_eq!(status, 400, "an out-of-range to date is refused");
+}
+
+/// Issue #128 honest degradation: a corrupt token usage log loads as
+/// empty — the endpoints answer 200 with null percentiles and empty
+/// breakdowns so the view's empty state (driven by `total_in_log`) never
+/// renders a wall of zeros. A corrupt fault log likewise answers zero
+/// timeouts while the duration percentiles keep computing from the
+/// intact token log.
+#[tokio::test]
+async fn test_llm_metrics_api_corrupt_logs_honest_empty() {
+    let fixture = TestFixture::new();
+    let dir = fixture.repo_path().join("re").join("analysis");
+    std::fs::create_dir_all(&dir).expect("analysis dir exists");
+    std::fs::write(dir.join("token_usage.json"), "{ not json").expect("corrupt log written");
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+
+    let (status, body) = get_json(&format!("{base}/api/llm-metrics/summary")).await;
+    assert_eq!(status, 200, "a corrupt log degrades, never errors");
+    assert_eq!(body["total_in_log"].as_u64().expect("total_in_log"), 0);
+    assert!(
+        body["p50_secs"].is_null(),
+        "a corrupt log means unmeasured, not zero"
+    );
+    assert_eq!(body["timeouts"].as_u64().expect("timeouts"), 0);
+
+    let (status, body) = get_json(&format!("{base}/api/llm-metrics/by-tier")).await;
+    assert_eq!(status, 200);
+    assert!(
+        body["tiers"].as_array().expect("tiers array").is_empty(),
+        "a corrupt log means no rows, not zero rows"
+    );
+
+    // The other direction: the fault log corrupts, the token log survives.
+    std::fs::write(dir.join("fault_log.json"), "{ not json").expect("corrupt fault log written");
+    write_token_usage_fixture(
+        &fixture.repo_path(),
+        &[llm_metrics_token_entry(
+            "game_logic.dll",
+            "DrawSprite",
+            1,
+            "initial",
+            4000,
+            false,
+            "stub",
+            FAULT_DAY_1 + 60,
+            Some(10),
+        )],
+    );
+    let (status, body) = get_json(&format!("{base}/api/llm-metrics/summary")).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["p50_secs"].as_u64().expect("p50_secs"), 10);
+    assert_eq!(body["timeouts"].as_u64().expect("timeouts"), 0);
+    assert!(
+        body["timeout_trend"]
+            .as_array()
+            .expect("timeout_trend array")
+            .is_empty(),
+        "a corrupt fault log means no buckets, not zero buckets"
+    );
+}
+
 // ── Headless browser test: Faults view (issue #125) ────────────────────
 
 /// The Faults tab renders the fixture log honestly: summary cards,
@@ -6919,6 +7404,273 @@ async fn test_headless_strategy_analytics_view_honest_empty_state() {
         assert!(
             tab.evaluate(
                 "document.getElementById('strategy-analytics-body').style.display === 'none'",
+                false
+            )
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+            "the empty state should hide the body — no wall of zeros"
+        );
+    }
+}
+
+/// The LLM Metrics tab renders the fixture logs honestly: percentile
+/// cards labeled as attempt wall-clock, the timeout trend, and the
+/// per-tier table — with an unmeasured tier rendering an em dash, never
+/// a fabricated number. The time-range filter re-renders in place.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_llm_metrics_view_renders_percentiles_and_filter() {
+    let fixture = TestFixture::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock after epoch")
+        .as_secs();
+    write_token_usage_fixture(
+        &fixture.repo_path(),
+        &[
+            llm_metrics_token_entry(
+                "game_logic.dll",
+                "DrawSprite",
+                1,
+                "initial",
+                4000,
+                false,
+                "stub",
+                now - 3_600,
+                Some(10),
+            ),
+            llm_metrics_token_entry(
+                "game_logic.dll",
+                "DrawSprite",
+                2,
+                "compile_fix",
+                3000,
+                true,
+                "stub",
+                now - 3_540,
+                Some(30),
+            ),
+            llm_metrics_token_entry(
+                "game_logic.dll",
+                "DrawSprite",
+                3,
+                "escalate",
+                8000,
+                false,
+                "unmeasured_tier",
+                now - 3_500,
+                None,
+            ),
+            llm_metrics_token_entry(
+                "d3d9.dll",
+                "UpdateScene",
+                1,
+                "initial",
+                2000,
+                true,
+                "stale_tier",
+                now - 40 * 86_400,
+                Some(90),
+            ),
+        ],
+    );
+    write_fault_log_fixture(
+        &fixture.repo_path(),
+        &[resource_exhaustion_fault_entry(
+            "game_logic.dll",
+            "DrawSprite",
+            3,
+            "escalate",
+            "timeout",
+            now - 3_600,
+        )],
+    );
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_count = |expr: &str| -> i64 {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_i64())
+            .unwrap_or(-1)
+    };
+    let eval_text = |expr: &str| -> String {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default()
+    };
+
+    // Switch to the LLM Metrics tab.
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"llm-metrics\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click llm metrics tab");
+
+    // The fixture renders: four cards (P50/P95/P99 + timeouts).
+    let mut loaded = false;
+    for _ in 0..25 {
+        if eval_count("document.querySelectorAll('#llm-metrics-summary-cards .status-card').length")
+            == 4
+        {
+            loaded = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        loaded,
+        "llm metrics view should render the percentile cards — last P50 read: {}",
+        eval_text(
+            "document.querySelector('#llm-metrics-summary-cards .status-card .status-card-value')?.textContent || ''"
+        )
+    );
+
+    // All-time percentiles over the measured durations 10/30/90:
+    // nearest-rank P50 is 30 — the unmeasured attempt never joins the math.
+    assert_eq!(
+        eval_text(
+            "document.querySelector('#llm-metrics-summary-cards .status-card .status-card-value').textContent"
+        ),
+        "30s",
+        "the P50 card should pin the nearest-rank percentile of the measured durations"
+    );
+
+    // Honest labeling: the note spells out that durations are attempt
+    // wall-clock (compile and tests included), never per-call latency.
+    assert!(
+        eval_text("document.querySelector('#view-llm-metrics .llm-metrics-note:last-of-type')?.textContent || ''")
+            .contains("compile and tests included"),
+        "the view must label durations as attempt-level wall-clock"
+    );
+
+    // The timeout trend renders its SVG from the server's buckets.
+    assert_eq!(
+        eval_count("document.querySelectorAll('#llm-metrics-timeout-trend svg').length"),
+        1,
+        "the timeout trend should render from the fixture fault"
+    );
+
+    // The per-tier table: stub (2), stale_tier (1), unmeasured_tier (1) —
+    // and the unmeasured tier's percentiles are em dashes, never numbers.
+    let mut tiers_rendered = false;
+    for _ in 0..25 {
+        if eval_count("document.querySelectorAll('#llm-metrics-tier-body tr').length") == 3 {
+            tiers_rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(tiers_rendered, "the tier table should render three tiers");
+    assert_eq!(
+        eval_text(
+            "document.querySelector('#llm-metrics-tier-body tr:last-child td:last-child').textContent"
+        ),
+        "—",
+        "an unmeasured tier renders an em dash, never a fabricated number"
+    );
+
+    // The time-range filter re-renders in place: 7 days drops the stale
+    // attempt — the P50 recomputes to 10s and the stale tier row is gone.
+    tab.evaluate(
+        r#"(() => {
+            const select = document.getElementById('llm-metrics-filter-range');
+            select.value = '7d';
+            select.dispatchEvent(new Event('change'));
+        })()"#,
+        false,
+    )
+    .expect("set time range filter");
+    let mut narrowed = false;
+    for _ in 0..25 {
+        if eval_count("document.querySelectorAll('#llm-metrics-tier-body tr').length") == 2 {
+            narrowed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        narrowed,
+        "the 7-day range should narrow the tier table to the recent attempts"
+    );
+    assert_eq!(
+        eval_text(
+            "document.querySelector('#llm-metrics-summary-cards .status-card .status-card-value').textContent"
+        ),
+        "10s",
+        "the 7-day range should recompute the P50 in place"
+    );
+}
+
+/// With no token usage log at all — or a corrupt one — the LLM Metrics
+/// tab says so plainly: no wall of zeros, no error.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_llm_metrics_view_honest_empty_state() {
+    for kind in ["missing", "corrupt"] {
+        let fixture = TestFixture::new();
+        if kind == "corrupt" {
+            let dir = fixture.repo_path().join("re").join("analysis");
+            std::fs::create_dir_all(&dir).expect("analysis dir exists");
+            std::fs::write(dir.join("token_usage.json"), "{ not json")
+                .expect("corrupt log written");
+        }
+        let state = ServerState::new(fixture.repo_path());
+        let router = build_router(state);
+        let _server = spawn_server(router, fixture.port()).await;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let browser = launch_headless_browser();
+        let tab = open_dashboard_tab(&browser, fixture.port());
+
+        // Switch to the LLM Metrics tab.
+        tab.evaluate(
+            "document.querySelector('.nav-tab[data-view=\"llm-metrics\"]')?.click() === undefined",
+            false,
+        )
+        .expect("click llm metrics tab");
+
+        let mut empty_visible = false;
+        for _ in 0..25 {
+            if tab
+                .evaluate(
+                    "document.getElementById('llm-metrics-empty').style.display === 'flex'",
+                    false,
+                )
+                .ok()
+                .and_then(|r| r.value)
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                empty_visible = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        assert!(
+            empty_visible,
+            "a {kind} token usage log should show the honest empty state"
+        );
+
+        assert!(
+            tab.evaluate(
+                "document.getElementById('llm-metrics-body').style.display === 'none'",
                 false
             )
             .ok()

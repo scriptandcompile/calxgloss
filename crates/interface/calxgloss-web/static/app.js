@@ -50,6 +50,7 @@ import { setupScopeControls, loadScopeControls, refreshScopeDisplay } from "./js
 import { setupFaultsControls, buildFaultsCsv } from "./js/faults.js";
 import { setupTokenUsageControls } from "./js/token-usage.js";
 import { setupStrategyAnalyticsControls, buildStrategyAnalyticsCsv } from "./js/strategy-analytics.js";
+import { setupLlmMetricsControls } from "./js/llm-metrics.js";
 import { API } from "./js/api.js";
 import { showToast } from "./js/ui.js";
 
@@ -231,6 +232,10 @@ function setupEventListeners() {
     // Strategy analytics controls (issue #127) — the time-range select
     // re-renders in place; the CSV button exports the filtered breakdown.
     setupStrategyAnalyticsControls();
+
+    // LLM performance metrics controls (issue #128) — the time-range
+    // select re-renders the cards, trend, and tier table in place.
+    setupLlmMetricsControls();
 
     // GC tab buttons
     document.getElementById("btn-scan-gc")?.addEventListener("click", loadGcCandidates);
