@@ -118,6 +118,13 @@ pub struct TranslationPipeline {
     /// Analyzer for DLL classification and API tagging.
     analyzer: Analyzer,
 
+    /// Built-in root-symbol patterns backing the translate-path guard: a
+    /// function named explicitly that the call-graph batch path would skip
+    /// (entry point, import thunk) is refused before any Ghidra fetch or
+    /// LLM spend, instead of being translated from a body that owns no
+    /// logic of its own.
+    root_detector: calxgloss_callgraph::RootDetector,
+
     /// Optional test generator for baseline test input creation.
     testgen: Option<TestGenerator>,
 
@@ -272,6 +279,7 @@ impl TranslationPipeline {
             llm,
             api_mappings,
             analyzer,
+            root_detector: calxgloss_callgraph::RootDetector::new(),
             testgen: None,
             exports: Vec::new(),
             target_binary: None,
@@ -701,6 +709,15 @@ impl TranslationPipeline {
     pub async fn translate(&self, binary: &str, function: &str) -> Result<Translation> {
         debug!(binary, function, "Starting translation pipeline");
 
+        // Root symbols — entry points and import thunks — own no logic to
+        // translate. The call-graph batch path already skips or stubs them,
+        // but an explicitly named function reaches here unchecked, and a
+        // `DelayLoad_` thunk is the classic trap: its resolved-import jump
+        // decompiles to an unrecovered jumptable plus a bare `return`, and
+        // the LLM faithfully translates the wreckage. Refuse before the
+        // Ghidra fetch, before any token is spent.
+        self.refuse_root_function(binary, function)?;
+
         // Emit: translation started
         self.emit(ProgressEvent::TranslationStarted {
             binary: binary.to_string().into(),
@@ -1058,6 +1075,10 @@ impl TranslationPipeline {
     pub async fn translate_from_request(&self, request: TranslationRequest) -> Result<Translation> {
         debug!(binary = %request.binary, function = %request.function, "Translating from request");
 
+        // Same root-symbol guard as [`translate`](Self::translate): a
+        // pre-built request is not a reason to spend LLM tokens on a thunk.
+        self.refuse_root_function(&request.binary, &request.function)?;
+
         if request.disassembly.is_empty() && request.decompiler_output.is_empty() {
             return Err(TranslatorError::MissingContext(
                 "Both disassembly and decompiler output are empty".to_string(),
@@ -1254,6 +1275,35 @@ impl TranslationPipeline {
         // (Success rate tracking infrastructure will be added in a follow-up.)
 
         Ok(result)
+    }
+
+    /// Refuse a translate request for a function the built-in root patterns
+    /// mark as skip — entry points and import thunks (`DelayLoad_*`,
+    /// `_imp_*`, `thunk_*`).
+    ///
+    /// The matched pattern's description becomes the error's reason, so the
+    /// operator learns *why* the function was refused: the thunk owns no
+    /// logic, and the caller's translation reaches the real API through the
+    /// PAL mappings instead. Only the `Skip` action is refused here —
+    /// `GenerateStub` is a batch-path policy and a single explicit request
+    /// still gets a real translation attempt.
+    fn refuse_root_function(&self, binary: &str, function: &str) -> Result<()> {
+        if let Some(pattern) = self.root_detector.matched_pattern(function)
+            && matches!(pattern.action, calxgloss_callgraph::RootAction::Skip)
+        {
+            warn!(
+                binary,
+                function,
+                pattern = pattern.description,
+                "Refusing to translate a root symbol named explicitly — it owns no logic to translate"
+            );
+            return Err(TranslatorError::SkippedRoot {
+                binary: binary.to_string(),
+                function: function.to_string(),
+                reason: pattern.description.to_string(),
+            });
+        }
+        Ok(())
     }
 
     /// Fetch function metadata from GhidraMCP.
@@ -2833,19 +2883,33 @@ impl TranslationPipeline {
                             }
                         }
                         Err(e) => {
-                            warn!(
-                                binary,
-                                function,
-                                error = %e,
-                                "Batch function translation failed (pipeline error)"
-                            );
-                            // Create a minimal failed result so the caller sees it
-                            let empty_result = retry::RetryResult::new();
-                            batch::FunctionResult::failure(
-                                binary.to_string(),
-                                function.clone(),
-                                empty_result,
-                            )
+                            // A root symbol named explicitly on the CLI is a
+                            // request the pipeline refuses, not a unit that
+                            // failed: record it skipped, the way the
+                            // call-graph path records its Skip nodes.
+                            if matches!(e, TranslatorError::SkippedRoot { .. }) {
+                                info!(
+                                    binary,
+                                    function,
+                                    error = %e,
+                                    "Batch function is a root symbol — recorded skipped, not failed"
+                                );
+                                batch::FunctionResult::skipped(binary.to_string(), function.clone())
+                            } else {
+                                warn!(
+                                    binary,
+                                    function,
+                                    error = %e,
+                                    "Batch function translation failed (pipeline error)"
+                                );
+                                // Create a minimal failed result so the caller sees it
+                                let empty_result = retry::RetryResult::new();
+                                batch::FunctionResult::failure(
+                                    binary.to_string(),
+                                    function.clone(),
+                                    empty_result,
+                                )
+                            }
                         }
                     };
                     (result, false)
@@ -3510,6 +3574,54 @@ mod tests {
             vec!["DrawPrimitive"],
             "the reviewer-skipped unit must never enter the queue, the rest keep running"
         );
+    }
+
+    // ─── Root-symbol guard & decompiler-warning triage ─────────────────
+
+    /// An import thunk named explicitly is refused before the Ghidra fetch:
+    /// the pipeline never spends a request (let alone an LLM call) on a
+    /// function that owns no logic, and the refusal names the matched
+    /// pattern so the operator learns why.
+    #[tokio::test]
+    async fn translate_refuses_an_import_thunk_before_touching_ghidra() {
+        let result = pipeline_over(None)
+            .translate(PROGRAM, "DelayLoad_cef_string_utf16_clear")
+            .await;
+        let Err(TranslatorError::SkippedRoot {
+            function, reason, ..
+        }) = result
+        else {
+            panic!("a delay-load thunk must be refused, got {result:?}");
+        };
+        assert_eq!(function, "DelayLoad_cef_string_utf16_clear");
+        assert!(
+            reason.contains("import thunk"),
+            "the refusal should name the matched pattern, got: {reason}"
+        );
+    }
+
+    /// A thunk named explicitly in a batch list is recorded skipped, not
+    /// failed — the same honest record the call-graph path gives its Skip
+    /// nodes — and the batch itself completes.
+    #[tokio::test]
+    async fn batch_translate_records_a_requested_thunk_as_skipped() {
+        let dir = TempDir::new().expect("temp workspace");
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        let result = pipeline_over(Some(dir.path()))
+            .batch_translate(
+                PROGRAM,
+                &["DelayLoad_ShellExecuteW".to_string()],
+                &retry::RetryConfig::default(),
+                &verifier,
+                None,
+            )
+            .await
+            .expect("the batch completes even when every unit is refused");
+
+        assert_eq!(result.total_count(), 1);
+        assert_eq!(result.skipped_count(), 1, "the thunk is recorded skipped");
+        assert_eq!(result.failure_count(), 0, "a refusal is not a failure");
     }
 
     /// A forced tier replaces the automatic selection for that unit only;

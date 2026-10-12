@@ -37,6 +37,20 @@ pub enum TranslatorError {
     #[error("translation request missing required context: {0}")]
     MissingContext(String),
 
+    /// The requested function is a root symbol the pipeline refuses to
+    /// translate verbatim — an entry point or an import thunk. The
+    /// call-graph batch path already skips or stubs these; an explicitly
+    /// named function is refused rather than spending LLM tokens on a body
+    /// that owns no logic (a `DelayLoad_` thunk, for instance, decompiles
+    /// to an unrecovered jumptable plus a bare `return`). The reason names
+    /// the root pattern that matched.
+    #[error("refusing to translate '{function}' from '{binary}': {reason}")]
+    SkippedRoot {
+        binary: String,
+        function: String,
+        reason: String,
+    },
+
     /// Failed to plan translation order from the call graph.
     #[error("call graph planning failed: {0}")]
     CallGraph(String),
