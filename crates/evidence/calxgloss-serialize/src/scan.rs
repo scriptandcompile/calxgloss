@@ -23,7 +23,7 @@ pub(crate) fn parse_uint(s: &str) -> Option<u64> {
 /// If an integer literal starts at `i` (with no preceding identifier
 /// character), return its value and the index just past it.
 pub(crate) fn literal_at(line: &[char], i: usize) -> Option<(u64, usize)> {
-    if !line[i].is_ascii_digit() {
+    if i >= line.len() || !line[i].is_ascii_digit() {
         return None;
     }
     if i > 0 && (line[i - 1].is_alphanumeric() || line[i - 1] == '_') {
@@ -112,5 +112,16 @@ mod tests {
         assert_eq!(literal_after_ws(&line, 2), Some((0x10, 9)));
         let line = chars(">> foo");
         assert_eq!(literal_after_ws(&line, 2), None);
+    }
+
+    #[test]
+    fn literal_lookups_at_or_past_line_end_are_none() {
+        // Regression: a decompiler line ending in whitespace walked
+        // literal_after_ws to line.len(), and literal_at indexed past it.
+        let line = chars("uint uVar1,                         ");
+        assert_eq!(literal_after_ws(&line, 4), None);
+        assert_eq!(literal_at(&line, line.len()), None);
+        assert_eq!(literal_at(&chars(""), 0), None);
+        assert_eq!(all_literals(&line), Vec::<u64>::new());
     }
 }
