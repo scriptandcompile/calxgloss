@@ -37,7 +37,8 @@ pub async fn handle_classify(
     // PE parsing fails, so no wrong-program guard runs — but the server still
     // comes through `GhidraSession::ensure`, never a bare client.
     let primary = dlls.first().map(String::as_str).unwrap_or("classify");
-    let session = open_ghidra_session(settings, workspace, primary, events).await?;
+    let binaries: Vec<std::path::PathBuf> = dlls.iter().map(|d| target_dir.join(d)).collect();
+    let session = open_ghidra_session(settings, workspace, primary, &binaries, events).await?;
     let ghidra = session.client().clone();
 
     // Initialize analyzer

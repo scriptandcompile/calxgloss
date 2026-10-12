@@ -28,10 +28,20 @@ pub use tracing::{debug, warn};
 /// server's log and pid files land. The returned session tracks ownership:
 /// an owned server is shut down by [`GhidraSession::shutdown`] (or killed on
 /// drop), an attached one is left untouched.
+///
+/// The project bootstrap (G1-T6, issue #116) then runs on the same session:
+/// the `.gpr` is created on the first run and reused after, and every path
+/// in `binaries` — the binaries this command will actually read — is loaded
+/// into the project and analyzed, skipping what a live server already
+/// holds open or the analysis cache says is done. A command whose binaries
+/// are only known later (auto-shim's classified DLL list) passes an empty
+/// slice here and calls [`GhidraSession::ensure_project`] itself once they
+/// are; the bootstrap is idempotent, so a second pass costs two probes.
 pub(super) async fn open_ghidra_session(
     settings: &crate::Settings,
     workspace: &Path,
     binary: &str,
+    binaries: &[PathBuf],
     events: Option<&TranslationEvents>,
 ) -> Result<GhidraSession> {
     let env_install = std::env::var_os("GHIDRA_INSTALL_DIR").map(PathBuf::from);
@@ -59,14 +69,30 @@ pub(super) async fn open_ghidra_session(
         },
         start_timeout: DEFAULT_START_TIMEOUT,
     };
-    GhidraSession::ensure(&request, events)
+    let session = GhidraSession::ensure(&request, events)
         .await
         .with_context(|| {
             format!(
                 "Failed to attach to or start a GhidraMCP server at {}",
                 settings.ghidra_url.value
             )
-        })
+        })?;
+    // Bootstrap only the binaries that exist on disk: commands like
+    // `translate` take a `--target` path that is decorative once a live
+    // server already holds the program (Ghidra identifies programs
+    // itself), and the wrong-program guard still verifies the name.
+    let present: Vec<PathBuf> = binaries.iter().filter(|p| p.exists()).cloned().collect();
+    if present.len() < binaries.len() {
+        warn!(
+            missing = binaries.len() - present.len(),
+            "Some target binaries are not on disk; the project bootstrap skips them"
+        );
+    }
+    session
+        .ensure_project(workspace, &present, events)
+        .await
+        .with_context(|| "Failed to load the run's binaries into the Ghidra project")?;
+    Ok(session)
 }
 
 /// Resolve the workspace: `--workspace` flag > settings > CWD.

@@ -387,6 +387,26 @@ impl ProbeFake {
     /// status to answer with — a foreign server's 404 is a different shape
     /// from GhidraMCP's `200`-with-an-error-body.
     async fn serving_status(routes: &[(&'static str, u16, &'static str)]) -> Self {
+        Self::serving_slow_status(routes, &[]).await
+    }
+
+    /// As [`serving`](Self::serving), but the named endpoints hold their
+    /// response open for the given duration — how a test keeps a blocking
+    /// call like `run_analysis` in flight long enough to observe what runs
+    /// concurrently with it.
+    async fn serving_slow(
+        routes: &[(&'static str, &'static str)],
+        slow: &[(&'static str, std::time::Duration)],
+    ) -> Self {
+        let routes: Vec<(&'static str, u16, &'static str)> =
+            routes.iter().map(|(p, b)| (*p, 200, *b)).collect();
+        Self::serving_slow_status(&routes, slow).await
+    }
+
+    async fn serving_slow_status(
+        routes: &[(&'static str, u16, &'static str)],
+        slow: &[(&'static str, std::time::Duration)],
+    ) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("fake server should bind");
@@ -394,10 +414,15 @@ impl ProbeFake {
         let calls: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
         let counted = Arc::clone(&calls);
         let routes: Vec<(&'static str, u16, &'static str)> = routes.to_vec();
+        let delays: HashMap<String, std::time::Duration> = slow
+            .iter()
+            .map(|(name, d)| (name.to_string(), *d))
+            .collect();
         tokio::spawn(async move {
             while let Ok((mut stream, _)) = listener.accept().await {
                 let counted = Arc::clone(&counted);
                 let routes = routes.clone();
+                let delays = delays.clone();
                 tokio::spawn(async move {
                     use tokio::io::{AsyncReadExt, AsyncWriteExt};
                     let mut request = [0u8; 2048];
@@ -423,6 +448,9 @@ impl ProbeFake {
                         .find(|(name, _, _)| endpoint == *name)
                         .map(|(_, status, body)| (*status, (*body).to_string()))
                         .unwrap_or((404, "Error 404: No context found for request".to_string()));
+                    if let Some(delay) = delays.get(&endpoint) {
+                        tokio::time::sleep(*delay).await;
+                    }
                     let reason = if status == 404 { "Not Found" } else { "OK" };
                     let response = format!(
                         "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -1333,5 +1361,408 @@ async fn the_wrong_program_guard_rides_on_the_session() {
         .expect("the target is open, if not current");
     assert_eq!(matched, ProgramMatch::Switched);
     assert_eq!(fake.count("switch_program"), 1);
+    session.shutdown().await;
+}
+
+// ============================================================
+// The project bootstrap (issue #116, G1-T6)
+// ============================================================
+
+use calxgloss_ghidra::lifecycle::{ProgramLoad, analysis_cache_path, ensure_project};
+use calxgloss_types::{ProgressEvent, TranslationEvents};
+
+const PROJECT_NONE: &str = "{\"has_project\":false}";
+const PROJECT_EQMAIN: &str = "{\"has_project\":true,\"project_name\":\"eqmain\",\"project_path\":\"/run/ghidra/eqmain\",\"file_count\":1,\"program_count\":1}";
+const PROJECT_OTHER: &str = "{\"has_project\":true,\"project_name\":\"someone-elses\",\"project_path\":\"/elsewhere\",\"file_count\":0,\"program_count\":0}";
+const PROJECT_ACTION_OK: &str = "{\"success\":true,\"message\":\"ok\"}";
+const FROM_PROJECT_MISS: &str = "{\"success\":false,\"error\":\"Program not found in project\",\"requested_path\":\"/eqmain.dll\",\"diagnostics\":{\"project_name\":\"eqmain\",\"program_count\":0}}";
+const FROM_PROJECT_OK: &str =
+    "{\"success\":true,\"program\":\"eqmain.dll\",\"path\":\"/eqmain.dll\"}";
+const LOADED_OK: &str = "{\"success\":true,\"program\":\"eqmain.dll\",\"language\":\"Ghidra: PE\"}";
+const ANALYSIS_DONE: &str = "{\"success\":true,\"duration_ms\":42000,\"total_functions\":21847,\"new_functions\":21847,\"program\":\"eqmain.dll\"}";
+const ANALYZING_STATUS: &str = "{\"name\":\"eqmain.dll\",\"analyzing\":true,\"analyzed\":false,\"should_ask_to_analyze\":false,\"function_count\":1200}";
+
+/// A workspace with a `bin/eqmain.dll` to bootstrap, and the project path
+/// the bootstrap is asked to establish.
+struct BootstrapFixture {
+    workspace: tempfile::TempDir,
+    binary: std::path::PathBuf,
+    project: std::path::PathBuf,
+}
+
+impl BootstrapFixture {
+    fn new() -> Self {
+        let workspace = tempfile::tempdir().expect("tempdir");
+        let bin_dir = workspace.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("bin dir");
+        let binary = bin_dir.join("eqmain.dll");
+        std::fs::write(&binary, b"MZ fake dll bytes").expect("binary fixture");
+        let project = workspace.path().join("ghidra").join("eqmain.gpr");
+        Self {
+            workspace,
+            binary,
+            project,
+        }
+    }
+}
+
+/// The SHA-256 (hex) a test expects the analysis cache to hold for a file.
+fn sha256_hex_of(path: &std::path::Path) -> String {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(path).expect("fixture bytes");
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Everything a subscriber missed while a bootstrap ran, drained in order.
+fn drain_events(rx: &mut tokio::sync::broadcast::Receiver<ProgressEvent>) -> Vec<ProgressEvent> {
+    let mut seen = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        seen.push(event);
+    }
+    seen
+}
+
+#[tokio::test]
+async fn the_first_run_creates_the_project_imports_and_analyzes() {
+    let fixture = BootstrapFixture::new();
+    let fake = ProbeFake::serving_slow(
+        &[
+            ("get_project_info", PROJECT_NONE),
+            ("create_project", PROJECT_ACTION_OK),
+            ("list_open_programs", OPEN_PROGRAMS_NONE),
+            ("load_program_from_project", FROM_PROJECT_MISS),
+            ("load_program", LOADED_OK),
+            ("run_analysis", ANALYSIS_DONE),
+            ("analysis_status", ANALYZING_STATUS),
+        ],
+        &[("run_analysis", std::time::Duration::from_millis(300))],
+    )
+    .await;
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+    let events = TranslationEvents::new(64);
+    let mut rx = events.subscribe();
+
+    let setup = ensure_project(
+        &client,
+        &fixture.project,
+        fixture.workspace.path(),
+        &[fixture.binary.clone()],
+        Some(&events),
+    )
+    .await
+    .expect("first-run bootstrap");
+
+    assert!(setup.created, "a missing project is created");
+    assert_eq!(setup.project, fixture.project);
+    assert!(
+        matches!(setup.programs[0], ProgramLoad::Imported { .. }),
+        "a project miss falls through to raw import: {:?}",
+        setup.programs[0]
+    );
+
+    assert_eq!(fake.count("create_project"), 1, "the first run creates");
+    assert_eq!(fake.count("open_project"), 0, "nothing to open yet");
+    assert_eq!(
+        fake.count("load_program_from_project"),
+        1,
+        "the project is tried before importing"
+    );
+    assert_eq!(
+        fake.count("load_program"),
+        1,
+        "the miss falls through to import"
+    );
+    assert_eq!(
+        fake.count("run_analysis"),
+        1,
+        "a raw import is always analyzed"
+    );
+    assert!(
+        fake.count("analysis_status") >= 1,
+        "the blocking analysis request was polled while in flight"
+    );
+
+    // The analysis result is recorded so a later run can skip it.
+    let cache_path = analysis_cache_path(fixture.workspace.path());
+    let cache: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cache_path).expect("cache written"))
+            .expect("cache json");
+    let key = fixture
+        .binary
+        .canonicalize()
+        .expect("canonical")
+        .display()
+        .to_string();
+    assert_eq!(
+        cache["analyzed"][&key]["sha256"].as_str(),
+        Some(sha256_hex_of(&fixture.binary).as_str()),
+        "the cache records the bytes the analysis ran on"
+    );
+
+    // Ghidra project files are binary and large: the workspace keeps them out of git.
+    let gitignore = std::fs::read_to_string(fixture.workspace.path().join(".gitignore"))
+        .expect("gitignore written");
+    assert!(gitignore.lines().any(|line| line.trim() == "ghidra/"));
+
+    let seen = drain_events(&mut rx);
+    assert!(
+        seen.iter().any(|event| matches!(
+            event,
+            ProgressEvent::GhidraProjectCreated { path } if path == &fixture.project.display().to_string()
+        )),
+        "creating the project announces it: {seen:?}"
+    );
+    assert!(
+        seen.iter().any(|event| matches!(
+            event,
+            ProgressEvent::GhidraProgramAnalyzed { dll, .. } if dll == "eqmain.dll"
+        )),
+        "a finished analysis announces itself: {seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_reused_project_and_current_program_cost_nothing() {
+    // A later run against a live server: the project is open and the
+    // program is current — the bootstrap must not create, open, load, or
+    // analyze anything, and must stay silent.
+    let fixture = BootstrapFixture::new();
+    let fake = ProbeFake::serving(&[
+        ("get_project_info", PROJECT_EQMAIN),
+        ("list_open_programs", OPEN_PROGRAMS_TARGET_CURRENT),
+    ])
+    .await;
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+    let events = TranslationEvents::new(64);
+    let mut rx = events.subscribe();
+
+    let setup = ensure_project(
+        &client,
+        &fixture.project,
+        fixture.workspace.path(),
+        &[fixture.binary.clone()],
+        Some(&events),
+    )
+    .await
+    .expect("reuse bootstrap");
+
+    assert!(!setup.created);
+    assert_eq!(
+        setup.programs[0],
+        ProgramLoad::AlreadyOpen { switched: false }
+    );
+    for endpoint in [
+        "create_project",
+        "open_project",
+        "load_program",
+        "load_program_from_project",
+        "run_analysis",
+    ] {
+        assert_eq!(fake.count(endpoint), 0, "{endpoint} must not be touched");
+    }
+    assert!(
+        drain_events(&mut rx).is_empty(),
+        "a run that changed nothing announces nothing"
+    );
+}
+
+#[tokio::test]
+async fn an_existing_gpr_is_opened_and_a_warm_cache_skips_analysis() {
+    // The `.gpr` exists on disk but the server holds another project: open
+    // it, take the program from the project, and — because the analysis
+    // cache says these bytes were analyzed before — skip the analysis.
+    let fixture = BootstrapFixture::new();
+    std::fs::create_dir_all(fixture.project.parent().expect("parent")).expect("ghidra dir");
+    std::fs::write(&fixture.project, "fake .gpr").expect(".gpr fixture");
+    let key = fixture
+        .binary
+        .canonicalize()
+        .expect("canonical")
+        .display()
+        .to_string();
+    let sha = sha256_hex_of(&fixture.binary);
+    let cache_path = analysis_cache_path(fixture.workspace.path());
+    std::fs::create_dir_all(cache_path.parent().expect("parent")).expect("cache dir");
+    std::fs::write(
+        &cache_path,
+        format!(
+            "{{\"version\":1,\"analyzed\":{{\"{key}\":{{\"sha256\":\"{sha}\",\"secs\":42}}}}}}"
+        ),
+    )
+    .expect("warm cache fixture");
+
+    let fake = ProbeFake::serving(&[
+        ("get_project_info", PROJECT_OTHER),
+        ("open_project", PROJECT_ACTION_OK),
+        ("list_open_programs", OPEN_PROGRAMS_NONE),
+        ("load_program_from_project", FROM_PROJECT_OK),
+    ])
+    .await;
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+    let events = TranslationEvents::new(64);
+    let mut rx = events.subscribe();
+
+    let setup = ensure_project(
+        &client,
+        &fixture.project,
+        fixture.workspace.path(),
+        &[fixture.binary.clone()],
+        Some(&events),
+    )
+    .await
+    .expect("later-run bootstrap");
+
+    assert!(!setup.created, "an existing project is opened, not created");
+    assert_eq!(
+        setup.programs[0],
+        ProgramLoad::FromProject {
+            analysis_ran: false
+        }
+    );
+    assert_eq!(fake.count("open_project"), 1);
+    assert_eq!(fake.count("create_project"), 0);
+    assert_eq!(
+        fake.count("load_program"),
+        0,
+        "the project copy is opened, not re-imported"
+    );
+    assert_eq!(
+        fake.count("run_analysis"),
+        0,
+        "the warm cache skips the minutes-long analysis"
+    );
+
+    let seen = drain_events(&mut rx);
+    assert!(
+        seen.iter()
+            .any(|event| matches!(event, ProgressEvent::GhidraProjectCreated { .. })),
+        "opening the project is announced too: {seen:?}"
+    );
+    assert!(
+        !seen
+            .iter()
+            .any(|event| matches!(event, ProgressEvent::GhidraProgramAnalyzed { .. })),
+        "no analysis ran, so none is announced: {seen:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_project_program_with_a_cold_cache_is_still_analyzed() {
+    // The project holds the program but the bytes are not in the cache —
+    // a different binary at the same path, or a cache that was lost — so
+    // the analysis runs and the cache records it.
+    let fixture = BootstrapFixture::new();
+    std::fs::create_dir_all(fixture.project.parent().expect("parent")).expect("ghidra dir");
+    std::fs::write(&fixture.project, "fake .gpr").expect(".gpr fixture");
+
+    let fake = ProbeFake::serving(&[
+        ("get_project_info", PROJECT_EQMAIN),
+        ("list_open_programs", OPEN_PROGRAMS_NONE),
+        ("load_program_from_project", FROM_PROJECT_OK),
+        ("run_analysis", ANALYSIS_DONE),
+        ("analysis_status", ANALYZING_STATUS),
+    ])
+    .await;
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+
+    let setup = ensure_project(
+        &client,
+        &fixture.project,
+        fixture.workspace.path(),
+        &[fixture.binary.clone()],
+        None,
+    )
+    .await
+    .expect("cold-cache bootstrap");
+
+    assert_eq!(
+        setup.programs[0],
+        ProgramLoad::FromProject { analysis_ran: true }
+    );
+    assert_eq!(fake.count("run_analysis"), 1);
+    let cache_path = analysis_cache_path(fixture.workspace.path());
+    let cache: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cache_path).expect("cache written"))
+            .expect("cache json");
+    let key = fixture
+        .binary
+        .canonicalize()
+        .expect("canonical")
+        .display()
+        .to_string();
+    assert_eq!(
+        cache["analyzed"][&key]["sha256"].as_str(),
+        Some(sha256_hex_of(&fixture.binary).as_str())
+    );
+}
+
+#[tokio::test]
+async fn a_stale_open_program_is_switched_not_reloaded() {
+    // The program is open but not current (the incident guard's shape):
+    // switching is enough — no load, no analysis.
+    let fixture = BootstrapFixture::new();
+    let fake = ProbeFake::serving(&[
+        ("get_project_info", PROJECT_EQMAIN),
+        ("list_open_programs", OPEN_PROGRAMS_TARGET_STALE),
+        ("switch_program", SWITCHED_TO_EQMAIN),
+    ])
+    .await;
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+
+    let setup = ensure_project(
+        &client,
+        &fixture.project,
+        fixture.workspace.path(),
+        &[fixture.binary.clone()],
+        None,
+    )
+    .await
+    .expect("switch bootstrap");
+
+    assert_eq!(
+        setup.programs[0],
+        ProgramLoad::AlreadyOpen { switched: true }
+    );
+    assert_eq!(fake.count("switch_program"), 1);
+    assert_eq!(fake.count("load_program"), 0);
+    assert_eq!(fake.count("run_analysis"), 0);
+}
+
+#[tokio::test]
+async fn the_session_bootstraps_the_project_it_was_given() {
+    // Commands reach the bootstrap through the session, which remembers
+    // the project path from the preflight request.
+    let fixture = BootstrapFixture::new();
+    let fake = ProbeFake::serving(&[
+        ("check_connection", HEADLESS_CONNECTION),
+        ("get_project_info", PROJECT_NONE),
+        ("create_project", PROJECT_ACTION_OK),
+        ("list_open_programs", OPEN_PROGRAMS_NONE),
+        ("load_program_from_project", FROM_PROJECT_MISS),
+        ("load_program", LOADED_OK),
+        ("run_analysis", ANALYSIS_DONE),
+        ("analysis_status", ANALYZING_STATUS),
+    ])
+    .await;
+
+    let session = GhidraSession::ensure(
+        &session_request(&fake.base_url, &fixture.project, fixture.workspace.path()),
+        None,
+    )
+    .await
+    .expect("attach to the fake");
+    assert_eq!(session.project_path(), fixture.project);
+
+    let setup = session
+        .ensure_project(fixture.workspace.path(), &[fixture.binary.clone()], None)
+        .await
+        .expect("session bootstrap");
+
+    assert!(setup.created);
+    assert_eq!(fake.count("create_project"), 1);
+    assert_eq!(fake.count("run_analysis"), 1);
     session.shutdown().await;
 }

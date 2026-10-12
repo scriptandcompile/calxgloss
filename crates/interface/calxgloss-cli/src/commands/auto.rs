@@ -472,7 +472,14 @@ pub async fn handle_auto(
     // `events` handle gets a `GhidraServerStarted` if one had to be started.
     // (The classify step opens its own preflight, which simply attaches to
     // the server already running here.)
-    let session = open_ghidra_session(settings, &workspace, &dlls[0], events).await?;
+    let session = open_ghidra_session(
+        settings,
+        &workspace,
+        &dlls[0],
+        &dlls.iter().map(|d| target_dir.join(d)).collect::<Vec<_>>(),
+        events,
+    )
+    .await?;
 
     println!();
     hsep_bold();

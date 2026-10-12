@@ -16,7 +16,10 @@
 //! The acting half is G1-T4: [`session::GhidraSession::ensure`] attaches to a
 //! running server or spawns a headless one ([`server`]) under these same
 //! checks, tracking ownership so owned servers get closed and killed on exit
-//! while attached ones are never touched.
+//! while attached ones are never touched. G1-T6 adds [`project`]'s bootstrap:
+//! create or open the run's `.gpr` and bring every needed binary to loaded
+//! and analyzed, with an on-disk analysis cache so later runs skip the
+//! minutes-long re-analysis.
 //!
 //! Version coupling is the load-bearing constraint throughout (ADR-0001): the
 //! extension jar is compiled against exactly one Ghidra build, so the install
@@ -26,6 +29,7 @@ mod discovery;
 mod extension;
 mod install;
 mod program;
+mod project;
 mod server;
 mod session;
 
@@ -33,6 +37,9 @@ pub use discovery::{BRIDGE_DEFAULT_PORT, DiscoveredServer, discover, socket_dir}
 pub use extension::{ExtensionDiscovery, ExtensionVerdict, GhidraExtension};
 pub use install::{GhidraInstall, InstallDiscovery, InstallSource};
 pub use program::{ProgramMatch, ensure_current_program};
+pub use project::{
+    ANALYSIS_POLL_INTERVAL, ProgramLoad, ProjectSetup, analysis_cache_path, ensure_project,
+};
 pub use server::LaunchPlan;
 pub use session::{
     DEFAULT_START_TIMEOUT, GhidraSession, Ownership, SessionRequest, default_project,

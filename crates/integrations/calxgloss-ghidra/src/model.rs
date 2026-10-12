@@ -361,3 +361,65 @@ pub struct EnumDefinition {
     /// The members.
     pub members: Vec<EnumMember>,
 }
+
+/// The project the headless server currently holds open, as
+/// `/get_project_info` renders it.
+///
+/// With no project open the endpoint answers just `{"has_project": false}`,
+/// so everything past the flag is optional.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectInfo {
+    /// Whether a project is open at all.
+    pub has_project: bool,
+    /// The open project's name, e.g. `eqmain`.
+    pub name: Option<String>,
+    /// Files held in the project, when the server counted them.
+    pub file_count: Option<u64>,
+    /// Files whose content type is a program, when the server counted them.
+    pub program_count: Option<u64>,
+}
+
+/// A program the server opened into its current program slot, as
+/// `/load_program` and `/load_program_from_project` render it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedProgram {
+    /// The program's name inside the project, e.g. `eqmain.dll`.
+    pub name: String,
+    /// The language the loader settled on, e.g. `x86:LE:64:default` — only
+    /// `/load_program` reports one.
+    pub language: Option<String>,
+    /// Its path inside the project, e.g. `/eqmain.dll` — only
+    /// `/load_program_from_project` reports one.
+    pub path: Option<String>,
+}
+
+/// What a `/run_analysis` call reported when it returned.
+///
+/// The endpoint blocks until the analysis finishes, so this is the summary
+/// of the run that just completed, not a status snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnalysisOutcome {
+    /// Wall-clock duration the server reported, in milliseconds.
+    pub duration_ms: u64,
+    /// Functions in the program once analysis finished.
+    pub total_functions: u64,
+    /// Functions the analysis discovered.
+    pub new_functions: u64,
+    /// The analyzed program's name.
+    pub program: String,
+}
+
+/// One program's auto-analysis state, as `/analysis_status` renders it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnalysisStatus {
+    /// The program's name.
+    pub name: String,
+    /// Whether analysis is running right now.
+    pub analyzing: bool,
+    /// Whether the program carries Ghidra's analyzed flag.
+    pub analyzed: bool,
+    /// Whether Ghidra would prompt to analyze this program.
+    pub should_ask_to_analyze: bool,
+    /// Functions Ghidra has identified so far.
+    pub function_count: u64,
+}

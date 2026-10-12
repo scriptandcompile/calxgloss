@@ -475,7 +475,7 @@ fn safe_key(name: &str) -> String {
 
 /// SHA-256 (hex) over `path`'s bytes. `Ok(None)` when the file does not
 /// exist — the missing-binary degradation the module docs promise.
-fn sha256_of_file(path: &Path) -> std::io::Result<Option<String>> {
+pub(crate) fn sha256_of_file(path: &Path) -> std::io::Result<Option<String>> {
     match std::fs::read(path) {
         Ok(bytes) => Ok(Some(sha256_hex(&bytes))),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),

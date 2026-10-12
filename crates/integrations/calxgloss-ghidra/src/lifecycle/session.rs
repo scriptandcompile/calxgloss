@@ -39,6 +39,7 @@ use super::discovery::{self, DiscoveredServer};
 use super::extension::{self, ExtensionDiscovery, ExtensionVerdict};
 use super::install::{self, InstallDiscovery};
 use super::program::{self, ProgramMatch};
+use super::project::{self, ProjectSetup};
 use super::server::{self, OwnedServer};
 use crate::client::{GhidraClient, GhidraConfig, GhidraError, MIN_PLUGIN_VERSION, Result};
 use crate::model::ServerInfo;
@@ -99,6 +100,10 @@ pub struct GhidraSession {
     client: GhidraClient,
     info: ServerInfo,
     ownership: Ownership,
+    /// The run's project path (`<workspace>/ghidra/<target>.gpr`), kept so
+    /// [`ensure_project`](Self::ensure_project) bootstraps the one the
+    /// preflight was asked for.
+    project: PathBuf,
     /// The supervised child, present exactly when `ownership` is `Owned`.
     server: Option<OwnedServer>,
 }
@@ -140,6 +145,7 @@ impl GhidraSession {
                     client,
                     info,
                     ownership: Ownership::Attached,
+                    project: request.project.to_path_buf(),
                     server: None,
                 })
             }
@@ -170,7 +176,8 @@ impl GhidraSession {
     ) -> Option<Self> {
         let servers = discovery::discover(request.socket_dir?);
         for server in servers {
-            let session = Self::attach_one(configured, &server, request.api_key).await;
+            let session =
+                Self::attach_one(configured, &server, request.api_key, request.project).await;
             if session.is_some() {
                 return session;
             }
@@ -185,6 +192,7 @@ impl GhidraSession {
         configured: &GhidraClient,
         server: &DiscoveredServer,
         api_key: Option<&str>,
+        project: &Path,
     ) -> Option<Self> {
         let port = server.port?;
         let url = format!("http://127.0.0.1:{port}");
@@ -208,6 +216,7 @@ impl GhidraSession {
                     client,
                     info,
                     ownership: Ownership::Attached,
+                    project: project.to_path_buf(),
                     server: None,
                 })
             }
@@ -416,6 +425,7 @@ impl GhidraSession {
             client,
             info,
             ownership: Ownership::Owned,
+            project: request.project.to_path_buf(),
             server: Some(server),
         })
     }
@@ -441,6 +451,25 @@ impl GhidraSession {
     /// naming the programs that *are* open when it is not.
     pub async fn ensure_current_program(&self, target: &str) -> Result<ProgramMatch> {
         program::ensure_current_program(&self.client, target).await
+    }
+
+    /// Bootstrap the run's Ghidra project (issue #116, G1-T6): create or
+    /// open the session's project on the server, then load every binary in
+    /// `binaries` and analyze what the analysis cache has not already
+    /// covered. See [`project`]'s module docs for the cascade and the
+    /// cache; `workspace` roots the cache and the `.gitignore` rule.
+    pub async fn ensure_project(
+        &self,
+        workspace: &Path,
+        binaries: &[PathBuf],
+        events: Option<&TranslationEvents>,
+    ) -> Result<ProjectSetup> {
+        project::ensure_project(&self.client, &self.project, workspace, binaries, events).await
+    }
+
+    /// The project path this session bootstraps.
+    pub fn project_path(&self) -> &Path {
+        &self.project
     }
 
     /// Release the session: an owned server gets its project closed and its

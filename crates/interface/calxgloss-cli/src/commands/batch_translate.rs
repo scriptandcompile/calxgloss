@@ -62,7 +62,8 @@ pub async fn handle_batch_translate(
     // The session preflight (G1-T4): attach or spawn, then the wrong-program
     // guard (incident 2026-10-08) — every function listed and translated
     // below belongs to the target binary only if the server is serving it.
-    let session = open_ghidra_session(settings, &workspace, binary, None).await?;
+    let session =
+        open_ghidra_session(settings, &workspace, binary, &[target.to_path_buf()], None).await?;
     session
         .ensure_current_program(binary)
         .await

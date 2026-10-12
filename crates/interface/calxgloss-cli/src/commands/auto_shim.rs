@@ -18,16 +18,18 @@ use crate::utils::*;
 pub async fn handle_auto_shim(
     dll_filter: Option<&str>,
     skip_git: bool,
-    _target_dir: &Path,
+    target_dir: &Path,
     workspace: &Path,
     settings: &Settings,
 ) -> Result<()> {
     info!("Starting auto-shim pipeline");
 
     // The session preflight (G1-T4): attach or spawn. The wrong-program guard
-    // runs per DLL inside the shim pipeline, through this session.
+    // runs per DLL inside the shim pipeline, through this session. The
+    // project bootstrap (G1-T6) waits until the DLL list is known below —
+    // it is decided from the filter or the classification records.
     let primary = dll_filter.unwrap_or("auto-shim");
-    let session = open_ghidra_session(settings, workspace, primary, None).await?;
+    let session = open_ghidra_session(settings, workspace, primary, &[], None).await?;
     let ghidra = session.client().clone();
 
     // Initialize LLM client.
@@ -107,6 +109,15 @@ pub async fn handle_auto_shim(
         };
 
     info!(count = dll_names.len(), dlls = ?dll_names, "Auto-shim targets");
+
+    // The project bootstrap (G1-T6, issue #116), now that the DLLs are
+    // known: the shim pipeline decompiles each one through this session,
+    // so every one must be loaded and analyzed in the project first.
+    let binaries: Vec<std::path::PathBuf> = dll_names.iter().map(|d| target_dir.join(d)).collect();
+    session
+        .ensure_project(workspace, &binaries, None)
+        .await
+        .with_context(|| "Failed to load the shim DLLs into the Ghidra project")?;
 
     // Initialize verifier.
     let verifier = Verifier::new(workspace).context("Failed to create verifier")?;

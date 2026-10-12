@@ -353,6 +353,28 @@ pub enum ProgressEvent {
         /// The PID of the server process calxgloss started and owns.
         pid: u32,
     },
+    /// The Ghidra project backing this run was created at startup, or an
+    /// existing one was opened on a server that had none (or another) open
+    /// (issue #116, G1-T6).
+    ///
+    /// Batch-level (no unit key): the project serves the whole run, not one
+    /// binary, and it names no phase — the run has not started work yet.
+    GhidraProjectCreated {
+        /// Path of the `.gpr` project file the server now has open.
+        path: String,
+    },
+    /// Ghidra static analysis ran for one binary during startup bootstrap,
+    /// and the result was recorded in the analysis cache so later runs skip
+    /// it (issue #116, G1-T6).
+    ///
+    /// Batch-level (no unit key): the analysis belongs to the project, not
+    /// to a translation unit, and it names no phase.
+    GhidraProgramAnalyzed {
+        /// The binary that was analyzed.
+        dll: String,
+        /// Wall-clock duration of the analysis, in seconds.
+        secs: u64,
+    },
 }
 
 impl ProgressEvent {
@@ -425,7 +447,9 @@ impl ProgressEvent {
             | ProgressEvent::BatchProgress { .. }
             | ProgressEvent::BatchSummary { .. }
             | ProgressEvent::PipelineStateChanged { .. }
-            | ProgressEvent::GhidraServerStarted { .. } => None,
+            | ProgressEvent::GhidraServerStarted { .. }
+            | ProgressEvent::GhidraProjectCreated { .. }
+            | ProgressEvent::GhidraProgramAnalyzed { .. } => None,
         }
     }
 }
@@ -716,6 +740,12 @@ impl std::fmt::Display for ProgressEvent {
             }
             ProgressEvent::GhidraServerStarted { url, pid } => {
                 write!(f, "Ghidra headless server started (pid {pid}) at {url}")
+            }
+            ProgressEvent::GhidraProjectCreated { path } => {
+                write!(f, "Ghidra project ready at {path}")
+            }
+            ProgressEvent::GhidraProgramAnalyzed { dll, secs } => {
+                write!(f, "Ghidra analysis of {dll} finished in {secs}s")
             }
         }
     }
@@ -1514,6 +1544,48 @@ mod tests {
         assert!(
             shown.contains("4123") && shown.contains("8089"),
             "display names the pid and the port: {shown}"
+        );
+    }
+
+    #[test]
+    fn ghidra_project_created_is_batch_scoped_phaseless_and_tagged() {
+        let event = ProgressEvent::GhidraProjectCreated {
+            path: "/work/ghidra/target.gpr".into(),
+        };
+        assert_eq!(event.unit_key(), None, "run-level, not unit-scoped");
+        assert!(
+            TranslationPhase::from_event(&event).is_none(),
+            "a project bootstrap names no unit phase"
+        );
+        let json = serde_json::to_value(&event).expect("serializes");
+        assert_eq!(json["event"], "ghidra_project_created");
+        assert_eq!(json["path"], "/work/ghidra/target.gpr");
+        let shown = event.to_string();
+        assert!(
+            shown.contains("target.gpr"),
+            "display names the project path: {shown}"
+        );
+    }
+
+    #[test]
+    fn ghidra_program_analyzed_is_batch_scoped_phaseless_and_tagged() {
+        let event = ProgressEvent::GhidraProgramAnalyzed {
+            dll: "target.dll".into(),
+            secs: 42,
+        };
+        assert_eq!(event.unit_key(), None, "run-level, not unit-scoped");
+        assert!(
+            TranslationPhase::from_event(&event).is_none(),
+            "a bootstrap analysis names no unit phase"
+        );
+        let json = serde_json::to_value(&event).expect("serializes");
+        assert_eq!(json["event"], "ghidra_program_analyzed");
+        assert_eq!(json["dll"], "target.dll");
+        assert_eq!(json["secs"], 42);
+        let shown = event.to_string();
+        assert!(
+            shown.contains("target.dll") && shown.contains("42"),
+            "display names the binary and the duration: {shown}"
         );
     }
 

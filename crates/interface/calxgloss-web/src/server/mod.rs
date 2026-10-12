@@ -574,6 +574,13 @@ impl ProgressState {
                 // it; nothing about it folds into the per-unit or per-binary
                 // view — the server belongs to the run, not to a binary.
             }
+            ProgressEvent::GhidraProjectCreated { .. }
+            | ProgressEvent::GhidraProgramAnalyzed { .. } => {
+                // Startup project bootstrap (issue #116): the project and
+                // its analyses belong to the run, not to a translation
+                // unit, so they ride the broadcast for the activity feed
+                // without folding into the per-unit view.
+            }
         }
     }
 

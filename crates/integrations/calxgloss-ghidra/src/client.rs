@@ -3,9 +3,9 @@
 use crate::error;
 use crate::error::Classification;
 use crate::model::{
-    DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionBody, FunctionReport,
-    FunctionSummary, OpenProgram, Segment, ServerInfo, ServerKind, StringLiteral, StructLayout,
-    Symbol, Xref,
+    AnalysisOutcome, AnalysisStatus, DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition,
+    FunctionBody, FunctionReport, FunctionSummary, LoadedProgram, OpenProgram, ProjectInfo,
+    Segment, ServerInfo, ServerKind, StringLiteral, StructLayout, Symbol, Xref,
 };
 use crate::parse;
 use calxgloss_types::{BinaryIdentity, ProgressEvent, TranslationEvents};
@@ -33,6 +33,13 @@ const DATA_PAGE: usize = 1000;
 /// response shapes this client speaks are that bridge's, so an older plugin
 /// is a configuration fault to name, not a shape to adapt to.
 pub const MIN_PLUGIN_VERSION: &str = "6.0.0";
+
+/// Timeout for a `/run_analysis` request.
+///
+/// The endpoint blocks inside Ghidra until the whole auto-analysis finishes,
+/// which for a large DLL runs to several minutes — far past the ordinary
+/// request timeout — so this call gets its own, much longer budget.
+pub const ANALYSIS_TIMEOUT: Duration = Duration::from_secs(600);
 
 // ============================================================
 // Error types
@@ -121,6 +128,17 @@ pub enum GhidraError {
         if open.is_empty() { "none".to_string() } else { open.join(", ") }
     )]
     WrongProgram { target: String, open: Vec<String> },
+
+    /// A local filesystem step the bootstrap needs — creating the
+    /// directory beside the run's `.gpr` — failed.
+    ///
+    /// Distinct from [`Reported`](Self::Reported): nothing on the server
+    /// answered this; the workspace itself refused the write.
+    #[error("Could not create the Ghidra project directory {path}: {source}")]
+    LocalIo {
+        path: String,
+        source: std::io::Error,
+    },
 
     /// Neither the configured port nor the fallback default is free, so a
     /// headless spawn cannot bind either.
@@ -235,6 +253,9 @@ impl GhidraConfig {
 pub struct GhidraClient {
     config: GhidraConfig,
     http: Client,
+    /// Same server, longer leash: `/run_analysis` blocks until a full
+    /// auto-analysis finishes, which outlasts the ordinary timeout.
+    slow_http: Client,
     /// Armed by `begin_pass` while an analysis pass walks the program;
     /// clones share it so every handle to one client beats as one.
     heartbeat: Arc<Mutex<Option<Arc<Heartbeat>>>>,
@@ -274,17 +295,22 @@ impl GhidraClient {
 
     /// Create a client from explicit settings.
     pub fn from_config(config: GhidraConfig) -> std::result::Result<Self, GhidraError> {
-        let http = Client::builder()
-            .timeout(config.timeout)
-            .build()
-            .map_err(|source| GhidraError::Transport {
-                url: config.base_url.to_string(),
-                source,
-            })?;
+        let build = |timeout: Duration| {
+            Client::builder()
+                .timeout(timeout)
+                .build()
+                .map_err(|source| GhidraError::Transport {
+                    url: config.base_url.to_string(),
+                    source,
+                })
+        };
+        let http = build(config.timeout)?;
+        let slow_http = build(config.timeout.max(ANALYSIS_TIMEOUT))?;
         info!(base_url = %config.base_url, "Created GhidraClient");
         Ok(Self {
             config,
             http,
+            slow_http,
             heartbeat: Arc::new(Mutex::new(None)),
         })
     }
@@ -386,6 +412,17 @@ impl GhidraClient {
     /// This is the single point where server errors become client errors, so
     /// every other method can assume it received content.
     async fn get_text(&self, endpoint: &str, params: &[(&str, String)]) -> Result<String> {
+        self.get_text_on(&self.http, endpoint, params).await
+    }
+
+    /// [`get_text`](Self::get_text) on a chosen HTTP client — the slow one
+    /// for calls like `/run_analysis` that block inside Ghidra.
+    async fn get_text_on(
+        &self,
+        http: &Client,
+        endpoint: &str,
+        params: &[(&str, String)],
+    ) -> Result<String> {
         let mut url = self.config.base_url.join(endpoint)?;
         // The query string is only touched when there is one to add. Merely
         // calling `query_pairs_mut` appends a bare `?`, and Ghidra rejects a
@@ -398,7 +435,7 @@ impl GhidraClient {
         }
 
         trace!(%url, endpoint, "GET");
-        let mut request = self.http.get(url.clone());
+        let mut request = http.get(url.clone());
         if let Some(ref key) = self.config.api_key {
             request = request.bearer_auth(key);
         }
@@ -412,9 +449,28 @@ impl GhidraClient {
     /// `{"error":"..."}` on failure; the failure shape goes through
     /// [`error::classify`] like every other response.
     async fn post_json(&self, endpoint: &str, payload: &serde_json::Value) -> Result<String> {
-        let url = self.config.base_url.join(endpoint)?;
+        self.post_json_on(&self.http, endpoint, &[], payload).await
+    }
+
+    /// [`post_json`](Self::post_json) with query parameters and a chosen
+    /// HTTP client — the bridge reads `program`-style parameters from the
+    /// query string even for POST-declared endpoints.
+    async fn post_json_on(
+        &self,
+        http: &Client,
+        endpoint: &str,
+        params: &[(&str, String)],
+        payload: &serde_json::Value,
+    ) -> Result<String> {
+        let mut url = self.config.base_url.join(endpoint)?;
+        if !params.is_empty() {
+            let mut pairs = url.query_pairs_mut();
+            for (k, v) in params {
+                pairs.append_pair(k, v);
+            }
+        }
         trace!(%url, endpoint, "POST");
-        let mut request = self.http.post(url.clone()).json(payload);
+        let mut request = http.post(url.clone()).json(payload);
         if let Some(ref key) = self.config.api_key {
             request = request.bearer_auth(key);
         }
@@ -1180,6 +1236,131 @@ impl GhidraClient {
         self.get_text("close_project", &[]).await?;
         info!("Closed the GhidraMCP server's project");
         Ok(())
+    }
+
+    // =========================================================
+    // Project bootstrap and program loading (issue #116, G1-T6)
+    // =========================================================
+
+    /// What project the server currently holds open, if any.
+    #[instrument(skip(self))]
+    pub async fn project_info(&self) -> Result<ProjectInfo> {
+        let body = self.get_text("get_project_info", &[]).await?;
+        parse::parse_project_info(&body).ok_or_else(|| GhidraError::Malformed {
+            kind: "project info",
+            detail: body.trim().to_string(),
+        })
+    }
+
+    /// Open the existing project whose `.gpr` file (or project directory) is
+    /// at `path`.
+    #[instrument(skip(self), fields(path))]
+    pub async fn open_project(&self, path: &str) -> Result<()> {
+        let payload = serde_json::json!({ "path": path });
+        self.post_json("open_project", &payload).await?;
+        info!(path, "Opened the GhidraMCP server's project");
+        Ok(())
+    }
+
+    /// Create a new project named `name` under `parent_dir` and open it.
+    #[instrument(skip(self), fields(parent_dir, name))]
+    pub async fn create_project(&self, parent_dir: &str, name: &str) -> Result<()> {
+        let payload = serde_json::json!({ "parentDir": parent_dir, "name": name });
+        self.post_json("create_project", &payload).await?;
+        info!(parent_dir, name, "Created the GhidraMCP server's project");
+        Ok(())
+    }
+
+    /// Import the binary at `file` into the server's project and make it the
+    /// current program.
+    ///
+    /// The bridge imports into the project root and, when a program of that
+    /// name is already in the project, reopens it instead of re-importing —
+    /// so this is safe to call for a binary the project already holds. It
+    /// does *not* run analysis; that is [`run_analysis`](Self::run_analysis).
+    #[instrument(skip(self), fields(file))]
+    pub async fn load_program(&self, file: &str) -> Result<LoadedProgram> {
+        let payload = serde_json::json!({ "file": file });
+        let body = self.post_json("load_program", &payload).await?;
+        let loaded = parse::parse_loaded_program(&body).ok_or_else(|| GhidraError::Malformed {
+            kind: "a loaded-program result",
+            detail: body.trim().to_string(),
+        })?;
+        info!(program = %loaded.name, "Loaded a program into the GhidraMCP server");
+        Ok(loaded)
+    }
+
+    /// Open the program stored at project path `path` in the open project.
+    ///
+    /// Answers `Ok(None)` when the project holds no program at that path:
+    /// the bridge reports a miss as HTTP 200 with `{"success":false,...}`,
+    /// which the transport's error classification never sees, so the client
+    /// reads the miss out of the body. A hard failure — no project open, a
+    /// malformed answer — is still an `Err`.
+    #[instrument(skip(self), fields(path))]
+    pub async fn load_program_from_project(&self, path: &str) -> Result<Option<LoadedProgram>> {
+        let payload = serde_json::json!({ "path": path });
+        let body = self
+            .post_json("load_program_from_project", &payload)
+            .await?;
+        if let Some(loaded) = parse::parse_loaded_program(&body) {
+            info!(program = %loaded.name, "Opened a program from the Ghidra project");
+            return Ok(Some(loaded));
+        }
+        match parse::parse_load_failure(&body) {
+            Some(reason) => {
+                debug!(path, reason, "Program is not in the Ghidra project");
+                Ok(None)
+            }
+            None => Err(GhidraError::Malformed {
+                kind: "a from-project load result",
+                detail: body.trim().to_string(),
+            }),
+        }
+    }
+
+    /// Run Ghidra's full auto-analysis on `program` (the current program when
+    /// `None`), blocking until it finishes.
+    ///
+    /// The endpoint holds the request open for as long as the analysis takes
+    /// — minutes for a large DLL — so this request runs on the client's slow
+    /// transport with [`ANALYSIS_TIMEOUT`]. Poll [`analysis_status`] from a
+    /// concurrent task to watch progress while this call is in flight.
+    #[instrument(skip(self), fields(program))]
+    pub async fn run_analysis(&self, program: Option<&str>) -> Result<AnalysisOutcome> {
+        let params = program
+            .map(|p| vec![("program", p.to_string())])
+            .unwrap_or_default();
+        let body = self
+            .post_json_on(
+                &self.slow_http,
+                "run_analysis",
+                &params,
+                &serde_json::json!({}),
+            )
+            .await?;
+        let outcome =
+            parse::parse_analysis_outcome(&body).ok_or_else(|| GhidraError::Malformed {
+                kind: "an analysis result",
+                detail: body.trim().to_string(),
+            })?;
+        info!(
+            program = %outcome.program,
+            secs = outcome.duration_ms / 1000,
+            functions = outcome.total_functions,
+            "Ghidra auto-analysis finished"
+        );
+        Ok(outcome)
+    }
+
+    /// Auto-analysis state for `program` (every open program when `None`).
+    #[instrument(skip(self), fields(program))]
+    pub async fn analysis_status(&self, program: Option<&str>) -> Result<Vec<AnalysisStatus>> {
+        let params = program
+            .map(|p| vec![("program", p.to_string())])
+            .unwrap_or_default();
+        let body = self.get_text("analysis_status", &params).await?;
+        Ok(parse::parse_analysis_status(&body))
     }
 }
 

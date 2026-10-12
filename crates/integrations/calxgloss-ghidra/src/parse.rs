@@ -11,9 +11,9 @@
 //! wrong call target.
 
 use crate::model::{
-    DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, EnumMember, FunctionBody,
-    FunctionSummary, OpenProgram, Segment, ServerInfo, ServerKind, StringLiteral,
-    StructFieldLayout, StructLayout, Symbol, Xref,
+    AnalysisOutcome, AnalysisStatus, DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition,
+    EnumMember, FunctionBody, FunctionSummary, LoadedProgram, OpenProgram, ProjectInfo, Segment,
+    ServerInfo, ServerKind, StringLiteral, StructFieldLayout, StructLayout, Symbol, Xref,
 };
 use serde_json::Value;
 
@@ -314,6 +314,132 @@ pub fn parse_open_programs(body: &str) -> Vec<OpenProgram> {
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
                 function_count: item.get("function_count").and_then(Value::as_u64),
+            })
+        })
+        .collect()
+}
+
+/// Parse a `get_project_info` response:
+/// `{"has_project":true,"project_name":...,"file_count":...,"program_count":...}`.
+///
+/// With no project open the endpoint answers just `{"has_project": false}`,
+/// so the descriptive fields stay `None`.
+pub fn parse_project_info(body: &str) -> Option<ProjectInfo> {
+    let value = serde_json::from_str::<Value>(body).ok()?;
+    let has_project = value.get("has_project")?.as_bool()?;
+    Some(ProjectInfo {
+        has_project,
+        name: value
+            .get("project_name")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        file_count: value.get("file_count").and_then(Value::as_u64),
+        program_count: value.get("program_count").and_then(Value::as_u64),
+    })
+}
+
+/// Parse a successful `/load_program` or `/load_program_from_project` body:
+/// `{"success":true,"program":...,"language"|"path":...}`.
+///
+/// A `success: false` body (the from-project miss shape) parses to `None`;
+/// the caller reads the failure separately.
+pub fn parse_loaded_program(body: &str) -> Option<LoadedProgram> {
+    let value = serde_json::from_str::<Value>(body).ok()?;
+    if !value
+        .get("success")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let name = value.get("program")?.as_str()?.to_string();
+    Some(LoadedProgram {
+        name,
+        language: value
+            .get("language")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        path: value
+            .get("path")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
+/// The `error` explanation from a `/load_program_from_project` failure body:
+/// `{"success":false,"error":...,"requested_path":...,"diagnostics":...}`.
+///
+/// The bridge answers a project miss as HTTP 200 with `success: false`, so
+/// the transport layer's error classification never sees it; this reads the
+/// explanation out of the body directly.
+pub fn parse_load_failure(body: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(body).ok()?;
+    if !value
+        .get("success")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return value
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+    }
+    None
+}
+
+/// Parse a `/run_analysis` response:
+/// `{"success":true,"duration_ms":...,"total_functions":...,"new_functions":...,"program":...}`.
+pub fn parse_analysis_outcome(body: &str) -> Option<AnalysisOutcome> {
+    let value = serde_json::from_str::<Value>(body).ok()?;
+    if !value
+        .get("success")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    Some(AnalysisOutcome {
+        duration_ms: value.get("duration_ms").and_then(Value::as_u64)?,
+        total_functions: value.get("total_functions").and_then(Value::as_u64)?,
+        new_functions: value.get("new_functions").and_then(Value::as_u64)?,
+        program: value.get("program")?.as_str()?.to_string(),
+    })
+}
+
+/// Parse an `/analysis_status` response, which comes in two shapes: a single
+/// program's object when one matched, or `{"programs":[...]}` when several
+/// did.
+pub fn parse_analysis_status(body: &str) -> Vec<AnalysisStatus> {
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return Vec::new();
+    };
+    let items: Vec<&Value> = match value.get("programs").and_then(Value::as_array) {
+        Some(items) => items.iter().collect(),
+        // The single-program form is the object itself.
+        None => vec![&value],
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let name = item.get("name")?.as_str()?;
+            Some(AnalysisStatus {
+                name: name.to_string(),
+                analyzing: item
+                    .get("analyzing")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                analyzed: item
+                    .get("analyzed")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                should_ask_to_analyze: item
+                    .get("should_ask_to_analyze")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                function_count: item
+                    .get("function_count")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
             })
         })
         .collect()
@@ -1038,6 +1164,88 @@ mod tests {
         assert_eq!(programs[0].function_count, Some(4587));
         // A malformed body yields no records rather than a failure.
         assert!(parse_open_programs("not json").is_empty());
+    }
+
+    #[test]
+    fn test_parses_project_info_with_and_without_a_project() {
+        // `GET /get_project_info` on the v6.0.0 headless bridge.
+        let body = "{\"has_project\":true,\"project_name\":\"eqmain\",\"file_count\":3,\"program_count\":2,\"project_server_bound\":false}";
+        let info = parse_project_info(body).expect("project info should parse");
+        assert!(info.has_project);
+        assert_eq!(info.name.as_deref(), Some("eqmain"));
+        assert_eq!(info.file_count, Some(3));
+        assert_eq!(info.program_count, Some(2));
+        // With no project open the answer is just the flag.
+        let info = parse_project_info("{\"has_project\": false}").expect("flag form should parse");
+        assert!(!info.has_project);
+        assert_eq!(info.name, None);
+        // A non-JSON body is not project info.
+        assert!(parse_project_info("not json").is_none());
+    }
+
+    #[test]
+    fn test_parses_a_loaded_program() {
+        // `POST /load_program` success body.
+        let body =
+            "{\"success\":true,\"program\":\"eqmain.dll\",\"language\":\"x86:LE:64:default\"}";
+        let loaded = parse_loaded_program(body).expect("load body should parse");
+        assert_eq!(loaded.name, "eqmain.dll");
+        assert_eq!(loaded.language.as_deref(), Some("x86:LE:64:default"));
+        assert_eq!(loaded.path, None);
+        // `POST /load_program_from_project` success body carries a path
+        // instead of a language.
+        let body = "{\"success\":true,\"program\":\"eqmain.dll\",\"path\":\"/eqmain.dll\"}";
+        let loaded = parse_loaded_program(body).expect("from-project body should parse");
+        assert_eq!(loaded.path.as_deref(), Some("/eqmain.dll"));
+        assert_eq!(loaded.language, None);
+    }
+
+    #[test]
+    fn test_a_project_load_miss_is_not_a_loaded_program() {
+        // `POST /load_program_from_project` answers a miss as HTTP 200 with
+        // `success: false` — the parser must refuse it and surface the error.
+        let body = "{\"success\":false,\"error\":\"Program not found in project\",\"requested_path\":\"/nope.dll\",\"diagnostics\":{\"project_open\":true}}";
+        assert!(parse_loaded_program(body).is_none());
+        assert_eq!(
+            parse_load_failure(body).as_deref(),
+            Some("Program not found in project")
+        );
+        // A success body carries no failure to read.
+        assert!(parse_load_failure("{\"success\":true,\"program\":\"x\"}").is_none());
+    }
+
+    #[test]
+    fn test_parses_an_analysis_outcome() {
+        // `POST /run_analysis` success body.
+        let body = "{\"success\":true,\"duration_ms\":183421,\"total_functions\":21847,\"new_functions\":21800,\"program\":\"eqmain.dll\"}";
+        let outcome = parse_analysis_outcome(body).expect("outcome should parse");
+        assert_eq!(outcome.duration_ms, 183421);
+        assert_eq!(outcome.total_functions, 21847);
+        assert_eq!(outcome.new_functions, 21800);
+        assert_eq!(outcome.program, "eqmain.dll");
+        assert!(parse_analysis_outcome("{\"success\":false}").is_none());
+    }
+
+    #[test]
+    fn test_parses_analysis_status_in_both_shapes() {
+        // `GET /analysis_status?program=...` answers a single object when one
+        // program matched...
+        let body = "{\"name\":\"eqmain.dll\",\"analyzing\":true,\"analyzed\":false,\"should_ask_to_analyze\":true,\"function_count\":120}";
+        let statuses = parse_analysis_status(body);
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].name, "eqmain.dll");
+        assert!(statuses[0].analyzing);
+        assert!(!statuses[0].analyzed);
+        assert!(statuses[0].should_ask_to_analyze);
+        assert_eq!(statuses[0].function_count, 120);
+        // ...and a `programs` array when several did.
+        let body = "{\"programs\":[{\"name\":\"a.dll\",\"analyzing\":false,\"analyzed\":true,\"should_ask_to_analyze\":false,\"function_count\":10},{\"name\":\"b.dll\",\"analyzing\":true,\"analyzed\":false,\"should_ask_to_analyze\":true,\"function_count\":2}]}";
+        let statuses = parse_analysis_status(body);
+        assert_eq!(statuses.len(), 2);
+        assert_eq!(statuses[1].name, "b.dll");
+        assert!(statuses[1].analyzing);
+        // A prose error is not a status.
+        assert!(parse_analysis_status("No programs are currently open").is_empty());
     }
 
     #[test]
