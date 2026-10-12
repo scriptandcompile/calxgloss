@@ -341,7 +341,10 @@ impl LlmClient {
         const CHARS_PER_TOKEN: usize = 3;
         let prompt_chars: usize = messages.iter().map(|m| m.content().len()).sum();
         let prompt_tokens = prompt_chars * 9 / (CHARS_PER_TOKEN * 8) + 1;
-        self.config.context_window.saturating_sub(prompt_tokens).max(256)
+        self.config
+            .context_window
+            .saturating_sub(prompt_tokens)
+            .max(256)
     }
 
     /// Send a prompt to the LLM and wait for the full response.
@@ -666,8 +669,14 @@ mod tests {
 
         let small = vec![LlmMessage::user("Translate to Rust: x = x + 1")];
         let budget = client.output_budget(&small);
-        assert!(budget < 172_000, "output cap must leave room for the prompt");
-        assert!(budget > 171_000, "a tiny prompt must barely dent the window");
+        assert!(
+            budget < 172_000,
+            "output cap must leave room for the prompt"
+        );
+        assert!(
+            budget > 171_000,
+            "a tiny prompt must barely dent the window"
+        );
 
         // A prompt near the window leaves only the floor, never zero.
         let huge = vec![LlmMessage::user(&"x".repeat(172_000 * 4))];
@@ -686,7 +695,9 @@ mod tests {
         )
         .unwrap();
 
-        let incident = vec![LlmMessage::user(&"0x1800  mov eax, [rbx+0x10]\n".repeat(428))];
+        let incident = vec![LlmMessage::user(
+            &"0x1800  mov eax, [rbx+0x10]\n".repeat(428),
+        )];
         let chars: usize = incident.iter().map(|m| m.content().len()).sum();
         assert!(chars > 11_900, "fixture matches the incident prompt size");
 

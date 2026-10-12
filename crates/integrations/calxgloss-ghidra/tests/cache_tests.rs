@@ -732,10 +732,7 @@ async fn a_warm_replay_still_beats_the_heartbeat_per_decompile() {
     let events = calxgloss_types::TranslationEvents::new(64);
     let mut rx = events.subscribe();
     second.begin_pass(PROGRAM, "type inference", &events);
-    let listed = second
-        .functions()
-        .await
-        .expect("warm function listing");
+    let listed = second.functions().await.expect("warm function listing");
     second
         .decompile(KNOWN_FUNCTION)
         .await

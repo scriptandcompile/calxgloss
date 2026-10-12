@@ -703,7 +703,11 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let verifier = Verifier::new(&dir).unwrap();
         verifier.ensure_pal_crate();
-        let content = dir.join("scratch").join("pal").join("src").join("stub_content.rs");
+        let content = dir
+            .join("scratch")
+            .join("pal")
+            .join("src")
+            .join("stub_content.rs");
         fs::write(&content, "//! stale template").unwrap();
         verifier.ensure_pal_crate();
         assert_eq!(fs::read_to_string(&content).unwrap(), PAL_STUB_CONTENT);

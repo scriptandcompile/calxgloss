@@ -148,7 +148,9 @@ pub async fn bootstrap(request: &BootstrapRequest<'_>) -> Result<BootstrapReport
             // a contradiction: pairing against the installed version anyway
             // would silently ignore the pin, and installing a second Ghidra
             // beside a working one is not the bootstrap's call to make.
-            if let Some(pin) = request.pin_version && install.version != pin {
+            if let Some(pin) = request.pin_version
+                && install.version != pin
+            {
                 return Err(GhidraError::BootstrapBlocked {
                     reason: format!(
                         "ghidra.pin_version names Ghidra {pin}, but the discovered install \
@@ -335,7 +337,9 @@ async fn plugin_first(
     // A local plugin zip that contradicts the pin names a pair that cannot
     // work; the strict pairing rule refuses it instead of installing a
     // plugin the pinned build will not load.
-    if let Some(pin) = request.pin_version && fetched.built_for != pin {
+    if let Some(pin) = request.pin_version
+        && fetched.built_for != pin
+    {
         return Err(GhidraError::BootstrapBlocked {
             reason: format!(
                 "the plugin zip is built for Ghidra {}, not the pinned {pin} — pass a \

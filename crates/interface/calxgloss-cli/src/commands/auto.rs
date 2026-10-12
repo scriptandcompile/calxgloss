@@ -819,12 +819,23 @@ mod tests {
             let tree_oid = idx.write_tree().expect("tree oid");
             let tree = repo.find_tree(tree_oid).expect("tree");
             let parent = repo.head().expect("head").peel_to_commit().expect("parent");
-            repo.commit(Some("refs/heads/main"), &sig, &sig, "classification record", &tree, &[&parent])
-                .expect("commit");
+            repo.commit(
+                Some("refs/heads/main"),
+                &sig,
+                &sig,
+                "classification record",
+                &tree,
+                &[&parent],
+            )
+            .expect("commit");
         }
         ensure_workspace_repo(workspace.path(), false).expect("second init");
         let repo = git2::Repository::open(workspace.path()).expect("open");
-        let main = repo.head().expect("head").peel_to_commit().expect("main tip");
+        let main = repo
+            .head()
+            .expect("head")
+            .peel_to_commit()
+            .expect("main tip");
         assert!(
             format!("{:?}", main.summary()).contains("classification"),
             "re-ensure must not reset main past the intervening commit: tip is {:?}",
