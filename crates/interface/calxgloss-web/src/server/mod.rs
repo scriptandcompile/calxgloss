@@ -949,6 +949,19 @@ fn shared_routes() -> Router<CombinedState> {
             "/api/token-usage/by-strategy",
             get(handlers::api_get_token_usage_by_strategy),
         )
+        // Strategy analytics (issue #127, W3.3): persisted-history reads
+        // — they aggregate `re/analysis/prompt_strategy_log.json` on
+        // demand, never live pipeline state — so every router answers
+        // them. A workspace whose prompt-strategy log is missing or
+        // corrupt honestly answers empty payloads.
+        .route(
+            "/api/strategy-analytics/by-strategy",
+            get(handlers::api_get_strategy_analytics_by_strategy),
+        )
+        .route(
+            "/api/strategy-analytics/by-category",
+            get(handlers::api_get_strategy_analytics_by_category),
+        )
         .route("/api/graph", get(handlers::api_get_dependency_graph))
         .route("/api/gc/candidates", get(handlers::api_get_gc_candidates))
         .route("/api/gc/archive", post(handlers::api_archive_gc))

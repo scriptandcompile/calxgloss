@@ -22,6 +22,7 @@
             <button class="nav-tab" data-view="llm-log">LLM I/O</button>
             <button class="nav-tab" data-view="faults">Faults</button>
             <button class="nav-tab" data-view="token-usage">Token Usage</button>
+            <button class="nav-tab" data-view="strategy-analytics">Strategy Analytics</button>
         </nav>
         <div class="topbar-right">
             <span id="live-indicator" class="live-dot" title="Live updates active">●</span>
@@ -545,6 +546,53 @@
                         </thead>
                         <tbody id="token-usage-strategy-body"></tbody>
                     </table>
+                </div>
+            </div>
+        </section>
+        <!-- Strategy analytics view (issue #127, W3.3) — retry-strategy
+             evidence from the persisted prompt-strategy log: a per-strategy
+             table with attempts, successes, failures, and pass rate, plus
+             pass rates broken down by binary category. The time-range
+             filter re-renders in place; CSV export is local. -->
+        <section id="view-strategy-analytics" class="view">
+            <div class="view-header">
+                <h2>Strategy Analytics</h2>
+                <div class="view-controls graph-filters">
+                    <label class="graph-filter-label">Time range
+                        <select id="strategy-analytics-filter-range" aria-label="Strategy analytics time range">
+                            <option value="">All time</option>
+                            <option value="7d">Last 7 days</option>
+                            <option value="30d">Last 30 days</option>
+                        </select>
+                    </label>
+                    <span id="strategy-analytics-filter-summary" class="graph-filter-summary"></span>
+                    <button id="btn-export-strategy-csv" class="btn btn-sm btn-secondary"
+                            title="Download the filtered per-strategy breakdown as CSV">CSV</button>
+                </div>
+            </div>
+            <div id="strategy-analytics-empty" class="empty-state" style="display:none">
+                <p id="strategy-analytics-empty-message"></p>
+            </div>
+            <div id="strategy-analytics-body" style="display:none">
+                <div id="strategy-analytics-table-wrap">
+                    <table id="strategy-analytics-strategy-table" class="faults-table">
+                        <thead>
+                            <tr>
+                                <th>Strategy</th>
+                                <th>Attempts</th>
+                                <th>Successes</th>
+                                <th>Failures</th>
+                                <th>Pass rate</th>
+                            </tr>
+                        </thead>
+                        <tbody id="strategy-analytics-strategy-body"></tbody>
+                    </table>
+                </div>
+                <div class="panel">
+                    <div class="column-header">
+                        <h2>Pass Rate by Binary Category</h2>
+                    </div>
+                    <div id="strategy-analytics-category-bars" class="token-bars"></div>
                 </div>
             </div>
         </section>

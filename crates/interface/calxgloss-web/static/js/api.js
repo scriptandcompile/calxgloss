@@ -91,6 +91,10 @@ export const API = {
     async tokenUsageByBinary(query) { return API.get(`/api/token-usage/by-binary${query}`); },
     async tokenUsageByTier(query) { return API.get(`/api/token-usage/by-tier${query}`); },
     async tokenUsageByStrategy(query) { return API.get(`/api/token-usage/by-strategy${query}`); },
+
+    // Strategy analytics (issue #127, W3.3).
+    async strategyAnalyticsByStrategy(query) { return API.get(`/api/strategy-analytics/by-strategy${query}`); },
+    async strategyAnalyticsByCategory(query) { return API.get(`/api/strategy-analytics/by-category${query}`); },
     async health() { return API.get("/health"); },
     async serverStatus() { return API.get("/api/server/status"); },
     async shutdownServer() { return API.post("/api/server/shutdown"); },

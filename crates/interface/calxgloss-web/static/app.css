@@ -3403,7 +3403,8 @@ svg {
     font-variant-numeric: tabular-nums;
 }
 
-#token-usage-table-wrap {
+#token-usage-table-wrap,
+#strategy-analytics-table-wrap {
     max-height: 60vh;
     overflow: auto;
     border: 1px solid var(--border-subtle);

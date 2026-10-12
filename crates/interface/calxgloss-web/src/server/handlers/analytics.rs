@@ -1,8 +1,8 @@
 //! Analytics handlers — the historical views over the persisted logs in
-//! `re/analysis/` (issues #125/#126, W3.1/W3.2): fault analytics and token
-//! usage analytics, plus the scaffolding the later analytics tickets reuse:
-//! this module, its registration on the shared router, and the analytics
-//! wire types in `types.rs`.
+//! `re/analysis/` (issues #125/#126/#127, W3.1/W3.2/W3.3): fault analytics,
+//! token usage analytics, and strategy analytics, plus the scaffolding the
+//! later analytics tickets reuse: this module, its registration on the
+//! shared router, and the analytics wire types in `types.rs`.
 //!
 //! Registered in the shared routes: the data is the persisted logs, never
 //! live pipeline state, so every router answers it. Aggregation is computed
@@ -10,11 +10,12 @@
 //! maintained incrementally (the established `compute_stats` pattern).
 //!
 //! Every endpoint honors its optional filters — faults: `category`,
-//! `binary`, and the `from`/`to` UTC date range (inclusive); token usage:
-//! the same `from`/`to` range — so a view's cards, bars, trend, and table
-//! always describe the same set. A malformed filter value is refused with
-//! 400 and the accepted shape, never silently ignored: an operator who
-//! typed a filter must never be shown unfiltered data.
+//! `binary`, and the `from`/`to` UTC date range (inclusive); token usage
+//! and strategy analytics: the same `from`/`to` range — so a view's cards,
+//! bars, trend, and table always describe the same set. A malformed filter
+//! value is refused with 400 and the accepted shape, never silently
+//! ignored: an operator who typed a filter must never be shown unfiltered
+//! data.
 //!
 //! Counts cover the logs' *retained* windows. The trim accumulators keep
 //! whole-run totals for `compute_stats`, but trimmed events carry no
@@ -32,17 +33,22 @@ use chrono::{DateTime, NaiveDate};
 use std::collections::BTreeMap;
 
 use calxgloss_types::{
-    FaultCategory, FaultEvent, FaultLog, FaultSeverity, TokenUsageEntry, TokenUsageLog,
+    FaultCategory, FaultEvent, FaultLog, FaultSeverity, PromptStrategyEntry, PromptStrategyLog,
+    TokenUsageEntry, TokenUsageLog,
 };
 
 use super::super::types::{
     FaultAnalytics, FaultAnalyticsEntry, FaultBinaryCount, FaultByBinaryResponse, FaultCount,
-    FaultSummaryResponse, FaultTrendPoint, FaultTrendResponse, TokenUsageBinaryShare,
-    TokenUsageByBinaryResponse, TokenUsageByStrategyResponse, TokenUsageByTierResponse,
-    TokenUsageStrategyStats, TokenUsageSummaryResponse, TokenUsageTierStats,
+    FaultSummaryResponse, FaultTrendPoint, FaultTrendResponse, StrategyAnalyticsByCategoryResponse,
+    StrategyAnalyticsByStrategyResponse, StrategyAnalyticsCategoryStats,
+    StrategyAnalyticsStrategyStats, TokenUsageBinaryShare, TokenUsageByBinaryResponse,
+    TokenUsageByStrategyResponse, TokenUsageByTierResponse, TokenUsageStrategyStats,
+    TokenUsageSummaryResponse, TokenUsageTierStats,
 };
 use super::super::{ServerError, ServerState};
-use super::process::{fault_log_path, load_json_or_default, token_usage_log_path};
+use super::process::{
+    fault_log_path, load_json_or_default, prompt_strategy_log_path, token_usage_log_path,
+};
 
 // ─── Filtering ─────────────────────────────────────────────────────────
 
@@ -506,6 +512,125 @@ pub async fn api_get_token_usage_by_strategy(
     });
 
     Ok(Json(TokenUsageByStrategyResponse { strategies }))
+}
+
+// ─── Strategy analytics (issue #127, W3.3) ─────────────────────────────
+
+/// Loads the persisted prompt-strategy log and applies the date-range
+/// filter.
+///
+/// Returns the matching retained entries alongside the total the log holds
+/// *before* filtering. A missing or corrupt log loads as empty — the
+/// honest "no attempts yet" shape, never an error.
+fn filtered_prompt_strategy(
+    state: &ServerState,
+    params: &HashMap<String, String>,
+) -> Result<(Vec<PromptStrategyEntry>, usize), ServerError> {
+    let from = parse_day(params, "from")?;
+    let to = parse_day(params, "to")?;
+    let log: PromptStrategyLog = load_json_or_default(&prompt_strategy_log_path(state.repo_path()));
+
+    let entries: Vec<PromptStrategyEntry> = log
+        .entries
+        .iter()
+        .filter(|entry| in_date_range(from, to, entry.timestamp))
+        .cloned()
+        .collect();
+    Ok((entries, log.entries.len()))
+}
+
+// ─── GET /api/strategy-analytics/by-strategy ───────────────────────────
+
+/// Serves attempts, successes, failures, and pass rate per retry strategy
+/// — the evidence for improving retry-strategy selection.
+pub async fn api_get_strategy_analytics_by_strategy(
+    State(state): State<ServerState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<StrategyAnalyticsByStrategyResponse>, ServerError> {
+    let (entries, total_in_log) = filtered_prompt_strategy(&state, &params)?;
+
+    let mut totals: HashMap<&str, (usize, usize)> = HashMap::new();
+    for entry in &entries {
+        let bucket = totals.entry(entry.strategy.as_str()).or_default();
+        bucket.0 += 1;
+        if entry.success {
+            bucket.1 += 1;
+        }
+    }
+
+    let mut strategies: Vec<StrategyAnalyticsStrategyStats> = totals
+        .iter()
+        .map(
+            |(strategy, (attempts, successes))| StrategyAnalyticsStrategyStats {
+                strategy: (*strategy).into(),
+                attempts: *attempts,
+                successes: *successes,
+                failures: attempts - successes,
+                // Every bucket holds at least one attempt, so the rate is
+                // always defined — never a fabricated zero over zero attempts.
+                pass_rate: *successes as f64 * 100.0 / *attempts as f64,
+            },
+        )
+        .collect();
+    // Most attempts first; ties alphabetical so the rows keep a stable order.
+    strategies.sort_by(|a, b| {
+        b.attempts
+            .cmp(&a.attempts)
+            .then_with(|| a.strategy.cmp(&b.strategy))
+    });
+
+    Ok(Json(StrategyAnalyticsByStrategyResponse {
+        strategies,
+        total_in_log,
+    }))
+}
+
+// ─── GET /api/strategy-analytics/by-category ───────────────────────────
+
+/// Serves pass rates broken down by binary category — whether one class of
+/// binary systematically defeats the current strategies. The category
+/// label is the `DllCategory` debug name, the same vocabulary the log's
+/// own aggregates use.
+pub async fn api_get_strategy_analytics_by_category(
+    State(state): State<ServerState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<StrategyAnalyticsByCategoryResponse>, ServerError> {
+    let (entries, total_in_log) = filtered_prompt_strategy(&state, &params)?;
+
+    let mut totals: HashMap<String, (usize, usize)> = HashMap::new();
+    for entry in &entries {
+        let bucket = totals
+            .entry(format!("{:?}", entry.dll_category))
+            .or_default();
+        bucket.0 += 1;
+        if entry.success {
+            bucket.1 += 1;
+        }
+    }
+
+    let mut categories: Vec<StrategyAnalyticsCategoryStats> = totals
+        .iter()
+        .map(
+            |(category, (attempts, successes))| StrategyAnalyticsCategoryStats {
+                category: category.clone(),
+                attempts: *attempts,
+                successes: *successes,
+                failures: attempts - successes,
+                pass_rate: *successes as f64 * 100.0 / *attempts as f64,
+            },
+        )
+        .collect();
+    // Most attempts first; ties alphabetical so the bars keep a stable order.
+    categories.sort_by(|a, b| {
+        b.attempts
+            .cmp(&a.attempts)
+            .then_with(|| a.category.cmp(&b.category))
+    });
+
+    Ok(Json(StrategyAnalyticsByCategoryResponse {
+        categories,
+        total_in_log,
+    }))
 }
 
 /// One breakdown row's percentage share of the filtered total (0.0–100.0).

@@ -5935,6 +5935,341 @@ async fn test_token_usage_api_corrupt_log_honest_empty() {
     );
 }
 
+// ─────────────────────────────────────────────────────────────
+// Strategy analytics (issue #127, W3.3)
+// ─────────────────────────────────────────────────────────────
+
+/// One prompt-strategy entry with every field spelled out — the fixture's
+/// exact values are what the endpoint assertions pin.
+fn strategy_entry(
+    binary: &str,
+    dll_category: &str,
+    strategy: &str,
+    success: bool,
+    attempt: u32,
+    timestamp: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "binary": binary,
+        "dll_category": dll_category,
+        "strategy": strategy,
+        "success": success,
+        "attempt": attempt,
+        "timestamp": timestamp,
+    })
+}
+
+/// Writes a deterministic prompt-strategy log fixture into the repo's
+/// analysis directory — the file the analytics endpoints read on demand.
+fn write_strategy_fixture(repo_path: &std::path::Path, entries: &[serde_json::Value]) {
+    let dir = repo_path.join("re").join("analysis");
+    std::fs::create_dir_all(&dir).expect("analysis dir exists");
+    std::fs::write(
+        dir.join("prompt_strategy_log.json"),
+        serde_json::to_string(&serde_json::json!({ "entries": entries }))
+            .expect("fixture serializes"),
+    )
+    .expect("fixture written");
+}
+
+/// The six-entry fixture the exact-JSON tests share: four attempts on
+/// `game_logic.dll/DrawSprite` (ProjectSpecific) on 2026-10-01 and two on
+/// `d3d9.dll/UpdateScene` (KnownThirdParty) on 2026-10-04. Success counts
+/// divide exactly (2/4 and 1/2) so pass rates pin as clean floats, and
+/// `initial`/`retry` tie at two attempts to pin the alphabetical tie rule.
+fn sample_strategy_entries() -> Vec<serde_json::Value> {
+    vec![
+        strategy_entry(
+            "game_logic.dll",
+            "ProjectSpecific",
+            "initial",
+            false,
+            1,
+            FAULT_DAY_1 + 60,
+        ),
+        strategy_entry(
+            "game_logic.dll",
+            "ProjectSpecific",
+            "compile_fix",
+            true,
+            2,
+            FAULT_DAY_1 + 120,
+        ),
+        strategy_entry(
+            "game_logic.dll",
+            "ProjectSpecific",
+            "escalate",
+            false,
+            3,
+            FAULT_DAY_1 + 180,
+        ),
+        strategy_entry(
+            "game_logic.dll",
+            "ProjectSpecific",
+            "retry",
+            true,
+            4,
+            FAULT_DAY_1 + 240,
+        ),
+        strategy_entry(
+            "d3d9.dll",
+            "KnownThirdParty",
+            "initial",
+            true,
+            1,
+            FAULT_DAY_4 + 60,
+        ),
+        strategy_entry(
+            "d3d9.dll",
+            "KnownThirdParty",
+            "retry",
+            false,
+            2,
+            FAULT_DAY_4 + 120,
+        ),
+    ]
+}
+
+/// Issue #127 router contract: both strategy-analytics endpoints are
+/// registered in the shared routes — they read the persisted prompt-
+/// strategy log, never live pipeline state — so both the plain and the
+/// live router answer them. With no log on disk they serve honest empty
+/// payloads.
+#[tokio::test]
+async fn test_strategy_analytics_registered_in_plain_and_live_routers() {
+    for kind in ["plain", "live"] {
+        let fixture = TestFixture::new();
+        let state = ServerState::new(fixture.repo_path());
+        let router = if kind == "plain" {
+            build_router(state)
+        } else {
+            let events = TranslationEvents::new(128);
+            let manager = SessionManager::new_with_broadcast(events.subscribe());
+            build_router_with_ws(state, manager, ProgressState::new())
+        };
+        let _server = spawn_server(router, fixture.port()).await;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let base = format!("http://127.0.0.1:{}", fixture.port());
+
+        for path in [
+            "/api/strategy-analytics/by-strategy",
+            "/api/strategy-analytics/by-category",
+        ] {
+            let (status, body) = get_json(&format!("{base}{path}")).await;
+            assert_eq!(status, 200, "{kind} router serves {path}");
+            assert_eq!(
+                body["total_in_log"].as_u64().expect("total_in_log"),
+                0,
+                "{kind} router reports an empty log with no log"
+            );
+        }
+
+        let (_, body) = get_json(&format!("{base}/api/strategy-analytics/by-strategy")).await;
+        assert!(
+            body["strategies"]
+                .as_array()
+                .expect("strategies array")
+                .is_empty(),
+            "no log means no fabricated strategies"
+        );
+        let (_, body) = get_json(&format!("{base}/api/strategy-analytics/by-category")).await;
+        assert!(
+            body["categories"]
+                .as_array()
+                .expect("categories array")
+                .is_empty(),
+            "no log means no fabricated categories"
+        );
+    }
+}
+
+/// Issue #127 exact-JSON contract: against a deterministic fixture log,
+/// each endpoint answers with exactly the attempt, success, failure, and
+/// pass-rate numbers the fixture implies — most attempts first, ties
+/// alphabetical.
+#[tokio::test]
+async fn test_strategy_analytics_api_exact_json_from_fixture_log() {
+    let fixture = TestFixture::new();
+    write_strategy_fixture(&fixture.repo_path(), &sample_strategy_entries());
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+
+    // Per-strategy breakdown — the initial/retry tie at two attempts
+    // sorts alphabetically ahead of the single-attempt strategies.
+    let (status, body) = get_json(&format!("{base}/api/strategy-analytics/by-strategy")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "strategies": [
+                {"strategy": "initial", "attempts": 2, "successes": 1, "failures": 1, "pass_rate": 50.0},
+                {"strategy": "retry", "attempts": 2, "successes": 1, "failures": 1, "pass_rate": 50.0},
+                {"strategy": "compile_fix", "attempts": 1, "successes": 1, "failures": 0, "pass_rate": 100.0},
+                {"strategy": "escalate", "attempts": 1, "successes": 0, "failures": 1, "pass_rate": 0.0},
+            ],
+            "total_in_log": 6,
+        })
+    );
+
+    // Per-category breakdown — ProjectSpecific (4 attempts) before
+    // KnownThirdParty (2), pass rates as percentages.
+    let (status, body) = get_json(&format!("{base}/api/strategy-analytics/by-category")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "categories": [
+                {"category": "ProjectSpecific", "attempts": 4, "successes": 2, "failures": 2, "pass_rate": 50.0},
+                {"category": "KnownThirdParty", "attempts": 2, "successes": 1, "failures": 1, "pass_rate": 50.0},
+            ],
+            "total_in_log": 6,
+        })
+    );
+}
+
+/// Issue #127 time-range contract: the `from`/`to` inclusive UTC date
+/// range narrows both endpoints the same way — the strategy table and the
+/// category bars always describe the same filtered set — while
+/// `total_in_log` keeps reporting the unfiltered log size. A malformed
+/// date is refused with 400.
+#[tokio::test]
+async fn test_strategy_analytics_api_time_range_narrows_every_endpoint() {
+    let fixture = TestFixture::new();
+    write_strategy_fixture(&fixture.repo_path(), &sample_strategy_entries());
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+
+    // `from` alone keeps everything from that UTC day on: only the two
+    // 2026-10-04 d3d9.dll attempts survive.
+    let (status, body) = get_json(&format!(
+        "{base}/api/strategy-analytics/by-strategy?from=2026-10-04"
+    ))
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["strategies"],
+        serde_json::json!([
+            {"strategy": "initial", "attempts": 1, "successes": 1, "failures": 0, "pass_rate": 100.0},
+            {"strategy": "retry", "attempts": 1, "successes": 0, "failures": 1, "pass_rate": 0.0},
+        ])
+    );
+    assert_eq!(
+        body["total_in_log"].as_u64().expect("total_in_log"),
+        6,
+        "the log's own size survives filtering"
+    );
+    let (status, body) = get_json(&format!(
+        "{base}/api/strategy-analytics/by-category?from=2026-10-04"
+    ))
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body["categories"],
+        serde_json::json!([
+            {"category": "KnownThirdParty", "attempts": 2, "successes": 1, "failures": 1, "pass_rate": 50.0},
+        ]),
+        "only the in-range category survives"
+    );
+
+    // An inclusive range holding no attempts answers with empty breakdowns
+    // — never a fabricated row of buckets.
+    let (status, body) = get_json(&format!(
+        "{base}/api/strategy-analytics/by-strategy?from=2026-10-02&to=2026-10-03"
+    ))
+    .await;
+    assert_eq!(status, 200);
+    assert!(
+        body["strategies"]
+            .as_array()
+            .expect("strategies array")
+            .is_empty(),
+        "no matching attempts means no rows"
+    );
+    let (_, body) = get_json(&format!(
+        "{base}/api/strategy-analytics/by-category?from=2026-10-02&to=2026-10-03"
+    ))
+    .await;
+    assert!(
+        body["categories"]
+            .as_array()
+            .expect("categories array")
+            .is_empty(),
+        "no matching attempts means no bars"
+    );
+
+    // Malformed dates are refused with 400 naming the accepted shape —
+    // an operator who typed a filter is never silently shown everything.
+    let (status, body) = get_json(&format!(
+        "{base}/api/strategy-analytics/by-strategy?from=not-a-date"
+    ))
+    .await;
+    assert_eq!(status, 400, "a malformed from date is refused");
+    let message = body["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("not-a-date") && message.contains("YYYY-MM-DD"),
+        "the 400 names the bad value and the accepted shape, got: {message}"
+    );
+
+    let (status, _) = get_json(&format!(
+        "{base}/api/strategy-analytics/by-category?to=2026-13-01"
+    ))
+    .await;
+    assert_eq!(status, 400, "an out-of-range to date is refused");
+}
+
+/// Issue #127 honest degradation: a corrupt prompt-strategy log loads as
+/// empty — the endpoints answer 200 with empty payloads so the view's
+/// empty state (driven by `total_in_log`) never renders a wall of zeros
+/// for a log it cannot read.
+#[tokio::test]
+async fn test_strategy_analytics_api_corrupt_log_honest_empty() {
+    let fixture = TestFixture::new();
+    let dir = fixture.repo_path().join("re").join("analysis");
+    std::fs::create_dir_all(&dir).expect("analysis dir exists");
+    std::fs::write(dir.join("prompt_strategy_log.json"), "{ not json")
+        .expect("corrupt log written");
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+
+    let (status, body) = get_json(&format!("{base}/api/strategy-analytics/by-strategy")).await;
+    assert_eq!(status, 200, "a corrupt log degrades, never errors");
+    assert_eq!(body["total_in_log"].as_u64().expect("total_in_log"), 0);
+    assert!(
+        body["strategies"]
+            .as_array()
+            .expect("strategies array")
+            .is_empty(),
+        "a corrupt log means no rows, not zero rows"
+    );
+
+    let (status, body) = get_json(&format!("{base}/api/strategy-analytics/by-category")).await;
+    assert_eq!(status, 200);
+    assert!(
+        body["categories"]
+            .as_array()
+            .expect("categories array")
+            .is_empty(),
+        "a corrupt log means no bars, not zero bars"
+    );
+}
+
 // ── Headless browser test: Faults view (issue #125) ────────────────────
 
 /// The Faults tab renders the fixture log honestly: summary cards,
@@ -6356,6 +6691,234 @@ async fn test_headless_token_usage_view_honest_empty_state() {
         assert!(
             tab.evaluate(
                 "document.getElementById('token-usage-body').style.display === 'none'",
+                false
+            )
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+            "the empty state should hide the body — no wall of zeros"
+        );
+    }
+}
+
+// ── Headless browser test: Strategy Analytics view (issue #127) ─────────
+
+/// The Strategy Analytics tab renders the fixture log honestly: the
+/// per-strategy table with attempts, successes, failures, and pass rate,
+/// and the per-category pass-rate bars — and the time-range selector
+/// re-renders in place. The CSV builder (exposed as
+/// `window.calxglossStrategyCsv`) is pinned against the same fixture.
+///
+/// The fixture timestamps are relative to now so the 7-day window keeps
+/// holding exactly the two recent attempts whenever the test runs.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_strategy_analytics_view_renders_filter_and_exports() {
+    let fixture = TestFixture::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock after epoch")
+        .as_secs();
+    write_strategy_fixture(
+        &fixture.repo_path(),
+        &[
+            strategy_entry(
+                "game_logic.dll",
+                "ProjectSpecific",
+                "initial",
+                false,
+                1,
+                now - 3_600,
+            ),
+            strategy_entry(
+                "game_logic.dll",
+                "ProjectSpecific",
+                "compile_fix",
+                true,
+                2,
+                now - 3_540,
+            ),
+            strategy_entry(
+                "d3d9.dll",
+                "KnownThirdParty",
+                "stale_strategy",
+                false,
+                1,
+                now - 40 * 86_400,
+            ),
+        ],
+    );
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_count = |expr: &str| -> i64 {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_i64())
+            .unwrap_or(-1)
+    };
+    let eval_text = |expr: &str| -> String {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default()
+    };
+
+    // Switch to the Strategy Analytics tab.
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"strategy-analytics\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click strategy analytics tab");
+
+    // The fixture log renders: all three attempts across three strategies.
+    let mut loaded = false;
+    for _ in 0..25 {
+        if eval_count("document.querySelectorAll('#strategy-analytics-strategy-body tr').length")
+            == 3
+        {
+            loaded = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        loaded,
+        "strategy analytics view should render all three fixture attempts"
+    );
+
+    // The per-category bars render — one per binary category the log names.
+    assert_eq!(
+        eval_count(
+            "document.querySelectorAll('#strategy-analytics-category-bars .token-bar-row').length"
+        ),
+        2,
+        "fixture log should render 2 per-category bars"
+    );
+    assert!(
+        eval_text("document.querySelector('#strategy-analytics-category-bars .token-bar-share').textContent")
+            .contains('%'),
+        "per-category bars should carry pass rates"
+    );
+
+    // The CSV export: exact rows from the fetched JSON — the per-strategy
+    // breakdown (all three strategies tie at one attempt, so they sort
+    // alphabetically), then the per-category breakdown.
+    let csv = eval_text("window.calxglossStrategyCsv()");
+    assert_eq!(
+        csv,
+        "strategy,attempts,successes,failures,pass_rate\n\
+         compile_fix,1,1,0,100\n\
+         initial,1,0,1,0\n\
+         stale_strategy,1,0,1,0\n\
+         \n\
+         category,attempts,successes,failures,pass_rate\n\
+         ProjectSpecific,2,1,1,50\n\
+         KnownThirdParty,1,0,1,0",
+        "the CSV should carry both filtered breakdowns verbatim"
+    );
+
+    // The time-range filter re-renders in place: 7 days drops the stale
+    // attempt from both the table and the bars.
+    tab.evaluate(
+        r#"(() => {
+            const select = document.getElementById('strategy-analytics-filter-range');
+            select.value = '7d';
+            select.dispatchEvent(new Event('change'));
+        })()"#,
+        false,
+    )
+    .expect("set time range filter");
+    let mut narrowed = false;
+    for _ in 0..25 {
+        if eval_count("document.querySelectorAll('#strategy-analytics-strategy-body tr').length")
+            == 2
+        {
+            narrowed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        narrowed,
+        "the 7-day range should narrow the view to the recent attempts"
+    );
+    assert_eq!(
+        eval_count(
+            "document.querySelectorAll('#strategy-analytics-category-bars .token-bar-row').length"
+        ),
+        1,
+        "the 7-day range should drop the out-of-range category bar"
+    );
+}
+
+/// With no prompt-strategy log at all — or a corrupt one — the Strategy
+/// Analytics tab says so plainly: no wall of zeros, no error.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_strategy_analytics_view_honest_empty_state() {
+    for kind in ["missing", "corrupt"] {
+        let fixture = TestFixture::new();
+        if kind == "corrupt" {
+            let dir = fixture.repo_path().join("re").join("analysis");
+            std::fs::create_dir_all(&dir).expect("analysis dir exists");
+            std::fs::write(dir.join("prompt_strategy_log.json"), "{ not json")
+                .expect("corrupt log written");
+        }
+        let state = ServerState::new(fixture.repo_path());
+        let router = build_router(state);
+        let _server = spawn_server(router, fixture.port()).await;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let browser = launch_headless_browser();
+        let tab = open_dashboard_tab(&browser, fixture.port());
+
+        // Switch to the Strategy Analytics tab.
+        tab.evaluate(
+            "document.querySelector('.nav-tab[data-view=\"strategy-analytics\"]')?.click() === undefined",
+            false,
+        )
+        .expect("click strategy analytics tab");
+
+        let mut empty_visible = false;
+        for _ in 0..25 {
+            if tab
+                .evaluate(
+                    "document.getElementById('strategy-analytics-empty').style.display === 'flex'",
+                    false,
+                )
+                .ok()
+                .and_then(|r| r.value)
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                empty_visible = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        assert!(
+            empty_visible,
+            "a {kind} prompt-strategy log should show the honest empty state"
+        );
+
+        assert!(
+            tab.evaluate(
+                "document.getElementById('strategy-analytics-body').style.display === 'none'",
                 false
             )
             .ok()

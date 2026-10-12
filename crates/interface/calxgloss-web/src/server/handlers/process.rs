@@ -259,6 +259,15 @@ pub(crate) fn fault_log_path(repo_path: &Path) -> std::path::PathBuf {
     repo_path.join("re").join("analysis").join("fault_log.json")
 }
 
+/// Path of the prompt-strategy log artifact inside the repo — the single
+/// place the layout is spelled out, shared by every handler that reads it.
+pub(crate) fn prompt_strategy_log_path(repo_path: &Path) -> std::path::PathBuf {
+    repo_path
+        .join("re")
+        .join("analysis")
+        .join("prompt_strategy_log.json")
+}
+
 /// Estimates the effort per queued unit from the token-usage log's recorded
 /// attempt durations: unit_id → average seconds per attempt.
 ///

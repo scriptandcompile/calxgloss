@@ -49,6 +49,7 @@ import { setupPipelineControls, setPipelineState } from "./js/pipeline-controls.
 import { setupScopeControls, loadScopeControls, refreshScopeDisplay } from "./js/scope-controls.js";
 import { setupFaultsControls, buildFaultsCsv } from "./js/faults.js";
 import { setupTokenUsageControls } from "./js/token-usage.js";
+import { setupStrategyAnalyticsControls, buildStrategyAnalyticsCsv } from "./js/strategy-analytics.js";
 import { API } from "./js/api.js";
 import { showToast } from "./js/ui.js";
 
@@ -226,6 +227,10 @@ function setupEventListeners() {
     // Token usage analytics controls (issue #126) — the time-range select
     // re-renders in place; the cost panel restores its localStorage price.
     setupTokenUsageControls();
+
+    // Strategy analytics controls (issue #127) — the time-range select
+    // re-renders in place; the CSV button exports the filtered breakdown.
+    setupStrategyAnalyticsControls();
 
     // GC tab buttons
     document.getElementById("btn-scan-gc")?.addEventListener("click", loadGcCandidates);
@@ -451,6 +456,9 @@ async function init() {
     // Test handle for the faults CSV export (issue #125) — build the CSV
     // text without triggering a real download.
     window.calxglossFaultsCsv = () => buildFaultsCsv();
+    // Test handle for the strategy analytics CSV export (issue #127) —
+    // build the CSV text without triggering a real download.
+    window.calxglossStrategyCsv = () => buildStrategyAnalyticsCsv();
 
     // Shared graph URL (issue #79) — restore filters and camera before the
     // first data load so the graph opens exactly as the sharer left it, and

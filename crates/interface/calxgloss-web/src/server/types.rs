@@ -949,6 +949,64 @@ pub struct TokenUsageByStrategyResponse {
     pub strategies: Vec<TokenUsageStrategyStats>,
 }
 
+// ─── Strategy analytics (issue #127, W3.3) ─────────────────────────────
+
+/// `GET /api/strategy-analytics/by-strategy` response: the pass-rate
+/// evidence per retry strategy, computed over the filtered retained window
+/// of the prompt-strategy log.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyAnalyticsByStrategyResponse {
+    /// Pass rates per retry strategy, most attempts first (ties alphabetical).
+    pub strategies: Vec<StrategyAnalyticsStrategyStats>,
+    /// How many attempts the log holds before filtering — lets the view
+    /// tell "no attempts at all" from "no attempts in the selected range".
+    pub total_in_log: usize,
+}
+
+/// Outcome counts for one retry strategy — the evidence for whether the
+/// strategy earns its place in the retry ladder.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyAnalyticsStrategyStats {
+    /// The retry strategy label, verbatim from the log.
+    pub strategy: String,
+    /// Attempts made with this strategy.
+    pub attempts: usize,
+    /// Attempts with this strategy that ultimately succeeded.
+    pub successes: usize,
+    /// Attempts with this strategy that failed.
+    pub failures: usize,
+    /// Pass rate as a percentage (0.0–100.0): successes over attempts.
+    pub pass_rate: f64,
+}
+
+/// `GET /api/strategy-analytics/by-category` response: pass rates broken
+/// down by binary category, revealing whether one class of binary
+/// systematically defeats the current strategies.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyAnalyticsByCategoryResponse {
+    /// Pass rates per binary category, most attempts first (ties alphabetical).
+    pub categories: Vec<StrategyAnalyticsCategoryStats>,
+    /// How many attempts the log holds before filtering.
+    pub total_in_log: usize,
+}
+
+/// Outcome counts for one DLL category. The category name is the
+/// `DllCategory` debug label — the same vocabulary the log's own
+/// `compute_stats` aggregates use.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StrategyAnalyticsCategoryStats {
+    /// The binary category label.
+    pub category: String,
+    /// Attempts made against binaries in this category.
+    pub attempts: usize,
+    /// Attempts against this category that ultimately succeeded.
+    pub successes: usize,
+    /// Attempts against this category that failed.
+    pub failures: usize,
+    /// Pass rate as a percentage (0.0–100.0): successes over attempts.
+    pub pass_rate: f64,
+}
+
 // ─── Ghidra context types ──────────────────────────────────────────────
 
 /// Ghidra disassembly listing line.
