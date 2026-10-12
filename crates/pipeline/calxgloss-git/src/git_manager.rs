@@ -5,6 +5,7 @@
 //! Every translation attempt gets its own branch following the naming
 //! convention `re/{binary}/{function}v{N}`.
 
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use calxgloss_types::{BinaryIdentity, GitBranch, GitCommit, TypesError};
@@ -187,6 +188,28 @@ impl GitManager {
         &self.repo
     }
 
+    /// Normalizes a file path for [`git2::Index::add_path`], which rejects
+    /// absolute paths ("repo path ... should be relative"). Callers routinely
+    /// pass workspace-joined absolute paths, so strip the workdir prefix when
+    /// present; relative paths pass through untouched.
+    fn repo_relative<'a>(&self, path: &'a Path) -> Cow<'a, Path> {
+        if path.is_relative() {
+            return Cow::Borrowed(path);
+        }
+        let workdir = self.repo.workdir().unwrap_or(&self.repo_path);
+        if let Ok(rel) = path.strip_prefix(workdir) {
+            return Cow::Owned(rel.to_path_buf());
+        }
+        // The caller's path may differ from the canonical workdir (symlinks,
+        // `..` segments); canonicalize both sides and retry before giving up.
+        if let (Ok(abs), Ok(base)) = (path.canonicalize(), workdir.canonicalize())
+            && let Ok(rel) = abs.strip_prefix(base)
+        {
+            return Cow::Owned(rel.to_path_buf());
+        }
+        Cow::Borrowed(path)
+    }
+
     /// Returns the author configuration used for commits.
     pub fn config(&self) -> &crate::InitConfig {
         &self.init_config
@@ -357,8 +380,8 @@ impl GitManager {
             });
         } else {
             for file_path in files {
-                let path = Path::new(file_path);
-                if let Err(e) = index.add_path(path) {
+                let path = self.repo_relative(Path::new(file_path));
+                if let Err(e) = index.add_path(&path) {
                     warn!("Failed to stage '{}': {}", file_path, e);
                 } else {
                     added_files.push(file_path.to_string());
@@ -420,8 +443,8 @@ impl GitManager {
 
         let mut added_files = Vec::new();
         for file_path in files {
-            let path = Path::new(file_path);
-            if let Err(e) = index.add_path(path) {
+            let path = self.repo_relative(Path::new(file_path));
+            if let Err(e) = index.add_path(&path) {
                 warn!("Failed to stage '{}': {}", file_path, e);
             } else {
                 added_files.push(file_path.to_string());

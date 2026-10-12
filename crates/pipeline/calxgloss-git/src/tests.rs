@@ -102,6 +102,54 @@ fn test_commit() {
 }
 
 #[test]
+fn test_commit_accepts_absolute_paths() {
+    // Regression: callers (classify, shim pipeline, translate) pass
+    // workspace-joined absolute paths, but git2's Index::add_path only
+    // accepts repo-relative ones — staging must normalize them first.
+    let (tmp_dir, manager) = temp_git_repo();
+
+    let abs_path = tmp_dir.join("re").join("classify").join("eqgame.exe.json");
+    std::fs::create_dir_all(abs_path.parent().unwrap()).unwrap();
+    std::fs::write(&abs_path, "{}").unwrap();
+
+    let commit = manager
+        .commit_to_main(
+            "classify: record classification for 1 DLL(s)",
+            &[abs_path.to_string_lossy().to_string()],
+        )
+        .expect("commit_to_main should accept absolute paths");
+    let commit_obj = manager
+        .repo()
+        .find_commit(commit.hash.parse().unwrap())
+        .unwrap();
+    assert!(
+        commit_obj
+            .tree()
+            .unwrap()
+            .get_path(std::path::Path::new("re/classify/eqgame.exe.json"))
+            .is_ok(),
+        "the commit tree should carry the repo-relative path"
+    );
+
+    // Same for the per-branch commit path.
+    let branch = manager
+        .create_branch("eqgame.exe", "Render", 1, None)
+        .unwrap()
+        .branch;
+    let src_path = tmp_dir.join("src").join("render.rs");
+    std::fs::create_dir_all(src_path.parent().unwrap()).unwrap();
+    std::fs::write(&src_path, "fn render() {}").unwrap();
+    let commit = manager
+        .commit(
+            &branch,
+            "re/translation: absolute path attempt",
+            &[src_path.to_string_lossy().as_ref()],
+        )
+        .expect("commit should accept absolute paths");
+    assert_eq!(commit.files.len(), 1);
+}
+
+#[test]
 fn test_merge_to_main() {
     let (tmp_dir, manager) = temp_git_repo();
     let branch_result = manager
