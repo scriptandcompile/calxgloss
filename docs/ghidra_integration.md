@@ -247,7 +247,8 @@ Safety:
    Ghidra is already 12.1.4 — "latest of each" would produce a broken pair).
 4. **Port collisions** — 8080 is the local AI. Never auto-bind: calxgloss
    starts the headless server on the *configured* port only if free, else on
-   the bridge default 8089, and discovery (UDS scan) reconciles the client URL.
+   the bridge default 8080, and discovery (UDS scan) reconciles the client URL.
+   (8089 is our configured load-instance port, not the fallback — ADR-0001.)
 5. **Ownership** — killing a Ghidra GUI we didn't start is a hard no. Track
    ownership explicitly (`Owned` vs `Attached`).
 6. **Security env** — respect the bridge defaults: script execution endpoints
