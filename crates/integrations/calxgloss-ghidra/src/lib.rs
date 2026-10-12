@@ -28,10 +28,15 @@
 //! evidence engines pull their program facts through; [`GhidraClient`]
 //! implements it, and [`CachedGhidraSource`] implements it once more as the
 //! two-tier read cache every engine will read through.
+//!
+//! The [`lifecycle`] module holds the read-only stack checks — Ghidra install
+//! discovery, the per-version GhidraMCP extension pairing, and the server
+//! identity probe — that `calxgloss doctor` reports and later preflights run.
 
 mod cache;
 mod client;
 mod error;
+pub mod lifecycle;
 mod model;
 pub mod parse;
 mod scan_source;

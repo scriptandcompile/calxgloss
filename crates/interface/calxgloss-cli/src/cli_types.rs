@@ -188,6 +188,24 @@ pub(super) enum Command {
     /// and `[llm]` sections. If a file already exists, it is overwritten.
     Init,
 
+    /// Report the whole Ghidra stack in one read-only pass
+    ///
+    /// Checks the discovered Ghidra install (`$GHIDRA_INSTALL_DIR` →
+    /// `ghidra.install_dir` → a `*ghidra_*_PUBLIC` glob in the home
+    /// directory, highest version wins), the GhidraMCP extension against it
+    /// (strict version pairing per ADR-0001), and the server on the
+    /// configured port (kind, version, port — "none" when unreachable).
+    /// Nothing is spawned, installed, or modified. Every failure carries a
+    /// remediation hint, and any failure exits non-zero so CI can gate on
+    /// this command.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss doctor
+    /// ```
+    Doctor,
+
     /// Classify DLLs, choosing how to treat each one
     Classify {
         /// The DLLs to classify are named here because Ghidra serves a single

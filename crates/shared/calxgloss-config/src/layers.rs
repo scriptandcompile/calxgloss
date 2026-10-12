@@ -69,6 +69,7 @@ impl Layers {
                 ghidra: GhidraSection {
                     url: var("CALXGLOSS_GHIDRA_URL"),
                     api_key: var("CALXGLOSS_GHIDRA_API_KEY"),
+                    install_dir: var("CALXGLOSS_GHIDRA_INSTALL_DIR"),
                 },
                 llm: LlmSection {
                     url: var("CALXGLOSS_LLM_URL"),
@@ -224,6 +225,7 @@ mod tests {
             r#"
 [ghidra]
 url = "http://10.0.0.5:8080"
+install_dir = "/opt/ghidra_12.1.2_PUBLIC"
 
 [llm]
 url = "http://10.0.0.6:1919/v1"
@@ -235,6 +237,10 @@ max_retries = 5
         );
         let c = load(Some(&path)).unwrap().file;
         assert_eq!(c.ghidra.url.as_deref(), Some("http://10.0.0.5:8080"));
+        assert_eq!(
+            c.ghidra.install_dir.as_deref(),
+            Some("/opt/ghidra_12.1.2_PUBLIC")
+        );
         assert_eq!(c.llm.url.as_deref(), Some("http://10.0.0.6:1919/v1"));
         assert_eq!(c.llm.model.as_deref(), Some("some-model"));
         assert_eq!(c.llm.max_tokens, Some(4096));

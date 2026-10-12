@@ -33,6 +33,11 @@ pub struct GhidraSection {
 
     /// Bearer token, for a server behind a proxy.
     pub api_key: Option<String>,
+
+    /// Where the Ghidra install lives. Empty or absent means discover it:
+    /// `$GHIDRA_INSTALL_DIR`, then this key, then a `*ghidra_*_PUBLIC` glob
+    /// in the home directory (highest version wins).
+    pub install_dir: Option<String>,
 }
 
 /// The `[llm]` table.
@@ -81,6 +86,7 @@ pub const EXAMPLE: &str = r#"# Calxgloss configuration.
 [ghidra]
 url = "http://127.0.0.1:8080"
 # api_key = "..."
+# install_dir = "/path/to/ghidra_12.1.2_PUBLIC"  # empty → discover
 
 [llm]
 url  = "http://127.0.0.1:1919/v1"

@@ -605,3 +605,199 @@ async fn an_under_versioned_plugin_fails_as_version_mismatch() {
         other => panic!("expected VersionMismatch, got {other:?}"),
     }
 }
+
+// ============================================================
+// The read-only stack check (`calxgloss doctor`'s engine)
+// ============================================================
+
+use calxgloss_ghidra::lifecycle::{
+    ExtensionVerdict, InstallDiscovery, ServerDiscovery, StackRequest, check_stack,
+};
+
+/// A fake install `<home>/ghidra_<version>_PUBLIC` with a valid layout.
+fn sample_install(home: &std::path::Path, version: &str) -> std::path::PathBuf {
+    let path = home.join(format!("ghidra_{version}_PUBLIC"));
+    std::fs::create_dir_all(path.join("Ghidra").join("Framework")).expect("create layout");
+    path
+}
+
+/// A fake GhidraMCP extension under `<home>/.config/ghidra/ghidra_<state>_PUBLIC`.
+fn sample_extension(
+    home: &std::path::Path,
+    state: &str,
+    built_for: &str,
+    plugin: &str,
+) -> std::path::PathBuf {
+    let dir = home
+        .join(".config")
+        .join("ghidra")
+        .join(format!("ghidra_{state}_PUBLIC"))
+        .join("Extensions")
+        .join("GhidraMCP");
+    std::fs::create_dir_all(dir.join("lib")).expect("create extension dirs");
+    std::fs::write(
+        dir.join("extension.properties"),
+        format!("name=GhidraMCP\ndescription=Plugin version {plugin}.\nversion={built_for}\n"),
+    )
+    .expect("write manifest");
+    std::fs::write(dir.join("lib").join(format!("GhidraMCP-{plugin}.jar")), b"")
+        .expect("write jar");
+    dir
+}
+
+#[tokio::test]
+async fn the_stack_check_passes_against_a_complete_stack() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let install = sample_install(home.path(), "12.1.2");
+    sample_extension(home.path(), "12.1.2", "12.1.2", "6.0.0");
+    let fake = ProbeFake::serving(&[("check_connection", HEADLESS_CONNECTION)]).await;
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+
+    let request = StackRequest {
+        env_install_dir: None,
+        config_install_dir: None,
+        home: Some(home.path()),
+    };
+    let report = check_stack(&client, &request).await;
+    assert!(report.all_ok(), "report: {report:?}");
+    match &report.install {
+        InstallDiscovery::Found { install: found, .. } => assert_eq!(found.path, install),
+        other => panic!("expected a found install, got {other:?}"),
+    }
+    assert_eq!(
+        report.extension,
+        Some(ExtensionVerdict::Ok {
+            plugin_version: Some("6.0.0".into()),
+            built_for: "12.1.2".into(),
+        })
+    );
+    match &report.server {
+        ServerDiscovery::Up { info, url } => {
+            assert_eq!(info.kind, ServerKind::Headless);
+            assert_eq!(info.version.as_deref(), Some("6.0.0"));
+            assert_eq!(
+                url,
+                &format!("{}/", fake.base_url),
+                "the probed URL, normalized"
+            );
+        }
+        other => panic!("expected an up server, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn the_stack_check_reports_an_unreachable_server_as_none_not_a_crash() {
+    // Bind and drop a listener so the port is almost certainly refused —
+    // the doctor contract is that this reports `Unreachable`, never panics.
+    let spare = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("spare port should bind");
+    let url = format!("http://{}", spare.local_addr().expect("address"));
+    drop(spare);
+    let home = tempfile::tempdir().expect("tempdir");
+    sample_install(home.path(), "12.1.2");
+    sample_extension(home.path(), "12.1.2", "12.1.2", "6.0.0");
+    let client = GhidraClient::new(&url).expect("client");
+
+    let report = check_stack(
+        &client,
+        &StackRequest {
+            env_install_dir: None,
+            config_install_dir: None,
+            home: Some(home.path()),
+        },
+    )
+    .await;
+    assert!(matches!(report.server, ServerDiscovery::Unreachable { .. }));
+    assert!(
+        !report.all_ok(),
+        "a stack with no server must not pass the gate"
+    );
+}
+
+#[tokio::test]
+async fn the_stack_check_flags_an_extension_built_for_another_ghidra_build() {
+    // The ADR-0001 failure: Ghidra was upgraded, the extension was not.
+    let home = tempfile::tempdir().expect("tempdir");
+    sample_install(home.path(), "12.1.2");
+    sample_extension(home.path(), "12.1.2", "12.1.1", "6.0.0");
+    let fake = ProbeFake::serving(&[("check_connection", HEADLESS_CONNECTION)]).await;
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+
+    let report = check_stack(
+        &client,
+        &StackRequest {
+            env_install_dir: None,
+            config_install_dir: None,
+            home: Some(home.path()),
+        },
+    )
+    .await;
+    match &report.extension {
+        Some(ExtensionVerdict::WrongBuild {
+            built_for,
+            ghidra,
+            extensions_dir,
+        }) => {
+            assert_eq!(built_for, "12.1.1");
+            assert_eq!(ghidra, "12.1.2");
+            assert!(
+                extensions_dir.ends_with("ghidra_12.1.2_PUBLIC/Extensions"),
+                "hint path: {}",
+                extensions_dir.display()
+            );
+        }
+        other => panic!("expected a wrong-build verdict, got {other:?}"),
+    }
+    assert!(!report.all_ok());
+}
+
+#[tokio::test]
+async fn the_stack_check_names_a_foreign_port_as_not_ghidra_mcp() {
+    // The 8080-is-my-local-AI class of error: the port answers HTTP, but the
+    // answer is not GhidraMCP's.
+    let fake =
+        ProbeFake::serving_status(&[("check_connection", 404, "<h1>404 Not Found</h1>")]).await;
+    let home = tempfile::tempdir().expect("tempdir");
+    sample_install(home.path(), "12.1.2");
+    sample_extension(home.path(), "12.1.2", "12.1.2", "6.0.0");
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+
+    let report = check_stack(
+        &client,
+        &StackRequest {
+            env_install_dir: None,
+            config_install_dir: None,
+            home: Some(home.path()),
+        },
+    )
+    .await;
+    assert!(matches!(
+        report.server,
+        ServerDiscovery::NotGhidraMcp { .. }
+    ));
+    assert!(!report.all_ok());
+}
+
+#[tokio::test]
+async fn the_stack_check_skips_the_extension_when_no_install_validates() {
+    // The extension lives per Ghidra build; with no install there is no
+    // version to pair against, so the verdict is honestly absent rather
+    // than a guess.
+    let home = tempfile::tempdir().expect("tempdir");
+    let fake = ProbeFake::serving(&[("check_connection", HEADLESS_CONNECTION)]).await;
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+
+    let report = check_stack(
+        &client,
+        &StackRequest {
+            env_install_dir: None,
+            config_install_dir: None,
+            home: Some(home.path()),
+        },
+    )
+    .await;
+    assert_eq!(report.install, InstallDiscovery::NotFound);
+    assert_eq!(report.extension, None);
+    assert!(!report.all_ok());
+}

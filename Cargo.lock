@@ -602,6 +602,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "calxgloss-analysis",
+ "calxgloss-ghidra",
  "calxgloss-git",
  "calxgloss-translator",
  "calxgloss-types",

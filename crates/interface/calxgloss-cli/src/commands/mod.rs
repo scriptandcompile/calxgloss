@@ -10,6 +10,7 @@ pub mod classify;
 pub mod consts;
 pub mod controlflow;
 pub mod dashboard;
+pub mod doctor;
 pub mod gc;
 pub mod init;
 pub mod live;

@@ -20,6 +20,7 @@
 //! - `apidetect` — Identify the libraries and APIs of the open binary (import table, per-function API summaries) and cache the result
 //! - `verify` — Verify a previously translated function
 //! - `config` — Show the configuration in force and where each value came from
+//! - `doctor` — Report the whole Ghidra stack (install, extension, server) read-only
 //! - `dashboard` — Show a structured terminal review dashboard
 //! - `gc` — Garbage-collect old translation branches (archive to refs/archive/)
 //! - `serve` — Start the web review UI HTTP server
@@ -68,6 +69,7 @@ use commands::dashboard::{
     handle_dashboard, handle_dashboard_accept, handle_dashboard_accept_all,
     handle_dashboard_reject, handle_dashboard_view,
 };
+use commands::doctor::handle_doctor;
 use commands::gc::handle_gc;
 use commands::init::handle_init;
 use commands::live::handle_live;
@@ -122,6 +124,7 @@ fn main() -> Result<()> {
         ghidra: GhidraSection {
             url: cli.ghidra_url.clone(),
             api_key: cli.ghidra_api_key.clone(),
+            install_dir: None,
         },
         llm: LlmSection {
             url: cli.llm_url.clone(),
@@ -145,6 +148,7 @@ fn main() -> Result<()> {
     if let Some(ref target) = cli.command {
         match target {
             Command::Config
+            | Command::Doctor
             | Command::Gc { .. }
             | Command::Typesdb { .. }
             | Command::Typeinfer { .. }
@@ -184,6 +188,11 @@ fn main() -> Result<()> {
             print!("{}", settings::render(&settings));
             Ok(())
         }
+        Command::Doctor => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("Failed to create tokio runtime")?
+            .block_on(handle_doctor(&settings)),
         Command::Classify { binary } => {
             let target_dir = settings
                 .target_dir

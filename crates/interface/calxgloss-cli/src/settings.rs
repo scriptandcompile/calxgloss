@@ -25,6 +25,8 @@ pub struct Settings {
     pub ghidra_url: Resolved<String>,
     /// Bearer token for GhidraMCP, when one is required.
     pub ghidra_api_key: Option<Resolved<String>>,
+    /// Where the Ghidra install lives, when configured; absent means discover.
+    pub ghidra_install_dir: Option<Resolved<String>>,
     /// Where to reach the LLM server, if configured.
     pub llm_url: Option<Resolved<String>>,
     /// Which model to ask for, if configured.
@@ -68,6 +70,7 @@ impl Settings {
         let GhidraSection {
             url: flag_ghidra,
             api_key: flag_ghidra_key,
+            install_dir: flag_ghidra_install,
         } = flags.ghidra;
 
         Self {
@@ -83,6 +86,12 @@ impl Settings {
                 flag_ghidra_key,
                 layers.env.ghidra.api_key.clone(),
                 layers.file.ghidra.api_key.clone(),
+                None,
+            ),
+            ghidra_install_dir: layers.resolve(
+                flag_ghidra_install,
+                layers.env.ghidra.install_dir.clone(),
+                layers.file.ghidra.install_dir.clone(),
                 None,
             ),
             llm_url: layers.resolve(
@@ -304,6 +313,12 @@ pub fn render(s: &Settings) -> String {
     out.push_str("\nghidra\n");
     row(&mut out, "url", Some(&s.ghidra_url), false);
     row(&mut out, "api_key", s.ghidra_api_key.as_ref(), true);
+    row(
+        &mut out,
+        "install_dir",
+        s.ghidra_install_dir.as_ref(),
+        false,
+    );
 
     out.push_str("\nllm\n");
     row(&mut out, "url", s.llm_url.as_ref(), false);
@@ -351,6 +366,7 @@ mod tests {
             ghidra: GhidraSection {
                 url: Some("http://from-file:8080".into()),
                 api_key: None,
+                install_dir: None,
             },
             ..Default::default()
         };
@@ -358,12 +374,37 @@ mod tests {
             ghidra: GhidraSection {
                 url: Some("http://from-flag:8080".into()),
                 api_key: None,
+                install_dir: None,
             },
             ..Default::default()
         };
         let s = settings_from(flags, file);
         assert_eq!(s.ghidra_url.value, "http://from-flag:8080");
         assert_eq!(s.ghidra_url.source, Source::Flag);
+    }
+
+    #[test]
+    fn test_ghidra_install_dir_comes_from_the_file_layer() {
+        // The install dir has no default on purpose: absence means "discover",
+        // which is a different state from a guessed path.
+        let file = FileConfig {
+            ghidra: GhidraSection {
+                install_dir: Some("/opt/ghidra_12.1.2_PUBLIC".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let s = settings_from(FileConfig::default(), file);
+        assert_eq!(
+            s.ghidra_install_dir.as_ref().expect("set").value,
+            "/opt/ghidra_12.1.2_PUBLIC"
+        );
+        assert_eq!(
+            s.ghidra_install_dir.as_ref().expect("set").source,
+            Source::File
+        );
+        let s = settings_from(FileConfig::default(), FileConfig::default());
+        assert!(s.ghidra_install_dir.is_none());
     }
 
     #[test]
