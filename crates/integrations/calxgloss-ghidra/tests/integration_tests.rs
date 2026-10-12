@@ -1758,7 +1758,7 @@ async fn the_first_run_creates_the_project_imports_and_analyzes() {
         &client,
         &fixture.project,
         fixture.workspace.path(),
-        &[fixture.binary.clone()],
+        std::slice::from_ref(&fixture.binary),
         Some(&events),
     )
     .await
@@ -1852,7 +1852,7 @@ async fn a_reused_project_and_current_program_cost_nothing() {
         &client,
         &fixture.project,
         fixture.workspace.path(),
-        &[fixture.binary.clone()],
+        std::slice::from_ref(&fixture.binary),
         Some(&events),
     )
     .await
@@ -1918,7 +1918,7 @@ async fn an_existing_gpr_is_opened_and_a_warm_cache_skips_analysis() {
         &client,
         &fixture.project,
         fixture.workspace.path(),
-        &[fixture.binary.clone()],
+        std::slice::from_ref(&fixture.binary),
         Some(&events),
     )
     .await
@@ -1981,7 +1981,7 @@ async fn a_project_program_with_a_cold_cache_is_still_analyzed() {
         &client,
         &fixture.project,
         fixture.workspace.path(),
-        &[fixture.binary.clone()],
+        std::slice::from_ref(&fixture.binary),
         None,
     )
     .await
@@ -2025,7 +2025,7 @@ async fn a_stale_open_program_is_switched_not_reloaded() {
         &client,
         &fixture.project,
         fixture.workspace.path(),
-        &[fixture.binary.clone()],
+        std::slice::from_ref(&fixture.binary),
         None,
     )
     .await
@@ -2066,7 +2066,11 @@ async fn the_session_bootstraps_the_project_it_was_given() {
     assert_eq!(session.project_path(), fixture.project);
 
     let setup = session
-        .ensure_project(fixture.workspace.path(), &[fixture.binary.clone()], None)
+        .ensure_project(
+            fixture.workspace.path(),
+            std::slice::from_ref(&fixture.binary),
+            None,
+        )
         .await
         .expect("session bootstrap");
 
