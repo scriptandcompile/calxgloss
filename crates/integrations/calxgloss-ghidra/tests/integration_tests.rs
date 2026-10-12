@@ -927,3 +927,235 @@ async fn the_guard_surfaces_a_switch_the_server_refuses() {
         "the server's reason propagates: {err:?}"
     );
 }
+
+// ============================================================
+// The session preflight: attach vs. start decisions (issue #114, G1-T4)
+// ============================================================
+
+use calxgloss_ghidra::lifecycle::{GhidraSession, Ownership, SessionRequest};
+
+/// A session request pointed at `url` with a project beside a tempdir, so
+/// log and pid files could land somewhere writable without polluting anything.
+fn session_request<'a>(
+    url: &'a str,
+    project: &'a std::path::Path,
+    home: &'a std::path::Path,
+) -> SessionRequest<'a> {
+    SessionRequest {
+        url,
+        api_key: None,
+        project,
+        stack: StackRequest {
+            env_install_dir: None,
+            config_install_dir: None,
+            home: Some(home),
+        },
+        start_timeout: std::time::Duration::from_millis(200),
+    }
+}
+
+#[tokio::test]
+async fn a_running_gui_server_is_attached_and_never_owned() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let fake = ProbeFake::serving(&[("check_connection", GUI_CONNECTION)]).await;
+
+    let session = GhidraSession::ensure(
+        &session_request(&fake.base_url, &home.path().join("eqmain.gpr"), home.path()),
+        None,
+    )
+    .await
+    .expect("a running server is attachable");
+    assert_eq!(session.ownership(), Ownership::Attached);
+    assert_eq!(session.server_info().kind, ServerKind::Gui);
+
+    // Shutting down an attached session must not touch the server: its owner
+    // is a human at a Ghidra window (design risk 5).
+    session.shutdown().await;
+    assert_eq!(
+        fake.count("close_project"),
+        0,
+        "an attached project stays open"
+    );
+}
+
+#[tokio::test]
+async fn a_running_headless_server_is_attached_too() {
+    // A manually started headless server is someone else's process too —
+    // ownership follows who spawned it, never the server's kind.
+    let home = tempfile::tempdir().expect("tempdir");
+    let fake = ProbeFake::serving(&[("check_connection", HEADLESS_CONNECTION)]).await;
+
+    let session = GhidraSession::ensure(
+        &session_request(&fake.base_url, &home.path().join("eqmain.gpr"), home.path()),
+        None,
+    )
+    .await
+    .expect("a running headless server is attachable");
+    assert_eq!(session.ownership(), Ownership::Attached);
+    assert_eq!(session.server_info().kind, ServerKind::Headless);
+    session.shutdown().await;
+    assert_eq!(fake.count("close_project"), 0);
+}
+
+#[tokio::test]
+async fn a_foreign_port_fails_fast_and_is_never_spawned_over() {
+    // The 8080-is-my-local-AI class of error, even with a complete stack
+    // fixture that *could* spawn: the probe's named error wins, and nothing
+    // is started over a port something else is answering on.
+    let home = tempfile::tempdir().expect("tempdir");
+    sample_install(home.path(), "12.1.2");
+    sample_extension(home.path(), "12.1.2", "12.1.2", "6.0.0");
+    let fake =
+        ProbeFake::serving_status(&[("check_connection", 404, "<h1>404 Not Found</h1>")]).await;
+
+    let err = GhidraSession::ensure(
+        &session_request(&fake.base_url, &home.path().join("eqmain.gpr"), home.path()),
+        None,
+    )
+    .await
+    .expect_err("a foreign port is a named failure, not a spawn trigger");
+    assert!(
+        matches!(err, GhidraError::NotGhidraMcp { .. }),
+        "the probe's own verdict propagates: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_under_versioned_plugin_fails_fast_too() {
+    let home = tempfile::tempdir().expect("tempdir");
+    sample_install(home.path(), "12.1.2");
+    sample_extension(home.path(), "12.1.2", "12.1.2", "6.0.0");
+    let fake = ProbeFake::serving(&[(
+        "check_connection",
+        "Connection OK - GhidraMCP Headless Server v5.4.0",
+    )])
+    .await;
+
+    let err = GhidraSession::ensure(
+        &session_request(&fake.base_url, &home.path().join("eqmain.gpr"), home.path()),
+        None,
+    )
+    .await
+    .expect_err("an old plugin is a named failure");
+    assert!(
+        matches!(err, GhidraError::VersionMismatch { .. }),
+        "ADR-0001's floor propagates: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_spawn_with_no_ghidra_install_names_what_is_missing() {
+    // Nothing answers the probe, so a spawn is the only way forward — but
+    // there is no install to spawn, and the error says so instead of trying.
+    let spare = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("spare port should bind");
+    let url = format!("http://{}", spare.local_addr().expect("address"));
+    drop(spare);
+    let home = tempfile::tempdir().expect("tempdir");
+
+    let err = GhidraSession::ensure(
+        &session_request(&url, &home.path().join("eqmain.gpr"), home.path()),
+        None,
+    )
+    .await
+    .expect_err("no install means no spawn");
+    match err {
+        GhidraError::CannotSpawn { reason } => {
+            assert!(
+                reason.contains("no Ghidra install was found"),
+                "the reason names the missing piece: {reason}"
+            );
+        }
+        other => panic!("expected CannotSpawn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_spawn_with_no_extension_names_the_extensions_dir() {
+    // The ADR-0001 pairing again: Ghidra is installed, the bridge is not —
+    // the error must say where the zip belongs.
+    let spare = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("spare port should bind");
+    let url = format!("http://{}", spare.local_addr().expect("address"));
+    drop(spare);
+    let home = tempfile::tempdir().expect("tempdir");
+    sample_install(home.path(), "12.1.2");
+
+    let err = GhidraSession::ensure(
+        &session_request(&url, &home.path().join("eqmain.gpr"), home.path()),
+        None,
+    )
+    .await
+    .expect_err("no extension means no spawn");
+    match err {
+        GhidraError::CannotSpawn { reason } => {
+            assert!(
+                reason.contains("extension is not installed")
+                    && reason.contains("ghidra_12.1.2_PUBLIC/Extensions"),
+                "the reason names the missing extension and where it goes: {reason}"
+            );
+        }
+        other => panic!("expected CannotSpawn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_busy_port_refuses_the_spawn_by_name() {
+    // Design risk 4: never bind a busy port. Something holds the configured
+    // port but does not answer as GhidraMCP (it hangs up on every request),
+    // so the probe says unreachable, the stack checks pass — and the free-
+    // port check is what stops the spawn.
+    let holder = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("port holder should bind");
+    let url = format!("http://{}", holder.local_addr().expect("address"));
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = holder.accept().await {
+            drop(stream); // answer nothing, hang up
+        }
+    });
+    let home = tempfile::tempdir().expect("tempdir");
+    sample_install(home.path(), "12.1.2");
+    sample_extension(home.path(), "12.1.2", "12.1.2", "6.0.0");
+
+    let err = GhidraSession::ensure(
+        &session_request(&url, &home.path().join("eqmain.gpr"), home.path()),
+        None,
+    )
+    .await
+    .expect_err("a held port must not be spawned onto");
+    match err {
+        GhidraError::PortBusy { url: named } => assert_eq!(named, format!("{url}/")),
+        other => panic!("expected PortBusy, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn the_wrong_program_guard_rides_on_the_session() {
+    // Commands reach the incident fix through the session, not by wiring the
+    // guard by hand: the same routes as the standalone guard, through
+    // `ensure_current_program`.
+    let home = tempfile::tempdir().expect("tempdir");
+    let fake = ProbeFake::serving(&[
+        ("check_connection", HEADLESS_CONNECTION),
+        ("list_open_programs", OPEN_PROGRAMS_TARGET_STALE),
+        ("switch_program", SWITCHED_TO_EQMAIN),
+    ])
+    .await;
+
+    let session = GhidraSession::ensure(
+        &session_request(&fake.base_url, &home.path().join("eqmain.gpr"), home.path()),
+        None,
+    )
+    .await
+    .expect("attach to the fake");
+    let matched = session
+        .ensure_current_program("eqmain.dll")
+        .await
+        .expect("the target is open, if not current");
+    assert_eq!(matched, ProgramMatch::Switched);
+    assert_eq!(fake.count("switch_program"), 1);
+    session.shutdown().await;
+}

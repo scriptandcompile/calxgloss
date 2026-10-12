@@ -568,6 +568,12 @@ impl ProgressState {
                 // by `/api/server/status` and echoed to WS clients by the
                 // broadcast. Nothing to fold into the per-unit view.
             }
+            ProgressEvent::GhidraServerStarted { .. } => {
+                // Preflight spawned a headless Ghidra server (issue #114).
+                // The event rides the broadcast so the activity feed shows
+                // it; nothing about it folds into the per-unit or per-binary
+                // view — the server belongs to the run, not to a binary.
+            }
         }
     }
 

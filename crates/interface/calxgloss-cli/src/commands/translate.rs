@@ -46,7 +46,6 @@ pub async fn handle_translate(
     // to configure something they do not use.
     let llm_url = settings.require_llm_url()?;
     let llm_model = settings.require_llm_model()?;
-    let ghidra_url = settings.ghidra_url.value.as_str();
     let max_tokens = settings.max_tokens.value;
     let temperature = settings.temperature.value;
     let max_retries = settings.max_retries.value;
@@ -84,14 +83,15 @@ pub async fn handle_translate(
     let (_, crate_src_dir) =
         setup_translation_crate(&workspace, binary).context("Failed to create output crate")?;
 
-    // Initialize Ghidra client
-    let mut ghidra_config = calxgloss_ghidra::GhidraConfig::new(ghidra_url)
-        .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
-    if let Some(key) = &settings.ghidra_api_key {
-        ghidra_config = ghidra_config.with_api_key(key.value.clone());
-    }
-    let ghidra = calxgloss_ghidra::GhidraClient::from_config(ghidra_config)
-        .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))?;
+    // The session preflight (G1-T4): attach or spawn, then the wrong-program
+    // guard (incident 2026-10-08) — the scan below only means anything if the
+    // server is serving the target binary.
+    let session = open_ghidra_session(settings, &workspace, binary, None).await?;
+    session
+        .ensure_current_program(binary)
+        .await
+        .with_context(|| format!("GhidraMCP is not serving {binary}"))?;
+    let ghidra = session.client().clone();
 
     // Initialize LLM client
     let mut llm_config = calxgloss_llm::LlmConfig::new(llm_url, llm_model)
@@ -349,6 +349,9 @@ pub async fn handle_translate(
         }
         _ => {}
     }
+
+    // Release the server if we spawned it; an attached one is left running.
+    session.shutdown().await;
 
     Ok(())
 }

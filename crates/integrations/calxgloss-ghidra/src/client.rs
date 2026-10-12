@@ -121,6 +121,52 @@ pub enum GhidraError {
         if open.is_empty() { "none".to_string() } else { open.join(", ") }
     )]
     WrongProgram { target: String, open: Vec<String> },
+
+    /// The configured port is held by something that is not a GhidraMCP
+    /// server, so a headless spawn cannot bind it.
+    ///
+    /// calxgloss never binds a busy port (design risk 4): the usual holder
+    /// is a foreign local server (8080 is also the popular local-AI port)
+    /// or a stale instance discovery has not reconciled yet (G1-T5).
+    #[error(
+        "Cannot start a headless Ghidra server: the port at {url} is already in use by \
+            something that is not GhidraMCP.\nFree the port or point the configured Ghidra URL \
+            (`--ghidra-url`, `CALXGLOSS_GHIDRA_URL`, or `ghidra.url`) at a free one"
+    )]
+    PortBusy { url: String },
+
+    /// A spawned headless server died before it ever answered the probe.
+    ///
+    /// The usual causes are a missing `java` on PATH or a JVM that refused
+    /// the launch arguments; the log file beside the project carries the
+    /// child's own explanation.
+    #[error(
+        "The headless Ghidra server calxgloss started died before it answered: {detail}\nIts \
+            log: {log}"
+    )]
+    SpawnFailed { detail: String, log: String },
+
+    /// A spawned headless server stayed silent through the whole boot poll.
+    ///
+    /// JVM + Ghidra boot is slow (the design budget is ~90 s), but a server
+    /// that never answers usually means it is wedged inside Ghidra startup —
+    /// the log file beside the project says where.
+    #[error(
+        "The headless Ghidra server calxgloss started never answered at {url} within {secs}s.\n\
+            Its log: {log}"
+    )]
+    BootTimeout { url: String, secs: u64, log: String },
+
+    /// The stack checks passed the *server* half but failed the pieces a
+    /// spawn needs: no valid Ghidra install, or no extension paired to it.
+    ///
+    /// Attaching to a running server needs neither, so this failure only
+    /// arises when preflight decides to start one — the message names what
+    /// is missing and points at `calxgloss doctor` for the full report.
+    #[error(
+        "Cannot start a headless Ghidra server: {reason}\nRun `calxgloss doctor` for the full stack report"
+    )]
+    CannotSpawn { reason: String },
 }
 
 // ============================================================
@@ -1115,6 +1161,20 @@ impl GhidraClient {
             .await?;
         let switched_to = parse::json_string(&body, "switched_to").unwrap_or_default();
         info!(program = %switched_to, "Switched GhidraMCP's current program");
+        Ok(())
+    }
+
+    /// Close the project the headless server currently holds open.
+    ///
+    /// A headless server owns its project for the life of the process; an
+    /// owned server gets this call before its process is killed so Ghidra
+    /// releases the project's lock cleanly rather than by signal. A GUI
+    /// server's project belongs to the human at the window — this is only
+    /// ever called on a server calxgloss started.
+    #[instrument(skip(self))]
+    pub async fn close_project(&self) -> Result<()> {
+        self.get_text("close_project", &[]).await?;
+        info!("Closed the GhidraMCP server's project");
         Ok(())
     }
 }

@@ -7,7 +7,6 @@ use calxgloss::ClassificationOverrideControl;
 use calxgloss::ProgressEvent;
 use calxgloss::TranslationEvents;
 use calxgloss_analysis::Analyzer;
-use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use calxgloss_git::GitManager;
 use calxgloss_pal::ApiMappings;
 use tracing::info;
@@ -33,17 +32,13 @@ pub async fn handle_classify(
 ) -> Result<()> {
     info!(count = dlls.len(), "Classifying DLLs");
 
-    // Initialize Ghidra client (needed only for fallback when PE parse fails)
-    let ghidra_url = &settings.ghidra_url.value;
-    let mut config = GhidraConfig::new(ghidra_url)
-        .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
-
-    if let Some(key) = &settings.ghidra_api_key {
-        config = config.with_api_key(key.value.clone());
-    }
-
-    let ghidra = GhidraClient::from_config(config)
-        .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))?;
+    // The session preflight (G1-T4): attach to a running GhidraMCP server or
+    // spawn a headless one. Ghidra is needed here only as the fallback when
+    // PE parsing fails, so no wrong-program guard runs — but the server still
+    // comes through `GhidraSession::ensure`, never a bare client.
+    let primary = dlls.first().map(String::as_str).unwrap_or("classify");
+    let session = open_ghidra_session(settings, workspace, primary, events).await?;
+    let ghidra = session.client().clone();
 
     // Initialize analyzer
     let api_mappings = ApiMappings::default();
@@ -154,6 +149,9 @@ pub async fn handle_classify(
 
     // Print report
     print_classification_report(&classifications, &report);
+
+    // Release the server if we spawned it; an attached one is left running.
+    session.shutdown().await;
 
     info!(count = classifications.len(), "Classification complete");
     Ok(())

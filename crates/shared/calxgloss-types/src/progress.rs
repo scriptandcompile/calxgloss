@@ -341,6 +341,18 @@ pub enum ProgressEvent {
         binary: BinaryIdentity,
         function: String,
     },
+    /// A headless GhidraMCP server that calxgloss started itself has booted —
+    /// the preflight found nothing answering on the configured port and chose
+    /// to spawn one rather than attach (issue #114, G1-T4).
+    ///
+    /// Batch-level (no unit key): the server serves the whole run, not one
+    /// binary, and it names no phase — the run has not started work yet.
+    GhidraServerStarted {
+        /// The URL the calxgloss-owned server answers on.
+        url: String,
+        /// The PID of the server process calxgloss started and owns.
+        pid: u32,
+    },
 }
 
 impl ProgressEvent {
@@ -412,7 +424,8 @@ impl ProgressEvent {
             | ProgressEvent::QueuePlanned { .. }
             | ProgressEvent::BatchProgress { .. }
             | ProgressEvent::BatchSummary { .. }
-            | ProgressEvent::PipelineStateChanged { .. } => None,
+            | ProgressEvent::PipelineStateChanged { .. }
+            | ProgressEvent::GhidraServerStarted { .. } => None,
         }
     }
 }
@@ -700,6 +713,9 @@ impl std::fmt::Display for ProgressEvent {
             }
             ProgressEvent::UnitCancelled { binary, function } => {
                 write!(f, "Cancelled in-flight unit {function} ({binary})")
+            }
+            ProgressEvent::GhidraServerStarted { url, pid } => {
+                write!(f, "Ghidra headless server started (pid {pid}) at {url}")
             }
         }
     }
@@ -1476,6 +1492,28 @@ mod tests {
                 && shown.contains("FUN_1929282")
                 && shown.contains("22143"),
             "display names the pass, the item, and the position: {shown}"
+        );
+    }
+
+    #[test]
+    fn ghidra_server_started_is_batch_scoped_phaseless_and_tagged() {
+        let event = ProgressEvent::GhidraServerStarted {
+            url: "http://127.0.0.1:8089".into(),
+            pid: 4123,
+        };
+        assert_eq!(event.unit_key(), None, "run-level, not unit-scoped");
+        assert!(
+            TranslationPhase::from_event(&event).is_none(),
+            "a server boot names no unit phase"
+        );
+        let json = serde_json::to_value(&event).expect("serializes");
+        assert_eq!(json["event"], "ghidra_server_started");
+        assert_eq!(json["url"], "http://127.0.0.1:8089");
+        assert_eq!(json["pid"], 4123);
+        let shown = event.to_string();
+        assert!(
+            shown.contains("4123") && shown.contains("8089"),
+            "display names the pid and the port: {shown}"
         );
     }
 

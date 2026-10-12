@@ -3,12 +3,17 @@
 //!
 //! This is the checking half of the lifecycle design (`docs/ghidra_integration.md`
 //! §3.2) — everything `calxgloss doctor` reports in one pass, and the same
-//! checks a later preflight will run before spawning anything. Nothing here
-//! spawns, installs, or modifies the filesystem or any process: discovery
-//! reads the filesystem, and the server check is one `check_connection`
-//! probe. The one exception is [`program`]'s guard, which may switch the
-//! server's *current program* — the incident fix (risk 7) — but never
-//! opens, closes, or kills anything.
+//! checks [`session`]'s preflight runs before spawning anything. The checks
+//! themselves spawn nothing and modify no process: discovery reads the
+//! filesystem, and the server check is one `check_connection` probe. The one
+//! exception is [`program`]'s guard, which may switch the server's *current
+//! program* — the incident fix (risk 7) — but never opens, closes, or kills
+//! anything.
+//!
+//! The acting half is G1-T4: [`session::GhidraSession::ensure`] attaches to a
+//! running server or spawns a headless one ([`server`]) under these same
+//! checks, tracking ownership so owned servers get closed and killed on exit
+//! while attached ones are never touched.
 //!
 //! Version coupling is the load-bearing constraint throughout (ADR-0001): the
 //! extension jar is compiled against exactly one Ghidra build, so the install
@@ -17,10 +22,16 @@
 mod extension;
 mod install;
 mod program;
+mod server;
+mod session;
 
 pub use extension::{ExtensionDiscovery, ExtensionVerdict, GhidraExtension};
 pub use install::{GhidraInstall, InstallDiscovery, InstallSource};
 pub use program::{ProgramMatch, ensure_current_program};
+pub use server::LaunchPlan;
+pub use session::{
+    DEFAULT_START_TIMEOUT, GhidraSession, Ownership, SessionRequest, default_project,
+};
 
 use tracing::warn;
 

@@ -5,7 +5,6 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use calxgloss_analysis::Analyzer;
 use calxgloss_analysis::shim_pipeline;
-use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use calxgloss_git::GitManager;
 use calxgloss_llm::LlmClient;
 use calxgloss_pal::ApiMappings;
@@ -25,17 +24,11 @@ pub async fn handle_auto_shim(
 ) -> Result<()> {
     info!("Starting auto-shim pipeline");
 
-    // Initialize Ghidra client.
-    let ghidra_url = &settings.ghidra_url.value;
-    let mut ghidra_config = GhidraConfig::new(ghidra_url)
-        .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
-
-    if let Some(key) = &settings.ghidra_api_key {
-        ghidra_config = ghidra_config.with_api_key(key.value.clone());
-    }
-
-    let ghidra = GhidraClient::from_config(ghidra_config)
-        .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))?;
+    // The session preflight (G1-T4): attach or spawn. The wrong-program guard
+    // runs per DLL inside the shim pipeline, through this session.
+    let primary = dll_filter.unwrap_or("auto-shim");
+    let session = open_ghidra_session(settings, workspace, primary, None).await?;
+    let ghidra = session.client().clone();
 
     // Initialize LLM client.
     let llm_url = settings
@@ -128,7 +121,7 @@ pub async fn handle_auto_shim(
     // Run the auto-shim pipeline.
     let results = shim_pipeline::generate_all_shims(
         &classifications,
-        &ghidra,
+        &session,
         llm,
         verifier,
         workspace,
@@ -192,6 +185,10 @@ pub async fn handle_auto_shim(
     }
 
     println!();
+
+    // Release the server if we spawned it; an attached one is left running.
+    session.shutdown().await;
+
     info!(count = dll_names.len(), "Auto-shim complete");
     Ok(())
 }

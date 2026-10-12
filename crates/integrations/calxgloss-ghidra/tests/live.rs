@@ -533,3 +533,65 @@ async fn read_memory_returns_the_raw_bytes() {
         .expect("read memory");
     assert_eq!(bytes, vec![b'M', b'Z']);
 }
+
+#[tokio::test]
+#[ignore = "spawns a real headless Ghidra server (needs a Ghidra install + extension)"]
+async fn a_headless_server_spawns_attaches_and_shuts_down() {
+    // The G1-T4 end-to-end proof: with a real install and extension on the
+    // machine, the preflight spawns a headless server, waits for the boot
+    // poll, and shuts it down again. Slow (a full JVM + Ghidra boot), so it
+    // stays ignored; run it after changing the launch recipe:
+    //
+    // ```text
+    // CALXGLOSS_GHIDRA_SPAWN_URL=http://127.0.0.1:18080 \
+    //     cargo test -p calxgloss-ghidra --test live -- --ignored --nocapture
+    // ```
+    //
+    // The URL must name a free port; the install and extension are found
+    // through `$GHIDRA_INSTALL_DIR` (or config-style discovery off `$HOME`).
+    let Some(url) = std::env::var("CALXGLOSS_GHIDRA_SPAWN_URL").ok() else {
+        eprintln!("CALXGLOSS_GHIDRA_SPAWN_URL not set; skipping");
+        return;
+    };
+    let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
+    if home.is_none() {
+        eprintln!("HOME not set; skipping");
+        return;
+    }
+    let workspace = std::env::temp_dir().join("calxgloss-live-spawn");
+    std::fs::create_dir_all(&workspace).expect("create workspace");
+    let project = calxgloss_ghidra::lifecycle::default_project(&workspace, "eqmain.dll");
+
+    let install_dir = std::env::var("GHIDRA_INSTALL_DIR")
+        .ok()
+        .map(std::path::PathBuf::from);
+    let request = calxgloss_ghidra::lifecycle::SessionRequest {
+        url: &url,
+        api_key: None,
+        project: &project,
+        stack: calxgloss_ghidra::lifecycle::StackRequest {
+            env_install_dir: install_dir.as_deref(),
+            config_install_dir: None,
+            home: home.as_deref(),
+        },
+        start_timeout: std::time::Duration::from_secs(120),
+    };
+    let session = calxgloss_ghidra::lifecycle::GhidraSession::ensure(&request, None)
+        .await
+        .expect("the preflight should spawn a headless server");
+    assert_eq!(
+        session.ownership(),
+        calxgloss_ghidra::lifecycle::Ownership::Owned,
+        "a server calxgloss started is owned"
+    );
+    eprintln!(
+        "spawned {} server v{}",
+        session.server_info().kind,
+        session
+            .server_info()
+            .version
+            .as_deref()
+            .unwrap_or("unnamed")
+    );
+    session.shutdown().await;
+}

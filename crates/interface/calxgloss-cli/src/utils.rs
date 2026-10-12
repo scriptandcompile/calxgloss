@@ -1,6 +1,10 @@
 //! Utility functions for the CLI.
 
 use anyhow::{Context, Result};
+use calxgloss::TranslationEvents;
+use calxgloss_ghidra::lifecycle::{
+    DEFAULT_START_TIMEOUT, GhidraSession, SessionRequest, StackRequest, default_project,
+};
 pub use calxgloss_reports::{
     print_batch_summary, print_classification_report, print_failure, print_git_status,
     print_verification_results,
@@ -9,6 +13,51 @@ pub use calxgloss_translator::RetryStrategy;
 pub use calxgloss_verify::Verifier;
 use std::path::{Path, PathBuf};
 pub use tracing::{debug, warn};
+
+/// Open the session preflight (G1-T4) every Ghidra command starts from:
+/// attach to a running GhidraMCP server, or spawn a supervised headless one
+/// under the doctor's install and extension checks.
+///
+/// The discovery inputs — `$GHIDRA_INSTALL_DIR`, the layered
+/// `ghidra.install_dir` setting, and `$HOME` — are read here so the lifecycle
+/// checks stay pure and testable; the project path defaults to
+/// `<workspace>/ghidra/<binary>.gpr`, beside which a spawned server's log and
+/// pid files land. The returned session tracks ownership: an owned server is
+/// shut down by [`GhidraSession::shutdown`] (or killed on drop), an attached
+/// one is left untouched.
+pub(super) async fn open_ghidra_session(
+    settings: &crate::Settings,
+    workspace: &Path,
+    binary: &str,
+    events: Option<&TranslationEvents>,
+) -> Result<GhidraSession> {
+    let env_install = std::env::var_os("GHIDRA_INSTALL_DIR").map(PathBuf::from);
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let config_install = settings
+        .ghidra_install_dir
+        .as_ref()
+        .map(|r| PathBuf::from(&r.value));
+    let project = default_project(workspace, binary);
+    let request = SessionRequest {
+        url: &settings.ghidra_url.value,
+        api_key: settings.ghidra_api_key.as_ref().map(|r| r.value.as_str()),
+        project: &project,
+        stack: StackRequest {
+            env_install_dir: env_install.as_deref(),
+            config_install_dir: config_install.as_deref(),
+            home: home.as_deref(),
+        },
+        start_timeout: DEFAULT_START_TIMEOUT,
+    };
+    GhidraSession::ensure(&request, events)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to attach to or start a GhidraMCP server at {}",
+                settings.ghidra_url.value
+            )
+        })
+}
 
 /// Resolve the workspace: `--workspace` flag > settings > CWD.
 ///

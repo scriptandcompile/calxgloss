@@ -17,7 +17,6 @@ use calxgloss::ScopeControl;
 use calxgloss::StopSignal;
 use calxgloss::TranslationEvents;
 use calxgloss::UnitCancellation;
-use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use calxgloss_git::BranchCreationPolicy;
 use calxgloss_git::DependencyPolicy;
 use calxgloss_git::GitManager;
@@ -39,6 +38,10 @@ use crate::utils::*;
 /// Ghidra setup, LLM client, test generator, pipeline, git operations, and
 /// result reporting.  Both `handle_auto` and `handle_live` call this.
 ///
+/// The Ghidra `session` is opened once per run by the caller — one server
+/// (attached or spawned) serves every binary's pass, and the wrong-program
+/// guard re-verifies the target at the start of each pass.
+///
 /// `scope` restricts which functions re-enter the translation queue based on
 /// the recorded attempt history (see [`scope_functions`]);
 /// [`RunScope::AllFunctions`] keeps the plain behaviour.
@@ -51,6 +54,7 @@ pub async fn run_translation_for_dll(
     workspace: &Path,
     skip_git: bool,
     settings: &Settings,
+    session: &calxgloss_ghidra::lifecycle::GhidraSession,
     events: Option<&TranslationEvents>,
     no_callgraph: bool,
     callgraph_cache: Option<PathBuf>,
@@ -74,15 +78,14 @@ pub async fn run_translation_for_dll(
         });
     }
 
-    // Get Ghidra client to list functions
-    let ghidra_url = &settings.ghidra_url.value;
-    let mut ghidra_config = GhidraConfig::new(ghidra_url)
-        .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
-    if let Some(key) = &settings.ghidra_api_key {
-        ghidra_config = ghidra_config.with_api_key(key.value.clone());
-    }
-    let ghidra = GhidraClient::from_config(ghidra_config)
-        .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))?;
+    // The wrong-program guard (incident 2026-10-08) before anything is
+    // listed: the session's server only answers for this binary if it is
+    // actually serving it.
+    session
+        .ensure_current_program(binary)
+        .await
+        .with_context(|| format!("GhidraMCP is not serving {binary}"))?;
+    let ghidra = session.client().clone();
 
     // List functions from Ghidra
     let summaries = ghidra
@@ -464,6 +467,13 @@ pub async fn handle_auto(
     // binaries; the default phase leaves the detection logic untouched.
     let force_classify = run.is_some_and(|r| r.phase == calxgloss::RunPhase::Classify);
 
+    // The session preflight (G1-T4) runs once for the whole auto run: one
+    // server — attached or spawned — serves every binary's pass, and the
+    // `events` handle gets a `GhidraServerStarted` if one had to be started.
+    // (The classify step opens its own preflight, which simply attaches to
+    // the server already running here.)
+    let session = open_ghidra_session(settings, &workspace, &dlls[0], events).await?;
+
     println!();
     hsep_bold();
     println_content(format!(
@@ -618,6 +628,7 @@ pub async fn handle_auto(
                 &workspace,
                 skip_git,
                 settings,
+                &session,
                 events,
                 no_callgraph,
                 callgraph_cache.clone(),
@@ -671,6 +682,7 @@ pub async fn handle_auto(
             &workspace,
             skip_git,
             settings,
+            &session,
             events,
             no_callgraph,
             callgraph_cache,
@@ -685,6 +697,9 @@ pub async fn handle_auto(
         )
         .await?;
     }
+
+    // Release the server if we spawned it; an attached one is left running.
+    session.shutdown().await;
 
     Ok(())
 }
