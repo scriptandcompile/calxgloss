@@ -142,7 +142,7 @@ pub struct ContextWindowFault {
     /// Size of the LLM response in characters.
     pub response_size: usize,
 
-    /// The model's configured output limit (max_tokens) in characters.
+    /// The model's configured token budget (context_window) in characters.
     /// For token-limited models this is the token count multiplied by an
     /// estimated characters-per-token ratio (typically 4).
     pub limit: usize,

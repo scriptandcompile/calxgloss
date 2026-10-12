@@ -142,7 +142,7 @@ fn main() -> Result<()> {
             url: cli.llm_url.clone(),
             model: cli.llm_model.clone(),
             api_key: cli.llm_api_key.clone(),
-            max_tokens: cli.max_tokens,
+            context_window: cli.context_window,
             temperature: cli.temperature,
             max_retries: cli.max_retries,
             strategy: cli.strategy.clone(),

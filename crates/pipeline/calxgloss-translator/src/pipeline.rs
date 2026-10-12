@@ -137,7 +137,7 @@ pub struct TranslationPipeline {
     events: Option<TranslationEvents>,
 
     /// Context-window detector for fault detection.
-    /// Created once with the LLM client's `max_tokens` setting.
+    /// Created once with the LLM client's `context_window` setting.
     context_detector: ContextWindowDetector,
 
     /// Hallucination detector for validating LLM-generated code.
@@ -262,11 +262,11 @@ impl TranslationPipeline {
     /// Create a new translation pipeline with the given Ghidra and LLM clients.
     ///
     /// This sets up the full pipeline with default analyzer and empty exports/tests.
-    /// A context-window detector is initialized with the LLM client's `max_tokens`
+    /// A context-window detector is initialized with the LLM client's `context_window`
     /// setting for automatic fault detection.
     pub fn new(ghidra: GhidraClient, llm: LlmClient, api_mappings: ApiMappings) -> Self {
         let analyzer = Analyzer::new(ghidra.clone(), api_mappings.clone());
-        let context_detector = ContextWindowDetector::new(llm.max_tokens());
+        let context_detector = ContextWindowDetector::new(llm.context_window());
         Self {
             ghidra,
             llm,

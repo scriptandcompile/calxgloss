@@ -87,8 +87,10 @@ pub struct LlmSection {
     /// Bearer token. Rarely needed for a local server.
     pub api_key: Option<String>,
 
-    /// Generation length limit.
-    pub max_tokens: Option<usize>,
+    /// Token budget for a single LLM request: prompt plus generated output
+    /// together must fit inside this. The client derives each request's
+    /// output limit from it, so it should match the server's context window.
+    pub context_window: Option<usize>,
 
     /// Sampling temperature.
     pub temperature: Option<f32>,
@@ -134,7 +136,9 @@ url = "http://127.0.0.1:8080"
 url  = "http://127.0.0.1:1919/v1"
 model = "Qwen3.6-35B-A3B-FP8"
 # api_key = "..."
-max_tokens = 8192
+# Token budget for one request: prompt + output must fit inside it.
+# Set to the server's context window.
+context_window = 8192
 temperature = 0.1
 max_retries = 3
 # strategy = "auto"  # compile_fix | test_fix | escalate | edge_case_fix | auto

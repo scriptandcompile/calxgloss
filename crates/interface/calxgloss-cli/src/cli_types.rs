@@ -72,9 +72,9 @@ pub(super) struct Cli {
     #[arg(long, global = true)]
     pub(super) llm_api_key: Option<String>,
 
-    /// Maximum tokens for LLM generation (default: 8192)
+    /// Token budget for a single LLM request: prompt + output (default: 8192)
     #[arg(long, global = true)]
-    pub(super) max_tokens: Option<usize>,
+    pub(super) context_window: Option<usize>,
 
     /// LLM temperature (0.0 = deterministic, higher = more creative) (default: 0.1)
     #[arg(long, global = true)]

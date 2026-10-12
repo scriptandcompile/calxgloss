@@ -53,8 +53,8 @@ pub struct Settings {
     /// key came from a flag or from a file is worth knowing when a request is
     /// rejected, and only the value has to stay secret.
     pub llm_api_key: Option<Resolved<String>>,
-    /// Generation length limit.
-    pub max_tokens: Resolved<usize>,
+    /// Token budget for a single LLM request (prompt + output).
+    pub context_window: Resolved<usize>,
     /// Sampling temperature.
     pub temperature: Resolved<f32>,
     /// Attempts before a translation is abandoned.
@@ -78,7 +78,7 @@ impl Settings {
             url: flag_url,
             model: flag_model,
             api_key: flag_key,
-            max_tokens: flag_tokens,
+            context_window: flag_window,
             temperature: flag_temp,
             max_retries: flag_retries,
             strategy: _,
@@ -192,14 +192,14 @@ impl Settings {
                 layers.file.llm.api_key.clone(),
                 None,
             ),
-            max_tokens: layers
+            context_window: layers
                 .resolve(
-                    flag_tokens,
-                    layers.env.llm.max_tokens,
-                    layers.file.llm.max_tokens,
-                    Some(defaults::LLM_MAX_TOKENS),
+                    flag_window,
+                    layers.env.llm.context_window,
+                    layers.file.llm.context_window,
+                    Some(defaults::LLM_CONTEXT_WINDOW),
                 )
-                .expect("max_tokens has a default"),
+                .expect("context_window has a default"),
             temperature: layers
                 .resolve(
                     flag_temp,
@@ -422,7 +422,7 @@ pub fn render(s: &Settings) -> String {
     row(&mut out, "url", s.llm_url.as_ref(), false);
     row(&mut out, "model", s.llm_model.as_ref(), false);
     row(&mut out, "api_key", s.llm_api_key.as_ref(), true);
-    num(&mut out, "max_tokens", &s.max_tokens);
+    num(&mut out, "context_window", &s.context_window);
     num(&mut out, "temperature", &s.temperature);
     num(&mut out, "max_retries", &s.max_retries);
 

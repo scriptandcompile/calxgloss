@@ -65,8 +65,11 @@ pub struct LlmConfig {
     /// Optional API key for authentication.
     pub api_key: Option<String>,
 
-    /// Maximum number of tokens to generate.
-    pub max_tokens: usize,
+    /// Token budget for a single request: prompt plus generated output
+    /// together must fit inside this. Matches the server's context window;
+    /// the client derives each request's wire `max_tokens` (the output cap)
+    /// from it, so a large prompt can never overflow the window.
+    pub context_window: usize,
 
     /// Sampling temperature (0.0 = deterministic, higher = more creative).
     pub temperature: f32,
@@ -83,7 +86,7 @@ impl LlmConfig {
             endpoint: url::Url::parse(endpoint).map_err(|e| LlmError::InvalidUrl(e.to_string()))?,
             model: model.to_string(),
             api_key: None,
-            max_tokens: 8192,
+            context_window: 8192,
             temperature: 0.1,
         })
     }
@@ -94,9 +97,9 @@ impl LlmConfig {
         self
     }
 
-    /// Set the maximum number of tokens to generate.
-    pub fn with_max_tokens(mut self, max_tokens: usize) -> Self {
-        self.max_tokens = max_tokens;
+    /// Set the token budget for a single request (prompt + output).
+    pub fn with_context_window(mut self, context_window: usize) -> Self {
+        self.context_window = context_window;
         self
     }
 
@@ -310,7 +313,7 @@ impl LlmClient {
 
     /// Create a new client from a URL string and model name.
     ///
-    /// Uses default values: max_tokens=8192, temperature=0.1.
+    /// Uses default values: context_window=8192, temperature=0.1.
     ///
     /// # Errors
     ///
@@ -323,6 +326,21 @@ impl LlmClient {
     // =========================================================
     // Completions
     // =========================================================
+
+    /// Derive the wire `max_tokens` (output cap) for a request from the
+    /// configured [`LlmConfig::context_window`].
+    ///
+    /// Servers enforce `prompt_tokens + max_tokens ≤ context`, so the output
+    /// cap is the window minus a deliberately pessimistic prompt estimate
+    /// (~4 chars/token plus 12.5% headroom). Floored at 256 so a degenerate
+    /// oversized prompt still produces a server-side error naming the real
+    /// numbers instead of a silent zero-token request.
+    fn output_budget(&self, messages: &[LlmMessage]) -> usize {
+        const CHARS_PER_TOKEN: usize = 4;
+        let prompt_chars: usize = messages.iter().map(|m| m.content().len()).sum();
+        let prompt_tokens = prompt_chars * 9 / (CHARS_PER_TOKEN * 8) + 1;
+        self.config.context_window.saturating_sub(prompt_tokens).max(256)
+    }
 
     /// Send a prompt to the LLM and wait for the full response.
     ///
@@ -352,11 +370,7 @@ impl LlmClient {
             } else {
                 None
             },
-            max_tokens: if self.config.max_tokens != 8192 {
-                Some(self.config.max_tokens)
-            } else {
-                None
-            },
+            max_tokens: Some(self.output_budget(messages)),
         };
 
         let response = self
@@ -469,11 +483,7 @@ impl LlmClient {
             } else {
                 None
             },
-            max_tokens: if self.config.max_tokens != 8192 {
-                Some(self.config.max_tokens)
-            } else {
-                None
-            },
+            max_tokens: Some(self.output_budget(messages)),
         };
 
         let response = self
@@ -529,9 +539,9 @@ impl LlmClient {
         &self.config.endpoint
     }
 
-    /// Get the maximum number of tokens configured.
-    pub fn max_tokens(&self) -> usize {
-        self.config.max_tokens
+    /// Get the token budget for a single request (prompt + output).
+    pub fn context_window(&self) -> usize {
+        self.config.context_window
     }
 
     /// Get the temperature configured.
@@ -623,7 +633,7 @@ mod tests {
     fn test_config_defaults() {
         let config = LlmConfig::new("http://localhost:11434/v1", "qwen3").unwrap();
         assert_eq!(config.model, "qwen3");
-        assert_eq!(config.max_tokens, 8192);
+        assert_eq!(config.context_window, 8192);
         assert_eq!(config.temperature, 0.1);
         assert!(config.api_key.is_none());
     }
@@ -632,13 +642,34 @@ mod tests {
     fn test_config_builders() {
         let config = LlmConfig::new("http://localhost:11434/v1", "test")
             .unwrap()
-            .with_max_tokens(4096)
+            .with_context_window(4096)
             .with_temperature(0.5)
             .with_api_key("key123".to_string());
 
-        assert_eq!(config.max_tokens, 4096);
+        assert_eq!(config.context_window, 4096);
         assert_eq!(config.temperature, 0.5);
         assert_eq!(config.api_key, Some("key123".to_string()));
+    }
+
+    #[test]
+    fn test_output_budget_fits_prompt_inside_window() {
+        // Regression: sending the raw window as the wire max_tokens made
+        // every request overflow the server (prompt + max_tokens > context).
+        let client = LlmClient::new(
+            LlmConfig::new("http://localhost:11434/v1", "qwen3")
+                .unwrap()
+                .with_context_window(172_000),
+        )
+        .unwrap();
+
+        let small = vec![LlmMessage::user("Translate to Rust: x = x + 1")];
+        let budget = client.output_budget(&small);
+        assert!(budget < 172_000, "output cap must leave room for the prompt");
+        assert!(budget > 171_000, "a tiny prompt must barely dent the window");
+
+        // A prompt near the window leaves only the floor, never zero.
+        let huge = vec![LlmMessage::user(&"x".repeat(172_000 * 4))];
+        assert_eq!(client.output_budget(&huge), 256);
     }
 
     #[test]

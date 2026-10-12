@@ -9,7 +9,7 @@
 //! After each LLM call the detector checks:
 //!
 //! 1. **Response size vs. configured limit** — if the response text (in
-//!    characters) meets or exceeds `max_tokens × 4` (rough estimate of
+//!    characters) meets or exceeds the configured budget × 4 (rough estimate of
 //!    characters-per-token), a [`ContextWindowFault`](calxgloss_types::ContextWindowFault)
 //!    is raised.
 //! 2. **Truncation signals** — the response body is scanned for markers that
@@ -32,7 +32,7 @@
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let client = LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;
-//! let detector = ContextWindowDetector::new(client.max_tokens());
+//! let detector = ContextWindowDetector::new(client.context_window());
 //!
 //! let messages = vec![LlmMessage::user("Translate this function...")];
 //! let response = client.complete(&messages).await?;
@@ -59,8 +59,8 @@ const DEFAULT_INPUT_LIMIT_TOKENS: usize = 131_072;
 
 /// Detects context-window exceeded faults from LLM requests and responses.
 ///
-/// The detector is created with the model's configured output limit
-/// (`max_tokens`) and uses a standard characters-per-token ratio to convert
+/// The detector is created with the model's configured token budget
+/// (`context_window`) and uses a standard characters-per-token ratio to convert
 /// token counts to character thresholds.
 #[derive(Debug, Clone)]
 pub struct ContextWindowDetector {
@@ -79,7 +79,7 @@ impl ContextWindowDetector {
     ///
     /// # Arguments
     ///
-    /// * `max_output_tokens` — The `max_tokens` setting passed to the LLM
+    /// * `max_output_tokens` — The `context_window` setting passed to the LLM
     ///   client. When the response exceeds this, a fault is raised.
     pub fn new(max_output_tokens: usize) -> Self {
         Self {

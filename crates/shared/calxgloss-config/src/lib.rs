@@ -52,7 +52,7 @@ pub mod defaults {
     pub const GHIDRA_URL: &str = "http://127.0.0.1:8080";
 
     /// Generation length for translations.
-    pub const LLM_MAX_TOKENS: usize = 8192;
+    pub const LLM_CONTEXT_WINDOW: usize = 8192;
 
     /// Sampling temperature. Low, because a translation is a mechanical
     /// transformation rather than a creative one.

@@ -128,7 +128,7 @@ pub async fn run_translation_for_dll(
     // Get LLM settings
     let llm_url = settings.require_llm_url()?;
     let llm_model = settings.require_llm_model()?;
-    let max_tokens = settings.max_tokens.value;
+    let context_window = settings.context_window.value;
     let temperature = settings.temperature.value;
     let max_retries = settings.max_retries.value;
 
@@ -154,7 +154,7 @@ pub async fn run_translation_for_dll(
         llm_config = llm_config.with_api_key(key.value.clone());
     }
     llm_config = llm_config
-        .with_max_tokens(max_tokens)
+        .with_context_window(context_window)
         .with_temperature(temperature);
     let llm = LlmClient::new(llm_config).context("Failed to create LLM client")?;
 

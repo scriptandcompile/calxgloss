@@ -83,7 +83,7 @@ impl Layers {
                     url: var("CALXGLOSS_LLM_URL"),
                     model: var("CALXGLOSS_LLM_MODEL"),
                     api_key: var("CALXGLOSS_LLM_API_KEY"),
-                    max_tokens: usize_var("CALXGLOSS_LLM_MAX_TOKENS"),
+                    context_window: usize_var("CALXGLOSS_LLM_CONTEXT_WINDOW"),
                     temperature: f32_var("CALXGLOSS_LLM_TEMPERATURE"),
                     max_retries: u32_var("CALXGLOSS_LLM_MAX_RETRIES"),
                     strategy: var("CALXGLOSS_LLM_STRATEGY"),
@@ -257,7 +257,7 @@ install_dir = "/opt/ghidra_12.1.2_PUBLIC"
 [llm]
 url = "http://10.0.0.6:1919/v1"
 model = "some-model"
-max_tokens = 4096
+context_window = 4096
 temperature = 0.7
 max_retries = 5
 "#,
@@ -270,7 +270,7 @@ max_retries = 5
         );
         assert_eq!(c.llm.url.as_deref(), Some("http://10.0.0.6:1919/v1"));
         assert_eq!(c.llm.model.as_deref(), Some("some-model"));
-        assert_eq!(c.llm.max_tokens, Some(4096));
+        assert_eq!(c.llm.context_window, Some(4096));
         assert_eq!(c.llm.temperature, Some(0.7));
         assert_eq!(c.llm.max_retries, Some(5));
     }
@@ -322,7 +322,7 @@ java_home = "/usr/lib/jvm/java-21"
     #[test]
     fn test_a_wrongly_typed_lifecycle_value_is_rejected() {
         // `auto_start = "false"` is a string, not a bool — coercing it would
-        // hide the mistake, like the quoted max_tokens case.
+        // hide the mistake, like the quoted context_window case.
         let dir = tempfile::tempdir().unwrap();
         let path = write(dir.path(), "c.toml", "[ghidra]\nauto_start = \"false\"\n");
         assert!(matches!(
@@ -413,10 +413,10 @@ java_home = "/usr/lib/jvm/java-21"
 
     #[test]
     fn test_a_wrongly_typed_value_is_rejected() {
-        // A quoted max_tokens is a string, not a number, and silently coercing
+        // A quoted context_window is a string, not a number, and silently coercing
         // it would hide the mistake.
         let dir = tempfile::tempdir().unwrap();
-        let path = write(dir.path(), "c.toml", "[llm]\nmax_tokens = \"lots\"\n");
+        let path = write(dir.path(), "c.toml", "[llm]\ncontext_window = \"lots\"\n");
         assert!(matches!(
             load(Some(&path)),
             Err(ConfigError::Invalid { .. })
