@@ -9589,14 +9589,14 @@ async fn test_headless_dashboard_summary_sections() {
     drop(browser);
 }
 
-/// Headless-browser test for issue #66: the pipeline overview must be
-/// selectable as the landing view; the preference persists in localStorage
-/// and the next page load opens the pipeline view instead of the dashboard.
+/// Headless-browser test: a browser reload keeps the tab the operator was
+/// on — clicking the pipeline tab and reloading must land back on the
+/// pipeline view, not the dashboard.
 ///
 /// Run with: `cargo test --features server --test e2e headless -- --ignored`
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires Chromium/Chrome installed; run with --ignored"]
-async fn test_headless_landing_view_preference() {
+async fn test_headless_reload_keeps_current_tab() {
     let fixture = TestFixture::new();
     let state = ServerState::new(fixture.repo_path());
     let router = build_router(state);
@@ -9615,24 +9615,12 @@ async fn test_headless_landing_view_preference() {
             .unwrap_or(false)
     };
 
-    // The landing selector offers the pipeline view; pick it.
-    let has_option =
-        eval_bool("!!document.querySelector('#landing-view option[value=\"pipeline\"]')");
-    assert!(
-        has_option,
-        "landing view select should offer the pipeline view"
-    );
+    // Switch to the pipeline tab.
     tab.evaluate(
-        "(() => { const sel = document.getElementById('landing-view'); \
-            sel.value = 'pipeline'; \
-            sel.dispatchEvent(new Event('change')); })()",
+        "(() => { document.querySelector('.nav-tab[data-view=\"pipeline\"]').click(); })()",
         false,
     )
-    .expect("select pipeline landing view");
-
-    // Reload: the pipeline view must be the active one, not the dashboard.
-    tab.reload(false, None).expect("reload");
-    tab.wait_until_navigated().expect("wait for reload");
+    .expect("click pipeline tab");
 
     let mut pipeline_active = false;
     for _ in 0..25 {
@@ -9645,13 +9633,26 @@ async fn test_headless_landing_view_preference() {
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+    assert!(pipeline_active, "pipeline view should be active after the tab click");
+
+    // Reload: the pipeline view must still be the active one.
+    tab.reload(false, None).expect("reload");
+    tab.wait_until_navigated().expect("wait for reload");
+
+    pipeline_active = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "document.getElementById('view-pipeline')?.classList.contains('view-active') === true \
+                && document.getElementById('view-dashboard')?.classList.contains('view-active') !== true",
+        ) {
+            pipeline_active = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
     assert!(
         pipeline_active,
-        "pipeline view should be the landing view after the preference is saved"
-    );
-    assert!(
-        eval_bool("document.getElementById('landing-view')?.value === 'pipeline'"),
-        "landing select should reflect the saved preference"
+        "reload should stay on the pipeline tab, not fall back to the dashboard"
     );
 
     tab.close_target().ok();

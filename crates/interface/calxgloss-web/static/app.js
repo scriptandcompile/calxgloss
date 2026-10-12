@@ -7,7 +7,7 @@
    ========================================================================== */
 
 import { State } from "./js/state.js";
-import { switchView } from "./js/views.js";
+import { switchView, lastView } from "./js/views.js";
 import {
     loadDashboard,
     renderQueueList,
@@ -414,33 +414,18 @@ function updateZoomIndicator(scale) {
     }
 }
 
-// ─── Landing view preference (issue #66) ────────────────────────────────
-
-const LANDING_VIEW_KEY = "calxgloss_landing_view";
-
-/* Applies the saved landing view (dashboard by default) and wires the
-   topbar select so the choice persists across reloads. */
-function setupLandingView() {
-    const select = document.getElementById("landing-view");
-    const saved = localStorage.getItem(LANDING_VIEW_KEY) || "dashboard";
-
-    if (select) {
-        select.value = saved;
-        select.addEventListener("change", () => {
-            localStorage.setItem(LANDING_VIEW_KEY, select.value);
-        });
-    }
-
-    if (saved !== "dashboard") {
-        switchView(saved);
-    }
-}
-
 // ─── Initialization ─────────────────────────────────────────────────────
 
 async function init() {
     setupEventListeners();
-    setupLandingView();
+
+    // A reload stays on the tab the operator was on: switchView persists
+    // the active view, and the page opens back on it — dashboard only when
+    // that is what was last open.
+    const last = lastView();
+    if (last !== "dashboard") {
+        switchView(last);
+    }
 
     // Initialize full-screen graph renderer
     State.graphRendererFull = new GraphRenderer(document.getElementById("graph-canvas-full"), {
@@ -456,7 +441,7 @@ async function init() {
 
     // Shared graph URL (issue #79) — restore filters and camera before the
     // first data load so the graph opens exactly as the sharer left it, and
-    // open the graph view regardless of the saved landing preference.
+    // open the graph view regardless of the last-viewed tab.
     const shared = readGraphShareState();
     if (shared) {
         applyGraphShareFilters(shared.filters);

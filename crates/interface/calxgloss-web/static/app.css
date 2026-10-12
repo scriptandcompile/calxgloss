@@ -269,21 +269,6 @@ svg {
 .status-card.blocked .status-card-value { color: var(--status-blocked); }
 .status-card.skipped .status-card-value { color: var(--status-skipped); }
 
-/* ─── Landing view preference (issue #66) ─────────────────────────────── */
-.landing-label {
-    font-size: 12px;
-    color: var(--text-muted);
-}
-
-.landing-select {
-    background: var(--bg-tertiary);
-    color: var(--text-primary);
-    border: 1px solid var(--border-color);
-    border-radius: var(--radius-sm);
-    padding: 4px 8px;
-    font-size: 12px;
-}
-
 /* ─── Dashboard summary sections (issue #66) ──────────────────────────── */
 .panel {
     background: var(--bg-card);

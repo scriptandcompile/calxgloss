@@ -22,11 +22,6 @@
             <button class="nav-tab" data-view="llm-log">LLM I/O</button>
         </nav>
         <div class="topbar-right">
-            <label class="landing-label" for="landing-view" title="View shown when the dashboard loads">Landing</label>
-            <select id="landing-view" class="landing-select" aria-label="Default landing view">
-                <option value="dashboard">Dashboard</option>
-                <option value="pipeline">Pipeline</option>
-            </select>
             <span id="live-indicator" class="live-dot" title="Live updates active">●</span>
             <button id="btn-refresh" class="icon-btn" aria-label="Refresh data">
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
@@ -191,7 +186,7 @@
             </div>
         </section>
 
-        <!-- Pipeline overview view (selectable landing view, issue #66) -->
+        <!-- Pipeline overview view (issue #66) -->
         <section id="view-pipeline" class="view">
             <div id="pipeline-panel" class="pipeline-panel" style="display:none">
                 <div class="pipeline-panel-header">

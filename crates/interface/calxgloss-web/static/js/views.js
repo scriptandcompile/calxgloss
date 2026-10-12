@@ -9,8 +9,22 @@ import { startLiveView, stopLiveView } from "./live.js";
 import { loadPipelineProgress } from "./dashboard.js";
 import { loadLlmLogHistory } from "./llm-log.js";
 
+// The tab the operator was last on, persisted so a browser reload lands
+// back where they were instead of always opening on the dashboard.
+const LAST_VIEW_KEY = "calxgloss_last_view";
+
+/* The view to open on page load: the last one switched to, or dashboard
+   when nothing was saved (or the saved name no longer names a real tab). */
+export function lastView() {
+    const saved = localStorage.getItem(LAST_VIEW_KEY);
+    if (!saved) return "dashboard";
+    const views = [...document.querySelectorAll(".nav-tab")].map(t => t.dataset.view);
+    return views.includes(saved) ? saved : "dashboard";
+}
+
 export function switchView(viewName) {
     State.currentView = viewName;
+    localStorage.setItem(LAST_VIEW_KEY, viewName);
     document.querySelectorAll(".nav-tab").forEach(t => {
         t.classList.toggle("active", t.dataset.view === viewName);
     });
