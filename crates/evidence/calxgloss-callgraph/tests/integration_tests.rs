@@ -992,6 +992,8 @@ fn test_end_to_end_realistic_plugin_pipeline() {
         exports_count: 0,
         imports_count: 0,
         crate_replacement: None,
+        known_runtime: false,
+        reason: String::new(),
     };
 
     let dep_graph =

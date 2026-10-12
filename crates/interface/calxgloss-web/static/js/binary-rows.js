@@ -9,27 +9,31 @@
    tokens, queued counts, and rates render as "—", never as fabricated
    zeros.
 
-   The quick-action buttons (Start Translation, Pause, Configure) are real
-   controls (issue #94): the first two drive the pipeline lifecycle
+   The quick-action buttons (Start Translation, Pause, Configure, Classify)
+   are real controls (issue #94): the first two drive the pipeline lifecycle
    endpoints, Configure opens the restart dialog with this binary pre-
-   selected as the target. The server's own reason surfaces on rejection —
+   selected as the target, Classify opens the classification-override panel
+   (issue #97). The server's own reason surfaces on rejection —
    a stale click is never a silent no-op.
    ========================================================================== */
 
 import { escapeHtml } from "./utils.js";
 import { API } from "./api.js";
 import { runControl, showRestartDialog } from "./pipeline-controls.js";
+import { openClassificationPanel } from "./classification-override.js";
 
 const ACTION_LABELS = {
     start: "Start Translation",
     pause: "Pause",
     configure: "Configure",
+    classify: "Classify",
 };
 
 const ACTION_TITLES = {
     start: "Start a pipeline run (POST /api/pipeline/start)",
     pause: "Pause the live run at the current unit boundary (POST /api/pipeline/pause)",
     configure: "Open restart options with this binary pre-selected",
+    classify: "Review and override this binary's classification (POST /api/binaries/{name}/classification)",
 };
 
 // Classification strategies arrive as Debug-formatted strings (e.g.
@@ -191,6 +195,10 @@ export function renderPipelineBinaryRows(binaries) {
             const { action, binary } = btn.dataset;
             if (action === "configure") {
                 showRestartDialog({ target: binary });
+                return;
+            }
+            if (action === "classify") {
+                openClassificationPanel(binary);
                 return;
             }
             const call =

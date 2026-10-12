@@ -2686,6 +2686,66 @@ svg {
     white-space: pre-wrap;
 }
 
+/* ─── Binary classification override panel (issue #97) ────────────── */
+
+.classification-override-panel {
+    margin-top: 12px;
+    padding: 12px 14px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+}
+
+.clf-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+
+.clf-header h2 {
+    margin: 0;
+    font-size: 14px;
+}
+
+.clf-current {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.clf-reason {
+    margin-top: 4px;
+    font-size: 12px;
+    font-style: italic;
+    color: var(--text-muted);
+}
+
+.clf-override-active {
+    font-size: 13px;
+    color: var(--text-primary);
+    margin-bottom: 8px;
+}
+
+.clf-strategy-hint {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.override-field input[type="text"] {
+    padding: 6px 8px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    font-size: 13px;
+    font-family: inherit;
+}
+
+.override-field input[type="text"]:disabled {
+    opacity: 0.5;
+}
+
 /* ─── Pipeline Phase Bar (issue #61) ──────────────────────────────── */
 
 .pipeline-phase-bar {

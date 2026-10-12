@@ -1296,6 +1296,58 @@ pub struct UnitOverrideResponse {
     pub r#override: Option<calxgloss_types::FunctionOverride>,
 }
 
+// ─── Binary classification overrides (issue #97, W2.8) ───────────────
+
+/// The classification a run recorded for one binary — read from the
+/// workspace's `re/classify/{binary}.json` artifact. Honesty rule: a
+/// workspace that never classified this binary has no record, and the
+/// reason is `None` for older artifacts written before reasons were
+/// recorded — never a fabricated explanation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordedClassification {
+    /// Classification category (e.g. "KnownThirdParty").
+    pub category: String,
+    /// Classification strategy (e.g. "CrateReplacement").
+    pub strategy: String,
+    /// Crate recommended for replacement, when the strategy names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crate_replacement: Option<String>,
+    /// Whether the record marks the binary a known runtime library —
+    /// never a translation target.
+    #[serde(default)]
+    pub known_runtime: bool,
+    /// Why the classification was chosen, if the record carries one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Request body of `POST /api/binaries/{name}/classification` — the
+/// operator's override record for this binary, replacing any previous
+/// one. `override: null` removes the override (the binary falls back to
+/// its recorded classification).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BinaryClassificationRequest {
+    /// The override to apply, or `None` to remove it.
+    #[serde(default, rename = "override")]
+    pub r#override: Option<calxgloss_types::BinaryClassificationOverride>,
+}
+
+/// Response body of the classification-override endpoints: the binary the
+/// call addressed, what the run recorded for it (`None` when the
+/// workspace has no classification artifact), and the operator's override
+/// now in force (`None` when none is set).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BinaryClassificationResponse {
+    /// The binary the call addressed, echoed back verbatim.
+    pub binary: String,
+    /// The recorded classification, if the workspace has one.
+    #[serde(default)]
+    pub classification: Option<RecordedClassification>,
+    /// The override now in force, if any.
+    #[serde(default, rename = "override")]
+    pub r#override: Option<calxgloss_types::BinaryClassificationOverride>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

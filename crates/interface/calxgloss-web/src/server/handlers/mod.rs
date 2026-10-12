@@ -5,6 +5,7 @@
 mod analysis;
 mod api;
 mod batch;
+mod classification;
 mod diff;
 mod gc;
 mod ghidra;
@@ -19,6 +20,7 @@ mod summary;
 
 pub use self::api::*;
 pub use self::batch::*;
+pub use self::classification::*;
 pub use self::diff::*;
 pub use self::gc::*;
 pub use self::ghidra::*;

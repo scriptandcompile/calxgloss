@@ -1,12 +1,14 @@
 //! The [`Analyzer`] struct, [`Strategy`] enum, [`DllClassification`],
 //! and [`FunctionAnalysis`] — the core analysis types.
 
-use crate::classify::{classify_dll_name, crate_replacement_for};
+use crate::classify::{classification_reason, classify_dll_name, crate_replacement_for};
 use crate::error::AnalysisError as Error;
 use crate::error::Result;
 use calxgloss_ghidra::GhidraClient;
 use calxgloss_pal::ApiMappings;
-use calxgloss_types::{DllCategory, DllInfo, FunctionInfo, WindowsApiCall};
+use calxgloss_types::{
+    ClassificationOverrideControl, DllCategory, DllInfo, FunctionInfo, WindowsApiCall,
+};
 use calxgloss_types::{FunctionComplexity, PromptVariant};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, warn};
@@ -36,6 +38,34 @@ pub enum Strategy {
     ReverseEngineer,
 }
 
+/// The strategy a category routes to — the single dispatch every
+/// classification path (heuristic or overridden) shares. The crate name
+/// rides along in the crate-replacement modes.
+fn strategy_for_category(category: &DllCategory, crate_replacement: Option<&str>) -> Strategy {
+    match category {
+        DllCategory::WindowsOs => Strategy::PalMapping,
+        DllCategory::MicrosoftSdk | DllCategory::KnownThirdParty => Strategy::CrateReplacement {
+            crate_name: crate_replacement.unwrap_or_default().to_string(),
+        },
+        DllCategory::ProjectSpecific
+        | DllCategory::UnknownThirdParty
+        | DllCategory::RuntimeLibrary => Strategy::ReverseEngineer,
+    }
+}
+
+/// The category's serde variant name — the display string the dashboard
+/// already matches on.
+fn category_label(category: &DllCategory) -> &'static str {
+    match category {
+        DllCategory::WindowsOs => "WindowsOs",
+        DllCategory::MicrosoftSdk => "MicrosoftSdk",
+        DllCategory::KnownThirdParty => "KnownThirdParty",
+        DllCategory::ProjectSpecific => "ProjectSpecific",
+        DllCategory::UnknownThirdParty => "UnknownThirdParty",
+        DllCategory::RuntimeLibrary => "RuntimeLibrary",
+    }
+}
+
 /// Classification result for a single DLL.
 ///
 /// Produced by [`Analyzer::classify_dll`] or [`Analyzer::classify_target`].
@@ -61,6 +91,21 @@ pub struct DllClassification {
     /// If `category` is `MicrosoftSdk` or `KnownThirdParty`, the recommended
     /// Rust crate name. `None` for `WindowsOs` and `ProjectSpecific` DLLs.
     pub crate_replacement: Option<String>,
+
+    /// Whether this binary is a known runtime library — never a translation
+    /// target (the Evidence glossary rule: consumers must check this flag
+    /// alongside `category`, never the category alone). A `RuntimeLibrary`
+    /// category always implies it; an operator override can set it for any
+    /// category, or clear it when overriding a runtime-named binary back to
+    /// a translated one.
+    #[serde(default)]
+    pub known_runtime: bool,
+
+    /// Why this classification was chosen — the table or pattern the
+    /// heuristics matched (or the operator's override). Displayed next to
+    /// the classification override control; older records carry none.
+    #[serde(default)]
+    pub reason: String,
 }
 
 /// Complete analysis result for a single function.
@@ -109,6 +154,12 @@ pub struct Analyzer {
 
     /// Windows API → Rust equivalent mapping table.
     api_mappings: ApiMappings,
+
+    /// The shared classification-override handle (issue #97, W2.8) — when
+    /// attached, every classification consults it before strategy dispatch,
+    /// so an operator's correction from the dashboard routes the binary
+    /// without a CLI re-run.
+    classification_overrides: Option<ClassificationOverrideControl>,
 }
 
 impl Analyzer {
@@ -120,7 +171,19 @@ impl Analyzer {
         Self {
             ghidra,
             api_mappings,
+            classification_overrides: None,
         }
+    }
+
+    /// Attach the shared [`ClassificationOverrideControl`] handle the web
+    /// router's classification endpoints drive. Every classification this
+    /// analyzer builds then consults it before strategy dispatch.
+    pub fn with_classification_overrides(
+        mut self,
+        overrides: ClassificationOverrideControl,
+    ) -> Self {
+        self.classification_overrides = Some(overrides);
+        self
     }
 
     /// Classifies a single DLL by fetching its metadata from Ghidra and
@@ -179,20 +242,9 @@ impl Analyzer {
         exports_count: usize,
         imports_count: usize,
     ) -> DllClassification {
-        let category = classify_dll_name(binary);
-        let crate_replacement = crate_replacement_for(binary, &category);
+        let (category, crate_replacement, known_runtime, reason) = self.classify_decision(binary);
 
-        let strategy = match &category {
-            DllCategory::WindowsOs => Strategy::PalMapping,
-            DllCategory::MicrosoftSdk | DllCategory::KnownThirdParty => {
-                Strategy::CrateReplacement {
-                    crate_name: crate_replacement.clone().unwrap_or_default(),
-                }
-            }
-            DllCategory::ProjectSpecific
-            | DllCategory::UnknownThirdParty
-            | DllCategory::RuntimeLibrary => Strategy::ReverseEngineer,
-        };
+        let strategy = strategy_for_category(&category, crate_replacement.as_deref());
 
         let classification = DllClassification {
             binary: binary.to_string(),
@@ -201,6 +253,8 @@ impl Analyzer {
             exports_count,
             imports_count,
             crate_replacement,
+            known_runtime,
+            reason,
         };
 
         info!(
@@ -213,6 +267,44 @@ impl Analyzer {
         );
 
         classification
+    }
+
+    /// The classification decision for one binary: the operator's override
+    /// if one is recorded (issue #97, W2.8), otherwise the filename
+    /// heuristics. Both the category and the `known_runtime` flag come out
+    /// of this one decision — per the Evidence glossary rule a
+    /// runtime-library classification is never a translation target, so an
+    /// override to `RuntimeLibrary` always carries the flag, and overriding
+    /// a runtime-named binary to another category clears it.
+    ///
+    /// Returns `(category, crate_replacement, known_runtime, reason)`.
+    fn classify_decision(&self, binary: &str) -> (DllCategory, Option<String>, bool, String) {
+        if let Some(override_record) = self
+            .classification_overrides
+            .as_ref()
+            .and_then(|control| control.get(binary))
+        {
+            let known_runtime = override_record.is_runtime();
+            let category = override_record.category;
+            let crate_replacement = match &category {
+                DllCategory::MicrosoftSdk | DllCategory::KnownThirdParty => override_record
+                    .crate_replacement
+                    .clone()
+                    .or_else(|| crate_replacement_for(binary, &category)),
+                _ => None,
+            };
+            let reason = format!(
+                "operator override — {} (category set from the dashboard)",
+                category_label(&category)
+            );
+            return (category, crate_replacement, known_runtime, reason);
+        }
+
+        let category = classify_dll_name(binary);
+        let crate_replacement = crate_replacement_for(binary, &category);
+        let known_runtime = category == DllCategory::RuntimeLibrary;
+        let reason = classification_reason(binary, &category);
+        (category, crate_replacement, known_runtime, reason)
     }
 
     /// Classifies each of the named DLLs.
@@ -486,20 +578,10 @@ impl Analyzer {
     ///
     /// * `dll_info` — The DLL metadata to classify.
     pub fn classify_dll_info(&self, dll_info: &DllInfo) -> DllClassification {
-        let category = classify_dll_name(&dll_info.name);
-        let crate_replacement = crate_replacement_for(&dll_info.name, &category);
+        let (category, crate_replacement, known_runtime, reason) =
+            self.classify_decision(&dll_info.name);
 
-        let strategy = match &category {
-            DllCategory::WindowsOs => Strategy::PalMapping,
-            DllCategory::MicrosoftSdk | DllCategory::KnownThirdParty => {
-                Strategy::CrateReplacement {
-                    crate_name: crate_replacement.clone().unwrap_or_default(),
-                }
-            }
-            DllCategory::ProjectSpecific
-            | DllCategory::UnknownThirdParty
-            | DllCategory::RuntimeLibrary => Strategy::ReverseEngineer,
-        };
+        let strategy = strategy_for_category(&category, crate_replacement.as_deref());
 
         DllClassification {
             binary: dll_info.name.clone(),
@@ -508,6 +590,8 @@ impl Analyzer {
             exports_count: dll_info.exports.len(),
             imports_count: dll_info.imports.len(),
             crate_replacement,
+            known_runtime,
+            reason,
         }
     }
 
@@ -1005,6 +1089,8 @@ mod tests {
             exports_count: 200,
             imports_count: 5,
             crate_replacement: Some("wgpu".to_string()),
+            known_runtime: false,
+            reason: String::new(),
         };
 
         let suggestion = suggest_shim(&classification);
@@ -1029,6 +1115,8 @@ mod tests {
             exports_count: 500,
             imports_count: 0,
             crate_replacement: None,
+            known_runtime: false,
+            reason: String::new(),
         };
 
         let suggestion = suggest_shim(&classification);
@@ -1048,6 +1136,8 @@ mod tests {
             exports_count: 80,
             imports_count: 2,
             crate_replacement: Some("fmod-rs".to_string()),
+            known_runtime: false,
+            reason: String::new(),
         };
 
         let suggestion = suggest_shim(&classification);
@@ -1068,6 +1158,8 @@ mod tests {
             exports_count: 3,
             imports_count: 1,
             crate_replacement: Some("lz4".to_string()),
+            known_runtime: false,
+            reason: String::new(),
         };
 
         let suggestion = suggest_shim(&classification);
@@ -1091,6 +1183,8 @@ mod tests {
                 exports_count: 50,
                 imports_count: 10,
                 crate_replacement: Some("wgpu".to_string()),
+                known_runtime: false,
+                reason: String::new(),
             },
             DllClassification {
                 binary: "kernel32.dll".to_string(),
@@ -1099,6 +1193,8 @@ mod tests {
                 exports_count: 500,
                 imports_count: 0,
                 crate_replacement: None,
+                known_runtime: false,
+                reason: String::new(),
             },
             DllClassification {
                 binary: "game_logic.dll".to_string(),
@@ -1107,6 +1203,8 @@ mod tests {
                 exports_count: 100,
                 imports_count: 5,
                 crate_replacement: None,
+                known_runtime: false,
+                reason: String::new(),
             },
             DllClassification {
                 binary: "fmod.dll".to_string(),
@@ -1117,6 +1215,8 @@ mod tests {
                 exports_count: 80,
                 imports_count: 2,
                 crate_replacement: Some("fmod-rs".to_string()),
+                known_runtime: false,
+                reason: String::new(),
             },
         ];
 
@@ -1139,6 +1239,8 @@ mod tests {
                 exports_count: 500,
                 imports_count: 0,
                 crate_replacement: None,
+                known_runtime: false,
+                reason: String::new(),
             },
             DllClassification {
                 binary: "game_logic.dll".to_string(),
@@ -1147,6 +1249,8 @@ mod tests {
                 exports_count: 100,
                 imports_count: 5,
                 crate_replacement: None,
+                known_runtime: false,
+                reason: String::new(),
             },
         ];
 
@@ -1167,6 +1271,8 @@ mod tests {
             exports_count: 0,
             imports_count: 0,
             crate_replacement: Some("wgpu".to_string()),
+            known_runtime: false,
+            reason: String::new(),
         };
 
         let suggestion = suggest_shim(&classification);
@@ -1176,5 +1282,150 @@ mod tests {
             calxgloss_types::ComplexityScore::Low
         ));
         assert!(suggestion.estimated_confidence >= 0.0 && suggestion.estimated_confidence <= 1.0);
+    }
+
+    // ── Binary classification overrides (issue #97, W2.8) ──
+
+    fn dll_info(name: &str) -> DllInfo {
+        DllInfo {
+            name: name.to_string(),
+            version: None,
+            category: DllCategory::ProjectSpecific,
+            known_runtime: false,
+            exports: Vec::new(),
+            imports: Vec::new(),
+        }
+    }
+
+    fn analyzer_with_override(
+        binary: &str,
+        record: calxgloss_types::BinaryClassificationOverride,
+    ) -> Analyzer {
+        let control = calxgloss_types::ClassificationOverrideControl::new();
+        control.set(binary, record).expect("in-memory override");
+        test_analyzer().with_classification_overrides(control)
+    }
+
+    fn override_record(
+        category: DllCategory,
+        crate_replacement: Option<&str>,
+        known_runtime: bool,
+    ) -> calxgloss_types::BinaryClassificationOverride {
+        calxgloss_types::BinaryClassificationOverride {
+            category,
+            crate_replacement: crate_replacement.map(str::to_string),
+            known_runtime,
+        }
+    }
+
+    #[test]
+    fn test_classification_override_routes_away_from_heuristic_strategy() {
+        // fmod.dll heuristically routes to crate replacement; an override
+        // to WindowsOs routes it to PAL mapping instead — observable in
+        // which strategy the binary lands on.
+        let analyzer = analyzer_with_override(
+            "fmod.dll",
+            override_record(DllCategory::WindowsOs, None, false),
+        );
+        let classification = analyzer.classify_dll_info(&dll_info("fmod.dll"));
+        assert_eq!(classification.category, DllCategory::WindowsOs);
+        assert_eq!(classification.strategy, Strategy::PalMapping);
+        assert!(!classification.known_runtime);
+        assert!(classification.reason.contains("operator override"));
+    }
+
+    #[test]
+    fn test_classification_override_crate_replacement_mode_carries_the_target_crate() {
+        // Overriding to crate-replacement mode with a target crate: the
+        // shim layer lands where the operator pointed it.
+        let analyzer = analyzer_with_override(
+            "game_logic.dll",
+            override_record(DllCategory::KnownThirdParty, Some("mlua"), false),
+        );
+        let classification = analyzer.classify_dll_info(&dll_info("game_logic.dll"));
+        assert_eq!(classification.category, DllCategory::KnownThirdParty);
+        assert_eq!(
+            classification.strategy,
+            Strategy::CrateReplacement {
+                crate_name: "mlua".to_string()
+            }
+        );
+        assert_eq!(
+            classification.crate_replacement.as_deref(),
+            Some("mlua"),
+            "the operator's target crate rides into the record"
+        );
+    }
+
+    #[test]
+    fn test_classification_override_to_runtime_library_sets_known_runtime() {
+        // The Evidence glossary rule: a runtime-library classification is
+        // never a translation target — the flag must follow the category
+        // even when the record left it false.
+        let analyzer = analyzer_with_override(
+            "game_logic.dll",
+            override_record(DllCategory::RuntimeLibrary, None, false),
+        );
+        let classification = analyzer.classify_dll_info(&dll_info("game_logic.dll"));
+        assert_eq!(classification.category, DllCategory::RuntimeLibrary);
+        assert!(
+            classification.known_runtime,
+            "a RuntimeLibrary classification is never a translation target"
+        );
+    }
+
+    #[test]
+    fn test_classification_override_clears_the_runtime_flag_for_other_categories() {
+        // msvcr100.dll heuristically reads as a runtime library; overriding
+        // it to ProjectSpecific must clear the flag — the operator is
+        // making it a translation target on purpose.
+        let heuristic = test_analyzer().classify_dll_info(&dll_info("msvcr100.dll"));
+        assert_eq!(heuristic.category, DllCategory::RuntimeLibrary);
+        assert!(heuristic.known_runtime);
+
+        let analyzer = analyzer_with_override(
+            "msvcr100.dll",
+            override_record(DllCategory::ProjectSpecific, None, false),
+        );
+        let classification = analyzer.classify_dll_info(&dll_info("msvcr100.dll"));
+        assert_eq!(classification.category, DllCategory::ProjectSpecific);
+        assert!(
+            !classification.known_runtime,
+            "the override's category and flag are both honored, not the heuristic's"
+        );
+    }
+
+    #[test]
+    fn test_classification_override_keyed_verbatim() {
+        // The override is keyed by binary identity — a differently spelled
+        // filename keeps its heuristic classification.
+        let analyzer = analyzer_with_override(
+            "Fmod.dll",
+            override_record(DllCategory::WindowsOs, None, false),
+        );
+        let classification = analyzer.classify_dll_info(&dll_info("fmod.dll"));
+        assert_eq!(
+            classification.category,
+            DllCategory::KnownThirdParty,
+            "fmod.dll (lowercase) is a different binary than Fmod.dll"
+        );
+    }
+
+    #[test]
+    fn test_classification_without_override_records_reason_and_runtime_flag() {
+        // Un-overridden classifications stay honest: the reason names the
+        // table that matched, and the runtime flag follows the category.
+        let analyzer = test_analyzer();
+        let fmod = analyzer.classify_dll_info(&dll_info("fmod.dll"));
+        assert!(
+            fmod.reason.contains("known third-party") && fmod.reason.contains("fmod-rs"),
+            "reason should name the matched table, got: {}",
+            fmod.reason
+        );
+        assert!(!fmod.known_runtime);
+
+        let runtime = analyzer.classify_dll_info(&dll_info("msvbvm60.dll"));
+        assert!(runtime.known_runtime);
+        assert!(runtime.reason.contains("runtime-library"));
     }
 }

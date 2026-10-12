@@ -200,7 +200,7 @@ fn main() -> Result<()> {
                 .build()
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_classify(
-                    &binary, target_dir, &workspace, skip_git, &settings, None,
+                    &binary, target_dir, &workspace, skip_git, &settings, None, None,
                 ))
         }
         Command::Translate(args) => {
@@ -432,6 +432,7 @@ fn main() -> Result<()> {
                     None, // no run selectors — plain auto has no start/restart channel
                     None, // no scope control — plain auto has no scope endpoints
                     None, // no override control — plain auto has no override endpoints
+                    None, // no classification overrides — plain auto has no classification endpoints
                 ))
         }
         Command::AutoShim { binary, skip_git } => {

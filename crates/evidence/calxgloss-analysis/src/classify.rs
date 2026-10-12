@@ -333,6 +333,37 @@ pub fn crate_replacement_for(dll_name: &str, category: &DllCategory) -> Option<S
     }
 }
 
+/// Why the heuristics classified a DLL the way they did — one honest sentence
+/// naming the table or pattern that matched (or the absence of one). The
+/// classification override panel displays this next to the control, so the
+/// operator can see what they're changing their mind about.
+pub fn classification_reason(dll_name: &str, category: &DllCategory) -> String {
+    match category {
+        DllCategory::RuntimeLibrary => {
+            format!("'{dll_name}' matches a runtime-library pattern — never a translation target")
+        }
+        DllCategory::KnownThirdParty => match known_third_party_crate(dll_name) {
+            Some(krate) => {
+                format!("'{dll_name}' matched the known third-party table → crate {krate}")
+            }
+            None => format!("'{dll_name}' is a known third-party library"),
+        },
+        DllCategory::MicrosoftSdk => match microsoft_sdk_crate(dll_name) {
+            Some(krate) => format!("'{dll_name}' matched the Microsoft SDK table → crate {krate}"),
+            None => format!("'{dll_name}' is a Microsoft SDK library"),
+        },
+        DllCategory::WindowsOs => {
+            format!("'{dll_name}' matched the Windows OS table — PAL mapping")
+        }
+        DllCategory::UnknownThirdParty => {
+            format!("'{dll_name}' is third-party with no known crate equivalent")
+        }
+        DllCategory::ProjectSpecific => {
+            format!("'{dll_name}' matched no known table — assumed project code")
+        }
+    }
+}
+
 /// Given a list of imports, returns the set of unique DLL names that are imported.
 ///
 /// This is useful for determining what external dependencies a target binary has,
@@ -433,6 +464,28 @@ mod tests {
         );
         assert_eq!(classify_dll_name("lua51.dll"), DllCategory::KnownThirdParty);
         // Note: msvbvm60.dll is now classified as RuntimeLibrary (checked separately)
+    }
+
+    #[test]
+    fn test_classification_reason_names_the_matched_table() {
+        // The override panel displays this next to the control — the reason
+        // must name what the heuristics actually matched.
+        let reason = classification_reason("fmod.dll", &DllCategory::KnownThirdParty);
+        assert!(reason.contains("known third-party") && reason.contains("fmod-rs"));
+
+        let reason = classification_reason("d3d9.dll", &DllCategory::MicrosoftSdk);
+        assert!(reason.contains("Microsoft SDK") && reason.contains("wgpu"));
+
+        let reason = classification_reason("kernel32.dll", &DllCategory::WindowsOs);
+        assert!(reason.contains("Windows OS") && reason.contains("PAL mapping"));
+
+        let reason = classification_reason("msvcr100.dll", &DllCategory::RuntimeLibrary);
+        assert!(
+            reason.contains("runtime-library") && reason.contains("never a translation target")
+        );
+
+        let reason = classification_reason("game_logic.dll", &DllCategory::ProjectSpecific);
+        assert!(reason.contains("matched no known table"));
     }
 
     #[test]

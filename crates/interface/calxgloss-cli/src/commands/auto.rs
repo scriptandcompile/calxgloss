@@ -403,6 +403,7 @@ pub async fn handle_auto(
     run: Option<&PipelineRunRequest>,
     scope_control: Option<&ScopeControl>,
     override_control: Option<&OverrideControl>,
+    classification_overrides: Option<&calxgloss::ClassificationOverrideControl>,
 ) -> Result<()> {
     info!("Auto mode: detecting project state");
 
@@ -511,6 +512,7 @@ pub async fn handle_auto(
             skip_git,
             settings,
             events,
+            classification_overrides,
         )
         .await?;
         println_content("");

@@ -40,6 +40,8 @@
 //!         exports_count: 0,
 //!         imports_count: 0,
 //!         crate_replacement: Some("wgpu".to_string()),
+//!         known_runtime: false,
+//!         reason: String::new(),
 //!     },
 //!     DllClassification {
 //!         binary: "game_logic.dll".to_string(),
@@ -48,6 +50,8 @@
 //!         exports_count: 10,
 //!         imports_count: 5,
 //!         crate_replacement: None,
+//!         known_runtime: false,
+//!         reason: String::new(),
 //!     },
 //! ];
 //!
@@ -126,6 +130,8 @@ use crate::DllClassification;
 ///     exports_count: 0,
 ///     imports_count: 0,
 ///     crate_replacement: Some("wgpu".to_string()),
+///     known_runtime: false,
+///     reason: String::new(),
 /// }];
 ///
 /// let call_graph: Vec<(&str, Vec<String>)> = vec![("DrawPrimitive", vec![])];
@@ -323,6 +329,8 @@ impl ShimLayerDeclaration {
 ///         exports_count: 0,
 ///         imports_count: 0,
 ///         crate_replacement: Some("wgpu".to_string()),
+///         known_runtime: false,
+///         reason: String::new(),
 ///     },
 /// ];
 ///
@@ -748,6 +756,8 @@ mod tests {
             exports_count: 0,
             imports_count: 0,
             crate_replacement: crate_name.map(|s| s.to_string()),
+            known_runtime: false,
+            reason: String::new(),
         }
     }
 

@@ -31,6 +31,10 @@
 //! - [`overrides`] — Per-unit reviewer overrides (`FunctionOverride`,
 //!   `UnitOverrides`, `OverrideControl`) — how one unit's next attempt is
 //!   steered, persisted under the record tree
+//! - [`classification_overrides`] — Binary classification overrides
+//!   (`BinaryClassificationOverride`, `ClassificationOverrideControl`) —
+//!   one target binary's category corrected live, persisted under the
+//!   record tree
 //! - [`error`] — Unified error type (`TypesError`)
 
 // ============================================================
@@ -46,6 +50,7 @@
 /// accumulator, so `compute_stats` still covers the whole run's history.
 pub const MAX_LOG_ENTRIES: usize = 10_000;
 
+pub mod classification_overrides;
 pub mod complexity;
 pub mod confidence;
 pub mod context_tier;
@@ -74,6 +79,10 @@ pub mod verification;
 
 // Re-export public types at the crate root for convenient access.
 
+pub use classification_overrides::{
+    BinaryClassificationOverride, ClassificationOverrideControl, ClassificationOverrides,
+    classification_override_records_path,
+};
 pub use complexity::{FailureHint, FunctionComplexity, PromptVariant, detect_complexity};
 pub use confidence::Confidence;
 pub use context_tier::{ContextTier, SuccessRate, record_translation_result, select_context_tier};

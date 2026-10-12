@@ -145,6 +145,13 @@ pub async fn handle_live(
     // next run.
     let override_control = calxgloss::OverrideControl::open(&workspace);
 
+    // Binary classification-override handle (issue #97, W2.8) — opened over
+    // the workspace, so persisted classification corrections steer the
+    // classify step from the first pass and every endpoint mutation
+    // re-persists them for the next run.
+    let classification_override_control =
+        calxgloss::ClassificationOverrideControl::open(&workspace);
+
     // Build the server state here (not inside the serve task) so the run
     // loop can also watch the server's shutdown flag and exit when the
     // operator shuts the server down.
@@ -156,7 +163,8 @@ pub async fn handle_live(
         .with_unit_cancellation(cancellation.clone())
         .with_run_requests(run_requests.clone())
         .with_scope_control(scope_control.clone())
-        .with_override_control(override_control.clone());
+        .with_override_control(override_control.clone())
+        .with_classification_override_control(classification_override_control.clone());
     let server_shutdown = server_state.shutdown_signal();
     // The loop below waits on this future across iterations — pin it so the
     // select can borrow it repeatedly.
@@ -299,6 +307,7 @@ pub async fn handle_live(
             run.as_ref(),       // W2.3 start/restart selectors for this run
             Some(&scope_control), // W2.5 scope endpoints steer this run
             Some(&override_control), // W2.7 override endpoints steer this run
+            Some(&classification_override_control), // W2.8 classification endpoints steer this run
         )
         .await;
 

@@ -537,6 +537,8 @@ mod tests {
             exports_count: 0,
             imports_count: 0,
             crate_replacement: crate_name.map(|s| s.to_string()),
+            known_runtime: false,
+            reason: String::new(),
         }
     }
 

@@ -5,7 +5,12 @@
 export const API = {
     async get(path) {
         const res = await fetch(path);
-        if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+        if (!res.ok) {
+            // The server's own reason surfaces when it sends one — an
+            // honest 503 explanation beats a bare status line.
+            const err = await res.json().catch(() => ({ message: res.statusText }));
+            throw new Error(err.message || `API ${res.status}`);
+        }
         return res.json();
     },
 
@@ -99,6 +104,11 @@ export const API = {
     async unitOverride(id) { return API.get(`/api/units/${encodeURIComponent(id)}/override`); },
     async applyUnitOverride(id, record) { return API.post(`/api/units/${encodeURIComponent(id)}/override`, { override: record }); },
     async removeUnitOverride(id) { return API.delete(`/api/units/${encodeURIComponent(id)}/override`); },
+    // Binary classification overrides (issue #97) — live router only; plain
+    // serve has no run to steer. `null` removes the override.
+    async binaryClassification(name) { return API.get(`/api/binaries/${encodeURIComponent(name)}/classification`); },
+    async setBinaryClassification(name, record) { return API.post(`/api/binaries/${encodeURIComponent(name)}/classification`, { override: record }); },
+    async clearBinaryClassification(name) { return API.post(`/api/binaries/${encodeURIComponent(name)}/classification`, { override: null }); },
     async liveProgress() { return API.get("/api/progress/enhanced"); },
     async gcCandidates(days) { return API.get(`/api/gc/candidates?days=${days}`); },
     async gcArchive(branches) { return API.post("/api/gc/archive", branches.length > 0 ? { branches } : {}); },

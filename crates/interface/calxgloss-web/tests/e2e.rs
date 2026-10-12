@@ -1110,6 +1110,213 @@ async fn test_override_endpoints_apply_get_and_persist() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Binary classification overrides (issue #97, W2.8)
+// ─────────────────────────────────────────────────────────────
+
+/// Seed a `re/classify/fmod.dll.json` artifact — the shape the classify
+/// command writes, reasoning included — so the endpoints have a recorded
+/// classification to report.
+fn write_canned_classification_record(fixture: &TestFixture, binary: &str, category: &str) {
+    let dir = fixture.repo_path().join("re").join("classify");
+    std::fs::create_dir_all(&dir).expect("classify dir");
+    let record = serde_json::json!({
+        "binary": binary,
+        "category": category,
+        "strategy": "ReverseEngineer",
+        "exports_count": 10,
+        "imports_count": 4,
+        "crate_replacement": null,
+        "known_runtime": false,
+        "reason": "import table matched no known library — treated as unknown third-party"
+    });
+    std::fs::write(
+        dir.join(format!("{binary}.json")),
+        serde_json::to_string_pretty(&record).expect("serialize"),
+    )
+    .expect("classification record written");
+}
+
+/// A live router built **without** a classification-override handle attached
+/// answers the classification endpoints honestly with 503 rather than
+/// steering a classification it does not hold — the override endpoints'
+/// honesty rule, same shape.
+#[tokio::test]
+async fn test_classification_override_endpoints_503_without_control() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let (manager, _event_tx) = SessionManager::new();
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let client = reqwest::Client::new();
+    let url = format!(
+        "http://127.0.0.1:{}/api/binaries/fmod.dll/classification",
+        fixture.port()
+    );
+
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .expect("request reaches server");
+    assert_eq!(
+        resp.status(),
+        503,
+        "GET classification without a handle is 503"
+    );
+    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no classification override control"),
+        "503 explains why, got: {body}"
+    );
+
+    let resp = client
+        .post(&url)
+        .json(
+            &serde_json::json!({"override": {"category": "RuntimeLibrary", "known_runtime": true}}),
+        )
+        .send()
+        .await
+        .expect("request reaches server");
+    assert_eq!(
+        resp.status(),
+        503,
+        "POST classification without a handle is 503"
+    );
+}
+
+/// The classification endpoints drive the shared handle end to end: the GET
+/// reports the recorded classification with its reasoning, an override
+/// lands and reads back, a typo'd category is refused, `null` removes it,
+/// and a handle re-opened over the same workspace (a restarted run) honors
+/// the persisted records without re-entering anything (issue #97).
+#[tokio::test]
+async fn test_classification_override_endpoints_set_get_and_persist() {
+    let fixture = TestFixture::new();
+    write_canned_classification_record(&fixture, "fmod.dll", "UnknownThirdParty");
+    let overrides = calxgloss_types::ClassificationOverrideControl::open(fixture.repo_path());
+    let state =
+        ServerState::new(fixture.repo_path()).with_classification_override_control(overrides);
+    let (manager, _event_tx) = SessionManager::new();
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let client = reqwest::Client::new();
+    let url = format!(
+        "http://127.0.0.1:{}/api/binaries/fmod.dll/classification",
+        fixture.port()
+    );
+
+    // The recorded classification, with its reasoning, and no override yet.
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .expect("request reaches server");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    assert_eq!(body["binary"], "fmod.dll");
+    assert_eq!(body["classification"]["category"], "UnknownThirdParty");
+    assert_eq!(body["classification"]["strategy"], "ReverseEngineer");
+    assert!(
+        body["classification"]["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no known library"),
+        "the reasoning rides along, got: {body}"
+    );
+    assert!(
+        body["override"].is_null(),
+        "no override set yet, got: {body}"
+    );
+
+    // Apply the override — a runtime-library correction.
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({"override": {
+            "category": "RuntimeLibrary",
+            "known_runtime": true
+        }}))
+        .send()
+        .await
+        .expect("request reaches server");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    assert_eq!(body["override"]["category"], "RuntimeLibrary");
+    assert_eq!(body["override"]["known_runtime"], true);
+
+    // A typo'd category is refused — serde rejects the unknown variant
+    // rather than storing a decision that means nothing (axum answers the
+    // failed JSON extraction with 422).
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({"override": {"category": "RuntimeLibary"}}))
+        .send()
+        .await
+        .expect("request reaches server");
+    assert_eq!(resp.status(), 422, "unknown category is rejected");
+    let stored = calxgloss_types::ClassificationOverrideControl::open(fixture.repo_path());
+    assert_eq!(
+        stored.get("fmod.dll").map(|o| o.category),
+        Some(calxgloss_types::DllCategory::RuntimeLibrary),
+        "the rejected request must not disturb the stored record"
+    );
+
+    // GET reads the same record back.
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .expect("request reaches server");
+    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    assert_eq!(body["override"]["category"], "RuntimeLibrary");
+
+    // A restarted run: a fresh handle over the same workspace loads the
+    // persisted record — nothing re-entered.
+    let reopened = calxgloss_types::ClassificationOverrideControl::open(fixture.repo_path());
+    let record = reopened
+        .get("fmod.dll")
+        .expect("the override survives a restart");
+    assert_eq!(
+        record.category,
+        calxgloss_types::DllCategory::RuntimeLibrary
+    );
+    assert!(
+        record.is_runtime(),
+        "the runtime rule holds across restarts"
+    );
+
+    // `override: null` removes it, and the removal survives the restart.
+    let resp = client
+        .post(&url)
+        .json(&serde_json::json!({"override": null}))
+        .send()
+        .await
+        .expect("request reaches server");
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.expect("body is JSON");
+    assert!(
+        body["override"].is_null(),
+        "removal leaves no record, got: {body}"
+    );
+
+    let reopened = calxgloss_types::ClassificationOverrideControl::open(fixture.repo_path());
+    assert!(
+        reopened.get("fmod.dll").is_none(),
+        "the removal survives a restart"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────
 // Pipeline start & restart (issue #92, W2.3)
 // ─────────────────────────────────────────────────────────────
 
@@ -4573,6 +4780,8 @@ async fn test_live_only_endpoints_absent_from_non_live_routers() {
             // Issue #96: the override GET is live-only too — a GET on an
             // unrouted path falls through to the static 404.
             "/api/units/game_logic.dll%2FDrawPrimitive%2Fv1/override",
+            // Issue #97: the classification GET is live-only too.
+            "/api/binaries/fmod.dll/classification",
         ] {
             let resp = reqwest::get(format!("http://127.0.0.1:{}{}", fixture.port(), path))
                 .await
@@ -4606,6 +4815,8 @@ async fn test_live_only_endpoints_absent_from_non_live_routers() {
             "/api/scope/constraints",
             // Issue #96: the per-unit override endpoints are live-only too.
             "/api/units/game_logic.dll%2FDrawPrimitive%2Fv1/override",
+            // Issue #97: the classification override endpoints are live-only too.
+            "/api/binaries/fmod.dll/classification",
         ] {
             let resp = reqwest::Client::new()
                 .post(format!("http://127.0.0.1:{}{}", fixture.port(), path))
@@ -7373,6 +7584,228 @@ async fn test_headless_unit_overrides_tab() {
     assert_eq!(
         body["override"]["skip"], true,
         "the skip flag landed on the server, got: {body}"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for the binary classification override panel
+/// (issue #97, W2.8): clicking Classify on a pipeline row renders the
+/// recorded classification with its reasoning, and choosing a category and
+/// crate and clicking Apply drives the endpoint end to end — the panel
+/// adopts the override the server echoes back, and the record persists in
+/// the workspace for the next run.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_classification_override_panel() {
+    let fixture = TestFixture::new();
+    write_canned_classification_record(&fixture, "fmod.dll", "UnknownThirdParty");
+    let overrides = calxgloss_types::ClassificationOverrideControl::open(fixture.repo_path());
+    let state =
+        ServerState::new(fixture.repo_path()).with_classification_override_control(overrides);
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    // One classified binary so the row exists to click.
+    events.emit(ProgressEvent::ClassificationComplete {
+        binary: "fmod.dll".into(),
+        category: "UnknownThirdParty".into(),
+        strategy: "ReverseEngineer".into(),
+        crate_replacement: None,
+        exported_symbols: 10,
+        imported_symbols: 4,
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+    let eval_text = |expr: &str| -> String {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default()
+    };
+
+    // Wait for the row, then click its Classify button.
+    let mut listed = false;
+    for _ in 0..25 {
+        if eval_bool("!!document.querySelector('#pipeline-binaries [data-binary=\"fmod.dll\"]')") {
+            listed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(listed, "pipeline row for fmod.dll should exist");
+    tab.evaluate(
+        "document.querySelector('#pipeline-binaries [data-binary=\"fmod.dll\"] [data-action=\"classify\"]').click() === undefined",
+        false,
+    )
+    .expect("click classify button");
+
+    // The panel renders the recorded classification with its reasoning.
+    let mut rendered = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "document.getElementById('classification-override-panel')?.textContent?.includes('no known library') === true",
+        ) {
+            rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let panel_text =
+        eval_text("document.getElementById('classification-override-panel')?.textContent || ''");
+    assert!(
+        rendered,
+        "panel should render the recorded classification with reasoning, got: {panel_text}"
+    );
+    assert!(
+        panel_text.contains("UnknownThirdParty"),
+        "the current category should show, got: {panel_text}"
+    );
+    assert!(
+        panel_text.contains("No override in force"),
+        "the absence of an override should be stated, got: {panel_text}"
+    );
+
+    // Steer it: a known third-party crate replacement, then Apply.
+    tab.evaluate(
+        "document.getElementById('clf-category').value = 'KnownThirdParty'",
+        false,
+    )
+    .expect("select category");
+    tab.evaluate(
+        "document.getElementById('clf-crate').value = 'fmod-rs'",
+        false,
+    )
+    .expect("fill crate");
+    tab.evaluate(
+        "document.getElementById('clf-apply').click() === undefined",
+        false,
+    )
+    .expect("click apply");
+
+    // The panel adopts the override the server echoes back.
+    let mut applied = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "document.getElementById('classification-override-panel')?.textContent?.includes('Override in force: KnownThirdParty') === true",
+        ) {
+            applied = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        applied,
+        "the panel should show the override after Apply, got: {}",
+        eval_text("document.getElementById('classification-override-panel')?.textContent || ''")
+    );
+
+    // The record landed in the workspace — a restarted run honors it.
+    let reopened = calxgloss_types::ClassificationOverrideControl::open(fixture.repo_path());
+    let record = reopened
+        .get("fmod.dll")
+        .expect("the override persists in the workspace");
+    assert_eq!(
+        record.category,
+        calxgloss_types::DllCategory::KnownThirdParty
+    );
+    assert_eq!(
+        record.crate_replacement.as_deref(),
+        Some("fmod-rs"),
+        "the crate replacement rides along"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser counterpart of the 503 contract: on a live router with
+/// no classification-override control attached, the panel renders the
+/// server's honest refusal instead of controls (issue #97).
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_classification_override_honest_without_control() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let events = TranslationEvents::new(128);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    events.emit(ProgressEvent::ClassificationComplete {
+        binary: "fmod.dll".into(),
+        category: "UnknownThirdParty".into(),
+        strategy: "ReverseEngineer".into(),
+        crate_replacement: None,
+        exported_symbols: 10,
+        imported_symbols: 4,
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    let eval_bool = |expr: &str| -> bool {
+        tab.evaluate(expr, false)
+            .ok()
+            .and_then(|r| r.value)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    };
+
+    let mut listed = false;
+    for _ in 0..25 {
+        if eval_bool("!!document.querySelector('#pipeline-binaries [data-binary=\"fmod.dll\"]')") {
+            listed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(listed, "pipeline row for fmod.dll should exist");
+    tab.evaluate(
+        "document.querySelector('#pipeline-binaries [data-binary=\"fmod.dll\"] [data-action=\"classify\"]').click() === undefined",
+        false,
+    )
+    .expect("click classify button");
+
+    // The server's own reason renders — no controls, no fabricated state.
+    let mut honest = false;
+    for _ in 0..25 {
+        if eval_bool(
+            "document.getElementById('classification-override-panel')?.textContent?.includes('no classification override control') === true",
+        ) {
+            honest = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        honest,
+        "the panel should render the server's honest 503 reason"
+    );
+    assert!(
+        !eval_bool("!!document.getElementById('clf-apply')"),
+        "no form controls when the endpoints are unavailable"
     );
 
     tab.close_target().ok();

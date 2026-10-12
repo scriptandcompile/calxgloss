@@ -26,9 +26,9 @@ use axum::{
 };
 use calxgloss_reports::dashboard::DashboardBuilder;
 use calxgloss_types::{
-    BinaryActivity, BinaryIdentity, OverrideControl, PhaseRecord, PipelineControl, ProgressEvent,
-    ReviewDashboard, RunRequestSignal, ScopeControl, StopSignal, TranslationPhase,
-    UnitCancellation, UnitKey,
+    BinaryActivity, BinaryIdentity, ClassificationOverrideControl, OverrideControl, PhaseRecord,
+    PipelineControl, ProgressEvent, ReviewDashboard, RunRequestSignal, ScopeControl, StopSignal,
+    TranslationPhase, UnitCancellation, UnitKey,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -81,6 +81,12 @@ pub struct ServerState {
     /// override endpoints read and mutate per-unit reviewer overrides
     /// through it.
     override_control: Option<OverrideControl>,
+    /// The live run's [`ClassificationOverrideControl`] handle (issue #97,
+    /// W2.8) — `None` on plain `serve` routers, which have no run whose
+    /// classifications to correct. The binary classification endpoints read
+    /// and mutate the operator's classification overrides through it, and
+    /// the analyzer consults the same handle before strategy dispatch.
+    classification_override_control: Option<ClassificationOverrideControl>,
     /// Graceful-shutdown trigger watched by `serve`/`serve_with_listener`.
     shutdown_tx: Arc<tokio::sync::watch::Sender<bool>>,
 }
@@ -103,6 +109,7 @@ impl ServerState {
             run_requests: None,
             scope_control: None,
             override_control: None,
+            classification_override_control: None,
             shutdown_tx: Arc::new(tokio::sync::watch::channel(false).0),
         }
     }
@@ -259,6 +266,22 @@ impl ServerState {
     /// when this router has no override control (plain `serve`).
     pub fn override_control(&self) -> Option<OverrideControl> {
         self.override_control.clone()
+    }
+
+    /// Attach the [`ClassificationOverrideControl`] handle the live
+    /// analyzer shares with this server, so the binary classification
+    /// endpoints (issue #97) can read and correct target classifications.
+    pub fn with_classification_override_control(
+        mut self,
+        overrides: ClassificationOverrideControl,
+    ) -> Self {
+        self.classification_override_control = Some(overrides);
+        self
+    }
+
+    /// The classification-override handle attached to this server, if any.
+    pub fn classification_override_control(&self) -> Option<ClassificationOverrideControl> {
+        self.classification_override_control.clone()
     }
 
     /// Request graceful shutdown: stop accepting new requests and let
@@ -930,6 +953,15 @@ fn live_only_routes() -> Router<CombinedState> {
             get(handlers::api_get_unit_override)
                 .post(handlers::api_apply_unit_override)
                 .delete(handlers::api_remove_unit_override),
+        )
+        // Binary classification overrides (issue #97, W2.8): correct a
+        // target binary's category (and target crate) from the dashboard;
+        // the analyzer honors it before strategy dispatch. Live-only — a
+        // plain `serve` router has no run whose classifications to steer.
+        .route(
+            "/api/binaries/{name}/classification",
+            get(handlers::api_get_binary_classification)
+                .post(handlers::api_set_binary_classification),
         )
 }
 

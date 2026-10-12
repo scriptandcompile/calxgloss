@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use calxgloss::ClassificationOverrideControl;
 use calxgloss::ProgressEvent;
 use calxgloss::TranslationEvents;
 use calxgloss_analysis::Analyzer;
@@ -15,6 +16,12 @@ use crate::Settings;
 use crate::utils::*;
 
 /// Handle the `classify` subcommand: analyzes DLLs and writes classification records.
+///
+/// The classification-override handle (issue #97, W2.8) is consulted before
+/// strategy dispatch: an operator's correction from the dashboard routes
+/// the binary without a CLI re-run. When no shared handle is passed (a
+/// plain CLI classify), one is opened over the workspace so persisted
+/// overrides are honored there too.
 pub async fn handle_classify(
     dlls: &[String],
     target_dir: &Path,
@@ -22,6 +29,7 @@ pub async fn handle_classify(
     skip_git: bool,
     settings: &Settings,
     events: Option<&TranslationEvents>,
+    classification_overrides: Option<&ClassificationOverrideControl>,
 ) -> Result<()> {
     info!(count = dlls.len(), "Classifying DLLs");
 
@@ -39,7 +47,10 @@ pub async fn handle_classify(
 
     // Initialize analyzer
     let api_mappings = ApiMappings::default();
-    let analyzer = Analyzer::new(ghidra, api_mappings);
+    let overrides = classification_overrides
+        .cloned()
+        .unwrap_or_else(|| ClassificationOverrideControl::open(workspace));
+    let analyzer = Analyzer::new(ghidra, api_mappings).with_classification_overrides(overrides);
 
     // Symbol counts come from PE headers on disk — accurate per-DLL.
     let classifications = analyzer.classify_dlls(dlls, target_dir).await?;
