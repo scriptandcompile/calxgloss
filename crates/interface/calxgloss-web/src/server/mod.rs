@@ -1003,6 +1003,16 @@ fn shared_routes() -> Router<CombinedState> {
             "/api/binaries/{name}/shim-status",
             get(handlers::api_get_binary_shim_status),
         )
+        // The PAL tracker read (issue #134, W4.4) is derived on demand
+        // from persisted artifacts too — the per-function Ghidra
+        // artifacts' API-call categories for the needed traits, the
+        // workspace's generated PAL/shim sources for existence — so
+        // every router answers it; missing or corrupt artifacts on
+        // either side honestly answer an empty trait list.
+        .route(
+            "/api/binaries/{name}/pal-status",
+            get(handlers::api_get_binary_pal_status),
+        )
         .route("/api/graph", get(handlers::api_get_dependency_graph))
         .route("/api/gc/candidates", get(handlers::api_get_gc_candidates))
         .route("/api/gc/archive", post(handlers::api_archive_gc))

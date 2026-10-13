@@ -1271,6 +1271,45 @@ pub struct ShimBranchInfo {
     pub sent_back: bool,
 }
 
+// ─── Binary PAL tracker (issue #134, W4.4) ─────────────────────────────
+
+/// `GET /api/binaries/{name}/pal-status` response: the PAL-trait tracker
+/// the Binaries detail panel renders for one binary. The *needed* traits
+/// are derived on demand from the persisted per-function Ghidra
+/// artifacts — the `windows_apis` categories recorded under
+/// `re/analysis/{binary}/` — mapped category→trait with the same shape
+/// the translator's Tier-4 PAL extraction uses. *Existence* is detected
+/// from the workspace's generated PAL/shim source artifacts (the shared
+/// PAL crate under `scratch/pal/src/` and the generated shim sources
+/// under `re/shims/`), so plain `serve` and `live` answer identically
+/// and no new persisted "defined traits" record is introduced. Where
+/// neither source exists the trait list honestly answers empty — never a
+/// fabricated trait list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PalStatusResponse {
+    /// The binary identity — the filename verbatim, as the classification
+    /// record names it (the request may have spelled it differently).
+    pub binary: BinaryIdentity,
+    /// The traits this binary needs, sorted by trait name; empty when no
+    /// readable API-call artifact records a category that maps to a
+    /// trait.
+    pub traits: Vec<PalTraitStatus>,
+}
+
+/// One needed PAL trait with the categories that demanded it and whether
+/// the workspace's generated PAL/shim sources already define it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PalTraitStatus {
+    /// The trait name (e.g. "GraphicsDevice").
+    pub name: String,
+    /// The API-call categories recorded on this binary's function
+    /// artifacts that map to this trait — verbatim, sorted, deduplicated.
+    pub categories: Vec<String>,
+    /// Whether a trait by this name is defined in the workspace's
+    /// generated PAL/shim source artifacts.
+    pub exists: bool,
+}
+
 // ─── Unit attempts view (issue #131, W4.5) ─────────────────────────────
 
 /// `GET /api/units/{id}/attempts` response: the attempt list the unit

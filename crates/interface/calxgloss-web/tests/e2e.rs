@@ -7446,6 +7446,319 @@ async fn test_binaries_shim_status_honest_missing_and_corrupt_artifacts() {
     );
 }
 
+// ── Binaries PAL tracker API (issue #134, W4.4) ────────────────────────
+
+/// Seed the artifacts the PAL-tracker tests pin, on top of
+/// `write_binaries_list_fixtures`: per-function Ghidra artifacts under
+/// `re/analysis/d3d9.dll/` whose `windows_apis` carry categories
+/// (DirectX, DirectX11, Win32Core — one corrupt artifact contributing
+/// nothing), the generated shared PAL crate under `scratch/pal/src/`
+/// defining `GraphicsDevice` but not `PlatformCore`, and the binary's
+/// generated shim source under `re/shims/d3d9.dll/shim.rs` defining no
+/// trait at all.
+fn write_pal_tracker_fixtures(fixture: &TestFixture) {
+    let analysis = fixture
+        .repo_path()
+        .join("re")
+        .join("analysis")
+        .join("d3d9.dll");
+    std::fs::create_dir_all(&analysis).expect("d3d9 analysis dir");
+    std::fs::write(
+        analysis.join("CreateDevice.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "function_name": "CreateDevice",
+            "windows_apis": [
+                { "name": "Direct3DCreate9", "category": "DirectX", "pal_mapping": "wgpu::Instance" },
+                { "name": "CreateFileA", "category": "Win32Core", "pal_mapping": "std::fs::File::open" }
+            ]
+        }))
+        .unwrap(),
+    )
+    .expect("CreateDevice artifact written");
+    std::fs::write(
+        analysis.join("Present.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "function_name": "Present",
+            "windows_apis": [
+                { "name": "IDXGISwapChain::Present", "category": "DirectX11", "pal_mapping": "wgpu::Surface::present" }
+            ]
+        }))
+        .unwrap(),
+    )
+    .expect("Present artifact written");
+    // A corrupt function artifact is no artifact — it names no category.
+    std::fs::write(analysis.join("broken.json"), "{ not json").expect("corrupt artifact written");
+
+    // The generated shared PAL crate the verifier writes under
+    // `scratch/pal/`: defines GraphicsDevice (and AudioDevice) but not
+    // PlatformCore.
+    let pal_src = fixture.repo_path().join("scratch").join("pal").join("src");
+    std::fs::create_dir_all(&pal_src).expect("scratch pal src dir");
+    std::fs::write(
+        pal_src.join("stub_content.rs"),
+        "pub trait GraphicsDevice {\n    fn create_device(width: u32, height: u32) -> Self;\n}\n\npub trait AudioDevice {\n    fn play(&mut self, samples: &[f32]);\n}\n",
+    )
+    .expect("pal stub content written");
+
+    // The binary's generated shim source: functions, no trait definitions.
+    let shim_dir = fixture.repo_path().join("re").join("shims").join("d3d9.dll");
+    std::fs::create_dir_all(&shim_dir).expect("d3d9 shim dir");
+    std::fs::write(
+        shim_dir.join("shim.rs"),
+        "// generated shim layer\nunsafe fn present() {}\n",
+    )
+    .expect("shim source written");
+}
+
+/// Issue #134 router contract: `/api/binaries/{name}/pal-status` is
+/// registered in the shared routes — it derives on demand from persisted
+/// artifacts, never live pipeline state — so both the plain and the live
+/// router answer it with the tracker payload.
+#[tokio::test]
+async fn test_binaries_pal_status_registered_in_plain_and_live_routers() {
+    for kind in ["plain", "live"] {
+        let fixture = TestFixture::new();
+        write_binaries_list_fixtures(&fixture);
+        write_pal_tracker_fixtures(&fixture);
+        let state = ServerState::new(fixture.repo_path());
+        let router = if kind == "plain" {
+            build_router(state)
+        } else {
+            let events = TranslationEvents::new(128);
+            let manager = SessionManager::new_with_broadcast(events.subscribe());
+            build_router_with_ws(state, manager, ProgressState::new())
+        };
+        let _server = spawn_server(router, fixture.port()).await;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let base = format!("http://127.0.0.1:{}", fixture.port());
+        let (status, body) = get_json(&format!("{base}/api/binaries/d3d9.dll/pal-status")).await;
+        assert_eq!(status, 200, "{kind} router serves /api/binaries/{{name}}/pal-status");
+        assert_eq!(
+            body["traits"].as_array().map(|t| t.len()),
+            Some(2),
+            "{kind} router: the derived traits answer"
+        );
+    }
+}
+
+/// Issue #134 exact-JSON contract: needed traits come only from the
+/// persisted per-function Ghidra artifacts' API-call categories, mapped
+/// category→trait with the translator's Tier-4 shape — DirectX and
+/// DirectX11 group into one GraphicsDevice, Win32Core into PlatformCore
+/// — sorted by trait name with verbatim sorted categories. Existence is
+/// detected from the workspace's generated PAL/shim source artifacts:
+/// GraphicsDevice exists (the scratch PAL crate defines it),
+/// PlatformCore is missing. A binary with no API-call artifacts honestly
+/// answers an empty trait list; the lookup is case-insensitive; unknown
+/// and corrupt-record names honestly 404.
+#[tokio::test]
+async fn test_binaries_pal_status_api_exact_json_from_fixture() {
+    let fixture = TestFixture::new();
+    write_binaries_list_fixtures(&fixture);
+    write_pal_tracker_fixtures(&fixture);
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+
+    // The binary with API-call artifacts and a generated PAL source:
+    // every fact derives from persisted artifacts only.
+    let (status, body) = get_json(&format!("{base}/api/binaries/d3d9.dll/pal-status")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "binary": "d3d9.dll",
+            "traits": [
+                {
+                    "name": "GraphicsDevice",
+                    "categories": ["DirectX", "DirectX11"],
+                    "exists": true,
+                },
+                {
+                    "name": "PlatformCore",
+                    "categories": ["Win32Core"],
+                    "exists": false,
+                },
+            ],
+        }),
+        "needed traits derive from the persisted API-call categories, \
+         existence from the generated PAL source"
+    );
+
+    // The binary with no per-function artifacts at all: the honest empty
+    // payload — no fabricated trait list.
+    let (status, body) = get_json(&format!("{base}/api/binaries/game_logic.dll/pal-status")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "binary": "game_logic.dll",
+            "traits": [],
+        }),
+        "no API-call artifacts means no derived traits — never a \
+         fabricated list"
+    );
+
+    // A differently-spelled name finds the same binary — the
+    // case-insensitive join every other server comparison makes — and
+    // the response carries the record's verbatim identity.
+    let (status, body) = get_json(&format!("{base}/api/binaries/D3D9.DLL/pal-status")).await;
+    assert_eq!(status, 200, "the lookup is case-insensitive");
+    assert_eq!(
+        body["binary"].as_str().expect("binary"),
+        "d3d9.dll",
+        "the verbatim record name answers, not the requested spelling"
+    );
+
+    // Unknown names honestly 404 — no empty shell.
+    for name in ["nope.dll", "broken.dll"] {
+        let (status, body) = get_json(&format!("{base}/api/binaries/{name}/pal-status")).await;
+        assert_eq!(status, 404, "{name} has no readable classification record");
+        assert_eq!(
+            body["error"].as_bool(),
+            Some(true),
+            "{name}: the 404 carries the honest error payload"
+        );
+    }
+}
+
+/// Issue #134 honest-degradation contract: a corrupt function artifact
+/// names no category while the readable ones still derive traits; with
+/// no generated PAL/shim source anywhere every needed trait is honestly
+/// missing; with no readable API-call artifacts at all the payload is
+/// the honest empty list.
+#[tokio::test]
+async fn test_binaries_pal_status_honest_missing_and_corrupt_artifacts() {
+    let fixture = TestFixture::new();
+    write_binaries_list_fixtures(&fixture);
+    write_pal_tracker_fixtures(&fixture);
+
+    // No generated PAL/shim source anywhere: delete the scratch PAL
+    // crate and the shim source.
+    std::fs::remove_dir_all(fixture.repo_path().join("scratch"))
+        .expect("scratch pal crate removed");
+    std::fs::remove_file(
+        fixture
+            .repo_path()
+            .join("re")
+            .join("shims")
+            .join("d3d9.dll")
+            .join("shim.rs"),
+    )
+    .expect("shim source removed");
+
+    // A second binary whose only readable artifact carries an Audio
+    // category — its other artifact is corrupt and names nothing.
+    let classify = fixture.repo_path().join("re").join("classify");
+    std::fs::write(
+        classify.join("ogg.dll.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "binary": "ogg.dll",
+            "category": "KnownThirdParty",
+            "strategy": "CrateReplacement",
+            "exports_count": 10,
+            "imports_count": 1,
+            "crate_replacement": "ogg-rs",
+            "known_runtime": false,
+            "reason": "audio codec — replaced with ogg-rs"
+        }))
+        .unwrap(),
+    )
+    .expect("ogg classification written");
+    let ogg_dir = fixture.repo_path().join("re").join("analysis").join("ogg.dll");
+    std::fs::create_dir_all(&ogg_dir).expect("ogg analysis dir");
+    std::fs::write(
+        ogg_dir.join("PlaySample.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "function_name": "PlaySample",
+            "windows_apis": [
+                { "name": "waveOutWrite", "category": "Audio", "pal_mapping": "cpal" }
+            ]
+        }))
+        .unwrap(),
+    )
+    .expect("PlaySample artifact written");
+    std::fs::write(ogg_dir.join("broken.json"), "not json at all").expect("corrupt artifact written");
+
+    // A third binary whose every artifact is corrupt: no artifact at all.
+    let dsound_dir = fixture.repo_path().join("re").join("analysis").join("dsound.dll");
+    std::fs::create_dir_all(&dsound_dir).expect("dsound analysis dir");
+    std::fs::write(dsound_dir.join("DirectSoundCreate.json"), "{{{")
+        .expect("corrupt artifact written");
+    std::fs::write(
+        classify.join("dsound.dll.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "binary": "dsound.dll",
+            "category": "WindowsOs",
+            "strategy": "PalMapping",
+            "exports_count": 8,
+            "imports_count": 2,
+            "known_runtime": false,
+            "reason": "Windows OS dll — PAL mapping"
+        }))
+        .unwrap(),
+    )
+    .expect("dsound classification written");
+
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+
+    // Needed traits still derive (the corrupt d3d9 artifact named
+    // nothing); with no generated PAL/shim source every trait is
+    // honestly missing.
+    let (status, body) = get_json(&format!("{base}/api/binaries/d3d9.dll/pal-status")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "binary": "d3d9.dll",
+            "traits": [
+                { "name": "GraphicsDevice", "categories": ["DirectX", "DirectX11"], "exists": false },
+                { "name": "PlatformCore", "categories": ["Win32Core"], "exists": false },
+            ],
+        }),
+        "no generated PAL/shim source means every needed trait is \
+         honestly missing"
+    );
+
+    // The corrupt artifact is skipped; the readable one still derives.
+    let (status, body) = get_json(&format!("{base}/api/binaries/ogg.dll/pal-status")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "binary": "ogg.dll",
+            "traits": [
+                { "name": "AudioDevice", "categories": ["Audio"], "exists": false },
+            ],
+        }),
+        "a corrupt artifact names no category; the readable one still answers"
+    );
+
+    // Every artifact corrupt: the honest empty payload.
+    let (status, body) = get_json(&format!("{base}/api/binaries/dsound.dll/pal-status")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "binary": "dsound.dll",
+            "traits": [],
+        }),
+        "corrupt artifacts are no artifacts — the trait list stays empty"
+    );
+}
+
 // ── Unit attempts API (issue #131, W4.5) ───────────────────────────────
 
 /// Issue #131 router contract: `/api/units/{id}/attempts` is registered in
@@ -9074,6 +9387,171 @@ async fn test_headless_binaries_detail_shim_tracker_honest_states() {
     assert!(
         !tracker_text.contains("Mappings:") && !tracker_text.contains("Branch re/"),
         "the empty state invents no mappings and no branch — got: {tracker_text}"
+    );
+}
+
+/// Wait for the panel's PAL tracker to finish its own read and render.
+async fn wait_for_pal_tracker(tab: &headless_chrome::Tab, needle: &str) -> bool {
+    let expr = format!(
+        "document.querySelector('#binaries-table-body .binaries-detail-pal .binaries-pal-tracker')?.textContent.includes({needle:?}) === true"
+    );
+    for _ in 0..25 {
+        if eval_bool(tab, &expr) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    false
+}
+
+/// Issue #134: the fixture binary's detail panel shows its needed PAL
+/// traits with at least one existing marker (GraphicsDevice — the
+/// generated scratch PAL crate defines it) and one missing marker
+/// (PlatformCore — nothing defines it).
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_binaries_detail_pal_tracker() {
+    let fixture = TestFixture::new();
+    write_binaries_list_fixtures(&fixture);
+    write_pal_tracker_fixtures(&fixture);
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"binaries\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click binaries tab");
+    let mut rows_rendered = false;
+    for _ in 0..25 {
+        if eval_count(
+            &tab,
+            "document.querySelectorAll('#binaries-table-body tr.binaries-row').length",
+        ) == 2
+        {
+            rows_rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(rows_rendered, "both classified binaries render as rows");
+
+    // Click the binary with API-call artifacts — d3d9.dll.
+    tab.evaluate(
+        "document.querySelector('#binaries-table-body tr.binaries-row[data-binary=\"d3d9.dll\"]').click() === undefined",
+        false,
+    )
+    .expect("click d3d9.dll row");
+
+    assert!(
+        wait_for_pal_tracker(&tab, "GraphicsDevice").await,
+        "the PAL tracker should render the traits derived from the \
+         persisted API-call categories"
+    );
+    let tracker_text = eval_text(
+        &tab,
+        "document.querySelector('#binaries-table-body .binaries-detail-pal .binaries-pal-tracker').textContent",
+    );
+    for expected in [
+        "PAL traits",
+        "GraphicsDevice", // derived from the DirectX and DirectX11 categories
+        "exists",         // the scratch PAL crate defines it
+        "PlatformCore",   // derived from the Win32Core category
+        "missing",        // nothing in the workspace defines it
+        "DirectX",        // the categories that demanded the trait
+        "Win32Core",
+    ] {
+        assert!(
+            tracker_text.contains(expected),
+            "the PAL tracker should show {expected:?} — got: {tracker_text}"
+        );
+    }
+
+    // The markers are the two traits' own states, not one global flag:
+    // exactly one exists chip and one missing chip render.
+    assert_eq!(
+        eval_count(
+            &tab,
+            "document.querySelectorAll('#binaries-table-body .binaries-pal-trait[data-state=\"exists\"]').length",
+        ),
+        1,
+        "one needed trait exists in the generated PAL source"
+    );
+    assert_eq!(
+        eval_count(
+            &tab,
+            "document.querySelectorAll('#binaries-table-body .binaries-pal-trait[data-state=\"missing\"]').length",
+        ),
+        1,
+        "one needed trait is visibly missing"
+    );
+}
+
+/// Issue #134: a binary with no persisted API-call artifacts shows the
+/// honest empty state — no fabricated trait list.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_binaries_detail_pal_tracker_honest_empty_state() {
+    let fixture = TestFixture::new();
+    write_binaries_list_fixtures(&fixture);
+    write_pal_tracker_fixtures(&fixture);
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"binaries\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click binaries tab");
+    let mut rows_rendered = false;
+    for _ in 0..25 {
+        if eval_count(
+            &tab,
+            "document.querySelectorAll('#binaries-table-body tr.binaries-row').length",
+        ) == 2
+        {
+            rows_rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(rows_rendered, "both classified binaries render as rows");
+
+    // The reverse-engineered binary has no per-function Ghidra artifacts.
+    tab.evaluate(
+        "document.querySelector('#binaries-table-body tr.binaries-row[data-binary=\"game_logic.dll\"]').click() === undefined",
+        false,
+    )
+    .expect("click game_logic.dll row");
+
+    assert!(
+        wait_for_pal_tracker(&tab, "No PAL traits derived").await,
+        "a binary without API-call artifacts honestly says no traits \
+         were derived"
+    );
+    assert_eq!(
+        eval_count(
+            &tab,
+            "document.querySelectorAll('#binaries-table-body .binaries-pal-trait').length",
+        ),
+        0,
+        "the empty state fabricates no trait rows"
     );
 }
 

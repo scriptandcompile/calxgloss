@@ -26,6 +26,13 @@
    never blanks the rest of the panel. A crate-replacement binary with
    no shim artifacts honestly says "shim not generated"; a
    reverse-engineered binary honestly says no shim is expected.
+
+   And a PAL-trait tracker (issue #134, W4.4): which PAL traits this
+   binary's recorded API-call categories derive, and which of them the
+   workspace's generated PAL source artifacts actually define — the
+   Tier-4 retry gap made visible. It fills in as its own read like the
+   shim tracker, and a binary whose categories derive no PAL traits
+   honestly says so instead of showing an empty grid.
    ========================================================================== */
 
 import { API } from "./api.js";
@@ -130,6 +137,7 @@ function wireRowExpansion(tbody) {
             // keeps a slow or failing shim-status from blanking the
             // classification and function list that already rendered.
             loadShimTracker(detail.querySelector(".binaries-detail-shim"));
+            loadPalTracker(detail.querySelector(".binaries-detail-pal"));
         } catch (err) {
             // The server's own reason surfaces — a 404 for an unknown
             // name is never papered over with an empty shell.
@@ -171,6 +179,9 @@ function renderDetail(d) {
                 <tbody>${fnBody}</tbody>
             </table>
             <div class="binaries-detail-shim" data-binary="${escapeHtml(d.binary)}">
+                <div class="spinner"></div>
+            </div>
+            <div class="binaries-detail-pal" data-binary="${escapeHtml(d.binary)}">
                 <div class="spinner"></div>
             </div>
         </div>
@@ -218,5 +229,34 @@ function renderShimTracker(s) {
         <div class="binaries-shim-tracker">
             <div class="binaries-shim-heading">Shim layer${s.crate_replacement ? ` → ${escapeHtml(s.crate_replacement)}` : ""}</div>
             ${body}
+        </div>`;
+}
+
+// Fill the panel's PAL tracker once its own read lands.
+async function loadPalTracker(el) {
+    if (!el) return;
+    try {
+        const s = await API.binaryPalStatus(el.dataset.binary);
+        el.innerHTML = renderPalTracker(s);
+    } catch (err) {
+        el.innerHTML = `<div class="binaries-detail-error">Failed to load PAL status: ${escapeHtml(err.message)}</div>`;
+    }
+}
+
+// The tracker: one marker per derived PAL trait, marked exists or missing
+// from the workspace's generated PAL source artifacts. Missing traits are
+// exactly what a Tier-4 retry would synthesise, so the gap is visible
+// before any run. No derived traits means an honest one-liner, not an
+// empty grid.
+function renderPalTracker(s) {
+    const traits = (s.traits || []).map(t => `
+        <span class="binaries-pal-trait" data-state="${t.exists ? "exists" : "missing"}"
+              title="API-call categories that derive this trait">${escapeHtml(t.name)} <span class="binaries-pal-categories">${escapeHtml((t.categories || []).join(", "))}</span> <span class="binaries-pal-state">${t.exists ? "exists" : "missing"}</span></span>
+    `).join("");
+    const body = traits || `<div class="binaries-pal-none">No PAL traits derived — the recorded API calls for this binary map to no PAL trait.</div>`;
+    return `
+        <div class="binaries-pal-tracker">
+            <div class="binaries-pal-heading">PAL traits</div>
+            <div class="binaries-pal-traits">${body}</div>
         </div>`;
 }

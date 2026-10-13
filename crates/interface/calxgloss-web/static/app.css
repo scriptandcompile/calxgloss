@@ -3575,6 +3575,28 @@ tr.binaries-detail-row td {
 .binaries-shim-branch[data-state="merged"] { color: var(--accent-green); }
 .binaries-shim-branch[data-state="sent-back"] { color: var(--accent-red); }
 
+/* PAL tracker inside the binaries detail panel (issue #134, W4.4). */
+.binaries-detail-pal { margin-top: 12px; }
+.binaries-pal-tracker {
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 12px;
+}
+.binaries-pal-heading {
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+.binaries-pal-none { color: var(--text-muted); font-style: italic; }
+.binaries-pal-traits {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+}
+.binaries-pal-categories { color: var(--text-muted); }
+.binaries-pal-trait[data-state="exists"] .binaries-pal-state { color: var(--accent-green); }
+.binaries-pal-trait[data-state="missing"] .binaries-pal-state { color: var(--accent-red); }
+
 .token-col-strategy {
     font-family: var(--font-mono, monospace);
     font-size: 12px;
