@@ -30,7 +30,7 @@ targets, not exact requirements.
 | W0 | Web UI Foundation & Phase Progress | `calxgloss-web` | 2–3 wk | ✅ done | closed — see epic [#55](https://github.com/scriptandcompile/calxgloss/issues/55) | [#55](https://github.com/scriptandcompile/calxgloss/issues/55) |
 | W1 | Web UI Status & Visibility | `calxgloss-web` | 1–2 wk | ✅ done | closed — see epic [#72](https://github.com/scriptandcompile/calxgloss/issues/72) | [#72](https://github.com/scriptandcompile/calxgloss/issues/72) |
 | W2 | Web UI Process Control | `calxgloss-web` + types/translator | 3–4 wk | ✅ done | closed — see epic [#88](https://github.com/scriptandcompile/calxgloss/issues/88) | [#88](https://github.com/scriptandcompile/calxgloss/issues/88) |
-| W3 | Web UI Historical & Analytical Views | `calxgloss-web` | 2–3 wk | 🔶 in progress | tickets published — `/implement`, frontier [#126](https://github.com/scriptandcompile/calxgloss/issues/126) | [#89](https://github.com/scriptandcompile/calxgloss/issues/89) |
+| W3 | Web UI Historical & Analytical Views | `calxgloss-web` | 2–3 wk | ✅ done | closed — see epic [#89](https://github.com/scriptandcompile/calxgloss/issues/89) | [#89](https://github.com/scriptandcompile/calxgloss/issues/89) |
 | W4 | Web UI New Views | `calxgloss-web` | 2–3 wk | ⬜ not started | after W0 P1, W1 P0–1 | — |
 | G1 | Ghidra Lifecycle Integration | `calxgloss-ghidra` + `calxgloss-cli` | 3–4 wk | ✅ done | closed — T1–T9 complete (identity probe, `doctor`, wrong-program guard, headless spawn + session ownership, UDS port discovery + reconciliation, project bootstrap + program loading, lifecycle config + autostart controls, `doctor --fix` plugin-first bootstrap, offline install + version pinning) | [#110](https://github.com/scriptandcompile/calxgloss/issues/110) |
 | P1.5 | typesdb Phase 5: cross-reference clustering, heuristic struct naming, nested structs/unions, STL type detection, Rust codegen for recovered structs | `calxgloss-typesdb` | — | ⬜ not started | `/to-spec` when picked up | — |
@@ -104,8 +104,12 @@ one per view, chained linearly with native blocking links —
 [#126](https://github.com/scriptandcompile/calxgloss/issues/126) token usage
 view ✅ → [#127](https://github.com/scriptandcompile/calxgloss/issues/127)
 strategy analytics ✅ → [#128](https://github.com/scriptandcompile/calxgloss/issues/128)
-LLM performance metrics ✅. All `ready-for-agent`; endpoints register on the
-shared router (serve + live).
+LLM performance metrics ✅. **Complete (2026-10-12):** all four views shipped,
+endpoints registered on the shared router (serve + live), each with exact-JSON
+API tests and headless-browser view tests; honest degradation throughout —
+empty states for missing/corrupt logs, em dashes for unmeasured values. Per-
+model metrics, pass-rate by complexity, and the token budget indicator stayed
+out of scope per the spec (no honest data source). See `CHANGELOG.md`.
 
 ## W4 — Web UI New Views (`calxgloss-web`)
 
