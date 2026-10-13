@@ -334,7 +334,7 @@ async fn the_engine_links_candidates_to_confirmed_vtables() {
     for candidate in linked {
         assert_eq!(candidate.name_origin, NameOrigin::VtableClass);
         let vtable = db
-            .find_vtable(candidate.linked_vtable.unwrap())
+            .find_vtable(candidate.linked_vtable.expect("the candidate is linked"))
             .expect("a link names a recovered vtable");
         assert!(vtable.is_confirmed(), "an unconfirmed table was linked");
         assert_eq!(

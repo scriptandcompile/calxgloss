@@ -503,14 +503,17 @@ async fn a_candidate_read_by_vtable_methods_links_names_and_persists() {
 
     let dir = TempDir::new().unwrap();
     let persistor = TypeDatabasePersistor::new(dir.path());
-    persistor.save(&db).unwrap();
-    let text = std::fs::read_to_string(persistor.path_for("eqmain.dll")).unwrap();
+    persistor.save(&db).expect("scan should be savable");
+    let text = std::fs::read_to_string(persistor.path_for("eqmain.dll"))
+        .expect("the saved document should be readable");
     assert!(
         text.contains("\"linked_vtable\""),
         "the link should be in the document: {text}"
     );
 
-    let loaded = persistor.load("eqmain.dll").unwrap();
+    let loaded = persistor
+        .load("eqmain.dll")
+        .expect("the linked document should load back");
     assert_eq!(loaded, db);
     let loaded = &loaded.inferred_structs[0];
     assert_eq!(loaded.name, "Widget");

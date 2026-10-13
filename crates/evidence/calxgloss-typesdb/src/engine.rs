@@ -204,7 +204,11 @@ fn link_candidates_to_vtables(candidates: &mut [InferredStruct], vtables: &[Vtab
                 candidate.linked_vtable = Some(vtable.address);
                 candidate.name = class_name.clone();
                 candidate.name_origin = NameOrigin::VtableClass;
-                candidate.confidence = Confidence::new(candidate.confidence.value() + bump);
+                // Only the naming term of the score changes, so swapping the
+                // two origins' payouts re-scores exactly; saturating keeps
+                // the sum inside the scale before `new` clamps.
+                candidate.confidence =
+                    Confidence::new(candidate.confidence.value().saturating_add(bump));
             }
         }
     }
@@ -708,7 +712,13 @@ mod tests {
         let vtable = db
             .find_vtable(0x1801_306f0)
             .expect("the link names a recovered vtable");
-        assert_eq!(candidate.name, vtable.class_name.as_deref().unwrap());
+        assert_eq!(
+            candidate.name,
+            vtable
+                .class_name
+                .as_deref()
+                .expect("the canned RTTI resolves a class name")
+        );
         // The cluster scored 16+10+25+20 = 71 as a literal-prefix name; the
         // vtable class origin pays 10 more.
         assert_eq!(candidate.confidence.value(), 81);

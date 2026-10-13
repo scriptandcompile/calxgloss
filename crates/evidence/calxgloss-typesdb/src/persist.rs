@@ -232,9 +232,12 @@ mod tests {
                 "referenced_by": ["FUN_18000b620"]
             }]
         }"#;
-        std::fs::write(dir.path().join("eqmain.dll.json"), text).unwrap();
+        std::fs::write(dir.path().join("eqmain.dll.json"), text)
+            .expect("mvp-shape document should be written");
 
-        let loaded = persistor.load("eqmain.dll").unwrap();
+        let loaded = persistor
+            .load("eqmain.dll")
+            .expect("the mvp-shape document should load");
         assert_eq!(loaded.inferred_structs[0].name, "Player");
         assert_eq!(loaded.inferred_structs[0].linked_vtable, None);
     }

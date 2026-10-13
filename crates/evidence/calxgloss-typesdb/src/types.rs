@@ -813,7 +813,8 @@ mod tests {
         let json = serde_json::to_string(&candidate).unwrap();
         assert!(json.contains("\"name_origin\":\"vtable_class\""));
         assert!(json.contains(&format!("\"linked_vtable\":{}", 0x1801_306f0u64)));
-        let back: InferredStruct = serde_json::from_str(&json).unwrap();
+        let back: InferredStruct =
+            serde_json::from_str(&json).expect("a linked candidate should round-trip");
         assert_eq!(back, candidate);
         assert!(back.is_linked());
     }
@@ -830,7 +831,8 @@ mod tests {
             "confidence": 79,
             "referenced_by": ["FUN_18000b620"]
         }"#;
-        let back: InferredStruct = serde_json::from_str(json).unwrap();
+        let back: InferredStruct =
+            serde_json::from_str(json).expect("the mvp-shape candidate should load");
         assert_eq!(back.name_origin, NameOrigin::LiteralPrefix);
         assert_eq!(back.linked_vtable, None);
         assert!(!back.is_linked());
