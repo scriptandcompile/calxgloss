@@ -68,6 +68,19 @@ pub enum ContextTier {
 }
 
 impl ContextTier {
+    /// Every tier, lowest to highest — the single enumeration of the set.
+    /// The dashboard's tier controls populate from this through the scope
+    /// status response, so the frontend never hardcodes the variant names
+    /// and a variant rename touches the enum and this list alone
+    /// (issue #109).
+    pub const ALL: [ContextTier; 5] = [
+        Self::Signature,
+        Self::Disassembly,
+        Self::WithTests,
+        Self::ModuleContext,
+        Self::FullModule,
+    ];
+
     /// Returns the tier number (0–4).
     pub fn number(self) -> u32 {
         match self {
@@ -464,6 +477,37 @@ mod tests {
         // Detailed + many APIs should not exceed FullModule
         let tier = select_context_tier(&FunctionComplexity::Detailed, 15, rate);
         assert_eq!(tier, ContextTier::FullModule);
+    }
+
+    #[test]
+    fn test_context_tier_all_enumerates_every_variant_low_to_high() {
+        // The dashboard's tier controls populate from this list (issue #109)
+        // — it must cover every variant in escalation order, and each must
+        // serialize to the exact variant name the constraints endpoint
+        // deserializes, so the frontend never hardcodes the names itself.
+        let names: Vec<String> = ContextTier::ALL
+            .iter()
+            .map(|t| serde_json::to_string(t).expect("tier serializes"))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "\"Signature\"",
+                "\"Disassembly\"",
+                "\"WithTests\"",
+                "\"ModuleContext\"",
+                "\"FullModule\""
+            ]
+        );
+        // The escalation walk visits exactly this order — no variant is
+        // missing from ALL and none sits out of order.
+        let mut walked = vec![ContextTier::Signature];
+        let mut tier = ContextTier::Signature;
+        while let Some(next) = tier.escalate() {
+            tier = next;
+            walked.push(tier);
+        }
+        assert_eq!(walked, ContextTier::ALL.to_vec());
     }
 
     #[test]

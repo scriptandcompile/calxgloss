@@ -19,6 +19,7 @@
 
 import { API } from "./api.js";
 import { showToast } from "./ui.js";
+import { loadPipelineBinaries } from "./pipeline-binaries.js";
 
 const STATE_LABELS = {
     unavailable: "No pipeline",
@@ -181,13 +182,11 @@ export async function showRestartDialog({ target = "all" } = {}) {
     `;
     document.body.appendChild(overlay);
 
-    // Target options come from the pipeline's own binary list; if that
+    // Target options come from the shared pipeline-binary loader; if that
     // fetch fails the dialog honestly offers only "All binaries".
     const targetSelect = overlay.querySelector("#restart-target");
     try {
-        const res = await API.pipeline();
-        for (const b of res.binaries || []) {
-            if (!b.binary) continue;
+        for (const b of await loadPipelineBinaries()) {
             const opt = document.createElement("option");
             opt.value = b.binary;
             opt.textContent = b.binary;

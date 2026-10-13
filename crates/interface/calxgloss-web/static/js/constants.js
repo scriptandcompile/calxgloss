@@ -47,7 +47,9 @@ export const KIND_COLORS = {
 };
 
 // DllCategory display labels (issue #66) — keys match the serde variant
-// names the API sends in `binary_categories`.
+// names the API sends in `binary_categories`. This map is the one place
+// those wire names live: panels derive the names from it (see
+// categoryKey) instead of spelling them again (issue #109).
 export const CATEGORY_LABELS = {
     WindowsOs: "Windows OS",
     MicrosoftSdk: "Microsoft SDK",
@@ -55,4 +57,27 @@ export const CATEGORY_LABELS = {
     ProjectSpecific: "Project Specific",
     UnknownThirdParty: "Unknown 3rd Party",
     RuntimeLibrary: "Runtime Library",
+};
+
+/**
+ * The DllCategory serde variant name behind a display label — the wire
+ * names live only in CATEGORY_LABELS, so a backend rename touches that
+ * map alone. Returns null when no category carries the label, so a rename
+ * on either side surfaces as a loudly missing control rather than a
+ * control that silently matches nothing (issue #109).
+ */
+export function categoryKey(label) {
+    return Object.keys(CATEGORY_LABELS).find((k) => CATEGORY_LABELS[k] === label) ?? null;
+}
+
+// ContextTier display labels — keys are the backend ContextTier serde
+// variant names (crates/shared/calxgloss-types/src/context_tier.rs). The
+// scope panel populates its tier select's values from the scope status
+// response's `context_tiers`, so this map only prettifies the ones whose
+// human label differs from the raw name — an unmapped tier renders under
+// its raw name rather than vanishing (issue #109).
+export const CONTEXT_TIER_LABELS = {
+    WithTests: "With Tests",
+    ModuleContext: "Module Context",
+    FullModule: "Full Module",
 };

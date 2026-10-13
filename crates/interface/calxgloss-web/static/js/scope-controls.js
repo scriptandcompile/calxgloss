@@ -24,16 +24,35 @@
 import { API } from "./api.js";
 import { escapeHtml } from "./utils.js";
 import { showToast } from "./ui.js";
+import { categoryKey, CONTEXT_TIER_LABELS } from "./constants.js";
+import { loadPipelineBinaries } from "./pipeline-binaries.js";
 
 // The four checkboxes and the classification category each speaks for.
 // "translate" mode: checked means the category's binaries are in scope;
-// "skip" mode: checked means they are kept out.
+// "skip" mode: checked means they are kept out. The wire names are derived
+// from CATEGORY_LABELS — the one map of the backend's serde variant names
+// — by display label, so a backend rename touches that map alone
+// (issue #109). A label missing from the map removes its checkbox from
+// the panel with a loud console error, and the category then keeps
+// whatever the server's current allow-list says, like Windows OS and
+// Microsoft SDK already do — never steering from a name that matches no
+// binary.
 const CHECKBOX_CATEGORIES = [
-    { id: "scope-skip-runtime", category: "RuntimeLibrary", mode: "skip" },
-    { id: "scope-translate-project-specific", category: "ProjectSpecific", mode: "translate" },
-    { id: "scope-translate-known-third-party", category: "KnownThirdParty", mode: "translate" },
-    { id: "scope-skip-unknown-third-party", category: "UnknownThirdParty", mode: "skip" },
-];
+    { id: "scope-skip-runtime", label: "Runtime Library", mode: "skip" },
+    { id: "scope-translate-project-specific", label: "Project Specific", mode: "translate" },
+    { id: "scope-translate-known-third-party", label: "Known 3rd Party", mode: "translate" },
+    { id: "scope-skip-unknown-third-party", label: "Unknown 3rd Party", mode: "skip" },
+].flatMap(({ id, label, mode }) => {
+    const category = categoryKey(label);
+    if (category === null) {
+        console.error(
+            `scope-controls: no classification category labeled "${label}" — checkbox "${id}" removed`
+        );
+        document.getElementById(id)?.closest("label")?.remove();
+        return [];
+    }
+    return [{ id, category, mode }];
+});
 
 // The latest ScopeStatusResponse — the panel's only source of truth. Every
 // render reads from it, never from the current input values.
@@ -101,18 +120,14 @@ export async function refreshScopeDisplay() {
 }
 
 /**
- * Refresh the binary → classification map from /api/pipeline, so a toggle
- * always recomputes over the binaries discovered so far — including ones
- * that appeared after the panel loaded.
+ * Refresh the binary → classification map from the shared pipeline-binary
+ * loader, so a toggle always recomputes over the binaries discovered so
+ * far — including ones that appeared after the panel loaded.
  */
 async function refreshBinaryCategories() {
     try {
-        const res = await API.pipeline();
-        binaryCategories = new Map(
-            (res.binaries || [])
-                .filter((b) => b.binary)
-                .map((b) => [b.binary, b.category || null])
-        );
+        const binaries = await loadPipelineBinaries();
+        binaryCategories = new Map(binaries.map((b) => [b.binary, b.category || null]));
     } catch {
         // Honest: no classifications known yet — the checkboxes have no
         // category to read, and the priority select offers no binaries.
@@ -210,11 +225,31 @@ function renderPriorityList() {
 }
 
 function renderConstraints() {
+    renderTierOptions();
     const c = status.constraints || {};
     setVal("scope-max-attempts", c.max_attempts ?? "");
     setVal("scope-max-tier", c.max_context_tier ?? "");
     setVal("scope-token-budget", c.token_budget ?? "");
     renderTokenRemaining();
+}
+
+/**
+ * The tier select's values come from the status response's `context_tiers`
+ * — the backend's own ContextTier enumeration — so the panel can never
+ * offer a cap the constraints endpoint would refuse with a 400; the label
+ * map only spells them for humans, falling back to the raw name
+ * (issue #109). Options are rebuilt before the value is set, so the
+ * server's current cap always lands on a real option.
+ */
+function renderTierOptions() {
+    const select = document.getElementById("scope-max-tier");
+    if (!select) return;
+    const tiers = status.context_tiers || [];
+    select.innerHTML =
+        '<option value="">No cap</option>' +
+        tiers
+            .map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(CONTEXT_TIER_LABELS[t] || t)}</option>`)
+            .join("");
 }
 
 function renderTokenRemaining() {

@@ -915,6 +915,20 @@ async fn test_scope_endpoints_drive_and_persist_the_operator_scope() {
         body["scope"]["priority_functions"][0]["function"],
         "DrawPrimitive"
     );
+    // The status also carries the backend's own tier enumeration — the
+    // dashboard's tier select populates its values from this instead of
+    // hardcoding the variant names (issue #109).
+    assert_eq!(
+        body["context_tiers"],
+        serde_json::json!([
+            "Signature",
+            "Disassembly",
+            "WithTests",
+            "ModuleContext",
+            "FullModule"
+        ]),
+        "the scope status names every context tier the constraints may cap at"
+    );
 
     // A restarted run: a fresh handle over the same workspace loads the
     // persisted records — nothing re-entered.
@@ -9776,6 +9790,17 @@ async fn test_headless_scope_controls_panel() {
             "document.getElementById('scope-max-tier')?.value || ''"
         ),
         "Disassembly"
+    );
+    // The tier select's values come from the status response's
+    // context_tiers, not from markup — every cap the server accepts is
+    // an option, and only those (issue #109).
+    assert_eq!(
+        eval_text(
+            &tab,
+            "[...document.querySelectorAll('#scope-max-tier option')].map(o => o.value).join(',')"
+        ),
+        ",Signature,Disassembly,WithTests,ModuleContext,FullModule",
+        "the tier select must offer exactly the tiers the status response names"
     );
     assert_eq!(
         eval_text(

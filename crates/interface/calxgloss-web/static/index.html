@@ -149,13 +149,11 @@
                                 <input type="number" id="scope-max-attempts" min="1" placeholder="no cap">
                             </label>
                             <label>Max context tier
+                                <!-- Options are populated from the scope status response's
+                                     context_tiers — the backend's own ContextTier
+                                     enumeration — never hardcoded here (issue #109). -->
                                 <select id="scope-max-tier">
                                     <option value="">No cap</option>
-                                    <option value="Signature">Signature</option>
-                                    <option value="Disassembly">Disassembly</option>
-                                    <option value="WithTests">With Tests</option>
-                                    <option value="ModuleContext">Module Context</option>
-                                    <option value="FullModule">Full Module</option>
                                 </select>
                             </label>
                             <label>Token budget

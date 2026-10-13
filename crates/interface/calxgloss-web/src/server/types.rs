@@ -1581,6 +1581,12 @@ pub struct ScopeStatusResponse {
     pub constraints: calxgloss_types::TranslationConstraints,
     /// Tokens charged to the run so far (per-run, never persisted).
     pub tokens_spent: u64,
+    /// Every context tier the `max_context_tier` cap may name, lowest to
+    /// highest — the backend's own enumeration, so the dashboard populates
+    /// its tier select from the server instead of hardcoding the variant
+    /// names and silently turning a rename into a source of 400s
+    /// (issue #109).
+    pub context_tiers: Vec<calxgloss_types::ContextTier>,
 }
 
 /// Request body of `POST /api/scope/binaries` — the full replacement list

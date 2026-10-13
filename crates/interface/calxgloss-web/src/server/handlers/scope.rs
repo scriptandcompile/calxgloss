@@ -26,12 +26,14 @@ fn scope_handle(combined: &CombinedState) -> Result<ScopeControl, ServerError> {
 }
 
 /// The status payload every endpoint echoes: current scope, constraints,
-/// and the run's token spend.
+/// the run's token spend, and the backend's context-tier enumeration the
+/// dashboard's tier select populates from (issue #109).
 fn status(scope: &ScopeControl) -> Json<ScopeStatusResponse> {
     Json(ScopeStatusResponse {
         scope: scope.scope(),
         constraints: scope.constraints(),
         tokens_spent: scope.tokens_spent(),
+        context_tiers: calxgloss_types::ContextTier::ALL.to_vec(),
     })
 }
 
