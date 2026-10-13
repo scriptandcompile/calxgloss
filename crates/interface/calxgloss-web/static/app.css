@@ -20,7 +20,7 @@
     --text-inverse: #1a1b2e;
 
     --accent-blue: #6c8cff;
-    --accent-blue-dim: #4a6ae0;
+    --accent-blue-dim: rgba(108, 140, 255, 0.12);
     --accent-green: #4ade80;
     --accent-green-dim: rgba(74, 222, 128, 0.12);
     --accent-yellow: #facc15;
@@ -1381,7 +1381,9 @@ svg {
 }
 
 .btn-primary:hover {
-    background: var(--accent-blue-dim);
+    /* Solid darker blue — the *-dim tokens are translucent tints, so the
+       hover shade is spelled out here. */
+    background: #4a6ae0;
 }
 
 .btn-success {
@@ -2174,7 +2176,7 @@ svg {
 }
 
 .llm-log-chevron {
-    color: var(--text-muted);
+    color: var(--text-secondary);
     font-size: 10px;
 }
 
@@ -2188,7 +2190,7 @@ svg {
     background: transparent;
     border: 1px solid var(--border-color);
     border-radius: var(--radius-sm);
-    color: var(--text-muted);
+    color: var(--text-secondary);
     font-size: 10px;
     padding: 2px 8px;
     cursor: pointer;
@@ -2218,7 +2220,9 @@ svg {
 
 .llm-log-entry-header .meta {
     margin-left: auto;
-    color: var(--text-muted);
+    /* --text-secondary, not --text-muted: this line sits on the tinted
+       request/response header and must stay readable there. */
+    color: var(--text-secondary);
     font-weight: 400;
     text-transform: none;
     letter-spacing: 0;
@@ -2232,7 +2236,7 @@ svg {
     line-height: 1.6;
     white-space: pre-wrap;
     word-break: break-all;
-    color: var(--text-secondary);
+    color: var(--text-primary);
     max-height: 400px;
     overflow-y: auto;
     background: var(--bg-secondary);
