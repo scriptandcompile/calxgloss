@@ -1139,6 +1139,63 @@ pub struct BinarySummaryRow {
     pub tokens_used: usize,
 }
 
+/// `GET /api/binaries/{name}` response: the full detail the Binaries
+/// view's expandable panel renders for one classified binary — the
+/// classification decision actually in force (override layer applied, the
+/// same fold the summary rows and the analyzer honor) and the binary's
+/// per-function list with each function's review status, so a reviewer
+/// can find stalled functions inside a binary. An unknown binary name
+/// honestly 404s rather than answering with an empty shell.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BinaryDetailResponse {
+    /// The binary identity — the filename verbatim, as the classification
+    /// record names it (the request may have spelled it differently).
+    pub binary: BinaryIdentity,
+    /// The category in force (e.g. "WindowsOs", "ProjectSpecific").
+    pub category: String,
+    /// The strategy in force (e.g. "PalMapping", "CrateReplacement",
+    /// "ReverseEngineer").
+    pub strategy: String,
+    /// Target crate for crate-replacement strategies, absent when the
+    /// strategy names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crate_replacement: Option<String>,
+    /// Whether the category/strategy shown comes from a persisted
+    /// classification override rather than the recorded classification.
+    pub overridden: bool,
+    /// Whether the decision in force marks the binary as never a
+    /// translation target — the glossary rule, mirroring the analyzer:
+    /// the flag or a `RuntimeLibrary` category.
+    pub known_runtime: bool,
+    /// The reason in force: the analyzer's synthesized override reason
+    /// when an override is, or the recorded reason verbatim when it is
+    /// not — an override carries no heuristic reasoning of its own.
+    /// Absent when the record stored none and no override is in force.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Exported symbols the classification record counted.
+    pub exports_count: usize,
+    /// Imported symbols the classification record counted.
+    pub imports_count: usize,
+    /// The binary's function-translation units, alphabetical by function
+    /// then attempt — the same dashboard units the summary row's counts
+    /// fold, so this list's length is always the row's `functions_total`.
+    pub functions: Vec<BinaryFunctionRow>,
+}
+
+/// One function-translation unit inside a binary, as the detail panel's
+/// function list renders it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BinaryFunctionRow {
+    /// The function name, verbatim from the unit's branch identity.
+    pub function: String,
+    /// Which translation attempt this unit is (1-based) — the same
+    /// function can appear once per attempt, each with its own status.
+    pub attempt: u32,
+    /// The unit's review status (e.g. "Accepted", "PendingReview").
+    pub status: calxgloss_types::ReviewStatus,
+}
+
 // ─── Unit attempts view (issue #131, W4.5) ─────────────────────────────
 
 /// `GET /api/units/{id}/attempts` response: the attempt list the unit

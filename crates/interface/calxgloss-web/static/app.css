@@ -3502,6 +3502,58 @@ svg {
     color: var(--text-muted);
 }
 
+/* Expandable binary detail panel (issue #132, W4.2) — the row is the
+   control, and the panel beneath it sits on the detail background so it
+   reads as an expansion, not a separate table. */
+#binaries-table-body tr.binaries-row { cursor: pointer; }
+#binaries-table-body tr.binaries-row:hover td { background: var(--bg-hover); }
+tr.binaries-detail-row td {
+    background: var(--bg-detail);
+    padding: 12px 16px;
+}
+.binaries-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.binaries-detail-decision { font-size: 14px; }
+.binaries-detail-reason {
+    margin-top: 4px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+.binaries-detail-counts {
+    margin-top: 4px;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+.binaries-detail-override { margin-top: 8px; }
+.binaries-detail-functions {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+.binaries-detail-functions th,
+.binaries-detail-functions td {
+    text-align: left;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border-subtle);
+}
+.binaries-fn-status {
+    display: inline-block;
+    padding: 1px 8px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+.binaries-fn-status[data-status="Accepted"] { color: var(--accent-green); }
+.binaries-fn-status[data-status="SendBack"],
+.binaries-fn-status[data-status="PatchRequested"] { color: var(--accent-red); }
+.binaries-detail-empty { color: var(--text-muted); font-style: italic; }
+.binaries-detail-error { color: var(--accent-red); }
+
 .token-col-strategy {
     font-family: var(--font-mono, monospace);
     font-size: 12px;

@@ -53,19 +53,6 @@ fn strategy_for_category(category: &DllCategory, crate_replacement: Option<&str>
     }
 }
 
-/// The category's serde variant name — the display string the dashboard
-/// already matches on.
-fn category_label(category: &DllCategory) -> &'static str {
-    match category {
-        DllCategory::WindowsOs => "WindowsOs",
-        DllCategory::MicrosoftSdk => "MicrosoftSdk",
-        DllCategory::KnownThirdParty => "KnownThirdParty",
-        DllCategory::ProjectSpecific => "ProjectSpecific",
-        DllCategory::UnknownThirdParty => "UnknownThirdParty",
-        DllCategory::RuntimeLibrary => "RuntimeLibrary",
-    }
-}
-
 /// Classification result for a single DLL.
 ///
 /// Produced by [`Analyzer::classify_dll`] or [`Analyzer::classify_target`].
@@ -285,6 +272,7 @@ impl Analyzer {
             .and_then(|control| control.get(binary))
         {
             let known_runtime = override_record.is_runtime();
+            let reason = override_record.override_reason();
             let category = override_record.category;
             let crate_replacement = match &category {
                 DllCategory::MicrosoftSdk | DllCategory::KnownThirdParty => override_record
@@ -293,10 +281,6 @@ impl Analyzer {
                     .or_else(|| crate_replacement_for(binary, &category)),
                 _ => None,
             };
-            let reason = format!(
-                "operator override — {} (category set from the dashboard)",
-                category_label(&category)
-            );
             return (category, crate_replacement, known_runtime, reason);
         }
 

@@ -80,6 +80,29 @@ impl BinaryClassificationOverride {
             | DllCategory::RuntimeLibrary => "ReverseEngineer",
         }
     }
+
+    /// Whether this override routes to crate replacement — the modes where
+    /// a target crate name means something, the same dispatch
+    /// [`Self::strategy_label`] spells.
+    pub fn is_crate_replacement(&self) -> bool {
+        matches!(
+            self.category,
+            DllCategory::MicrosoftSdk | DllCategory::KnownThirdParty
+        )
+    }
+
+    /// The reason the analyzer records when this override is the decision
+    /// in force — spelled once so every reader (the analyzer's artifact,
+    /// the dashboard's binary detail panel) gives the same honest account:
+    /// an overridden classification is the operator's decision, not a
+    /// heuristic with a borrowed reason (issue #132).
+    pub fn override_reason(&self) -> String {
+        let label = serde_json::to_value(&self.category)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_else(|| "unknown".to_string());
+        format!("operator override — {label} (category set from the dashboard)")
+    }
 }
 
 /// The persisted override map, keyed by binary identity (filename verbatim).

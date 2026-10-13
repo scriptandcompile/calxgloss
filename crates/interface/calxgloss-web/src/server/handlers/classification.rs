@@ -40,7 +40,7 @@ fn classification_handle(
 
 /// The classification artifact path for one binary — the same sanitization
 /// the classify command used to write it (`/` and `\` become `_`).
-fn classification_record_path(repo_path: &Path, binary: &str) -> std::path::PathBuf {
+pub(crate) fn classification_record_path(repo_path: &Path, binary: &str) -> std::path::PathBuf {
     let sanitized: String = binary
         .chars()
         .map(|c| match c {

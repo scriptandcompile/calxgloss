@@ -203,14 +203,17 @@ function renderUnavailable(reason) {
 }
 
 /**
- * Open the classification-override panel for one binary, below the pipeline
- * rows. Fetches the current classification and override first; the server's
- * own reason renders when the endpoints are unavailable.
+ * Open the classification-override panel for one binary. Fetches the
+ * current classification and override first; the server's own reason
+ * renders when the endpoints are unavailable.
  * @param {string} binary - the binary identity (filename verbatim)
+ * @param {Element} [anchor] - element the panel is inserted after;
+ *     defaults to the pipeline rows (the Binaries view passes its own
+ *     table so the panel opens where the binary is inspected, issue #132)
  */
-export async function openClassificationPanel(binary) {
+export async function openClassificationPanel(binary, anchor) {
     closePanel();
-    const container = document.getElementById("pipeline-binaries");
+    const container = anchor || document.getElementById("pipeline-binaries");
     if (!container) return;
 
     const panel = document.createElement("div");

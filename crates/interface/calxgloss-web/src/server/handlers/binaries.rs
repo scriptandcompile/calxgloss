@@ -1,5 +1,6 @@
 //! Binaries view handlers — the whole-effort read over every classified
-//! target binary (issue #130, W4.1).
+//! target binary (issue #130, W4.1) and the per-binary detail behind an
+//! expanded row (issue #132, W4.2).
 //!
 //! Registered in the shared routes: every read is persisted history, never
 //! live pipeline state, so plain `serve` and `live` answer identically.
@@ -31,17 +32,21 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use axum::{Json, extract::State};
+use axum::{Json, extract::Path as PathExtractor, extract::State};
 
 use calxgloss_types::{
-    ClassificationOverrides, ReviewStatus, TokenUsageLog, WorkKind,
+    BinaryClassificationOverride, ClassificationOverrides, ReviewStatus, TokenUsageLog, WorkKind,
     classification_override_records_path,
 };
 
-use super::super::types::{BinariesListResponse, BinarySummaryRow};
+use super::super::types::{
+    BinariesListResponse, BinaryDetailResponse, BinaryFunctionRow, BinarySummaryRow,
+    ClassificationInfo,
+};
 use super::super::{ServerError, ServerState};
+use super::classification::classification_record_path;
 use super::pipeline::disk_classifications;
-use super::process::{load_json_or_default, token_usage_log_path};
+use super::process::{binary_matches, load_json_or_default, token_usage_log_path};
 
 /// Per-binary function tallies folded from the dashboard's units.
 #[derive(Debug, Default, Clone, Copy)]
@@ -111,6 +116,58 @@ fn tokens_by_binary(repo_path: &Path) -> HashMap<String, usize> {
     totals
 }
 
+/// The classification decision actually in force for one record: the
+/// recorded classification with the persisted override layer applied on
+/// top. Spelled once so the summary rows and the detail panel can never
+/// disagree about what the analyzer would act on.
+struct InForceDecision {
+    category: String,
+    strategy: String,
+    crate_replacement: Option<String>,
+    reason: Option<String>,
+    overridden: bool,
+}
+
+/// Fold one record with its override (exact-key match, the same rule the
+/// override endpoints and the analyzer hold). `recorded_reason` is the
+/// raw record's stored reason, used only when no override is in force;
+/// under one, the decision matches what the analyzer would act on — its
+/// synthesized override reason, and a crate named only in
+/// crate-replacement mode, where the recorded crate stands in for the
+/// analyzer's table fallback (the web crate does not link the
+/// classification table).
+fn in_force_decision(
+    record: &ClassificationInfo,
+    r#override: Option<&BinaryClassificationOverride>,
+    recorded_reason: Option<&str>,
+) -> InForceDecision {
+    match r#override {
+        Some(o) => InForceDecision {
+            category: serde_json::to_value(&o.category)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_else(|| record.category.clone()),
+            strategy: o.strategy_label().to_string(),
+            crate_replacement: if o.is_crate_replacement() {
+                o.crate_replacement
+                    .clone()
+                    .or_else(|| record.crate_replacement.clone())
+            } else {
+                None
+            },
+            reason: Some(o.override_reason()),
+            overridden: true,
+        },
+        None => InForceDecision {
+            category: record.category.clone(),
+            strategy: record.strategy.clone(),
+            crate_replacement: record.crate_replacement.clone(),
+            reason: recorded_reason.map(str::to_string),
+            overridden: false,
+        },
+    }
+}
+
 /// Build the full binaries list payload from the workspace's persisted
 /// history. Split from the handler so the aggregation is testable and the
 /// follow-up W4 tickets grow the same shape.
@@ -149,27 +206,17 @@ fn binaries_list(repo_path: &Path) -> Result<BinariesListResponse, ServerError> 
         .values()
         .map(|record| {
             let name = record.binary.as_str();
-            let r#override = overrides.get(name);
+            let decision = in_force_decision(record, overrides.get(name), None);
             let tally = counts
                 .get(&name.to_ascii_lowercase())
                 .copied()
                 .unwrap_or_default();
             BinarySummaryRow {
                 binary: record.binary.clone(),
-                category: r#override
-                    .as_ref()
-                    .map(|o| serde_json::to_value(&o.category).ok())
-                    .and_then(|v| v.and_then(|v| v.as_str().map(str::to_string)))
-                    .unwrap_or_else(|| record.category.clone()),
-                strategy: r#override
-                    .as_ref()
-                    .map(|o| o.strategy_label().to_string())
-                    .unwrap_or_else(|| record.strategy.clone()),
-                crate_replacement: match r#override.as_ref() {
-                    Some(o) => o.crate_replacement.clone(),
-                    None => record.crate_replacement.clone(),
-                },
-                overridden: r#override.is_some(),
+                category: decision.category,
+                strategy: decision.strategy,
+                crate_replacement: decision.crate_replacement,
+                overridden: decision.overridden,
                 functions_total: tally.total,
                 functions_done: tally.done,
                 functions_queued: tally.queued(),
@@ -194,6 +241,121 @@ pub async fn api_get_binaries_list(
     State(state): State<ServerState>,
 ) -> Result<Json<BinariesListResponse>, ServerError> {
     Ok(Json(binaries_list(state.repo_path())?))
+}
+
+/// Tally the binary's function-translation units into the detail panel's
+/// function list — the same dashboard units the summary row's counts
+/// fold, so the list's length is always that row's `functions_total`.
+/// Alphabetical by function, then attempt: the same function can appear
+/// once per attempt, each with its own review status.
+fn functions_for_binary(
+    units: impl IntoIterator<Item = calxgloss_types::UnitOfWork>,
+    name: &str,
+) -> Vec<BinaryFunctionRow> {
+    let mut rows: Vec<BinaryFunctionRow> = units
+        .into_iter()
+        .filter(|unit| {
+            unit.kind == WorkKind::FunctionTranslation && binary_matches(unit.binary.as_str(), name)
+        })
+        .map(|unit| BinaryFunctionRow {
+            function: unit.function.unwrap_or_else(|| unit.name.clone()),
+            attempt: unit.attempt,
+            status: unit.status,
+        })
+        .collect();
+    rows.sort_by(|a, b| a.function.cmp(&b.function).then(a.attempt.cmp(&b.attempt)));
+    rows
+}
+
+/// Build the full detail payload for one binary from persisted history.
+/// The requested spelling resolves to the record's verbatim identity
+/// through the case-insensitive binary rule every other server
+/// comparison makes; no readable classification record under any
+/// spelling is an honest 404, never an empty shell.
+fn binary_detail(repo_path: &Path, name: &str) -> Result<BinaryDetailResponse, ServerError> {
+    let classifications = disk_classifications(repo_path);
+    // Deterministic when several spellings of one name each hold a
+    // record: the alphabetically first verbatim identity wins.
+    let record = classifications
+        .values()
+        .filter(|c| binary_matches(c.binary.as_str(), name))
+        .min_by_key(|c| c.binary.as_str())
+        .ok_or_else(|| {
+            ServerError::not_found(&format!(
+                "no readable classification record for binary: {name}"
+            ))
+        })?;
+    let name = record.binary.as_str();
+
+    let overrides = load_json_or_default::<ClassificationOverrides>(
+        &classification_override_records_path(repo_path),
+    )
+    .overrides;
+    let r#override = overrides.get(name);
+
+    // The recorded reasoning and the runtime flag live only in the raw
+    // record — `disk_classifications` keeps the shape the pipeline rows
+    // need. A record the reader already accepted cannot realistically
+    // fail to re-read; if it does, those fields honestly stay
+    // absent/false.
+    let raw = std::fs::read_to_string(classification_record_path(repo_path, name))
+        .ok()
+        .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok());
+    let recorded_reason = raw
+        .as_ref()
+        .and_then(|v| v.get("reason"))
+        .and_then(|v| v.as_str());
+    let recorded_runtime = raw
+        .as_ref()
+        .and_then(|v| v.get("known_runtime"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let decision = in_force_decision(record, r#override, recorded_reason);
+
+    // The glossary rule as the analyzer applies it: an override answers
+    // through `is_runtime`, and a `RuntimeLibrary` category always
+    // implies the flag.
+    let known_runtime = match r#override {
+        Some(o) => o.is_runtime(),
+        None => recorded_runtime || decision.category == "RuntimeLibrary",
+    };
+
+    let dashboard = super::super::build_dashboard(repo_path)
+        .map_err(|e| ServerError::internal(&e.to_string()))?;
+    let functions = functions_for_binary(
+        dashboard
+            .review_queue
+            .into_iter()
+            .chain(dashboard.recent_activity),
+        name,
+    );
+
+    Ok(BinaryDetailResponse {
+        binary: record.binary.clone(),
+        category: decision.category,
+        strategy: decision.strategy,
+        crate_replacement: decision.crate_replacement,
+        overridden: decision.overridden,
+        known_runtime,
+        reason: decision.reason,
+        exports_count: record.exported_symbols,
+        imports_count: record.imported_symbols,
+        functions,
+    })
+}
+
+/// Handle `GET /api/binaries/{name}` — one binary's full detail: the
+/// classification decision in force (override layer applied, with its
+/// recorded reasoning and symbol counts) and the per-function list with
+/// each unit's review status. Shared router: both `serve` and `live`
+/// answer it from persisted history only. An unknown binary name — or
+/// one whose only record is corrupt — honestly 404s.
+pub async fn api_get_binary_detail(
+    State(state): State<ServerState>,
+    PathExtractor(name): PathExtractor<String>,
+) -> Result<Json<BinaryDetailResponse>, ServerError> {
+    Ok(Json(binary_detail(state.repo_path(), &name)?))
 }
 
 #[cfg(test)]
@@ -333,5 +495,145 @@ mod tests {
         assert_eq!(counts.len(), 1, "one binary, one tally");
         let tally = counts.get("game_logic.dll").expect("lowercased key");
         assert_eq!(tally.total, 2);
+    }
+
+    #[test]
+    fn detail_function_list_is_every_matching_unit_sorted() {
+        // Both attempts of one function appear, each with its own status;
+        // other binaries' and non-function units never join. The list's
+        // length is always the summary row's functions_total.
+        let mut units = vec![
+            make_unit(
+                "game_logic.dll",
+                WorkKind::FunctionTranslation,
+                ReviewStatus::Accepted,
+            ),
+            {
+                let mut v2 = make_unit(
+                    "game_logic.dll",
+                    WorkKind::FunctionTranslation,
+                    ReviewStatus::PendingReview,
+                );
+                v2.attempt = 2;
+                v2
+            },
+            make_unit(
+                "other.dll",
+                WorkKind::FunctionTranslation,
+                ReviewStatus::Accepted,
+            ),
+            make_unit(
+                "game_logic.dll",
+                WorkKind::DllClassification,
+                ReviewStatus::Accepted,
+            ),
+        ];
+        units[0].function = Some("DrawPrimitive".into());
+        units[1].function = Some("DrawPrimitive".into());
+        units[2].function = Some("DrawPrimitive".into());
+        units[3].function = Some("Classify".into());
+
+        let rows = functions_for_binary(units, "game_logic.dll");
+        assert_eq!(rows.len(), 2, "only this binary's function units");
+        assert_eq!(rows[0].function, "DrawPrimitive");
+        assert_eq!(rows[0].attempt, 1);
+        assert_eq!(rows[0].status, ReviewStatus::Accepted);
+        assert_eq!(rows[1].attempt, 2);
+        assert_eq!(rows[1].status, ReviewStatus::PendingReview);
+    }
+
+    #[test]
+    fn detail_function_list_join_is_case_insensitive() {
+        let rows = functions_for_binary(
+            vec![make_unit(
+                "Game_Logic.DLL",
+                WorkKind::FunctionTranslation,
+                ReviewStatus::Queued,
+            )],
+            "game_logic.dll",
+        );
+        assert_eq!(rows.len(), 1, "the requested spelling folds case");
+    }
+
+    #[test]
+    fn in_force_decision_prefers_the_override_layer() {
+        // The same fold the summary rows and the analyzer honor: category,
+        // strategy label, crate, and reason come from the override;
+        // without one, the record answers verbatim.
+        let record = ClassificationInfo {
+            binary: "d3d9.dll".into(),
+            category: "MicrosoftSdk".into(),
+            strategy: "CrateReplacement".into(),
+            crate_replacement: Some("wgpu".into()),
+            exported_symbols: 100,
+            imported_symbols: 5,
+        };
+        let plain = in_force_decision(&record, None, Some("heuristic reason"));
+        assert_eq!(plain.category, "MicrosoftSdk");
+        assert_eq!(plain.strategy, "CrateReplacement");
+        assert_eq!(plain.crate_replacement.as_deref(), Some("wgpu"));
+        assert_eq!(plain.reason.as_deref(), Some("heuristic reason"));
+        assert!(!plain.overridden);
+
+        let r#override = calxgloss_types::BinaryClassificationOverride {
+            category: calxgloss_types::DllCategory::KnownThirdParty,
+            crate_replacement: Some("wgpu-rs".into()),
+            known_runtime: false,
+        };
+        let steered = in_force_decision(&record, Some(&r#override), Some("heuristic reason"));
+        assert_eq!(steered.category, "KnownThirdParty");
+        assert_eq!(steered.strategy, "CrateReplacement");
+        assert_eq!(steered.crate_replacement.as_deref(), Some("wgpu-rs"));
+        // The reason is the analyzer's own account of an overridden
+        // decision — the recorded heuristic reason does not carry over.
+        assert_eq!(
+            steered.reason.as_deref(),
+            Some("operator override — KnownThirdParty (category set from the dashboard)")
+        );
+        assert!(steered.overridden);
+    }
+
+    #[test]
+    fn override_crate_follows_the_analyzers_category_rule() {
+        // A crate name means something only in crate-replacement modes:
+        // elsewhere the analyzer drops it, and in those modes an override
+        // naming no crate falls back to the recorded one (the web stand-in
+        // for the analyzer's table lookup).
+        let record = ClassificationInfo {
+            binary: "game_logic.dll".into(),
+            category: "ProjectSpecific".into(),
+            strategy: "ReverseEngineer".into(),
+            crate_replacement: Some("recorded-crate".into()),
+            exported_symbols: 1,
+            imported_symbols: 1,
+        };
+        let steered = in_force_decision(
+            &record,
+            Some(&calxgloss_types::BinaryClassificationOverride {
+                category: calxgloss_types::DllCategory::ProjectSpecific,
+                crate_replacement: Some("ignored-crate".into()),
+                known_runtime: false,
+            }),
+            None,
+        );
+        assert_eq!(
+            steered.crate_replacement, None,
+            "a non-crate-replacement category drops the crate, as the analyzer does"
+        );
+
+        let steered = in_force_decision(
+            &record,
+            Some(&calxgloss_types::BinaryClassificationOverride {
+                category: calxgloss_types::DllCategory::KnownThirdParty,
+                crate_replacement: None,
+                known_runtime: false,
+            }),
+            None,
+        );
+        assert_eq!(
+            steered.crate_replacement.as_deref(),
+            Some("recorded-crate"),
+            "a crate-replacement override naming no crate keeps the recorded one"
+        );
     }
 }

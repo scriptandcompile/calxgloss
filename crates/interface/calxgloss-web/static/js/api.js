@@ -109,6 +109,10 @@ export const API = {
     // Binaries view (issue #130, W4.1) — shared router, so both `serve`
     // and `live` answer it.
     async binariesList() { return API.get("/api/binaries/list"); },
+    // Binary detail (issue #132, W4.2) — the expanded row's panel: the
+    // classification in force and the per-function list. Shared router;
+    // an unknown binary name honestly 404s.
+    async binaryDetail(name) { return API.get(`/api/binaries/${encodeURIComponent(name)}`); },
     async health() { return API.get("/health"); },
     async serverStatus() { return API.get("/api/server/status"); },
     async shutdownServer() { return API.post("/api/server/shutdown"); },

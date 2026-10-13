@@ -6976,6 +6976,135 @@ async fn test_binaries_list_api_exact_json_from_fixture() {
     );
 }
 
+/// Issue #132 router contract: `/api/binaries/{name}` is registered in
+/// the shared routes — it reads only persisted history, never live
+/// pipeline state — so both the plain and the live router answer it with
+/// the full detail payload.
+#[tokio::test]
+async fn test_binaries_detail_registered_in_plain_and_live_routers() {
+    for kind in ["plain", "live"] {
+        let fixture = TestFixture::new();
+        write_binaries_list_fixtures(&fixture);
+        let state = ServerState::new(fixture.repo_path());
+        let router = if kind == "plain" {
+            build_router(state)
+        } else {
+            let events = TranslationEvents::new(128);
+            let manager = SessionManager::new_with_broadcast(events.subscribe());
+            build_router_with_ws(state, manager, ProgressState::new())
+        };
+        let _server = spawn_server(router, fixture.port()).await;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let base = format!("http://127.0.0.1:{}", fixture.port());
+        let (status, body) = get_json(&format!("{base}/api/binaries/game_logic.dll")).await;
+        assert_eq!(status, 200, "{kind} router serves /api/binaries/{{name}}");
+        assert_eq!(body["binary"].as_str().expect("binary"), "game_logic.dll");
+        assert_eq!(
+            body["functions"].as_array().expect("functions array").len(),
+            3,
+            "{kind} router: the same three dashboard units the summary row counts"
+        );
+    }
+}
+
+/// Issue #132 exact-JSON contract: the detail carries the classification
+/// decision in force — the override layer applied, exactly what the
+/// analyzer would act on — with its reasoning and symbol counts, plus
+/// the per-function list with each unit's review status. The lookup
+/// is case-insensitive like every other server binary join; an unknown
+/// or corrupt-record name honestly 404s rather than rendering an empty
+/// shell.
+#[tokio::test]
+async fn test_binaries_detail_api_exact_json_from_fixture() {
+    let fixture = TestFixture::new();
+    write_binaries_list_fixtures(&fixture);
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+
+    // The overridden binary: category, strategy, and crate come from the
+    // override in force, and so does the reason — the analyzer's own
+    // account of an overridden decision, not the heuristic's.
+    let (status, body) = get_json(&format!("{base}/api/binaries/d3d9.dll")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "binary": "d3d9.dll",
+            "category": "KnownThirdParty",
+            "strategy": "CrateReplacement",
+            "crate_replacement": "wgpu-rs",
+            "overridden": true,
+            "known_runtime": false,
+            "reason": "operator override — KnownThirdParty (category set from the dashboard)",
+            "exports_count": 100,
+            "imports_count": 5,
+            "functions": [
+                { "function": "wgpu", "attempt": 1, "status": "Accepted" },
+            ],
+        }),
+        "the override-in-force decision exactly as the analyzer would act \
+         on it, with the per-function list"
+    );
+
+    // The un-overridden binary: the recorded decision verbatim, and the
+    // function list spelling out where each attempt stands — the stalled
+    // v2 sits right next to the accepted v1.
+    let (status, body) = get_json(&format!("{base}/api/binaries/game_logic.dll")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "binary": "game_logic.dll",
+            "category": "ProjectSpecific",
+            "strategy": "ReverseEngineer",
+            "overridden": false,
+            "known_runtime": false,
+            "reason": "project-built binary — reverse engineer from disassembly",
+            "exports_count": 24,
+            "imports_count": 12,
+            "functions": [
+                { "function": "DrawPrimitive", "attempt": 1, "status": "Accepted" },
+                { "function": "DrawPrimitive", "attempt": 2, "status": "PendingReview" },
+                { "function": "UpdateScene", "attempt": 1, "status": "Accepted" },
+            ],
+        }),
+        "the recorded decision with the per-function review statuses"
+    );
+
+    // A differently-spelled name finds the same binary — the
+    // case-insensitive join every other server comparison makes — and
+    // the response carries the record's verbatim identity.
+    let (status, body) = get_json(&format!("{base}/api/binaries/GAME_LOGIC.DLL")).await;
+    assert_eq!(status, 200, "the lookup is case-insensitive");
+    assert_eq!(
+        body["binary"].as_str().expect("binary"),
+        "game_logic.dll",
+        "the verbatim record name answers, not the requested spelling"
+    );
+
+    // Unknown names honestly 404 — no empty shell.
+    for name in ["nope.dll", "broken.dll"] {
+        let (status, body) = get_json(&format!("{base}/api/binaries/{name}")).await;
+        assert_eq!(status, 404, "{name} has no readable classification record");
+        assert_eq!(
+            body["error"].as_bool(),
+            Some(true),
+            "{name}: the 404 carries the honest error payload"
+        );
+        assert!(
+            body["message"].as_str().expect("message").contains(name),
+            "the message names the binary the request asked for"
+        );
+    }
+}
+
 // ── Unit attempts API (issue #131, W4.5) ───────────────────────────────
 
 /// Issue #131 router contract: `/api/units/{id}/attempts` is registered in
@@ -8291,6 +8420,129 @@ async fn test_headless_binaries_view_honest_empty_state() {
             "document.getElementById('binaries-body').style.display === 'none'"
         ),
         "the empty state should hide the table — no wall of zeros"
+    );
+}
+
+/// Issue #132: clicking a fixture row expands the detail panel beneath it
+/// — the classification decision in force (override applied) with its
+/// reasoning and symbol counts, the per-function list with each
+/// unit's review status, and the shortcut to the existing
+/// classification-override flow.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_binaries_detail_panel_expands() {
+    let fixture = TestFixture::new();
+    write_binaries_list_fixtures(&fixture);
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    // Switch to the Binaries tab and wait for the rows.
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"binaries\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click binaries tab");
+    let mut rows_rendered = false;
+    for _ in 0..25 {
+        if eval_count(
+            &tab,
+            "document.querySelectorAll('#binaries-table-body tr.binaries-row').length",
+        ) == 2
+        {
+            rows_rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        rows_rendered,
+        "both classified binaries should render as rows"
+    );
+
+    // Click the first row — the overridden d3d9.dll.
+    tab.evaluate(
+        "document.querySelector('#binaries-table-body tr.binaries-row').click() === undefined",
+        false,
+    )
+    .expect("click first binaries row");
+
+    // The panel expands with the fetched detail (the spinner is replaced).
+    let mut detail_rendered = false;
+    for _ in 0..25 {
+        if eval_bool(
+            &tab,
+            "document.querySelector('#binaries-table-body tr.binaries-detail-row')?.textContent.includes('KnownThirdParty') === true",
+        ) {
+            detail_rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        detail_rendered,
+        "the expanded panel should show the override-in-force category"
+    );
+
+    let detail_text = eval_text(
+        &tab,
+        "document.querySelector('#binaries-table-body tr.binaries-detail-row').textContent",
+    );
+    for expected in [
+        "operator override — KnownThirdParty", // the in-force reason, as the analyzer spells it
+        "Exports: 100",
+        "Imports: 5",
+        "wgpu",                    // the binary's one function unit
+        "Accepted",                // its review status
+        "Override classification", // the shortcut to the existing flow
+    ] {
+        assert!(
+            detail_text.contains(expected),
+            "the detail panel should show {expected:?} — got: {detail_text}"
+        );
+    }
+
+    // Exactly one function row, carrying its review status.
+    assert_eq!(
+        eval_count(
+            &tab,
+            "document.querySelectorAll('#binaries-table-body .binaries-detail-functions tbody tr').length",
+        ),
+        1,
+        "d3d9.dll's one dashboard unit appears in the function list"
+    );
+
+    // The shortcut opens the existing classification-override panel —
+    // anchored inside this view. Its endpoints are live-only, so under
+    // plain `serve` it honestly reports itself unavailable rather than
+    // rendering a blank or a fake form.
+    tab.evaluate(
+        "document.querySelector('#binaries-table-body .binaries-detail-override')?.click() === undefined",
+        false,
+    )
+    .expect("click override shortcut");
+    let mut override_panel = false;
+    for _ in 0..25 {
+        if eval_bool(
+            &tab,
+            "document.getElementById('classification-override-panel')?.textContent.includes('unavailable') === true",
+        ) {
+            override_panel = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        override_panel,
+        "the shortcut should open the existing override panel, honestly \
+         reporting unavailability under plain serve"
     );
 }
 
