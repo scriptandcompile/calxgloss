@@ -573,3 +573,148 @@ async fn a_loaded_inferred_candidate_renders_into_prompt_data() {
     assert_eq!(rendered.fields[1].name, "y");
     assert_eq!(rendered.size, 8, "both integer fields carry a size");
 }
+
+// ------------------------------------------------------------
+// Merging candidates whose cross-reference evidence overlaps
+// ------------------------------------------------------------
+
+/// The canned program, but the `Widget` fields are read across the two
+/// vtable methods plus a hub function: the hub points at 25 literals, so
+/// clustering splits the struct into two half-candidates that the merge
+/// pass has to stitch back together.
+fn program_split_by_a_hub() -> FakeProgram {
+    let mut program = FakeProgram::program();
+    for (address, value) in [
+        (0x1801_29400, "widget.width=1"),
+        (0x1801_29410, "widget.height=2"),
+        (0x1801_29420, "widget.label=hello"),
+        (0x1801_29430, "widget.visible=true"),
+    ] {
+        program.literals.push(StringLiteral {
+            address,
+            value: value.into(),
+        });
+    }
+    program.xrefs.insert(
+        0x1801_29400,
+        vec![reference("FUN_18003ab00"), reference("FUN_widget_access")],
+    );
+    program.xrefs.insert(
+        0x1801_29410,
+        vec![reference("FUN_18003ab00"), reference("FUN_widget_access")],
+    );
+    program.xrefs.insert(
+        0x1801_29420,
+        vec![reference("FUN_18003e750"), reference("FUN_widget_access")],
+    );
+    program.xrefs.insert(
+        0x1801_29430,
+        vec![reference("FUN_18003e750"), reference("FUN_widget_access")],
+    );
+    // 21 more literals read only by the hub: its fan-out reaches 25, past
+    // the hub threshold, so it clusters none of them.
+    for i in 0..21u64 {
+        let address = 0x1801_29500 + 8 * i;
+        program.literals.push(StringLiteral {
+            address,
+            value: format!("filler_{i}"),
+        });
+        program
+            .xrefs
+            .insert(address, vec![reference("FUN_widget_access")]);
+    }
+    program
+}
+
+#[tokio::test]
+async fn a_struct_split_across_a_hub_merges_back_into_one_candidate() {
+    let db = TypesDBEngine::with_source(program_split_by_a_hub())
+        .without_tagging()
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let widgets: Vec<_> = db
+        .inferred_structs
+        .iter()
+        .filter(|c| c.name == "Widget")
+        .collect();
+    assert_eq!(widgets.len(), 1, "the hub-split halves merge into one");
+    let widget = &widgets[0];
+    assert_eq!(widget.merged_from, Some(2));
+    assert_eq!(widget.linked_vtable, Some(0x1801_306f0));
+    assert_eq!(widget.name_origin, NameOrigin::VtableClass);
+    assert_eq!(
+        widget.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+        ["width", "height", "label", "visible"],
+        "the field union keeps its stable order"
+    );
+    assert!(
+        db.inferred_structs.iter().any(|c| c.name == "Player"),
+        "the unrelated Player candidate stays separate"
+    );
+}
+
+#[tokio::test]
+async fn a_merge_survives_the_save_load_round_trip() {
+    let db = TypesDBEngine::with_source(program_split_by_a_hub())
+        .without_tagging()
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let dir = TempDir::new().unwrap();
+    let persistor = TypeDatabasePersistor::new(dir.path());
+    persistor.save(&db).expect("scan should be savable");
+    let text = std::fs::read_to_string(persistor.path_for("eqmain.dll"))
+        .expect("the saved document should be readable");
+    assert!(
+        text.contains("\"merged_from\""),
+        "the merge marker should be in the document: {text}"
+    );
+
+    let loaded = persistor
+        .load("eqmain.dll")
+        .expect("the merged document should load back");
+    assert_eq!(loaded, db);
+    let merged = loaded
+        .inferred_structs
+        .iter()
+        .find(|c| c.name == "Widget")
+        .expect("the merged candidate");
+    assert_eq!(merged.merged_from, Some(2), "the merge marker survives");
+    assert_eq!(merged.linked_vtable, Some(0x1801_306f0));
+    assert_eq!(
+        merged.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+        ["width", "height", "label", "visible"],
+        "the field union survives"
+    );
+}
+
+#[tokio::test]
+async fn two_scans_of_the_same_program_produce_byte_identical_databases() {
+    // Determinism: the merge pass walks candidates in literal-address
+    // order, so the same program scanned twice yields the same bytes.
+    let first = TypesDBEngine::with_source(program_split_by_a_hub())
+        .without_tagging()
+        .scan("eqmain.dll")
+        .await
+        .expect("first scan");
+    let second = TypesDBEngine::with_source(program_split_by_a_hub())
+        .without_tagging()
+        .scan("eqmain.dll")
+        .await
+        .expect("second scan");
+
+    // Metadata carries the scan timestamp; the knowledge itself must match.
+    let first_bytes =
+        serde_json::to_vec(&(&first.named_types, &first.vtables, &first.inferred_structs))
+            .expect("serialize first");
+    let second_bytes =
+        serde_json::to_vec(&(&second.named_types, &second.vtables, &second.inferred_structs))
+            .expect("serialize second");
+    assert_eq!(
+        first_bytes, second_bytes,
+        "two scans of the same program are byte-identical"
+    );
+}

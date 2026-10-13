@@ -136,6 +136,11 @@ fn print_type_database_report(db: &TypeDatabase, path: &Path) {
 
     let top_confidence = db.inferred_structs.iter().map(|s| s.confidence).max();
     let linked = db.inferred_structs.iter().filter(|s| s.is_linked()).count();
+    let merged = db
+        .inferred_structs
+        .iter()
+        .filter(|s| s.merged_from.is_some())
+        .count();
     println_content(format!(
         "  {}{:<5}{}",
         white_bold("Inferred:   "),
@@ -145,6 +150,9 @@ fn print_type_database_report(db: &TypeDatabase, path: &Path) {
                 let mut notes: Vec<String> = Vec::new();
                 if linked > 0 {
                     notes.push(format!("{linked} linked to vtables"));
+                }
+                if merged > 0 {
+                    notes.push(format!("{merged} merged from half-candidates"));
                 }
                 notes.push(format!("top confidence {confidence}"));
                 notes.join(", ")
@@ -182,8 +190,12 @@ fn print_type_database_report(db: &TypeDatabase, path: &Path) {
                 .linked_vtable
                 .map(|address| format!(" {}", dim(&format!("(vtable {address:#x})"))))
                 .unwrap_or_default();
+            let merge = candidate
+                .merged_from
+                .map(|parts| format!(" {}", dim(&format!("(merged from {parts})"))))
+                .unwrap_or_default();
             println_content(format!(
-                "  {}  {:<24} {:>3} fields  confidence {}{link}",
+                "  {}  {:<24} {:>3} fields  confidence {}{link}{merge}",
                 dim("●"),
                 white_bold(&candidate.name),
                 candidate.fields.len(),

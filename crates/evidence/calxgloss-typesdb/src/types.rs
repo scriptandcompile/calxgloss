@@ -423,7 +423,10 @@ pub struct InferredStruct {
     pub fields: Vec<InferredField>,
     /// Confidence that the cluster is one struct, 0–100.
     pub confidence: Confidence,
-    /// The functions whose cross-references tie the literals together.
+    /// Every function that references the candidate's literals — including
+    /// hub functions, which point at so many literals that they cannot
+    /// cluster one struct but still evidence the ones they read. The
+    /// cross-reference merge pass compares these sets across candidates.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub referenced_by: Vec<String>,
     /// The address of the RTTI-confirmed vtable this candidate was linked
@@ -433,6 +436,13 @@ pub struct InferredStruct {
     /// for databases written before the linking pass existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub linked_vtable: Option<u64>,
+    /// How many half-candidates the cross-reference merge pass combined into
+    /// this one — `Some(n)` with `n ≥ 2` when the candidate is the union of
+    /// `n` candidates whose referencing functions overlapped, `None` when
+    /// the pass left it alone. Candidates written before the merge pass
+    /// existed load as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_from: Option<usize>,
 }
 
 impl InferredStruct {
@@ -781,6 +791,7 @@ mod tests {
             confidence: Confidence::new(79),
             referenced_by: vec!["FUN_18000b620".into()],
             linked_vtable: None,
+            merged_from: None,
         };
         let json = serde_json::to_string(&candidate).unwrap();
         // Kinds and origins serialize snake_case, matching the workspace's
@@ -809,6 +820,7 @@ mod tests {
             confidence: Confidence::new(81),
             referenced_by: vec!["FUN_18003ab00".into()],
             linked_vtable: Some(0x1801_306f0),
+            merged_from: None,
         };
         let json = serde_json::to_string(&candidate).unwrap();
         assert!(json.contains("\"name_origin\":\"vtable_class\""));
@@ -821,9 +833,9 @@ mod tests {
 
     #[test]
     fn a_candidate_written_before_the_linking_pass_still_loads() {
-        // The shipped MVP shape: no `linked_vtable` key and no
-        // `vtable_class` origin anywhere. The new field defaults, so old
-        // cached documents keep loading.
+        // The shipped MVP shape: no `linked_vtable` key, no `merged_from`
+        // key, and no `vtable_class` origin anywhere. The new fields
+        // default, so old cached documents keep loading.
         let json = r#"{
             "name": "Player",
             "name_origin": "literal_prefix",
@@ -836,6 +848,43 @@ mod tests {
         assert_eq!(back.name_origin, NameOrigin::LiteralPrefix);
         assert_eq!(back.linked_vtable, None);
         assert!(!back.is_linked());
+        assert_eq!(back.merged_from, None);
+    }
+
+    #[test]
+    fn a_merged_candidate_round_trips_with_its_merge_marker() {
+        let candidate = InferredStruct {
+            name: "Widget".into(),
+            name_origin: NameOrigin::VtableClass,
+            fields: vec![
+                InferredField {
+                    name: "width".into(),
+                    field_type: FieldType::Integer,
+                    size: Some(4),
+                    offset: Some(0),
+                    source_value: "widget.width=1".into(),
+                    source_address: 0x1801_29400,
+                },
+                InferredField {
+                    name: "label".into(),
+                    field_type: FieldType::String,
+                    size: Some(8),
+                    offset: Some(4),
+                    source_value: "widget.label".into(),
+                    source_address: 0x1801_29420,
+                },
+            ],
+            confidence: Confidence::new(97),
+            referenced_by: vec!["FUN_18003ab00".into(), "FUN_widget_access".into()],
+            linked_vtable: Some(0x1801_306f0),
+            merged_from: Some(2),
+        };
+        let json = serde_json::to_string(&candidate).unwrap();
+        assert!(json.contains("\"merged_from\":2"));
+        let back: InferredStruct =
+            serde_json::from_str(&json).expect("a merged candidate should round-trip");
+        assert_eq!(back, candidate);
+        assert_eq!(back.merged_from, Some(2));
     }
 
     #[test]
@@ -872,6 +921,7 @@ mod tests {
             confidence: Confidence::new(28),
             referenced_by: Vec::new(),
             linked_vtable: None,
+            merged_from: None,
         };
         let json = serde_json::to_string(&candidate).unwrap();
         assert!(!json.contains("\"size\""));
@@ -981,6 +1031,7 @@ mod tests {
             confidence: Confidence::new(79),
             referenced_by: Vec::new(),
             linked_vtable: None,
+            merged_from: None,
         };
         let rendered = StructuredData::from(&candidate);
         assert_eq!(rendered.name, "Player");
@@ -1010,6 +1061,7 @@ mod tests {
             confidence: Confidence::new(28),
             referenced_by: Vec::new(),
             linked_vtable: None,
+            merged_from: None,
         };
         let rendered = StructuredData::from(&candidate);
         assert_eq!(rendered.size, 0);
@@ -1054,6 +1106,7 @@ mod tests {
                 confidence: Confidence::new(79),
                 referenced_by: Vec::new(),
                 linked_vtable: None,
+                merged_from: None,
             }],
         };
         let json = serde_json::to_string(&db).unwrap();

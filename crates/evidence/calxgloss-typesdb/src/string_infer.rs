@@ -86,7 +86,14 @@ impl Shapes {
 /// that tied them.
 struct Cluster {
     literals: Vec<StringLiteral>,
+    /// The clustering-key functions — the shared functions that unioned the
+    /// literals. Naming reads these; a hub function names nothing.
     functions: Vec<String>,
+    /// Every function that references a literal in the cluster, hubs
+    /// included. This is the candidate's evidence of who reads its fields,
+    /// and the engine's cross-reference merge pass compares it across
+    /// candidates; hubs are excluded from clustering, not from evidence.
+    all_functions: Vec<String>,
 }
 
 /// Literals grouped by the functions that reference them.
@@ -133,14 +140,16 @@ async fn cluster_literals(
     groups
         .into_values()
         .map(|members| {
-            let functions: BTreeSet<&String> = members
+            let all: BTreeSet<&String> = members.iter().flat_map(|&i| referrers[i].iter()).collect();
+            let functions: BTreeSet<&String> = all
                 .iter()
-                .flat_map(|&i| referrers[i].iter())
+                .copied()
                 .filter(|function| is_key(function))
                 .collect();
             Cluster {
                 literals: members.iter().map(|&i| literals[i].clone()).collect(),
                 functions: functions.into_iter().cloned().collect(),
+                all_functions: all.into_iter().cloned().collect(),
             }
         })
         .collect()
@@ -602,10 +611,14 @@ impl<S> StringInferenceEngine<S> {
             name,
             name_origin: origin,
             fields,
-            referenced_by: cluster.functions.clone(),
-            // The engine's linking pass may later attach a vtable and
-            // re-name the candidate; inference itself never links.
+            // Evidence of who reads the fields includes hub functions:
+            // naming and scoring read the key functions above, but the
+            // engine's merge pass needs every reference, hubs included.
+            referenced_by: cluster.all_functions.clone(),
+            // The engine's linking and merge passes may later rename or
+            // combine the candidate; inference itself does neither.
             linked_vtable: None,
+            merged_from: None,
         }
     }
 
@@ -965,6 +978,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_hub_function_still_counts_as_referencing_evidence() {
+        // A hub is skipped as a clustering key, but it really does read the
+        // literals: the candidate records it in `referenced_by` so the
+        // engine's merge pass can see the overlap it creates.
+        let mut source = MockSource::new(vec![literal("width", 0x400), literal("height", 0x408)]);
+        for i in 0..23u64 {
+            source.literals.push(literal(&format!("message_{i}"), 0x200 + 8 * i));
+            source.referenced_by(0x200 + 8 * i, &["FUN_logger"]);
+        }
+        source.referenced_by(0x400, &["FUN_logger", "Widget_getSize"]);
+        source.referenced_by(0x408, &["FUN_logger", "Widget_getSize"]);
+
+        let candidates = engine_over(source).infer_structures().await.unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].name, "Widget");
+        assert_eq!(
+            candidates[0].referenced_by,
+            ["FUN_logger".to_string(), "Widget_getSize".to_string()]
+        );
+    }
+
+    #[tokio::test]
     async fn field_kinds_come_from_the_shape_of_the_literal() {
         let mut source = MockSource::new(vec![
             literal("cfg.width=100", 0x100),
@@ -1228,6 +1263,9 @@ mod tests {
         let cluster = |count: usize, functions: usize| Cluster {
             literals: (0..count).map(|i| literal("field", i as u64)).collect(),
             functions: (0..functions)
+                .map(|i| format!("FUN_{i}"))
+                .collect::<Vec<_>>(),
+            all_functions: (0..functions)
                 .map(|i| format!("FUN_{i}"))
                 .collect::<Vec<_>>(),
         };

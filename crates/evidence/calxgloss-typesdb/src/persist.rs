@@ -187,6 +187,7 @@ mod tests {
                 confidence: Confidence::new(79),
                 referenced_by: vec!["FUN_18000b620".into()],
                 linked_vtable: Some(0x1801_306f0),
+                merged_from: None,
             }],
         }
     }

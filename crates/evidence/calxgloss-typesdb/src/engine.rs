@@ -16,15 +16,22 @@
 //! After the scans, a pure in-memory pass links string-inferred candidates
 //! to RTTI-confirmed vtables: a candidate whose referencing functions include
 //! a confirmed table's methods takes that table's demangled class name and
-//! records the link. The pass reads only what the scans already recovered,
-//! so it can neither fail the run nor cost a record.
+//! records the link. A second pass then merges candidates whose referencing
+//! functions overlap — one struct read by a hub function splits into half-
+//! candidates, and the overlap through the hub is what ties them back
+//! together — keeping the stronger half's name and link and unioning the
+//! fields. Both passes read only what the scans already recovered, so they
+//! can neither fail the run nor cost a record.
 
 use crate::error::Result;
 use crate::scanner::TypeLibraryScanner;
 use crate::string_infer::StringInferenceEngine;
-use crate::types::{Confidence, InferredStruct, NameOrigin, ScanMetadata, TypeDatabase, Vtable};
+use crate::types::{
+    Confidence, InferredField, InferredStruct, NameOrigin, ScanMetadata, TypeDatabase, Vtable,
+};
 use crate::vtable::{TagSink, VtableDetector};
 use calxgloss_ghidra::GhidraClient;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 use tracing::info;
 
@@ -134,6 +141,7 @@ impl<S> TypesDBEngine<S> {
             self.strings.infer_structures(),
         )?;
         link_candidates_to_vtables(&mut inferred_structs, &vtables);
+        let merged = merge_candidates(&mut inferred_structs);
 
         let mut metadata = ScanMetadata::new(binary);
         metadata.duration_secs = started.elapsed().as_secs();
@@ -142,6 +150,7 @@ impl<S> TypesDBEngine<S> {
             named_types = named_types.len(),
             vtables = vtables.len(),
             inferred_structs = inferred_structs.len(),
+            merged_candidates = merged,
             duration_secs = metadata.duration_secs,
             "Recovered type database"
         );
@@ -214,6 +223,203 @@ fn link_candidates_to_vtables(candidates: &mut [InferredStruct], vtables: &[Vtab
     }
 }
 
+/// The cross-reference overlap needed to merge two candidates, as a
+/// fraction of the smaller candidate's referencing-function set: half.
+/// A single shared hub out of two references is enough; one out of three
+/// is not, because a lone shared reader says less the more readers each
+/// half has on its own.
+const MERGE_OVERLAP_NUMERATOR: usize = 1;
+const MERGE_OVERLAP_DENOMINATOR: usize = 2;
+
+/// Merge candidates that describe the same struct in separate functions.
+///
+/// Clustering skips hub functions, so a struct whose fields are read by a
+/// hub splits into half-candidates — the fields the hub shares with each
+/// half cannot tie them together at the literal level. At the candidate
+/// level the hub *is* evidence: two candidates whose referencing-function
+/// sets overlap by at least [`MERGE_OVERLAP_NUMERATOR`] over
+/// [`MERGE_OVERLAP_DENOMINATOR`] of the smaller set are read as one
+/// struct, and unrelated candidates — whose sets cannot share a non-hub
+/// function, since that would already have merged their literals — stay
+/// separate.
+///
+/// The merge keeps the strongest half's name, name origin, and vtable
+/// link (ties go to the lower first-field address), unions the fields in
+/// literal-address order with offsets re-accumulated, and unions the
+/// referencing functions. The score re-reads the merged evidence: the
+/// strongest half's confidence plus the inference score's own breadth and
+/// agreement payouts for the fields and functions the merge adds, so a
+/// merge never scores below the half it grew from. The number of halves
+/// is recorded in [`InferredStruct::merged_from`].
+///
+/// Candidates are visited in literal-address order and the final list is
+/// re-sorted by confidence and name, so two scans of one program produce
+/// identical databases. Returns how many candidates the pass folded away.
+fn merge_candidates(candidates: &mut Vec<InferredStruct>) -> usize {
+    if candidates.len() < 2 {
+        return 0;
+    }
+    candidates.sort_by(|a, b| {
+        first_field_address(a)
+            .cmp(&first_field_address(b))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+
+    let mut parent: Vec<usize> = (0..candidates.len()).collect();
+    for i in 0..candidates.len() {
+        for j in i + 1..candidates.len() {
+            if references_overlap(&candidates[i].referenced_by, &candidates[j].referenced_by) {
+                union(&mut parent, i, j);
+            }
+        }
+    }
+    let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for index in 0..candidates.len() {
+        groups
+            .entry(find(&mut parent, index))
+            .or_default()
+            .push(index);
+    }
+
+    let halves: Vec<InferredStruct> = std::mem::take(candidates);
+    let mut merged = 0usize;
+    for group in groups.values() {
+        if group.len() > 1 {
+            merged += group.len() - 1;
+        }
+        let members: Vec<&InferredStruct> = group.iter().map(|&index| &halves[index]).collect();
+        if let Some(candidate) = merge_group(&members) {
+            candidates.push(candidate);
+        }
+    }
+    candidates.sort_by(|a, b| {
+        b.confidence
+            .cmp(&a.confidence)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    merged
+}
+
+/// Whether two candidates' referencing-function sets overlap enough to
+/// read them as one struct.
+fn references_overlap(a: &[String], b: &[String]) -> bool {
+    let shared = a.iter().filter(|function| b.contains(function)).count();
+    let smaller = a.len().min(b.len());
+    shared > 0 && shared * MERGE_OVERLAP_DENOMINATOR >= smaller * MERGE_OVERLAP_NUMERATOR
+}
+
+/// The lowest literal address backing a candidate, the key its halves are
+/// ordered by; a candidate with no fields sorts first.
+fn first_field_address(candidate: &InferredStruct) -> u64 {
+    candidate
+        .fields
+        .first()
+        .map_or(0, |field| field.source_address)
+}
+
+/// One overlap group as a single candidate. A group of one is that
+/// candidate unchanged; a group of several takes the dominant half's
+/// identity and unions the rest, as [`merge_candidates`] describes.
+/// An empty group yields `None`; the grouping in [`merge_candidates`]
+/// never produces one.
+fn merge_group(members: &[&InferredStruct]) -> Option<InferredStruct> {
+    let first = members.first()?;
+    if members.len() == 1 {
+        return Some((*first).clone());
+    }
+    // The dominant half: the strongest name origin, ties to the earlier
+    // literal address — the order `members` already arrives in, so a
+    // strict comparison keeps the first strongest.
+    let dominant = members.iter().fold(*first, |best: &InferredStruct, candidate| {
+        if candidate.name_origin.confidence_bonus() > best.name_origin.confidence_bonus() {
+            *candidate
+        } else {
+            best
+        }
+    });
+
+    let mut fields: Vec<InferredField> = members
+        .iter()
+        .flat_map(|candidate| candidate.fields.iter().cloned())
+        .collect();
+    fields.sort_by(|a, b| {
+        a.source_address
+            .cmp(&b.source_address)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    // Offsets re-accumulate over the merged field list exactly as
+    // inference laid out one cluster's: each placed field starts on a
+    // 4-byte boundary after the last.
+    let mut cursor = 0u64;
+    for field in fields.iter_mut() {
+        field.offset = field.size.map(|size| {
+            let at = cursor.div_ceil(4) * 4;
+            cursor = at + size;
+            at
+        });
+    }
+
+    let referenced_by: BTreeSet<&String> = members
+        .iter()
+        .flat_map(|candidate| candidate.referenced_by.iter())
+        .collect();
+
+    // Re-score for the merged evidence with the inference score's own
+    // payouts: 8 per field the merge adds past the widest half (up to
+    // five counted), 5 per reader it adds past the widest half's reader
+    // set (up to four counted), on top of the strongest half's score.
+    let widest = members.iter().map(|c| c.fields.len()).max().unwrap_or(0);
+    let breadth = fields.len().saturating_sub(widest).min(5) * 8;
+    let widest_readers = members
+        .iter()
+        .map(|c| c.referenced_by.len())
+        .max()
+        .unwrap_or(0);
+    let agreement = referenced_by.len().saturating_sub(widest_readers).min(4) * 5;
+    let base = members
+        .iter()
+        .map(|c| c.confidence.value())
+        .max()
+        .unwrap_or(0);
+
+    Some(InferredStruct {
+        name: dominant.name.clone(),
+        name_origin: dominant.name_origin,
+        fields,
+        confidence: Confidence::new(
+            u64::from(base)
+                .saturating_add(breadth as u64)
+                .saturating_add(agreement as u64)
+                .min(u64::from(u8::MAX)) as u8,
+        ),
+        referenced_by: referenced_by.into_iter().cloned().collect(),
+        linked_vtable: dominant.linked_vtable,
+        merged_from: Some(members.len()),
+    })
+}
+
+/// The representative of `index`'s group, flattening the path on the way out.
+fn find(parent: &mut [usize], mut index: usize) -> usize {
+    let mut root = index;
+    while parent[root] != root {
+        root = parent[root];
+    }
+    while parent[index] != root {
+        let next = parent[index];
+        parent[index] = root;
+        index = next;
+    }
+    root
+}
+
+/// Merge two candidates' groups.
+fn union(parent: &mut [usize], a: usize, b: usize) {
+    let (a, b) = (find(parent, a), find(parent, b));
+    if a != b {
+        parent[a.max(b)] = a.min(b);
+    }
+}
+
 // ============================================================
 // Tests
 // ============================================================
@@ -222,7 +428,7 @@ fn link_candidates_to_vtables(candidates: &mut [InferredStruct], vtables: &[Vtab
 mod tests {
     use super::*;
     use crate::error::TypesDbError;
-    use crate::types::VtableMethod;
+    use crate::types::{FieldType, VtableMethod};
     use calxgloss_ghidra::{
         DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
         Result as GhidraResult, StringLiteral, StructFieldLayout, StructLayout, Symbol, Xref,
@@ -450,6 +656,54 @@ mod tests {
         program
             .xrefs
             .insert(0x1801_29360, vec![reference("FUN_18003ab00")]);
+        program
+    }
+
+    /// The same program, but the `Widget` fields are read across two
+    /// methods plus a hub: the hub points at 25 literals, so it cannot
+    /// cluster them, and the field list splits into two half-candidates
+    /// that the merge pass has to stitch back together through the hub.
+    fn program_split_by_a_hub() -> FakeProgram {
+        let mut program = program();
+        for (address, value) in [
+            (0x1801_29400, "widget.width=1"),
+            (0x1801_29410, "widget.height=2"),
+            (0x1801_29420, "widget.label=hello"),
+            (0x1801_29430, "widget.visible=true"),
+        ] {
+            program.literals.push(StringLiteral {
+                address,
+                value: value.into(),
+            });
+        }
+        program.xrefs.insert(
+            0x1801_29400,
+            vec![reference("FUN_18003ab00"), reference("FUN_widget_access")],
+        );
+        program.xrefs.insert(
+            0x1801_29410,
+            vec![reference("FUN_18003ab00"), reference("FUN_widget_access")],
+        );
+        program.xrefs.insert(
+            0x1801_29420,
+            vec![reference("FUN_18003e750"), reference("FUN_widget_access")],
+        );
+        program.xrefs.insert(
+            0x1801_29430,
+            vec![reference("FUN_18003e750"), reference("FUN_widget_access")],
+        );
+        // 21 more literals read only by the hub: its fan-out reaches 25,
+        // past the hub threshold, so it clusters none of them.
+        for i in 0..21u64 {
+            let address = 0x1801_29500 + 8 * i;
+            program.literals.push(StringLiteral {
+                address,
+                value: format!("filler_{i}"),
+            });
+            program
+                .xrefs
+                .insert(address, vec![reference("FUN_widget_access")]);
+        }
         program
     }
 
@@ -739,6 +993,72 @@ mod tests {
         assert!(!candidate.is_linked());
     }
 
+    #[tokio::test]
+    async fn a_struct_split_across_a_hub_merges_back_into_one_candidate() {
+        let db = TypesDBEngine::with_source(program_split_by_a_hub())
+            .without_tagging()
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        let widget = db
+            .inferred_structs
+            .iter()
+            .find(|candidate| candidate.name == "Widget")
+            .expect("the widget candidate");
+        assert_eq!(widget.merged_from, Some(2), "two halves became one");
+        assert_eq!(
+            widget
+                .fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            ["width", "height", "label", "visible"],
+            "the field union keeps literal-address order"
+        );
+        assert_eq!(
+            widget.referenced_by,
+            [
+                "FUN_18003ab00".to_string(),
+                "FUN_18003e750".to_string(),
+                "FUN_widget_access".to_string()
+            ]
+        );
+        // The linked half's vtable link and class name survive the merge.
+        assert_eq!(widget.linked_vtable, Some(0x1801_306f0));
+        assert_eq!(widget.name_origin, NameOrigin::VtableClass);
+        // Each half scored 76 linked; the merge pays its own breadth and
+        // agreement terms for what it adds: 76 + 2 fields * 8 + 1 function * 5.
+        assert_eq!(widget.confidence.value(), 97);
+
+        // The unrelated candidate, whose readers share nothing with the
+        // widget's, stays separate and unmerged.
+        assert_eq!(db.inferred_structs.len(), 2);
+        let player = db
+            .inferred_structs
+            .iter()
+            .find(|candidate| candidate.name == "Player")
+            .expect("the player candidate");
+        assert_eq!(player.merged_from, None);
+        assert_eq!(player.fields.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn the_confidence_threshold_still_filters_with_the_merge_in_place() {
+        // The hub-split halves each score 76; a threshold above that
+        // filters them before they can merge, exactly as before the pass.
+        let db = TypesDBEngine::with_source(program_split_by_a_hub())
+            .with_min_confidence(80)
+            .without_tagging()
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+        assert!(
+            db.inferred_structs.is_empty(),
+            "halves below the threshold never reach the merge"
+        );
+    }
+
     fn confirmed_vtable(address: u64, class_name: Option<&str>, methods: &[&str]) -> Vtable {
         Vtable {
             address,
@@ -768,6 +1088,7 @@ mod tests {
             confidence: Confidence::new(30),
             referenced_by: referenced_by.iter().map(|f| (*f).to_string()).collect(),
             linked_vtable: None,
+            merged_from: None,
         }
     }
 
@@ -822,5 +1143,214 @@ mod tests {
         link_candidates_to_vtables(&mut candidates, &[high, low]);
         assert_eq!(candidates[0].linked_vtable, Some(0x1801_306f0));
         assert_eq!(candidates[0].name, "Low");
+    }
+
+    /// A candidate for the merge tests: fields at `addresses`, read by
+    /// `referenced_by`.
+    fn merge_candidate(
+        name: &str,
+        origin: NameOrigin,
+        confidence: u8,
+        addresses: &[u64],
+        referenced_by: &[&str],
+    ) -> InferredStruct {
+        InferredStruct {
+            name: name.to_string(),
+            name_origin: origin,
+            fields: addresses
+                .iter()
+                .enumerate()
+                .map(|(index, &address)| InferredField {
+                    name: format!("field_{index}"),
+                    field_type: FieldType::Integer,
+                    size: Some(4),
+                    offset: Some(index as u64 * 4),
+                    source_value: format!("{name}.field_{index}"),
+                    source_address: address,
+                })
+                .collect(),
+            confidence: Confidence::new(confidence),
+            referenced_by: referenced_by.iter().map(|f| (*f).to_string()).collect(),
+            linked_vtable: None,
+            merged_from: None,
+        }
+    }
+
+    #[test]
+    fn candidates_sharing_a_referencing_function_merge_into_one() {
+        let mut candidates = vec![
+            merge_candidate(
+                "Widget",
+                NameOrigin::LiteralPrefix,
+                66,
+                &[0x100, 0x108],
+                &["FUN_a", "FUN_hub"],
+            ),
+            merge_candidate(
+                "Widget",
+                NameOrigin::LiteralPrefix,
+                66,
+                &[0x110, 0x118],
+                &["FUN_b", "FUN_hub"],
+            ),
+        ];
+        assert_eq!(merge_candidates(&mut candidates), 1);
+        assert_eq!(candidates.len(), 1);
+        let candidate = &candidates[0];
+        assert_eq!(candidate.merged_from, Some(2));
+        assert_eq!(
+            candidate.referenced_by,
+            [
+                "FUN_a".to_string(),
+                "FUN_b".to_string(),
+                "FUN_hub".to_string()
+            ]
+        );
+        assert_eq!(
+            candidate
+                .fields
+                .iter()
+                .map(|field| (field.name.as_str(), field.source_address, field.offset))
+                .collect::<Vec<_>>(),
+            [
+                ("field_0", 0x100, Some(0)),
+                ("field_1", 0x108, Some(4)),
+                ("field_0", 0x110, Some(8)),
+                ("field_1", 0x118, Some(12)),
+            ],
+            "the union keeps literal-address order and re-accumulates offsets"
+        );
+        // 66 plus the added breadth (2 fields * 8) and agreement (1 function * 5).
+        assert_eq!(candidate.confidence.value(), 87);
+    }
+
+    #[test]
+    fn a_below_threshold_overlap_keeps_candidates_separate() {
+        // One shared reader out of three is not enough: a lone overlap
+        // says less the more readers each half has on its own.
+        let mut candidates = vec![
+            merge_candidate(
+                "Widget",
+                NameOrigin::LiteralPrefix,
+                66,
+                &[0x100],
+                &["FUN_a", "FUN_b", "FUN_c"],
+            ),
+            merge_candidate(
+                "Widget",
+                NameOrigin::LiteralPrefix,
+                66,
+                &[0x108],
+                &["FUN_a", "FUN_d", "FUN_e"],
+            ),
+        ];
+        assert_eq!(merge_candidates(&mut candidates), 0);
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates.iter().all(|c| c.merged_from.is_none()));
+    }
+
+    #[test]
+    fn an_overlap_at_the_threshold_merges() {
+        // Two shared readers out of three clears the half.
+        let mut candidates = vec![
+            merge_candidate(
+                "Widget",
+                NameOrigin::LiteralPrefix,
+                66,
+                &[0x100],
+                &["FUN_a", "FUN_b", "FUN_c"],
+            ),
+            merge_candidate(
+                "Widget",
+                NameOrigin::LiteralPrefix,
+                66,
+                &[0x108],
+                &["FUN_a", "FUN_b", "FUN_d"],
+            ),
+        ];
+        assert_eq!(merge_candidates(&mut candidates), 1);
+        assert_eq!(candidates[0].merged_from, Some(2));
+    }
+
+    #[test]
+    fn candidates_that_share_no_readers_stay_separate() {
+        let mut candidates = vec![
+            merge_candidate("Widget", NameOrigin::LiteralPrefix, 66, &[0x100], &["FUN_a"]),
+            merge_candidate("Player", NameOrigin::LiteralPrefix, 66, &[0x108], &["FUN_b"]),
+            merge_candidate("Strings", NameOrigin::Address, 30, &[0x110], &[]),
+        ];
+        assert_eq!(merge_candidates(&mut candidates), 0);
+        assert_eq!(candidates.len(), 3);
+    }
+
+    #[test]
+    fn the_strongest_half_names_the_merge_and_keeps_its_link() {
+        let mut linked = merge_candidate(
+            "Widget",
+            NameOrigin::VtableClass,
+            97,
+            &[0x100, 0x108],
+            &["FUN_m1", "FUN_hub"],
+        );
+        linked.linked_vtable = Some(0x1801_306f0);
+        let address_named = merge_candidate(
+            "strings_at_180129410",
+            NameOrigin::Address,
+            40,
+            &[0x110],
+            &["FUN_b", "FUN_hub"],
+        );
+        let mut candidates = vec![address_named, linked];
+        merge_candidates(&mut candidates);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].name, "Widget");
+        assert_eq!(candidates[0].name_origin, NameOrigin::VtableClass);
+        assert_eq!(candidates[0].linked_vtable, Some(0x1801_306f0));
+    }
+
+    #[test]
+    fn when_both_halves_are_linked_the_earlier_address_keeps_its_link() {
+        let mut early = merge_candidate(
+            "Widget",
+            NameOrigin::LiteralPrefix,
+            66,
+            &[0x100],
+            &["FUN_a", "FUN_hub"],
+        );
+        early.linked_vtable = Some(0x1801_306f0);
+        let mut late = merge_candidate(
+            "Widget",
+            NameOrigin::LiteralPrefix,
+            66,
+            &[0x200],
+            &["FUN_b", "FUN_hub"],
+        );
+        late.linked_vtable = Some(0x1801_30700);
+        let mut candidates = vec![late.clone(), early.clone()];
+        merge_candidates(&mut candidates);
+        assert_eq!(candidates[0].linked_vtable, Some(0x1801_306f0));
+    }
+
+    #[test]
+    fn the_merge_does_not_depend_on_input_order() {
+        let first = merge_candidate(
+            "Widget",
+            NameOrigin::LiteralPrefix,
+            66,
+            &[0x100, 0x108],
+            &["FUN_a", "FUN_hub"],
+        );
+        let second = merge_candidate(
+            "Widget",
+            NameOrigin::VtableClass,
+            76,
+            &[0x110],
+            &["FUN_b", "FUN_hub"],
+        );
+        let mut forwards = vec![first.clone(), second.clone()];
+        let mut backwards = vec![second.clone(), first.clone()];
+        merge_candidates(&mut forwards);
+        merge_candidates(&mut backwards);
+        assert_eq!(forwards, backwards, "two scans merge in one order");
     }
 }
