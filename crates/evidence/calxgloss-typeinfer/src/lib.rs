@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into nine modules:
+//! The crate is organized into ten modules:
 //!
 //! - [`types`] - Core data types: `InferredParamType`, `InferenceMethod`,
 //!   `InferenceScope` for per-parameter inference records; `InferredLocalType`
@@ -16,8 +16,9 @@
 //!   `TypeInferenceResult`, `ScanMetadata` for the persisted per-binary
 //!   results.
 //! - [`engine`] - Scan orchestration: `TypeInferEngine` decompiles each
-//!   function of a program exactly once, reads it with all three detectors,
-//!   and assembles their records into one `TypeInferenceResult`;
+//!   function of a program exactly once, reads it with all three inline
+//!   detectors, propagates the surviving readings across function
+//!   boundaries, and assembles everything into one `TypeInferenceResult`;
 //!   the shared `ScanSource` trait abstracts the decompiler reads so tests
 //!   run the orchestration over canned bodies.
 //! - [`this_ptr`] - C++ this-pointer detection: `ThisPointerDetector`
@@ -32,6 +33,10 @@
 //!   extracts calls from decompiled text and propagates parameter types
 //!   through a signature database of well-known library functions, with
 //!   A/W-suffix name matching and per-signature confidence scores.
+//! - [`cross_function`] - Cross-function propagation: `CrossFunctionPropagator`
+//!   carries each function's surviving parameter readings to the arguments
+//!   at that callee's call sites — and to the caller's own parameter when
+//!   the argument is one, so types climb the call chain.
 //! - [`reading`] - Detector-internal accumulator: the single `Reading`
 //!   shape every detector feeds, with highest-confidence-wins resolution
 //!   and shared record assembly.
@@ -43,6 +48,7 @@
 //! - [`error`] - [`TypeInferError`] and the crate-wide [`Result`] alias.
 
 pub mod confidence;
+pub mod cross_function;
 pub mod engine;
 pub mod error;
 pub mod known_type;

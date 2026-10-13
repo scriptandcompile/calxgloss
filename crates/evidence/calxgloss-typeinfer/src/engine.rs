@@ -1,25 +1,33 @@
 //! Type inference orchestration.
 //!
-//! [`TypeInferEngine`] runs the three detectors — this-pointer detection,
-//! parameter-size detection, and known-type propagation — over every
-//! function of one open Ghidra program and assembles their records into a
-//! single [`TypeInferenceResult`] with its scan provenance.
+//! [`TypeInferEngine`] runs the three inline detectors — this-pointer
+//! detection, parameter-size detection, and known-type propagation — over
+//! every function of one open Ghidra program, then runs the
+//! cross-function pass: each function's surviving parameter readings
+//! type the arguments at that callee's call sites, and the caller's own
+//! parameter when the argument is one. Their records are assembled into
+//! a single [`TypeInferenceResult`] with its scan provenance.
 //!
-//! The detectors are pure text analysis over one decompiled body, so the
-//! engine fetches each function's pseudo-C exactly once and reads it with
-//! all three, rather than having each detector pull its own copy. The scan
-//! is then one pass over the function listing: there are no disjoint
+//! The inline detectors are pure text analysis over one decompiled body,
+//! so the engine fetches each function's pseudo-C exactly once and reads
+//! it with all three, rather than having each detector pull its own copy
+//! — and the cross-function pass re-reads those same bodies, keeping the
+//! whole scan at one decompile per function. The inline pass is then one
+//! sequential pass over the function listing: there are no disjoint
 //! endpoint sets to overlap the way the type-database scans have, and
 //! keeping the pass sequential keeps the persisted inference list in a
 //! stable, diffable order.
 
+use std::collections::HashMap;
+
 use crate::confidence::resolve_conflicts;
+use crate::cross_function::{CalleeParams, CrossFunctionPropagator};
 use crate::error::Result;
 use crate::known_type::KnownTypePropagationEngine;
 use crate::param_size::ParameterSizeDetector;
 use crate::this_ptr::ThisPointerDetector;
 use crate::types::{InferredType, ScanMetadata, TypeInferenceResult};
-use calxgloss_ghidra::GhidraClient;
+use calxgloss_ghidra::{DecompiledFunction, GhidraClient};
 use std::time::Instant;
 use tracing::{info, warn};
 
@@ -33,7 +41,8 @@ use tracing::{info, warn};
 /// orchestrating task.
 pub use calxgloss_ghidra::ScanSource;
 
-/// Orchestrates the three detectors into one [`TypeInferenceResult`].
+/// Orchestrates the inline detectors and the cross-function pass into one
+/// [`TypeInferenceResult`].
 ///
 /// The engine is generic over its [`ScanSource`], so tests can run the
 /// whole orchestration over canned bodies; [`new`](Self::new) builds one over
@@ -45,6 +54,7 @@ pub struct TypeInferEngine<S = GhidraClient> {
     this_ptr: ThisPointerDetector,
     param_size: ParameterSizeDetector,
     known: KnownTypePropagationEngine,
+    cross: CrossFunctionPropagator,
 }
 
 impl TypeInferEngine<GhidraClient> {
@@ -55,6 +65,7 @@ impl TypeInferEngine<GhidraClient> {
             this_ptr: ThisPointerDetector::new(),
             param_size: ParameterSizeDetector::new(),
             known: KnownTypePropagationEngine::new(),
+            cross: CrossFunctionPropagator::new(),
         }
     }
 }
@@ -67,18 +78,21 @@ impl<S> TypeInferEngine<S> {
             this_ptr: ThisPointerDetector::new(),
             param_size: ParameterSizeDetector::new(),
             known: KnownTypePropagationEngine::new(),
+            cross: CrossFunctionPropagator::new(),
         }
     }
 
-    /// Infer parameter types across `binary`, decompiling each function
-    /// exactly once and reading it with all three detectors.
+    /// Infer types across `binary`, decompiling each function exactly
+    /// once and reading it with all three inline detectors, then
+    /// propagating the surviving readings across function boundaries.
     ///
     /// `binary` names the program the scan reads (e.g. `eqmain.dll`) and
     /// becomes the key a persisted result is filed under. The inferences
     /// follow the function listing — function by function, and within one
-    /// function the this-pointer readings, then the size readings, then the
-    /// known-signature readings — so two scans of the same program diff
-    /// cleanly.
+    /// function the this-pointer readings, then the size readings, then
+    /// the known-signature readings — with the cross-function records
+    /// appended after the inline ones, in listing order, so two scans of
+    /// the same program diff cleanly.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad entry
     /// point) is skipped with a warning; only a failure of the listing
@@ -92,7 +106,10 @@ impl<S> TypeInferEngine<S> {
     /// — `strlen`'s argument stands read by the size detector and the
     /// known-signature engine at once — conflict resolution collapses the
     /// competition to the strongest record before the result is assembled,
-    /// so the result carries at most one inference per parameter.
+    /// so the result carries at most one inference per parameter, local,
+    /// or call-site argument. The cross-function pass propagates only
+    /// those resolved survivors, and its own records compete with the
+    /// inline ones for the same targets in the final resolution.
     pub async fn scan(&self, binary: impl Into<String>) -> Result<TypeInferenceResult>
     where
         S: ScanSource,
@@ -101,6 +118,9 @@ impl<S> TypeInferEngine<S> {
         let functions = self.source.functions().await?;
 
         let mut inferences = Vec::new();
+        // The bodies stay in hand after the inline pass so the
+        // cross-function pass can re-read them without a second decompile.
+        let mut bodies: Vec<DecompiledFunction> = Vec::new();
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
         for function in &functions {
@@ -148,13 +168,33 @@ impl<S> TypeInferEngine<S> {
                 .chain(self.param_size.detect_parameter_sizes(&decompiled))
                 .chain(self.known.propagate_known_types(&decompiled));
             inferences.extend(readings.map(InferredType::Param));
+            bodies.push(decompiled);
         }
 
         // The detectors read each body independently, so one parameter can
-        // stand read several times over; the result carries only the
-        // strongest reading per parameter.
-        let collected = inferences.len();
-        let inferences = resolve_conflicts(inferences);
+        // stand read several times over; the cross-function pass only
+        // propagates the strongest reading per parameter, so the inline
+        // records resolve among themselves first.
+        let mut collected = inferences.len();
+        let inline = resolve_conflicts(inferences);
+        let callee_params = surviving_param_readings(&inline);
+
+        // Callee to caller: each body's calls to a user-defined callee
+        // take that callee's surviving readings as the arguments' types,
+        // and a caller's own parameter is read when the argument names
+        // one. The bodies are the ones already decompiled — the scan
+        // still visits each function exactly once.
+        let mut propagated: Vec<InferredType> = Vec::new();
+        for body in &bodies {
+            propagated.extend(self.cross.propagate(body, &callee_params));
+        }
+
+        // The propagated records compete with the inline ones — one
+        // parameter can stand read by its own body and by a callee's
+        // contract at once — so the assembled list resolves once more,
+        // and the result carries at most one inference per target.
+        collected += propagated.len();
+        let inferences = resolve_conflicts(inline.into_iter().chain(propagated).collect());
 
         let mut metadata = ScanMetadata::new(binary);
         metadata.duration_secs = started.elapsed().as_secs();
@@ -174,6 +214,23 @@ impl<S> TypeInferEngine<S> {
     }
 }
 
+/// The surviving parameter readings grouped by the function carrying
+/// them — the contracts the cross-function pass propagates. A callee
+/// absent from the map is a library routine, a thunk, or a function no
+/// detector read: it carries nothing to propagate.
+fn surviving_param_readings(inferences: &[InferredType]) -> CalleeParams<'_> {
+    let mut by_callee: CalleeParams<'_> = HashMap::new();
+    for inference in inferences {
+        if let InferredType::Param(record) = inference {
+            by_callee
+                .entry(record.function.as_str())
+                .or_default()
+                .push(record);
+        }
+    }
+    by_callee
+}
+
 // ============================================================
 // Tests
 // ============================================================
@@ -181,7 +238,7 @@ impl<S> TypeInferEngine<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Confidence, InferenceMethod, InferenceScope};
+    use crate::types::{Confidence, InferenceMethod, InferenceScope, InferredCallType};
     use calxgloss_ghidra::{
         DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
         Result, StringLiteral, StructLayout, Symbol, Xref,
@@ -455,6 +512,182 @@ mod tests {
         assert_eq!(record.confidence, Confidence::new(75));
     }
 
+    /// The canned program for the cross-function pass: a helper whose
+    /// body reads its own parameters — `char *` at position 0, `void *`
+    /// at position 1 — and a caller that invokes it with its own
+    /// parameter, a local, a literal, a cast, and a nested call.
+    fn cross_program() -> FakeProgram {
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18004b210"), summary("FUN_180051c00")];
+        program.bodies.insert(
+            "FUN_18004b210".into(),
+            function(
+                "FUN_18004b210",
+                "undefined FUN_18004b210(undefined8 param_1,undefined8 param_2)",
+                "  uVar1 = strlen(param_1);\n  CloseHandle(param_2);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_180051c00".into(),
+            function(
+                "FUN_180051c00",
+                "undefined FUN_180051c00(undefined8 param_1,undefined8 param_2)",
+                "  FUN_18004b210(param_1, local_8);\n\
+                 \x20 FUN_18004b210(\"name\", (char *)param_2);\n\
+                 \x20 FUN_18004b210(get_name(), 0x10);\n",
+            ),
+        );
+        program
+    }
+
+    fn call_site_finding<'a>(
+        result: &'a TypeInferenceResult,
+        function: &str,
+        callee: &str,
+        arg_index: usize,
+    ) -> &'a InferredCallType {
+        result
+            .for_function(function)
+            .find_map(|inference| match inference {
+                InferredType::CallSite(record)
+                    if record.callee == callee && record.arg_index == arg_index =>
+                {
+                    Some(record)
+                }
+                _ => None,
+            })
+            .expect("call-site record")
+    }
+
+    fn call_site_count(result: &TypeInferenceResult, function: &str) -> usize {
+        result
+            .for_function(function)
+            .filter(|inference| matches!(inference, InferredType::CallSite(_)))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn a_callee_s_surviving_reading_types_the_arguments_at_its_call_sites() {
+        let program = cross_program();
+        let result = scan(program.clone()).await;
+
+        // The helper's own readings survive as before.
+        assert_eq!(
+            finding(&result, "FUN_18004b210", InferenceMethod::StringFunction, 0).inferred_type(),
+            "char *"
+        );
+
+        // The call-site record: the helper's `char *` reading types the
+        // first argument, with the call line as evidence.
+        let site = call_site_finding(&result, "FUN_180051c00", "FUN_18004b210", 0);
+        assert_eq!(site.arg_name.as_deref(), Some("param_1"));
+        assert_eq!(site.inferred_type, "char *");
+        assert_eq!(site.method, InferenceMethod::CrossFunction);
+        assert_eq!(site.scope, InferenceScope::Function);
+        assert_eq!(site.confidence, Confidence::new(70));
+        assert_eq!(site.evidence, "FUN_18004b210(param_1, local_8);");
+
+        // The second position takes the helper's `void *` reading; the
+        // argument is a local, so no parameter record rides along.
+        let site = call_site_finding(&result, "FUN_180051c00", "FUN_18004b210", 1);
+        assert_eq!(site.arg_name.as_deref(), Some("local_8"));
+        assert_eq!(site.inferred_type, "void *");
+
+        // The argument that is the caller's own parameter gets a
+        // parameter record too — the type climbing the call chain.
+        let climb = finding(&result, "FUN_180051c00", InferenceMethod::CrossFunction, 0);
+        let InferredType::Param(record) = climb else {
+            unreachable!("the cross-function pass emits parameter records");
+        };
+        assert_eq!(record.param_name.as_deref(), Some("param_1"));
+        assert_eq!(record.inferred_type, "char *");
+        assert_eq!(record.scope, InferenceScope::Function);
+        assert_eq!(record.confidence, Confidence::new(65));
+        assert_eq!(record.evidence, "FUN_18004b210(param_1, local_8);");
+
+        // The literal, cast, and nested-call sites produced nothing:
+        // two call-site records for the caller, and its second
+        // parameter carries no reading at all.
+        assert_eq!(call_site_count(&result, "FUN_180051c00"), 2);
+        assert_eq!(param_count(&result, "FUN_180051c00", 1), 0);
+
+        // The cross-function pass re-read the bodies it already had:
+        // still one decompile per function.
+        assert_eq!(
+            program.decompiled(),
+            vec!["FUN_18004b210", "FUN_180051c00"],
+            "one decompile per function, in listing order"
+        );
+    }
+
+    #[tokio::test]
+    async fn conflicting_call_site_readings_for_one_target_keep_the_first_seen() {
+        // Two calls to one callee at one position, both bare names: the
+        // target is the same, the readings tie at 70, and conflict
+        // resolution keeps the site the body showed first.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18004b210"), summary("FUN_180051c00")];
+        program.bodies.insert(
+            "FUN_18004b210".into(),
+            function(
+                "FUN_18004b210",
+                "undefined FUN_18004b210(undefined8 param_1)",
+                "  uVar1 = strlen(param_1);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_180051c00".into(),
+            function(
+                "FUN_180051c00",
+                "undefined FUN_180051c00(undefined8 param_1)",
+                "  FUN_18004b210(param_1);\n  FUN_18004b210(local_8);\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        assert_eq!(call_site_count(&result, "FUN_180051c00"), 1);
+        let site = call_site_finding(&result, "FUN_180051c00", "FUN_18004b210", 0);
+        assert_eq!(site.arg_name.as_deref(), Some("param_1"));
+        assert_eq!(site.evidence, "FUN_18004b210(param_1);");
+    }
+
+    #[tokio::test]
+    async fn a_cross_function_reading_loses_to_a_stronger_inline_reading_for_one_parameter() {
+        // The caller's parameter stands read by its own body (`strlen`,
+        // 70) and by the callee's contract (65): the direct reading wins
+        // the target and the cross-function record drops — while the
+        // call-site record, a different target, survives on its own.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18004b210"), summary("FUN_180051c00")];
+        program.bodies.insert(
+            "FUN_18004b210".into(),
+            function(
+                "FUN_18004b210",
+                "undefined FUN_18004b210(undefined8 param_1)",
+                "  CloseHandle(param_1);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_180051c00".into(),
+            function(
+                "FUN_180051c00",
+                "undefined FUN_180051c00(undefined8 param_1)",
+                "  uVar1 = strlen(param_1);\n  FUN_18004b210(param_1);\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        assert_eq!(param_count(&result, "FUN_180051c00", 0), 1);
+        let InferredType::Param(record) =
+            finding(&result, "FUN_180051c00", InferenceMethod::StringFunction, 0)
+        else {
+            unreachable!("the size detector emits parameter records");
+        };
+        assert_eq!(record.inferred_type, "char *");
+        let site = call_site_finding(&result, "FUN_180051c00", "FUN_18004b210", 0);
+        assert_eq!(site.inferred_type, "void *");
+    }
+
     #[tokio::test]
     async fn scan_decompiles_each_function_exactly_once() {
         // The three detectors share one fetch per function; a scan that
@@ -597,5 +830,38 @@ mod tests {
         assert!(result.is_empty());
         assert_eq!(result.metadata.binary, "eqmain.dll");
         assert!(result.metadata.scanned_at > 0);
+    }
+
+    #[tokio::test]
+    async fn an_inline_reading_at_confidence_65_beats_the_cross_function_climb() {
+        // Both readings sit at 65, so the first-seen rule decides — and
+        // the inline chain is always resolved before the propagated one.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18004b210"), summary("FUN_180051c00")];
+        program.bodies.insert(
+            "FUN_18004b210".into(),
+            function(
+                "FUN_18004b210",
+                "undefined FUN_18004b210(undefined8 param_1)",
+                "  *param_1 = 0;\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_180051c00".into(),
+            function(
+                "FUN_180051c00",
+                "undefined FUN_180051c00(undefined8 param_1)",
+                "  *param_1 = 0;\n  FUN_18004b210(param_1);\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        assert_eq!(param_count(&result, "FUN_180051c00", 0), 1);
+        let InferredType::Param(record) =
+            finding(&result, "FUN_180051c00", InferenceMethod::PointerArithmetic, 0)
+        else {
+            unreachable!("the pointer detector emits parameter records");
+        };
+        assert_eq!(record.inferred_type, "void *");
     }
 }

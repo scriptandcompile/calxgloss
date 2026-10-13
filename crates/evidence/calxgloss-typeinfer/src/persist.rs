@@ -142,8 +142,9 @@ mod tests {
     };
     use tempfile::TempDir;
 
-    /// A result with one record of every inference kind, so a round trip
-    /// proves each kind survives the file, not just the envelope.
+    /// A result with one record of every inference kind — including the
+    /// cross-function method — so a round trip proves each kind survives
+    /// the file, not just the envelope.
     fn result(binary: &str) -> TypeInferenceResult {
         TypeInferenceResult {
             metadata: ScanMetadata {
@@ -182,6 +183,17 @@ mod tests {
                     confidence: Confidence::new(75),
                     evidence: "CloseHandle(param_2);".into(),
                 }),
+                InferredType::CallSite(InferredCallType {
+                    function: "FUN_180051c00".into(),
+                    callee: "FUN_18004b210".into(),
+                    arg_index: 0,
+                    arg_name: Some("param_1".into()),
+                    inferred_type: "char *".into(),
+                    method: InferenceMethod::CrossFunction,
+                    scope: InferenceScope::Function,
+                    confidence: Confidence::new(70),
+                    evidence: "FUN_18004b210(param_1, local_8);".into(),
+                }),
             ],
         }
     }
@@ -199,6 +211,11 @@ mod tests {
         assert_eq!(loaded.inferences[0].inferred_type(), "Widget *");
         assert_eq!(loaded.inferences[1].confidence(), Confidence::new(60));
         assert_eq!(loaded.for_function("FUN_1800412a0").count(), 1);
+        let text = std::fs::read_to_string(dir.path().join("eqmain.dll.json")).unwrap();
+        assert!(
+            text.contains("\"method\": \"cross_function\""),
+            "the cross_function method label survives the file: {text}"
+        );
     }
 
     #[test]

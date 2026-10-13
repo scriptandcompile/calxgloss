@@ -54,6 +54,10 @@ pub enum InferenceMethod {
     /// A known library signature (`malloc`, `CloseHandle`, ...) propagates
     /// the callee's parameter type to the argument.
     KnownSignature,
+    /// A user-defined callee's surviving parameter reading propagates to
+    /// the argument sitting at that callee's call site — and, when the
+    /// argument is the caller's own parameter, to that parameter too.
+    CrossFunction,
 }
 
 impl InferenceMethod {
@@ -77,6 +81,7 @@ calxgloss_types::display_serde_label!(InferenceMethod {
     IntegerBitPattern => "integer_bit_pattern",
     PointerArithmetic => "pointer_arithmetic",
     KnownSignature => "known_signature",
+    CrossFunction => "cross_function",
 });
 
 // ============================================================
