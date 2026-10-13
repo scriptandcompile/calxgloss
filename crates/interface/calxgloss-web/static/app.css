@@ -3412,6 +3412,26 @@ svg {
     border-radius: 8px;
 }
 
+/* The Binaries view's summary table (issue #130, W4.1). */
+#binaries-table-wrap {
+    max-height: 60vh;
+    overflow: auto;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+}
+
+/* Small badge on rows whose category/strategy comes from a persisted
+   classification override rather than the recorded classification. */
+.binaries-overridden {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 1px 8px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
 .token-col-strategy {
     font-family: var(--font-mono, monospace);
     font-size: 12px;

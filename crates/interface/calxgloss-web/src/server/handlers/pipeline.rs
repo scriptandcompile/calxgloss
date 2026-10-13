@@ -293,7 +293,11 @@ pub async fn api_get_pipeline(
 /// only account of what the workspace already knows — the pipeline table
 /// hydrates its rows from them until this run's own events supersede them.
 /// Records missing a name or category are skipped rather than guessed at.
-fn disk_classifications(repo_path: &Path) -> HashMap<BinaryIdentity, ClassificationInfo> {
+/// The binaries view (issue #130) reads the same records through this one
+/// shape — one reader of the artifact format, not two.
+pub(crate) fn disk_classifications(
+    repo_path: &Path,
+) -> HashMap<BinaryIdentity, ClassificationInfo> {
     let mut found = HashMap::new();
     let classify_dir = repo_path.join("re").join("classify");
     let Ok(entries) = std::fs::read_dir(&classify_dir) else {

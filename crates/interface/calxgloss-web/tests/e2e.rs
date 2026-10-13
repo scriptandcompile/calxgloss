@@ -6769,6 +6769,213 @@ async fn test_llm_metrics_api_corrupt_logs_honest_empty() {
     );
 }
 
+// ─────────────────────────────────────────────────────────────
+// Binaries view (issue #130, W4.1)
+// ─────────────────────────────────────────────────────────────
+
+/// Issue #130 router contract: `/api/binaries/list` is registered in the
+/// shared routes — it reads only persisted history, never live pipeline
+/// state — so both the plain and the live router answer it. The fixture's
+/// initial classification records carry no `binary` field, so
+/// `disk_classifications` skips them and the list is honestly empty.
+#[tokio::test]
+async fn test_binaries_list_registered_in_plain_and_live_routers() {
+    for kind in ["plain", "live"] {
+        let fixture = TestFixture::new();
+        let state = ServerState::new(fixture.repo_path());
+        let router = if kind == "plain" {
+            build_router(state)
+        } else {
+            let events = TranslationEvents::new(128);
+            let manager = SessionManager::new_with_broadcast(events.subscribe());
+            build_router_with_ws(state, manager, ProgressState::new())
+        };
+        let _server = spawn_server(router, fixture.port()).await;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let base = format!("http://127.0.0.1:{}", fixture.port());
+        let (status, body) = get_json(&format!("{base}/api/binaries/list")).await;
+        assert_eq!(status, 200, "{kind} router serves /api/binaries/list");
+        assert!(
+            body["binaries"]
+                .as_array()
+                .expect("binaries array")
+                .is_empty(),
+            "{kind} router answers an empty list when no classification \
+             record is readable — never a wall of zero rows"
+        );
+    }
+}
+
+/// Seed the full-shape persisted history the exact-JSON test pins:
+/// classification records carrying the `binary` field the artifact reader
+/// requires (overwriting the fixture's minimal ones), a corrupt record
+/// that must be skipped, a classification override on `d3d9.dll`, and a
+/// token-usage log with a differently-spelled binary to pin the
+/// case-insensitive join.
+fn write_binaries_list_fixtures(fixture: &TestFixture) {
+    let classify = fixture.repo_path().join("re").join("classify");
+    std::fs::create_dir_all(&classify).expect("classify dir");
+    std::fs::write(
+        classify.join("game_logic.dll.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "binary": "game_logic.dll",
+            "category": "ProjectSpecific",
+            "strategy": "ReverseEngineer",
+            "exports_count": 24,
+            "imports_count": 12,
+            "crate_replacement": null,
+            "known_runtime": false,
+            "reason": "project-built binary — reverse engineer from disassembly"
+        }))
+        .unwrap(),
+    )
+    .expect("game_logic classification written");
+    std::fs::write(
+        classify.join("d3d9.dll.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "binary": "d3d9.dll",
+            "category": "MicrosoftSdk",
+            "strategy": "CrateReplacement",
+            "exports_count": 100,
+            "imports_count": 5,
+            "crate_replacement": "wgpu",
+            "known_runtime": false,
+            "reason": "Direct3D 9 — replaced with wgpu behind a shim layer"
+        }))
+        .unwrap(),
+    )
+    .expect("d3d9 classification written");
+    // A corrupt record is no record at all — it must not become a row.
+    std::fs::write(classify.join("broken.dll.json"), "{ not json")
+        .expect("corrupt classification written");
+
+    // The persisted override layer: d3d9.dll steered to KnownThirdParty
+    // with a different target crate — exact-key match on the filename.
+    let analysis = fixture.repo_path().join("re").join("analysis");
+    std::fs::create_dir_all(&analysis).expect("analysis dir");
+    std::fs::write(
+        analysis.join("classification_overrides.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "overrides": {
+                "d3d9.dll": {
+                    "category": "KnownThirdParty",
+                    "crate_replacement": "wgpu-rs",
+                    "known_runtime": false
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .expect("override record written");
+
+    // Token totals: game_logic.dll 100 + 50, plus a 25-token entry under
+    // a different spelling that must join into the same row; d3d9.dll 75;
+    // other.dll 999 belongs to no row — no classification record names it.
+    write_token_usage_fixture(
+        &fixture.repo_path(),
+        &[
+            token_usage_entry(
+                "game_logic.dll",
+                "DrawPrimitive",
+                1,
+                "initial",
+                100,
+                false,
+                "",
+                1,
+            ),
+            token_usage_entry(
+                "game_logic.dll",
+                "UpdateScene",
+                1,
+                "initial",
+                50,
+                true,
+                "",
+                2,
+            ),
+            token_usage_entry(
+                "GAME_LOGIC.DLL",
+                "DrawPrimitive",
+                2,
+                "escalate",
+                25,
+                true,
+                "",
+                3,
+            ),
+            token_usage_entry("d3d9.dll", "CreateDevice", 1, "initial", 75, true, "", 4),
+            token_usage_entry("other.dll", "Whatever", 1, "initial", 999, true, "", 5),
+        ],
+    );
+}
+
+/// Issue #130 exact-JSON contract: rows aggregate category/strategy from
+/// the classification records with the persisted override layer applied,
+/// function counts from all the review dashboard's units (queue plus
+/// recent activity — where the merged, accepted ones live), and token
+/// totals from the token-usage log with a case-insensitive join. Corrupt
+/// records are skipped; rows sort alphabetically.
+#[tokio::test]
+async fn test_binaries_list_api_exact_json_from_fixture() {
+    let fixture = TestFixture::new();
+    write_binaries_list_fixtures(&fixture);
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+    let (status, body) = get_json(&format!("{base}/api/binaries/list")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "binaries": [
+                {
+                    "binary": "d3d9.dll",
+                    // The override wins over the recorded MicrosoftSdk
+                    // classification, and its strategy label follows the
+                    // category — CrateReplacement, with the override's
+                    // target crate shown.
+                    "category": "KnownThirdParty",
+                    "strategy": "CrateReplacement",
+                    "crate_replacement": "wgpu-rs",
+                    "overridden": true,
+                    // The merged `re/d3d9.dll/wgpu` branch is an accepted
+                    // unit in the dashboard — the row counts what the
+                    // dashboard holds.
+                    "functions_total": 1,
+                    "functions_done": 1,
+                    "functions_queued": 0,
+                    "functions_failed": 0,
+                    "tokens_used": 75,
+                },
+                {
+                    "binary": "game_logic.dll",
+                    "category": "ProjectSpecific",
+                    "strategy": "ReverseEngineer",
+                    "overridden": false,
+                    // Three units: merged DrawPrimitive v1 and UpdateScene
+                    // v1 (accepted) plus the unmerged v2 branch (patch
+                    // record → pending review); the "GAME_LOGIC.DLL" token
+                    // entry joins in case-insensitively.
+                    "functions_total": 3,
+                    "functions_done": 2,
+                    "functions_queued": 1,
+                    "functions_failed": 0,
+                    "tokens_used": 175,
+                },
+            ],
+        }),
+        "the corrupt record is skipped, the override layer is applied, and \
+         other.dll's tokens belong to no row"
+    );
+}
+
 // ── Headless browser test: Faults view (issue #125) ────────────────────
 
 /// The Faults tab renders the fixture log honestly: summary cards,
@@ -7703,6 +7910,128 @@ async fn test_headless_llm_metrics_view_honest_empty_state() {
             "the empty state should hide the body — no wall of zeros"
         );
     }
+}
+
+/// The Binaries tab renders the fixture's classified binaries as rows:
+/// the override chip on the overridden row, the function counts, and the
+/// token totals — all read straight from the persisted history.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_binaries_view_renders_rows() {
+    let fixture = TestFixture::new();
+    write_binaries_list_fixtures(&fixture);
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    // Switch to the Binaries tab.
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"binaries\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click binaries tab");
+
+    // Two rows — the corrupt classification record never becomes one.
+    let mut rows_rendered = false;
+    for _ in 0..25 {
+        if eval_count(
+            &tab,
+            "document.querySelectorAll('#binaries-table-body tr').length",
+        ) == 2
+        {
+            rows_rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        rows_rendered,
+        "both classified binaries should render as rows"
+    );
+
+    // Alphabetical: d3d9.dll first, carrying the override chip.
+    assert_eq!(
+        eval_text(
+            &tab,
+            "document.querySelector('#binaries-table-body tr td').textContent"
+        ),
+        "d3d9.dll",
+        "rows sort alphabetically by binary name"
+    );
+    assert!(
+        eval_bool(
+            &tab,
+            "document.querySelector('#binaries-table-body tr').textContent.includes('overridden')"
+        ),
+        "the overridden row carries the override chip"
+    );
+
+    // The token total renders with its thousands separator, and the
+    // function counts land in the game_logic.dll row.
+    assert!(
+        eval_bool(
+            &tab,
+            "document.querySelector('#binaries-table-body').textContent.includes('175')"
+        ),
+        "the case-insensitive token join shows game_logic.dll's 175 tokens"
+    );
+}
+
+/// With no readable classification records — the fixture's own minimal
+/// ones carry no `binary` field — the Binaries tab says so plainly: no
+/// empty table shell, no wall of zeros, no error.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_binaries_view_honest_empty_state() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    // Switch to the Binaries tab.
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"binaries\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click binaries tab");
+
+    let mut empty_visible = false;
+    for _ in 0..25 {
+        if eval_bool(
+            &tab,
+            "document.getElementById('binaries-empty').style.display === 'flex'",
+        ) {
+            empty_visible = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        empty_visible,
+        "no readable classification records should show the honest empty state"
+    );
+
+    assert!(
+        eval_bool(
+            &tab,
+            "document.getElementById('binaries-body').style.display === 'none'"
+        ),
+        "the empty state should hide the table — no wall of zeros"
+    );
 }
 
 /// Integration test verifying that the full router with actions

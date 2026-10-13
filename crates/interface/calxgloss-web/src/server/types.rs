@@ -1086,6 +1086,59 @@ pub struct LlmMetricsTierStats {
     pub p95_secs: Option<u64>,
 }
 
+// ─── Binaries view (issue #130, W4.1) ──────────────────────────────────
+
+/// `GET /api/binaries/list` response: one row per classified target
+/// binary, the summary the Binaries view renders. Rows come only from
+/// persisted history — classification records with the override layer
+/// applied, the review dashboard's function units, and the token-usage
+/// log — so plain `serve` and `live` answer identically.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BinariesListResponse {
+    /// The classified binaries, alphabetical by binary name. A workspace
+    /// whose classification records are missing or corrupt honestly
+    /// answers with an empty list — never a wall of zero rows.
+    pub binaries: Vec<BinarySummaryRow>,
+}
+
+/// One classified binary's summary row. Category and strategy carry the
+/// decision actually in force: the recorded classification with the
+/// persisted override layer applied on top. Function counts cover the
+/// review dashboard's function-translation units for this binary —
+/// `functions_total = functions_done + functions_queued + functions_failed`
+/// always holds, so no unit hides in an unshown bucket.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BinarySummaryRow {
+    /// The binary identity — the filename verbatim, as the classification
+    /// record names it.
+    pub binary: BinaryIdentity,
+    /// The category in force (e.g. "WindowsOs", "ProjectSpecific").
+    pub category: String,
+    /// The strategy in force (e.g. "PalMapping", "CrateReplacement",
+    /// "ReverseEngineer").
+    pub strategy: String,
+    /// Target crate for crate-replacement strategies, absent when the
+    /// strategy names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crate_replacement: Option<String>,
+    /// Whether the category/strategy shown comes from a persisted
+    /// classification override rather than the recorded classification.
+    pub overridden: bool,
+    /// Function-translation units this binary owns.
+    pub functions_total: usize,
+    /// Units accepted and merged to main.
+    pub functions_done: usize,
+    /// Units not done and not failing — queued, pending review, in
+    /// progress, blocked, or skipped.
+    pub functions_queued: usize,
+    /// Units a reviewer or the run left failing — sent back or awaiting
+    /// a patch.
+    pub functions_failed: usize,
+    /// Tokens the token-usage log recorded for this binary — 0 when the
+    /// log holds no attempts for it.
+    pub tokens_used: usize,
+}
+
 // ─── Ghidra context types ──────────────────────────────────────────────
 
 /// Ghidra disassembly listing line.

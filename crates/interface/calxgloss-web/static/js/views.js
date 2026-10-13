@@ -12,6 +12,7 @@ import { loadFaults } from "./faults.js";
 import { loadTokenUsage } from "./token-usage.js";
 import { loadStrategyAnalytics } from "./strategy-analytics.js";
 import { loadLlmMetrics } from "./llm-metrics.js";
+import { loadBinaries } from "./binaries.js";
 
 // The tab the operator was last on, persisted so a browser reload lands
 // back where they were instead of always opening on the dashboard.
@@ -87,6 +88,13 @@ export function switchView(viewName) {
     // entry so the view always reflects the current logs.
     if (viewName === "llm-metrics") {
         loadLlmMetrics().catch((err) => console.warn("[LLM metrics] load failed:", err));
+    }
+
+    // Binaries view (issue #130): reload the persisted summary on entry —
+    // classification records, dashboard units, and the token log may all
+    // have moved since the last visit.
+    if (viewName === "binaries") {
+        loadBinaries().catch((err) => console.warn("[Binaries] load failed:", err));
     }
 
     // Live view: fetch on entry, tick elapsed clocks while visible.

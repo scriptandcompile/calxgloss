@@ -975,6 +975,15 @@ fn shared_routes() -> Router<CombinedState> {
             "/api/llm-metrics/by-tier",
             get(handlers::api_get_llm_metrics_by_tier),
         )
+        // Binaries view (issue #130, W4.1): a persisted-history read — it
+        // aggregates the `re/classify/` records with the persisted
+        // classification-override layer applied, the review dashboard's
+        // units, and the token-usage log, never live pipeline state — so
+        // every router answers it. A workspace whose classification
+        // records are missing or corrupt honestly answers an empty list.
+        // The live-only `/api/binaries/{name}/classification` endpoint
+        // below stays live-only; the read paths do not collide with it.
+        .route("/api/binaries/list", get(handlers::api_get_binaries_list))
         .route("/api/graph", get(handlers::api_get_dependency_graph))
         .route("/api/gc/candidates", get(handlers::api_get_gc_candidates))
         .route("/api/gc/archive", post(handlers::api_archive_gc))

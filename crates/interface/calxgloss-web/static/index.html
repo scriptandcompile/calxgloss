@@ -24,6 +24,7 @@
             <button class="nav-tab" data-view="token-usage">Token Usage</button>
             <button class="nav-tab" data-view="strategy-analytics">Strategy Analytics</button>
             <button class="nav-tab" data-view="llm-metrics">LLM Metrics</button>
+            <button class="nav-tab" data-view="binaries">Binaries</button>
         </nav>
         <div class="topbar-right">
             <span id="live-indicator" class="live-dot" title="Live updates active">●</span>
@@ -646,6 +647,46 @@
                     </table>
                 </div>
                 <p class="llm-metrics-note">Attempt durations are wall-clock seconds per translation attempt — compile and tests included — never raw per-LLM-call latency. An em dash means the value was never measured.</p>
+            </div>
+        </section>
+
+        <!-- Binaries view (issue #130, W4.1) — every classified target
+             binary as a row: category and strategy in force (the persisted
+             override layer applied), function counts from the review
+             dashboard's units, and token totals from the token-usage log.
+             Reads only persisted history, so plain `serve` and
+             `calxgloss live` behave identically; a workspace with no
+             readable classification records shows an honest empty state,
+             never a wall of zeros. -->
+        <section id="view-binaries" class="view">
+            <div class="view-header">
+                <h2>Binaries</h2>
+                <div class="view-controls graph-filters">
+                    <span id="binaries-filter-summary" class="graph-filter-summary"></span>
+                </div>
+            </div>
+            <div id="binaries-empty" class="empty-state" style="display:none">
+                <p id="binaries-empty-message"></p>
+            </div>
+            <div id="binaries-body" style="display:none">
+                <div id="binaries-table-wrap">
+                    <table id="binaries-table" class="faults-table">
+                        <thead>
+                            <tr>
+                                <th>Binary</th>
+                                <th>Category</th>
+                                <th>Strategy</th>
+                                <th>Functions</th>
+                                <th>Done</th>
+                                <th>Queued</th>
+                                <th>Failed</th>
+                                <th>Tokens</th>
+                            </tr>
+                        </thead>
+                        <tbody id="binaries-table-body"></tbody>
+                    </table>
+                </div>
+                <p class="llm-metrics-note">Rows come from persisted history only — classification records with the override layer applied, the review dashboard's function units, and the token-usage log — so this view reads the same under plain <code>serve</code> as under <code>calxgloss live</code>. Done / Queued / Failed always add up to Functions; Queued covers everything still waiting, including blocked and skipped.</p>
             </div>
         </section>
     </main>

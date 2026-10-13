@@ -104,6 +104,10 @@ export const API = {
     // same time-range query so cards, trend, and table stay in step.
     async llmMetricsSummary(query) { return API.get(`/api/llm-metrics/summary${query}`); },
     async llmMetricsByTier(query) { return API.get(`/api/llm-metrics/by-tier${query}`); },
+
+    // Binaries view (issue #130, W4.1) — shared router, so both `serve`
+    // and `live` answer it.
+    async binariesList() { return API.get("/api/binaries/list"); },
     async health() { return API.get("/health"); },
     async serverStatus() { return API.get("/api/server/status"); },
     async shutdownServer() { return API.post("/api/server/shutdown"); },
