@@ -31,7 +31,7 @@ targets, not exact requirements.
 | W1 | Web UI Status & Visibility | `calxgloss-web` | 1–2 wk | ✅ done | closed — see epic [#72](https://github.com/scriptandcompile/calxgloss/issues/72) | [#72](https://github.com/scriptandcompile/calxgloss/issues/72) |
 | W2 | Web UI Process Control | `calxgloss-web` + types/translator | 3–4 wk | ✅ done | closed — see epic [#88](https://github.com/scriptandcompile/calxgloss/issues/88) | [#88](https://github.com/scriptandcompile/calxgloss/issues/88) |
 | W3 | Web UI Historical & Analytical Views | `calxgloss-web` | 2–3 wk | ✅ done | closed — see epic [#89](https://github.com/scriptandcompile/calxgloss/issues/89) | [#89](https://github.com/scriptandcompile/calxgloss/issues/89) |
-| W4 | Web UI New Views | `calxgloss-web` | 2–3 wk | ⬜ not started | after W0 P1, W1 P0–1 | — |
+| W4 | Web UI New Views | `calxgloss-web` | 2–3 wk | ✅ done | closed — see epic [#129](https://github.com/scriptandcompile/calxgloss/issues/129) | [#129](https://github.com/scriptandcompile/calxgloss/issues/129) |
 | G1 | Ghidra Lifecycle Integration | `calxgloss-ghidra` + `calxgloss-cli` | 3–4 wk | ✅ done | closed — T1–T9 complete (identity probe, `doctor`, wrong-program guard, headless spawn + session ownership, UDS port discovery + reconciliation, project bootstrap + program loading, lifecycle config + autostart controls, `doctor --fix` plugin-first bootstrap, offline install + version pinning) | [#110](https://github.com/scriptandcompile/calxgloss/issues/110) |
 | P1.5 | typesdb Phase 5: cross-reference clustering, heuristic struct naming, nested structs/unions, STL type detection, Rust codegen for recovered structs | `calxgloss-typesdb` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P2.5 | typeinfer Phase 5: cross-function call-site propagation, integer bit-pattern analysis, C++ mangling analysis, local-variable and return-type inference, **write inferred types back into Ghidra** | `calxgloss-typeinfer` + `calxgloss-ghidra` | — | ⬜ not started | `/to-spec` when picked up | — |
@@ -116,6 +116,30 @@ out of scope per the spec (no honest data source). See `CHANGELOG.md`.
 After W0 Phase 1, W1 Phases 0–1. Binaries view (`/api/binaries*`, shim + PAL
 trackers); unit-detail attempt comparison (side-by-side diff across all
 attempts, per-attempt metadata). Archive §16 + §17.16.
+**Spec (2026-10-12):** published as [#129](https://github.com/scriptandcompile/calxgloss/issues/129)
+— read-only over existing artifacts, all endpoints on the shared router,
+PAL tracker by honest derivation, single e2e test seam (exact-JSON API
+tests + headless-browser view tests, the W3 pattern).
+**Tickets (2026-10-12):** six tracer-bullet tickets in two chains with
+native blocking links — binaries:
+[#130](https://github.com/scriptandcompile/calxgloss/issues/130) list &
+summary table (establishes the binaries handler module + tab pattern) →
+[#132](https://github.com/scriptandcompile/calxgloss/issues/132) detail
+panel → [#133](https://github.com/scriptandcompile/calxgloss/issues/133)
+shim tracker ∥ [#134](https://github.com/scriptandcompile/calxgloss/issues/134)
+PAL tracker; attempts:
+[#131](https://github.com/scriptandcompile/calxgloss/issues/131) attempt
+list & metadata (establishes the attempt-join helpers) →
+[#135](https://github.com/scriptandcompile/calxgloss/issues/135)
+side-by-side diff. **Complete (2026-10-12):** both views shipped — the
+Binaries tab with its summary table, detail panel (override fold applied),
+shim tracker, and honestly-derived PAL tracker, and unit-detail attempt
+comparison with per-attempt metadata and a side-by-side diff across any two
+attempts. All six endpoints on the shared router (serve + live), no new
+persistence formats, honest degradation throughout — not-generated shims,
+no-artifact PAL states, nothing-to-compare single-attempt units, and 404s
+naming what is missing instead of fabricated payloads. Each ticket pinned
+by exact-JSON API tests and headless-browser view tests. See `CHANGELOG.md`.
 
 ## G1 — Ghidra Lifecycle Integration (`calxgloss-ghidra` + `calxgloss-cli`)
 
