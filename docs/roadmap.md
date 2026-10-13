@@ -8,6 +8,11 @@
 > `/to-tickets` (tickets carry native blocking links + triage labels), and the
 > epic link is added to the status matrix below. `/implement` works the
 > tickets; `CHANGELOG.md` stays the record of what shipped.
+>
+> **Where done tracks go:** a completed track is removed from this roadmap —
+> its shipped history lives in `CHANGELOG.md` and its key decisions are
+> recorded as ADRs in `docs/adr/` (W0 → ADR-0002, W1 → ADR-0003, W2 →
+> ADR-0004, W3 → ADR-0005, W4 → ADR-0006, G1 → ADR-0007, X2 → ADR-0008).
 
 ## How a track gets built
 
@@ -19,21 +24,13 @@
 4. `/implement` — drive the tickets (tdd + code-review per ticket).
 5. Update this matrix when a phase completes.
 
-Within the web track, W0 comes first; W1–W4 depend only on backend pipeline
-data, not on the analysis crates. Test counts in the archive are indicative
-targets, not exact requirements.
+Test counts in the archive are indicative targets, not exact requirements.
 
 ## Status matrix
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| W0 | Web UI Foundation & Phase Progress | `calxgloss-web` | 2–3 wk | ✅ done | closed — see epic [#55](https://github.com/scriptandcompile/calxgloss/issues/55) | [#55](https://github.com/scriptandcompile/calxgloss/issues/55) |
-| W1 | Web UI Status & Visibility | `calxgloss-web` | 1–2 wk | ✅ done | closed — see epic [#72](https://github.com/scriptandcompile/calxgloss/issues/72) | [#72](https://github.com/scriptandcompile/calxgloss/issues/72) |
-| W2 | Web UI Process Control | `calxgloss-web` + types/translator | 3–4 wk | ✅ done | closed — see epic [#88](https://github.com/scriptandcompile/calxgloss/issues/88) | [#88](https://github.com/scriptandcompile/calxgloss/issues/88) |
-| W3 | Web UI Historical & Analytical Views | `calxgloss-web` | 2–3 wk | ✅ done | closed — see epic [#89](https://github.com/scriptandcompile/calxgloss/issues/89) | [#89](https://github.com/scriptandcompile/calxgloss/issues/89) |
-| W4 | Web UI New Views | `calxgloss-web` | 2–3 wk | ✅ done | closed — see epic [#129](https://github.com/scriptandcompile/calxgloss/issues/129) | [#129](https://github.com/scriptandcompile/calxgloss/issues/129) |
-| G1 | Ghidra Lifecycle Integration | `calxgloss-ghidra` + `calxgloss-cli` | 3–4 wk | ✅ done | closed — T1–T9 complete (identity probe, `doctor`, wrong-program guard, headless spawn + session ownership, UDS port discovery + reconciliation, project bootstrap + program loading, lifecycle config + autostart controls, `doctor --fix` plugin-first bootstrap, offline install + version pinning) | [#110](https://github.com/scriptandcompile/calxgloss/issues/110) |
-| P1.5 | typesdb Phase 5: cross-reference clustering, heuristic struct naming, nested structs/unions, STL type detection, Rust codegen for recovered structs | `calxgloss-typesdb` | — | ⬜ not started | `/to-spec` when picked up | — |
+| P1.5 | typesdb Phase 5: cross-reference clustering, heuristic struct naming, nested structs/unions, STL type detection, Rust codegen for recovered structs | `calxgloss-typesdb` | — | 🔶 in progress | `/implement` (frontier: #137, #139, #140) | [#136](https://github.com/scriptandcompile/calxgloss/issues/136) |
 | P2.5 | typeinfer Phase 5: cross-function call-site propagation, integer bit-pattern analysis, C++ mangling analysis, local-variable and return-type inference, **write inferred types back into Ghidra** | `calxgloss-typeinfer` + `calxgloss-ghidra` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P3.5 | algorithm Phase 5: confidence scoring improvements, dynamic (JSON) pattern database, multi-function correlation, parallelize across functions | `calxgloss-algorithm` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P4.5 | memory Phase 5: cross-function allocation tracking, ownership transfer detection, smart-pointer conversion, resource leak detection, per-type `Drop` suggestions | `calxgloss-memory` | — | ⬜ not started | `/to-spec` when picked up | — |
@@ -45,7 +42,6 @@ targets, not exact requirements.
 | P10.5 | consts Phase 5: full bitmask enum reconstruction, named constants from context, protocol constants, RGB grouping, codegen output | `calxgloss-consts` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P11.5 | serialize Phase 5: full serialization format inference, cross-field validation, protocol message / network protocol identification, per-type endianness mapping | `calxgloss-serialize` | — | ⬜ not started | `/to-spec` when picked up | — |
 | X1 | Integration-test backend: prefer bethington's headless server over a hand-built mock | test infra | — | ⬜ not started | `/to-spec` when picked up | — |
-| X2 | Orphaned templates `fix.j2` / `disassembly_translate.j2` removed or wired up | `calxgloss-prompts` | — | ✅ done | closed — deleted, see [#87](https://github.com/scriptandcompile/calxgloss/issues/87) | [#87](https://github.com/scriptandcompile/calxgloss/issues/87) |
 | X3 | `data_flow.md` updated to include all methodologies | docs | — | ⬜ not started | `/to-spec` when picked up | — |
 | X4 | Architecture diagrams in source docs match implementation | docs | — | ⬜ not started | `/to-spec` when picked up | — |
 
@@ -53,106 +49,6 @@ Legend: ✅ done · 🔶 in progress · ⬜ not started. Rows P1.5–P11.5 and X
 X3–X4 are open future-work items — optional Phase 5 depth work and
 cross-cutting chores — verified still open in the code (2026-10-08); no
 effort estimates yet.
-
-## W0 — Web UI Foundation & Phase Progress (`calxgloss-web`)
-
-Independent; first web track. Complete — Phases 0–4 plus the Phase 2 tail:
-server management endpoints, pipeline phase bar, per-binary rows, in-flight
-unit phases, unit process detail, live translation view, dashboard
-enhancements, and WS phase events (the live server pushes per-unit
-`unit_phase` records — current phase and history — over the WebSocket, and
-the live view updates its rows from them) — shipped under epic #55, see
-`CHANGELOG.md`.
-
-**Router note:** `/api/progress`, `/api/progress/enhanced`, and the WS
-upgrade exist only in the WS router (`calxgloss live`); `/api/pipeline` is
-shared — it serves an honest
-empty payload on plain `serve` (issue #61). Every new endpoint must state
-which router(s) it registers in.
-
-## W1 — Web UI Status & Visibility (`calxgloss-web`)
-
-After W0 Phases 0–1. Unit-detail enhancements (tier info, fault history,
-tokens, retry strategy, API mappings, caller/callee context); queue view
-(priority/skip/estimate columns, multi-select batch actions — needs a
-queue-order persistence mechanism, none exists today); dependency-graph
-filters + visual encoding + export; LLM I/O log enhancements —
-**prerequisite:** the log is client-side in-memory only; build server-side
-persistence (`re/analysis/llm_io/`) + read endpoint first. Archive §13 + §17.13.
-
-## W2 — Web UI Process Control (`calxgloss-web`, `calxgloss-types`, `calxgloss-translator`)
-
-After W0 Phase 1. `PipelineState` enum in **`calxgloss-types`** (not the CLI —
-web can't depend on it); state machine as shared `Arc` between translator and
-web router (pipeline + web only coexist under `calxgloss live`); pause/resume/
-stop/restart/cancel-current endpoints; controls UI; translation scope controls
-(skip functions/binaries, priorities, constraints); per-function override panel
-(force tier/strategy, hints, notes); binary classification override. **Note:**
-the WebSocket has no client→server command channel (`WsCommand` only has
-`Register`) — control goes through REST or extend `WsCommand`. Archive §14 + §17.14.
-
-## W3 — Web UI Historical & Analytical Views (`calxgloss-web`)
-
-After W0 Phases 1–2. Faults view (`/api/faults*`, charts, CSV export); token
-usage view (`/api/token-usage*`, cost estimates); strategy analytics
-(`/api/strategy-analytics*`); LLM performance metrics (`/api/llm-metrics*`,
-attempt-duration percentiles). Archive §15 + §17.15.
-**Tickets (2026-10-12):** spec #89 decomposed into four tracer-bullet tickets,
-one per view, chained linearly with native blocking links —
-[#125](https://github.com/scriptandcompile/calxgloss/issues/125) faults view ✅
-(establishes the analytics handler module + tab pattern) →
-[#126](https://github.com/scriptandcompile/calxgloss/issues/126) token usage
-view ✅ → [#127](https://github.com/scriptandcompile/calxgloss/issues/127)
-strategy analytics ✅ → [#128](https://github.com/scriptandcompile/calxgloss/issues/128)
-LLM performance metrics ✅. **Complete (2026-10-12):** all four views shipped,
-endpoints registered on the shared router (serve + live), each with exact-JSON
-API tests and headless-browser view tests; honest degradation throughout —
-empty states for missing/corrupt logs, em dashes for unmeasured values. Per-
-model metrics, pass-rate by complexity, and the token budget indicator stayed
-out of scope per the spec (no honest data source). See `CHANGELOG.md`.
-
-## W4 — Web UI New Views (`calxgloss-web`)
-
-After W0 Phase 1, W1 Phases 0–1. Binaries view (`/api/binaries*`, shim + PAL
-trackers); unit-detail attempt comparison (side-by-side diff across all
-attempts, per-attempt metadata). Archive §16 + §17.16.
-**Spec (2026-10-12):** published as [#129](https://github.com/scriptandcompile/calxgloss/issues/129)
-— read-only over existing artifacts, all endpoints on the shared router,
-PAL tracker by honest derivation, single e2e test seam (exact-JSON API
-tests + headless-browser view tests, the W3 pattern).
-**Tickets (2026-10-12):** six tracer-bullet tickets in two chains with
-native blocking links — binaries:
-[#130](https://github.com/scriptandcompile/calxgloss/issues/130) list &
-summary table (establishes the binaries handler module + tab pattern) →
-[#132](https://github.com/scriptandcompile/calxgloss/issues/132) detail
-panel → [#133](https://github.com/scriptandcompile/calxgloss/issues/133)
-shim tracker ∥ [#134](https://github.com/scriptandcompile/calxgloss/issues/134)
-PAL tracker; attempts:
-[#131](https://github.com/scriptandcompile/calxgloss/issues/131) attempt
-list & metadata (establishes the attempt-join helpers) →
-[#135](https://github.com/scriptandcompile/calxgloss/issues/135)
-side-by-side diff. **Complete (2026-10-12):** both views shipped — the
-Binaries tab with its summary table, detail panel (override fold applied),
-shim tracker, and honestly-derived PAL tracker, and unit-detail attempt
-comparison with per-attempt metadata and a side-by-side diff across any two
-attempts. All six endpoints on the shared router (serve + live), no new
-persistence formats, honest degradation throughout — not-generated shims,
-no-artifact PAL states, nothing-to-compare single-attempt units, and 404s
-naming what is missing instead of fabricated payloads. Each ticket pinned
-by exact-JSON API tests and headless-browser view tests. See `CHANGELOG.md`.
-
-## G1 — Ghidra Lifecycle Integration (`calxgloss-ghidra` + `calxgloss-cli`)
-
-Design doc: `docs/ghidra_integration.md` — preflight, headless server
-spawn/supervise, project bootstrap, `doctor --fix` install path; spec from
-the doc's P0–P4 phasing. Endpoint reference: `docs/ghidra_endpoint_map.md`.
-**Bridge decision (2026-10-03):** the Ghidra bridge is
-[bethington/ghidra-mcp](https://github.com/bethington/ghidra-mcp) v6.0.0,
-load port 8089 — see `docs/adr/0001-bethington-ghidra-mcp-bridge.md`.
-**Incident (2026-10-08):** multiple open CodeBrowser windows made the bridge
-answer listings and name searches from different programs; scans skipped
-everything and nearly persisted phantom-clean records. Program selectors +
-preflight program check moved into P1; see risk 7 and issue #71.
 
 ## P1.5 — typesdb Phase 5 (`calxgloss-typesdb`)
 
@@ -225,12 +121,6 @@ protocol identification, per-type endianness mapping.
 
 Prefer bethington's headless server over a hand-built mock for integration
 tests; current state is inline fixtures + `#[ignore]`d live tests.
-
-## X2 — Orphaned templates (`calxgloss-prompts`)
-
-Done — decision was remove. `fix.j2` and `disassembly_translate.j2` sat in
-`templates/` unreferenced in `templates.rs`; the renderer already covers both
-jobs with other templates, so both files were deleted (#87).
 
 ## X3 — `data_flow.md` update (docs)
 
