@@ -12,7 +12,8 @@
 > **Where done tracks go:** a completed track is removed from this roadmap —
 > its shipped history lives in `CHANGELOG.md` and its key decisions are
 > recorded as ADRs in `docs/adr/` (W0 → ADR-0002, W1 → ADR-0003, W2 →
-> ADR-0004, W3 → ADR-0005, W4 → ADR-0006, G1 → ADR-0007, X2 → ADR-0008).
+> ADR-0004, W3 → ADR-0005, W4 → ADR-0006, G1 → ADR-0007, X2 → ADR-0008,
+> P1.5 → ADR-0009–0013).
 
 ## How a track gets built
 
@@ -30,7 +31,6 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P1.5 | typesdb Phase 5: cross-reference clustering, heuristic struct naming, nested structs/unions, STL type detection, Rust codegen for recovered structs | `calxgloss-typesdb` | — | 🔶 in progress | all five tickets shipped (#137–#141); close epic #136 | [#136](https://github.com/scriptandcompile/calxgloss/issues/136) |
 | P2.5 | typeinfer Phase 5: cross-function call-site propagation, integer bit-pattern analysis, C++ mangling analysis, local-variable and return-type inference, **write inferred types back into Ghidra** | `calxgloss-typeinfer` + `calxgloss-ghidra` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P3.5 | algorithm Phase 5: confidence scoring improvements, dynamic (JSON) pattern database, multi-function correlation, parallelize across functions | `calxgloss-algorithm` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P4.5 | memory Phase 5: cross-function allocation tracking, ownership transfer detection, smart-pointer conversion, resource leak detection, per-type `Drop` suggestions | `calxgloss-memory` | — | ⬜ not started | `/to-spec` when picked up | — |
@@ -45,17 +45,10 @@ Test counts in the archive are indicative targets, not exact requirements.
 | X3 | `data_flow.md` updated to include all methodologies | docs | — | ⬜ not started | `/to-spec` when picked up | — |
 | X4 | Architecture diagrams in source docs match implementation | docs | — | ⬜ not started | `/to-spec` when picked up | — |
 
-Legend: ✅ done · 🔶 in progress · ⬜ not started. Rows P1.5–P11.5 and X1,
+Legend: ✅ done · 🔶 in progress · ⬜ not started. Rows P2.5–P11.5 and X1,
 X3–X4 are open future-work items — optional Phase 5 depth work and
 cross-cutting chores — verified still open in the code (2026-10-08); no
 effort estimates yet.
-
-## P1.5 — typesdb Phase 5 (`calxgloss-typesdb`)
-
-Optional depth work on the shipped MVP (archive §1, Phase 5): cross-reference
-clustering, heuristic struct naming, nested structs/unions, STL type
-detection, Rust codegen output for recovered structs. Write-back wrappers
-were deferred to P2.5.
 
 ## P2.5 — typeinfer Phase 5 (`calxgloss-typeinfer` + `calxgloss-ghidra`)
 
