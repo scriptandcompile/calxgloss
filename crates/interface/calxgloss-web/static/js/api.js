@@ -113,6 +113,7 @@ export const API = {
     // classification in force and the per-function list. Shared router;
     // an unknown binary name honestly 404s.
     async binaryDetail(name) { return API.get(`/api/binaries/${encodeURIComponent(name)}`); },
+    async binaryShimStatus(name) { return API.get(`/api/binaries/${encodeURIComponent(name)}/shim-status`); },
     async health() { return API.get("/health"); },
     async serverStatus() { return API.get("/api/server/status"); },
     async shutdownServer() { return API.post("/api/server/shutdown"); },

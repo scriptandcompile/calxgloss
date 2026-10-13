@@ -17,6 +17,15 @@
    behind it are live-only, so under plain `serve` that panel honestly
    reports itself unavailable. An unknown binary name 404s server-side
    and surfaces as an error line in the row, never an empty shell.
+
+   The panel also carries a shim-layer tracker (issue #133, W4.3):
+   whether a shim exists for this binary (from the shim artifacts the
+   shim pipeline persists under `re/shims/`), its mapping count, its
+   verification outcome, and whether the shim branch was merged or sent
+   back. It fills in as its own read, so a slow or failing shim-status
+   never blanks the rest of the panel. A crate-replacement binary with
+   no shim artifacts honestly says "shim not generated"; a
+   reverse-engineered binary honestly says no shim is expected.
    ========================================================================== */
 
 import { API } from "./api.js";
@@ -117,6 +126,10 @@ function wireRowExpansion(tbody) {
         try {
             const d = await API.binaryDetail(row.dataset.binary);
             detail.innerHTML = `<td colspan="8">${renderDetail(d)}</td>`;
+            // The shim tracker is its own read — filling it separately
+            // keeps a slow or failing shim-status from blanking the
+            // classification and function list that already rendered.
+            loadShimTracker(detail.querySelector(".binaries-detail-shim"));
         } catch (err) {
             // The server's own reason surfaces — a 404 for an unknown
             // name is never papered over with an empty shell.
@@ -157,6 +170,53 @@ function renderDetail(d) {
                 <thead><tr><th>Function</th><th>Attempt</th><th>Review status</th></tr></thead>
                 <tbody>${fnBody}</tbody>
             </table>
+            <div class="binaries-detail-shim" data-binary="${escapeHtml(d.binary)}">
+                <div class="spinner"></div>
+            </div>
         </div>
     `;
+}
+
+// Fill the panel's shim tracker once its own read lands.
+async function loadShimTracker(el) {
+    if (!el) return;
+    try {
+        const s = await API.binaryShimStatus(el.dataset.binary);
+        el.innerHTML = renderShimTracker(s);
+    } catch (err) {
+        el.innerHTML = `<div class="binaries-detail-error">Failed to load shim status: ${escapeHtml(err.message)}</div>`;
+    }
+}
+
+// The tracker: existence, mapping count, verification outcome, and the
+// shim branch's acceptance state — or the honest empty state. The pass
+// rate is our division of the persisted counts, shown only when tests
+// actually ran.
+function renderShimTracker(s) {
+    let body;
+    if (!s.shim_expected) {
+        body = `<div class="binaries-shim-none">No shim expected — the decision in force is not a crate replacement.</div>`;
+    } else if (!s.generated) {
+        body = `<div class="binaries-shim-none">Shim not generated — no readable shim artifacts recorded for this binary yet.</div>`;
+    } else {
+        const verification = s.verification
+            ? `Compiled: ${s.verification.compiled ? "yes" : "no"} · Mapping tests: ${s.verification.tests_passed}/${s.verification.tests_total}` +
+              (s.verification.tests_total ? ` (${Math.round((s.verification.tests_passed / s.verification.tests_total) * 100)}%)` : "") +
+              ` · Edge tests: ${s.verification.edge_tests_passed}/${s.verification.edge_tests_total}`
+            : "Verification: not recorded";
+        const branch = s.branch
+            ? `Branch ${s.branch.name}: ${s.branch.merged ? "merged" : s.branch.sent_back ? "sent back" : "open"}`
+            : "No shim branch in the branch model yet";
+        body = `
+            <div class="binaries-shim-facts">
+                <span>Mappings: ${s.mapping_count}</span>
+                <span>${escapeHtml(verification)}</span>
+                <span class="binaries-shim-branch" data-state="${s.branch ? (s.branch.merged ? "merged" : s.branch.sent_back ? "sent-back" : "open") : "none"}">${escapeHtml(branch)}</span>
+            </div>`;
+    }
+    return `
+        <div class="binaries-shim-tracker">
+            <div class="binaries-shim-heading">Shim layer${s.crate_replacement ? ` → ${escapeHtml(s.crate_replacement)}` : ""}</div>
+            ${body}
+        </div>`;
 }

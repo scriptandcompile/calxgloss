@@ -994,6 +994,15 @@ fn shared_routes() -> Router<CombinedState> {
         // empty shell.
         .route("/api/binaries/list", get(handlers::api_get_binaries_list))
         .route("/api/binaries/{name}", get(handlers::api_get_binary_detail))
+        // The shim tracker read (issue #133, W4.3) is persisted history
+        // too — shim artifacts under `re/shims/` plus the shim branch's
+        // verdict in the dashboard's branch model — so every router
+        // answers it; missing or corrupt artifacts honestly answer
+        // "not generated".
+        .route(
+            "/api/binaries/{name}/shim-status",
+            get(handlers::api_get_binary_shim_status),
+        )
         .route("/api/graph", get(handlers::api_get_dependency_graph))
         .route("/api/gc/candidates", get(handlers::api_get_gc_candidates))
         .route("/api/gc/archive", post(handlers::api_archive_gc))

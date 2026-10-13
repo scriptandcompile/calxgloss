@@ -1,6 +1,7 @@
 //! Binaries view handlers — the whole-effort read over every classified
-//! target binary (issue #130, W4.1) and the per-binary detail behind an
-//! expanded row (issue #132, W4.2).
+//! target binary (issue #130, W4.1), the per-binary detail behind an
+//! expanded row (issue #132, W4.2), and the shim-layer tracker inside
+//! that panel (issue #133, W4.3).
 //!
 //! Registered in the shared routes: every read is persisted history, never
 //! live pipeline state, so plain `serve` and `live` answer identically.
@@ -30,7 +31,7 @@
 //! a missing or corrupt log means no recorded spend, not a failure.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use axum::{Json, extract::Path as PathExtractor, extract::State};
 
@@ -41,7 +42,7 @@ use calxgloss_types::{
 
 use super::super::types::{
     BinariesListResponse, BinaryDetailResponse, BinaryFunctionRow, BinarySummaryRow,
-    ClassificationInfo,
+    ClassificationInfo, ShimBranchInfo, ShimStatusResponse, ShimVerificationInfo,
 };
 use super::super::{ServerError, ServerState};
 use super::classification::classification_record_path;
@@ -267,16 +268,17 @@ fn functions_for_binary(
     rows
 }
 
-/// Build the full detail payload for one binary from persisted history.
-/// The requested spelling resolves to the record's verbatim identity
+/// Resolve the requested spelling to one readable classification record
 /// through the case-insensitive binary rule every other server
-/// comparison makes; no readable classification record under any
-/// spelling is an honest 404, never an empty shell.
-fn binary_detail(repo_path: &Path, name: &str) -> Result<BinaryDetailResponse, ServerError> {
-    let classifications = disk_classifications(repo_path);
-    // Deterministic when several spellings of one name each hold a
-    // record: the alphabetically first verbatim identity wins.
-    let record = classifications
+/// comparison makes; no readable record under any spelling is an honest
+/// 404, never an empty shell. Deterministic when several spellings of
+/// one name each hold a record: the alphabetically first verbatim
+/// identity wins.
+fn find_classification_record<'a>(
+    classifications: &'a HashMap<calxgloss_types::BinaryIdentity, ClassificationInfo>,
+    name: &str,
+) -> Result<&'a ClassificationInfo, ServerError> {
+    classifications
         .values()
         .filter(|c| binary_matches(c.binary.as_str(), name))
         .min_by_key(|c| c.binary.as_str())
@@ -284,7 +286,17 @@ fn binary_detail(repo_path: &Path, name: &str) -> Result<BinaryDetailResponse, S
             ServerError::not_found(&format!(
                 "no readable classification record for binary: {name}"
             ))
-        })?;
+        })
+}
+
+/// Build the full detail payload for one binary from persisted history.
+/// The requested spelling resolves to the record's verbatim identity
+/// through the case-insensitive binary rule every other server
+/// comparison makes; no readable classification record under any
+/// spelling is an honest 404, never an empty shell.
+fn binary_detail(repo_path: &Path, name: &str) -> Result<BinaryDetailResponse, ServerError> {
+    let classifications = disk_classifications(repo_path);
+    let record = find_classification_record(&classifications, name)?;
     let name = record.binary.as_str();
 
     let overrides = load_json_or_default::<ClassificationOverrides>(
@@ -356,6 +368,135 @@ pub async fn api_get_binary_detail(
     PathExtractor(name): PathExtractor<String>,
 ) -> Result<Json<BinaryDetailResponse>, ServerError> {
     Ok(Json(binary_detail(state.repo_path(), &name)?))
+}
+
+/// The workspace's shim artifact directory for one binary — the layout
+/// the shim pipeline persists (`calxgloss-analysis::shim_pipeline`):
+/// `re/shims/{binary}/` holding `mappings.json`, `shim.rs`,
+/// `shim_tests.rs`, and `verification.json`. The directory name is
+/// matched case-insensitively like every other server binary join;
+/// deterministically, the alphabetically first spelling wins. No
+/// directory is `None` — the honest "no artifacts" answer.
+fn shim_artifact_dir(repo_path: &Path, name: &str) -> Option<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(repo_path.join("re").join("shims"))
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|dir_name| binary_matches(dir_name, name))
+        })
+        .collect();
+    dirs.sort();
+    dirs.into_iter().next()
+}
+
+/// Reads one shim artifact, honestly `None` when the file is missing or
+/// corrupt — a corrupt artifact is no artifact, never a zeroed one.
+fn read_shim_artifact<T: serde::de::DeserializeOwned>(dir: &Path, file: &str) -> Option<T> {
+    std::fs::read_to_string(dir.join(file))
+        .ok()
+        .and_then(|content| serde_json::from_str(&content).ok())
+}
+
+/// Fold the dashboard's shim unit for one crate into the tracker's
+/// branch state. The join is the same exact-crate-name rule the
+/// dashboard's own dependency wiring holds (shim units keyed by their
+/// function, the crate name); no shim unit for the crate is `None` —
+/// honestly "no shim branch", never a guessed verdict.
+fn shim_branch_state(
+    units: impl IntoIterator<Item = calxgloss_types::UnitOfWork>,
+    krate: &str,
+) -> Option<ShimBranchInfo> {
+    let unit = units
+        .into_iter()
+        .find(|unit| unit.kind == WorkKind::ShimLayer && unit.function.as_deref() == Some(krate))?;
+    Some(ShimBranchInfo {
+        name: format!("re/shim/{krate}"),
+        merged: unit.status == ReviewStatus::Accepted,
+        sent_back: unit.status == ReviewStatus::SendBack,
+    })
+}
+
+/// Build the full shim tracker payload for one binary from persisted
+/// artifacts only: the shim files under `re/shims/{binary}/` (mappings
+/// and verification result) and the shim branch's acceptance state in
+/// the dashboard's branch model. Whether a shim is expected at all
+/// follows the decision in force — the override layer applied — so an
+/// overridden binary is tracked against the crate the analyzer would
+/// actually build on. A crate-replacement binary with no readable
+/// artifacts honestly reports not generated; a reverse-engineered
+/// binary honestly reports no shim expected.
+fn shim_status(repo_path: &Path, name: &str) -> Result<ShimStatusResponse, ServerError> {
+    let classifications = disk_classifications(repo_path);
+    let record = find_classification_record(&classifications, name)?;
+    let name = record.binary.as_str();
+
+    let overrides = load_json_or_default::<ClassificationOverrides>(
+        &classification_override_records_path(repo_path),
+    )
+    .overrides;
+    let decision = in_force_decision(record, overrides.get(name), None);
+
+    let artifacts = shim_artifact_dir(repo_path, name);
+    let mappings: Option<calxgloss_types::ShimLayer> = artifacts
+        .as_ref()
+        .and_then(|dir| read_shim_artifact(dir, "mappings.json"));
+    let verification: Option<calxgloss_types::ShimVerificationResult> = artifacts
+        .as_ref()
+        .and_then(|dir| read_shim_artifact(dir, "verification.json"));
+
+    // Only a decision in force that names a crate has a shim branch to
+    // look for; the branch model is the same dashboard the rest of this
+    // module reads, so merged/sent-back come from its persisted verdicts.
+    let branch = match decision.crate_replacement.as_deref() {
+        Some(krate) => {
+            let dashboard = super::super::build_dashboard(repo_path)
+                .map_err(|e| ServerError::internal(&e.to_string()))?;
+            shim_branch_state(
+                dashboard
+                    .review_queue
+                    .into_iter()
+                    .chain(dashboard.recent_activity),
+                krate,
+            )
+        }
+        None => None,
+    };
+
+    Ok(ShimStatusResponse {
+        binary: record.binary.clone(),
+        shim_expected: decision.crate_replacement.is_some(),
+        crate_replacement: decision.crate_replacement,
+        generated: mappings.is_some(),
+        mapping_count: mappings.as_ref().map(|shim| shim.mappings.len()),
+        verification: verification.map(|v| ShimVerificationInfo {
+            compiled: v.compiled,
+            tests_passed: v.tests_passed,
+            tests_total: v.tests_total,
+            edge_tests_passed: v.edge_tests_passed,
+            edge_tests_total: v.edge_tests_total,
+        }),
+        branch,
+    })
+}
+
+/// Handle `GET /api/binaries/{name}/shim-status` — the shim-layer
+/// tracker for one binary: whether a shim exists (from the shim
+/// artifacts the shim pipeline persists under `re/shims/{binary}/`),
+/// its mapping count, its verification outcome, and whether the shim
+/// branch was merged or sent back (from the dashboard's branch model).
+/// Shared router: both `serve` and `live` answer it from persisted
+/// artifacts only. Missing or corrupt artifacts honestly answer "not
+/// generated" with the derived fields absent; an unknown binary name
+/// honestly 404s like every other binaries read.
+pub async fn api_get_binary_shim_status(
+    State(state): State<ServerState>,
+    PathExtractor(name): PathExtractor<String>,
+) -> Result<Json<ShimStatusResponse>, ServerError> {
+    Ok(Json(shim_status(state.repo_path(), &name)?))
 }
 
 #[cfg(test)]
@@ -634,6 +775,72 @@ mod tests {
             steered.crate_replacement.as_deref(),
             Some("recorded-crate"),
             "a crate-replacement override naming no crate keeps the recorded one"
+        );
+    }
+
+    #[test]
+    fn shim_branch_state_folds_the_dashboard_verdicts() {
+        // The shim unit's review status is the acceptance state: the
+        // builder spells merged as Accepted and a reviewer's verdict as
+        // SendBack; anything else is neither. Only shim-layer units
+        // join, keyed by the crate name exactly as the dashboard's own
+        // dependency wiring keys it.
+        let mut shim_unit = make_unit("shim", WorkKind::ShimLayer, ReviewStatus::Accepted);
+        shim_unit.function = Some("wgpu".into());
+        let mut other = make_unit("shim", WorkKind::PalTrait, ReviewStatus::Accepted);
+        other.function = Some("wgpu".into());
+
+        let merged = shim_branch_state(vec![shim_unit, other], "wgpu")
+            .expect("the shim unit joins on the crate name");
+        assert_eq!(merged.name, "re/shim/wgpu");
+        assert!(merged.merged);
+        assert!(!merged.sent_back);
+
+        let sent_back = shim_branch_state(
+            vec![{
+                let mut u = make_unit("shim", WorkKind::ShimLayer, ReviewStatus::SendBack);
+                u.function = Some("wgpu".into());
+                u
+            }],
+            "wgpu",
+        )
+        .expect("the sent-back shim unit joins");
+        assert!(!sent_back.merged);
+        assert!(sent_back.sent_back);
+
+        assert!(
+            shim_branch_state(
+                vec![{
+                    let mut u = make_unit("shim", WorkKind::ShimLayer, ReviewStatus::Queued);
+                    u.function = Some("wgpu".into());
+                    u
+                }],
+                "wgpu-rs",
+            )
+            .is_none(),
+            "no shim unit for the crate in force is honestly no branch"
+        );
+    }
+
+    #[test]
+    fn shim_artifact_dir_join_is_case_insensitive() {
+        // The shim directory carries the binary name the pipeline wrote;
+        // the lookup folds case like every other server binary join, and
+        // deterministically the alphabetically first spelling wins.
+        let workspace = tempfile::tempdir().expect("temp workspace");
+        let shims = workspace.path().join("re").join("shims");
+        std::fs::create_dir_all(shims.join("D3D9.dll")).expect("shim dir");
+        std::fs::create_dir_all(shims.join("d3d9.dll")).expect("shim dir");
+
+        let dir = shim_artifact_dir(workspace.path(), "d3d9.dll").expect("a matching dir");
+        assert_eq!(
+            dir.file_name().and_then(|n| n.to_str()),
+            Some("D3D9.dll"),
+            "alphabetically first spelling wins"
+        );
+        assert!(
+            shim_artifact_dir(workspace.path(), "other.dll").is_none(),
+            "no matching directory is honestly no artifacts"
         );
     }
 }

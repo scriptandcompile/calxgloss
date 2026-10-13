@@ -7105,6 +7105,347 @@ async fn test_binaries_detail_api_exact_json_from_fixture() {
     }
 }
 
+// ── Binaries shim tracker API (issue #133, W4.3) ───────────────────────
+
+/// Seed the shim artifacts and shim branches the shim-tracker tests
+/// pin, on top of `write_binaries_list_fixtures`: readable mappings and
+/// a verification result for `d3d9.dll` (whose in-force override names
+/// `wgpu-rs`) with the `re/shim/wgpu-rs` branch merged into main, and a
+/// crate-replacement `fmod.dll` whose shim was generated but whose
+/// `re/shim/fmod-rs` branch a reviewer sent back.
+fn write_shim_tracker_fixtures(fixture: &TestFixture) {
+    let classify = fixture.repo_path().join("re").join("classify");
+    std::fs::write(
+        classify.join("fmod.dll.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "binary": "fmod.dll",
+            "category": "KnownThirdParty",
+            "strategy": "CrateReplacement",
+            "exports_count": 40,
+            "imports_count": 3,
+            "crate_replacement": "fmod-rs",
+            "known_runtime": false,
+            "reason": "audio middleware — replaced with fmod-rs behind a shim layer"
+        }))
+        .unwrap(),
+    )
+    .expect("fmod classification written");
+
+    // The shim pipeline's persisted artifacts for d3d9.dll — the exact
+    // layout `shim_pipeline::persist_shim_artifacts` writes.
+    let shim_dir = fixture.repo_path().join("re").join("shims").join("d3d9.dll");
+    std::fs::create_dir_all(&shim_dir).expect("shim artifact dir");
+    std::fs::write(
+        shim_dir.join("mappings.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "source_dll": "d3d9.dll",
+            "target_crate": "wgpu-rs",
+            "mappings": [
+                { "original_api": "Present", "crate_api": "wgpu::Queue::submit" },
+                { "original_api": "Clear", "crate_api": "wgpu::RenderPass::clear_color" }
+            ]
+        }))
+        .unwrap(),
+    )
+    .expect("shim mappings written");
+    std::fs::write(
+        shim_dir.join("verification.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "compiled": true,
+            "compilation_errors": [],
+            "compilation_warnings": [],
+            "tests_passed": 7,
+            "tests_total": 8,
+            "edge_tests_passed": 2,
+            "edge_tests_total": 2,
+            "failed_tests": [],
+            "mapping_results": []
+        }))
+        .unwrap(),
+    )
+    .expect("shim verification written");
+
+    // The dashboard's branch model: `re/shim/wgpu-rs` merged into main
+    // (the crate the d3d9.dll override in force names), and
+    // `re/shim/fmod-rs` unmerged with a reviewer's send-back record —
+    // fmod.dll's generated artifacts still on disk (generated, then sent back).
+    let fmod_shim_dir = fixture.repo_path().join("re").join("shims").join("fmod.dll");
+    std::fs::create_dir_all(&fmod_shim_dir).expect("fmod shim artifact dir");
+    std::fs::write(
+        fmod_shim_dir.join("mappings.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "source_dll": "fmod.dll",
+            "target_crate": "fmod-rs",
+            "mappings": [
+                { "original_api": "FSOUND_Init", "crate_api": "fmod_rs::init" },
+                { "original_api": "FSOUND_Close", "crate_api": "fmod_rs::close" }
+            ]
+        }))
+        .unwrap(),
+    )
+    .expect("fmod mappings written");
+    let git = GitManager::open(&fixture.repo_path()).expect("open fixture repo");
+    {
+        let branch = GitBranch::new("shim", "wgpu-rs", 1).expect("wgpu-rs shim branch name");
+        git.create_branch("shim", "wgpu-rs", 1, None).expect("wgpu-rs branch created");
+        let shim_file = "src/wgpu_rs_shim.rs";
+        std::fs::create_dir_all(git.repo_path().join("src")).expect("src dir");
+        std::fs::write(git.repo_path().join(shim_file), "// wgpu-rs shim layer").expect("wgpu-rs shim written");
+        git.commit(&branch, "Add wgpu-rs shim layer", &[shim_file]).expect("wgpu-rs shim committed");
+        git.merge_to_main(&branch).expect("wgpu-rs branch merged");
+    }
+    {
+        let branch = GitBranch::new("shim", "fmod-rs", 1).expect("fmod-rs shim branch name");
+        git.create_branch("shim", "fmod-rs", 1, None).expect("fmod-rs branch created");
+        let shim_file = "src/fmod_rs_shim.rs";
+        std::fs::write(git.repo_path().join(shim_file), "// fmod-rs shim layer").expect("fmod-rs shim written");
+        git.commit(&branch, "Add fmod-rs shim layer", &[shim_file]).expect("fmod-rs shim committed");
+        // The reviewer's send-back verdict, as `reject_branch` persists it.
+        let rejections = fixture
+            .repo_path()
+            .join("re")
+            .join("rejections")
+            .join("shim")
+            .join("fmod-rs");
+        std::fs::create_dir_all(&rejections).expect("rejection dir");
+        std::fs::write(
+            rejections.join("v1.json"),
+            serde_json::json!({
+                "function": "fmod-rs",
+                "reason": "mapping table incomplete — send back",
+                "requested_changes": "regenerate the missing exports",
+                "reviewed_at": "2026-09-05T00:00:00Z",
+            })
+            .to_string(),
+        )
+        .expect("send-back record written");
+    }
+}
+
+/// Issue #133 router contract: `/api/binaries/{name}/shim-status` is
+/// registered in the shared routes — it reads only persisted artifacts,
+/// never live pipeline state — so both the plain and the live router
+/// answer it with the tracker payload.
+#[tokio::test]
+async fn test_binaries_shim_status_registered_in_plain_and_live_routers() {
+    for kind in ["plain", "live"] {
+        let fixture = TestFixture::new();
+        write_binaries_list_fixtures(&fixture);
+        write_shim_tracker_fixtures(&fixture);
+        let state = ServerState::new(fixture.repo_path());
+        let router = if kind == "plain" {
+            build_router(state)
+        } else {
+            let events = TranslationEvents::new(128);
+            let manager = SessionManager::new_with_broadcast(events.subscribe());
+            build_router_with_ws(state, manager, ProgressState::new())
+        };
+        let _server = spawn_server(router, fixture.port()).await;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let base = format!("http://127.0.0.1:{}", fixture.port());
+        let (status, body) = get_json(&format!("{base}/api/binaries/d3d9.dll/shim-status")).await;
+        assert_eq!(status, 200, "{kind} router serves /api/binaries/{{name}}/shim-status");
+        assert_eq!(
+            body["generated"].as_bool(),
+            Some(true),
+            "{kind} router: the persisted shim artifacts answer"
+        );
+        assert_eq!(body["mapping_count"].as_u64().expect("mapping_count"), 2);
+    }
+}
+
+/// Issue #133 exact-JSON contract: the tracker reports existence,
+/// mapping count, verification outcome, and merged/sent-back state from
+/// persisted artifacts only. The crate joined to is the one the
+/// override in force names (`wgpu-rs`, not the recorded `wgpu`); a
+/// reverse-engineered binary honestly reports no shim expected; a
+/// crate-replacement binary whose branch a reviewer sent back carries
+/// the sent-back verdict. The lookup is case-insensitive; unknown and
+/// corrupt-record names honestly 404.
+#[tokio::test]
+async fn test_binaries_shim_status_api_exact_json_from_fixture() {
+    let fixture = TestFixture::new();
+    write_binaries_list_fixtures(&fixture);
+    write_shim_tracker_fixtures(&fixture);
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+
+    // The crate-replacement binary with artifacts and a merged shim
+    // branch: every fact comes from the persisted shim files and the
+    // branch model.
+    let (status, body) = get_json(&format!("{base}/api/binaries/d3d9.dll/shim-status")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "binary": "d3d9.dll",
+            "shim_expected": true,
+            // The crate in force is the override's, and so is the
+            // branch joined to.
+            "crate_replacement": "wgpu-rs",
+            "generated": true,
+            "mapping_count": 2,
+            "verification": {
+                "compiled": true,
+                "tests_passed": 7,
+                "tests_total": 8,
+                "edge_tests_passed": 2,
+                "edge_tests_total": 2,
+            },
+            "branch": { "name": "re/shim/wgpu-rs", "merged": true, "sent_back": false },
+        }),
+        "existence, mapping count, verification, and merged state from \
+         persisted artifacts only"
+    );
+
+    // The reverse-engineered binary: honestly no shim expected, and no
+    // derived fields on the wire at all.
+    let (status, body) = get_json(&format!("{base}/api/binaries/game_logic.dll/shim-status")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "binary": "game_logic.dll",
+            "shim_expected": false,
+            "generated": false,
+        }),
+        "a reverse-engineered binary honestly reports no shim expected"
+    );
+
+    // The crate-replacement binary whose shim was generated but whose branch
+    // was sent back: the artifacts and the reviewer's verdict both answer.
+    let (status, body) = get_json(&format!("{base}/api/binaries/fmod.dll/shim-status")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "binary": "fmod.dll",
+            "shim_expected": true,
+            "crate_replacement": "fmod-rs",
+            "generated": true,
+            "mapping_count": 2,
+            "branch": { "name": "re/shim/fmod-rs", "merged": false, "sent_back": true },
+        }),
+        "no artifacts is honestly not generated; the send-back record \
+         still folds to the branch's acceptance state"
+    );
+
+    // A differently-spelled name finds the same binary — the
+    // case-insensitive join every other server comparison makes — and
+    // the response carries the record's verbatim identity.
+    let (status, body) = get_json(&format!("{base}/api/binaries/D3D9.DLL/shim-status")).await;
+    assert_eq!(status, 200, "the lookup is case-insensitive");
+    assert_eq!(
+        body["binary"].as_str().expect("binary"),
+        "d3d9.dll",
+        "the verbatim record name answers, not the requested spelling"
+    );
+
+    // Unknown names honestly 404 — no empty shell.
+    for name in ["nope.dll", "broken.dll"] {
+        let (status, body) = get_json(&format!("{base}/api/binaries/{name}/shim-status")).await;
+        assert_eq!(status, 404, "{name} has no readable classification record");
+        assert_eq!(
+            body["error"].as_bool(),
+            Some(true),
+            "{name}: the 404 carries the honest error payload"
+        );
+    }
+}
+
+/// Issue #133 honest-degradation contract: a corrupt `mappings.json` is
+/// no shim — the tracker answers "not generated" with the derived
+/// fields absent, never a zeroed count; a corrupt `verification.json`
+/// leaves the verification absent while the readable mappings still
+/// answer.
+#[tokio::test]
+async fn test_binaries_shim_status_honest_missing_and_corrupt_artifacts() {
+    let fixture = TestFixture::new();
+    write_binaries_list_fixtures(&fixture);
+    write_shim_tracker_fixtures(&fixture);
+
+    // d3d9.dll's mappings go corrupt — the verification file stays
+    // readable, but the shim's existence itself is unreadable.
+    let shim_dir = fixture.repo_path().join("re").join("shims").join("d3d9.dll");
+    std::fs::write(shim_dir.join("mappings.json"), "{ not json").expect("corrupt mappings");
+
+    // A second crate-replacement binary with both artifacts corrupt.
+    let classify = fixture.repo_path().join("re").join("classify");
+    std::fs::write(
+        classify.join("ogg.dll.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "binary": "ogg.dll",
+            "category": "KnownThirdParty",
+            "strategy": "CrateReplacement",
+            "exports_count": 10,
+            "imports_count": 1,
+            "crate_replacement": "ogg-rs",
+            "known_runtime": false,
+            "reason": "audio codec — replaced with ogg-rs"
+        }))
+        .unwrap(),
+    )
+    .expect("ogg classification written");
+    let ogg_dir = fixture.repo_path().join("re").join("shims").join("ogg.dll");
+    std::fs::create_dir_all(&ogg_dir).expect("ogg shim dir");
+    std::fs::write(ogg_dir.join("mappings.json"), "not json at all").expect("corrupt mappings");
+    std::fs::write(ogg_dir.join("verification.json"), "{{{").expect("corrupt verification");
+
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+
+    // Corrupt mappings: honestly not generated — no mapping count, even
+    // though the verification artifact is still readable.
+    let (status, body) = get_json(&format!("{base}/api/binaries/d3d9.dll/shim-status")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "binary": "d3d9.dll",
+            "shim_expected": true,
+            "crate_replacement": "wgpu-rs",
+            "generated": false,
+            "verification": {
+                "compiled": true,
+                "tests_passed": 7,
+                "tests_total": 8,
+                "edge_tests_passed": 2,
+                "edge_tests_total": 2,
+            },
+            "branch": { "name": "re/shim/wgpu-rs", "merged": true, "sent_back": false },
+        }),
+        "a corrupt mappings.json is no shim — honestly not generated, \
+         never a zeroed count"
+    );
+
+    // Both artifacts corrupt: the honest empty payload — not generated,
+    // no mapping count, no verification, no branch in the model.
+    let (status, body) = get_json(&format!("{base}/api/binaries/ogg.dll/shim-status")).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "binary": "ogg.dll",
+            "shim_expected": true,
+            "crate_replacement": "ogg-rs",
+            "generated": false,
+        }),
+        "corrupt artifacts are no artifacts — the payload stays empty"
+    );
+}
+
 // ── Unit attempts API (issue #131, W4.5) ───────────────────────────────
 
 /// Issue #131 router contract: `/api/units/{id}/attempts` is registered in
@@ -8543,6 +8884,196 @@ async fn test_headless_binaries_detail_panel_expands() {
         override_panel,
         "the shortcut should open the existing override panel, honestly \
          reporting unavailability under plain serve"
+    );
+}
+
+/// Wait for the panel's shim tracker to finish its own read and render.
+async fn wait_for_shim_tracker(tab: &headless_chrome::Tab, needle: &str) -> bool {
+    let expr = format!(
+        "document.querySelector('#binaries-table-body .binaries-detail-shim .binaries-shim-tracker')?.textContent.includes({needle:?}) === true"
+    );
+    for _ in 0..25 {
+        if eval_bool(tab, &expr) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    false
+}
+
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_binaries_detail_shim_tracker() {
+    let fixture = TestFixture::new();
+    write_binaries_list_fixtures(&fixture);
+    write_shim_tracker_fixtures(&fixture);
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"binaries\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click binaries tab");
+    let mut rows_rendered = false;
+    for _ in 0..25 {
+        if eval_count(
+            &tab,
+            "document.querySelectorAll('#binaries-table-body tr.binaries-row').length",
+        ) == 3
+        {
+            rows_rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(rows_rendered, "all three classified binaries render as rows");
+
+    // Click the crate-replacement binary with artifacts — d3d9.dll.
+    tab.evaluate(
+        "document.querySelector('#binaries-table-body tr.binaries-row[data-binary=\"d3d9.dll\"]').click() === undefined",
+        false,
+    )
+    .expect("click d3d9.dll row");
+
+    assert!(
+        wait_for_shim_tracker(&tab, "Mappings: 2").await,
+        "the shim tracker should render from the persisted shim artifacts"
+    );
+    let tracker_text = eval_text(
+        &tab,
+        "document.querySelector('#binaries-table-body .binaries-detail-shim .binaries-shim-tracker').textContent",
+    );
+    for expected in [
+        "Shim layer",
+        "wgpu-rs",           // the crate the override in force names
+        "Mappings: 2",       // from mappings.json
+        "Compiled: yes",     // from verification.json
+        "7/8",               // mapping test pass counts
+        "2/2",               // edge test pass counts
+        "re/shim/wgpu-rs",   // the branch the dependency model names
+        "merged",            // its acceptance state in the branch model
+    ] {
+        assert!(
+            tracker_text.contains(expected),
+            "the shim tracker should show {expected:?} — got: {tracker_text}"
+        );
+    }
+}
+
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_binaries_detail_shim_tracker_honest_states() {
+    let fixture = TestFixture::new();
+    write_binaries_list_fixtures(&fixture);
+    write_shim_tracker_fixtures(&fixture);
+    // A fourth binary: a crate replacement with no shim artifacts at all —
+    // the honest "shim not generated" empty state.
+    std::fs::write(
+        fixture
+            .repo_path()
+            .join("re")
+            .join("classify")
+            .join("ogg.dll.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "binary": "ogg.dll",
+            "category": "KnownThirdParty",
+            "strategy": "CrateReplacement",
+            "exports_count": 10,
+            "imports_count": 1,
+            "crate_replacement": "ogg-rs",
+            "known_runtime": false,
+            "reason": "audio codec — replaced with ogg-rs behind a shim layer"
+        }))
+        .unwrap(),
+    )
+    .expect("ogg classification written");
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"binaries\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click binaries tab");
+    let mut rows_rendered = false;
+    for _ in 0..25 {
+        if eval_count(
+            &tab,
+            "document.querySelectorAll('#binaries-table-body tr.binaries-row').length",
+        ) == 4
+        {
+            rows_rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(rows_rendered, "all four classified binaries render as rows");
+
+    // The reverse-engineered binary: honestly no shim expected.
+    tab.evaluate(
+        "document.querySelector('#binaries-table-body tr.binaries-row[data-binary=\"game_logic.dll\"]').click() === undefined",
+        false,
+    )
+    .expect("click game_logic.dll row");
+    assert!(
+        wait_for_shim_tracker(&tab, "No shim expected").await,
+        "a reverse-engineered binary's tracker honestly says no shim is expected"
+    );
+
+    // The crate-replacement binary whose shim was generated but whose
+    // branch the reviewer sent back: both answers show side by side.
+    tab.evaluate(
+        "document.querySelector('#binaries-table-body tr.binaries-row[data-binary=\"fmod.dll\"]').click() === undefined",
+        false,
+    )
+    .expect("click fmod.dll row");
+    assert!(
+        wait_for_shim_tracker(&tab, "Mappings: 2").await,
+        "a crate-replacement binary with shim artifacts reports the generated mappings"
+    );
+    let tracker_text = eval_text(
+        &tab,
+        "document.querySelector('#binaries-table-body .binaries-detail-shim .binaries-shim-tracker').textContent",
+    );
+    assert!(
+        tracker_text.contains("sent back"),
+        "the mapping count and the sent-back branch verdict both show — got: {tracker_text}"
+    );
+
+    // The crate-replacement binary with no shim artifacts: the honest
+    // empty state — not generated, no invented counts.
+    tab.evaluate(
+        "document.querySelector('#binaries-table-body tr.binaries-row[data-binary=\"ogg.dll\"]').click() === undefined",
+        false,
+    )
+    .expect("click ogg.dll row");
+    assert!(
+        wait_for_shim_tracker(&tab, "Shim not generated").await,
+        "a crate-replacement binary without shim artifacts honestly \
+         reports shim not generated"
+    );
+    let tracker_text = eval_text(
+        &tab,
+        "document.querySelector('#binaries-table-body .binaries-detail-shim .binaries-shim-tracker').textContent",
+    );
+    assert!(
+        !tracker_text.contains("Mappings:") && !tracker_text.contains("Branch re/"),
+        "the empty state invents no mappings and no branch — got: {tracker_text}"
     );
 }
 

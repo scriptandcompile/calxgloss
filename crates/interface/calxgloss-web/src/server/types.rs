@@ -1196,6 +1196,81 @@ pub struct BinaryFunctionRow {
     pub status: calxgloss_types::ReviewStatus,
 }
 
+// ─── Binary shim tracker (issue #133, W4.3) ────────────────────────────
+
+/// `GET /api/binaries/{name}/shim-status` response: the shim-layer
+/// tracker the Binaries detail panel renders for one binary. Every fact
+/// comes from persisted artifacts only — the shim files the shim pipeline
+/// writes under `re/shims/{binary}/` plus the shim branch's acceptance
+/// state in the review dashboard's branch model — so plain `serve` and
+/// `live` answer identically. A crate-replacement binary with no readable
+/// shim artifacts honestly reports `generated: false`; a binary whose
+/// decision in force names no crate honestly reports `shim_expected:
+/// false` — no shim is expected.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShimStatusResponse {
+    /// The binary identity — the filename verbatim, as the classification
+    /// record names it (the request may have spelled it differently).
+    pub binary: BinaryIdentity,
+    /// Whether the decision in force is a crate replacement, so a shim
+    /// layer is expected at all.
+    pub shim_expected: bool,
+    /// The target crate the decision in force names, absent when the
+    /// decision names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crate_replacement: Option<String>,
+    /// Whether readable shim mappings exist under the workspace's shim
+    /// directory. A missing or corrupt `mappings.json` is no shim —
+    /// honestly false, never a zeroed count.
+    pub generated: bool,
+    /// API mappings the persisted shim layer holds, absent when no
+    /// readable mappings exist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mapping_count: Option<usize>,
+    /// The persisted verification outcome, absent when no readable
+    /// `verification.json` exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<ShimVerificationInfo>,
+    /// The shim branch's acceptance state in the dashboard's branch
+    /// model, absent when the decision in force names no crate or no
+    /// shim unit for that crate exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<ShimBranchInfo>,
+}
+
+/// The shim verification outcome as the tracker renders it: compiled or
+/// not, and the mapping/edge-case test pass counts the verification
+/// artifact recorded. The pass rate is the frontend's division of these
+/// persisted counts — the server invents no derived number.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShimVerificationInfo {
+    /// Whether the shim code compiled without errors.
+    pub compiled: bool,
+    /// Shim mapping tests that passed.
+    pub tests_passed: usize,
+    /// Shim mapping tests that executed.
+    pub tests_total: usize,
+    /// Edge-case tests that passed.
+    pub edge_tests_passed: usize,
+    /// Edge-case tests that executed.
+    pub edge_tests_total: usize,
+}
+
+/// The shim branch's acceptance state, folded from the dashboard's
+/// branch model: `Accepted` is the builder's merged-into-main verdict,
+/// `SendBack` the reviewer's sent-back verdict — anything else is
+/// neither (queued, pending review, …).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShimBranchInfo {
+    /// The shim branch the dependency model names for the crate in
+    /// force (e.g. `re/shim/wgpu`).
+    pub name: String,
+    /// Whether the shim branch is merged into main.
+    pub merged: bool,
+    /// Whether a reviewer sent the shim branch back.
+    pub sent_back: bool,
+}
+
 // ─── Unit attempts view (issue #131, W4.5) ─────────────────────────────
 
 /// `GET /api/units/{id}/attempts` response: the attempt list the unit

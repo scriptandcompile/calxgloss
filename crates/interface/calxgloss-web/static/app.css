@@ -3554,6 +3554,27 @@ tr.binaries-detail-row td {
 .binaries-detail-empty { color: var(--text-muted); font-style: italic; }
 .binaries-detail-error { color: var(--accent-red); }
 
+/* Shim tracker inside the binaries detail panel (issue #133, W4.3). */
+.binaries-detail-shim { margin-top: 12px; }
+.binaries-shim-tracker {
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 12px;
+}
+.binaries-shim-heading {
+    font-weight: 600;
+    margin-bottom: 4px;
+}
+.binaries-shim-none { color: var(--text-muted); font-style: italic; }
+.binaries-shim-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+}
+.binaries-shim-branch[data-state="merged"] { color: var(--accent-green); }
+.binaries-shim-branch[data-state="sent-back"] { color: var(--accent-red); }
+
 .token-col-strategy {
     font-family: var(--font-mono, monospace);
     font-size: 12px;
