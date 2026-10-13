@@ -17,10 +17,6 @@ members = [
     "crates/interface/*",
     "crates/shared/*",
 ]
-# Per-context documentation directories (GLOSSARY.md, docs/adr/ — see
-# docs/agents/domain.md) live beside the crates but are not crates.
-# (Cargo's exclude takes exact paths, not globs, against member globs.)
-exclude = ["crates/evidence/docs"]
 
 [workspace.dependencies]
 anyhow = "1.0.104"

@@ -1,4 +1,4 @@
-# ADR-0001: Propagate inferred types callee→caller in one post-inline pass
+# ADR-0014: Propagate inferred types callee→caller in one post-inline pass
 
 - **Status:** Accepted
 - **Date:** 2026-10-13 (P2.5-1 shipped, issue #143)
