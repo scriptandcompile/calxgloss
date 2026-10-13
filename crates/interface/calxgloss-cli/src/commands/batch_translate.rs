@@ -188,11 +188,11 @@ pub async fn handle_batch_translate(
             &retry_config,
             &verifier,
             Some(&mut |_dll, _function, func_result| {
-                if !func_result.success {
+                // A unit with no translated code — failed, or a refused
+                // root recorded skipped — has nothing to write or commit.
+                let Some(rust_code) = func_result.rust_code.as_ref() else {
                     return true;
-                }
-
-                let rust_code = func_result.rust_code.as_ref().unwrap();
+                };
 
                 // Register the function as a module and write the file. Returns the path
                 // so we can reference it in the git commit below.

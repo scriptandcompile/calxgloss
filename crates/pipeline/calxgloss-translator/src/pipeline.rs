@@ -2881,6 +2881,9 @@ impl TranslationPipeline {
             // point, since nothing an attempt produced is persisted until
             // the unit completes — and the unit is recorded as a failed
             // attempt while the batch continues with the next unit.
+            // A refused root is recorded skipped, not failed; the flag keeps
+            // it out of the completion callback (see below).
+            let mut unit_refused = false;
             let (mut result, mut aborted) = tokio::select! {
                 outcome = self.try_translate_with_retry(binary, function, config, verifier) => {
                     let result = match outcome {
@@ -2926,6 +2929,7 @@ impl TranslationPipeline {
                                     error = %e,
                                     "Batch function is a root symbol — recorded skipped, not failed"
                                 );
+                                unit_refused = true;
                                 batch::FunctionResult::skipped(binary.to_string(), function.clone())
                             } else {
                                 warn!(
@@ -3012,7 +3016,12 @@ impl TranslationPipeline {
             // commits). Cancelled units go through it too — the caller owns
             // git cleanup, and per the Archive rule a cancelled unit's
             // branch is archived under the archive refs, never deleted.
-            let continue_batch = if let Some(ref mut cb) = on_function_completed {
+            // A refused root never reaches it: it was never attempted, so
+            // it has no translated code to write and no branch to clean up,
+            // and a caller that assumes a success carries code would panic.
+            let continue_batch = if let Some(ref mut cb) = on_function_completed
+                && !unit_refused
+            {
                 cb(binary, function, &mut result)
             } else {
                 true
@@ -3219,7 +3228,7 @@ impl TranslationPipeline {
                     );
                     let skipped =
                         batch::FunctionResult::skipped(binary.clone(), plan_func.name.clone());
-                    batch_result.add(skipped.clone());
+                    batch_result.add(skipped);
 
                     self.emit(ProgressEvent::FunctionCompleted {
                         binary: binary.clone().into(),
@@ -3229,13 +3238,11 @@ impl TranslationPipeline {
                         branch: None,
                     });
 
-                    // Invoke the caller's callback even for skipped functions
-                    if let Some(ref mut cb) = on_function_completed
-                        && !cb(binary, &plan_func.name, &mut skipped.clone())
-                    {
-                        info!(binary, function = %plan_func.name, "Batch stopped early by callback");
-                        break;
-                    }
+                    // A skipped plan node never reaches the caller's
+                    // callback: it was never attempted, so it has no
+                    // translated code to write and no branch to clean up,
+                    // and a caller that assumes a success carries code
+                    // would panic.
 
                     continue;
                 }
@@ -3654,6 +3661,41 @@ mod tests {
         assert_eq!(result.total_count(), 1);
         assert_eq!(result.skipped_count(), 1, "the thunk is recorded skipped");
         assert_eq!(result.failure_count(), 0, "a refusal is not a failure");
+    }
+
+    /// The callback contract the CLI git-commit path relies on: a result
+    /// delivered with `success` set carries its translated code. A refused
+    /// root arriving as a success without code makes the caller's
+    /// `rust_code` unwrap panic mid-batch (the `auto` crash on a
+    /// delay-load thunk named explicitly).
+    #[tokio::test]
+    async fn batch_translate_callback_never_sees_a_success_without_code() {
+        let dir = TempDir::new().expect("temp workspace");
+        let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
+
+        let mut codeless_successes: Vec<String> = Vec::new();
+        let result = pipeline_over(Some(dir.path()))
+            .batch_translate(
+                PROGRAM,
+                &["DelayLoad_ShellExecuteW".to_string()],
+                &retry::RetryConfig::default(),
+                &verifier,
+                Some(&mut |_dll, _function, func_result| {
+                    if func_result.success && func_result.rust_code.is_none() {
+                        codeless_successes.push(func_result.function.clone());
+                    }
+                    true
+                }),
+            )
+            .await
+            .expect("the batch completes even when every unit is refused");
+
+        assert!(
+            codeless_successes.is_empty(),
+            "every success delivered to the callback must carry rust_code; \
+             codeless: {codeless_successes:?}"
+        );
+        assert_eq!(result.skipped_count(), 1, "the refusal is still recorded skipped");
     }
 
     /// A forced tier replaces the automatic selection for that unit only;

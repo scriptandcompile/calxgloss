@@ -240,11 +240,11 @@ pub async fn run_translation_for_dll(
             &retry_config,
             &verifier,
             Some(&mut |_dll, _function, func_result| {
-                if !func_result.success {
+                // A unit with no translated code — failed, or a refused
+                // root recorded skipped — has nothing to write or commit.
+                let Some(rust_code) = func_result.rust_code.as_ref() else {
                     return true;
-                }
-
-                let rust_code = func_result.rust_code.as_ref().unwrap();
+                };
                 let output_path = modules_dir
                     .join(&func_result.function)
                     .join("translated.rs");
