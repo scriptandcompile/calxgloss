@@ -20,17 +20,23 @@
 //! functions overlap — one struct read by a hub function splits into half-
 //! candidates, and the overlap through the hub is what ties them back
 //! together — keeping the stronger half's name and link and unioning the
-//! fields. Both passes read only what the scans already recovered, so they
-//! can neither fail the run nor cost a record.
+//! fields. A third pass links struct fields to the recovered named types
+//! they name, so a layout whose field is another recovered type reads as a
+//! tree: the field records that type's Type Manager path and kind, and a
+//! field typed as a recovered union carries the union kind. All passes read
+//! only what the scans already recovered, so they can neither fail the run
+//! nor cost a record.
 
 use crate::error::Result;
 use crate::scanner::TypeLibraryScanner;
 use crate::string_infer::StringInferenceEngine;
 use crate::types::{
-    Confidence, InferredField, InferredStruct, NameOrigin, ScanMetadata, TypeDatabase, Vtable,
+    Confidence, InferredField, InferredStruct, NameOrigin, NamedType, ScanMetadata, TypeDatabase,
+    TypeKind, Vtable,
 };
 use crate::vtable::{TagSink, VtableDetector};
 use calxgloss_ghidra::GhidraClient;
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 use tracing::info;
@@ -135,13 +141,14 @@ impl<S> TypesDBEngine<S> {
         S: ScanSource + TagSink,
     {
         let started = Instant::now();
-        let (named_types, vtables, mut inferred_structs) = tokio::try_join!(
+        let (mut named_types, vtables, mut inferred_structs) = tokio::try_join!(
             self.scanner.scan_named_types(),
             self.vtables.detect_vtables(),
             self.strings.infer_structures(),
         )?;
         link_candidates_to_vtables(&mut inferred_structs, &vtables);
         let merged = merge_candidates(&mut inferred_structs);
+        let nested = link_nested_fields(&mut named_types);
 
         let mut metadata = ScanMetadata::new(binary);
         metadata.duration_secs = started.elapsed().as_secs();
@@ -151,6 +158,7 @@ impl<S> TypesDBEngine<S> {
             vtables = vtables.len(),
             inferred_structs = inferred_structs.len(),
             merged_candidates = merged,
+            nested_fields = nested,
             duration_secs = metadata.duration_secs,
             "Recovered type database"
         );
@@ -330,13 +338,15 @@ fn merge_group(members: &[&InferredStruct]) -> Option<InferredStruct> {
     // The dominant half: the strongest name origin, ties to the earlier
     // literal address — the order `members` already arrives in, so a
     // strict comparison keeps the first strongest.
-    let dominant = members.iter().fold(*first, |best: &InferredStruct, candidate| {
-        if candidate.name_origin.confidence_bonus() > best.name_origin.confidence_bonus() {
-            *candidate
-        } else {
-            best
-        }
-    });
+    let dominant = members
+        .iter()
+        .fold(*first, |best: &InferredStruct, candidate| {
+            if candidate.name_origin.confidence_bonus() > best.name_origin.confidence_bonus() {
+                *candidate
+            } else {
+                best
+            }
+        });
 
     let mut fields: Vec<InferredField> = members
         .iter()
@@ -420,6 +430,52 @@ fn union(parent: &mut [usize], a: usize, b: usize) {
     }
 }
 
+/// Link struct fields to the recovered named types they name, so a
+/// recovered layout reads as a tree instead of a flat list.
+///
+/// A field whose `type_name` matches exactly one recovered named type
+/// records that type's Type Manager path — the database's unique key,
+/// since type *names* are not unique — and the linked type's kind, so a
+/// field typed as a recovered union carries the union kind instead of
+/// being misread as a struct. A field whose type name several recovered
+/// types share stays unlinked: the field record carries no category, so
+/// nothing in the scan can pick which type the field means, and a wrong
+/// link would render a wrong subtree. A field typed as a primitive or a
+/// type the scan never recovered simply names nothing to link.
+///
+/// Returns the number of fields linked, for the scan log.
+fn link_nested_fields(named_types: &mut [NamedType]) -> usize {
+    // Each name maps to its one type's (path, kind), or to `None` once a
+    // second type shares it — the ambiguous marker.
+    let mut named_by_name: BTreeMap<String, Option<(String, TypeKind)>> = BTreeMap::new();
+    for named in named_types.iter() {
+        match named_by_name.entry(named.name.clone()) {
+            Entry::Occupied(mut entry) => *entry.get_mut() = None,
+            Entry::Vacant(entry) => {
+                entry.insert(Some((named.path.clone(), named.kind)));
+            }
+        }
+    }
+
+    let mut linked = 0;
+    for named in named_types.iter_mut() {
+        for field in named.fields.iter_mut() {
+            if let Some(Some((path, kind))) = named_by_name.get(&field.type_name) {
+                // A field never nests its own type: a by-value
+                // self-reference is impossible, and a self-link would
+                // render a cycle.
+                if path == &named.path {
+                    continue;
+                }
+                field.linked_type = Some(path.clone());
+                field.linked_kind = Some(*kind);
+                linked += 1;
+            }
+        }
+    }
+    linked
+}
+
 // ============================================================
 // Tests
 // ============================================================
@@ -428,7 +484,7 @@ fn union(parent: &mut [usize], a: usize, b: usize) {
 mod tests {
     use super::*;
     use crate::error::TypesDbError;
-    use crate::types::{FieldType, VtableMethod};
+    use crate::types::{FieldType, StructField, VtableMethod};
     use calxgloss_ghidra::{
         DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
         Result as GhidraResult, StringLiteral, StructFieldLayout, StructLayout, Symbol, Xref,
@@ -704,6 +760,95 @@ mod tests {
                 .xrefs
                 .insert(address, vec![reference("FUN_widget_access")]);
         }
+        program
+    }
+
+    /// The same program, plus a `WIDGET` struct whose fields name other
+    /// recovered types: `MODES` (one enum), `MY_UNION` (one union), and
+    /// `SHARED` (two types share the name), so the nesting pass has a
+    /// unique link, a union link, and an ambiguous name to work through.
+    fn program_with_nested_fields() -> FakeProgram {
+        let mut program = program();
+        program.listing.extend(vec![
+            entry("WIDGET", "pe", Some(24)),
+            entry("MODES", "excpt.h", Some(4)),
+            entry("MY_UNION", "sys", Some(8)),
+            entry("SHARED", "a", Some(4)),
+            entry("SHARED", "b", Some(4)),
+        ]);
+        program.buckets.insert(
+            "struct",
+            vec![
+                entry("IMAGE_DOS_HEADER", "pe", Some(128)),
+                entry("WIDGET", "pe", Some(24)),
+                entry("SHARED", "a", Some(4)),
+                entry("SHARED", "b", Some(4)),
+            ],
+        );
+        program.buckets.insert(
+            "enum",
+            vec![
+                entry("_EXCEPTION_DISPOSITION", "excpt.h", Some(4)),
+                entry("MODES", "excpt.h", Some(4)),
+            ],
+        );
+        program
+            .buckets
+            .insert("union", vec![entry("MY_UNION", "sys", Some(8))]);
+        program.layouts.insert(
+            "WIDGET".into(),
+            StructLayout {
+                name: "WIDGET".into(),
+                size: 24,
+                alignment: 4,
+                fields: vec![
+                    StructFieldLayout {
+                        offset: 0,
+                        size: 4,
+                        type_name: "MODES".into(),
+                        field_name: "mode".into(),
+                    },
+                    StructFieldLayout {
+                        offset: 4,
+                        size: 8,
+                        type_name: "MY_UNION".into(),
+                        field_name: "payload".into(),
+                    },
+                    StructFieldLayout {
+                        offset: 12,
+                        size: 4,
+                        type_name: "SHARED".into(),
+                        field_name: "twin".into(),
+                    },
+                    StructFieldLayout {
+                        offset: 16,
+                        size: 4,
+                        type_name: "dword".into(),
+                        field_name: "raw".into(),
+                    },
+                ],
+            },
+        );
+        program.layouts.insert(
+            "SHARED".into(),
+            StructLayout {
+                name: "SHARED".into(),
+                size: 4,
+                alignment: 4,
+                fields: Vec::new(),
+            },
+        );
+        program.enums.insert(
+            "MODES".into(),
+            EnumDefinition {
+                name: "MODES".into(),
+                size: 4,
+                members: vec![calxgloss_ghidra::EnumMember {
+                    name: "MODE_ON".into(),
+                    value: 1,
+                }],
+            },
+        );
         program
     }
 
@@ -1275,8 +1420,20 @@ mod tests {
     #[test]
     fn candidates_that_share_no_readers_stay_separate() {
         let mut candidates = vec![
-            merge_candidate("Widget", NameOrigin::LiteralPrefix, 66, &[0x100], &["FUN_a"]),
-            merge_candidate("Player", NameOrigin::LiteralPrefix, 66, &[0x108], &["FUN_b"]),
+            merge_candidate(
+                "Widget",
+                NameOrigin::LiteralPrefix,
+                66,
+                &[0x100],
+                &["FUN_a"],
+            ),
+            merge_candidate(
+                "Player",
+                NameOrigin::LiteralPrefix,
+                66,
+                &[0x108],
+                &["FUN_b"],
+            ),
             merge_candidate("Strings", NameOrigin::Address, 30, &[0x110], &[]),
         ];
         assert_eq!(merge_candidates(&mut candidates), 0);
@@ -1352,5 +1509,139 @@ mod tests {
         merge_candidates(&mut forwards);
         merge_candidates(&mut backwards);
         assert_eq!(forwards, backwards, "two scans merge in one order");
+    }
+
+    // ------------------------------------------------------------
+    // Linking nested struct fields to their recovered types
+    // ------------------------------------------------------------
+
+    /// A struct named `name` in `category` with one field per
+    /// `(field name, type name)` pair, links not yet filled in.
+    fn nesting_struct(name: &str, category: &str, fields: &[(&str, &str)]) -> NamedType {
+        let mut named = NamedType::from_listing(&entry(name, category, None), TypeKind::Struct);
+        named.fields = fields
+            .iter()
+            .map(|(field_name, type_name)| StructField {
+                name: (*field_name).into(),
+                offset: 0,
+                size: 4,
+                type_name: (*type_name).into(),
+                linked_type: None,
+                linked_kind: None,
+            })
+            .collect();
+        named
+    }
+
+    #[test]
+    fn a_field_naming_one_recovered_type_links_to_its_path() {
+        let mut types = vec![
+            nesting_struct("WIDGET", "pe", &[("mode", "MODES")]),
+            NamedType::from_listing(&entry("MODES", "excpt.h", Some(4)), TypeKind::Enum),
+        ];
+        let linked = link_nested_fields(&mut types);
+
+        assert_eq!(linked, 1);
+        let field = &types[0].fields[0];
+        assert_eq!(field.linked_type.as_deref(), Some("/excpt.h/MODES"));
+        assert_eq!(field.linked_kind, Some(TypeKind::Enum));
+        assert!(field.is_nested());
+    }
+
+    #[test]
+    fn a_field_naming_several_recovered_types_stays_unlinked() {
+        // Paths, not names, are the unique keys: a name two recovered
+        // types share names no single type, so the field gets no link.
+        let mut types = vec![
+            nesting_struct("WIDGET", "pe", &[("twin", "SHARED")]),
+            NamedType::from_listing(&entry("SHARED", "a", Some(4)), TypeKind::Struct),
+            NamedType::from_listing(&entry("SHARED", "b", Some(4)), TypeKind::Struct),
+        ];
+        let linked = link_nested_fields(&mut types);
+
+        assert_eq!(linked, 0);
+        assert_eq!(types[0].fields[0].linked_type, None);
+        assert_eq!(types[0].fields[0].linked_kind, None);
+    }
+
+    #[test]
+    fn a_field_naming_a_recovered_union_carries_the_union_kind() {
+        let mut types = vec![
+            nesting_struct("WIDGET", "pe", &[("payload", "MY_UNION")]),
+            NamedType::from_listing(&entry("MY_UNION", "sys", Some(8)), TypeKind::Union),
+        ];
+        let linked = link_nested_fields(&mut types);
+
+        assert_eq!(linked, 1);
+        assert_eq!(types[0].fields[0].linked_kind, Some(TypeKind::Union));
+    }
+
+    #[test]
+    fn a_field_naming_nothing_recovered_stays_unlinked() {
+        // Primitives and types the scan never recovered name nothing to
+        // link; the field keeps its bare type name.
+        let mut types = vec![nesting_struct(
+            "IMAGE_DOS_HEADER",
+            "pe",
+            &[("e_magic", "char[2]"), ("e_lfanew", "dword")],
+        )];
+        let linked = link_nested_fields(&mut types);
+
+        assert_eq!(linked, 0);
+        assert!(types[0].fields.iter().all(|f| !f.is_nested()));
+    }
+
+    #[test]
+    fn a_field_naming_its_own_type_stays_unlinked() {
+        // A field never nests its own type — a self-link would render a
+        // cycle — even when the owner is the only recovered type of
+        // that name.
+        let mut types = vec![nesting_struct("WIDGET", "pe", &[("twin", "WIDGET")])];
+        let linked = link_nested_fields(&mut types);
+
+        assert_eq!(linked, 0);
+        assert_eq!(types[0].fields[0].linked_type, None);
+    }
+
+    #[tokio::test]
+    async fn a_scan_links_fields_that_name_recovered_types() {
+        let db = TypesDBEngine::with_source(program_with_nested_fields())
+            .without_tagging()
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        let widget = db
+            .find_named_type("/pe/WIDGET")
+            .expect("the canned widget struct");
+        let field = |name: &str| {
+            widget
+                .fields
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| panic!("the widget should carry a `{name}` field"))
+        };
+
+        assert_eq!(field("mode").linked_type.as_deref(), Some("/excpt.h/MODES"));
+        assert_eq!(field("mode").linked_kind, Some(TypeKind::Enum));
+        assert_eq!(
+            field("payload").linked_type.as_deref(),
+            Some("/sys/MY_UNION")
+        );
+        assert_eq!(
+            field("payload").linked_kind,
+            Some(TypeKind::Union),
+            "a union-typed field carries the union kind"
+        );
+        assert_eq!(
+            field("twin").linked_type,
+            None,
+            "an ambiguous name stays unlinked"
+        );
+        assert_eq!(
+            field("raw").linked_type,
+            None,
+            "a primitive names nothing to link"
+        );
     }
 }

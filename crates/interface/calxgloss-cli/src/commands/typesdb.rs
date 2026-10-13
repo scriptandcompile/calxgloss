@@ -118,11 +118,21 @@ fn print_type_database_report(db: &TypeDatabase, path: &Path) {
     .filter(|(_, count)| *count > 0)
     .map(|(kind, count)| format!("{kind} {count}"))
     .collect();
+    let nested = db
+        .named_types
+        .iter()
+        .flat_map(|t| t.fields.iter())
+        .filter(|f| f.is_nested())
+        .count();
+    let mut notes = breakdown;
+    if nested > 0 {
+        notes.push(format!("{nested} nested fields"));
+    }
     println_content(format!(
         "  {}{:<5}{}",
         white_bold("Named types:"),
         db.named_types.len(),
-        dim(&breakdown.join(", "))
+        dim(&notes.join(", "))
     ));
 
     let confirmed = db.vtables.iter().filter(|v| v.is_confirmed()).count();

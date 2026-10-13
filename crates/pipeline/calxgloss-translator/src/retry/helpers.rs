@@ -1119,6 +1119,8 @@ mod tests {
                 offset: 0,
                 size: 4,
                 type_name: "dword".into(),
+                linked_type: None,
+                linked_kind: None,
             }],
             members: Vec::new(),
         }

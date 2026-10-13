@@ -347,3 +347,50 @@ async fn the_engine_links_candidates_to_confirmed_vtables() {
         );
     }
 }
+
+#[tokio::test]
+#[ignore = "needs a running GhidraMCP server with eqmain.dll open"]
+async fn the_scan_links_nested_fields_to_recovered_types() {
+    let Some(ghidra) = client() else {
+        eprintln!("CALXGLOSS_GHIDRA_URL not set; skipping");
+        return;
+    };
+
+    // eqmain's PE headers nest: `IMAGE_NT_HEADERS`' `FileHeader` field
+    // names the `IMAGE_FILE_HEADER` the scan also recovers, so the
+    // nesting pass should link it. Tagging writes back, so the live
+    // scan runs read-only.
+    let db = TypesDBEngine::new(&ghidra)
+        .without_tagging()
+        .scan("eqmain.dll")
+        .await
+        .expect("type database scan");
+
+    let nested = db
+        .named_types
+        .iter()
+        .flat_map(|t| t.fields.iter())
+        .filter(|f| f.is_nested())
+        .count();
+    assert!(nested > 0, "no named-type field linked to a recovered type");
+
+    let nt_headers = db
+        .named_types
+        .iter()
+        .find(|t| t.name == "IMAGE_NT_HEADERS")
+        .expect("the PE headers should be in the Type Manager");
+    let file_header = nt_headers
+        .fields
+        .iter()
+        .find(|f| f.name == "FileHeader")
+        .expect("IMAGE_NT_HEADERS should carry its FileHeader field");
+    let path = file_header
+        .linked_type
+        .as_deref()
+        .expect("FileHeader names one recovered type");
+    let target = db
+        .find_named_type(path)
+        .expect("a link should resolve to a recovered type");
+    assert_eq!(target.name, "IMAGE_FILE_HEADER");
+    assert_eq!(file_header.linked_kind, Some(TypeKind::Struct));
+}

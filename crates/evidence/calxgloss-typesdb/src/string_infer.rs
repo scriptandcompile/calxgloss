@@ -140,7 +140,8 @@ async fn cluster_literals(
     groups
         .into_values()
         .map(|members| {
-            let all: BTreeSet<&String> = members.iter().flat_map(|&i| referrers[i].iter()).collect();
+            let all: BTreeSet<&String> =
+                members.iter().flat_map(|&i| referrers[i].iter()).collect();
             let functions: BTreeSet<&String> = all
                 .iter()
                 .copied()
@@ -984,7 +985,9 @@ mod tests {
         // engine's merge pass can see the overlap it creates.
         let mut source = MockSource::new(vec![literal("width", 0x400), literal("height", 0x408)]);
         for i in 0..23u64 {
-            source.literals.push(literal(&format!("message_{i}"), 0x200 + 8 * i));
+            source
+                .literals
+                .push(literal(&format!("message_{i}"), 0x200 + 8 * i));
             source.referenced_by(0x200 + 8 * i, &["FUN_logger"]);
         }
         source.referenced_by(0x400, &["FUN_logger", "Widget_getSize"]);

@@ -645,7 +645,11 @@ async fn a_struct_split_across_a_hub_merges_back_into_one_candidate() {
     assert_eq!(widget.linked_vtable, Some(0x1801_306f0));
     assert_eq!(widget.name_origin, NameOrigin::VtableClass);
     assert_eq!(
-        widget.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+        widget
+            .fields
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect::<Vec<_>>(),
         ["width", "height", "label", "visible"],
         "the field union keeps its stable order"
     );
@@ -685,7 +689,11 @@ async fn a_merge_survives_the_save_load_round_trip() {
     assert_eq!(merged.merged_from, Some(2), "the merge marker survives");
     assert_eq!(merged.linked_vtable, Some(0x1801_306f0));
     assert_eq!(
-        merged.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+        merged
+            .fields
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect::<Vec<_>>(),
         ["width", "height", "label", "visible"],
         "the field union survives"
     );
@@ -710,11 +718,229 @@ async fn two_scans_of_the_same_program_produce_byte_identical_databases() {
     let first_bytes =
         serde_json::to_vec(&(&first.named_types, &first.vtables, &first.inferred_structs))
             .expect("serialize first");
-    let second_bytes =
-        serde_json::to_vec(&(&second.named_types, &second.vtables, &second.inferred_structs))
-            .expect("serialize second");
+    let second_bytes = serde_json::to_vec(&(
+        &second.named_types,
+        &second.vtables,
+        &second.inferred_structs,
+    ))
+    .expect("serialize second");
     assert_eq!(
         first_bytes, second_bytes,
         "two scans of the same program are byte-identical"
+    );
+}
+
+// ------------------------------------------------------------
+// Linking fields to the recovered types they name
+// ------------------------------------------------------------
+
+/// The same program, plus a `WIDGET` struct whose fields name other
+/// recovered types: `MODES` (one enum), `MY_UNION` (one union), and
+/// `SHARED` (two types share the name), so the flow has a unique link,
+/// a union link, and an ambiguous name to work through.
+fn program_with_nested_fields() -> FakeProgram {
+    let mut program = FakeProgram::program();
+    program.listing.extend(vec![
+        entry("WIDGET", "pe", Some(24)),
+        entry("MODES", "excpt.h", Some(4)),
+        entry("MY_UNION", "sys", Some(8)),
+        entry("SHARED", "a", Some(4)),
+        entry("SHARED", "b", Some(4)),
+    ]);
+    program.buckets.insert(
+        "struct",
+        vec![
+            entry("IMAGE_DOS_HEADER", "pe", Some(128)),
+            entry("WIDGET", "pe", Some(24)),
+            entry("SHARED", "a", Some(4)),
+            entry("SHARED", "b", Some(4)),
+        ],
+    );
+    program.buckets.insert(
+        "enum",
+        vec![
+            entry("_EXCEPTION_DISPOSITION", "excpt.h", Some(4)),
+            entry("MODES", "excpt.h", Some(4)),
+        ],
+    );
+    program
+        .buckets
+        .insert("union", vec![entry("MY_UNION", "sys", Some(8))]);
+    program.layouts.insert(
+        "WIDGET".into(),
+        StructLayout {
+            name: "WIDGET".into(),
+            size: 24,
+            alignment: 4,
+            fields: vec![
+                StructFieldLayout {
+                    offset: 0,
+                    size: 4,
+                    type_name: "MODES".into(),
+                    field_name: "mode".into(),
+                },
+                StructFieldLayout {
+                    offset: 4,
+                    size: 8,
+                    type_name: "MY_UNION".into(),
+                    field_name: "payload".into(),
+                },
+                StructFieldLayout {
+                    offset: 12,
+                    size: 4,
+                    type_name: "SHARED".into(),
+                    field_name: "twin".into(),
+                },
+                StructFieldLayout {
+                    offset: 16,
+                    size: 4,
+                    type_name: "dword".into(),
+                    field_name: "raw".into(),
+                },
+            ],
+        },
+    );
+    program.layouts.insert(
+        "SHARED".into(),
+        StructLayout {
+            name: "SHARED".into(),
+            size: 4,
+            alignment: 4,
+            fields: Vec::new(),
+        },
+    );
+    program.enums.insert(
+        "MODES".into(),
+        EnumDefinition {
+            name: "MODES".into(),
+            size: 4,
+            members: vec![calxgloss_ghidra::EnumMember {
+                name: "MODE_ON".into(),
+                value: 1,
+            }],
+        },
+    );
+    program
+}
+
+#[tokio::test]
+async fn a_scan_links_nested_fields_to_the_types_they_name() {
+    let db = TypesDBEngine::with_source(program_with_nested_fields())
+        .without_tagging()
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let widget = db
+        .named_types
+        .iter()
+        .find(|t| t.name == "WIDGET")
+        .expect("WIDGET recovered");
+    let field = |name: &str| {
+        widget
+            .fields
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("WIDGET should carry a `{name}` field: {:?}", widget.fields))
+    };
+
+    let mode = field("mode");
+    assert_eq!(
+        mode.linked_type.as_deref(),
+        Some("/excpt.h/MODES"),
+        "a field naming one recovered type links to its path"
+    );
+    assert_eq!(mode.linked_kind, Some(TypeKind::Enum));
+
+    let payload = field("payload");
+    assert_eq!(
+        payload.linked_type.as_deref(),
+        Some("/sys/MY_UNION"),
+        "a field naming a recovered union links to it"
+    );
+    assert_eq!(
+        payload.linked_kind,
+        Some(TypeKind::Union),
+        "and carries the union kind instead of being misread as a struct"
+    );
+
+    assert_eq!(
+        field("twin").linked_type,
+        None,
+        "a name several recovered types share stays unlinked"
+    );
+    assert_eq!(
+        field("raw").linked_type,
+        None,
+        "a primitive names nothing recovered"
+    );
+}
+
+#[tokio::test]
+async fn nested_links_survive_the_save_load_round_trip() {
+    let db = TypesDBEngine::with_source(program_with_nested_fields())
+        .without_tagging()
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let dir = TempDir::new().unwrap();
+    let persistor = TypeDatabasePersistor::new(dir.path());
+    persistor.save(&db).expect("scan should be savable");
+    let text = std::fs::read_to_string(persistor.path_for("eqmain.dll"))
+        .expect("the saved document should be readable");
+    assert!(
+        text.contains("\"linked_type\""),
+        "the nesting links should be in the document: {text}"
+    );
+
+    let loaded = persistor
+        .load("eqmain.dll")
+        .expect("the nested document should load back");
+    assert_eq!(loaded, db);
+    let widget = loaded
+        .named_types
+        .iter()
+        .find(|t| t.name == "WIDGET")
+        .expect("the WIDGET type");
+    let mode = widget
+        .fields
+        .iter()
+        .find(|f| f.name == "mode")
+        .expect("the mode field");
+    assert_eq!(
+        mode.linked_type.as_deref(),
+        Some("/excpt.h/MODES"),
+        "the link survives the file"
+    );
+    assert_eq!(mode.linked_kind, Some(TypeKind::Enum), "the kind survives");
+}
+
+#[tokio::test]
+async fn a_nested_field_renders_its_kind_in_the_prompt() {
+    let db = TypesDBEngine::with_source(program_with_nested_fields())
+        .without_tagging()
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let widget = db
+        .named_types
+        .iter()
+        .find(|t| t.name == "WIDGET")
+        .expect("WIDGET recovered");
+
+    let rendered = StructuredData::from(widget);
+    let types: Vec<&str> = rendered.fields.iter().map(|f| f.type_.as_str()).collect();
+    assert!(
+        types.contains(&"enum MODES"),
+        "the enum link shows in the field list: {types:?}"
+    );
+    assert!(
+        types.contains(&"union MY_UNION"),
+        "the union link shows in the field list: {types:?}"
+    );
+    assert!(
+        types.contains(&"dword"),
+        "unlinked fields stay verbatim: {types:?}"
     );
 }

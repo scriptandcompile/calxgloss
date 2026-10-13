@@ -90,6 +90,27 @@ pub struct StructField {
     pub size: u64,
     /// The field's data type name, e.g. `dword` or `char[2]`.
     pub type_name: String,
+    /// The Type Manager path of the recovered named type this field's
+    /// `type_name` names — set by the scan's nesting pass when exactly one
+    /// recovered type carries that name (paths, not names, are the unique
+    /// keys). `None` for a field typed as a primitive or an unrecovered
+    /// type, for a name several recovered types share, and for databases
+    /// written before the nesting pass existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked_type: Option<String>,
+    /// The kind of the linked type, carried through the link so a field
+    /// typed as a recovered union reads as a union rather than being
+    /// misread as a struct. `None` exactly when `linked_type` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked_kind: Option<TypeKind>,
+}
+
+impl StructField {
+    /// Whether the nesting pass linked this field to a recovered named
+    /// type, making its layout part of a tree rather than a flat list.
+    pub fn is_nested(&self) -> bool {
+        self.linked_type.is_some()
+    }
 }
 
 /// One member of a recovered enumeration.
@@ -119,6 +140,9 @@ impl From<&StructFieldLayout> for StructField {
             offset: field.offset,
             size: field.size,
             type_name: field.type_name.clone(),
+            // The nesting pass fills the links in after the scans assemble.
+            linked_type: None,
+            linked_kind: None,
         }
     }
 }
@@ -470,7 +494,10 @@ impl InferredStruct {
 
 /// Render a Type Manager record as prompt data. Structure fields keep
 /// their offsets; enum members arrive as fields whose "type" is the
-/// member value and whose offset is unknown (`-1`).
+/// member value and whose offset is unknown (`-1`). A field the nesting
+/// pass linked to a recovered named type renders its kind in front of
+/// the name — `union VALUE`, not just `VALUE` — so the layout reads as a
+/// tree inside the existing field list, with no new prompt section.
 impl From<&NamedType> for StructuredData {
     fn from(named: &NamedType) -> Self {
         let fields = named
@@ -478,7 +505,10 @@ impl From<&NamedType> for StructuredData {
             .iter()
             .map(|f| calxgloss_prompts::StructField {
                 name: f.name.clone(),
-                type_: f.type_name.clone(),
+                type_: match f.linked_kind {
+                    Some(kind) => format!("{kind} {}", f.type_name),
+                    None => f.type_name.clone(),
+                },
                 offset: f.offset as i64,
             })
             .chain(
@@ -609,6 +639,8 @@ mod tests {
             offset: 0,
             size: 2,
             type_name: "char[2]".into(),
+            linked_type: None,
+            linked_kind: None,
         });
         let enum_type = NamedType {
             members: vec![EnumMember {
@@ -638,6 +670,53 @@ mod tests {
         assert!(!json.contains("\"fields\""));
         assert!(!json.contains("\"members\""));
         assert!(!json.contains("\"alignment\""));
+    }
+
+    #[test]
+    fn a_nested_field_round_trips_with_its_links() {
+        let mut struct_type =
+            NamedType::from_listing(&entry("WIDGET", "pe", Some(24)), TypeKind::Struct);
+        struct_type.fields.push(StructField {
+            name: "payload".into(),
+            offset: 4,
+            size: 8,
+            type_name: "MY_UNION".into(),
+            linked_type: Some("/sys/MY_UNION".into()),
+            linked_kind: Some(TypeKind::Union),
+        });
+
+        let json = serde_json::to_string(&struct_type).unwrap();
+        assert!(json.contains("\"linked_type\":\"/sys/MY_UNION\""));
+        assert!(json.contains("\"linked_kind\":\"union\""));
+        let back: NamedType =
+            serde_json::from_str(&json).expect("a nested field should round-trip");
+        assert_eq!(back, struct_type);
+        assert!(back.fields[0].is_nested());
+    }
+
+    #[test]
+    fn a_field_written_before_the_nesting_pass_still_loads() {
+        // The shipped MVP shape: fields carry no `linked_type` or
+        // `linked_kind` key. The new fields default, so old cached
+        // documents keep loading.
+        let json = r#"{
+            "name": "IMAGE_DOS_HEADER",
+            "kind": "struct",
+            "category": "pe",
+            "path": "/pe/IMAGE_DOS_HEADER",
+            "size": 128,
+            "fields": [{
+                "name": "e_magic",
+                "offset": 0,
+                "size": 2,
+                "type_name": "char[2]"
+            }]
+        }"#;
+        let back: NamedType = serde_json::from_str(json).expect("the mvp-shape field should load");
+        assert_eq!(back.fields[0].type_name, "char[2]");
+        assert_eq!(back.fields[0].linked_type, None);
+        assert_eq!(back.fields[0].linked_kind, None);
+        assert!(!back.fields[0].is_nested());
     }
 
     #[test]
@@ -949,12 +1028,16 @@ mod tests {
                     offset: 0,
                     size: 2,
                     type_name: "char[2]".into(),
+                    linked_type: None,
+                    linked_kind: None,
                 },
                 StructField {
                     name: "e_lfanew".into(),
                     offset: 60,
                     size: 4,
                     type_name: "dword".into(),
+                    linked_type: None,
+                    linked_kind: None,
                 },
             ],
             ..NamedType::from_listing(
@@ -972,6 +1055,47 @@ mod tests {
     }
 
     #[test]
+    fn a_linked_field_renders_its_kind_in_the_prompt_field_list() {
+        // Nesting shows up inside the existing field list: a linked
+        // field's type carries the linked kind, so a union field cannot
+        // be misread as a struct; unlinked fields stay verbatim.
+        let recovered = NamedType {
+            fields: vec![
+                StructField {
+                    name: "mode".into(),
+                    offset: 0,
+                    size: 4,
+                    type_name: "MODES".into(),
+                    linked_type: Some("/excpt.h/MODES".into()),
+                    linked_kind: Some(TypeKind::Enum),
+                },
+                StructField {
+                    name: "payload".into(),
+                    offset: 4,
+                    size: 8,
+                    type_name: "MY_UNION".into(),
+                    linked_type: Some("/sys/MY_UNION".into()),
+                    linked_kind: Some(TypeKind::Union),
+                },
+                StructField {
+                    name: "raw".into(),
+                    offset: 12,
+                    size: 4,
+                    type_name: "dword".into(),
+                    linked_type: None,
+                    linked_kind: None,
+                },
+            ],
+            ..NamedType::from_listing(&entry("WIDGET", "pe", Some(16)), TypeKind::Struct)
+        };
+        let rendered = StructuredData::from(&recovered);
+        assert_eq!(rendered.fields.len(), 3, "no new fields or sections");
+        assert_eq!(rendered.fields[0].type_, "enum MODES");
+        assert_eq!(rendered.fields[1].type_, "union MY_UNION");
+        assert_eq!(rendered.fields[2].type_, "dword");
+    }
+
+    #[test]
     fn enum_members_convert_after_the_fields_holding_their_value() {
         let recovered = NamedType {
             fields: vec![StructField {
@@ -979,6 +1103,8 @@ mod tests {
                 offset: 0,
                 size: 4,
                 type_name: "dword".into(),
+                linked_type: None,
+                linked_kind: None,
             }],
             members: vec![
                 EnumMember {

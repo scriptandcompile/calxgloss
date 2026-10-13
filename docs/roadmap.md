@@ -30,7 +30,7 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P1.5 | typesdb Phase 5: cross-reference clustering, heuristic struct naming, nested structs/unions, STL type detection, Rust codegen for recovered structs | `calxgloss-typesdb` | — | 🔶 in progress | `/implement` (frontier: #139, #140) | [#136](https://github.com/scriptandcompile/calxgloss/issues/136) |
+| P1.5 | typesdb Phase 5: cross-reference clustering, heuristic struct naming, nested structs/unions, STL type detection, Rust codegen for recovered structs | `calxgloss-typesdb` | — | 🔶 in progress | `/implement` (frontier: #140) | [#136](https://github.com/scriptandcompile/calxgloss/issues/136) |
 | P2.5 | typeinfer Phase 5: cross-function call-site propagation, integer bit-pattern analysis, C++ mangling analysis, local-variable and return-type inference, **write inferred types back into Ghidra** | `calxgloss-typeinfer` + `calxgloss-ghidra` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P3.5 | algorithm Phase 5: confidence scoring improvements, dynamic (JSON) pattern database, multi-function correlation, parallelize across functions | `calxgloss-algorithm` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P4.5 | memory Phase 5: cross-function allocation tracking, ownership transfer detection, smart-pointer conversion, resource leak detection, per-type `Drop` suggestions | `calxgloss-memory` | — | ⬜ not started | `/to-spec` when picked up | — |

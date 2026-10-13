@@ -244,6 +244,45 @@ mod tests {
     }
 
     #[test]
+    fn a_named_type_written_before_the_nesting_pass_still_loads() {
+        // Documents written before the nesting pass carry no `linked_type`
+        // or `linked_kind` keys on their struct fields; both default, so
+        // the cache keeps working across the upgrade.
+        let dir = TempDir::new().unwrap();
+        let persistor = TypeDatabasePersistor::with_cache_dir(dir.path());
+        let text = r#"{
+            "metadata": {
+                "binary": "eqmain.dll",
+                "scanned_at": 1759488000,
+                "duration_secs": 12
+            },
+            "named_types": [{
+                "name": "WIDGET",
+                "kind": "struct",
+                "category": "pe",
+                "path": "/pe/WIDGET",
+                "size": 8,
+                "fields": [{
+                    "name": "mode",
+                    "offset": 0,
+                    "size": 4,
+                    "type_name": "MODES"
+                }]
+            }]
+        }"#;
+        std::fs::write(dir.path().join("eqmain.dll.json"), text)
+            .expect("pre-nesting document should be written");
+
+        let loaded = persistor
+            .load("eqmain.dll")
+            .expect("the pre-nesting document should load");
+        let field = &loaded.named_types[0].fields[0];
+        assert_eq!(field.linked_type, None, "no link key means no link");
+        assert_eq!(field.linked_kind, None, "no kind key means no kind");
+        assert!(!field.is_nested());
+    }
+
+    #[test]
     fn new_files_databases_under_re_analysis_typesdb() {
         let dir = TempDir::new().unwrap();
         let persistor = TypeDatabasePersistor::new(dir.path());
