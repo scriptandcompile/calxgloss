@@ -274,7 +274,9 @@ pub(super) enum Command {
     /// Runs the three recovery scans — named types from Ghidra's Type
     /// Manager, vtable detection, and string-guided struct inference —
     /// against the currently open program and saves the result to
-    /// `re/analysis/typesdb/<binary>.json` in the workspace. Batch
+    /// `re/analysis/typesdb/<binary>.json` in the workspace, alongside a
+    /// generated `re/analysis/typesdb/<binary>.rs` file of `#[repr(C)]`
+    /// Rust declarations recovered from the database. Batch
     /// translation recovers this automatically before its first batch
     /// when no database is cached; this command is the manual entry
     /// point: it rebuilds the database on demand and can print what a
@@ -284,7 +286,8 @@ pub(super) enum Command {
     ///
     /// * `--binary` — Binary the open Ghidra program was loaded from, e.g.
     ///   `eqmain.dll`. Names the persisted file.
-    /// * `--show` — Print a summary of the cached database without
+    /// * `--show` — Print a summary of the cached database, and the path
+    ///   of its Rust declarations file when one exists, without
     ///   connecting to Ghidra.
     /// * `--no-tag` — Detect vtable methods without writing
     ///   `vtable-method` tags back into the program.

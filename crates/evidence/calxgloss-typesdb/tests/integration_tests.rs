@@ -25,6 +25,7 @@ use calxgloss_ghidra::{
 use calxgloss_prompts::StructuredData;
 use calxgloss_typesdb::engine::{ScanSource, TypesDBEngine};
 use calxgloss_typesdb::persist::TypeDatabasePersistor;
+use calxgloss_typesdb::rust_decls::render_rust_decls;
 use calxgloss_typesdb::stl::StlKind;
 use calxgloss_typesdb::types::{NameOrigin, TypeDatabase, TypeKind};
 use calxgloss_typesdb::vtable::TagSink;
@@ -1199,4 +1200,111 @@ async fn a_flagged_record_names_its_stl_family_in_the_prompt() {
         "the flagged field's type names its family: {types:?}"
     );
     assert!(types.contains(&"int"), "unflagged fields stay verbatim");
+}
+
+// ------------------------------------------------------------
+// Rendering Rust declarations from the recovered database (issue #141)
+// ------------------------------------------------------------
+
+#[tokio::test]
+async fn a_round_tripped_database_renders_rust_declarations() {
+    // The full flow the ticket promises: scan → save → load → render.
+    let dir = TempDir::new().expect("temp dir should exist");
+    let persistor = TypeDatabasePersistor::new(dir.path());
+    persistor.save(&scanned("eqmain.dll").await).unwrap();
+    let db = persistor
+        .load("eqmain.dll")
+        .expect("the document should load back");
+
+    let rendered = render_rust_decls(&db);
+
+    assert!(
+        rendered.contains("// Rust declarations recovered from eqmain.dll"),
+        "the file names its source: {rendered}"
+    );
+    assert!(
+        rendered.contains("#[repr(C)]\npub struct IMAGE_DOS_HEADER {"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("pub e_magic: [i8; 2],"), "{rendered}");
+    assert!(
+        rendered.contains("_pad_2: [u8; 58],"),
+        "the recovered offset gap becomes explicit padding: {rendered}"
+    );
+    assert!(rendered.contains("pub e_lfanew: u32,"), "{rendered}");
+    assert!(
+        rendered.contains("#[repr(i64)]\npub enum _EXCEPTION_DISPOSITION {"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("ExceptionContinueSearch = 1,"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("#[repr(C)]\npub struct Player {"),
+        "the inferred candidate is declared too: {rendered}"
+    );
+    assert!(rendered.contains("pub x: i32,"), "{rendered}");
+}
+
+#[tokio::test]
+async fn two_renders_of_the_round_tripped_database_are_byte_identical() {
+    let dir = TempDir::new().expect("temp dir should exist");
+    let persistor = TypeDatabasePersistor::new(dir.path());
+    persistor.save(&scanned("eqmain.dll").await).unwrap();
+    let db = persistor
+        .load("eqmain.dll")
+        .expect("the document should load back");
+
+    assert_eq!(render_rust_decls(&db), render_rust_decls(&db));
+}
+
+#[tokio::test]
+async fn two_separate_scans_render_byte_identical_declarations() {
+    // The promise a reviewer leans on: rescanning the program and
+    // re-rendering changes only what the scan actually learned, never
+    // the renderer's own ordering or formatting.
+    let first = scanned("eqmain.dll").await;
+    let second = scanned("eqmain.dll").await;
+
+    assert_eq!(render_rust_decls(&first), render_rust_decls(&second));
+}
+
+#[tokio::test]
+async fn nested_links_and_stl_flags_shape_the_rendered_declarations() {
+    // The nesting links (#139) and STL flags (#140) the renderer reads:
+    // a linked field names the inner type, an STL type is a comment, and
+    // the layout-less union is skipped.
+    let db = TypesDBEngine::with_source(program_with_nested_fields())
+        .without_tagging()
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let rendered = render_rust_decls(&db);
+
+    assert!(rendered.contains("pub mode: MODES,"), "{rendered}");
+    assert!(
+        !rendered.contains("MY_UNION {"),
+        "the layout-less union gets no declaration of its own: {rendered}"
+    );
+    assert!(
+        rendered.contains("pub twin: SHARED,"),
+        "the ambiguous name stays a plain type reference: {rendered}"
+    );
+
+    let flagged = TypesDBEngine::with_source(program_with_stl_shapes())
+        .without_tagging()
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let rendered = render_rust_decls(&flagged);
+    assert!(
+        rendered.contains("// basic_string — STL string: maps to Rust String; no layout emitted."),
+        "{rendered}"
+    );
+    assert!(
+        !rendered.contains("struct vector"),
+        "no hand-rolled container layouts: {rendered}"
+    );
 }

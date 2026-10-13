@@ -129,6 +129,37 @@ impl TypeDatabasePersistor {
 
         Ok(self.store.load(binary)?)
     }
+
+    /// Returns the path the rendered Rust declarations for `binary` are
+    /// filed under — the JSON document's path with a `.rs` extension, so
+    /// the two artifacts always sit side by side.
+    pub fn decls_path_for(&self, binary: &str) -> PathBuf {
+        self.path_for(binary).with_extension("rs")
+    }
+
+    /// Whether rendered declarations are persisted for `binary`.
+    pub fn decls_exists(&self, binary: &str) -> bool {
+        self.decls_path_for(binary).is_file()
+    }
+
+    /// Writes the rendered Rust declarations beside the JSON document.
+    ///
+    /// The file is a derived artifact: it is rewritten whole from the
+    /// loaded database on every scan and never read back, so a rescan
+    /// that changes nothing leaves a byte-identical file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if directory creation or file I/O fails.
+    pub fn save_decls(&self, binary: &str, content: &str) -> Result<()> {
+        let path = self.decls_path_for(binary);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        info!(path = %path.display(), "Writing Rust declarations");
+        std::fs::write(&path, content)?;
+        Ok(())
+    }
 }
 
 // ============================================================
@@ -357,6 +388,42 @@ mod tests {
         persistor.save(&database("eqmain.dll")).unwrap();
         assert!(persistor.exists("eqmain.dll"));
         assert!(!persistor.exists("renderer.dll"));
+    }
+
+    #[test]
+    fn save_decls_files_the_declarations_beside_the_database() {
+        let dir = TempDir::new().unwrap();
+        let persistor = TypeDatabasePersistor::new(dir.path());
+
+        persistor
+            .save_decls("eqmain.dll", "// declarations\n")
+            .unwrap();
+
+        let expected = dir
+            .path()
+            .join("re")
+            .join("analysis")
+            .join("typesdb")
+            .join("eqmain.dll.rs");
+        assert_eq!(persistor.decls_path_for("eqmain.dll"), expected);
+        let text = std::fs::read_to_string(&expected).unwrap();
+        assert_eq!(text, "// declarations\n");
+    }
+
+    #[test]
+    fn decls_exists_tracks_whether_declarations_are_persisted() {
+        let dir = TempDir::new().unwrap();
+        let persistor = TypeDatabasePersistor::with_cache_dir(dir.path());
+
+        assert!(!persistor.decls_exists("eqmain.dll"));
+        persistor
+            .save_decls("eqmain.dll", "// declarations\n")
+            .unwrap();
+        assert!(persistor.decls_exists("eqmain.dll"));
+        assert!(
+            !persistor.decls_exists("renderer.dll"),
+            "other binaries keep their own declarations"
+        );
     }
 
     #[test]

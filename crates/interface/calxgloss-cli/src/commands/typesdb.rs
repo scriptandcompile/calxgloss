@@ -14,6 +14,7 @@ use anyhow::{Context, Result};
 use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use calxgloss_typesdb::engine::TypesDBEngine;
 use calxgloss_typesdb::persist::TypeDatabasePersistor;
+use calxgloss_typesdb::rust_decls::render_rust_decls;
 use calxgloss_typesdb::types::{TypeDatabase, TypeKind, Vtable};
 use chrono::DateTime;
 use tracing::info;
@@ -42,7 +43,12 @@ pub async fn handle_typesdb(
                  run `calxgloss typesdb --binary {binary}` to recover one"
             )
         })?;
-        print_type_database_report(&db, &persistor.path_for(binary));
+        let decls = persistor.decls_exists(binary);
+        print_type_database_report(
+            &db,
+            &persistor.path_for(binary),
+            decls.then(|| persistor.decls_path_for(binary)).as_deref(),
+        );
         return Ok(());
     }
 
@@ -69,14 +75,22 @@ pub async fn handle_typesdb(
     persistor
         .save(&db)
         .with_context(|| format!("Failed to save the type database for {binary}"))?;
+    persistor
+        .save_decls(binary, &render_rust_decls(&db))
+        .with_context(|| format!("Failed to write the Rust declarations for {binary}"))?;
 
-    print_type_database_report(&db, &persistor.path_for(binary));
+    print_type_database_report(
+        &db,
+        &persistor.path_for(binary),
+        Some(&persistor.decls_path_for(binary)),
+    );
     Ok(())
 }
 
-/// Print a summary of a recovered type database: where it is filed, when
-/// it was built, and what each of the three recovered sections holds.
-fn print_type_database_report(db: &TypeDatabase, path: &Path) {
+/// Print a summary of a recovered type database: where it is filed, where
+/// its rendered Rust declarations are (when they exist), when it was
+/// built, and what each of the three recovered sections holds.
+fn print_type_database_report(db: &TypeDatabase, path: &Path, decls_path: Option<&Path>) {
     println!();
     hsep_bold();
     println_content(format!("  Type Database — {}", db.metadata.binary));
@@ -88,6 +102,13 @@ fn print_type_database_report(db: &TypeDatabase, path: &Path) {
         white_bold("File:       "),
         dim(&path.display().to_string())
     ));
+    if let Some(decls_path) = decls_path {
+        println_content(format!(
+            "  {}{}",
+            white_bold("Rust decls: "),
+            dim(&decls_path.display().to_string())
+        ));
+    }
     let scanned = DateTime::from_timestamp(db.metadata.scanned_at as i64, 0)
         .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
         .unwrap_or_else(|| format!("unix {}", db.metadata.scanned_at));

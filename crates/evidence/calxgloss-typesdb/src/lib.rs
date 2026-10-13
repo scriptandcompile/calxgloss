@@ -31,12 +31,17 @@
 //!   recovery engines concurrently over one program and assembles their
 //!   results into a single [`types::TypeDatabase`].
 //! - [`persist`] - JSON persistence: `TypeDatabasePersistor` saves and loads
-//!   the per-DLL database under `re/analysis/typesdb/`.
+//!   the per-DLL database under `re/analysis/typesdb/`, and files the
+//!   rendered Rust declarations beside it.
+//! - [`rust_decls`] - Rust codegen: [`rust_decls::render_rust_decls`] turns a
+//!   recovered database into a deterministic `#[repr(C)]` declarations file
+//!   a reviewer can read; the file is a derived artifact, never read back.
 //! - [`error`] - [`TypesDbError`] and the crate-wide [`Result`] alias.
 
 pub mod engine;
 pub mod error;
 pub mod persist;
+pub mod rust_decls;
 pub mod scanner;
 pub mod stl;
 pub mod string_infer;
