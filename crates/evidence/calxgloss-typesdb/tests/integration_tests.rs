@@ -25,7 +25,7 @@ use calxgloss_ghidra::{
 use calxgloss_prompts::StructuredData;
 use calxgloss_typesdb::engine::{ScanSource, TypesDBEngine};
 use calxgloss_typesdb::persist::TypeDatabasePersistor;
-use calxgloss_typesdb::types::{TypeDatabase, TypeKind};
+use calxgloss_typesdb::types::{NameOrigin, TypeDatabase, TypeKind};
 use calxgloss_typesdb::vtable::TagSink;
 use tempfile::TempDir;
 
@@ -474,6 +474,53 @@ async fn loaded_inferred_candidates_keep_their_fields_and_evidence() {
         candidate.referenced_by.iter().any(|f| f == "Player_update"),
         "the cluster should still name its referencing function"
     );
+}
+
+#[tokio::test]
+async fn a_candidate_read_by_vtable_methods_links_names_and_persists() {
+    // The same canned program, but the literals are read by the confirmed
+    // vtable's two methods: the candidate should link to the table, take
+    // its RTTI class name, and keep both through the JSON file.
+    let mut program = FakeProgram::program();
+    program.xrefs.insert(
+        0x1801_29350,
+        vec![reference("FUN_18003ab00"), reference("FUN_18003e750")],
+    );
+    program
+        .xrefs
+        .insert(0x1801_29360, vec![reference("FUN_18003ab00")]);
+    let db = TypesDBEngine::with_source(program)
+        .without_tagging()
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let candidate = &db.inferred_structs[0];
+    assert_eq!(candidate.name, "Widget");
+    assert_eq!(candidate.name_origin, NameOrigin::VtableClass);
+    assert!(candidate.is_linked());
+    assert_eq!(candidate.linked_vtable, Some(0x1801_306f0));
+
+    let dir = TempDir::new().unwrap();
+    let persistor = TypeDatabasePersistor::new(dir.path());
+    persistor.save(&db).unwrap();
+    let text = std::fs::read_to_string(persistor.path_for("eqmain.dll")).unwrap();
+    assert!(
+        text.contains("\"linked_vtable\""),
+        "the link should be in the document: {text}"
+    );
+
+    let loaded = persistor.load("eqmain.dll").unwrap();
+    assert_eq!(loaded, db);
+    let loaded = &loaded.inferred_structs[0];
+    assert_eq!(loaded.name, "Widget");
+    assert_eq!(loaded.name_origin, NameOrigin::VtableClass);
+    assert_eq!(loaded.linked_vtable, Some(0x1801_306f0));
+
+    // The prompt conversion carries the class name, not the address or the
+    // literal prefix.
+    let rendered = StructuredData::from(loaded);
+    assert_eq!(rendered.name, "Widget");
 }
 
 #[tokio::test]

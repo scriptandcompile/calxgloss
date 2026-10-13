@@ -17,9 +17,10 @@
 //! With `eqmain.dll` loaded, the default targets below do.
 
 use calxgloss_ghidra::GhidraClient;
+use calxgloss_typesdb::engine::TypesDBEngine;
 use calxgloss_typesdb::scanner::TypeLibraryScanner;
 use calxgloss_typesdb::string_infer::StringInferenceEngine;
-use calxgloss_typesdb::types::TypeKind;
+use calxgloss_typesdb::types::{NameOrigin, TypeKind};
 use calxgloss_typesdb::vtable::VtableDetector;
 
 fn client() -> Option<GhidraClient> {
@@ -300,4 +301,49 @@ async fn the_string_filter_narrows_the_run() {
             .map(|f| &f.source_value)
             .collect::<Vec<_>>()
     );
+}
+
+#[tokio::test]
+#[ignore = "needs a running GhidraMCP server with eqmain.dll open"]
+async fn the_engine_links_candidates_to_confirmed_vtables() {
+    let Some(ghidra) = client() else {
+        eprintln!("CALXGLOSS_GHIDRA_URL not set; skipping");
+        return;
+    };
+
+    // eqmain's classes carry real RTTI names and its methods read member
+    // literals, so the scan should link at least one candidate to a
+    // confirmed table and name it from the class. Tagging writes back, so
+    // the live scan runs read-only.
+    let db = TypesDBEngine::new(&ghidra)
+        .without_tagging()
+        .scan("eqmain.dll")
+        .await
+        .expect("type database scan");
+
+    let linked: Vec<_> = db
+        .inferred_structs
+        .iter()
+        .filter(|c| c.is_linked())
+        .collect();
+    assert!(
+        !linked.is_empty(),
+        "no candidate linked to a vtable of {} recovered",
+        db.vtables.len()
+    );
+    for candidate in linked {
+        assert_eq!(candidate.name_origin, NameOrigin::VtableClass);
+        let vtable = db
+            .find_vtable(candidate.linked_vtable.unwrap())
+            .expect("a link names a recovered vtable");
+        assert!(vtable.is_confirmed(), "an unconfirmed table was linked");
+        assert_eq!(
+            candidate.name,
+            vtable
+                .class_name
+                .as_deref()
+                .expect("a linked table carries its class name"),
+            "the candidate should carry the demangled class name"
+        );
+    }
 }

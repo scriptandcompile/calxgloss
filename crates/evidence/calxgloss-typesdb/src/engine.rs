@@ -12,11 +12,17 @@
 //! surfacing here means the server itself failed mid-scan; the run aborts
 //! with that error rather than returning a database whose sections were
 //! built against different programs or different moments.
+//!
+//! After the scans, a pure in-memory pass links string-inferred candidates
+//! to RTTI-confirmed vtables: a candidate whose referencing functions include
+//! a confirmed table's methods takes that table's demangled class name and
+//! records the link. The pass reads only what the scans already recovered,
+//! so it can neither fail the run nor cost a record.
 
 use crate::error::Result;
 use crate::scanner::TypeLibraryScanner;
 use crate::string_infer::StringInferenceEngine;
-use crate::types::{ScanMetadata, TypeDatabase};
+use crate::types::{Confidence, InferredStruct, NameOrigin, ScanMetadata, TypeDatabase, Vtable};
 use crate::vtable::{TagSink, VtableDetector};
 use calxgloss_ghidra::GhidraClient;
 use std::time::Instant;
@@ -122,11 +128,12 @@ impl<S> TypesDBEngine<S> {
         S: ScanSource + TagSink,
     {
         let started = Instant::now();
-        let (named_types, vtables, inferred_structs) = tokio::try_join!(
+        let (named_types, vtables, mut inferred_structs) = tokio::try_join!(
             self.scanner.scan_named_types(),
             self.vtables.detect_vtables(),
             self.strings.infer_structures(),
         )?;
+        link_candidates_to_vtables(&mut inferred_structs, &vtables);
 
         let mut metadata = ScanMetadata::new(binary);
         metadata.duration_secs = started.elapsed().as_secs();
@@ -147,6 +154,62 @@ impl<S> TypesDBEngine<S> {
     }
 }
 
+/// Link string-inferred candidates to RTTI-confirmed vtables and name them
+/// from the class.
+///
+/// When the functions referencing a candidate's literals include methods of
+/// a vtable whose RTTI chain resolved a class name, the literals most likely
+/// belong to that class: the candidate records the link by vtable address,
+/// takes the demangled class name — the strongest name origin — and its
+/// confidence is re-scored for the stronger naming evidence. A candidate
+/// matching several tables links to the one sharing the most methods; ties
+/// go to the lowest address, so two scans of one program diff cleanly.
+///
+/// A table that is not RTTI-confirmed, or whose class name never resolved,
+/// links nothing: the link exists to carry a real class name, and without
+/// one there is nothing to take.
+fn link_candidates_to_vtables(candidates: &mut [InferredStruct], vtables: &[Vtable]) {
+    let named: Vec<&Vtable> = vtables
+        .iter()
+        .filter(|v| v.is_confirmed() && v.class_name.as_deref().is_some_and(|c| !c.is_empty()))
+        .collect();
+    for candidate in candidates.iter_mut() {
+        let mut best: Option<(&Vtable, usize)> = None;
+        for vtable in &named {
+            let shared = candidate
+                .referenced_by
+                .iter()
+                .filter(|function| {
+                    vtable
+                        .methods
+                        .iter()
+                        .any(|m| m.name.as_deref() == Some(function.as_str()))
+                })
+                .count();
+            if shared > 0
+                && best.is_none_or(|(previous, previous_shared)| {
+                    shared > previous_shared
+                        || (shared == previous_shared && vtable.address < previous.address)
+                })
+            {
+                best = Some((vtable, shared));
+            }
+        }
+        if let Some((vtable, _)) = best {
+            // The filter above guarantees the class name; the pattern only
+            // reborrow it.
+            if let Some(class_name) = &vtable.class_name {
+                let bump = NameOrigin::VtableClass.confidence_bonus()
+                    - candidate.name_origin.confidence_bonus();
+                candidate.linked_vtable = Some(vtable.address);
+                candidate.name = class_name.clone();
+                candidate.name_origin = NameOrigin::VtableClass;
+                candidate.confidence = Confidence::new(candidate.confidence.value() + bump);
+            }
+        }
+    }
+}
+
 // ============================================================
 // Tests
 // ============================================================
@@ -155,6 +218,7 @@ impl<S> TypesDBEngine<S> {
 mod tests {
     use super::*;
     use crate::error::TypesDbError;
+    use crate::types::VtableMethod;
     use calxgloss_ghidra::{
         DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
         Result as GhidraResult, StringLiteral, StructFieldLayout, StructLayout, Symbol, Xref,
@@ -367,6 +431,21 @@ mod tests {
         program
             .xrefs
             .insert(0x1801_29360, vec![reference("Player_update")]);
+        program
+    }
+
+    /// The same program, but the literals are read by the vtable's methods
+    /// instead of `Player_update`, so the candidate should link to the table
+    /// and take its class name.
+    fn program_read_by_vtable_methods() -> FakeProgram {
+        let mut program = program();
+        program.xrefs.insert(
+            0x1801_29350,
+            vec![reference("FUN_18003ab00"), reference("FUN_18003e750")],
+        );
+        program
+            .xrefs
+            .insert(0x1801_29360, vec![reference("FUN_18003ab00")]);
         program
     }
 
@@ -607,5 +686,131 @@ mod tests {
         );
         assert!(program.tagged().is_empty(), "the detector stays read-only");
         assert_eq!(db.vtables.len(), 1, "detection itself still ran");
+    }
+
+    #[tokio::test]
+    async fn a_candidate_read_by_vtable_methods_links_and_takes_the_class_name() {
+        let db = TypesDBEngine::with_source(program_read_by_vtable_methods())
+            .without_tagging()
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        assert_eq!(db.inferred_structs.len(), 1);
+        let candidate = &db.inferred_structs[0];
+        assert_eq!(
+            candidate.name, "Widget",
+            "the RTTI class name replaces the literal prefix"
+        );
+        assert_eq!(candidate.name_origin, NameOrigin::VtableClass);
+        assert!(candidate.is_linked());
+        assert_eq!(candidate.linked_vtable, Some(0x1801_306f0));
+        let vtable = db
+            .find_vtable(0x1801_306f0)
+            .expect("the link names a recovered vtable");
+        assert_eq!(candidate.name, vtable.class_name.as_deref().unwrap());
+        // The cluster scored 16+10+25+20 = 71 as a literal-prefix name; the
+        // vtable class origin pays 10 more.
+        assert_eq!(candidate.confidence.value(), 81);
+    }
+
+    #[tokio::test]
+    async fn a_candidate_outside_the_vtable_stays_unlinked() {
+        // The stock program's candidate is read by `Player_update`, which is
+        // not one of the table's methods: nothing links, nothing renames.
+        let db = TypesDBEngine::with_source(program())
+            .without_tagging()
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+        let candidate = &db.inferred_structs[0];
+        assert_eq!(candidate.name, "Player");
+        assert_eq!(candidate.name_origin, NameOrigin::LiteralPrefix);
+        assert!(!candidate.is_linked());
+    }
+
+    fn confirmed_vtable(address: u64, class_name: Option<&str>, methods: &[&str]) -> Vtable {
+        Vtable {
+            address,
+            label: "vftable".into(),
+            size: 8 * methods.len() as u64,
+            meta_ptr_address: Some(address - 8),
+            methods: methods
+                .iter()
+                .enumerate()
+                .map(|(slot, name)| VtableMethod {
+                    slot,
+                    address: 0,
+                    name: Some((*name).into()),
+                })
+                .collect(),
+            class_name: class_name.map(str::to_string),
+            base_classes: Vec::new(),
+            is_com_interface: false,
+        }
+    }
+
+    fn address_named_candidate(referenced_by: &[&str]) -> InferredStruct {
+        InferredStruct {
+            name: "strings_at_180129350".into(),
+            name_origin: NameOrigin::Address,
+            fields: Vec::new(),
+            confidence: Confidence::new(30),
+            referenced_by: referenced_by.iter().map(|f| (*f).to_string()).collect(),
+            linked_vtable: None,
+        }
+    }
+
+    #[test]
+    fn linking_names_the_candidate_and_records_the_link() {
+        let mut candidates = [address_named_candidate(&["FUN_18003ab00"])];
+        let vtables = [confirmed_vtable(
+            0x1801_306f0,
+            Some("Widget"),
+            &["FUN_18003ab00"],
+        )];
+        link_candidates_to_vtables(&mut candidates, &vtables);
+        let candidate = &candidates[0];
+        assert_eq!(candidate.name, "Widget");
+        assert_eq!(candidate.name_origin, NameOrigin::VtableClass);
+        assert_eq!(candidate.linked_vtable, Some(0x1801_306f0));
+        // The address origin paid 0; the class name pays 35.
+        assert_eq!(candidate.confidence.value(), 65);
+    }
+
+    #[test]
+    fn an_unconfirmed_or_unnamed_table_links_nothing() {
+        let mut unconfirmed = confirmed_vtable(0x1801_306f0, Some("Widget"), &["FUN_18003ab00"]);
+        unconfirmed.meta_ptr_address = None;
+        let unnamed = confirmed_vtable(0x1801_30700, None, &["FUN_18003ab00"]);
+        let mut candidates = [address_named_candidate(&["FUN_18003ab00"])];
+        link_candidates_to_vtables(&mut candidates, &[unconfirmed, unnamed]);
+        assert!(!candidates[0].is_linked());
+        assert_eq!(candidates[0].name, "strings_at_180129350");
+        assert_eq!(candidates[0].confidence.value(), 30);
+    }
+
+    #[test]
+    fn a_candidate_matching_several_tables_links_to_the_most_shared_methods() {
+        let weak = confirmed_vtable(0x1801_306f0, Some("Weak"), &["FUN_18003ab00"]);
+        let strong = confirmed_vtable(
+            0x1801_30700,
+            Some("Strong"),
+            &["FUN_18003ab00", "FUN_18003e750"],
+        );
+        let mut candidates = [address_named_candidate(&["FUN_18003ab00", "FUN_18003e750"])];
+        link_candidates_to_vtables(&mut candidates, &[weak, strong]);
+        assert_eq!(candidates[0].name, "Strong");
+        assert_eq!(candidates[0].linked_vtable, Some(0x1801_30700));
+    }
+
+    #[test]
+    fn a_tie_between_tables_goes_to_the_lowest_address() {
+        let low = confirmed_vtable(0x1801_306f0, Some("Low"), &["FUN_18003ab00"]);
+        let high = confirmed_vtable(0x1801_30700, Some("High"), &["FUN_18003ab00"]);
+        let mut candidates = [address_named_candidate(&["FUN_18003ab00"])];
+        link_candidates_to_vtables(&mut candidates, &[high, low]);
+        assert_eq!(candidates[0].linked_vtable, Some(0x1801_306f0));
+        assert_eq!(candidates[0].name, "Low");
     }
 }

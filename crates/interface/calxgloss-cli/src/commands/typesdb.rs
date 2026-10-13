@@ -135,12 +135,20 @@ fn print_type_database_report(db: &TypeDatabase, path: &Path) {
     ));
 
     let top_confidence = db.inferred_structs.iter().map(|s| s.confidence).max();
+    let linked = db.inferred_structs.iter().filter(|s| s.is_linked()).count();
     println_content(format!(
         "  {}{:<5}{}",
         white_bold("Inferred:   "),
         db.inferred_structs.len(),
         dim(&match top_confidence {
-            Some(confidence) => format!("top confidence {confidence}"),
+            Some(confidence) => {
+                let mut notes: Vec<String> = Vec::new();
+                if linked > 0 {
+                    notes.push(format!("{linked} linked to vtables"));
+                }
+                notes.push(format!("top confidence {confidence}"));
+                notes.join(", ")
+            }
             None => String::new(),
         })
     ));
@@ -170,8 +178,12 @@ fn print_type_database_report(db: &TypeDatabase, path: &Path) {
         println_content("  Inferred struct candidates:");
         hsep();
         for candidate in db.inferred_structs.iter().take(DETAIL_LIMIT) {
+            let link = candidate
+                .linked_vtable
+                .map(|address| format!(" {}", dim(&format!("(vtable {address:#x})"))))
+                .unwrap_or_default();
             println_content(format!(
-                "  {}  {:<24} {:>3} fields  confidence {}",
+                "  {}  {:<24} {:>3} fields  confidence {}{link}",
                 dim("●"),
                 white_bold(&candidate.name),
                 candidate.fields.len(),

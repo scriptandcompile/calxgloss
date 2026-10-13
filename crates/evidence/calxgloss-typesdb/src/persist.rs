@@ -174,8 +174,8 @@ mod tests {
                 is_com_interface: false,
             }],
             inferred_structs: vec![InferredStruct {
-                name: "Player".into(),
-                name_origin: NameOrigin::LiteralPrefix,
+                name: "Widget".into(),
+                name_origin: NameOrigin::VtableClass,
                 fields: vec![InferredField {
                     name: "x".into(),
                     field_type: FieldType::Integer,
@@ -186,6 +186,7 @@ mod tests {
                 }],
                 confidence: Confidence::new(79),
                 referenced_by: vec!["FUN_18000b620".into()],
+                linked_vtable: Some(0x1801_306f0),
             }],
         }
     }
@@ -202,7 +203,40 @@ mod tests {
         assert_eq!(loaded, db);
         assert_eq!(loaded.named_types[0].path, "/pe/IMAGE_DOS_HEADER");
         assert_eq!(loaded.vtables[0].class_name.as_deref(), Some("Widget"));
+        assert_eq!(loaded.inferred_structs[0].name, "Widget");
+        assert_eq!(
+            loaded.inferred_structs[0].linked_vtable,
+            Some(0x1801_306f0),
+            "the vtable link survives the file"
+        );
+    }
+
+    #[test]
+    fn a_document_in_the_shipped_mvp_shape_still_loads() {
+        // Databases written before the linking pass carry no
+        // `linked_vtable` key; the field defaults, so the cache keeps
+        // working across the upgrade.
+        let dir = TempDir::new().unwrap();
+        let persistor = TypeDatabasePersistor::with_cache_dir(dir.path());
+        let text = r#"{
+            "metadata": {
+                "binary": "eqmain.dll",
+                "scanned_at": 1759488000,
+                "duration_secs": 12
+            },
+            "inferred_structs": [{
+                "name": "Player",
+                "name_origin": "literal_prefix",
+                "fields": [],
+                "confidence": 79,
+                "referenced_by": ["FUN_18000b620"]
+            }]
+        }"#;
+        std::fs::write(dir.path().join("eqmain.dll.json"), text).unwrap();
+
+        let loaded = persistor.load("eqmain.dll").unwrap();
         assert_eq!(loaded.inferred_structs[0].name, "Player");
+        assert_eq!(loaded.inferred_structs[0].linked_vtable, None);
     }
 
     #[test]

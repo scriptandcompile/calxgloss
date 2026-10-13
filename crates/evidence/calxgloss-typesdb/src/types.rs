@@ -351,15 +351,39 @@ impl fmt::Display for FieldType {
 ///
 /// The name is part of the evidence report: a candidate named from the data
 /// it came from is a better hypothesis than one named after its own address.
+/// The variants are ordered strongest evidence first — the evidence ladder
+/// the confidence score pays out through [`NameOrigin::confidence_bonus`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NameOrigin {
+    /// The candidate links to an RTTI-confirmed vtable and the name is that
+    /// table's demangled class name — the program's own name for the type.
+    VtableClass,
     /// The literals share a qualifier: `player.x`, `player.y` → `Player`.
     LiteralPrefix,
     /// The referencing functions share a stem: `Widget_getWidth` → `Widget`.
     FunctionStem,
     /// Neither yielded anything usable, so the name is the cluster's address.
     Address,
+}
+
+impl NameOrigin {
+    /// The confidence points this origin contributes to a candidate's score.
+    ///
+    /// The payouts follow the enum order: a name the program itself carries
+    /// (an RTTI class name) beats one guessed from the literals, which beats
+    /// one guessed from function stems, which beats the address fallback.
+    /// This is the single source for the ladder, so a candidate re-named
+    /// after linking can be re-scored by swapping one origin's payout for
+    /// another's.
+    pub fn confidence_bonus(&self) -> u8 {
+        match self {
+            NameOrigin::VtableClass => 35,
+            NameOrigin::LiteralPrefix => 25,
+            NameOrigin::FunctionStem => 15,
+            NameOrigin::Address => 0,
+        }
+    }
 }
 
 /// One field of a struct inferred from string literals.
@@ -402,12 +426,25 @@ pub struct InferredStruct {
     /// The functions whose cross-references tie the literals together.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub referenced_by: Vec<String>,
+    /// The address of the RTTI-confirmed vtable this candidate was linked
+    /// to — set when its referencing functions include that table's methods,
+    /// which is why the name is then the table's class name
+    /// ([`NameOrigin::VtableClass`]). `None` for an unlinked candidate, and
+    /// for databases written before the linking pass existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked_vtable: Option<u64>,
 }
 
 impl InferredStruct {
     /// Whether the name came from the data rather than the cluster's address.
     pub fn is_named(&self) -> bool {
         self.name_origin != NameOrigin::Address
+    }
+
+    /// Whether the candidate was linked to an RTTI-confirmed vtable, and so
+    /// carries that table's class name.
+    pub fn is_linked(&self) -> bool {
+        self.linked_vtable.is_some()
     }
 
     /// Estimated size: the sum of the field sizes, or `None` when any one of
@@ -743,6 +780,7 @@ mod tests {
             ],
             confidence: Confidence::new(79),
             referenced_by: vec!["FUN_18000b620".into()],
+            linked_vtable: None,
         };
         let json = serde_json::to_string(&candidate).unwrap();
         // Kinds and origins serialize snake_case, matching the workspace's
@@ -753,6 +791,67 @@ mod tests {
         assert_eq!(back, candidate);
         assert!(candidate.is_named());
         assert_eq!(candidate.size(), Some(12));
+    }
+
+    #[test]
+    fn a_linked_candidate_round_trips_with_its_vtable_link() {
+        let candidate = InferredStruct {
+            name: "Widget".into(),
+            name_origin: NameOrigin::VtableClass,
+            fields: vec![InferredField {
+                name: "x".into(),
+                field_type: FieldType::Integer,
+                size: Some(4),
+                offset: Some(0),
+                source_value: "widget.x".into(),
+                source_address: 0x1801_29350,
+            }],
+            confidence: Confidence::new(81),
+            referenced_by: vec!["FUN_18003ab00".into()],
+            linked_vtable: Some(0x1801_306f0),
+        };
+        let json = serde_json::to_string(&candidate).unwrap();
+        assert!(json.contains("\"name_origin\":\"vtable_class\""));
+        assert!(json.contains(&format!("\"linked_vtable\":{}", 0x1801_306f0u64)));
+        let back: InferredStruct = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, candidate);
+        assert!(back.is_linked());
+    }
+
+    #[test]
+    fn a_candidate_written_before_the_linking_pass_still_loads() {
+        // The shipped MVP shape: no `linked_vtable` key and no
+        // `vtable_class` origin anywhere. The new field defaults, so old
+        // cached documents keep loading.
+        let json = r#"{
+            "name": "Player",
+            "name_origin": "literal_prefix",
+            "fields": [],
+            "confidence": 79,
+            "referenced_by": ["FUN_18000b620"]
+        }"#;
+        let back: InferredStruct = serde_json::from_str(json).unwrap();
+        assert_eq!(back.name_origin, NameOrigin::LiteralPrefix);
+        assert_eq!(back.linked_vtable, None);
+        assert!(!back.is_linked());
+    }
+
+    #[test]
+    fn name_origins_pay_out_the_evidence_ladder() {
+        // The vtable class name outranks the guessed names, which outrank
+        // the address fallback — the order the variants are declared in.
+        assert!(
+            NameOrigin::VtableClass.confidence_bonus()
+                > NameOrigin::LiteralPrefix.confidence_bonus()
+        );
+        assert!(
+            NameOrigin::LiteralPrefix.confidence_bonus()
+                > NameOrigin::FunctionStem.confidence_bonus()
+        );
+        assert!(
+            NameOrigin::FunctionStem.confidence_bonus() > NameOrigin::Address.confidence_bonus()
+        );
+        assert_eq!(NameOrigin::Address.confidence_bonus(), 0);
     }
 
     #[test]
@@ -770,6 +869,7 @@ mod tests {
             }],
             confidence: Confidence::new(28),
             referenced_by: Vec::new(),
+            linked_vtable: None,
         };
         let json = serde_json::to_string(&candidate).unwrap();
         assert!(!json.contains("\"size\""));
@@ -878,6 +978,7 @@ mod tests {
             ],
             confidence: Confidence::new(79),
             referenced_by: Vec::new(),
+            linked_vtable: None,
         };
         let rendered = StructuredData::from(&candidate);
         assert_eq!(rendered.name, "Player");
@@ -906,6 +1007,7 @@ mod tests {
             }],
             confidence: Confidence::new(28),
             referenced_by: Vec::new(),
+            linked_vtable: None,
         };
         let rendered = StructuredData::from(&candidate);
         assert_eq!(rendered.size, 0);
@@ -949,6 +1051,7 @@ mod tests {
                 fields: Vec::new(),
                 confidence: Confidence::new(79),
                 referenced_by: Vec::new(),
+                linked_vtable: None,
             }],
         };
         let json = serde_json::to_string(&db).unwrap();

@@ -364,11 +364,7 @@ fn is_useful_literal(value: &str, shapes: &Shapes) -> bool {
 fn score(cluster: &Cluster, origin: NameOrigin, clean_fields: usize, fields: usize) -> u8 {
     let breadth = cluster.literals.len().min(5) * 8;
     let agreement = cluster.functions.len().min(4) * 5;
-    let naming = match origin {
-        NameOrigin::LiteralPrefix => 25,
-        NameOrigin::FunctionStem => 15,
-        NameOrigin::Address => 0,
-    };
+    let naming = origin.confidence_bonus() as usize;
     let shape = (20 * clean_fields).checked_div(fields).unwrap_or(0);
     (breadth + agreement + naming + shape).min(100) as u8
 }
@@ -607,6 +603,9 @@ impl<S> StringInferenceEngine<S> {
             name_origin: origin,
             fields,
             referenced_by: cluster.functions.clone(),
+            // The engine's linking pass may later attach a vtable and
+            // re-name the candidate; inference itself never links.
+            linked_vtable: None,
         }
     }
 
@@ -1233,6 +1232,12 @@ mod tests {
                 .collect::<Vec<_>>(),
         };
         assert_eq!(score(&cluster(1, 1), NameOrigin::Address, 1, 1), 8 + 5 + 20);
+        // A name taken from a linked vtable's RTTI class is the strongest
+        // naming evidence there is.
+        assert_eq!(
+            score(&cluster(1, 1), NameOrigin::VtableClass, 1, 1),
+            8 + 5 + 35 + 20
+        );
         // The parts sum past the ceiling, so the score is capped at 100.
         assert_eq!(score(&cluster(5, 4), NameOrigin::LiteralPrefix, 5, 5), 100);
         // More literals and more functions than that add nothing: the score

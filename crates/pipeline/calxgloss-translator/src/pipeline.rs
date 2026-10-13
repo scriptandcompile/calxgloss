@@ -3695,7 +3695,11 @@ mod tests {
             "every success delivered to the callback must carry rust_code; \
              codeless: {codeless_successes:?}"
         );
-        assert_eq!(result.skipped_count(), 1, "the refusal is still recorded skipped");
+        assert_eq!(
+            result.skipped_count(),
+            1,
+            "the refusal is still recorded skipped"
+        );
     }
 
     /// A forced tier replaces the automatic selection for that unit only;

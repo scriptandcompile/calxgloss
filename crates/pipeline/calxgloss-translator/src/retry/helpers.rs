@@ -1101,6 +1101,7 @@ mod tests {
             ],
             confidence: 79.into(),
             referenced_by: referenced_by.iter().map(|f| f.to_string()).collect(),
+            linked_vtable: None,
         }
     }
 
