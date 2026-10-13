@@ -53,6 +53,21 @@ impl FunctionRef {
             function: function.into(),
         }
     }
+
+    /// The one match rule for scope entries (issue #107) — every mutator
+    /// and reader of the skip and priority lists asks this, so adding,
+    /// checking, and removing the same (binary, function) pair always
+    /// treat it as the same entry.
+    ///
+    /// The case policy is deliberate: the binary name matches ASCII
+    /// case-insensitively — Windows binary names are case-insensitive, and
+    /// the operator may spell the same DLL differently across panel and
+    /// record — while the function name matches exactly: PE export names
+    /// and Ghidra symbols are case-sensitive, so `DrawPrimitive` and
+    /// `drawprimitive` are different functions.
+    pub fn matches(&self, binary: &str, function: &str) -> bool {
+        self.binary.as_str().eq_ignore_ascii_case(binary) && self.function == function
+    }
 }
 
 /// What the run is allowed to touch.
@@ -88,14 +103,14 @@ impl TranslationScope {
     pub fn is_skipped(&self, binary: &str, function: &str) -> bool {
         self.skipped_functions
             .iter()
-            .any(|f| f.binary.as_str().eq_ignore_ascii_case(binary) && f.function == function)
+            .any(|f| f.matches(binary, function))
     }
 
     /// Whether the named function is prioritized in the named binary.
     pub fn is_priority(&self, binary: &str, function: &str) -> bool {
         self.priority_functions
             .iter()
-            .any(|f| f.binary.as_str().eq_ignore_ascii_case(binary) && f.function == function)
+            .any(|f| f.matches(binary, function))
     }
 }
 
@@ -241,14 +256,16 @@ impl ScopeControl {
     /// skipping an already-skipped function is not an error.
     pub fn skip_function(&self, binary: &str, function: &str) -> Result<(), PersistError> {
         let mut state = self.lock();
-        let reference = FunctionRef::new(binary, function);
         if !state
             .scope
             .skipped_functions
             .iter()
-            .any(|f| f.binary == reference.binary && f.function == reference.function)
+            .any(|f| f.matches(binary, function))
         {
-            state.scope.skipped_functions.push(reference);
+            state
+                .scope
+                .skipped_functions
+                .push(FunctionRef::new(binary, function));
         }
         Self::persist(&state)
     }
@@ -258,14 +275,16 @@ impl ScopeControl {
     /// error.
     pub fn prioritize_function(&self, binary: &str, function: &str) -> Result<(), PersistError> {
         let mut state = self.lock();
-        let reference = FunctionRef::new(binary, function);
         if !state
             .scope
             .priority_functions
             .iter()
-            .any(|f| f.binary == reference.binary && f.function == reference.function)
+            .any(|f| f.matches(binary, function))
         {
-            state.scope.priority_functions.push(reference);
+            state
+                .scope
+                .priority_functions
+                .push(FunctionRef::new(binary, function));
         }
         Self::persist(&state)
     }
@@ -280,11 +299,10 @@ impl ScopeControl {
         function: &str,
     ) -> Result<(), PersistError> {
         let mut state = self.lock();
-        let reference = FunctionRef::new(binary, function);
         state
             .scope
             .priority_functions
-            .retain(|f| !(f.binary == reference.binary && f.function == reference.function));
+            .retain(|f| !f.matches(binary, function));
         Self::persist(&state)
     }
 
@@ -366,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn scope_filters_match_binary_verbatim_and_function_exactly() {
+    fn scope_filters_match_binary_case_insensitively_and_function_exactly() {
         let scope = TranslationScope {
             binaries: vec![],
             skipped_functions: vec![FunctionRef::new("game_logic.dll", "DllMain")],
@@ -380,6 +398,60 @@ mod tests {
         );
         assert!(scope.is_priority("eqmain.dll", "DrawPrimitive"));
         assert!(!scope.is_priority("eqmain.dll", "UpdateScene"));
+        // The match rule's case policy (issue #107): binary names are
+        // Windows filenames — case-insensitive. Function names are PE
+        // exports / Ghidra symbols — case-sensitive.
+        assert!(
+            scope.is_skipped("GAME_LOGIC.dll", "DllMain"),
+            "a differently-cased binary spelling still matches the skip"
+        );
+        assert!(
+            scope.is_priority("EQMAIN.DLL", "DrawPrimitive"),
+            "a differently-cased binary spelling still matches the priority"
+        );
+        assert!(
+            !scope.is_skipped("game_logic.dll", "dllmain"),
+            "a differently-cased function name is a different function"
+        );
+    }
+
+    /// The one match rule (issue #107): adding, checking, and removing the
+    /// same (binary, function) pair always land on one entry, however the
+    /// operator cased the binary name.
+    #[test]
+    fn differently_cased_mutations_dedupe_and_remove_the_same_entry() {
+        let control = ScopeControl::new();
+        control
+            .skip_function("game_logic.dll", "DllMain")
+            .expect("first skip");
+        control
+            .skip_function("GAME_LOGIC.dll", "DllMain")
+            .expect("differently-cased skip is not an error");
+        assert_eq!(
+            control.scope().skipped_functions.len(),
+            1,
+            "a differently-cased skip dedupes rather than duplicates"
+        );
+
+        control
+            .prioritize_function("game_logic.dll", "DrawPrimitive")
+            .expect("first priority");
+        control
+            .prioritize_function("GAME_LOGIC.DLL", "DrawPrimitive")
+            .expect("differently-cased priority is not an error");
+        assert_eq!(
+            control.scope().priority_functions.len(),
+            1,
+            "a differently-cased priority add dedupes rather than duplicates"
+        );
+
+        control
+            .remove_priority_function("Game_Logic.dll", "DrawPrimitive")
+            .expect("differently-cased removal is not an error");
+        assert!(
+            control.scope().priority_functions.is_empty(),
+            "a differently-cased removal drops the entry"
+        );
     }
 
     #[test]
