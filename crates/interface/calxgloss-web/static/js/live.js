@@ -51,7 +51,10 @@ export async function loadLiveProgress() {
     } catch (err) {
         lastState = null;
         list.innerHTML = "";
-        if (String(err.message || err).includes("404")) {
+        // Branch on the HTTP status itself, not the message text: a static
+        // 404 answers with HTML, so the message falls back to the bare
+        // statusText ("Not Found") and carries no "404" to match.
+        if (err.status === 404) {
             showEmpty("The live view needs a running pipeline — start " +
                 "`calxgloss live` to watch units translate here.");
         } else {

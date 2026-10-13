@@ -7,9 +7,13 @@ export const API = {
         const res = await fetch(path);
         if (!res.ok) {
             // The server's own reason surfaces when it sends one — an
-            // honest 503 explanation beats a bare status line.
+            // honest 503 explanation beats a bare status line. The status
+            // code rides on the error too, so callers can branch on it
+            // without string-matching a message the server may overwrite.
             const err = await res.json().catch(() => ({ message: res.statusText }));
-            throw new Error(err.message || `API ${res.status}`);
+            const failure = new Error(err.message || `API ${res.status}`);
+            failure.status = res.status;
+            throw failure;
         }
         return res.json();
     },

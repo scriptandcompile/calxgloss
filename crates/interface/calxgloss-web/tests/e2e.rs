@@ -6777,21 +6777,6 @@ async fn test_headless_faults_view_renders_filters_and_exports() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_count = |expr: &str| -> i64 {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_i64())
-            .unwrap_or(-1)
-    };
-    let eval_text = |expr: &str| -> String {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_default()
-    };
-
     // Switch to the Faults tab.
     tab.evaluate(
         "document.querySelector('.nav-tab[data-view=\"faults\"]')?.click() === undefined",
@@ -6802,7 +6787,11 @@ async fn test_headless_faults_view_renders_filters_and_exports() {
     // The fixture log renders: 6 rows in the table.
     let mut loaded = false;
     for _ in 0..25 {
-        if eval_count("document.querySelectorAll('#faults-table-body tr').length") == 6 {
+        if eval_count(
+            &tab,
+            "document.querySelectorAll('#faults-table-body tr').length",
+        ) == 6
+        {
             loaded = true;
             break;
         }
@@ -6812,22 +6801,32 @@ async fn test_headless_faults_view_renders_filters_and_exports() {
 
     // Summary cards, per-binary bars, and the trend line all render.
     assert_eq!(
-        eval_count("document.querySelectorAll('#faults-summary-cards .status-card').length"),
+        eval_count(
+            &tab,
+            "document.querySelectorAll('#faults-summary-cards .status-card').length"
+        ),
         9,
         "fixture log should render total + 5 category + 3 severity cards"
     );
     assert_eq!(
-        eval_count("document.querySelectorAll('#faults-binary-bars .fault-bar-row').length"),
+        eval_count(
+            &tab,
+            "document.querySelectorAll('#faults-binary-bars .fault-bar-row').length"
+        ),
         2,
         "fixture log should render 2 per-binary bars"
     );
     assert_eq!(
-        eval_count("document.querySelectorAll('#faults-trend polyline').length"),
+        eval_count(
+            &tab,
+            "document.querySelectorAll('#faults-trend polyline').length"
+        ),
         2,
         "trend should render a count line and a moving-average line"
     );
     assert_eq!(
         eval_count(
+            &tab,
             "document.querySelector('#faults-trend polyline').getAttribute('points').split(' ').length"
         ),
         4,
@@ -6836,7 +6835,7 @@ async fn test_headless_faults_view_renders_filters_and_exports() {
 
     // The CSV builder (the export button's data source) is pinned against
     // the fixture: header + 6 rows, with the recovery verbatim.
-    let csv = eval_text("window.calxglossFaultsCsv()");
+    let csv = eval_text(&tab, "window.calxglossFaultsCsv()");
     let lines: Vec<&str> = csv.lines().collect();
     assert_eq!(
         lines.first().copied().unwrap_or(""),
@@ -6863,7 +6862,11 @@ async fn test_headless_faults_view_renders_filters_and_exports() {
     .expect("set category filter");
     let mut filtered = false;
     for _ in 0..25 {
-        if eval_count("document.querySelectorAll('#faults-table-body tr').length") == 2 {
+        if eval_count(
+            &tab,
+            "document.querySelectorAll('#faults-table-body tr').length",
+        ) == 2
+        {
             filtered = true;
             break;
         }
@@ -6988,21 +6991,6 @@ async fn test_headless_token_usage_view_renders_cost_and_time_range() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_count = |expr: &str| -> i64 {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_i64())
-            .unwrap_or(-1)
-    };
-    let eval_text = |expr: &str| -> String {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_default()
-    };
-
     // Switch to the Token Usage tab.
     tab.evaluate(
         "document.querySelector('.nav-tab[data-view=\"token-usage\"]')?.click() === undefined",
@@ -7013,7 +7001,11 @@ async fn test_headless_token_usage_view_renders_cost_and_time_range() {
     // The fixture log renders: both attempts in the strategy table.
     let mut loaded = false;
     for _ in 0..25 {
-        if eval_count("document.querySelectorAll('#token-usage-strategy-body tr').length") == 2 {
+        if eval_count(
+            &tab,
+            "document.querySelectorAll('#token-usage-strategy-body tr').length",
+        ) == 2
+        {
             loaded = true;
             break;
         }
@@ -7026,22 +7018,32 @@ async fn test_headless_token_usage_view_renders_cost_and_time_range() {
 
     // Summary split, per-binary bars, per-tier bars all render.
     assert_eq!(
-        eval_count("document.querySelectorAll('#token-usage-summary-cards .status-card').length"),
+        eval_count(
+            &tab,
+            "document.querySelectorAll('#token-usage-summary-cards .status-card').length"
+        ),
         3,
         "fixture log should render total + successful + failed cards"
     );
     assert_eq!(
-        eval_count("document.querySelectorAll('#token-usage-binary-bars .token-bar-row').length"),
+        eval_count(
+            &tab,
+            "document.querySelectorAll('#token-usage-binary-bars .token-bar-row').length"
+        ),
         2,
         "fixture log should render 2 per-binary bars"
     );
     assert_eq!(
-        eval_count("document.querySelectorAll('#token-usage-tier-bars .token-bar-row').length"),
+        eval_count(
+            &tab,
+            "document.querySelectorAll('#token-usage-tier-bars .token-bar-row').length"
+        ),
         2,
         "fixture log should render 2 per-tier bars"
     );
     assert!(
         eval_text(
+            &tab,
             "document.querySelector('#token-usage-binary-bars .token-bar-share').textContent"
         )
         .contains('%'),
@@ -7060,14 +7062,17 @@ async fn test_headless_token_usage_view_renders_cost_and_time_range() {
     )
     .expect("type pricing");
     assert_eq!(
-        eval_text("document.getElementById('token-usage-cost-total').textContent"),
+        eval_text(
+            &tab,
+            "document.getElementById('token-usage-cost-total').textContent"
+        ),
         "$1.00",
         "the cost panel should compute the estimate from the typed price"
     );
 
     // The pricing persists in localStorage and survives a reload.
     assert_eq!(
-        eval_text("localStorage.getItem('calxgloss_token_pricing')"),
+        eval_text(&tab, "localStorage.getItem('calxgloss_token_pricing')"),
         "100",
         "the typed price should persist in localStorage"
     );
@@ -7079,7 +7084,11 @@ async fn test_headless_token_usage_view_renders_cost_and_time_range() {
     .expect("click token usage tab after reload");
     let mut cost_restored = false;
     for _ in 0..25 {
-        if eval_text("document.getElementById('token-usage-cost-total')?.textContent") == "$1.00" {
+        if eval_text(
+            &tab,
+            "document.getElementById('token-usage-cost-total')?.textContent",
+        ) == "$1.00"
+        {
             cost_restored = true;
             break;
         }
@@ -7103,7 +7112,11 @@ async fn test_headless_token_usage_view_renders_cost_and_time_range() {
     .expect("set time range filter");
     let mut narrowed = false;
     for _ in 0..25 {
-        if eval_count("document.querySelectorAll('#token-usage-strategy-body tr').length") == 1 {
+        if eval_count(
+            &tab,
+            "document.querySelectorAll('#token-usage-strategy-body tr').length",
+        ) == 1
+        {
             narrowed = true;
             break;
         }
@@ -7114,7 +7127,10 @@ async fn test_headless_token_usage_view_renders_cost_and_time_range() {
         "the 7-day range should narrow the view to the recent attempt"
     );
     assert_eq!(
-        eval_text("document.getElementById('token-usage-cost-total').textContent"),
+        eval_text(
+            &tab,
+            "document.getElementById('token-usage-cost-total').textContent"
+        ),
         "$0.40",
         "the cost estimate should follow the filtered totals without a reload"
     );
@@ -7245,21 +7261,6 @@ async fn test_headless_strategy_analytics_view_renders_filter_and_exports() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_count = |expr: &str| -> i64 {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_i64())
-            .unwrap_or(-1)
-    };
-    let eval_text = |expr: &str| -> String {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_default()
-    };
-
     // Switch to the Strategy Analytics tab.
     tab.evaluate(
         "document.querySelector('.nav-tab[data-view=\"strategy-analytics\"]')?.click() === undefined",
@@ -7270,8 +7271,10 @@ async fn test_headless_strategy_analytics_view_renders_filter_and_exports() {
     // The fixture log renders: all three attempts across three strategies.
     let mut loaded = false;
     for _ in 0..25 {
-        if eval_count("document.querySelectorAll('#strategy-analytics-strategy-body tr').length")
-            == 3
+        if eval_count(
+            &tab,
+            "document.querySelectorAll('#strategy-analytics-strategy-body tr').length",
+        ) == 3
         {
             loaded = true;
             break;
@@ -7286,13 +7289,14 @@ async fn test_headless_strategy_analytics_view_renders_filter_and_exports() {
     // The per-category bars render — one per binary category the log names.
     assert_eq!(
         eval_count(
+            &tab,
             "document.querySelectorAll('#strategy-analytics-category-bars .token-bar-row').length"
         ),
         2,
         "fixture log should render 2 per-category bars"
     );
     assert!(
-        eval_text("document.querySelector('#strategy-analytics-category-bars .token-bar-share').textContent")
+        eval_text(&tab, "document.querySelector('#strategy-analytics-category-bars .token-bar-share').textContent")
             .contains('%'),
         "per-category bars should carry pass rates"
     );
@@ -7300,7 +7304,7 @@ async fn test_headless_strategy_analytics_view_renders_filter_and_exports() {
     // The CSV export: exact rows from the fetched JSON — the per-strategy
     // breakdown (all three strategies tie at one attempt, so they sort
     // alphabetically), then the per-category breakdown.
-    let csv = eval_text("window.calxglossStrategyCsv()");
+    let csv = eval_text(&tab, "window.calxglossStrategyCsv()");
     assert_eq!(
         csv,
         "strategy,attempts,successes,failures,pass_rate\n\
@@ -7327,8 +7331,10 @@ async fn test_headless_strategy_analytics_view_renders_filter_and_exports() {
     .expect("set time range filter");
     let mut narrowed = false;
     for _ in 0..25 {
-        if eval_count("document.querySelectorAll('#strategy-analytics-strategy-body tr').length")
-            == 2
+        if eval_count(
+            &tab,
+            "document.querySelectorAll('#strategy-analytics-strategy-body tr').length",
+        ) == 2
         {
             narrowed = true;
             break;
@@ -7341,6 +7347,7 @@ async fn test_headless_strategy_analytics_view_renders_filter_and_exports() {
     );
     assert_eq!(
         eval_count(
+            &tab,
             "document.querySelectorAll('#strategy-analytics-category-bars .token-bar-row').length"
         ),
         1,
@@ -7498,21 +7505,6 @@ async fn test_headless_llm_metrics_view_renders_percentiles_and_filter() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_count = |expr: &str| -> i64 {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_i64())
-            .unwrap_or(-1)
-    };
-    let eval_text = |expr: &str| -> String {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_default()
-    };
-
     // Switch to the LLM Metrics tab.
     tab.evaluate(
         "document.querySelector('.nav-tab[data-view=\"llm-metrics\"]')?.click() === undefined",
@@ -7523,8 +7515,10 @@ async fn test_headless_llm_metrics_view_renders_percentiles_and_filter() {
     // The fixture renders: four cards (P50/P95/P99 + timeouts).
     let mut loaded = false;
     for _ in 0..25 {
-        if eval_count("document.querySelectorAll('#llm-metrics-summary-cards .status-card').length")
-            == 4
+        if eval_count(
+            &tab,
+            "document.querySelectorAll('#llm-metrics-summary-cards .status-card').length",
+        ) == 4
         {
             loaded = true;
             break;
@@ -7535,6 +7529,7 @@ async fn test_headless_llm_metrics_view_renders_percentiles_and_filter() {
         loaded,
         "llm metrics view should render the percentile cards — last P50 read: {}",
         eval_text(
+            &tab,
             "document.querySelector('#llm-metrics-summary-cards .status-card .status-card-value')?.textContent || ''"
         )
     );
@@ -7543,6 +7538,7 @@ async fn test_headless_llm_metrics_view_renders_percentiles_and_filter() {
     // nearest-rank P50 is 30 — the unmeasured attempt never joins the math.
     assert_eq!(
         eval_text(
+            &tab,
             "document.querySelector('#llm-metrics-summary-cards .status-card .status-card-value').textContent"
         ),
         "30s",
@@ -7552,14 +7548,17 @@ async fn test_headless_llm_metrics_view_renders_percentiles_and_filter() {
     // Honest labeling: the note spells out that durations are attempt
     // wall-clock (compile and tests included), never per-call latency.
     assert!(
-        eval_text("document.querySelector('#view-llm-metrics .llm-metrics-note:last-of-type')?.textContent || ''")
+        eval_text(&tab, "document.querySelector('#view-llm-metrics .llm-metrics-note:last-of-type')?.textContent || ''")
             .contains("compile and tests included"),
         "the view must label durations as attempt-level wall-clock"
     );
 
     // The timeout trend renders its SVG from the server's buckets.
     assert_eq!(
-        eval_count("document.querySelectorAll('#llm-metrics-timeout-trend svg').length"),
+        eval_count(
+            &tab,
+            "document.querySelectorAll('#llm-metrics-timeout-trend svg').length"
+        ),
         1,
         "the timeout trend should render from the fixture fault"
     );
@@ -7568,7 +7567,11 @@ async fn test_headless_llm_metrics_view_renders_percentiles_and_filter() {
     // and the unmeasured tier's percentiles are em dashes, never numbers.
     let mut tiers_rendered = false;
     for _ in 0..25 {
-        if eval_count("document.querySelectorAll('#llm-metrics-tier-body tr').length") == 3 {
+        if eval_count(
+            &tab,
+            "document.querySelectorAll('#llm-metrics-tier-body tr').length",
+        ) == 3
+        {
             tiers_rendered = true;
             break;
         }
@@ -7577,6 +7580,7 @@ async fn test_headless_llm_metrics_view_renders_percentiles_and_filter() {
     assert!(tiers_rendered, "the tier table should render three tiers");
     assert_eq!(
         eval_text(
+            &tab,
             "document.querySelector('#llm-metrics-tier-body tr:last-child td:last-child').textContent"
         ),
         "—",
@@ -7596,7 +7600,11 @@ async fn test_headless_llm_metrics_view_renders_percentiles_and_filter() {
     .expect("set time range filter");
     let mut narrowed = false;
     for _ in 0..25 {
-        if eval_count("document.querySelectorAll('#llm-metrics-tier-body tr').length") == 2 {
+        if eval_count(
+            &tab,
+            "document.querySelectorAll('#llm-metrics-tier-body tr').length",
+        ) == 2
+        {
             narrowed = true;
             break;
         }
@@ -7608,6 +7616,7 @@ async fn test_headless_llm_metrics_view_renders_percentiles_and_filter() {
     );
     assert_eq!(
         eval_text(
+            &tab,
             "document.querySelector('#llm-metrics-summary-cards .status-card .status-card-value').textContent"
         ),
         "10s",
@@ -8480,6 +8489,39 @@ fn open_dashboard_tab(
     tab
 }
 
+/// Evaluate a JS expression on the dashboard tab and read the result as a
+/// boolean, shared by every headless test so none redefines the coercion.
+///
+/// An evaluation error or a non-boolean result reads as `false`, which keeps
+/// render-polling loops honest until the dashboard actually shows the thing.
+fn eval_bool(tab: &headless_chrome::Tab, expr: &str) -> bool {
+    tab.evaluate(expr, false)
+        .ok()
+        .and_then(|r| r.value)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+/// Like [`eval_bool`], but reads the result as text; errors and non-string
+/// results read as the empty string.
+fn eval_text(tab: &headless_chrome::Tab, expr: &str) -> String {
+    tab.evaluate(expr, false)
+        .ok()
+        .and_then(|r| r.value)
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_default()
+}
+
+/// Like [`eval_bool`], but reads the result as a whole number; errors and
+/// non-number results read as `-1`, a count no real element set can match.
+fn eval_count(tab: &headless_chrome::Tab, expr: &str) -> i64 {
+    tab.evaluate(expr, false)
+        .ok()
+        .and_then(|r| r.value)
+        .and_then(|v| v.as_i64())
+        .unwrap_or(-1)
+}
+
 /// Test that a headless browser can navigate to the server and
 /// verify the HTML page loads without JavaScript errors.
 ///
@@ -8669,26 +8711,19 @@ async fn test_headless_server_control_panel() {
     }
     assert!(rendered, "dashboard should render the server control panel");
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .expect("evaluate panel expression")
-            .value
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
-
     assert!(
-        eval_bool("!!document.getElementById('server-shutdown-btn')"),
+        eval_bool(&tab, "!!document.getElementById('server-shutdown-btn')"),
         "control panel should have a shutdown button"
     );
     assert!(
-        eval_bool("!!document.getElementById('server-restart-btn')"),
+        eval_bool(&tab, "!!document.getElementById('server-restart-btn')"),
         "control panel should have a restart button"
     );
 
     // The log-level select must offer the levels the server accepts.
     assert!(
         eval_bool(
+            &tab,
             "['off','error','warn','info','debug','trace'].every(\
                 l => [...document.getElementById('server-loglevel-select').options]\
                     .some(o => o.value === l))"
@@ -8698,6 +8733,7 @@ async fn test_headless_server_control_panel() {
     // And pre-select the level the server reports.
     assert!(
         eval_bool(
+            &tab,
             "document.getElementById('server-loglevel-select').value === \
                 document.getElementById('server-status-loglevel').textContent"
         ),
@@ -8751,26 +8787,15 @@ async fn test_headless_pipeline_phase_bar_live() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
-    let eval_len = |expr: &str| -> i64 {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_i64())
-            .unwrap_or(-1)
-    };
-
     // The bar renders asynchronously once the pipeline fetch settles;
     // poll until all 8 segments appear (up to ~5 seconds).
     let mut rendered = false;
     for _ in 0..25 {
-        if eval_len("document.querySelectorAll('#pipeline-phase-bar .phase-segment').length") == 8 {
+        if eval_count(
+            &tab,
+            "document.querySelectorAll('#pipeline-phase-bar .phase-segment').length",
+        ) == 8
+        {
             rendered = true;
             break;
         }
@@ -8797,6 +8822,7 @@ async fn test_headless_pipeline_phase_bar_live() {
     // Phase 2.5 (PAL Design) is present as its own segment.
     assert!(
         eval_bool(
+            &tab,
             "!!document.querySelector('#pipeline-phase-bar .phase-segment[data-phase=\"pal_design\"]')"
         ),
         "PAL Design must be its own segment"
@@ -8805,10 +8831,13 @@ async fn test_headless_pipeline_phase_bar_live() {
     // Restitching & Documentation render honestly as no-data-source.
     for phase in ["restitching", "documentation"] {
         assert!(
-            eval_bool(&format!(
-                "document.querySelector('#pipeline-phase-bar .phase-segment[data-phase=\"{phase}\"]')\
+            eval_bool(
+                &tab,
+                &format!(
+                    "document.querySelector('#pipeline-phase-bar .phase-segment[data-phase=\"{phase}\"]')\
                     ?.classList.contains('state-no_data_source') === true"
-            )),
+                )
+            ),
             "{phase} segment must render as no-data-source, not zero progress"
         );
     }
@@ -8894,33 +8923,12 @@ async fn test_headless_pipeline_binary_rows() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
-    let eval_len = |expr: &str| -> i64 {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_i64())
-            .unwrap_or(-1)
-    };
-    let eval_text = |expr: &str| -> String {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_default()
-    };
-
     // Rows render asynchronously once the pipeline fetch settles;
     // poll until all four appear (up to ~5 seconds).
     let mut rendered = false;
     for _ in 0..25 {
-        if eval_len(
+        if eval_count(
+            &tab,
             "document.querySelectorAll('#pipeline-binaries .pipeline-binary-row[data-binary]').length",
         ) == 4
         {
@@ -8937,17 +8945,23 @@ async fn test_headless_pipeline_binary_rows() {
     // One row per discovered binary, keyed by name.
     for binary in ["d3d9.dll", "dinput8.dll", "engine.dll", "game_logic.dll"] {
         assert!(
-            eval_bool(&format!(
-                "!!document.querySelector('#pipeline-binaries [data-binary=\"{binary}\"]')"
-            )),
+            eval_bool(
+                &tab,
+                &format!(
+                    "!!document.querySelector('#pipeline-binaries [data-binary=\"{binary}\"]')"
+                )
+            ),
             "row for {binary} should exist"
         );
     }
 
     let cell_text = |binary: &str, selector: &str| -> String {
-        eval_text(&format!(
-            "document.querySelector('#pipeline-binaries [data-binary=\"{binary}\"] {selector}')?.textContent || ''"
-        ))
+        eval_text(
+            &tab,
+            &format!(
+                "document.querySelector('#pipeline-binaries [data-binary=\"{binary}\"] {selector}')?.textContent || ''"
+            ),
+        )
     };
 
     // ── game_logic: counts, tokens, and success rate from the canned batch ──
@@ -8985,6 +8999,7 @@ async fn test_headless_pipeline_binary_rows() {
     // ── Status badge lives in the Success column, not beside the name ──
     assert!(
         eval_bool(
+            &tab,
             "document.querySelectorAll('#pipeline-binaries .pipeline-binary-head .pipeline-binary-status').length === 0"
         ),
         "no status badge next to the binary name"
@@ -9041,12 +9056,14 @@ async fn test_headless_pipeline_binary_rows() {
     );
     assert!(
         eval_bool(
+            &tab,
             "[...document.querySelectorAll('#pipeline-binaries .pipeline-binary-status')].every(e => !e.textContent.includes('Classified'))"
         ),
         "no Classified badge — the state column already carries the classification state"
     );
     assert!(
         eval_bool(
+            &tab,
             "document.querySelectorAll('#pipeline-binaries .pipeline-binary-strategy').length === 0"
         ),
         "the redundant strategy column is gone"
@@ -9061,6 +9078,7 @@ async fn test_headless_pipeline_binary_rows() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(
         eval_bool(
+            &tab,
             r#"(() => {
                 const pairs = [
                     ['.pipeline-binary-counts', 2],
@@ -9104,9 +9122,10 @@ async fn test_headless_pipeline_binary_rows() {
     // ── Quick-action buttons: real controls driving the lifecycle endpoints ──
     assert!(
         eval_bool(
-            "[...document.querySelectorAll('#pipeline-binaries [data-binary=\"game_logic.dll\"] .pipeline-binary-actions button')].length === 3"
+            &tab,
+            "[...document.querySelectorAll('#pipeline-binaries [data-binary=\"game_logic.dll\"] .pipeline-binary-actions button')].length === 4"
         ),
-        "each row should offer Start Translation, Pause, and Configure"
+        "each row should offer Start Translation, Pause, Configure, and Classify"
     );
 
     // Instrument fetch so any state-changing request becomes observable.
@@ -9130,7 +9149,7 @@ async fn test_headless_pipeline_binary_rows() {
     // The click is a real control: it fires a POST to the lifecycle endpoint…
     let mut fired = false;
     for _ in 0..25 {
-        if eval_len("window.__nonGetFetches") >= 1 {
+        if eval_count(&tab, "window.__nonGetFetches") >= 1 {
             fired = true;
             break;
         }
@@ -9147,6 +9166,7 @@ async fn test_headless_pipeline_binary_rows() {
     let mut surfaced = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "[...document.querySelectorAll('#toast-container .toast')].some(t => t.textContent.includes('no live pipeline control'))",
         ) {
             surfaced = true;
@@ -9158,6 +9178,7 @@ async fn test_headless_pipeline_binary_rows() {
         surfaced,
         "the server's 503 reason must surface as an error toast, got: {}",
         eval_text(
+            &tab,
             "[...document.querySelectorAll('#toast-container .toast')].map(t => t.textContent).join(' | ')"
         )
     );
@@ -9193,26 +9214,17 @@ async fn test_headless_controls_header_tracks_live_state() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
+    let header_state = || {
+        eval_text(
+            &tab,
+            "document.getElementById('pipeline-state')?.dataset.state || ''",
+        )
     };
-    let eval_text = |expr: &str| -> String {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_default()
-    };
-    let header_state =
-        || eval_text("document.getElementById('pipeline-state')?.dataset.state || ''");
     let btn_disabled = |id: &str| {
-        eval_bool(&format!(
-            "document.getElementById('{id}')?.disabled === true"
-        ))
+        eval_bool(
+            &tab,
+            &format!("document.getElementById('{id}')?.disabled === true"),
+        )
     };
     let wait_for_state = |want: &'static str| async move {
         for _ in 0..25 {
@@ -9281,6 +9293,7 @@ async fn test_headless_controls_header_tracks_live_state() {
     let mut rejected = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "[...document.querySelectorAll('#toast-container .toast')].some(t => t.textContent.includes('cannot start a pipeline that is running'))",
         ) {
             rejected = true;
@@ -9292,6 +9305,7 @@ async fn test_headless_controls_header_tracks_live_state() {
         rejected,
         "a stale click must surface the server's 409 reason, got: {}",
         eval_text(
+            &tab,
             "[...document.querySelectorAll('#toast-container .toast')].map(t => t.textContent).join(' | ')"
         )
     );
@@ -9384,25 +9398,11 @@ async fn test_headless_restart_dialog_drives_endpoint() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
-    let eval_text = |expr: &str| -> String {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_default()
-    };
-
     // The header settles on complete, which unlocks Restart.
     let mut settled = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "document.getElementById('pipeline-state')?.dataset.state === 'complete' \
                  && document.getElementById('ctl-restart')?.disabled === false",
         ) {
@@ -9414,7 +9414,10 @@ async fn test_headless_restart_dialog_drives_endpoint() {
     assert!(
         settled,
         "the header must show complete and enable Restart, got: {}",
-        eval_text("document.getElementById('pipeline-state')?.dataset.state || ''")
+        eval_text(
+            &tab,
+            "document.getElementById('pipeline-state')?.dataset.state || ''"
+        )
     );
 
     tab.evaluate(
@@ -9426,7 +9429,7 @@ async fn test_headless_restart_dialog_drives_endpoint() {
     // The dialog opens with the three selectors and the safety explanation.
     let mut opened = false;
     for _ in 0..25 {
-        if eval_bool("!!document.getElementById('restart-dialog')") {
+        if eval_bool(&tab, "!!document.getElementById('restart-dialog')") {
             opened = true;
             break;
         }
@@ -9435,25 +9438,31 @@ async fn test_headless_restart_dialog_drives_endpoint() {
     assert!(opened, "Restart must open the options dialog");
     assert!(
         eval_bool(
+            &tab,
             "[...document.querySelectorAll('#restart-phase option')].map(o => o.value).join(',') === 'translate,classify'"
         ),
         "phase selector offers translate and classify"
     );
     assert!(
         eval_bool(
+            &tab,
             "[...document.querySelectorAll('#restart-target option')].some(o => o.value === 'all')"
         ),
         "target selector offers all binaries"
     );
     assert!(
         eval_bool(
+            &tab,
             "[...document.querySelectorAll('#restart-scope option')].map(o => o.value).join(',') === 'all_functions,only_queued,only_failed'"
         ),
         "scope selector offers all_functions, only_queued, and only_failed"
     );
     assert!(
-        eval_text("document.querySelector('#restart-dialog .dialog-safety')?.textContent || ''")
-            .contains("nothing in flight is discarded"),
+        eval_text(
+            &tab,
+            "document.querySelector('#restart-dialog .dialog-safety')?.textContent || ''"
+        )
+        .contains("nothing in flight is discarded"),
         "the dialog must explain the safety of restarting"
     );
 
@@ -9473,7 +9482,10 @@ async fn test_headless_restart_dialog_drives_endpoint() {
     // The header follows the machine back to running…
     let mut restarted = false;
     for _ in 0..25 {
-        if eval_bool("document.getElementById('pipeline-state')?.dataset.state === 'running'") {
+        if eval_bool(
+            &tab,
+            "document.getElementById('pipeline-state')?.dataset.state === 'running'",
+        ) {
             restarted = true;
             break;
         }
@@ -9510,10 +9522,12 @@ async fn test_headless_restart_dialog_drives_endpoint() {
     // The success toast names the selectors it sent.
     assert!(
         eval_bool(
+            &tab,
             "[...document.querySelectorAll('#toast-container .toast')].some(t => t.textContent.includes('phase classify') && t.textContent.includes('only failed functions'))"
         ),
         "the toast must report the restart the server actually queued, got: {}",
         eval_text(
+            &tab,
             "[...document.querySelectorAll('#toast-container .toast')].map(t => t.textContent).join(' | ')"
         )
     );
@@ -9547,25 +9561,13 @@ async fn test_headless_shutdown_dialog_drives_endpoint() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
-    let eval_text = |expr: &str| -> String {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_default()
-    };
-
     // Shut Down Server is available from the very first snapshot.
     let mut ready = false;
     for _ in 0..25 {
-        if eval_bool("document.getElementById('ctl-shutdown')?.disabled === false") {
+        if eval_bool(
+            &tab,
+            "document.getElementById('ctl-shutdown')?.disabled === false",
+        ) {
             ready = true;
             break;
         }
@@ -9584,7 +9586,7 @@ async fn test_headless_shutdown_dialog_drives_endpoint() {
 
     let mut opened = false;
     for _ in 0..25 {
-        if eval_bool("!!document.getElementById('shutdown-dialog')") {
+        if eval_bool(&tab, "!!document.getElementById('shutdown-dialog')") {
             opened = true;
             break;
         }
@@ -9594,8 +9596,10 @@ async fn test_headless_shutdown_dialog_drives_endpoint() {
 
     // The dialog lists exactly what the shutdown does — honest to the live
     // router: unit boundary, the in-flight unit is saved, then the process stops.
-    let listed =
-        eval_text("document.querySelector('#shutdown-dialog .dialog-list')?.textContent || ''");
+    let listed = eval_text(
+        &tab,
+        "document.querySelector('#shutdown-dialog .dialog-list')?.textContent || ''",
+    );
     assert!(
         listed.contains("unit boundary")
             && listed.contains("save its state")
@@ -9684,36 +9688,19 @@ async fn test_headless_scope_controls_panel() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
-    let eval_text = |expr: &str| -> String {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_default()
-    };
-    let eval_len = |expr: &str| -> i64 {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_i64())
-            .unwrap_or(-1)
-    };
     let checked = |id: &str| {
-        eval_bool(&format!(
-            "document.getElementById('{id}')?.checked === true"
-        ))
+        eval_bool(
+            &tab,
+            &format!("document.getElementById('{id}')?.checked === true"),
+        )
     };
     let chip_count = |fn_name: &str| {
-        eval_len(&format!(
-            "document.querySelectorAll('#scope-priority-list .scope-priority-chip[data-function=\"{fn_name}\"]').length"
-        ))
+        eval_count(
+            &tab,
+            &format!(
+                "document.querySelectorAll('#scope-priority-list .scope-priority-chip[data-function=\"{fn_name}\"]').length"
+            ),
+        )
     };
     let get_scope = || async {
         reqwest::get(format!("http://127.0.0.1:{}/api/scope", fixture.port()))
@@ -9777,20 +9764,32 @@ async fn test_headless_scope_controls_panel() {
     // Constraints render from the status endpoint, and the token display
     // carries the budget minus the run's spend.
     assert_eq!(
-        eval_text("document.getElementById('scope-max-attempts')?.value || ''"),
+        eval_text(
+            &tab,
+            "document.getElementById('scope-max-attempts')?.value || ''"
+        ),
         "2"
     );
     assert_eq!(
-        eval_text("document.getElementById('scope-max-tier')?.value || ''"),
+        eval_text(
+            &tab,
+            "document.getElementById('scope-max-tier')?.value || ''"
+        ),
         "Disassembly"
     );
     assert_eq!(
-        eval_text("document.getElementById('scope-token-budget')?.value || ''"),
+        eval_text(
+            &tab,
+            "document.getElementById('scope-token-budget')?.value || ''"
+        ),
         "50000"
     );
     assert!(
-        eval_text("document.getElementById('scope-token-remaining')?.textContent || ''")
-            .contains("37655"),
+        eval_text(
+            &tab,
+            "document.getElementById('scope-token-remaining')?.textContent || ''"
+        )
+        .contains("37655"),
         "the remaining-budget display follows the server's spend"
     );
 
@@ -9961,8 +9960,11 @@ async fn test_headless_scope_controls_panel() {
         "the constraint inputs must drive POST /api/scope/constraints wholesale"
     );
     assert!(
-        eval_text("document.getElementById('scope-token-remaining')?.textContent || ''")
-            .contains("77655"),
+        eval_text(
+            &tab,
+            "document.getElementById('scope-token-remaining')?.textContent || ''"
+        )
+        .contains("77655"),
         "the remaining-budget display follows the new budget"
     );
 
@@ -9988,24 +9990,10 @@ async fn test_headless_scope_controls_honest_without_control() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
-    let eval_text = |expr: &str| -> String {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_default()
-    };
-
     let mut honest = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "!!document.getElementById('scope-unavailable') && \
                  document.getElementById('scope-unavailable').style.display !== 'none' && \
                  document.getElementById('scope-body').style.display === 'none'",
@@ -10020,8 +10008,11 @@ async fn test_headless_scope_controls_honest_without_control() {
         "without a scope control the panel must show its honest unavailable state"
     );
     assert!(
-        eval_text("document.getElementById('scope-unavailable-message')?.textContent || ''")
-            .contains("calxgloss live"),
+        eval_text(
+            &tab,
+            "document.getElementById('scope-unavailable-message')?.textContent || ''"
+        )
+        .contains("calxgloss live"),
         "the message names what the panel needs"
     );
 
@@ -10048,21 +10039,6 @@ async fn test_headless_unit_process_sections() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
-    let eval_text = |expr: &str| -> String {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_default()
-    };
-
     // Switch to the queue view so the full queue list renders.
     tab.evaluate(
         "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
@@ -10074,6 +10050,7 @@ async fn test_headless_unit_process_sections() {
     let mut listed = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "!!document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]')",
         ) {
             listed = true;
@@ -10101,7 +10078,7 @@ async fn test_headless_unit_process_sections() {
          !!document.getElementById('process-strategies-section')";
     let mut rendered = false;
     for _ in 0..25 {
-        if eval_bool(all_sections) {
+        if eval_bool(&tab, all_sections) {
             rendered = true;
             break;
         }
@@ -10113,7 +10090,10 @@ async fn test_headless_unit_process_sections() {
     );
 
     // The tier section shows the escalated tier from the canned telemetry.
-    let tier_text = eval_text("document.getElementById('process-tier-section')?.textContent || ''");
+    let tier_text = eval_text(
+        &tab,
+        "document.getElementById('process-tier-section')?.textContent || ''",
+    );
     assert!(
         tier_text.contains("with_tests"),
         "tier section should show the final tier label, got: {tier_text}"
@@ -10124,16 +10104,20 @@ async fn test_headless_unit_process_sections() {
     );
 
     // The fault section lists the canned fault categories.
-    let fault_text =
-        eval_text("document.getElementById('process-faults-section')?.textContent || ''");
+    let fault_text = eval_text(
+        &tab,
+        "document.getElementById('process-faults-section')?.textContent || ''",
+    );
     assert!(
         fault_text.contains("context_window_exceeded") && fault_text.contains("hallucination"),
         "fault section should list both canned faults, got: {fault_text}"
     );
 
     // The strategy section shows the retry strategies used.
-    let strategy_text =
-        eval_text("document.getElementById('process-strategies-section')?.textContent || ''");
+    let strategy_text = eval_text(
+        &tab,
+        "document.getElementById('process-strategies-section')?.textContent || ''",
+    );
     assert!(
         strategy_text.contains("initial") && strategy_text.contains("compile_fix"),
         "strategy section should list both strategies, got: {strategy_text}"
@@ -10184,21 +10168,6 @@ async fn test_headless_unit_overrides_tab() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
-    let eval_text = |expr: &str| -> String {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_default()
-    };
-
     // Switch to the queue view and open the telemetry-backed unit's detail.
     tab.evaluate(
         "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
@@ -10208,6 +10177,7 @@ async fn test_headless_unit_overrides_tab() {
     let mut listed = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "!!document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]')",
         ) {
             listed = true;
@@ -10237,6 +10207,7 @@ async fn test_headless_unit_overrides_tab() {
     let mut rendered = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "document.getElementById('overrides-body')?.textContent?.includes('forced to FullModule') === true",
         ) {
             rendered = true;
@@ -10244,7 +10215,10 @@ async fn test_headless_unit_overrides_tab() {
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    let summary = eval_text("document.getElementById('override-summary')?.textContent || ''");
+    let summary = eval_text(
+        &tab,
+        "document.getElementById('override-summary')?.textContent || ''",
+    );
     assert!(
         rendered,
         "overrides tab should render the seeded summary, got: {summary}"
@@ -10254,24 +10228,35 @@ async fn test_headless_unit_overrides_tab() {
         "summary should name the forced strategy and hint count, got: {summary}"
     );
     assert_eq!(
-        eval_text("document.getElementById('override-tier')?.value || ''"),
+        eval_text(
+            &tab,
+            "document.getElementById('override-tier')?.value || ''"
+        ),
         "FullModule",
         "the tier select should come back pre-filled"
     );
     assert_eq!(
-        eval_text("document.getElementById('override-strategy')?.value || ''"),
+        eval_text(
+            &tab,
+            "document.getElementById('override-strategy')?.value || ''"
+        ),
         "escalate",
         "the strategy select should come back pre-filled"
     );
     assert!(
-        eval_text("document.getElementById('override-hints')?.value || ''")
-            .contains("blitter routine"),
+        eval_text(
+            &tab,
+            "document.getElementById('override-hints')?.value || ''"
+        )
+        .contains("blitter routine"),
         "the hints textarea should come back pre-filled"
     );
 
     // Reviewer notes display in the overview too, not only inside the tab.
-    let notes_text =
-        eval_text("document.getElementById('reviewer-notes-section')?.textContent || ''");
+    let notes_text = eval_text(
+        &tab,
+        "document.getElementById('reviewer-notes-section')?.textContent || ''",
+    );
     assert!(
         notes_text.contains("looks like a blitter"),
         "the overview should show the reviewer notes, got: {notes_text}"
@@ -10292,6 +10277,7 @@ async fn test_headless_unit_overrides_tab() {
     let mut skip_applied = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "document.getElementById('override-summary')?.textContent?.includes('skipped') === true",
         ) {
             skip_applied = true;
@@ -10302,7 +10288,10 @@ async fn test_headless_unit_overrides_tab() {
     assert!(
         skip_applied,
         "the summary should show the skip after Apply, got: {}",
-        eval_text("document.getElementById('override-summary')?.textContent || ''")
+        eval_text(
+            &tab,
+            "document.getElementById('override-summary')?.textContent || ''"
+        )
     );
     let body = reqwest::get(format!(
         "http://127.0.0.1:{}/api/units/game_logic.dll%2FDrawPrimitive%2Fv2/override",
@@ -10358,25 +10347,13 @@ async fn test_headless_classification_override_panel() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
-    let eval_text = |expr: &str| -> String {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_default()
-    };
-
     // Wait for the row, then click its Classify button.
     let mut listed = false;
     for _ in 0..25 {
-        if eval_bool("!!document.querySelector('#pipeline-binaries [data-binary=\"fmod.dll\"]')") {
+        if eval_bool(
+            &tab,
+            "!!document.querySelector('#pipeline-binaries [data-binary=\"fmod.dll\"]')",
+        ) {
             listed = true;
             break;
         }
@@ -10393,6 +10370,7 @@ async fn test_headless_classification_override_panel() {
     let mut rendered = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "document.getElementById('classification-override-panel')?.textContent?.includes('no known library') === true",
         ) {
             rendered = true;
@@ -10400,8 +10378,10 @@ async fn test_headless_classification_override_panel() {
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    let panel_text =
-        eval_text("document.getElementById('classification-override-panel')?.textContent || ''");
+    let panel_text = eval_text(
+        &tab,
+        "document.getElementById('classification-override-panel')?.textContent || ''",
+    );
     assert!(
         rendered,
         "panel should render the recorded classification with reasoning, got: {panel_text}"
@@ -10436,6 +10416,7 @@ async fn test_headless_classification_override_panel() {
     let mut applied = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "document.getElementById('classification-override-panel')?.textContent?.includes('Override in force: KnownThirdParty') === true",
         ) {
             applied = true;
@@ -10446,7 +10427,10 @@ async fn test_headless_classification_override_panel() {
     assert!(
         applied,
         "the panel should show the override after Apply, got: {}",
-        eval_text("document.getElementById('classification-override-panel')?.textContent || ''")
+        eval_text(
+            &tab,
+            "document.getElementById('classification-override-panel')?.textContent || ''"
+        )
     );
 
     // The record landed in the workspace — a restarted run honors it.
@@ -10497,17 +10481,12 @@ async fn test_headless_classification_override_honest_without_control() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
-
     let mut listed = false;
     for _ in 0..25 {
-        if eval_bool("!!document.querySelector('#pipeline-binaries [data-binary=\"fmod.dll\"]')") {
+        if eval_bool(
+            &tab,
+            "!!document.querySelector('#pipeline-binaries [data-binary=\"fmod.dll\"]')",
+        ) {
             listed = true;
             break;
         }
@@ -10524,6 +10503,7 @@ async fn test_headless_classification_override_honest_without_control() {
     let mut honest = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "document.getElementById('classification-override-panel')?.textContent?.includes('no classification override control') === true",
         ) {
             honest = true;
@@ -10536,7 +10516,7 @@ async fn test_headless_classification_override_honest_without_control() {
         "the panel should render the server's honest 503 reason"
     );
     assert!(
-        !eval_bool("!!document.getElementById('clf-apply')"),
+        !eval_bool(&tab, "!!document.getElementById('clf-apply')"),
         "no form controls when the endpoints are unavailable"
     );
 
@@ -10564,21 +10544,6 @@ async fn test_headless_unit_analysis_sections() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
-    let eval_text = |expr: &str| -> String {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_default()
-    };
-
     // Switch to the queue view so the full queue list renders.
     tab.evaluate(
         "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
@@ -10590,6 +10555,7 @@ async fn test_headless_unit_analysis_sections() {
     let mut listed = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "!!document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]')",
         ) {
             listed = true;
@@ -10615,7 +10581,7 @@ async fn test_headless_unit_analysis_sections() {
          !!document.getElementById('call-graph-section')";
     let mut rendered = false;
     for _ in 0..25 {
-        if eval_bool(all_sections) {
+        if eval_bool(&tab, all_sections) {
             rendered = true;
             break;
         }
@@ -10627,7 +10593,10 @@ async fn test_headless_unit_analysis_sections() {
     );
 
     // The API mappings section lists the canned APIs with category and PAL mapping.
-    let api_text = eval_text("document.getElementById('api-mappings-section')?.textContent || ''");
+    let api_text = eval_text(
+        &tab,
+        "document.getElementById('api-mappings-section')?.textContent || ''",
+    );
     assert!(
         api_text.contains("Present")
             && api_text.contains("DirectX")
@@ -10636,7 +10605,10 @@ async fn test_headless_unit_analysis_sections() {
     );
 
     // The call graph section lists resolved caller and callee names.
-    let cg_text = eval_text("document.getElementById('call-graph-section')?.textContent || ''");
+    let cg_text = eval_text(
+        &tab,
+        "document.getElementById('call-graph-section')?.textContent || ''",
+    );
     assert!(
         cg_text.contains("GameLoop") && cg_text.contains("BlitSurface"),
         "call graph section should list caller and callee names, got: {cg_text}"
@@ -10671,26 +10643,12 @@ async fn test_headless_pipeline_estimate_and_queue_effort() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
-    let eval_text = |expr: &str| -> String {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_default()
-    };
-
     // The pipeline panel renders asynchronously; poll until the time
     // estimate is visible (up to ~5 seconds).
     let mut estimate_visible = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "document.getElementById('pipeline-time-estimate')?.style.display !== 'none' \
                 && document.getElementById('pipeline-time-estimate')?.textContent.includes('remaining')",
         ) {
@@ -10716,6 +10674,7 @@ async fn test_headless_pipeline_estimate_and_queue_effort() {
     let mut effort_rendered = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "(() => { const el = document.querySelector('#full-queue-list \
                 [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"] .qi-effort'); \
                 return !!el && el.textContent !== '—'; })()",
@@ -10726,6 +10685,7 @@ async fn test_headless_pipeline_estimate_and_queue_effort() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
     let effort_text = eval_text(
+        &tab,
         "document.querySelector('#full-queue-list \
             [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"] .qi-effort')?.textContent || ''",
     );
@@ -10759,14 +10719,6 @@ async fn test_headless_queue_priority_and_reorder() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
-
     // Switch to the queue view so the full queue list renders.
     tab.evaluate(
         "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
@@ -10781,6 +10733,7 @@ async fn test_headless_queue_priority_and_reorder() {
     let mut priority_rendered = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "(() => { const el = document.querySelector('#full-queue-list \
                 [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"] .qi-priority'); \
                 return !!el && el.textContent === 'NORMAL'; })()",
@@ -10818,6 +10771,7 @@ async fn test_headless_queue_priority_and_reorder() {
     let mut reorder_rendered = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "(() => { const first = document.querySelector('#full-queue-list .queue-item-full'); \
                 return !!first && first.dataset.unitId === 'game_logic.dll/RenderHUD/v1'; })()",
         ) {
@@ -10866,6 +10820,7 @@ async fn test_headless_queue_priority_and_reorder() {
     let mut priority_updated = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "(() => { const el = document.querySelector('#full-queue-list \
                 [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"] .qi-priority'); \
                 return !!el && el.textContent === 'HIGH'; })()",
@@ -10918,14 +10873,6 @@ async fn test_headless_queue_skip_checkbox() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
-
     // Switch to the queue view so the full queue list renders.
     tab.evaluate(
         "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
@@ -10939,10 +10886,13 @@ async fn test_headless_queue_skip_checkbox() {
     // The skip checkbox column renders, unchecked for an active unit.
     let mut checkbox_rendered = false;
     for _ in 0..25 {
-        if eval_bool(&format!(
-            "(() => {{ const el = document.querySelector('{row_sel} .qi-skip-check'); \
+        if eval_bool(
+            &tab,
+            &format!(
+                "(() => {{ const el = document.querySelector('{row_sel} .qi-skip-check'); \
                     return !!el && el.checked === false; }})()"
-        )) {
+            ),
+        ) {
             checkbox_rendered = true;
             break;
         }
@@ -10987,13 +10937,16 @@ async fn test_headless_queue_skip_checkbox() {
     // badge — the checkbox reflects persisted state, not just the click.
     let mut skipped_rendered = false;
     for _ in 0..25 {
-        if eval_bool(&format!(
-            "(() => {{ const row = document.querySelector('{row_sel}'); \
+        if eval_bool(
+            &tab,
+            &format!(
+                "(() => {{ const row = document.querySelector('{row_sel}'); \
                     const cb = row?.querySelector('.qi-skip-check'); \
                     const st = row?.querySelector('.qi-status'); \
                     return !!cb && cb.checked === true \
                         && !!st && st.textContent.includes('Skipped'); }})()"
-        )) {
+            ),
+        ) {
             skipped_rendered = true;
             break;
         }
@@ -11026,10 +10979,13 @@ async fn test_headless_queue_skip_checkbox() {
 
     let mut restored_rendered = false;
     for _ in 0..25 {
-        if eval_bool(&format!(
-            "(() => {{ const el = document.querySelector('{row_sel} .qi-skip-check'); \
+        if eval_bool(
+            &tab,
+            &format!(
+                "(() => {{ const el = document.querySelector('{row_sel} .qi-skip-check'); \
                     return !!el && el.checked === false; }})()"
-        )) {
+            ),
+        ) {
             restored_rendered = true;
             break;
         }
@@ -11066,14 +11022,6 @@ async fn test_headless_queue_multiselect_batch_actions() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
-
     // Switch to the queue view so the full queue list renders.
     tab.evaluate(
         "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
@@ -11089,11 +11037,14 @@ async fn test_headless_queue_multiselect_batch_actions() {
     // Each row renders an (unchecked) select checkbox beside the skip one.
     let mut selects_rendered = false;
     for _ in 0..25 {
-        if eval_bool(&format!(
-            "(() => {{ const a = document.querySelector('{draw_sel} .qi-select'); \
+        if eval_bool(
+            &tab,
+            &format!(
+                "(() => {{ const a = document.querySelector('{draw_sel} .qi-select'); \
                     const b = document.querySelector('{hud_sel} .qi-select'); \
                     return !!a && !a.checked && !!b && !b.checked; }})()"
-        )) {
+            ),
+        ) {
             selects_rendered = true;
             break;
         }
@@ -11107,6 +11058,7 @@ async fn test_headless_queue_multiselect_batch_actions() {
     // The batch dropdown offers the three batch actions.
     assert!(
         eval_bool(
+            &tab,
             "(() => {{ const sel = document.getElementById('batch-action'); \
                     const values = [...sel.options].map(o => o.value); \
                     return values.includes('accept') && values.includes('skip') \
@@ -11122,11 +11074,14 @@ async fn test_headless_queue_multiselect_batch_actions() {
     )
     .expect("click select-all");
     assert!(
-        eval_bool(&format!(
-            "(() => {{ const a = document.querySelector('{draw_sel} .qi-select'); \
+        eval_bool(
+            &tab,
+            &format!(
+                "(() => {{ const a = document.querySelector('{draw_sel} .qi-select'); \
                     const b = document.querySelector('{hud_sel} .qi-select'); \
                     return !!a && a.checked && !!b && b.checked; }})()"
-        )),
+            )
+        ),
         "select-all should check every visible row"
     );
 
@@ -11167,14 +11122,17 @@ async fn test_headless_queue_multiselect_batch_actions() {
     // with unchecked select checkboxes (and checked skip checkboxes).
     let mut selection_cleared = false;
     for _ in 0..25 {
-        if eval_bool(&format!(
-            "(() => {{ const a = document.querySelector('{draw_sel} .qi-select'); \
+        if eval_bool(
+            &tab,
+            &format!(
+                "(() => {{ const a = document.querySelector('{draw_sel} .qi-select'); \
                     const b = document.querySelector('{hud_sel} .qi-select'); \
                     const sa = document.querySelector('{draw_sel} .qi-skip-check'); \
                     const sb = document.querySelector('{hud_sel} .qi-skip-check'); \
                     return !!a && !a.checked && !!b && !b.checked \
                         && !!sa && sa.checked && !!sb && sb.checked; }})()"
-        )) {
+            ),
+        ) {
             selection_cleared = true;
             break;
         }
@@ -11242,13 +11200,6 @@ async fn test_headless_graph_filters_and_encoding() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
     let eval_str = |expr: &str| -> Option<String> {
         tab.evaluate(expr, false)
             .ok()
@@ -11266,7 +11217,10 @@ async fn test_headless_graph_filters_and_encoding() {
     // The renderer loads the fixture's five units.
     let mut loaded = false;
     for _ in 0..25 {
-        if eval_bool("!!window.calxglossGraph && window.calxglossGraph.totalNodeCount >= 5") {
+        if eval_bool(
+            &tab,
+            "!!window.calxglossGraph && window.calxglossGraph.totalNodeCount >= 5",
+        ) {
             loaded = true;
             break;
         }
@@ -11279,6 +11233,7 @@ async fn test_headless_graph_filters_and_encoding() {
     let mut size_encoded = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "(() => { const g = window.calxglossGraph; if (!g) return false; \
                 const draw = g._allNodes.find(n => n.id === 'game_logic.dll/DrawPrimitive/v2'); \
                 const update = g._allNodes.find(n => n.id === 'game_logic.dll/UpdateScene/v1'); \
@@ -11298,6 +11253,7 @@ async fn test_headless_graph_filters_and_encoding() {
     // Color encoding: real nodes stay honest (null confidence → neutral),
     // and the 0.0→1.0 range maps to hues 0→140 (red→green).
     let confidence_encoded = eval_bool(
+        &tab,
         "(() => { const g = window.calxglossGraph; if (!g) return false; \
             const honest = g._allNodes.every(n => n._confidenceHue === null \
                 || (n._confidenceHue >= 0 && n._confidenceHue <= 140)); \
@@ -11330,6 +11286,7 @@ async fn test_headless_graph_filters_and_encoding() {
     let mut binary_filtered = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "(() => { const g = window.calxglossGraph; \
                 const sum = document.getElementById('graph-filter-summary'); \
                 return !!g && g.visibleNodeCount === 2 && g.totalNodeCount >= 7 \
@@ -11358,6 +11315,7 @@ async fn test_headless_graph_filters_and_encoding() {
     let mut combined_filtered = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "(() => { const g = window.calxglossGraph; \
                 return !!g && g.visibleNodeCount === 0; })()",
         ) {
@@ -11418,13 +11376,6 @@ async fn test_headless_graph_export_and_share_url() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
     let eval_str = |expr: &str| -> Option<String> {
         tab.evaluate(expr, false)
             .ok()
@@ -11435,7 +11386,10 @@ async fn test_headless_graph_export_and_share_url() {
     // Wait for the graph renderer to load the fixture's units.
     let mut loaded = false;
     for _ in 0..25 {
-        if eval_bool("!!window.calxglossGraph && window.calxglossGraph.totalNodeCount >= 5") {
+        if eval_bool(
+            &tab,
+            "!!window.calxglossGraph && window.calxglossGraph.totalNodeCount >= 5",
+        ) {
             loaded = true;
             break;
         }
@@ -11455,7 +11409,10 @@ async fn test_headless_graph_export_and_share_url() {
 
     let mut filtered = false;
     for _ in 0..25 {
-        if eval_bool("!!window.calxglossGraph && window.calxglossGraph.visibleNodeCount === 2") {
+        if eval_bool(
+            &tab,
+            "!!window.calxglossGraph && window.calxglossGraph.visibleNodeCount === 2",
+        ) {
             filtered = true;
             break;
         }
@@ -11605,29 +11562,11 @@ async fn test_headless_llm_log_browser() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
-    let eval_text = |expr: &str| -> String {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_default()
-    };
-    let visible_count = || -> i64 {
-        tab.evaluate(
+    let visible_count = || {
+        eval_count(
+            &tab,
             "document.querySelectorAll('#llm-log-entries .llm-log-entry').length",
-            false,
         )
-        .ok()
-        .and_then(|r| r.value)
-        .and_then(|v| v.as_i64())
-        .unwrap_or(-1)
     };
 
     // Switch to the LLM I/O tab.
@@ -11651,6 +11590,7 @@ async fn test_headless_llm_log_browser() {
     // Token count per entry: the response carries its count, the request
     // shows an honest em dash rather than a fabricated zero.
     let response_meta = eval_text(
+        &tab,
         "document.querySelector('#llm-log-entries .llm-log-entry:nth-child(2) .meta').textContent",
     );
     assert!(
@@ -11658,6 +11598,7 @@ async fn test_headless_llm_log_browser() {
         "response entry should show its token count, got: {response_meta}"
     );
     let request_meta = eval_text(
+        &tab,
         "document.querySelector('#llm-log-entries .llm-log-entry:nth-child(1) .meta').textContent",
     );
     assert!(
@@ -11668,6 +11609,7 @@ async fn test_headless_llm_log_browser() {
     // Entries start collapsed: the body is hidden until the header is clicked.
     assert!(
         eval_bool(
+            &tab,
             "document.querySelector('#llm-log-entries .llm-log-entry .llm-log-entry-body').offsetHeight === 0"
         ),
         "entries should start collapsed"
@@ -11679,6 +11621,7 @@ async fn test_headless_llm_log_browser() {
     .expect("click entry header");
     assert!(
         eval_bool(
+            &tab,
             "document.querySelector('#llm-log-entries .llm-log-entry .llm-log-entry-body').offsetHeight > 0"
         ),
         "header click should expand the entry"
@@ -11686,7 +11629,10 @@ async fn test_headless_llm_log_browser() {
 
     // One-click copy: every entry carries a copy button.
     assert!(
-        eval_bool("document.querySelectorAll('#llm-log-entries .llm-log-copy').length === 3"),
+        eval_bool(
+            &tab,
+            "document.querySelectorAll('#llm-log-entries .llm-log-copy').length === 3"
+        ),
         "every entry should have a copy button"
     );
 
@@ -11718,8 +11664,10 @@ async fn test_headless_llm_log_browser() {
         visible_count() == 1,
         "search should match exactly the entry whose content mentions it"
     );
-    let searched_meta =
-        eval_text("document.querySelector('#llm-log-entries .llm-log-entry .meta').textContent");
+    let searched_meta = eval_text(
+        &tab,
+        "document.querySelector('#llm-log-entries .llm-log-entry .meta').textContent",
+    );
     assert!(
         searched_meta.contains("UpdateScene"),
         "the searched entry should be the UpdateScene prompt, got: {searched_meta}"
@@ -11839,28 +11787,6 @@ async fn test_headless_live_view_renders_and_updates() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
-    let eval_len = |expr: &str| -> i64 {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_i64())
-            .unwrap_or(-1)
-    };
-    let eval_text = |expr: &str| -> String {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_default()
-    };
-
     // Switch to the Live tab.
     tab.evaluate(
         "document.querySelector('.nav-tab[data-view=\"live\"]')?.click() === undefined",
@@ -11872,7 +11798,8 @@ async fn test_headless_live_view_renders_and_updates() {
     // poll until the unit appears (up to ~5 seconds).
     let mut rendered = false;
     for _ in 0..25 {
-        if eval_len(
+        if eval_count(
+            &tab,
             "document.querySelectorAll('#live-units .live-unit[data-function=\"DrawPrimitive\"]').length",
         ) == 1
         {
@@ -11884,13 +11811,19 @@ async fn test_headless_live_view_renders_and_updates() {
     assert!(
         rendered,
         "live view should render one row for the in-flight unit, rows: {}",
-        eval_len("document.querySelectorAll('#live-units .live-unit').length")
+        eval_count(
+            &tab,
+            "document.querySelectorAll('#live-units .live-unit').length"
+        )
     );
 
     // The row carries the phase label and the evidence the stream reported.
     let row = "#live-units .live-unit[data-function=\"DrawPrimitive\"]";
     let row_text = |suffix: &str| -> String {
-        eval_text(&format!("document.querySelector('{row}')?{suffix} || ''"))
+        eval_text(
+            &tab,
+            &format!("document.querySelector('{row}')?{suffix} || ''"),
+        )
     };
     assert_eq!(
         row_text(".querySelector('.live-phase')?.textContent"),
@@ -11944,11 +11877,14 @@ async fn test_headless_live_view_renders_and_updates() {
 
     let mut updated = false;
     for _ in 0..25 {
-        if eval_bool(&format!(
-            "(() => {{ const r = document.querySelector('{row}'); \
+        if eval_bool(
+            &tab,
+            &format!(
+                "(() => {{ const r = document.querySelector('{row}'); \
                 return !!r && r.classList.contains('finished-ok') && \
                     r.querySelector('.live-phase')?.textContent === 'Review'; }})()"
-        )) {
+            ),
+        ) {
             updated = true;
             break;
         }
@@ -12000,14 +11936,6 @@ async fn test_headless_live_view_honest_without_live_mode() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
-
     tab.evaluate(
         "document.querySelector('.nav-tab[data-view=\"live\"]')?.click() === undefined",
         false,
@@ -12018,6 +11946,7 @@ async fn test_headless_live_view_honest_without_live_mode() {
     let mut announced = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "(() => { const e = document.getElementById('live-empty'); \
                 return !!e && e.style.display !== 'none' && \
                     e.textContent.includes('calxgloss live'); })()",
@@ -12032,7 +11961,10 @@ async fn test_headless_live_view_honest_without_live_mode() {
         "plain serve must announce that the live view needs calxgloss live"
     );
     assert!(
-        !eval_bool("document.querySelector('#live-units .live-unit') !== null"),
+        !eval_bool(
+            &tab,
+            "document.querySelector('#live-units .live-unit') !== null"
+        ),
         "no fabricated unit rows outside live mode"
     );
 
@@ -12061,25 +11993,11 @@ async fn test_headless_dashboard_summary_sections() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
-    let eval_text = |expr: &str| -> String {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_default()
-    };
-
     // Category cards: one per DllCategory, with the fixture's counts.
     let mut cards_rendered = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "(() => { const cards = document.querySelectorAll('#category-cards .category-card'); \
                 if (cards.length !== 6) return false; \
                 const ps = document.querySelector('#category-cards [data-category=\"ProjectSpecific\"]'); \
@@ -12101,6 +12019,7 @@ async fn test_headless_dashboard_summary_sections() {
     let mut quality_rendered = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "(() => { const el = document.getElementById('quality-summary'); \
                 if (!el) return false; const t = el.textContent; \
                 return t.includes('73%') && t.includes('—'); })()",
@@ -12113,7 +12032,10 @@ async fn test_headless_dashboard_summary_sections() {
     assert!(
         quality_rendered,
         "quality summary should show the 73% average confidence and em-dashes for the rates with no data behind them, got: {:?}",
-        eval_text("document.getElementById('quality-summary')?.textContent || ''")
+        eval_text(
+            &tab,
+            "document.getElementById('quality-summary')?.textContent || ''"
+        )
     );
 
     // Token budget: consumed tokens come from the log; the budget itself is
@@ -12129,6 +12051,7 @@ async fn test_headless_dashboard_summary_sections() {
     let mut budget_rendered = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "(() => { const el = document.getElementById('token-budget'); \
                 if (!el) return false; \
                 const tokens = el.querySelector('[data-total-tokens]'); \
@@ -12144,7 +12067,10 @@ async fn test_headless_dashboard_summary_sections() {
     assert!(
         budget_rendered,
         "token budget bar should show 7,168 consumed against the 10,000 budget (71.68%), got: {:?}",
-        eval_text("document.getElementById('token-budget')?.textContent || ''")
+        eval_text(
+            &tab,
+            "document.getElementById('token-budget')?.textContent || ''"
+        )
     );
 
     tab.close_target().ok();
@@ -12169,14 +12095,6 @@ async fn test_headless_reload_keeps_current_tab() {
     let browser = launch_headless_browser();
     let tab = open_dashboard_tab(&browser, fixture.port());
 
-    let eval_bool = |expr: &str| -> bool {
-        tab.evaluate(expr, false)
-            .ok()
-            .and_then(|r| r.value)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-    };
-
     // Switch to the pipeline tab.
     tab.evaluate(
         "(() => { document.querySelector('.nav-tab[data-view=\"pipeline\"]').click(); })()",
@@ -12187,6 +12105,7 @@ async fn test_headless_reload_keeps_current_tab() {
     let mut pipeline_active = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "document.getElementById('view-pipeline')?.classList.contains('view-active') === true \
                 && document.getElementById('view-dashboard')?.classList.contains('view-active') !== true",
         ) {
@@ -12207,6 +12126,7 @@ async fn test_headless_reload_keeps_current_tab() {
     pipeline_active = false;
     for _ in 0..25 {
         if eval_bool(
+            &tab,
             "document.getElementById('view-pipeline')?.classList.contains('view-active') === true \
                 && document.getElementById('view-dashboard')?.classList.contains('view-active') !== true",
         ) {
