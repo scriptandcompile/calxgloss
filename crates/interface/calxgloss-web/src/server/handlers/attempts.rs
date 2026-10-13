@@ -1,11 +1,13 @@
-//! Unit attempt comparison reads — the attempt list and per-attempt
-//! metadata a function unit accumulated (issue #131, W4.5).
+//! Unit attempt comparison reads — the attempt list with per-attempt
+//! metadata (issue #131, W4.5) and the side-by-side diff between any two
+//! attempt branches (issue #135, W4.6) that a function unit accumulated.
 //!
 //! Registered in the shared routes: every read is persisted history, never
 //! live pipeline state, so plain `serve` and `live` answer identically.
-//! This module is also the join layer the follow-up diff ticket reuses —
-//! [`collect_unit_attempts`] is `pub(crate)` so
-//! `/api/units/{id}/attempts/diff` compares the very same attempt set.
+//! The diff endpoint reuses this module's own join —
+//! [`collect_unit_attempts`] resolves both requested attempts to the
+//! branches they were recorded on, so `/api/units/{id}/attempts/diff`
+//! compares the very same attempt set the list shows.
 //!
 //! The attempt set is exactly what the workspace persisted — the union of
 //! translation branches named for this unit (read through
@@ -31,16 +33,16 @@
 //! pass count is persisted anywhere, so the honest outcome fields
 //! (`success`, `compilation_errors`, `test_failures`) stand in instead.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
-use axum::{Json, extract::Path, extract::State};
+use axum::{Json, extract::Path, extract::Query, extract::State};
 
 use calxgloss_git::{GitManager, PatchRecord};
 use calxgloss_types::{
     FaultEvent, FaultLog, TokenUsageEntry, TokenUsageLog, UnitOfWork, parse_branch_name,
 };
 
-use super::super::types::{AttemptMetadata, UnitAttemptsResponse};
+use super::super::types::{AttemptDiffResponse, AttemptMetadata, UnitAttemptsResponse};
 use super::super::{ServerError, ServerState};
 use super::process::{binary_matches, fault_log_path, load_json_or_default, token_usage_log_path};
 
@@ -131,6 +133,133 @@ pub(crate) fn collect_unit_attempts(
         attempts,
         comparable,
     })
+}
+
+/// `GET /api/units/{id}/attempts/diff?from={n}&to={m}` — the unified diff
+/// between two attempt branches, git2 tree-to-tree (issue #135, W4.6).
+/// Both attempts resolve through the same join the list uses; an attempt
+/// with no recorded branch answers an honest 404 naming it, never an
+/// empty fabricated diff.
+pub async fn api_get_unit_attempts_diff(
+    state: State<ServerState>,
+    Path(unit_id): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<AttemptDiffResponse>, ServerError> {
+    let unit = super::queue::find_unit(&state, &unit_id)?;
+    let from = parse_attempt_param(&params, "from")?;
+    let to = parse_attempt_param(&params, "to")?;
+
+    let attempts = collect_unit_attempts(state.repo_path(), &unit)?;
+    let from_branch = attempt_branch(&attempts, from)?;
+    let to_branch = attempt_branch(&attempts, to)?;
+
+    let git = GitManager::open(state.repo_path())
+        .map_err(|e| ServerError::internal(&format!("Failed to open repo: {e}")))?;
+    let from_commit = attempt_commit(&git, from, &from_branch)?;
+    let to_commit = attempt_commit(&git, to, &to_branch)?;
+    let (diff, files_changed, insertions, deletions) =
+        compute_attempt_diff(&git, &from_commit, &to_commit)
+            .map_err(|e| ServerError::internal(&format!("Failed to compute diff: {e}")))?;
+
+    Ok(Json(AttemptDiffResponse {
+        unit_id: unit.id.clone(),
+        from,
+        to,
+        from_branch,
+        to_branch,
+        files_changed,
+        insertions,
+        deletions,
+        diff,
+    }))
+}
+
+/// Parse one `from`/`to` query value; a missing or non-numeric value is a
+/// 400 naming the accepted shape, like the analytics date filters do.
+fn parse_attempt_param(params: &HashMap<String, String>, key: &str) -> Result<u32, ServerError> {
+    params
+        .get(key)
+        .and_then(|value| value.parse::<u32>().ok())
+        .ok_or_else(|| {
+            ServerError::bad_request(
+                "Query parameters 'from' and 'to' must be attempt numbers (e.g. ?from=1&to=2)",
+            )
+        })
+}
+
+/// The branch the attempt join recorded for one attempt number. A missing
+/// attempt or a branchless one is a 404 naming the attempt — the honest
+/// error the ticket demands in place of a fabricated empty diff.
+fn attempt_branch(attempts: &UnitAttemptsResponse, attempt: u32) -> Result<String, ServerError> {
+    attempts
+        .attempts
+        .iter()
+        .find(|entry| entry.attempt == attempt)
+        .and_then(|entry| entry.branch.clone())
+        .ok_or_else(|| {
+            ServerError::not_found(&format!(
+                "Attempt {attempt} has no recorded branch for unit {} — nothing to diff",
+                attempts.unit_id
+            ))
+        })
+}
+
+/// Resolve one attempt's branch to a commit. A branch the join named —
+/// e.g. a patch record's `branch_name` whose git branch was since deleted
+/// — is just as honestly a 404 naming the attempt as an attempt the join
+/// never found: the diff is never fabricated from a half-present pair.
+fn attempt_commit<'a>(
+    git: &'a GitManager,
+    attempt: u32,
+    branch: &str,
+) -> Result<git2::Commit<'a>, ServerError> {
+    git.repo()
+        .find_branch(branch, git2::BranchType::Local)
+        .map_err(|_| {
+            ServerError::not_found(&format!(
+                "Attempt {attempt} branch {branch} is not in the repository — nothing to diff"
+            ))
+        })?
+        .get()
+        .peel_to_commit()
+        .map_err(|e| ServerError::internal(&format!("Failed to resolve branch {branch}: {e}")))
+}
+
+/// The git2 tree-to-tree diff between two attempt commits: the unified
+/// patch text plus its (files, insertions, deletions) stats.
+fn compute_attempt_diff(
+    git: &GitManager,
+    from_commit: &git2::Commit,
+    to_commit: &git2::Commit,
+) -> Result<(String, usize, usize, usize), anyhow::Error> {
+    let mut diff_opts = git2::DiffOptions::new();
+    let diff = git.repo().diff_tree_to_tree(
+        Some(&from_commit.tree()?),
+        Some(&to_commit.tree()?),
+        Some(&mut diff_opts),
+    )?;
+    let stats = diff.stats()?;
+
+    let mut text = String::new();
+    diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+        // git2 hands out the line content without its unified-diff origin
+        // character; `f` (file header) and `h` (hunk header) lines are
+        // already complete text, everything else needs its prefix back so
+        // the payload is genuine `git diff` text.
+        let origin = line.origin();
+        if !matches!(origin, 'F' | 'H') {
+            text.push(origin);
+        }
+        text.push_str(&String::from_utf8_lossy(line.content()));
+        true
+    })?;
+
+    Ok((
+        text,
+        stats.files_changed(),
+        stats.insertions(),
+        stats.deletions(),
+    ))
 }
 
 /// Every patch-record file this unit owns, read from

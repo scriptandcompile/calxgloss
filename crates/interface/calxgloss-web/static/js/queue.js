@@ -849,6 +849,9 @@ async function loadAttemptsView(unitId) {
         const body = document.getElementById("unit-attempts-body");
         if (!body) return;
         body.innerHTML = renderAttemptsList(res);
+        if (res.comparable) {
+            wireAttemptDiff(unitId);
+        }
     } catch (err) {
         const body = document.getElementById("unit-attempts-body");
         if (body) {
@@ -907,7 +910,122 @@ function renderAttemptsList(res) {
     const note = res.comparable
         ? ""
         : `<div class="unit-attempts-note">Only one attempt recorded \u2014 nothing to compare yet.</div>`;
-    return `<div class="unit-attempt-list">${rows}</div>${note}`;
+    // With two or more attempts the reviewer picks any pair and sees the
+    // unified diff between their branches (issue #135, W4.6).
+    const compare = res.comparable ? renderAttemptCompare(attempts) : "";
+    return `<div class="unit-attempt-list">${rows}</div>${compare}${note}`;
+}
+
+/// Attempt pickers for the side-by-side diff, defaulting to the last two
+/// attempts — the retry the reviewer most likely wants to understand.
+function renderAttemptCompare(attempts) {
+    const from = attempts[attempts.length - 2];
+    const to = attempts[attempts.length - 1];
+    const options = selected => attempts.map(a => `
+        <option value="${a.attempt}" ${a.attempt === selected ? "selected" : ""}>Attempt ${a.attempt}</option>
+    `).join("");
+    return `
+        <div class="unit-attempt-compare">
+            <div class="unit-attempt-compare-title">Compare attempts</div>
+            <div class="unit-attempt-compare-controls">
+                <select id="attempt-diff-from">${options(from.attempt)}</select>
+                <span class="unit-attempt-compare-arrow">\u2192</span>
+                <select id="attempt-diff-to">${options(to.attempt)}</select>
+            </div>
+            <div id="attempt-diff-body" class="diff-viewer"></div>
+        </div>
+    `;
+}
+
+function wireAttemptDiff(unitId) {
+    const fromSel = document.getElementById("attempt-diff-from");
+    const toSel = document.getElementById("attempt-diff-to");
+    if (!fromSel || !toSel) return;
+    const reload = () => loadAttemptDiff(unitId, Number(fromSel.value), Number(toSel.value));
+    fromSel.addEventListener("change", reload);
+    toSel.addEventListener("change", reload);
+    reload();
+}
+
+async function loadAttemptDiff(unitId, from, to) {
+    const body = document.getElementById("attempt-diff-body");
+    if (!body) return;
+    try {
+        const res = await API.unitAttemptDiff(unitId, from, to);
+        body.innerHTML = renderUnifiedDiff(res.diff);
+    } catch (err) {
+        // A missing branch answers an honest error — show its reason,
+        // never an empty diff pretending the branches matched.
+        body.innerHTML = `<div class="ghidra-empty">${escapeHtml(err.message)}</div>`;
+    }
+}
+
+/// Render unified diff text (git patch format) with the existing dark
+/// theme's addition/deletion line styles — vanilla JS, no diff library.
+function renderUnifiedDiff(text) {
+    if (!text || !text.trim()) {
+        return '<div class="ghidra-empty">No changes between these attempts.</div>';
+    }
+
+    let html = "";
+    let tableOpen = false;
+    let sawHunk = false;
+    let oldLine = 0;
+    let newLine = 0;
+    const closeTable = () => {
+        if (tableOpen) {
+            html += "</table></div>";
+            tableOpen = false;
+        }
+    };
+
+    for (const line of text.split("\n")) {
+        if (line.startsWith("diff --git ")) {
+            closeTable();
+            const match = line.match(/ b\/(.+)$/);
+            html += `<div class="diff-file">
+                <div class="diff-file-header"><span class="path">${escapeHtml(match ? match[1] : line)}</span></div>
+                <table class="diff-table">`;
+            tableOpen = true;
+            sawHunk = false;
+            continue;
+        }
+        if (!tableOpen) continue;
+
+        if (line.startsWith("@@")) {
+            const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+            oldLine = match ? Number(match[1]) : 1;
+            newLine = match ? Number(match[2]) : 1;
+            sawHunk = true;
+            html += `<tr class="diff-line hunk-header">
+                <td class="diff-line-body">${escapeHtml(line)}</td>
+            </tr>`;
+            continue;
+        }
+
+        // File metadata lines carry no content to render; the ---/+++
+        // headers only precede the first hunk of a file.
+        if (line.startsWith("index ") || line.startsWith("new file")
+            || line.startsWith("deleted file") || line.startsWith("similarity index")
+            || line.startsWith("rename from") || line.startsWith("rename to")
+            || line.startsWith("\\ No newline")
+            || (!sawHunk && (line.startsWith("--- ") || line.startsWith("+++ ")))) {
+            continue;
+        }
+
+        const kind = line.startsWith("+") ? "addition"
+            : line.startsWith("-") ? "deletion" : "context";
+        const content = line.slice(1);
+        const oldNum = kind === "addition" ? '<span class="empty">&nbsp;</span>' : `<span class="old">${oldLine++}</span>`;
+        const newNum = kind === "deletion" ? '<span class="empty">&nbsp;</span>' : `<span class="new">${newLine++}</span>`;
+        html += `<tr class="diff-line ${kind}">
+            <td class="diff-line-num">${oldNum}</td>
+            <td class="diff-line-num">${newNum}</td>
+            <td class="diff-line-body">${escapeHtml(content)}</td>
+        </tr>`;
+    }
+    closeTable();
+    return html;
 }
 
 // ─── Diff Tab ─────────────────────────────────────────────────────────────

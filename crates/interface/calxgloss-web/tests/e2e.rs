@@ -7133,7 +7133,11 @@ fn write_shim_tracker_fixtures(fixture: &TestFixture) {
 
     // The shim pipeline's persisted artifacts for d3d9.dll — the exact
     // layout `shim_pipeline::persist_shim_artifacts` writes.
-    let shim_dir = fixture.repo_path().join("re").join("shims").join("d3d9.dll");
+    let shim_dir = fixture
+        .repo_path()
+        .join("re")
+        .join("shims")
+        .join("d3d9.dll");
     std::fs::create_dir_all(&shim_dir).expect("shim artifact dir");
     std::fs::write(
         shim_dir.join("mappings.json"),
@@ -7169,7 +7173,11 @@ fn write_shim_tracker_fixtures(fixture: &TestFixture) {
     // (the crate the d3d9.dll override in force names), and
     // `re/shim/fmod-rs` unmerged with a reviewer's send-back record —
     // fmod.dll's generated artifacts still on disk (generated, then sent back).
-    let fmod_shim_dir = fixture.repo_path().join("re").join("shims").join("fmod.dll");
+    let fmod_shim_dir = fixture
+        .repo_path()
+        .join("re")
+        .join("shims")
+        .join("fmod.dll");
     std::fs::create_dir_all(&fmod_shim_dir).expect("fmod shim artifact dir");
     std::fs::write(
         fmod_shim_dir.join("mappings.json"),
@@ -7187,19 +7195,25 @@ fn write_shim_tracker_fixtures(fixture: &TestFixture) {
     let git = GitManager::open(&fixture.repo_path()).expect("open fixture repo");
     {
         let branch = GitBranch::new("shim", "wgpu-rs", 1).expect("wgpu-rs shim branch name");
-        git.create_branch("shim", "wgpu-rs", 1, None).expect("wgpu-rs branch created");
+        git.create_branch("shim", "wgpu-rs", 1, None)
+            .expect("wgpu-rs branch created");
         let shim_file = "src/wgpu_rs_shim.rs";
         std::fs::create_dir_all(git.repo_path().join("src")).expect("src dir");
-        std::fs::write(git.repo_path().join(shim_file), "// wgpu-rs shim layer").expect("wgpu-rs shim written");
-        git.commit(&branch, "Add wgpu-rs shim layer", &[shim_file]).expect("wgpu-rs shim committed");
+        std::fs::write(git.repo_path().join(shim_file), "// wgpu-rs shim layer")
+            .expect("wgpu-rs shim written");
+        git.commit(&branch, "Add wgpu-rs shim layer", &[shim_file])
+            .expect("wgpu-rs shim committed");
         git.merge_to_main(&branch).expect("wgpu-rs branch merged");
     }
     {
         let branch = GitBranch::new("shim", "fmod-rs", 1).expect("fmod-rs shim branch name");
-        git.create_branch("shim", "fmod-rs", 1, None).expect("fmod-rs branch created");
+        git.create_branch("shim", "fmod-rs", 1, None)
+            .expect("fmod-rs branch created");
         let shim_file = "src/fmod_rs_shim.rs";
-        std::fs::write(git.repo_path().join(shim_file), "// fmod-rs shim layer").expect("fmod-rs shim written");
-        git.commit(&branch, "Add fmod-rs shim layer", &[shim_file]).expect("fmod-rs shim committed");
+        std::fs::write(git.repo_path().join(shim_file), "// fmod-rs shim layer")
+            .expect("fmod-rs shim written");
+        git.commit(&branch, "Add fmod-rs shim layer", &[shim_file])
+            .expect("fmod-rs shim committed");
         // The reviewer's send-back verdict, as `reject_branch` persists it.
         let rejections = fixture
             .repo_path()
@@ -7246,7 +7260,10 @@ async fn test_binaries_shim_status_registered_in_plain_and_live_routers() {
 
         let base = format!("http://127.0.0.1:{}", fixture.port());
         let (status, body) = get_json(&format!("{base}/api/binaries/d3d9.dll/shim-status")).await;
-        assert_eq!(status, 200, "{kind} router serves /api/binaries/{{name}}/shim-status");
+        assert_eq!(
+            status, 200,
+            "{kind} router serves /api/binaries/{{name}}/shim-status"
+        );
         assert_eq!(
             body["generated"].as_bool(),
             Some(true),
@@ -7373,7 +7390,11 @@ async fn test_binaries_shim_status_honest_missing_and_corrupt_artifacts() {
 
     // d3d9.dll's mappings go corrupt — the verification file stays
     // readable, but the shim's existence itself is unreadable.
-    let shim_dir = fixture.repo_path().join("re").join("shims").join("d3d9.dll");
+    let shim_dir = fixture
+        .repo_path()
+        .join("re")
+        .join("shims")
+        .join("d3d9.dll");
     std::fs::write(shim_dir.join("mappings.json"), "{ not json").expect("corrupt mappings");
 
     // A second crate-replacement binary with both artifacts corrupt.
@@ -7501,7 +7522,11 @@ fn write_pal_tracker_fixtures(fixture: &TestFixture) {
     .expect("pal stub content written");
 
     // The binary's generated shim source: functions, no trait definitions.
-    let shim_dir = fixture.repo_path().join("re").join("shims").join("d3d9.dll");
+    let shim_dir = fixture
+        .repo_path()
+        .join("re")
+        .join("shims")
+        .join("d3d9.dll");
     std::fs::create_dir_all(&shim_dir).expect("d3d9 shim dir");
     std::fs::write(
         shim_dir.join("shim.rs"),
@@ -7534,7 +7559,10 @@ async fn test_binaries_pal_status_registered_in_plain_and_live_routers() {
 
         let base = format!("http://127.0.0.1:{}", fixture.port());
         let (status, body) = get_json(&format!("{base}/api/binaries/d3d9.dll/pal-status")).await;
-        assert_eq!(status, 200, "{kind} router serves /api/binaries/{{name}}/pal-status");
+        assert_eq!(
+            status, 200,
+            "{kind} router serves /api/binaries/{{name}}/pal-status"
+        );
         assert_eq!(
             body["traits"].as_array().map(|t| t.len()),
             Some(2),
@@ -7671,7 +7699,11 @@ async fn test_binaries_pal_status_honest_missing_and_corrupt_artifacts() {
         .unwrap(),
     )
     .expect("ogg classification written");
-    let ogg_dir = fixture.repo_path().join("re").join("analysis").join("ogg.dll");
+    let ogg_dir = fixture
+        .repo_path()
+        .join("re")
+        .join("analysis")
+        .join("ogg.dll");
     std::fs::create_dir_all(&ogg_dir).expect("ogg analysis dir");
     std::fs::write(
         ogg_dir.join("PlaySample.json"),
@@ -7684,10 +7716,15 @@ async fn test_binaries_pal_status_honest_missing_and_corrupt_artifacts() {
         .unwrap(),
     )
     .expect("PlaySample artifact written");
-    std::fs::write(ogg_dir.join("broken.json"), "not json at all").expect("corrupt artifact written");
+    std::fs::write(ogg_dir.join("broken.json"), "not json at all")
+        .expect("corrupt artifact written");
 
     // A third binary whose every artifact is corrupt: no artifact at all.
-    let dsound_dir = fixture.repo_path().join("re").join("analysis").join("dsound.dll");
+    let dsound_dir = fixture
+        .repo_path()
+        .join("re")
+        .join("analysis")
+        .join("dsound.dll");
     std::fs::create_dir_all(&dsound_dir).expect("dsound analysis dir");
     std::fs::write(dsound_dir.join("DirectSoundCreate.json"), "{{{")
         .expect("corrupt artifact written");
@@ -8017,6 +8054,187 @@ async fn test_unit_attempts_corrupt_logs_degrade_honestly() {
             "patch-record fields survive the corrupt logs"
         );
     }
+}
+
+// ── Unit attempt diff API (issue #135, W4.6) ───────────────────────────
+
+/// Issue #135 router contract: `/api/units/{id}/attempts/diff` is
+/// registered in the shared routes — it reads only persisted branches —
+/// so both the plain and the live router answer it. The fixture's
+/// DrawPrimitive v1 and v2 branches carry distinct commits, so the diff
+/// is real text, not an empty shell.
+#[tokio::test]
+async fn test_unit_attempt_diff_registered_in_plain_and_live_routers() {
+    for kind in ["plain", "live"] {
+        let fixture = TestFixture::new();
+        let state = ServerState::new(fixture.repo_path());
+        let router = if kind == "plain" {
+            build_router(state)
+        } else {
+            let events = TranslationEvents::new(128);
+            let manager = SessionManager::new_with_broadcast(events.subscribe());
+            build_router_with_ws(state, manager, ProgressState::new())
+        };
+        let _server = spawn_server(router, fixture.port()).await;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let base = format!("http://127.0.0.1:{}", fixture.port());
+        let (status, body) = get_json(&format!(
+            "{base}/api/units/game_logic.dll%2FDrawPrimitive%2Fv2/attempts/diff?from=1&to=2"
+        ))
+        .await;
+        assert_eq!(
+            status, 200,
+            "{kind} router serves /api/units/{{id}}/attempts/diff"
+        );
+        assert_eq!(body["from"].as_u64().expect("from"), 1);
+        assert_eq!(body["to"].as_u64().expect("to"), 2);
+        let diff = body["diff"].as_str().expect("diff text");
+        assert!(
+            diff.contains("src/draw_primitive_v2.rs"),
+            "{kind} router: the v2 branch's distinct commit shows in the diff"
+        );
+    }
+}
+
+/// The exact-JSON pin against fixture branches with distinct commits:
+/// v1's tree lacks the v2 attempt's file, so the tree-to-tree diff is
+/// exactly that one added file — verbatim unified text plus its stats.
+#[tokio::test]
+async fn test_unit_attempt_diff_api_exact_json_from_fixture() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+    let (status, body) = get_json(&format!(
+        "{base}/api/units/game_logic.dll%2FDrawPrimitive%2Fv2/attempts/diff?from=1&to=2"
+    ))
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "unit_id": "game_logic.dll/DrawPrimitive/v2",
+            "from": 1,
+            "to": 2,
+            "from_branch": "re/game_logic.dll/DrawPrimitivev1",
+            "to_branch": "re/game_logic.dll/DrawPrimitivev2",
+            "files_changed": 1,
+            "insertions": 4,
+            "deletions": 0,
+            "diff": "diff --git a/src/draw_primitive_v2.rs b/src/draw_primitive_v2.rs\n\
+                     new file mode 100644\n\
+                     index 0000000..1d34caf\n\
+                     --- /dev/null\n\
+                     +++ b/src/draw_primitive_v2.rs\n\
+                     @@ -0,0 +1,4 @@\n\
+                     +/// Attempt 2 — wrong shader constant mapping\n\
+                     +pub fn draw_primitive_v2(_encoder: &mut wgpu::CommandEncoder) {\n\
+                     +    // buggy implementation\n\
+                     +}\n",
+        }),
+        "the diff is the git2 tree-to-tree patch between the two attempt \
+         branches' trees, verbatim"
+    );
+}
+
+/// A missing branch on either side answers an honest error payload —
+/// never an empty fabricated diff — and a non-numeric attempt number is
+/// a 400 naming the accepted shape.
+#[tokio::test]
+async fn test_unit_attempt_diff_missing_branch_and_bad_params() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+
+    // Attempt 3 never left a branch or record in the fixture.
+    let (status, body) = get_json(&format!(
+        "{base}/api/units/game_logic.dll%2FDrawPrimitive%2Fv2/attempts/diff?from=1&to=3"
+    ))
+    .await;
+    assert_eq!(status, 404, "a missing attempt branch is an honest 404");
+    assert!(
+        body["error"].as_bool().unwrap_or(false)
+            && body["message"].as_str().unwrap_or("").contains("Attempt 3"),
+        "the error payload names the attempt that has no branch, got: {body}"
+    );
+    assert!(
+        body.get("diff").is_none(),
+        "the error payload never carries a fabricated diff"
+    );
+
+    // The `to` side missing is just as honest as the `from` side.
+    let (status, body) = get_json(&format!(
+        "{base}/api/units/game_logic.dll%2FDrawPrimitive%2Fv2/attempts/diff?from=9&to=2"
+    ))
+    .await;
+    assert_eq!(status, 404);
+    assert!(
+        body["message"].as_str().unwrap_or("").contains("Attempt 9"),
+        "the from side is named too, got: {body}"
+    );
+
+    // An attempt the join *does* find — a patch record naming a branch
+    // the repository no longer holds — is the same honest 404, never a
+    // 500 and never an empty diff.
+    let patch_dir = fixture
+        .repo_path()
+        .join("re")
+        .join("patches")
+        .join("game_logic.dll")
+        .join("DrawPrimitive");
+    std::fs::write(
+        patch_dir.join("v4.json"),
+        serde_json::json!({
+            "binary": "game_logic.dll",
+            "function": "DrawPrimitive",
+            "attempt": 4,
+            "branch_name": "re/game_logic.dll/DrawPrimitivev4",
+            "committed_at": "2025-09-29T09:00:00Z",
+            "error_message": "",
+            "compilation_errors": [],
+            "test_failures": [],
+            "commit_hash": "ghi789"
+        })
+        .to_string(),
+    )
+    .expect("record naming a branch the repo lacks");
+    let (status, body) = get_json(&format!(
+        "{base}/api/units/game_logic.dll%2FDrawPrimitive%2Fv2/attempts/diff?from=1&to=4"
+    ))
+    .await;
+    assert_eq!(
+        status, 404,
+        "a branch the join names but the repo lacks is an honest 404"
+    );
+    assert!(
+        body["message"].as_str().unwrap_or("").contains("Attempt 4"),
+        "the error names the attempt whose branch is gone, got: {body}"
+    );
+
+    // A non-numeric attempt number answers 400 naming the accepted shape.
+    let (status, body) = get_json(&format!(
+        "{base}/api/units/game_logic.dll%2FDrawPrimitive%2Fv2/attempts/diff?from=one&to=2"
+    ))
+    .await;
+    assert_eq!(status, 400, "a non-numeric attempt is a 400");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("?from=1&to=2"),
+        "the 400 names the accepted shape, got: {body}"
+    );
 }
 
 // ── Headless browser test: Faults view (issue #125) ────────────────────
@@ -9247,7 +9465,10 @@ async fn test_headless_binaries_detail_shim_tracker() {
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    assert!(rows_rendered, "all three classified binaries render as rows");
+    assert!(
+        rows_rendered,
+        "all three classified binaries render as rows"
+    );
 
     // Click the crate-replacement binary with artifacts — d3d9.dll.
     tab.evaluate(
@@ -9266,13 +9487,13 @@ async fn test_headless_binaries_detail_shim_tracker() {
     );
     for expected in [
         "Shim layer",
-        "wgpu-rs",           // the crate the override in force names
-        "Mappings: 2",       // from mappings.json
-        "Compiled: yes",     // from verification.json
-        "7/8",               // mapping test pass counts
-        "2/2",               // edge test pass counts
-        "re/shim/wgpu-rs",   // the branch the dependency model names
-        "merged",            // its acceptance state in the branch model
+        "wgpu-rs",         // the crate the override in force names
+        "Mappings: 2",     // from mappings.json
+        "Compiled: yes",   // from verification.json
+        "7/8",             // mapping test pass counts
+        "2/2",             // edge test pass counts
+        "re/shim/wgpu-rs", // the branch the dependency model names
+        "merged",          // its acceptance state in the branch model
     ] {
         assert!(
             tracker_text.contains(expected),
@@ -12161,6 +12382,161 @@ async fn test_headless_unit_attempts_single_attempt_note() {
     assert!(
         section.contains("Attempt 1"),
         "the one attempt is still listed, got: {section}"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Adds a DrawPrimitive attempt branch with its own commit, so the
+/// fixture unit gains another comparable attempt whose tree differs —
+/// a pair the side-by-side diff can visibly switch between.
+fn add_attempt_branch_with_commit(fixture: &TestFixture, attempt: u32, file_stem: &str) {
+    let git = GitManager::open(&fixture.repo_path()).expect("open fixture repo");
+    let branch = GitBranch::new("game_logic.dll", "DrawPrimitive", attempt).expect("branch name");
+    git.create_branch("game_logic.dll", "DrawPrimitive", attempt, None)
+        .expect("create branch");
+
+    let src_file = format!("src/{file_stem}.rs");
+    std::fs::create_dir_all(fixture.repo_path().join("src")).expect("create src dir");
+    std::fs::write(
+        fixture.repo_path().join(&src_file),
+        format!(
+            "/// {file_stem} — retry translation\npub fn {file_stem}(_encoder: &mut wgpu::CommandEncoder) {{}}\n"
+        ),
+    )
+    .expect("write translation file");
+    git.commit(
+        &branch,
+        &format!("Retry DrawPrimitive — attempt {attempt}"),
+        &[src_file.as_str()],
+    )
+    .expect("commit branch");
+}
+
+/// Headless-browser test for the unit detail panel's attempt comparison
+/// (issue #135, W4.6): a three-attempt unit renders pickers defaulting to
+/// the last two attempts and a side-by-side diff of their branches with
+/// additions and deletions styled per the dark theme — and picking a
+/// different pair changes the rendered diff.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_unit_attempt_diff_side_by_side() {
+    let fixture = TestFixture::new();
+    add_attempt_branch_with_commit(&fixture, 3, "draw_primitive_v3");
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click queue tab");
+
+    tab.evaluate(
+        "document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]').click() === undefined",
+        false,
+    )
+    .expect("click queue item");
+
+    // The attempts section fills asynchronously; poll until all three
+    // attempt entries are rendered (up to ~5 seconds).
+    let three_attempts =
+        "document.querySelectorAll('#unit-attempts-section .unit-attempt-item').length === 3";
+    let mut rendered = false;
+    for _ in 0..25 {
+        if eval_bool(&tab, three_attempts) {
+            rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        rendered,
+        "attempts section should render all three attempts"
+    );
+
+    // The pickers default to the last two attempts.
+    let default_from = eval_text(
+        &tab,
+        "document.getElementById('attempt-diff-from')?.value || ''",
+    );
+    let default_to = eval_text(
+        &tab,
+        "document.getElementById('attempt-diff-to')?.value || ''",
+    );
+    assert_eq!(
+        default_from, "2",
+        "the from picker defaults to the second-to-last attempt"
+    );
+    assert_eq!(
+        default_to, "3",
+        "the to picker defaults to the last attempt"
+    );
+
+    // The default pair (2 → 3) shows the v2 file removed and the v3 file
+    // added, styled as deletions and additions.
+    let styled = "document.querySelectorAll('#attempt-diff-body .diff-line.deletion').length > 0 \
+                  && document.querySelectorAll('#attempt-diff-body .diff-line.addition').length > 0";
+    let mut diff_rendered = false;
+    for _ in 0..25 {
+        if eval_bool(&tab, styled) {
+            diff_rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        diff_rendered,
+        "the attempt diff renders styled additions and deletions"
+    );
+
+    let diff_text = eval_text(
+        &tab,
+        "document.getElementById('attempt-diff-body')?.textContent || ''",
+    );
+    assert!(
+        diff_text.contains("src/draw_primitive_v3.rs"),
+        "the default diff shows the v3 attempt's file, got: {diff_text}"
+    );
+    assert!(
+        diff_text.contains("src/draw_primitive_v2.rs"),
+        "the default diff shows the v2 attempt's file removed, got: {diff_text}"
+    );
+
+    // The reviewer picks a different pair (1 → 2): the rendered diff
+    // changes to the v2 file appearing, with no v3 file anywhere.
+    tab.evaluate(
+        "(() => { const f = document.getElementById('attempt-diff-from'); f.value = '1'; f.dispatchEvent(new Event('change')); const t = document.getElementById('attempt-diff-to'); t.value = '2'; t.dispatchEvent(new Event('change')); return true; })()",
+        false,
+    )
+    .expect("switch the pickers to the pair 1 → 2");
+
+    let switched = "(document.getElementById('attempt-diff-body')?.textContent || '').includes('draw_primitive_v2.rs') \
+         && !(document.getElementById('attempt-diff-body')?.textContent || '').includes('draw_primitive_v3')";
+    let mut changed = false;
+    for _ in 0..25 {
+        if eval_bool(&tab, switched) {
+            changed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        changed,
+        "picking a different attempt pair re-renders the diff, got: {}",
+        eval_text(
+            &tab,
+            "document.getElementById('attempt-diff-body')?.textContent || ''"
+        )
     );
 
     tab.close_target().ok();

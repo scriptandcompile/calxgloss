@@ -70,6 +70,7 @@ export const API = {
     async unit(id) { return API.get(`/api/units/${encodeURIComponent(id)}`); },
     async unitDiff(id) { return API.get(`/api/units/${encodeURIComponent(id)}/diff`); },
     async unitAttempts(id) { return API.get(`/api/units/${encodeURIComponent(id)}/attempts`); },
+    async unitAttemptDiff(id, from, to) { return API.get(`/api/units/${encodeURIComponent(id)}/attempts/diff?from=${from}&to=${to}`); },
     async unitGhidra(id) { return API.get(`/api/units/${encodeURIComponent(id)}/ghidra`); },
     async acceptUnit(id) { return API.post(`/api/units/${encodeURIComponent(id)}/accept`); },
     async sendBackUnit(id, reason) { return API.post(`/api/units/${encodeURIComponent(id)}/send-back`, { reason }); },

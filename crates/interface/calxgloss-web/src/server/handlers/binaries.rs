@@ -545,9 +545,7 @@ const PAL_TRAIT_CATEGORIES: &[(&str, &[&str])] = &[
 fn pal_trait_for_category(category: &str) -> Option<&'static str> {
     PAL_TRAIT_CATEGORIES
         .iter()
-        .find(|(_, categories)| {
-            categories.iter().any(|c| category.eq_ignore_ascii_case(c))
-        })
+        .find(|(_, categories)| categories.iter().any(|c| category.eq_ignore_ascii_case(c)))
         .map(|(trait_name, _)| *trait_name)
 }
 
@@ -640,16 +638,15 @@ fn recorded_api_categories(repo_path: &Path, name: &str) -> Vec<String> {
 /// without defining them, so only `shim.rs` counts). Unreadable files
 /// are skipped; no sources is the honest empty answer.
 fn generated_pal_source_texts(repo_path: &Path) -> Vec<String> {
-    let mut pal_files: Vec<PathBuf> = std::fs::read_dir(
-        repo_path.join("scratch").join("pal").join("src"),
-    )
-    .ok()
-    .into_iter()
-    .flatten()
-    .flatten()
-    .map(|entry| entry.path())
-    .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "rs"))
-    .collect();
+    let mut pal_files: Vec<PathBuf> =
+        std::fs::read_dir(repo_path.join("scratch").join("pal").join("src"))
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "rs"))
+            .collect();
     pal_files.sort();
 
     let mut shim_files: Vec<PathBuf> = std::fs::read_dir(repo_path.join("re").join("shims"))
@@ -1139,7 +1136,12 @@ mod tests {
         ];
         let got: Vec<(&str, Vec<&str>)> = traits
             .iter()
-            .map(|t| (t.name.as_str(), t.categories.iter().map(String::as_str).collect()))
+            .map(|t| {
+                (
+                    t.name.as_str(),
+                    t.categories.iter().map(String::as_str).collect(),
+                )
+            })
             .collect();
         assert_eq!(got.len(), spelled.len(), "one row per demanded trait");
         for (name, cats) in spelled {
@@ -1157,8 +1159,14 @@ mod tests {
 
     #[test]
     fn trait_definition_scan_requires_word_boundaries() {
-        assert!(defines_trait("pub trait GraphicsDevice {", "GraphicsDevice"));
-        assert!(defines_trait("pub unsafe trait GraphicsDevice: Send {", "GraphicsDevice"));
+        assert!(defines_trait(
+            "pub trait GraphicsDevice {",
+            "GraphicsDevice"
+        ));
+        assert!(defines_trait(
+            "pub unsafe trait GraphicsDevice: Send {",
+            "GraphicsDevice"
+        ));
         assert!(
             !defines_trait("pub trait GraphicsDevice2 {", "GraphicsDevice"),
             "a longer trait name is not the shorter one"
@@ -1206,16 +1214,19 @@ mod tests {
         std::fs::create_dir_all(&pal_src).expect("pal src dir");
         std::fs::write(pal_src.join("stub_content.rs"), "pub trait WindowManager {")
             .expect("stub content");
-        std::fs::write(pal_src.join("lib.rs"), "include!(\"stub_content.rs\");")
-            .expect("lib rs");
+        std::fs::write(pal_src.join("lib.rs"), "include!(\"stub_content.rs\");").expect("lib rs");
         let shim_dir = workspace.path().join("re").join("shims").join("d3d9.dll");
         std::fs::create_dir_all(&shim_dir).expect("shim dir");
         std::fs::write(shim_dir.join("shim.rs"), "unsafe fn present() {}").expect("shim source");
-        std::fs::write(shim_dir.join("shim_tests.rs"), "pub trait ComObject {").expect("shim tests");
+        std::fs::write(shim_dir.join("shim_tests.rs"), "pub trait ComObject {")
+            .expect("shim tests");
 
         let sources = generated_pal_source_texts(workspace.path());
         let joined = sources.join("\n");
-        assert!(defines_trait(&joined, "WindowManager"), "the generated PAL crate counts");
+        assert!(
+            defines_trait(&joined, "WindowManager"),
+            "the generated PAL crate counts"
+        );
         assert!(
             !defines_trait(&joined, "ComObject"),
             "a shim test source is not a generated trait definition"

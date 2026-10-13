@@ -1379,6 +1379,34 @@ pub struct AttemptMetadata {
     pub committed_at: Option<String>,
 }
 
+/// `GET /api/units/{id}/attempts/diff?from={n}&to={m}` response: the
+/// unified diff between two attempt branches, computed git2 tree-to-tree
+/// from the branches the attempt join actually found (issue #135, W4.6).
+/// A requested attempt with no recorded branch never produces this
+/// response — the endpoint 404s instead of fabricating an empty diff.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttemptDiffResponse {
+    /// The unit's id, echoed back (e.g. "game_logic.dll/DrawPrimitive/v2").
+    pub unit_id: String,
+    /// The attempt the diff starts from — its tree is the "old" side.
+    pub from: u32,
+    /// The attempt the diff moves to — its tree is the "new" side.
+    pub to: u32,
+    /// The branch the `from` attempt was recorded on.
+    pub from_branch: String,
+    /// The branch the `to` attempt was recorded on.
+    pub to_branch: String,
+    /// Files the two trees differ on.
+    pub files_changed: usize,
+    /// Lines added going from `from` to `to`.
+    pub insertions: usize,
+    /// Lines deleted going from `from` to `to`.
+    pub deletions: usize,
+    /// The unified diff text (`git diff` patch format), verbatim. Empty
+    /// only when the two attempt trees are genuinely identical.
+    pub diff: String,
+}
+
 // ─── Ghidra context types ──────────────────────────────────────────────
 
 /// Ghidra disassembly listing line.

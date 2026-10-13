@@ -1283,6 +1283,48 @@ svg {
     font-style: italic;
 }
 
+/* Attempt pair pickers + side-by-side diff (issue #135, W4.6) */
+.unit-attempt-compare {
+    margin-top: 12px;
+    border-top: 1px solid var(--border-subtle);
+    padding-top: 10px;
+}
+
+.unit-attempt-compare-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+}
+
+.unit-attempt-compare-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.unit-attempt-compare-controls select {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    padding: 4px 8px;
+    font-size: 12px;
+}
+
+.unit-attempt-compare-controls select:focus {
+    outline: none;
+    border-color: var(--accent-blue);
+}
+
+.unit-attempt-compare-arrow {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
 /* ─── Dependencies ──────────────────────────────────────────────────── */
 .dependency-list {
     display: flex;

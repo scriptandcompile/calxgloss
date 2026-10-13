@@ -876,6 +876,12 @@ fn shared_routes() -> Router<CombinedState> {
             "/api/units/{id}/attempts",
             get(handlers::api_get_unit_attempts),
         )
+        // Attempt side-by-side diff (issue #135, W4.6): the same
+        // persisted-history join, so it rides the shared routes too.
+        .route(
+            "/api/units/{id}/attempts/diff",
+            get(handlers::api_get_unit_attempts_diff),
+        )
         .route("/api/units/{id}/ghidra", get(handlers::api_get_unit_ghidra))
         .route("/api/units/{id}/accept", post(handlers::api_accept_unit))
         .route(
