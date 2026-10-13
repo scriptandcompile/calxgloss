@@ -6976,6 +6976,266 @@ async fn test_binaries_list_api_exact_json_from_fixture() {
     );
 }
 
+// ── Unit attempts API (issue #131, W4.5) ───────────────────────────────
+
+/// Issue #131 router contract: `/api/units/{id}/attempts` is registered in
+/// the shared routes — it reads only persisted history, never live
+/// pipeline state — so both the plain and the live router answer it. The
+/// fixture's two DrawPrimitive branches and two patch records form the
+/// attempt set; with no token or fault log seeded, the metadata fields
+/// honestly stay absent rather than zeroed.
+#[tokio::test]
+async fn test_unit_attempts_registered_in_plain_and_live_routers() {
+    for kind in ["plain", "live"] {
+        let fixture = TestFixture::new();
+        let state = ServerState::new(fixture.repo_path());
+        let router = if kind == "plain" {
+            build_router(state)
+        } else {
+            let events = TranslationEvents::new(128);
+            let manager = SessionManager::new_with_broadcast(events.subscribe());
+            build_router_with_ws(state, manager, ProgressState::new())
+        };
+        let _server = spawn_server(router, fixture.port()).await;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let base = format!("http://127.0.0.1:{}", fixture.port());
+        let (status, body) = get_json(&format!(
+            "{base}/api/units/game_logic.dll%2FDrawPrimitive%2Fv2/attempts"
+        ))
+        .await;
+        assert_eq!(
+            status, 200,
+            "{kind} router serves /api/units/{{id}}/attempts"
+        );
+        assert_eq!(
+            body["unit_id"].as_str().expect("unit_id"),
+            "game_logic.dll/DrawPrimitive/v2"
+        );
+        let attempts = body["attempts"].as_array().expect("attempts array");
+        assert_eq!(attempts.len(), 2, "{kind} router: both persisted attempts");
+        assert!(body["comparable"].as_bool().expect("comparable"));
+        let v1 = &attempts[0];
+        assert_eq!(v1["attempt"].as_u64().expect("attempt"), 1);
+        assert_eq!(
+            v1["branch"].as_str().expect("branch"),
+            "re/game_logic.dll/DrawPrimitivev1"
+        );
+        assert!(
+            v1.get("strategy").is_none() && v1.get("tokens_used").is_none(),
+            "{kind} router: no token log means absent fields, not zeros"
+        );
+        assert_eq!(v1["commit_hash"].as_str().expect("commit_hash"), "abc123");
+    }
+}
+
+/// The exact-JSON pin for the attempt join: the union of the fixture's
+/// branches and patch records, a branch-only v3 created in-test, the
+/// case-insensitive token-log join ("GAME_LOGIC.DLL"), the fault log as
+/// the strategy fallback for the attempt the token log never recorded,
+/// and the token log winning over the fault log where both name an
+/// attempt. Absent metadata stays off the wire entirely.
+#[tokio::test]
+async fn test_unit_attempts_api_exact_json_from_fixture() {
+    let fixture = TestFixture::new();
+
+    // A third attempt that exists only as a branch — no patch record, no
+    // token entry — so the union's "nothing dropped" half is pinned.
+    let git = GitManager::open(&fixture.repo_path()).expect("open fixture repo");
+    git.create_branch("game_logic.dll", "DrawPrimitive", 3, None)
+        .expect("v3 branch");
+
+    write_token_usage_fixture(
+        &fixture.repo_path(),
+        &[
+            token_usage_entry(
+                "game_logic.dll",
+                "DrawPrimitive",
+                1,
+                "initial",
+                4000,
+                false,
+                "stub",
+                1759053600,
+            ),
+            // The differently-spelled binary must join case-insensitively.
+            token_usage_entry(
+                "GAME_LOGIC.DLL",
+                "DrawPrimitive",
+                2,
+                "escalate",
+                2500,
+                true,
+                "with_tests",
+                1759059000,
+            ),
+            // Same attempt number, different function — must not join.
+            token_usage_entry(
+                "game_logic.dll",
+                "UpdateScene",
+                1,
+                "initial",
+                999,
+                true,
+                "stub",
+                1759053600,
+            ),
+        ],
+    );
+    write_fault_log_fixture(
+        &fixture.repo_path(),
+        &[
+            // Names attempt 1 too — the token log wins where both speak.
+            fault_entry(
+                "game_logic.dll",
+                "DrawPrimitive",
+                1,
+                "compile_fix",
+                "infinite_loop",
+                "critical",
+                1759053700,
+            ),
+            // The only source naming attempt 3's strategy.
+            fault_entry(
+                "game_logic.dll",
+                "DrawPrimitive",
+                3,
+                "test_fix",
+                "behavior_divergence",
+                "warning",
+                1759060000,
+            ),
+        ],
+    );
+
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+    let (status, body) = get_json(&format!(
+        "{base}/api/units/game_logic.dll%2FDrawPrimitive%2Fv2/attempts"
+    ))
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "unit_id": "game_logic.dll/DrawPrimitive/v2",
+            "attempts": [
+                {
+                    "attempt": 1,
+                    "branch": "re/game_logic.dll/DrawPrimitivev1",
+                    "strategy": "initial",
+                    "context_tier": "stub",
+                    "tokens_used": 4000,
+                    "success": false,
+                    "compiled": true,
+                    "compilation_errors": [],
+                    "commit_hash": "abc123",
+                    "committed_at": "2025-09-28T10:00:00Z",
+                },
+                {
+                    "attempt": 2,
+                    "branch": "re/game_logic.dll/DrawPrimitivev2",
+                    "strategy": "escalate",
+                    "context_tier": "with_tests",
+                    "tokens_used": 2500,
+                    "success": true,
+                    "compiled": false,
+                    "compilation_errors": ["mismatched types"],
+                    "tests_failed": 1,
+                    "test_failures": ["shader_constant_map_wrong"],
+                    "commit_hash": "def456",
+                    "committed_at": "2025-09-28T11:30:00Z",
+                },
+                {
+                    "attempt": 3,
+                    "branch": "re/game_logic.dll/DrawPrimitivev3",
+                    "strategy": "test_fix",
+                },
+            ],
+            "comparable": true,
+        }),
+        "the attempt set is the union of branches and patch records, the \
+         token log joins case-insensitively and wins over the fault log, \
+         and every absent source leaves its field off the wire"
+    );
+}
+
+/// A single-attempt unit honestly answers one attempt with
+/// `comparable: false` — the detail panel's "nothing to compare" state —
+/// and an unknown unit is a 404, the same contract the other
+/// `/api/units/{id}/…` reads keep.
+#[tokio::test]
+async fn test_unit_attempts_single_attempt_and_unknown_unit() {
+    let fixture = TestFixture::new();
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+    let (status, body) = get_json(&format!(
+        "{base}/api/units/game_logic.dll%2FUpdateScene%2Fv1/attempts"
+    ))
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["attempts"].as_array().expect("attempts").len(), 1);
+    assert!(
+        !body["comparable"].as_bool().expect("comparable"),
+        "a single attempt is not comparable"
+    );
+
+    let (status, _) = get_json(&format!("{base}/api/units/nope.dll%2FGhost%2Fv1/attempts")).await;
+    assert_eq!(status, 404, "an unknown unit is a 404, not an empty list");
+}
+
+/// Corrupt logs are no logs at all: strategy, tier, tokens, and success
+/// stay absent while the patch-record fields survive untouched — the
+/// join degrades honestly instead of failing or zeroing.
+#[tokio::test]
+async fn test_unit_attempts_corrupt_logs_degrade_honestly() {
+    let fixture = TestFixture::new();
+    let analysis = fixture.repo_path().join("re").join("analysis");
+    std::fs::create_dir_all(&analysis).expect("analysis dir");
+    std::fs::write(analysis.join("token_usage.json"), "{ not json").expect("corrupt token log");
+    std::fs::write(analysis.join("fault_log.json"), "nope").expect("corrupt fault log");
+
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let base = format!("http://127.0.0.1:{}", fixture.port());
+    let (status, body) = get_json(&format!(
+        "{base}/api/units/game_logic.dll%2FDrawPrimitive%2Fv2/attempts"
+    ))
+    .await;
+    assert_eq!(status, 200, "corrupt logs never fail the request");
+    let attempts = body["attempts"].as_array().expect("attempts");
+    assert_eq!(
+        attempts.len(),
+        2,
+        "the attempt set survives the corrupt logs"
+    );
+    for attempt in attempts {
+        assert!(attempt.get("strategy").is_none());
+        assert!(attempt.get("context_tier").is_none());
+        assert!(attempt.get("tokens_used").is_none());
+        assert!(attempt.get("success").is_none());
+        assert!(
+            attempt["commit_hash"].is_string(),
+            "patch-record fields survive the corrupt logs"
+        );
+    }
+}
+
 // ── Headless browser test: Faults view (issue #125) ────────────────────
 
 /// The Faults tab renders the fixture log honestly: summary cards,
@@ -10475,6 +10735,171 @@ async fn test_headless_unit_process_sections() {
     assert!(
         strategy_text.contains("initial") && strategy_text.contains("compile_fix"),
         "strategy section should list both strategies, got: {strategy_text}"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for the unit detail panel's attempt list
+/// (issue #131, W4.5): clicking the two-attempt DrawPrimitive unit renders
+/// one entry per persisted attempt with the joined metadata — strategies,
+/// tiers, token counts, and commit identities from the seeded logs and
+/// patch records — and no "nothing to compare" note.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_unit_attempts_list_metadata() {
+    let fixture = TestFixture::new();
+    write_token_usage_fixture(
+        &fixture.repo_path(),
+        &[
+            token_usage_entry(
+                "game_logic.dll",
+                "DrawPrimitive",
+                1,
+                "initial",
+                4000,
+                false,
+                "stub",
+                1759053600,
+            ),
+            token_usage_entry(
+                "GAME_LOGIC.DLL",
+                "DrawPrimitive",
+                2,
+                "escalate",
+                2500,
+                true,
+                "with_tests",
+                1759059000,
+            ),
+        ],
+    );
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click queue tab");
+
+    tab.evaluate(
+        "document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/DrawPrimitive/v2\"]').click() === undefined",
+        false,
+    )
+    .expect("click queue item");
+
+    // The attempts section fills asynchronously; poll until both attempt
+    // entries are rendered (up to ~5 seconds).
+    let two_attempts =
+        "document.querySelectorAll('#unit-attempts-section .unit-attempt-item').length === 2";
+    let mut rendered = false;
+    for _ in 0..25 {
+        if eval_bool(&tab, two_attempts) {
+            rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(rendered, "attempts section should render both attempts");
+
+    let section = eval_text(
+        &tab,
+        "document.getElementById('unit-attempts-section')?.textContent || ''",
+    );
+    for expected in [
+        "Attempt 1",
+        "Attempt 2",
+        "initial",
+        "escalate",
+        "stub",
+        "with_tests",
+        "4,000",
+        "2,500",
+        "abc123",
+        "def456",
+    ] {
+        assert!(
+            section.contains(expected),
+            "attempts section should show {expected}, got: {section}"
+        );
+    }
+    assert!(
+        !section.contains("nothing to compare"),
+        "a two-attempt unit never shows the single-attempt note, got: {section}"
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser honest state for issue #131: a single-attempt unit
+/// shows exactly one attempt entry and the "nothing to compare" note —
+/// the panel never pretends a diff is possible.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_unit_attempts_single_attempt_note() {
+    let fixture = TestFixture::new();
+    // A queued unit with one branch and no patch records or logs.
+    add_pending_translation(&fixture, "RenderHUD");
+    let state = ServerState::new(fixture.repo_path());
+    let router = build_router(state);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    tab.evaluate(
+        "document.querySelector('.nav-tab[data-view=\"queue\"]')?.click() === undefined",
+        false,
+    )
+    .expect("click queue tab");
+
+    tab.evaluate(
+        "document.querySelector('#full-queue-list [data-unit-id=\"game_logic.dll/RenderHUD/v1\"]').click() === undefined",
+        false,
+    )
+    .expect("click queue item");
+
+    let one_attempt =
+        "document.querySelectorAll('#unit-attempts-section .unit-attempt-item').length === 1";
+    let mut rendered = false;
+    for _ in 0..25 {
+        if eval_bool(&tab, one_attempt) {
+            rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        rendered,
+        "attempts section should render the single attempt"
+    );
+
+    let section = eval_text(
+        &tab,
+        "document.getElementById('unit-attempts-section')?.textContent || ''",
+    );
+    assert!(
+        section.contains("nothing to compare"),
+        "a single-attempt unit honestly says there is nothing to compare, got: {section}"
+    );
+    assert!(
+        section.contains("Attempt 1"),
+        "the one attempt is still listed, got: {section}"
     );
 
     tab.close_target().ok();

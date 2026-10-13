@@ -1213,6 +1213,76 @@ svg {
     text-overflow: ellipsis;
 }
 
+/* ─── Unit attempts (issue #131, W4.5) ──────────────────────────────── */
+.unit-attempt-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.unit-attempt-item {
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
+    font-size: 12px;
+}
+
+.unit-attempt-header {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.unit-attempt-number {
+    font-weight: 600;
+}
+
+.unit-attempt-branch {
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.unit-attempt-meta {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 2px 12px;
+}
+
+.unit-attempt-row {
+    display: flex;
+    gap: 6px;
+    min-width: 0;
+}
+
+.unit-attempt-label {
+    color: var(--text-muted);
+}
+
+.unit-attempt-value {
+    font-family: var(--font-mono);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.unit-attempt-failures {
+    margin-top: 4px;
+    color: var(--accent-red);
+    font-size: 11px;
+}
+
+.unit-attempts-note {
+    margin-top: 8px;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-style: italic;
+}
+
 /* ─── Dependencies ──────────────────────────────────────────────────── */
 .dependency-list {
     display: flex;

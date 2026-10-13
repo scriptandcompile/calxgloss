@@ -1139,6 +1139,75 @@ pub struct BinarySummaryRow {
     pub tokens_used: usize,
 }
 
+// ─── Unit attempts view (issue #131, W4.5) ─────────────────────────────
+
+/// `GET /api/units/{id}/attempts` response: the attempt list the unit
+/// detail panel renders. The attempt set is exactly what the workspace
+/// persisted — translation branches named for this unit plus patch-record
+/// files under `re/patches/` — nothing invented, nothing dropped.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnitAttemptsResponse {
+    /// The unit's id, echoed back (e.g. "game_logic.dll/DrawPrimitive/v2").
+    pub unit_id: String,
+    /// The unit's attempts, ascending by attempt number.
+    pub attempts: Vec<AttemptMetadata>,
+    /// Whether a diff is possible — at least two attempts exist. The
+    /// detail panel shows an honest "nothing to compare" note when false.
+    pub comparable: bool,
+}
+
+/// One attempt's metadata, joined from persisted history only. Every
+/// field except the attempt number is `Option`: a log missing or corrupt
+/// leaves the field absent — never zeroed or guessed.
+///
+/// `tests_passed` is deliberately absent: no per-attempt pass count is
+/// persisted anywhere (patch records store only failures), so reporting
+/// one would invent it. `success` plus the failure lists carry the
+/// honest outcome instead.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttemptMetadata {
+    /// The attempt number, from the branch name or patch record.
+    pub attempt: u32,
+    /// The translation branch this attempt was recorded on, when one
+    /// exists (e.g. "re/game_logic.dll/DrawPrimitivev1").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// The prompt strategy the token-usage log recorded for this
+    /// attempt, absent when no log entry names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<String>,
+    /// The context tier the token-usage log recorded, absent when the
+    /// entry predates tier tracking or no entry exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_tier: Option<String>,
+    /// Tokens the token-usage log recorded for this attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_used: Option<usize>,
+    /// Whether the token-usage log marks this attempt successful.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub success: Option<bool>,
+    /// Whether the patch record says the attempt compiled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiled: Option<bool>,
+    /// Compile errors the patch record stored, absent when no patch
+    /// record exists for this attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compilation_errors: Option<Vec<String>>,
+    /// How many tests the attempt failed, per the patch record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tests_failed: Option<usize>,
+    /// The failing tests' names, per the patch record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_failures: Option<Vec<String>>,
+    /// Commit hash the patch record stored for this attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_hash: Option<String>,
+    /// When the attempt was committed — the patch record's timestamp,
+    /// falling back to the token-usage log's, absent when neither has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub committed_at: Option<String>,
+}
+
 // ─── Ghidra context types ──────────────────────────────────────────────
 
 /// Ghidra disassembly listing line.

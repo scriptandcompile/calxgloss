@@ -870,6 +870,12 @@ fn shared_routes() -> Router<CombinedState> {
         .route("/api/pipeline", get(handlers::api_get_pipeline))
         .route("/api/units/{id}", get(handlers::api_get_unit))
         .route("/api/units/{id}/diff", get(handlers::api_get_unit_diff))
+        // Unit attempt list & metadata (issue #131, W4.5): persisted
+        // history only, so plain and live routers answer identically.
+        .route(
+            "/api/units/{id}/attempts",
+            get(handlers::api_get_unit_attempts),
+        )
         .route("/api/units/{id}/ghidra", get(handlers::api_get_unit_ghidra))
         .route("/api/units/{id}/accept", post(handlers::api_accept_unit))
         .route(

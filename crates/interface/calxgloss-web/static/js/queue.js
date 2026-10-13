@@ -351,6 +351,7 @@ export async function showDetail(unitId) {
         body.innerHTML = `
             <div id="detail-content">
                 ${renderDetailOverview(u)}
+                ${renderAttemptsSection()}
                 ${renderDetailActions(u)}
                 ${renderDiffTab(u)}
             </div>
@@ -364,6 +365,7 @@ export async function showDetail(unitId) {
         loadDiffView(unitId);
         loadGhidraView(unitId);
         loadUnitOverrides(unitId);
+        loadAttemptsView(unitId);
 
     } catch (err) {
         body.innerHTML = `<div class="empty-state">Failed to load unit details: ${err.message}</div>`;
@@ -392,6 +394,7 @@ export async function renderInlineDetail(unitId) {
         body.innerHTML = `
             <div id="detail-content">
                 ${renderDetailOverview(u)}
+                ${renderAttemptsSection()}
                 ${renderDetailActions(u)}
                 ${renderDiffTab(u)}
             </div>
@@ -405,6 +408,7 @@ export async function renderInlineDetail(unitId) {
         loadDiffView(unitId);
         loadGhidraView(unitId);
         loadUnitOverrides(unitId);
+        loadAttemptsView(unitId);
 
     } catch (err) {
         body.innerHTML = `<div class="empty-state">Failed to load unit details: ${err.message}</div>`;
@@ -822,6 +826,88 @@ function renderDetailActions(u) {
             </div>
         </div>
     `;
+}
+
+// ─── Attempts section (issue #131, W4.5) ────────────────────────────────
+
+/// Placeholder filled by `loadAttemptsView` — the attempt list with
+/// per-attempt metadata, joined server-side from persisted history only.
+function renderAttemptsSection() {
+    return `
+        <div class="detail-section" id="unit-attempts-section">
+            <div class="detail-section-title">Attempts</div>
+            <div id="unit-attempts-body">
+                <div class="spinner"></div>
+            </div>
+        </div>
+    `;
+}
+
+async function loadAttemptsView(unitId) {
+    try {
+        const res = await API.unitAttempts(unitId);
+        const body = document.getElementById("unit-attempts-body");
+        if (!body) return;
+        body.innerHTML = renderAttemptsList(res);
+    } catch (err) {
+        const body = document.getElementById("unit-attempts-body");
+        if (body) {
+            body.innerHTML = `<div class="ghidra-empty">Failed to load attempts: ${escapeHtml(err.message)}</div>`;
+        }
+    }
+}
+
+function renderAttemptsList(res) {
+    const attempts = res.attempts || [];
+    if (attempts.length === 0) {
+        return '<div class="ghidra-empty">No attempts recorded for this unit.</div>';
+    }
+
+    const rows = attempts.map(a => {
+        const meta = [
+            ["Strategy", a.strategy],
+            ["Tier", a.context_tier],
+            ["Tokens", a.tokens_used != null ? a.tokens_used.toLocaleString("en-US") : null],
+            ["Success", a.success != null ? (a.success ? "yes" : "no") : null],
+            ["Compiled", a.compiled != null ? (a.compiled ? "yes" : "no") : null],
+            ["Tests failed", a.tests_failed != null ? String(a.tests_failed) : null],
+            ["Commit", a.commit_hash ? a.commit_hash.slice(0, 7) : null],
+            ["Committed", a.committed_at],
+        ];
+        const failures = [];
+        if (a.compilation_errors && a.compilation_errors.length > 0) {
+            failures.push(...a.compilation_errors);
+        }
+        if (a.test_failures && a.test_failures.length > 0) {
+            failures.push(...a.test_failures);
+        }
+        return `
+            <div class="unit-attempt-item">
+                <div class="unit-attempt-header">
+                    <span class="unit-attempt-number">Attempt ${a.attempt}</span>
+                    ${a.branch ? `<span class="unit-attempt-branch">${escapeHtml(a.branch)}</span>` : ""}
+                </div>
+                <div class="unit-attempt-meta">
+                    ${meta.map(([label, value]) => `
+                        <div class="unit-attempt-row">
+                            <span class="unit-attempt-label">${label}</span>
+                            <span class="unit-attempt-value">${value != null ? escapeHtml(String(value)) : "\u2014"}</span>
+                        </div>
+                    `).join("")}
+                </div>
+                ${failures.length > 0 ? `
+                    <div class="unit-attempt-failures">${failures.map(f => escapeHtml(f)).join("; ")}</div>
+                ` : ""}
+            </div>
+        `;
+    }).join("");
+
+    // Honest single-attempt state: with one attempt there is nothing to
+    // compare — say so instead of pretending a diff is possible.
+    const note = res.comparable
+        ? ""
+        : `<div class="unit-attempts-note">Only one attempt recorded \u2014 nothing to compare yet.</div>`;
+    return `<div class="unit-attempt-list">${rows}</div>${note}`;
 }
 
 // ─── Diff Tab ─────────────────────────────────────────────────────────────

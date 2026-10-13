@@ -5,6 +5,7 @@
 mod analysis;
 mod analytics;
 mod api;
+mod attempts;
 mod batch;
 mod binaries;
 mod classification;
@@ -22,6 +23,7 @@ mod summary;
 
 pub use self::analytics::*;
 pub use self::api::*;
+pub use self::attempts::*;
 pub use self::batch::*;
 pub use self::binaries::*;
 pub use self::classification::*;
