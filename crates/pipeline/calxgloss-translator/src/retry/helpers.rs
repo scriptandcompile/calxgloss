@@ -1089,6 +1089,7 @@ mod tests {
                     offset: Some(0),
                     source_value: format!("{name}.x"),
                     source_address: 0x1801_29350,
+                    stl_kind: None,
                 },
                 InferredField {
                     name: "label".into(),
@@ -1097,6 +1098,7 @@ mod tests {
                     offset: None,
                     source_value: format!("{name}.label"),
                     source_address: 0x1801_29360,
+                    stl_kind: None,
                 },
             ],
             confidence: 79.into(),
@@ -1123,6 +1125,7 @@ mod tests {
                 linked_kind: None,
             }],
             members: Vec::new(),
+            stl_kind: None,
         }
     }
 
@@ -1140,6 +1143,7 @@ mod tests {
             class_name: Some(class.to_string()),
             base_classes: Vec::new(),
             is_com_interface: false,
+            stl_kind: None,
         }
     }
 

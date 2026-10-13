@@ -124,9 +124,13 @@ fn print_type_database_report(db: &TypeDatabase, path: &Path) {
         .flat_map(|t| t.fields.iter())
         .filter(|f| f.is_nested())
         .count();
+    let stl_types = db.named_types.iter().filter(|t| t.is_stl()).count();
     let mut notes = breakdown;
     if nested > 0 {
         notes.push(format!("{nested} nested fields"));
+    }
+    if stl_types > 0 {
+        notes.push(format!("{stl_types} STL-flagged"));
     }
     println_content(format!(
         "  {}{:<5}{}",
@@ -137,11 +141,17 @@ fn print_type_database_report(db: &TypeDatabase, path: &Path) {
 
     let confirmed = db.vtables.iter().filter(|v| v.is_confirmed()).count();
     let com = db.vtables.iter().filter(|v| v.is_com_interface).count();
+    let stl_vtables = db.vtables.iter().filter(|v| v.is_stl()).count();
+    let stl_note = if stl_vtables > 0 {
+        format!(", {stl_vtables} STL-flagged")
+    } else {
+        String::new()
+    };
     println_content(format!(
         "  {}{:<5}{}",
         white_bold("Vtables:    "),
         db.vtables.len(),
-        dim(&format!("{confirmed} RTTI-confirmed, {com} COM"))
+        dim(&format!("{confirmed} RTTI-confirmed, {com} COM{stl_note}"))
     ));
 
     let top_confidence = db.inferred_structs.iter().map(|s| s.confidence).max();
@@ -150,6 +160,12 @@ fn print_type_database_report(db: &TypeDatabase, path: &Path) {
         .inferred_structs
         .iter()
         .filter(|s| s.merged_from.is_some())
+        .count();
+    let stl_fields = db
+        .inferred_structs
+        .iter()
+        .flat_map(|s| s.fields.iter())
+        .filter(|f| f.is_stl())
         .count();
     println_content(format!(
         "  {}{:<5}{}",
@@ -163,6 +179,9 @@ fn print_type_database_report(db: &TypeDatabase, path: &Path) {
                 }
                 if merged > 0 {
                     notes.push(format!("{merged} merged from half-candidates"));
+                }
+                if stl_fields > 0 {
+                    notes.push(format!("{stl_fields} STL-flagged fields"));
                 }
                 notes.push(format!("top confidence {confidence}"));
                 notes.join(", ")
@@ -231,8 +250,8 @@ fn print_type_database_report(db: &TypeDatabase, path: &Path) {
     println!();
 }
 
-/// The parenthetical flags for one vtable row: RTTI/COM confirmation and
-/// base classes.
+/// The parenthetical flags for one vtable row: RTTI/COM confirmation, the
+/// STL family when flagged, and base classes.
 fn vtable_notes(vtable: &Vtable) -> String {
     let mut notes: Vec<String> = Vec::new();
     if vtable.is_confirmed() {
@@ -240,6 +259,9 @@ fn vtable_notes(vtable: &Vtable) -> String {
     }
     if vtable.is_com_interface {
         notes.push("COM".to_string());
+    }
+    if let Some(kind) = vtable.stl_kind {
+        notes.push(format!("STL {kind}"));
     }
     match vtable.base_classes.len() {
         0 => {}

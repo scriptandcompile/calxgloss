@@ -150,7 +150,7 @@ fn u32_le(bytes: &[u8], at: usize) -> u32 {
 /// The qualified name is written innermost-first (`Class@Namespace`), so the
 /// segments are reversed for display. Anything that is not a class (`.?AV`)
 /// or structure (`.?AU`) descriptor name is refused.
-fn demangle_rtti_name(raw: &str) -> Option<String> {
+pub(crate) fn demangle_rtti_name(raw: &str) -> Option<String> {
     let core = raw
         .strip_prefix(".?AV")
         .or_else(|| raw.strip_prefix(".?AU"))?
@@ -297,6 +297,8 @@ impl<S> VtableDetector<S> {
                 class_name: rtti.class_name,
                 base_classes: rtti.base_classes,
                 is_com_interface: is_com,
+                // The engine's flag pass fills this in after the scans.
+                stl_kind: None,
             });
         }
         vtables.sort_by_key(|v| v.address);

@@ -25,6 +25,7 @@ use calxgloss_ghidra::{
 use calxgloss_prompts::StructuredData;
 use calxgloss_typesdb::engine::{ScanSource, TypesDBEngine};
 use calxgloss_typesdb::persist::TypeDatabasePersistor;
+use calxgloss_typesdb::stl::StlKind;
 use calxgloss_typesdb::types::{NameOrigin, TypeDatabase, TypeKind};
 use calxgloss_typesdb::vtable::TagSink;
 use tempfile::TempDir;
@@ -943,4 +944,259 @@ async fn a_nested_field_renders_its_kind_in_the_prompt() {
         types.contains(&"dword"),
         "unlinked fields stay verbatim: {types:?}"
     );
+}
+
+// ------------------------------------------------------------
+// Flagging STL/MFC shapes (issue #140)
+// ------------------------------------------------------------
+
+/// The same program, plus the shapes STL flagging targets: Type Manager
+/// entries named like each standard-library family, two more vtables whose
+/// RTTI TypeDescriptors name `basic_string` and `vector`, and a literal
+/// whose inferred field suggests `char *`. The `Widget` vtable and the
+/// integer fields stay unflagged as controls.
+fn program_with_stl_shapes() -> FakeProgram {
+    let mut program = FakeProgram::program();
+    program.listing.extend(vec![
+        entry("vector<CWidget>", "pe", Some(24)),
+        entry("basic_string", "pe", Some(24)),
+        entry("list<CWidget>", "pe", Some(24)),
+        entry("map<int,CWidget>", "pe", Some(24)),
+        entry("shared_ptr<CWidget>", "pe", Some(16)),
+    ]);
+    program.buckets.insert(
+        "struct",
+        vec![
+            entry("IMAGE_DOS_HEADER", "pe", Some(128)),
+            entry("vector<CWidget>", "pe", Some(24)),
+            entry("basic_string", "pe", Some(24)),
+            entry("list<CWidget>", "pe", Some(24)),
+            entry("map<int,CWidget>", "pe", Some(24)),
+            entry("shared_ptr<CWidget>", "pe", Some(16)),
+        ],
+    );
+    for name in [
+        "vector<CWidget>",
+        "basic_string",
+        "list<CWidget>",
+        "map<int,CWidget>",
+        "shared_ptr<CWidget>",
+    ] {
+        program.layouts.insert(
+            name.into(),
+            StructLayout {
+                name: name.into(),
+                size: 24,
+                alignment: 8,
+                fields: Vec::new(),
+            },
+        );
+    }
+
+    // vftable @ 1801316f0 preceded by its vftable_meta_ptr, whose COL
+    // TypeDescriptor names basic_string<char> the way MSVC RTTI spells it.
+    program.items.extend(vec![
+        item("vftable_meta_ptr", 0x1801_316e8, "pointer", 8),
+        item("vftable", 0x1801_316f0, "pointer[1]", 8),
+    ]);
+    program.memory.insert(0x1801_316f0, le64(0x1800_3ab00));
+    program.memory.insert(0x1801_316e8, le64(0x1801_31700));
+    program.memory.insert(
+        0x1801_31700,
+        [le32(1), le32(0), le32(0), le32(0x13_1800), le32(0x13_1900)].concat(),
+    );
+    program.memory.insert(
+        0x1801_31800,
+        type_descriptor(".?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@"),
+    );
+    program
+        .memory
+        .insert(0x1801_31900, [le32(0), le32(0), le32(0)].concat());
+
+    // A second RTTI-confirmed table naming std::vector<CWidget>.
+    program.items.extend(vec![
+        item("vftable_meta_ptr", 0x1801_326e8, "pointer", 8),
+        item("vftable", 0x1801_326f0, "pointer[1]", 8),
+    ]);
+    program.memory.insert(0x1801_326f0, le64(0x1800_3e750));
+    program.memory.insert(0x1801_326e8, le64(0x1801_32700));
+    program.memory.insert(
+        0x1801_32700,
+        [le32(1), le32(0), le32(0), le32(0x13_2800), le32(0x13_2900)].concat(),
+    );
+    program
+        .memory
+        .insert(0x1801_32800, type_descriptor(".?AV?$vector@VWidget@@std@@"));
+    program
+        .memory
+        .insert(0x1801_32900, [le32(0), le32(0), le32(0)].concat());
+
+    // A literal whose inferred field suggests `char *` — a string shape.
+    program.literals.push(StringLiteral {
+        address: 0x1801_29370,
+        value: "player.name=hello".into(),
+    });
+    program
+        .xrefs
+        .insert(0x1801_29370, vec![reference("Player_update")]);
+    program
+}
+
+#[tokio::test]
+async fn a_scan_flags_stl_shapes_on_types_vtables_and_fields() {
+    let db = TypesDBEngine::with_source(program_with_stl_shapes())
+        .without_tagging()
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let vector = db
+        .find_named_type("/pe/vector<CWidget>")
+        .expect("the container type");
+    assert_eq!(
+        vector.stl_kind,
+        Some(StlKind::Vector),
+        "a container-named type carries its family"
+    );
+    let string_type = db
+        .find_named_type("/pe/basic_string")
+        .expect("the string type");
+    assert_eq!(string_type.stl_kind, Some(StlKind::String));
+    assert!(vector.is_stl() && string_type.is_stl());
+
+    let dos = db
+        .find_named_type("/pe/IMAGE_DOS_HEADER")
+        .expect("the program type");
+    assert_eq!(
+        dos.stl_kind, None,
+        "a program type keeps no flag: {:?}",
+        dos.name
+    );
+
+    let string_vtable = db.find_vtable(0x1801_316f0).expect("the string table");
+    assert_eq!(
+        string_vtable.stl_kind,
+        Some(StlKind::String),
+        "the RTTI-demangled class name carries the shape"
+    );
+    let widget = db.find_vtable(0x1801_306f0).expect("the widget table");
+    assert_eq!(widget.stl_kind, None, "Widget is not an STL shape");
+
+    let player = db
+        .inferred_structs
+        .iter()
+        .find(|c| c.name == "Player")
+        .expect("the Player candidate");
+    let field = |name: &str| {
+        player
+            .fields
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("Player should carry a `{name}` field"))
+    };
+    assert_eq!(
+        field("name").stl_kind,
+        Some(StlKind::String),
+        "the suggested `char *` is a string shape"
+    );
+    assert_eq!(field("x").stl_kind, None, "an int field stays unflagged");
+}
+
+#[tokio::test]
+async fn flagged_records_still_answer_every_lookup() {
+    // Flag-only (issue #140): the flag marks records, it never removes
+    // them from a section or a lookup.
+    let db = TypesDBEngine::with_source(program_with_stl_shapes())
+        .without_tagging()
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    assert!(db.find_named_type("/pe/basic_string").is_some());
+    assert!(db.find_named_type("/pe/vector<CWidget>").is_some());
+    let string_vtable = db
+        .find_vtable(0x1801_316f0)
+        .expect("a flagged table stays findable");
+    assert!(
+        string_vtable.is_confirmed(),
+        "and keeps its RTTI confirmation"
+    );
+    let vector_vtable = db
+        .find_vtable(0x1801_326f0)
+        .expect("the vector table stays findable");
+    assert_eq!(vector_vtable.stl_kind, Some(StlKind::Vector));
+    assert_eq!(db.named_types.len(), 7, "no named type was dropped");
+    assert_eq!(db.vtables.len(), 3, "no vtable was dropped");
+}
+
+#[tokio::test]
+async fn stl_flags_survive_the_save_load_round_trip() {
+    let db = TypesDBEngine::with_source(program_with_stl_shapes())
+        .without_tagging()
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let dir = TempDir::new().expect("temp dir should exist");
+    let persistor = TypeDatabasePersistor::new(dir.path());
+    persistor.save(&db).expect("scan should be savable");
+    let text = std::fs::read_to_string(persistor.path_for("eqmain.dll"))
+        .expect("the saved document should be readable");
+    assert!(
+        text.contains("\"stl_kind\""),
+        "the flags should be in the document: {text}"
+    );
+
+    let loaded = persistor
+        .load("eqmain.dll")
+        .expect("the flagged document should load back");
+    assert_eq!(loaded, db);
+    assert_eq!(
+        loaded
+            .find_vtable(0x1801_316f0)
+            .expect("the string table")
+            .stl_kind,
+        Some(StlKind::String),
+        "the flag survives the file"
+    );
+}
+
+#[tokio::test]
+async fn a_flagged_record_names_its_stl_family_in_the_prompt() {
+    let db = TypesDBEngine::with_source(program_with_stl_shapes())
+        .without_tagging()
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let string_type = db
+        .find_named_type("/pe/basic_string")
+        .expect("the string type");
+    let rendered = StructuredData::from(string_type);
+    assert_eq!(
+        rendered.name, "basic_string (STL string)",
+        "the family rides in the type description"
+    );
+
+    let dos = db
+        .find_named_type("/pe/IMAGE_DOS_HEADER")
+        .expect("the program type");
+    assert_eq!(
+        StructuredData::from(dos).name,
+        "IMAGE_DOS_HEADER",
+        "unflagged types render verbatim"
+    );
+
+    let player = db
+        .inferred_structs
+        .iter()
+        .find(|c| c.name == "Player")
+        .expect("the Player candidate");
+    let rendered = StructuredData::from(player);
+    let types: Vec<&str> = rendered.fields.iter().map(|f| f.type_.as_str()).collect();
+    assert!(
+        types.contains(&"char * (STL string)"),
+        "the flagged field's type names its family: {types:?}"
+    );
+    assert!(types.contains(&"int"), "unflagged fields stay verbatim");
 }

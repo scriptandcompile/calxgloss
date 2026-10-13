@@ -394,3 +394,57 @@ async fn the_scan_links_nested_fields_to_recovered_types() {
     assert_eq!(target.name, "IMAGE_FILE_HEADER");
     assert_eq!(file_header.linked_kind, Some(TypeKind::Struct));
 }
+
+#[tokio::test]
+#[ignore = "needs a running GhidraMCP server with eqmain.dll open"]
+async fn the_scan_flags_stl_shapes_in_real_rtti_names() {
+    let Some(ghidra) = client() else {
+        eprintln!("CALXGLOSS_GHIDRA_URL not set; skipping");
+        return;
+    };
+
+    // eqmain links against the C++ standard library, so its Type Manager
+    // names carry real `basic_string`/`vector` shapes, and its recovered
+    // vtables carry real RTTI-demangled class names — the spellings the
+    // detector must also handle. The flag is name-pattern matching, so
+    // the printed lists are the evidence of the run; the assertion is a
+    // smoke check that at least one record was flagged. Tagging writes
+    // back, so the live scan runs read-only.
+    let db = TypesDBEngine::new(&ghidra)
+        .without_tagging()
+        .scan("eqmain.dll")
+        .await
+        .expect("type database scan");
+
+    let with_classes = db.vtables.iter().filter(|v| v.class_name.is_some()).count();
+    assert!(
+        with_classes > 0,
+        "no vtable recovered an RTTI-demangled class name to flag"
+    );
+
+    let flagged_types: Vec<&str> = db
+        .named_types
+        .iter()
+        .filter(|t| t.is_stl())
+        .map(|t| t.name.as_str())
+        .collect();
+    let flagged_vtables: Vec<String> = db
+        .vtables
+        .iter()
+        .filter(|v| v.is_stl())
+        .map(|v| {
+            format!(
+                "{:#x} {} ({})",
+                v.address,
+                v.class_name.as_deref().unwrap_or("(unresolved)"),
+                v.stl_kind.expect("a flagged vtable carries its kind")
+            )
+        })
+        .collect();
+    println!("STL-flagged types: {flagged_types:?}");
+    println!("STL-flagged vtables: {flagged_vtables:?}");
+    assert!(
+        !flagged_types.is_empty() || !flagged_vtables.is_empty(),
+        "no record was flagged in a program that ships STL types"
+    );
+}

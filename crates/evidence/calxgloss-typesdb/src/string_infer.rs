@@ -639,6 +639,8 @@ impl<S> StringInferenceEngine<S> {
             offset: None,
             source_value: literal.value.clone(),
             source_address: literal.address,
+            // The engine's flag pass fills this in after the scans.
+            stl_kind: None,
         })
     }
 }

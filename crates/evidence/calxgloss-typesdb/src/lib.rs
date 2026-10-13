@@ -6,7 +6,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into seven modules:
+//! The crate is organized into eight modules:
 //!
 //! - [`types`] - Core data types: `NamedType`, `TypeKind`, `StructField` for
 //!   named types from Ghidra's Type Manager; `Vtable`, `VtableMethod` for
@@ -22,6 +22,11 @@
 //! - [`string_infer`] - String-guided inference: `StringInferenceEngine`
 //!   infers struct layouts from string collection, cross-reference
 //!   clustering, and confidence scoring.
+//! - [`stl`] - STL/MFC shape detection: [`stl::detect`] matches recovered
+//!   names against known standard-library shapes (`basic_string`/`CString`,
+//!   `vector`, `list`, the `map`/`set` family, smart pointers) and names the
+//!   family with `StlKind`; the scan flags matching records, never filters
+//!   them out.
 //! - [`engine`] - Orchestration: [`engine::TypesDBEngine`] runs the three
 //!   recovery engines concurrently over one program and assembles their
 //!   results into a single [`types::TypeDatabase`].
@@ -33,6 +38,7 @@ pub mod engine;
 pub mod error;
 pub mod persist;
 pub mod scanner;
+pub mod stl;
 pub mod string_infer;
 pub mod types;
 pub mod vtable;

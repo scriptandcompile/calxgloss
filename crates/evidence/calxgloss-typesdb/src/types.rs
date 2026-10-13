@@ -19,6 +19,7 @@
 //! data: `From<&NamedType>` and `From<&InferredStruct>` render a
 //! [`calxgloss_prompts::StructuredData`] for the translation prompts.
 
+use crate::stl::StlKind;
 use calxgloss_ghidra::{DataTypeEntry, EnumDefinition, StructFieldLayout, StructLayout};
 use calxgloss_prompts::StructuredData;
 use serde::{Deserialize, Serialize};
@@ -195,6 +196,15 @@ pub struct NamedType {
     /// Enumeration members. Empty for kinds without members.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<EnumMember>,
+    /// The STL/MFC family this type's name matches — set by the scan's
+    /// STL flagging pass when the recovered name spells a known
+    /// standard-library shape (`basic_string`/`CString`, `vector`, `list`,
+    /// the `map`/`set` family, a smart pointer). Flag-only: the record
+    /// stays in every section and answers every lookup. `None` for the
+    /// program's own types and for databases written before the flagging
+    /// pass existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stl_kind: Option<StlKind>,
 }
 
 impl NamedType {
@@ -212,6 +222,8 @@ impl NamedType {
             alignment: None,
             fields: Vec::new(),
             members: Vec::new(),
+            // The STL flagging pass fills the flag in after the scans assemble.
+            stl_kind: None,
         }
     }
 
@@ -230,6 +242,7 @@ impl NamedType {
             alignment: Some(layout.alignment),
             fields: layout.fields.iter().map(StructField::from).collect(),
             members: Vec::new(),
+            stl_kind: None,
         }
     }
 
@@ -244,12 +257,20 @@ impl NamedType {
             alignment: None,
             fields: Vec::new(),
             members: definition.members.iter().map(EnumMember::from).collect(),
+            stl_kind: None,
         }
     }
 
     /// Whether a layout or member list was recovered for this type.
     pub fn has_layout(&self) -> bool {
         !self.fields.is_empty() || !self.members.is_empty()
+    }
+
+    /// Whether the STL flagging pass recognized this type's name as a
+    /// standard-library shape. The flag never removes the record from a
+    /// section or a lookup.
+    pub fn is_stl(&self) -> bool {
+        self.stl_kind.is_some()
     }
 }
 
@@ -306,12 +327,25 @@ pub struct Vtable {
     /// (QueryInterface / AddRef / Release).
     #[serde(default)]
     pub is_com_interface: bool,
+    /// The STL/MFC family the RTTI-demangled `class_name` matches — set by
+    /// the scan's STL flagging pass. Flag-only: a flagged table stays in
+    /// the section and answers address lookups. `None` for the program's
+    /// own classes, for an unresolved class name, and for databases
+    /// written before the flagging pass existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stl_kind: Option<StlKind>,
 }
 
 impl Vtable {
     /// Whether the table carried the `vftable_meta_ptr` RTTI confirmation.
     pub fn is_confirmed(&self) -> bool {
         self.meta_ptr_address.is_some()
+    }
+
+    /// Whether the STL flagging pass recognized the class name as a
+    /// standard-library shape.
+    pub fn is_stl(&self) -> bool {
+        self.stl_kind.is_some()
     }
 }
 
@@ -428,6 +462,21 @@ pub struct InferredField {
     pub source_value: String,
     /// Address of that literal.
     pub source_address: u64,
+    /// The STL/MFC family the field's suggested type matches — set by the
+    /// scan's STL flagging pass, so a text-typed field reads as the
+    /// string family rather than as an untyped pointer. Flag-only. `None`
+    /// for a suggested type with no shape and for databases written before
+    /// the flagging pass existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stl_kind: Option<StlKind>,
+}
+
+impl InferredField {
+    /// Whether the STL flagging pass recognized this field's suggested
+    /// type as a standard-library shape.
+    pub fn is_stl(&self) -> bool {
+        self.stl_kind.is_some()
+    }
 }
 
 /// A struct candidate inferred from clustered string literals.
@@ -497,7 +546,10 @@ impl InferredStruct {
 /// member value and whose offset is unknown (`-1`). A field the nesting
 /// pass linked to a recovered named type renders its kind in front of
 /// the name — `union VALUE`, not just `VALUE` — so the layout reads as a
-/// tree inside the existing field list, with no new prompt section.
+/// tree inside the existing field list, with no new prompt section. A
+/// type the STL flagging pass recognized names its family in the type
+/// description — `basic_string<…> (STL string)` — so the translator maps
+/// it to a Rust equivalent instead of inventing a raw layout.
 impl From<&NamedType> for StructuredData {
     fn from(named: &NamedType) -> Self {
         let fields = named
@@ -523,7 +575,10 @@ impl From<&NamedType> for StructuredData {
             )
             .collect();
         Self {
-            name: named.name.clone(),
+            name: match named.stl_kind {
+                Some(kind) => format!("{} (STL {kind})", named.name),
+                None => named.name.clone(),
+            },
             size: named.size.unwrap_or(0) as usize,
             fields,
         }
@@ -532,7 +587,10 @@ impl From<&NamedType> for StructuredData {
 
 /// Render an inferred candidate as prompt data. Field types are the C
 /// declarations the inference suggested; offsets are estimates and stay
-/// unknown (`-1`) when the candidate could not place a field.
+/// unknown (`-1`) when the candidate could not place a field. A field
+/// the STL flagging pass recognized names its family in the type —
+/// `char * (STL string)` — so the translator maps it to a Rust string
+/// type instead of hand-rolling a buffer.
 impl From<&InferredStruct> for StructuredData {
     fn from(candidate: &InferredStruct) -> Self {
         let fields = candidate
@@ -540,7 +598,10 @@ impl From<&InferredStruct> for StructuredData {
             .iter()
             .map(|f| calxgloss_prompts::StructField {
                 name: f.name.clone(),
-                type_: f.field_type.c_type().to_string(),
+                type_: match f.stl_kind {
+                    Some(kind) => format!("{} (STL {kind})", f.field_type.c_type()),
+                    None => f.field_type.c_type().to_string(),
+                },
                 offset: f.offset.map(|o| o as i64).unwrap_or(-1),
             })
             .collect();
@@ -720,6 +781,101 @@ mod tests {
     }
 
     #[test]
+    fn a_flagged_named_type_round_trips_with_its_stl_kind() {
+        let mut recovered =
+            NamedType::from_listing(&entry("basic_string", "pe", Some(24)), TypeKind::Class);
+        recovered.stl_kind = Some(StlKind::String);
+
+        let json = serde_json::to_string(&recovered).expect("a flagged type should serialize");
+        assert!(json.contains("\"stl_kind\":\"string\""));
+        let back: NamedType =
+            serde_json::from_str(&json).expect("a flagged type should round-trip");
+        assert_eq!(back, recovered);
+        assert!(back.is_stl());
+    }
+
+    #[test]
+    fn a_flagged_vtable_and_inferred_field_round_trip_with_their_kinds() {
+        let vtable = Vtable {
+            stl_kind: Some(StlKind::Vector),
+            ..vtable_at(0x1801_306f0)
+        };
+        let json = serde_json::to_string(&vtable).expect("a flagged vtable should serialize");
+        assert!(json.contains("\"stl_kind\":\"vector\""));
+        let back: Vtable = serde_json::from_str(&json).expect("a flagged vtable should round-trip");
+        assert_eq!(back, vtable);
+        assert!(back.is_stl());
+
+        let candidate = InferredStruct {
+            name: "strings_at_180129350".into(),
+            name_origin: NameOrigin::Address,
+            fields: vec![InferredField {
+                name: "payload".into(),
+                field_type: FieldType::Unknown,
+                size: None,
+                offset: None,
+                source_value: "payload".into(),
+                source_address: 0x1801_29350,
+                stl_kind: Some(StlKind::Map),
+            }],
+            confidence: Confidence::new(30),
+            referenced_by: Vec::new(),
+            linked_vtable: None,
+            merged_from: None,
+        };
+        let json = serde_json::to_string(&candidate).expect("a flagged field should serialize");
+        assert!(json.contains("\"stl_kind\":\"map\""));
+        let back: InferredStruct =
+            serde_json::from_str(&json).expect("a flagged field should round-trip");
+        assert_eq!(back, candidate);
+        assert!(back.fields[0].is_stl());
+    }
+
+    #[test]
+    fn records_written_before_the_stl_flag_still_load() {
+        // The shipped MVP shape: no record carries an `stl_kind` key.
+        // The field defaults, so old cached documents keep loading.
+        let named: NamedType = serde_json::from_str(
+            r#"{
+                "name": "IMAGE_DOS_HEADER",
+                "kind": "struct",
+                "category": "pe",
+                "path": "/pe/IMAGE_DOS_HEADER",
+                "size": 128
+            }"#,
+        )
+        .expect("a pre-STL named type should load");
+        assert_eq!(named.stl_kind, None);
+        assert!(!named.is_stl());
+
+        let vtable: Vtable = serde_json::from_str(
+            r#"{
+                "address": 98823820528,
+                "label": "vftable",
+                "size": 40,
+                "methods": [],
+                "is_com_interface": false
+            }"#,
+        )
+        .expect("a pre-STL vtable should load");
+        assert_eq!(vtable.stl_kind, None);
+
+        let field: InferredField = serde_json::from_str(
+            r#"{
+                "name": "x",
+                "field_type": "integer",
+                "size": 4,
+                "offset": 0,
+                "source_value": "player.x",
+                "source_address": 103079856976
+            }"#,
+        )
+        .expect("a pre-STL inferred field should load");
+        assert_eq!(field.stl_kind, None);
+        assert!(!field.is_stl());
+    }
+
+    #[test]
     fn from_struct_maps_the_layout_fields() {
         // The IMAGE_DOS_HEADER layout as `get_struct_layout` renders it.
         let layout = StructLayout {
@@ -817,6 +973,7 @@ mod tests {
             class_name: Some("UdpLibrary::UdpRefCount".into()),
             base_classes: vec!["Base".into()],
             is_com_interface: false,
+            stl_kind: None,
         };
         let json = serde_json::to_string(&vtable).unwrap();
         let back: Vtable = serde_json::from_str(&json).unwrap();
@@ -835,6 +992,7 @@ mod tests {
             class_name: None,
             base_classes: Vec::new(),
             is_com_interface: false,
+            stl_kind: None,
         };
         let json = serde_json::to_string(&vtable).unwrap();
         assert!(!json.contains("\"methods\""));
@@ -857,6 +1015,7 @@ mod tests {
                     offset: Some(0),
                     source_value: "player.x".into(),
                     source_address: 0x1801_29350,
+                    stl_kind: None,
                 },
                 InferredField {
                     name: "name".into(),
@@ -865,6 +1024,7 @@ mod tests {
                     offset: Some(4),
                     source_value: "player.name".into(),
                     source_address: 0x1801_29360,
+                    stl_kind: None,
                 },
             ],
             confidence: Confidence::new(79),
@@ -895,6 +1055,7 @@ mod tests {
                 offset: Some(0),
                 source_value: "widget.x".into(),
                 source_address: 0x1801_29350,
+                stl_kind: None,
             }],
             confidence: Confidence::new(81),
             referenced_by: vec!["FUN_18003ab00".into()],
@@ -943,6 +1104,7 @@ mod tests {
                     offset: Some(0),
                     source_value: "widget.width=1".into(),
                     source_address: 0x1801_29400,
+                    stl_kind: None,
                 },
                 InferredField {
                     name: "label".into(),
@@ -951,6 +1113,7 @@ mod tests {
                     offset: Some(4),
                     source_value: "widget.label".into(),
                     source_address: 0x1801_29420,
+                    stl_kind: None,
                 },
             ],
             confidence: Confidence::new(97),
@@ -996,6 +1159,7 @@ mod tests {
                 offset: None,
                 source_value: "mystery".into(),
                 source_address: 0x1801_29350,
+                stl_kind: None,
             }],
             confidence: Confidence::new(28),
             referenced_by: Vec::new(),
@@ -1096,6 +1260,60 @@ mod tests {
     }
 
     #[test]
+    fn a_flagged_named_type_names_its_stl_family_in_the_prompt_name() {
+        // The kind rides in the type description, so the translator maps
+        // the type to a Rust equivalent instead of inventing a raw layout
+        // (issue #140).
+        let recovered = NamedType {
+            stl_kind: Some(StlKind::String),
+            ..NamedType::from_listing(&entry("basic_string", "pe", Some(24)), TypeKind::Class)
+        };
+        let rendered = StructuredData::from(&recovered);
+        assert_eq!(rendered.name, "basic_string (STL string)");
+
+        let plain = NamedType::from_listing(&entry("WIDGET", "pe", Some(8)), TypeKind::Class);
+        assert_eq!(StructuredData::from(&plain).name, "WIDGET");
+    }
+
+    #[test]
+    fn a_flagged_inferred_field_names_its_stl_family_in_the_prompt_type() {
+        let candidate = InferredStruct {
+            name: "Player".into(),
+            name_origin: NameOrigin::LiteralPrefix,
+            fields: vec![
+                InferredField {
+                    name: "label".into(),
+                    field_type: FieldType::String,
+                    size: Some(8),
+                    offset: Some(0),
+                    source_value: "Player".into(),
+                    source_address: 0x1801_29350,
+                    stl_kind: Some(StlKind::String),
+                },
+                InferredField {
+                    name: "x".into(),
+                    field_type: FieldType::Integer,
+                    size: Some(4),
+                    offset: Some(8),
+                    source_value: "42".into(),
+                    source_address: 0x1801_29360,
+                    stl_kind: None,
+                },
+            ],
+            confidence: Confidence::new(79),
+            referenced_by: Vec::new(),
+            linked_vtable: None,
+            merged_from: None,
+        };
+        let rendered = StructuredData::from(&candidate);
+        assert_eq!(rendered.fields[0].type_, "char * (STL string)");
+        assert_eq!(
+            rendered.fields[1].type_, "int",
+            "unflagged fields stay verbatim"
+        );
+    }
+
+    #[test]
     fn enum_members_convert_after_the_fields_holding_their_value() {
         let recovered = NamedType {
             fields: vec![StructField {
@@ -1144,6 +1362,7 @@ mod tests {
                     offset: Some(0),
                     source_value: "player.x".into(),
                     source_address: 0x1801_29350,
+                    stl_kind: None,
                 },
                 InferredField {
                     name: "label".into(),
@@ -1152,6 +1371,7 @@ mod tests {
                     offset: None,
                     source_value: "player.label".into(),
                     source_address: 0x1801_29360,
+                    stl_kind: None,
                 },
             ],
             confidence: Confidence::new(79),
@@ -1183,6 +1403,7 @@ mod tests {
                 offset: None,
                 source_value: "mystery".into(),
                 source_address: 0x1801_29350,
+                stl_kind: None,
             }],
             confidence: Confidence::new(28),
             referenced_by: Vec::new(),
@@ -1213,6 +1434,7 @@ mod tests {
             class_name: None,
             base_classes: Vec::new(),
             is_com_interface: false,
+            stl_kind: None,
         }
     }
 

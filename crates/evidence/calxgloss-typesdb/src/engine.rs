@@ -23,12 +23,15 @@
 //! fields. A third pass links struct fields to the recovered named types
 //! they name, so a layout whose field is another recovered type reads as a
 //! tree: the field records that type's Type Manager path and kind, and a
-//! field typed as a recovered union carries the union kind. All passes read
-//! only what the scans already recovered, so they can neither fail the run
+//! field typed as a recovered union carries the union kind. A fourth pass
+//! then flags the records whose names match an STL/MFC shape, marking them
+//! for the LLM without removing them (issue #140). All passes read only
+//! what the scans already recovered, so they can neither fail the run
 //! nor cost a record.
 
 use crate::error::Result;
 use crate::scanner::TypeLibraryScanner;
+use crate::stl;
 use crate::string_infer::StringInferenceEngine;
 use crate::types::{
     Confidence, InferredField, InferredStruct, NameOrigin, NamedType, ScanMetadata, TypeDatabase,
@@ -141,7 +144,7 @@ impl<S> TypesDBEngine<S> {
         S: ScanSource + TagSink,
     {
         let started = Instant::now();
-        let (mut named_types, vtables, mut inferred_structs) = tokio::try_join!(
+        let (mut named_types, mut vtables, mut inferred_structs) = tokio::try_join!(
             self.scanner.scan_named_types(),
             self.vtables.detect_vtables(),
             self.strings.infer_structures(),
@@ -149,6 +152,7 @@ impl<S> TypesDBEngine<S> {
         link_candidates_to_vtables(&mut inferred_structs, &vtables);
         let merged = merge_candidates(&mut inferred_structs);
         let nested = link_nested_fields(&mut named_types);
+        let stl_flagged = flag_stl_types(&mut named_types, &mut vtables, &mut inferred_structs);
 
         let mut metadata = ScanMetadata::new(binary);
         metadata.duration_secs = started.elapsed().as_secs();
@@ -159,6 +163,7 @@ impl<S> TypesDBEngine<S> {
             inferred_structs = inferred_structs.len(),
             merged_candidates = merged,
             nested_fields = nested,
+            stl_flagged,
             duration_secs = metadata.duration_secs,
             "Recovered type database"
         );
@@ -476,6 +481,50 @@ fn link_nested_fields(named_types: &mut [NamedType]) -> usize {
     linked
 }
 
+/// Flag every named type, vtable, and inferred field whose name matches an
+/// STL/MFC shape (see [`crate::stl`]).
+///
+/// Flag-only: flagged records stay in every section and lookup, exactly the
+/// way ADR-0009 keeps weak candidates — the flag tells the LLM what it is
+/// looking at, it does not hide the record (issue #140). The pass runs last,
+/// after merging and nesting, so each record is flagged once and the flag
+/// lands on the record that survives rather than on a duplicate that gets
+/// folded away. Returns the number of flagged records for the scan log.
+fn flag_stl_types(
+    named_types: &mut [NamedType],
+    vtables: &mut [Vtable],
+    inferred_structs: &mut [InferredStruct],
+) -> usize {
+    let mut flagged = 0;
+    for named in named_types.iter_mut() {
+        if let Some(kind) = stl::detect(&named.name) {
+            named.stl_kind = Some(kind);
+            flagged += 1;
+        }
+    }
+    // RTTI-demangled class names carry the shapes the same way Type
+    // Manager names do (issue #140).
+    for vtable in vtables.iter_mut() {
+        if let Some(class_name) = &vtable.class_name
+            && let Some(kind) = stl::detect(class_name)
+        {
+            vtable.stl_kind = Some(kind);
+            flagged += 1;
+        }
+    }
+    for candidate in inferred_structs.iter_mut() {
+        for field in candidate.fields.iter_mut() {
+            // The suggested type is what the prompt entry shows, so that
+            // is the string the shape has to match.
+            if let Some(kind) = stl::detect(field.field_type.c_type()) {
+                field.stl_kind = Some(kind);
+                flagged += 1;
+            }
+        }
+    }
+    flagged
+}
+
 // ============================================================
 // Tests
 // ============================================================
@@ -484,6 +533,7 @@ fn link_nested_fields(named_types: &mut [NamedType]) -> usize {
 mod tests {
     use super::*;
     use crate::error::TypesDbError;
+    use crate::stl::StlKind;
     use crate::types::{FieldType, StructField, VtableMethod};
     use calxgloss_ghidra::{
         DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
@@ -1222,6 +1272,7 @@ mod tests {
             class_name: class_name.map(str::to_string),
             base_classes: Vec::new(),
             is_com_interface: false,
+            stl_kind: None,
         }
     }
 
@@ -1312,6 +1363,7 @@ mod tests {
                     offset: Some(index as u64 * 4),
                     source_value: format!("{name}.field_{index}"),
                     source_address: address,
+                    stl_kind: None,
                 })
                 .collect(),
             confidence: Confidence::new(confidence),
@@ -1642,6 +1694,90 @@ mod tests {
             field("raw").linked_type,
             None,
             "a primitive names nothing to link"
+        );
+    }
+
+    // ------------------------------------------------------------
+    // Flagging STL/MFC shapes (issue #140)
+    // ------------------------------------------------------------
+
+    #[test]
+    fn the_flag_pass_marks_types_vtables_and_inferred_fields() {
+        let mut types = vec![
+            NamedType::from_listing(
+                &entry("std::vector<CWidget>", "pe", Some(24)),
+                TypeKind::Class,
+            ),
+            NamedType::from_listing(&entry("CWidget", "pe", Some(8)), TypeKind::Class),
+        ];
+        let mut vtables = vec![
+            confirmed_vtable(0x1801_306f0, Some("std::basic_string<char>"), &["FUN_1"]),
+            confirmed_vtable(0x1801_30700, Some("CWidget"), &["FUN_2"]),
+            confirmed_vtable(0x1801_30710, None, &["FUN_3"]),
+        ];
+        let mut candidates = vec![InferredStruct {
+            name: "strings_at_180129350".into(),
+            name_origin: NameOrigin::Address,
+            fields: vec![
+                InferredField {
+                    name: "label".into(),
+                    field_type: FieldType::String,
+                    size: Some(8),
+                    offset: None,
+                    source_value: "Player".into(),
+                    source_address: 0x1801_29350,
+                    stl_kind: None,
+                },
+                InferredField {
+                    name: "count".into(),
+                    field_type: FieldType::Integer,
+                    size: Some(4),
+                    offset: None,
+                    source_value: "42".into(),
+                    source_address: 0x1801_29360,
+                    stl_kind: None,
+                },
+            ],
+            confidence: Confidence::new(50),
+            referenced_by: vec!["FUN_18000b620".into()],
+            linked_vtable: None,
+            merged_from: None,
+        }];
+
+        let flagged = flag_stl_types(&mut types, &mut vtables, &mut candidates);
+
+        assert_eq!(flagged, 3, "one type, one vtable, one field");
+        assert_eq!(types[0].stl_kind, Some(StlKind::Vector));
+        assert_eq!(types[1].stl_kind, None, "a plain class stays unflagged");
+        assert_eq!(vtables[0].stl_kind, Some(StlKind::String));
+        assert_eq!(vtables[1].stl_kind, None);
+        assert_eq!(
+            vtables[2].stl_kind, None,
+            "a table whose class name never resolved flags nothing"
+        );
+        assert_eq!(
+            candidates[0].fields[0].stl_kind,
+            Some(StlKind::String),
+            "the suggested `char *` is a string shape"
+        );
+        assert_eq!(candidates[0].fields[1].stl_kind, None);
+    }
+
+    #[test]
+    fn flagging_leaves_records_in_place() {
+        // Flag-only (issue #140): the pass marks records, it never removes
+        // or reorders them.
+        let mut types = vec![
+            NamedType::from_listing(&entry("CWidget", "pe", Some(8)), TypeKind::Class),
+            NamedType::from_listing(&entry("std::list<int>", "pe", Some(16)), TypeKind::Class),
+        ];
+        let before: Vec<String> = types.iter().map(|t| t.path.clone()).collect();
+        let flagged = flag_stl_types(&mut types, &mut [], &mut []);
+
+        assert_eq!(flagged, 1);
+        assert_eq!(
+            types.iter().map(|t| t.path.clone()).collect::<Vec<_>>(),
+            before
         );
     }
 }

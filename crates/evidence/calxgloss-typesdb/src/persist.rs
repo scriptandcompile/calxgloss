@@ -138,6 +138,7 @@ impl TypeDatabasePersistor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stl::StlKind;
     use crate::types::{
         Confidence, FieldType, InferredField, InferredStruct, NameOrigin, NamedType, ScanMetadata,
         TypeKind, Vtable,
@@ -172,6 +173,7 @@ mod tests {
                 class_name: Some("Widget".into()),
                 base_classes: vec!["Base".into()],
                 is_com_interface: false,
+                stl_kind: Some(StlKind::SmartPointer),
             }],
             inferred_structs: vec![InferredStruct {
                 name: "Widget".into(),
@@ -183,6 +185,7 @@ mod tests {
                     offset: Some(0),
                     source_value: "player.x".into(),
                     source_address: 0x1801_29350,
+                    stl_kind: Some(StlKind::String),
                 }],
                 confidence: Confidence::new(79),
                 referenced_by: vec!["FUN_18000b620".into()],
