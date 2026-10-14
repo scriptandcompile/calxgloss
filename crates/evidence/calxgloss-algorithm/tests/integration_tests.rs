@@ -474,6 +474,66 @@ async fn a_pattern_file_configures_the_scan_and_reaches_the_persisted_document()
     );
 }
 
+#[tokio::test]
+async fn a_pattern_file_correlation_section_reaches_the_persisted_document() {
+    // The fourth section rides the whole teaching path: a JSON file
+    // names a qsort/comparator relationship under its own name and its
+    // own confidence, the scan configured from the file correlates the
+    // pair through it, and the persisted document carries exactly that
+    // claim — the built-in relationships the section replaced,
+    // `divide_and_conquer` and `comparison_sort`, are absent.
+    let workspace = TempDir::new().unwrap();
+    let patterns = workspace.path().join("patterns.json");
+    std::fs::write(
+        &patterns,
+        r#"{
+            "correlation_patterns": [{
+                "name": "library_sort",
+                "category": "sorting",
+                "body_patterns": ["\\bqsort\\s*\\("],
+                "partner_patterns": ["[*&][^;]*[^-](?:[<>]|==|!=)[^;]*[*&]"],
+                "min_lines": 4,
+                "confidence": 80
+            }]
+        }"#,
+    )
+    .unwrap();
+
+    let database = PatternDatabase::load(&patterns).expect("pattern file");
+    let result = AlgorithmEngine::with_source(correlated_program())
+        .with_pattern_database(database)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let persistor = AlgorithmPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+    let document =
+        std::fs::read_to_string(persistor.path_for("eqmain.dll")).expect("read document");
+    assert!(
+        document.contains("\"method\": \"cross_function\""),
+        "the file-taught relationship persists under the correlation method"
+    );
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let order: Vec<(&str, &str, u8)> = loaded
+        .hints
+        .iter()
+        .map(|hint| {
+            (
+                hint.function.as_str(),
+                hint.algorithm.as_str(),
+                hint.confidence.value(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        order,
+        [("FUN_180050100", "library_sort", 80)],
+        "only the file's relationship claims, at its own confidence"
+    );
+}
+
 // ------------------------------------------------------------
 // Consumption
 // ------------------------------------------------------------

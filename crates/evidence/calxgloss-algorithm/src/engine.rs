@@ -136,14 +136,14 @@ impl<S> AlgorithmEngine<S> {
     /// to read. Entries keep the detectors' semantics whole — the
     /// `{name}` placeholder, the lenient uncompilable-regex rule, and
     /// the per-entry confidence that overrides the standard score in
-    /// resolution. The database carries no correlation section yet,
-    /// so the whole-swap contract means the correlation detector runs
-    /// with nothing to read until that section lands (#155).
+    /// resolution. The correlation section is no exception: a supplied
+    /// database replaces the built-in relationship set whole, and only
+    /// a scan with no database at all keeps the built-in relationships.
     pub fn with_pattern_database(mut self, database: crate::pattern_db::PatternDatabase) -> Self {
         self.cfg = CfgPatternMatcher::with_patterns(database.control_flow);
         self.strings = StringHintEngine::with_signatures(database.string_signatures);
         self.callbacks = CallbackPatternDb::with_patterns(database.callback_contracts);
-        self.cross = CrossFunctionDetector::new();
+        self.cross = CrossFunctionDetector::with_relationships(database.correlation_patterns);
         self
     }
 
@@ -635,6 +635,42 @@ mod tests {
                 "FUN_180050100",
                 "void FUN_180050100(int *param_1,int param_2)",
                 &["  qsort(param_1,param_2,4,FUN_1800412a0);", "  return;"].join("\n"),
+            ),
+        );
+        program.bodies.insert(
+            "FUN_1800412a0".into(),
+            function(
+                "FUN_1800412a0",
+                "int FUN_1800412a0(int *param_1,int *param_2)",
+                &[
+                    "  if (*param_1 < *param_2) {",
+                    "    return -1;",
+                    "  }",
+                    "  return 1;",
+                ]
+                .join("\n"),
+            ),
+        );
+        program
+    }
+
+    /// A program whose only call relationship is one no built-in
+    /// relationship names: a custom host `my_sort` handed the comparator
+    /// sitting beside it in the listing. The built-in set reads nothing
+    /// here — it knows `qsort`, not this host — so a file that names the
+    /// host is the only way the scan sees the relationship.
+    fn custom_host_program() -> FakeProgram {
+        let mut program = FakeProgram::empty();
+        program.listing = vec![
+            summary("FUN_180050200", 0x1800_50200),
+            summary("FUN_1800412a0", A12A0),
+        ];
+        program.bodies.insert(
+            "FUN_180050200".into(),
+            function(
+                "FUN_180050200",
+                "void FUN_180050200(int *param_1,int param_2)",
+                &["  my_sort(param_1,param_2,4,FUN_1800412a0);", "  return;"].join("\n"),
             ),
         );
         program.bodies.insert(
@@ -1150,10 +1186,10 @@ mod tests {
     #[tokio::test]
     async fn a_pattern_database_silences_the_correlation_detector_too() {
         // The whole-swap contract reaches the fourth detector: the
-        // database carries no correlation section yet, so a scan
-        // configured from a file correlates nothing — the file is
-        // exactly what the scan knows, and a file that retires the
-        // built-in qsort shape never keeps a built-in correlation.
+        // document omits the correlation section, so a scan configured
+        // from a file correlates nothing — the file is exactly what the
+        // scan knows, and a file that retires the built-in qsort shape
+        // never keeps a built-in correlation.
         let result = AlgorithmEngine::with_source(correlated_program())
             .with_pattern_database(PatternDatabase::default())
             .scan("eqmain.dll")
@@ -1452,6 +1488,78 @@ mod tests {
             claims,
             [(DetectionMethod::CfgPattern, 90)],
             "the built-in body claim at 60 and the file claim at 90 merge into one, at 90"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_correlation_section_teaches_the_scan_a_relationship_only_the_file_carries() {
+        // The fourth section in action: a custom host `my_sort` handing
+        // the scan's comparator its callback is a relationship no
+        // built-in relationship names — the default scan sees nothing —
+        // while a file naming the host and the partner's comparison
+        // shape claims the sort at the standard correlation score,
+        // evidenced by the line naming the partner.
+        let plain = scan(custom_host_program()).await;
+        assert!(plain.is_empty(), "no built-in relationship names this host");
+
+        let db = database_document(
+            r#"{
+                "correlation_patterns": [{
+                    "name": "library_sort",
+                    "category": "sorting",
+                    "body_patterns": ["\\bmy_sort\\s*\\("],
+                    "partner_patterns": ["[*&][^;]*[^-](?:[<>]|==|!=)[^;]*[*&]"],
+                    "min_lines": 4
+                }]
+            }"#,
+        );
+        let result = AlgorithmEngine::with_source(custom_host_program())
+            .with_pattern_database(db)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        let hint = finding(&result, "FUN_180050200", DetectionMethod::CrossFunction);
+        assert_eq!(hint.algorithm, "library_sort");
+        assert_eq!(hint.category, AlgorithmCategory::Sorting);
+        assert_eq!(hint.confidence.value(), 70);
+        assert_eq!(hint.evidence, "my_sort(param_1,param_2,4,FUN_1800412a0);");
+    }
+
+    #[tokio::test]
+    async fn a_correlation_section_replaces_the_built_in_relationships_whole() {
+        // The section swaps the relationship set whole, like every
+        // other section: the file names the qsort/comparator shape under
+        // a new name, and the built-in set it replaces carries neither
+        // `comparison_sort` nor `divide_and_conquer` — the recursive
+        // split the built-ins claimed goes unclaimed, and the sort
+        // stands under the file's name alone.
+        let db = database_document(
+            r#"{
+                "correlation_patterns": [{
+                    "name": "library_sort",
+                    "category": "sorting",
+                    "body_patterns": ["\\bqsort\\s*\\("],
+                    "partner_patterns": ["[*&][^;]*[^-](?:[<>]|==|!=)[^;]*[*&]"],
+                    "min_lines": 4
+                }]
+            }"#,
+        );
+        let result = AlgorithmEngine::with_source(correlated_program())
+            .with_pattern_database(db)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        let claims: Vec<(&str, &str)> = result
+            .hints
+            .iter()
+            .map(|hint| (hint.function.as_str(), hint.algorithm.as_str()))
+            .collect();
+        assert_eq!(
+            claims,
+            [("FUN_180050100", "library_sort")],
+            "the file's set is the whole set — no built-in claim survives beside it"
         );
     }
 }

@@ -10,15 +10,16 @@
 //! instead of the standard ones, whole.
 //!
 //! The entry format is exactly the existing serde shape of the pattern
-//! types — [`AlgorithmPattern`], [`StringSignature`], and
-//! [`CallbackPattern`] — with one addition each: an optional
-//! [`confidence`](AlgorithmPattern::confidence) per entry that overrides
-//! the detector's standard score in resolution, so a hand-tuned
-//! signature can outweigh a standard-score claim for the same algorithm.
+//! types — [`AlgorithmPattern`], [`StringSignature`],
+//! [`CallbackPattern`], and [`CorrelationRelationship`] — with one
+//! addition each: an optional [`confidence`](AlgorithmPattern::confidence)
+//! per entry that overrides the detector's standard score in resolution,
+//! so a hand-tuned signature can outweigh a standard-score claim for the
+//! same algorithm.
 //! A section the document omits is an empty set: the database replaces
 //! the standard sets whole rather than merging into them, so a file
-//! that names only control flow signatures leaves the string and
-//! callback detectors with nothing to read.
+//! that names only control flow signatures leaves the string, callback,
+//! and correlation detectors with nothing to read.
 //!
 //! [`load`](PatternDatabase::load) goes through the shared JSON
 //! persistence plumbing; a missing, unreadable, or malformed file is a
@@ -35,11 +36,12 @@ use calxgloss_types::persist::load_json;
 use serde::{Deserialize, Serialize};
 
 use crate::callback_db::CallbackPattern;
+use crate::cross_function::CorrelationRelationship;
 use crate::error::{AlgorithmError, Result};
 use crate::string_hints::StringSignature;
 use crate::types::AlgorithmPattern;
 
-/// One JSON document carrying all three detector sets a scan reads
+/// One JSON document carrying all four detector sets a scan reads
 /// against, in place of the built-in standard sets.
 ///
 /// Each section holds its detector's entries in the order the file
@@ -70,6 +72,13 @@ pub struct PatternDatabase {
     /// would carry.
     #[serde(default)]
     pub callback_contracts: Vec<CallbackPattern>,
+    /// Correlation relationships the cross-function detector matches
+    /// the body-derived call map against — the same
+    /// [`CorrelationRelationship`] entries
+    /// [`with_cross_detector`](crate::engine::AlgorithmEngine::with_cross_detector)
+    /// would carry.
+    #[serde(default)]
+    pub correlation_patterns: Vec<CorrelationRelationship>,
 }
 
 impl PatternDatabase {
@@ -132,6 +141,16 @@ mod tests {
                 .body_patterns([r"[*&][^;]*<[^;]*[*&]"])
                 .type_hints([TypeHint::return_value("int")]),
             ],
+            correlation_patterns: vec![
+                CorrelationRelationship::new(
+                    "library_sort",
+                    AlgorithmCategory::Sorting,
+                    [r"\bmy_qsort\s*\("],
+                )
+                .with_partner_patterns([r"[*&][^;]*[^-](?:[<>]|==|!=)[^;]*[*&]"])
+                .with_min_lines(4)
+                .with_confidence(75),
+            ],
         }
     }
 
@@ -145,7 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn the_document_keys_name_the_three_detector_sections() {
+    fn the_document_keys_name_the_four_detector_sections() {
         // The file format is pinned: one section per detector, and the
         // entries carry exactly the pattern types' serde shapes.
         let json = serde_json::to_string(&database()).expect("the database serializes");
@@ -160,12 +179,28 @@ mod tests {
         keys.sort();
         assert_eq!(
             keys,
-            ["callback_contracts", "control_flow", "string_signatures"]
+            [
+                "callback_contracts",
+                "control_flow",
+                "correlation_patterns",
+                "string_signatures"
+            ]
         );
         assert_eq!(value["control_flow"][0]["name"], "radix_sort");
         assert_eq!(value["control_flow"][0]["confidence"], 80);
         assert_eq!(value["string_signatures"][0]["case_insensitive"], true);
         assert_eq!(value["callback_contracts"][0]["param_count"], 2);
+        assert_eq!(value["correlation_patterns"][0]["name"], "library_sort");
+        assert_eq!(
+            value["correlation_patterns"][0]["body_patterns"][0],
+            r"\bmy_qsort\s*\("
+        );
+        assert_eq!(
+            value["correlation_patterns"][0]["partner_patterns"][0],
+            r"[*&][^;]*[^-](?:[<>]|==|!=)[^;]*[*&]"
+        );
+        assert_eq!(value["correlation_patterns"][0]["min_lines"], 4);
+        assert_eq!(value["correlation_patterns"][0]["confidence"], 75);
     }
 
     #[test]
@@ -203,15 +238,17 @@ mod tests {
         assert_eq!(db.control_flow[0].name, "crc_loop");
         assert!(db.string_signatures.is_empty());
         assert!(db.callback_contracts.is_empty());
+        assert!(db.correlation_patterns.is_empty());
     }
 
     #[test]
-    fn an_empty_document_reads_as_three_empty_sets() {
+    fn an_empty_document_reads_as_four_empty_sets() {
         let db: PatternDatabase =
             serde_json::from_str("{}").expect("an empty document is well formed");
         assert!(db.control_flow.is_empty());
         assert!(db.string_signatures.is_empty());
         assert!(db.callback_contracts.is_empty());
+        assert!(db.correlation_patterns.is_empty());
     }
 
     #[test]
@@ -252,6 +289,30 @@ mod tests {
 
         let error =
             PatternDatabase::load(&path).expect_err("a misspelled entry field fails the load");
+        assert!(
+            matches!(&error, AlgorithmError::PatternDatabase { path: p, .. } if p == &path),
+            "{error}"
+        );
+        assert!(
+            error.to_string().contains("patterns.json"),
+            "the error names the file: {error}"
+        );
+    }
+
+    #[test]
+    fn a_typo_in_a_correlation_entry_field_name_fails_the_load_naming_the_path() {
+        // The fourth section is as strict as the other three: a field
+        // the relationship type does not name is a malformed file.
+        let dir = TempDir::new().expect("the temp dir is created");
+        let path = dir.path().join("patterns.json");
+        std::fs::write(
+            &path,
+            r#"{"correlation_patterns": [{"name": "sort", "category": "sorting", "body_patternz": ["\\bqsort\\b"]}]}"#,
+        )
+        .expect("the document is written");
+
+        let error = PatternDatabase::load(&path)
+            .expect_err("a misspelled relationship field fails the load");
         assert!(
             matches!(&error, AlgorithmError::PatternDatabase { path: p, .. } if p == &path),
             "{error}"
