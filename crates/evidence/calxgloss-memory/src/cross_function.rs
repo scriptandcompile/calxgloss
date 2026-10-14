@@ -86,6 +86,13 @@ const LEAK_CONFIDENCE: u8 = 60;
 /// the leak disappears with the owner.
 const LEAK_SUGGESTION: &str = "Box<T>";
 
+/// The Rust pattern a kept pointer suggests: the callee stored the
+/// block somewhere the call survives — a global, a struct field — so
+/// more than one place holds it at once, which is shared ownership,
+/// not a move. `Arc<T>` stays the reference-count detector's
+/// spelling; thread-awareness is out of scope.
+const RC_SUGGESTION: &str = "Rc<T>";
+
 /// Cross-function lifecycle readings over the bodies one scan holds.
 ///
 /// The analyzer is stateless: every reading comes from the bodies it
@@ -126,7 +133,12 @@ impl CrossFunctionAnalyzer {
     /// decompiled) releases nothing this scan can see, so it forms no
     /// pair — but the hand-off itself is still an escape, and the
     /// transfer reads it. Where one open variable both pairs and
-    /// escapes, the pair wins: one moved block moves once.
+    /// escapes, the pair wins: one moved block moves once. Where the
+    /// callee reached by the pair or the transfer also *keeps* the
+    /// block — stores the parameter into a global or a struct field
+    /// — the suggestion upgrades from `Box<T>` to `Rc<T>` and the
+    /// store line joins the evidence: more than one place holds the
+    /// block, so the pattern is shared ownership, not a move.
     pub fn analyze(
         &self,
         functions: &[DecompiledFunction],
@@ -141,7 +153,7 @@ impl CrossFunctionAnalyzer {
         let mut findings = Vec::new();
         for func in functions {
             for allocation in tracker.open_allocations(func) {
-                let mut pair: Option<(&DecompiledFunction, String)> = None;
+                let mut pair: Option<(&DecompiledFunction, String, usize)> = None;
                 let mut escape: Option<Escape<'_>> = None;
                 for call in call_sites(&func.body, &CALL_SCAN) {
                     let Some(position) = call.args.iter().position(|arg| {
@@ -155,6 +167,7 @@ impl CrossFunctionAnalyzer {
                         escape = Some(Escape {
                             direction: TransferDirection::HandedToCallee,
                             partner: Some(call.callee),
+                            position: Some(position),
                             line: line_at(&func.body, call.offset),
                         });
                     }
@@ -163,7 +176,7 @@ impl CrossFunctionAnalyzer {
                     {
                         let callee = &functions[callee_index];
                         if let Some(release) = release_of_parameter(callee, position, tracker) {
-                            pair = Some((callee, release));
+                            pair = Some((callee, release, position));
                         }
                     }
                 }
@@ -173,39 +186,77 @@ impl CrossFunctionAnalyzer {
                     escape = Some(Escape {
                         direction: TransferDirection::ReturnedToCaller,
                         partner: None,
+                        position: None,
                         line: line_at(&func.body, offset),
                     });
                 }
-                if let Some((callee, release)) = pair {
+                if let Some((callee, release, position)) = pair {
+                    // A callee that keeps the block — stores the
+                    // parameter into a global or a field — shares it
+                    // past the release, so the pattern is shared
+                    // ownership, not a move.
+                    let kept = keep_site(callee, position);
+                    let mut evidence = format!(
+                        "{} {} {}",
+                        allocation.line,
+                        // The releasing call is the first hand-off
+                        // to the partner that named the variable.
+                        line_at(
+                            &func.body,
+                            first_handoff(&func.body, &allocation.variable, callee)
+                        ),
+                        release
+                    );
+                    if let Some(keep) = &kept {
+                        evidence.push(' ');
+                        evidence.push_str(keep);
+                    }
                     findings.push(MemoryFinding::CrossFunction(CrossFunctionLifecycle {
                         function: func.name.clone(),
                         partner: callee.name.clone(),
                         variable: allocation.variable.clone(),
                         allocation_type: allocation.allocation_type,
-                        suggestion: CROSS_SUGGESTION.to_string(),
+                        suggestion: if kept.is_some() {
+                            RC_SUGGESTION
+                        } else {
+                            CROSS_SUGGESTION
+                        }
+                        .to_string(),
                         confidence: CROSS_CONFIDENCE.into(),
-                        evidence: format!(
-                            "{} {} {}",
-                            allocation.line,
-                            // The releasing call is the first hand-off
-                            // to the partner that named the variable.
-                            line_at(
-                                &func.body,
-                                first_handoff(&func.body, &allocation.variable, callee)
-                            ),
-                            release
-                        ),
+                        evidence,
                     }));
                 } else if let Some(escape) = escape {
+                    // The same keep reading upgrades a transfer to a
+                    // scanned callee: the block was handed over *and*
+                    // stored, so more than one place holds it.
+                    let kept = escape
+                        .position
+                        .zip(escape.partner)
+                        .and_then(|(position, name)| {
+                            scanned
+                                .get(name)
+                                .map(|&index| (position, &functions[index]))
+                        })
+                        .and_then(|(position, callee)| keep_site(callee, position));
+                    let mut evidence = format!("{} {}", allocation.line, escape.line);
+                    if let Some(keep) = &kept {
+                        evidence.push(' ');
+                        evidence.push_str(keep);
+                    }
                     findings.push(MemoryFinding::Ownership(OwnershipTransfer {
                         function: func.name.clone(),
                         direction: escape.direction,
                         partner: escape.partner.map(str::to_string),
                         variable: allocation.variable.clone(),
                         allocation_type: allocation.allocation_type,
-                        suggestion: TRANSFER_SUGGESTION.to_string(),
+                        suggestion: if kept.is_some() {
+                            RC_SUGGESTION
+                        } else {
+                            TRANSFER_SUGGESTION
+                        }
+                        .to_string(),
                         confidence: TRANSFER_CONFIDENCE.into(),
-                        evidence: format!("{} {}", allocation.line, escape.line),
+                        evidence,
                     }));
                 } else {
                     findings.push(MemoryFinding::Leak(ResourceLeak {
@@ -246,11 +297,111 @@ impl CrossFunctionAnalyzer {
 }
 
 /// The escape an open allocation took: the direction it crossed the
-/// boundary and the line that shows it.
+/// boundary, the callee it reached and the argument position it
+/// arrived at (a return names neither), and the line that shows it.
 struct Escape<'a> {
     direction: TransferDirection,
     partner: Option<&'a str>,
+    position: Option<usize>,
     line: String,
+}
+
+/// The line in `callee`'s body where the parameter declared at
+/// `position` is kept — stored somewhere the call survives — or
+/// `None` when the body keeps it nowhere.
+///
+/// The keep is an assignment whose right side, seen through any
+/// cast, is the parameter whole, and whose left side names a place
+/// outside the callee's own frame: a struct field (`obj.field =
+/// param_1;`, `this->ptr = param_1;`) or a plain identifier the
+/// decompiler did not name as one of its own locals — Ghidra names
+/// locals `param_N`, `local_N`, and the `*Var<N>` families, so any
+/// other plain name is a program symbol the block outlives the call
+/// in. A store through a bare dereference names no place the scan
+/// can tell from a stack slot, so it keeps nothing.
+fn keep_site(callee: &DecompiledFunction, position: usize) -> Option<String> {
+    let parameter = callee.parameter_names().into_iter().nth(position)?;
+    let body = &callee.body;
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                i = skip_string(bytes, i + 1);
+                continue;
+            }
+            b'=' => {}
+            _ => {
+                i += 1;
+                continue;
+            }
+        }
+        // A comparison (`==`) or a compound assignment (`+=` and
+        // friends) stores nothing.
+        if bytes.get(i + 1).is_some_and(|b| *b == b'=')
+            || i > 0
+                && matches!(
+                    bytes[i - 1],
+                    b'=' | b'!'
+                        | b'<'
+                        | b'>'
+                        | b'+'
+                        | b'-'
+                        | b'*'
+                        | b'/'
+                        | b'%'
+                        | b'&'
+                        | b'|'
+                        | b'^'
+                )
+        {
+            i += 1;
+            continue;
+        }
+        let line_start = body[..i].rfind('\n').map(|start| start + 1).unwrap_or(0);
+        let left = body[line_start..i].trim();
+        let Some(right_end) = body[i + 1..].find(';').map(|rest| i + 1 + rest) else {
+            i += 1;
+            continue;
+        };
+        let right = strip_casts(&body[i + 1..right_end], crate::allocator::is_type_word);
+        if crate::allocator::plain_variable(&right) != Some(parameter.as_str()) {
+            i += 1;
+            continue;
+        }
+        if keeps_place(left) {
+            return Some(line_at(body, i));
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Whether an assignment's left side names a place outside the
+/// callee's own frame: a field access, or a plain identifier the
+/// decompiler did not name as one of its own locals.
+fn keeps_place(left: &str) -> bool {
+    if left.is_empty() {
+        return false;
+    }
+    if left.contains('.') || left.contains("->") {
+        return true;
+    }
+    crate::allocator::plain_variable(left).is_some_and(|name| !is_decompiler_local(name))
+}
+
+/// Whether `name` is one of the decompiler's own local spellings: a
+/// parameter, a stack slot, or one of the typed-variable families
+/// (`iVar1`, `uVar2`, `pcVar3`, …) — a `Var` followed by digits and
+/// nothing else. Anything else a body assigns to is a program
+/// symbol, which is what makes it a global.
+fn is_decompiler_local(name: &str) -> bool {
+    name.starts_with("param_")
+        || name.starts_with("local_")
+        || name.find("Var").is_some_and(|at| {
+            let suffix = &name[at + 3..];
+            !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
+        })
 }
 
 /// Whether `variable` leaves this body: a plain argument (seen
@@ -990,5 +1141,174 @@ mod tests {
                 ("FUN_18003ab00", "hFile", "CreateFileW".to_string()),
             ]
         );
+    }
+
+    // ------------------------------------------------------------
+    // Kept pointers: the Rc upgrade
+    // ------------------------------------------------------------
+
+    /// The suggestion of the first finding, whatever kind it is.
+    fn suggestion(findings: &[MemoryFinding]) -> String {
+        findings[0].suggestion().to_string()
+    }
+
+    #[test]
+    fn a_callee_that_keeps_the_parameter_upgrades_the_pair_to_rc() {
+        // The callee frees the block *and* stores the parameter into
+        // a global: the stored copy outlives the release, so more
+        // than one place holds the block — shared ownership.
+        let program = vec![
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  pvVar1 = malloc(0x20);\n  FUN_18003e750(pvVar1);\n",
+            ),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void *param_1)",
+                "  global_ptr = param_1;\n  free(param_1);\n",
+            ),
+        ];
+        let findings = analyze(&program);
+        assert_eq!(suggestion(&findings), "Rc<T>");
+        assert_eq!(findings[0].confidence().value(), 70);
+        // The evidence names the kept relationship: the store line.
+        assert!(findings[0].evidence().contains("global_ptr = param_1;"));
+    }
+
+    #[test]
+    fn a_callee_that_only_reads_the_parameter_keeps_the_plain_reading() {
+        let program = vec![
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  pvVar1 = malloc(0x20);\n  FUN_18003e750(pvVar1);\n",
+            ),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void *param_1)",
+                "  use(param_1);\n  free(param_1);\n",
+            ),
+        ];
+        assert_eq!(suggestion(&analyze(&program)), "Box<T>");
+    }
+
+    #[test]
+    fn a_field_store_keeps_the_parameter_too() {
+        let program = vec![
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  pvVar1 = malloc(0x20);\n  FUN_18003e750(pvVar1);\n",
+            ),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void *param_1)",
+                "  this->ptr = param_1;\n  free(param_1);\n",
+            ),
+        ];
+        assert_eq!(suggestion(&analyze(&program)), "Rc<T>");
+    }
+
+    #[test]
+    fn a_store_into_the_callee_s_own_frame_keeps_nothing() {
+        // A stack slot or a typed local is gone when the call
+        // returns — the block is not kept anywhere.
+        let program = vec![
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  pvVar1 = malloc(0x20);\n  FUN_18003e750(pvVar1);\n",
+            ),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void *param_1)",
+                "  local_8 = param_1;\n  iVar1 = 0;\n  free(param_1);\n",
+            ),
+        ];
+        assert_eq!(suggestion(&analyze(&program)), "Box<T>");
+    }
+
+    #[test]
+    fn a_keep_upgrades_a_transfer_to_a_scanned_callee() {
+        // No release, but the callee stores the parameter into a
+        // global: the block was handed over *and* kept, so the
+        // transfer reads as shared ownership at its own confidence.
+        let program = vec![
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  pvVar1 = malloc(0x20);\n  FUN_18003e750(pvVar1);\n",
+            ),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void *param_1)",
+                "  global_ptr = param_1;\n  use(param_1);\n",
+            ),
+        ];
+        let findings = analyze(&program);
+        assert_eq!(transfers(&findings).len(), 1);
+        assert_eq!(suggestion(&findings), "Rc<T>");
+        assert_eq!(findings[0].confidence().value(), 65);
+        assert!(findings[0].evidence().contains("global_ptr = param_1;"));
+    }
+
+    #[test]
+    fn a_keep_of_a_handed_over_or_returned_pointer_upgrades_nothing_else() {
+        // A return has no callee body to read, and a hand-off to a
+        // callee outside the scanned set has no body this scan holds
+        // — neither can be shown to keep, so both keep the plain
+        // transfer reading.
+        let program = vec![
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  pvVar1 = malloc(0x20);\n  return pvVar1;\n",
+            ),
+            function(
+                "FUN_18003abcd",
+                "undefined FUN_18003abcd(void)",
+                "  pvVar1 = malloc(0x20);\n  external_store(pvVar1);\n",
+            ),
+        ];
+        let findings = analyze(&program);
+        assert_eq!(transfers(&findings).len(), 2);
+        assert!(findings.iter().all(|f| f.suggestion() == "Box<T>"));
+    }
+
+    #[test]
+    fn a_keep_through_a_cast_is_seen_through() {
+        let program = vec![
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  pvVar1 = malloc(0x20);\n  FUN_18003e750(pvVar1);\n",
+            ),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void *param_1)",
+                "  global_ptr = (void *)param_1;\n  free(param_1);\n",
+            ),
+        ];
+        assert_eq!(suggestion(&analyze(&program)), "Rc<T>");
+    }
+
+    #[test]
+    fn a_store_of_something_else_keeps_nothing() {
+        // An interior pointer and a different parameter are not the
+        // block being kept.
+        let program = vec![
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  pvVar1 = malloc(0x20);\n  FUN_18003e750(pvVar1);\n",
+            ),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void *param_1, void *param_2)",
+                "  global_ptr = param_1 + 1;\n  other_ptr = param_2;\n  free(param_1);\n",
+            ),
+        ];
+        assert_eq!(suggestion(&analyze(&program)), "Box<T>");
     }
 }

@@ -809,6 +809,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_scan_upgrades_a_pair_whose_callee_keeps_the_block_to_rc() {
+        // End-to-end through the seam: the callee frees the block and
+        // stores the parameter into a global, so the allocating
+        // function's reading is shared ownership, not a move.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  pvVar1 = malloc(0x20);\n  FUN_18003e750(pvVar1);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void *param_1)",
+                "  global_ptr = param_1;\n  free(param_1);\n",
+            ),
+        );
+        let result = scan(program).await;
+        let findings: Vec<&MemoryFinding> = result.for_function("FUN_18003ab00").collect();
+        assert_eq!(findings.len(), 1);
+        let MemoryFinding::CrossFunction(record) = findings[0] else {
+            unreachable!("the releasing callee pairs");
+        };
+        assert_eq!(record.suggestion, "Rc<T>");
+        assert_eq!(record.confidence.value(), 70);
+        assert!(record.evidence.contains("global_ptr = param_1;"));
+    }
+
+    #[tokio::test]
     async fn cross_function_findings_append_after_the_per_function_findings() {
         // One function carries an in-body pair and an open allocation
         // handed to a releasing callee: the pairing finding rides the
