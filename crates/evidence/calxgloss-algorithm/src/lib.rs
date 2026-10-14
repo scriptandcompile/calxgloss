@@ -34,12 +34,18 @@
 //!   matching through the call graph.
 //! - [`engine`] - Scan orchestration: `AlgorithmEngine` decompiles each
 //!   function of an open program exactly once, reads it with all three
-//!   detectors, and assembles their hints into one
-//!   `AlgorithmRecognitionResult` with its scan provenance.
-//! - [`confidence`] - Shared confidence model: score composition per
-//!   detection method, configurable thresholds, and highest-confidence-wins
-//!   resolution when several detectors hint at different algorithms for
-//!   one function.
+//!   detectors, resolves competing claims for one algorithm down to
+//!   their strongest reading, and assembles the survivors into one
+//!   `AlgorithmRecognitionResult` with its scan provenance;
+//!   `with_min_confidence` sets a floor below which hints never reach
+//!   the persisted result.
+//! - [`confidence`] - Shared confidence model: the standard score each
+//!   detection method pays out (control flow 60, string body match 60 /
+//!   listing-only match 30, callback contract 75), and
+//!   highest-confidence-wins resolution when several detectors claim
+//!   the same algorithm for one function — ties keep the claim the scan
+//!   surfaced first, and the survivor stands where that algorithm
+//!   first appeared.
 //! - [`persist`] - JSON persistence: `AlgorithmPersistor` saves and loads
 //!   the per-binary recognition results under `re/analysis/algorithm/`.
 //! - [`error`] - [`AlgorithmError`] and the crate-wide [`Result`] alias.

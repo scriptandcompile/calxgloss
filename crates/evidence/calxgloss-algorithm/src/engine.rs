@@ -11,17 +11,23 @@
 //! literals exactly once and reads them with every function — the way
 //! the typeinfer detectors share one decompile. The scan is then one
 //! pass over the function listing, keeping the persisted hint list in a
-//! stable, diffable order. The callback detector is the only reader of
-//! the call graph, and it runs only for functions whose arity a
-//! configured contract could fit: a function of the wrong arity fits no
-//! contract however it is used, so fetching its callers would be a round
-//! trip guaranteed to be refused.
+//! stable, diffable order. Where several detectors claim one algorithm
+//! for one function, the scan reports it once with the strongest
+//! evidence — the [`confidence`](crate::confidence) module's resolution
+//! — and a configured minimum-confidence floor
+//! ([`with_min_confidence`](AlgorithmEngine::with_min_confidence))
+//! keeps weak claims out of the persisted result. The callback detector
+//! is the only reader of the call graph, and it runs only for functions
+//! whose arity a configured contract could fit: a function of the wrong
+//! arity fits no contract however it is used, so fetching its callers
+//! would be a round trip guaranteed to be refused.
 
 use crate::callback_db::CallbackPatternDb;
 use crate::cfg_patterns::CfgPatternMatcher;
+use crate::confidence::resolve_conflicts;
 use crate::error::Result;
 use crate::string_hints::StringHintEngine;
-use crate::types::{AlgorithmRecognitionResult, ScanMetadata};
+use crate::types::{AlgorithmHint, AlgorithmRecognitionResult, ScanMetadata};
 use calxgloss_ghidra::GhidraClient;
 use std::time::Instant;
 use tracing::{info, warn};
@@ -44,13 +50,17 @@ pub use calxgloss_ghidra::ScanSource;
 /// starts configured with its standard signature set —
 /// [`with_matcher`](Self::with_matcher), [`with_string_engine`](Self::with_string_engine),
 /// and [`with_callback_db`](Self::with_callback_db) swap a detector's set
-/// whole — so one instance of each serves the whole scan.
+/// whole — so one instance of each serves the whole scan. A scan keeps
+/// every hint it resolves by default;
+/// [`with_min_confidence`](Self::with_min_confidence) sets a floor
+/// below which hints never reach the persisted result.
 #[derive(Debug, Clone)]
 pub struct AlgorithmEngine<S = GhidraClient> {
     source: S,
     cfg: CfgPatternMatcher,
     strings: StringHintEngine,
     callbacks: CallbackPatternDb,
+    min_confidence: u8,
 }
 
 impl AlgorithmEngine<GhidraClient> {
@@ -62,6 +72,7 @@ impl AlgorithmEngine<GhidraClient> {
             cfg: CfgPatternMatcher::with_default_patterns(),
             strings: StringHintEngine::with_default_signatures(),
             callbacks: CallbackPatternDb::with_default_patterns(),
+            min_confidence: 0,
         }
     }
 }
@@ -75,6 +86,7 @@ impl<S> AlgorithmEngine<S> {
             cfg: CfgPatternMatcher::with_default_patterns(),
             strings: StringHintEngine::with_default_signatures(),
             callbacks: CallbackPatternDb::with_default_patterns(),
+            min_confidence: 0,
         }
     }
 
@@ -97,6 +109,18 @@ impl<S> AlgorithmEngine<S> {
         self
     }
 
+    /// Persist only hints scoring `threshold` or higher.
+    ///
+    /// Mirrors the typesdb engine's filter: the floor drops hints below
+    /// `threshold` and keeps those at or above it, and it applies after
+    /// conflict resolution — to the surviving claim — so a reading
+    /// another detector strengthened clears a threshold its first claim
+    /// would have missed.
+    pub fn with_min_confidence(mut self, threshold: u8) -> Self {
+        self.min_confidence = threshold;
+        self
+    }
+
     /// Recognize algorithms across `binary`, decompiling each function
     /// exactly once and reading it with all three detectors.
     ///
@@ -106,6 +130,15 @@ impl<S> AlgorithmEngine<S> {
     /// function the control flow matches, then the string-guided hints,
     /// then the callback matches — so two scans of the same program diff
     /// cleanly.
+    ///
+    /// Where several detectors claim the same algorithm for one function,
+    /// the scan reports it once with its strongest evidence: a tie keeps
+    /// the claim the scan surfaced first, and the survivor stands where
+    /// that algorithm first appeared. Different algorithms claimed for
+    /// one function all stand. A configured minimum-confidence floor
+    /// ([`with_min_confidence`](Self::with_min_confidence)) then drops
+    /// hints below the threshold — after resolution, so the floor judges
+    /// each algorithm's surviving strongest claim.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad entry
     /// point) is skipped with a warning, and a function whose callers
@@ -202,6 +235,15 @@ impl<S> AlgorithmEngine<S> {
 
         let mut metadata = ScanMetadata::new(binary);
         metadata.duration_secs = started.elapsed().as_secs();
+        // Competing claims for one (function, algorithm) resolve to
+        // their strongest reading before the floor applies, so the
+        // threshold judges each algorithm's best claim rather than
+        // every duplicate, and the survivor keeps the position where
+        // that algorithm first appeared in scan order.
+        let hints: Vec<AlgorithmHint> = resolve_conflicts(hints)
+            .into_iter()
+            .filter(|hint| hint.confidence >= self.min_confidence)
+            .collect();
         info!(
             binary = %metadata.binary,
             functions = functions.len(),
@@ -221,7 +263,10 @@ impl<S> AlgorithmEngine<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{AlgorithmCategory, AlgorithmHint, Confidence, DetectionMethod};
+    use crate::callback_db::CallbackPattern;
+    use crate::types::{
+        AlgorithmCategory, AlgorithmHint, AlgorithmPattern, Confidence, DetectionMethod,
+    };
     use calxgloss_ghidra::{
         DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
         Result, StringLiteral, StructLayout, Symbol, Xref,
@@ -234,6 +279,13 @@ mod tests {
         FunctionSummary {
             name: name.to_string(),
             address,
+        }
+    }
+
+    fn literal(address: u64, value: &str) -> StringLiteral {
+        StringLiteral {
+            address,
+            value: value.to_string(),
         }
     }
 
@@ -490,10 +542,7 @@ mod tests {
                 &compare_body(),
             ),
         );
-        program.literals = vec![StringLiteral {
-            address: 0x1801_29350,
-            value: "CRC32 verification failed".into(),
-        }];
+        program.literals = vec![literal(0x1801_29350, "CRC32 verification failed")];
         program.callers.insert(AB00, vec!["FUN_180001900".into()]);
         program.callers.insert(A12A0, vec!["qsort".into()]);
         program
@@ -792,5 +841,154 @@ mod tests {
             !sort_function_methods.contains(&DetectionMethod::CfgPattern),
             "the custom set carries no sort signature"
         );
+    }
+
+    #[tokio::test]
+    async fn one_algorithm_claimed_by_two_detectors_reports_once_with_the_stronger_evidence() {
+        // A callback contract naming `crc` reaches the sort function
+        // through its caller at 75, while the program-wide listing
+        // claims `crc` there at 30: the scan reports crc once, carrying
+        // the callback's stronger reading.
+        let db = CallbackPatternDb::with_patterns([CallbackPattern::new(
+            "crc",
+            AlgorithmCategory::Checksum,
+            ["FUN_180001900"],
+            2,
+        )]);
+        let result = AlgorithmEngine::with_source(program())
+            .with_callback_db(db)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        let crc: Vec<&AlgorithmHint> = result
+            .for_function("FUN_18003ab00")
+            .filter(|hint| hint.algorithm == "crc")
+            .collect();
+        assert_eq!(crc.len(), 1, "one claim per algorithm per function");
+        assert_eq!(crc[0].method, DetectionMethod::CallbackPattern);
+        assert_eq!(crc[0].confidence, Confidence::new(75));
+        assert_eq!(crc[0].evidence, "FUN_180001900");
+    }
+
+    #[tokio::test]
+    async fn a_tie_between_detectors_keeps_the_claim_the_scan_surfaced_first() {
+        // A control flow signature and the string set's body match both
+        // read the CRC loop as `crc` at 60; the scan surfaces the
+        // control flow match first, so that claim stands.
+        let matcher = CfgPatternMatcher::with_patterns([AlgorithmPattern::new(
+            "crc",
+            AlgorithmCategory::Checksum,
+            ["crc_table"],
+        )]);
+        let result = AlgorithmEngine::with_source(program())
+            .with_matcher(matcher)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        let crc: Vec<&AlgorithmHint> = result
+            .for_function("FUN_18003e750")
+            .filter(|hint| hint.algorithm == "crc")
+            .collect();
+        assert_eq!(crc.len(), 1);
+        assert_eq!(crc[0].method, DetectionMethod::CfgPattern);
+        assert_eq!(crc[0].evidence, "uVar1 = (uVar1 >> 8) ^ crc_table[uVar1];");
+    }
+
+    #[tokio::test]
+    async fn the_surviving_claim_stands_where_the_algorithm_first_appeared() {
+        // For the sort function the scan surfaces the listing's crc
+        // claim (30) before the callback contract's stronger crc claim
+        // (75), with the http listing claim surfacing in between: the
+        // surviving crc stands at the position crc first appeared, not
+        // where its stronger claim arrived — and the different
+        // algorithms beside it all coexist.
+        let mut program = program();
+        program
+            .literals
+            .push(literal(0x1801_29400, "HTTP/1.1 200 OK"));
+        let db = CallbackPatternDb::with_patterns([CallbackPattern::new(
+            "crc",
+            AlgorithmCategory::Checksum,
+            ["FUN_180001900"],
+            2,
+        )]);
+        let result = AlgorithmEngine::with_source(program)
+            .with_callback_db(db)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        let claims: Vec<(&str, DetectionMethod)> = result
+            .for_function("FUN_18003ab00")
+            .map(|hint| (hint.algorithm.as_str(), hint.method))
+            .collect();
+        assert_eq!(
+            claims,
+            [
+                ("comparison_sort", DetectionMethod::CfgPattern),
+                ("crc", DetectionMethod::CallbackPattern),
+                ("http", DetectionMethod::StringHint),
+            ],
+            "the crc winner stands where crc first appeared, and different algorithms coexist"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_minimum_confidence_filter_drops_hints_below_the_threshold() {
+        // The listing-only crc claims (30) fall below a floor of 40
+        // while body matches (60) and the callback contract (75) stand.
+        // The floor applies after resolution: the sort function's crc
+        // claim was first surfaced at 30 but the contract strengthens
+        // it to 75, so it clears a floor the raw listing claim could
+        // not.
+        let db = CallbackPatternDb::with_patterns([CallbackPattern::new(
+            "crc",
+            AlgorithmCategory::Checksum,
+            ["FUN_180001900"],
+            2,
+        )]);
+        let result = AlgorithmEngine::with_source(program())
+            .with_callback_db(db)
+            .with_min_confidence(40)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        let sort: Vec<(&str, u8)> = result
+            .for_function("FUN_18003ab00")
+            .map(|hint| (hint.algorithm.as_str(), hint.confidence.value()))
+            .collect();
+        assert_eq!(sort, [("comparison_sort", 60), ("crc", 75)]);
+        assert_eq!(
+            result
+                .for_function("FUN_18003e750")
+                .next()
+                .expect("the body match stands")
+                .confidence
+                .value(),
+            60
+        );
+        assert!(
+            result.for_function("FUN_1800412a0").next().is_none(),
+            "the compare callback's only claim was the listing-only crc at 30"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_threshold_keeps_hints_at_exactly_its_value() {
+        // A floor of 30 keeps the listing-only claims sitting exactly
+        // on it — the filter drops below the threshold, not at it.
+        let result = AlgorithmEngine::with_source(program())
+            .with_min_confidence(30)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+        let listing_claim = result
+            .for_function("FUN_18003ab00")
+            .find(|hint| hint.algorithm == "crc")
+            .expect("the listing-only crc claim survives at exactly the floor");
+        assert_eq!(listing_claim.confidence, Confidence::new(30));
     }
 }

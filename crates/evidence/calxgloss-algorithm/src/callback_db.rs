@@ -42,26 +42,12 @@
 //! [`AlgorithmHint`] naming the role with the contract whose type
 //! hints the fit carries over to the function's signature.
 
+use crate::confidence::CALLBACK_CONFIDENCE;
 use crate::types::{AlgorithmCategory, AlgorithmHint, DetectionMethod};
 use calxgloss_ghidra::DecompiledFunction;
 use calxgloss_types::Confidence;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-
-// ============================================================
-// Detection confidence
-// ============================================================
-
-/// Confidence of a callback detection: two independent signals agree —
-/// the call graph shows one of the contract's hosts reaching the
-/// function, and the function's own signature fits the contract's
-/// arity and body shapes. A call-graph edge from a host like `qsort`
-/// is close to proof that the function is the callback that host was
-/// handed, but the reading still rests on regexes over decompiled
-/// pseudo-C rather than a resolved indirect-call target, so it stands
-/// above a lone control flow or string match and below a direct
-/// vtable dispatch.
-const CALLBACK_CONFIDENCE: u8 = 75;
 
 // ============================================================
 // Type hints

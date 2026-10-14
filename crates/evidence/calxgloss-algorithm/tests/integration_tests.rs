@@ -5,7 +5,9 @@
 //!
 //! - **Scan to disk** — [`AlgorithmEngine`] scans a canned program, the
 //!   [`AlgorithmPersistor`] files the result in the workspace layout, and
-//!   loading it back yields the same result the scan returned.
+//!   loading it back yields the same result the scan returned — with
+//!   competing claims resolved and the confidence floor applied before
+//!   anything is persisted.
 //! - **Consumption** — the loaded result answers the lookups a translation
 //!   pipeline makes (the hints made for one function) and its records
 //!   render into [`AlgorithmInfo`] for the prompts.
@@ -17,6 +19,7 @@
 
 use std::collections::HashMap;
 
+use calxgloss_algorithm::callback_db::{CallbackPattern, CallbackPatternDb};
 use calxgloss_algorithm::engine::{AlgorithmEngine, ScanSource};
 use calxgloss_algorithm::persist::AlgorithmPersistor;
 use calxgloss_algorithm::types::{AlgorithmCategory, DetectionMethod};
@@ -262,6 +265,50 @@ async fn the_persisted_document_keeps_every_hint_in_scan_order() {
             ("FUN_1800412a0", DetectionMethod::StringHint),
             ("FUN_1800412a0", DetectionMethod::CallbackPattern),
         ]
+    );
+}
+
+#[tokio::test]
+async fn resolved_and_floored_hints_are_what_reaches_the_disk() {
+    // A callback contract naming `crc` competes with the listing-only
+    // crc claim on the sort function, and a floor of 40 drops the
+    // weaker claims: the persisted document carries exactly the
+    // resolved survivors — the stronger crc beside the sort shape, the
+    // body match on the CRC loop, and nothing on the compare callback
+    // whose only claim sat below the floor.
+    let workspace = TempDir::new().unwrap();
+    let result = AlgorithmEngine::with_source(program())
+        .with_callback_db(CallbackPatternDb::with_patterns([CallbackPattern::new(
+            "crc",
+            AlgorithmCategory::Checksum,
+            ["FUN_180001900"],
+            2,
+        )]))
+        .with_min_confidence(40)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = AlgorithmPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let order: Vec<(&str, &str, DetectionMethod)> = loaded
+        .hints
+        .iter()
+        .map(|hint| (hint.function.as_str(), hint.algorithm.as_str(), hint.method))
+        .collect();
+    assert_eq!(
+        order,
+        [
+            (
+                "FUN_18003ab00",
+                "comparison_sort",
+                DetectionMethod::CfgPattern
+            ),
+            ("FUN_18003ab00", "crc", DetectionMethod::CallbackPattern),
+            ("FUN_18003e750", "crc", DetectionMethod::StringHint),
+        ],
+        "one resolved claim per algorithm, floor survivors only, in scan order"
     );
 }
 

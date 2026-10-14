@@ -26,30 +26,11 @@
 //! listing-only match below a match the function's own body carries.
 
 use crate::cfg_patterns::line_at;
+use crate::confidence::{BODY_CONFIDENCE, LISTING_CONFIDENCE};
 use crate::types::{AlgorithmCategory, AlgorithmHint, DetectionMethod};
 use calxgloss_ghidra::{DecompiledFunction, StringLiteral};
 use calxgloss_types::Confidence;
 use serde::{Deserialize, Serialize};
-
-// ============================================================
-// Hint confidence
-// ============================================================
-
-/// Confidence of a body match: the function's own decompiled text
-/// carries the marker, so the algorithm's name sits right where the
-/// function's behavior is spelled out — but a substring hit is
-/// approximate, a `CRC` in a format string evidences use rather than
-/// implementation, so the hint sits beside a control flow match as a
-/// hypothesis for the translation prompt, not a fact applied to the
-/// program.
-const BODY_CONFIDENCE: u8 = 60;
-
-/// Confidence of a listing-only match: the marker appears somewhere in
-/// the binary's string listing but not in this function's body, so the
-/// evidence ties the program to the algorithm rather than the function
-/// to its implementation — a weak lead worth carrying, not one to
-/// weigh beside a body match or a control flow shape.
-const LISTING_CONFIDENCE: u8 = 30;
 
 // ============================================================
 // String signatures

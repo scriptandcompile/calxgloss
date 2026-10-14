@@ -222,14 +222,17 @@ impl From<&AlgorithmHint> for calxgloss_prompts::AlgorithmInfo {
 /// The recognition result for one binary — the document persisted to
 /// `re/analysis/algorithm/{dll}.json`.
 ///
-/// The hints are the three detectors' outputs in scan order: function by
-/// function, and within one function the control flow matches, then the
-/// string-guided hints, then the callback matches. Each detector already
-/// reports one algorithm once per function, and detectors naming
-/// different algorithms for one function all stand — a sort shape beside
-/// a qsort compare contract is two readings of one function that a
-/// translation prompt weighs together. The stable order means two scans
-/// of the same program diff cleanly.
+/// The hints are the three detectors' outputs, resolved and in scan
+/// order: function by function, and within one function the control
+/// flow matches, then the string-guided hints, then the callback
+/// matches. Each detector already reports one algorithm once per
+/// function, and where several detectors claim the same algorithm for
+/// one function the scan reports it once with its strongest reading —
+/// the survivor standing where that algorithm first appeared. Detectors
+/// naming different algorithms for one function all stand — a sort
+/// shape beside a qsort compare contract is two readings of one
+/// function that a translation prompt weighs together. The stable order
+/// means two scans of the same program diff cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AlgorithmRecognitionResult {
     /// Provenance of the scan that produced these hints.

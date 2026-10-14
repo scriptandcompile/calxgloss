@@ -16,21 +16,11 @@
 //!
 //! [`AlgorithmPattern`]: crate::types::AlgorithmPattern
 
+use crate::confidence::CFG_CONFIDENCE;
 use crate::types::{AlgorithmCategory, AlgorithmHint, AlgorithmPattern, DetectionMethod};
 use calxgloss_ghidra::DecompiledFunction;
 use calxgloss_types::Confidence;
 use regex::Regex;
-
-// ============================================================
-// Match confidence
-// ============================================================
-
-/// Confidence of a control flow match: the body carries every shape the
-/// signature requires and clears its line floor, which is real
-/// evidence, but regexes over decompiled pseudo-C approximate the
-/// algorithm rather than prove it — the hint stays a hypothesis for
-/// the translation prompt, not a fact applied to the program.
-const CFG_CONFIDENCE: u8 = 60;
 
 // ============================================================
 // Matcher
