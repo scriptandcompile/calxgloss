@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into ten modules:
+//! The crate is organized into eleven modules:
 //!
 //! - [`types`] - Core data types: `InferredParamType`, `InferenceMethod`,
 //!   `InferenceScope` for per-parameter inference records; `InferredLocalType`
@@ -37,6 +37,10 @@
 //!   carries each function's surviving parameter readings to the arguments
 //!   at that callee's call sites — and to the caller's own parameter when
 //!   the argument is one, so types climb the call chain.
+//! - [`local_chain`] - Local-variable inference via assignment chains:
+//!   `LocalChainDetector` types a stack slot assigned a parameter with a
+//!   surviving reading, a known-signature call's result, or an
+//!   already-typed local — one hop per chain — as the local record kind.
 //! - [`reading`] - Detector-internal accumulator: the single `Reading`
 //!   shape every detector feeds, with highest-confidence-wins resolution
 //!   and shared record assembly.
@@ -52,6 +56,7 @@ pub mod cross_function;
 pub mod engine;
 pub mod error;
 pub mod known_type;
+pub mod local_chain;
 pub mod param_size;
 pub mod persist;
 pub(crate) mod reading;

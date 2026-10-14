@@ -290,6 +290,54 @@ async fn caller_propagated_parameter_records_survive_the_persistence_round_trip(
 // ------------------------------------------------------------
 
 #[tokio::test]
+async fn assignment_chain_local_records_survive_the_persistence_round_trip() {
+    // A local typed from its assignment chain must reach disk and read
+    // back like any other record, so the pipeline's type-info
+    // extraction names the stack slot with its type after a plain load.
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("FUN_18003ab00")];
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(undefined8 param_1)",
+            "  strlen(param_1);\n\
+             \x20 local_8 = param_1;\n",
+        ),
+    );
+
+    let workspace = TempDir::new().unwrap();
+    let result = TypeInferEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = TypeInferPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let locals: Vec<&InferredType> = loaded
+        .for_function("FUN_18003ab00")
+        .filter(|inference| matches!(inference, InferredType::Local(_)))
+        .collect();
+    assert_eq!(locals.len(), 1, "the local record round-trips");
+    let InferredType::Local(record) = locals[0] else {
+        unreachable!("the assignment-chain pass emits local records");
+    };
+    assert_eq!(record.variable_name, "local_8");
+    assert_eq!(record.inferred_type, "char *");
+    assert_eq!(record.method, InferenceMethod::AssignmentChain);
+    assert_eq!(record.scope, InferenceScope::Function);
+
+    // And renders into the prompt type-info section under the name.
+    let rendered = TypeInfo::from(locals[0]);
+    assert_eq!(rendered.name, "local_8");
+    assert_eq!(
+        rendered.description,
+        "char * (via assignment_chain, confidence 60)"
+    );
+}
+
+#[tokio::test]
 async fn a_loaded_result_answers_the_pipeline_lookups() {
     let workspace = TempDir::new().unwrap();
     let result = TypeInferEngine::with_source(program())

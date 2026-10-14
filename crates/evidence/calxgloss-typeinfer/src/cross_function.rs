@@ -302,7 +302,7 @@ fn string_literal_type(arg: &str) -> Option<&'static str> {
 
 /// The callee name of a plain `name(...)` argument, or nothing when the
 /// argument is not shaped like a direct call.
-fn call_callee(arg: &str) -> Option<&str> {
+pub(crate) fn call_callee(arg: &str) -> Option<&str> {
     let open = arg.find('(')?;
     let name = arg[..open].trim();
     is_bare_identifier(name).then_some(name)
@@ -312,7 +312,7 @@ fn call_callee(arg: &str) -> Option<&str> {
 /// this pass reads. A literal (`"name"`, `0x10`), a cast (`(char *)x`),
 /// an indexed or member operand (`a[0]`, `a.b`), or a nested call all
 /// carry punctuation and name no single value to type.
-fn is_bare_identifier(text: &str) -> bool {
+pub(crate) fn is_bare_identifier(text: &str) -> bool {
     let mut bytes = text.bytes();
     matches!(bytes.next(), Some(b) if b.is_ascii_alphabetic() || b == b'_')
         && text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')

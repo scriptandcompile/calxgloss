@@ -58,6 +58,10 @@ pub enum InferenceMethod {
     /// the argument sitting at that callee's call site — and, when the
     /// argument is the caller's own parameter, to that parameter too.
     CrossFunction,
+    /// A local assigned a typed parameter, a known routine's result, or
+    /// an already-typed local takes that type through the assignment —
+    /// the local-variable reading's only evidence family.
+    AssignmentChain,
 }
 
 impl InferenceMethod {
@@ -82,6 +86,7 @@ calxgloss_types::display_serde_label!(InferenceMethod {
     PointerArithmetic => "pointer_arithmetic",
     KnownSignature => "known_signature",
     CrossFunction => "cross_function",
+    AssignmentChain => "assignment_chain",
 });
 
 // ============================================================

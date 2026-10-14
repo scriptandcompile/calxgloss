@@ -2,13 +2,12 @@
 //!
 //! [`TypeInferEngine`] runs the three inline detectors — this-pointer
 //! detection, parameter-size detection, and known-type propagation — over
-//! every function of one open Ghidra program, then runs the
-//! cross-function passes: each function's surviving parameter readings
-//! type the arguments at that callee's call sites, and the caller's own
-//! parameter when the argument is one; and what a function's callers
-//! actually pass at their sites types that function's own parameters.
-//! Their records are assembled into a single [`TypeInferenceResult`]
-//! with its scan provenance.
+//! every function of one open Ghidra program, then runs the post-inline
+//! passes over the same bodies: the assignment-chain pass types each
+//! function's locals from its surviving parameter readings and known
+//! contracts, the cross-function passes carry readings across function
+//! boundaries in both directions, and everything assembles into one
+//! [`TypeInferenceResult`] with its scan provenance.
 //!
 //! The inline detectors are pure text analysis over one decompiled body,
 //! so the engine fetches each function's pseudo-C exactly once and reads
@@ -27,6 +26,7 @@ use crate::confidence::resolve_conflicts;
 use crate::cross_function::{CalleeParams, CrossFunctionPropagator};
 use crate::error::Result;
 use crate::known_type::KnownTypePropagationEngine;
+use crate::local_chain::LocalChainDetector;
 use crate::param_size::ParameterSizeDetector;
 use crate::this_ptr::ThisPointerDetector;
 use crate::types::{InferredType, ScanMetadata, TypeInferenceResult};
@@ -57,6 +57,7 @@ pub struct TypeInferEngine<S = GhidraClient> {
     this_ptr: ThisPointerDetector,
     param_size: ParameterSizeDetector,
     known: KnownTypePropagationEngine,
+    local_chain: LocalChainDetector,
     cross: CrossFunctionPropagator,
 }
 
@@ -68,6 +69,7 @@ impl TypeInferEngine<GhidraClient> {
             this_ptr: ThisPointerDetector::new(),
             param_size: ParameterSizeDetector::new(),
             known: KnownTypePropagationEngine::new(),
+            local_chain: LocalChainDetector::new(),
             cross: CrossFunctionPropagator::new(),
         }
     }
@@ -81,6 +83,7 @@ impl<S> TypeInferEngine<S> {
             this_ptr: ThisPointerDetector::new(),
             param_size: ParameterSizeDetector::new(),
             known: KnownTypePropagationEngine::new(),
+            local_chain: LocalChainDetector::new(),
             cross: CrossFunctionPropagator::new(),
         }
     }
@@ -94,9 +97,9 @@ impl<S> TypeInferEngine<S> {
     /// becomes the key a persisted result is filed under. The inferences
     /// follow the function listing — function by function, and within one
     /// function the this-pointer readings, then the size readings, then
-    /// the known-signature readings — with the cross-function records
-    /// appended after the inline ones, in listing order, so two scans of
-    /// the same program diff cleanly.
+    /// the known-signature readings — with the local records and the
+    /// cross-function records appended after the inline ones, in listing
+    /// order, so two scans of the same program diff cleanly.
     ///
     /// The caller→callee direction fetches each analyzed function's
     /// callers; a caller whose body the listing pass did not already
@@ -188,6 +191,26 @@ impl<S> TypeInferEngine<S> {
         let inline = resolve_conflicts(inferences);
         let callee_params = surviving_param_readings(&inline);
 
+        // Locals from assignment chains: a slot assigned one of those
+        // surviving parameters, a known routine's result, or an
+        // already-typed local takes that type. The pass reads the same
+        // bodies and their surviving readings, so it runs right after
+        // inline resolution — before the cross-function passes, whose
+        // records compete with everything else in the final resolution.
+        let mut locals: Vec<InferredType> = Vec::new();
+        for body in &bodies {
+            let readings = callee_params
+                .get(body.name.as_str())
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            locals.extend(
+                self.local_chain
+                    .detect_locals(body, readings)
+                    .into_iter()
+                    .map(InferredType::Local),
+            );
+        }
+
         // Callee to caller: each body's calls to a user-defined callee
         // take that callee's surviving readings as the arguments' types,
         // and a caller's own parameter is read when the argument names
@@ -268,10 +291,11 @@ impl<S> TypeInferEngine<S> {
         // list resolves once more, and the result carries at most one
         // inference per target. The inline chain is first, so an inline
         // reading wins every tie against a propagated one.
-        collected += propagated.len() + to_callee.len();
+        collected += locals.len() + propagated.len() + to_callee.len();
         let inferences = resolve_conflicts(
             inline
                 .into_iter()
+                .chain(locals)
                 .chain(propagated)
                 .chain(to_callee)
                 .collect(),
@@ -286,7 +310,7 @@ impl<S> TypeInferEngine<S> {
             conflicts_resolved = collected - inferences.len(),
             skipped,
             duration_secs = metadata.duration_secs,
-            "Inferred parameter types"
+            "Inferred types"
         );
         Ok(TypeInferenceResult {
             metadata,
@@ -319,7 +343,9 @@ fn surviving_param_readings(inferences: &[InferredType]) -> CalleeParams<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Confidence, InferenceMethod, InferenceScope, InferredCallType};
+    use crate::types::{
+        Confidence, InferenceMethod, InferenceScope, InferredCallType, InferredLocalType,
+    };
     use calxgloss_ghidra::{
         DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
         Result, StringLiteral, StructLayout, Symbol, Xref,
@@ -604,6 +630,113 @@ mod tests {
         assert_eq!(record.method, InferenceMethod::KnownSignature);
         assert_eq!(record.inferred_type, "void *");
         assert_eq!(record.confidence, Confidence::new(75));
+    }
+
+    /// The canned program for the assignment-chain pass: one function
+    /// whose `param_2` the inline detectors read as `char *`, and whose
+    /// locals are assigned that parameter, a `malloc` result, and one
+    /// hop from a typed local.
+    fn locals_program() -> FakeProgram {
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(undefined8 param_1,undefined8 param_2)",
+                "  strlen(param_2);\n\
+                 \x20 local_8 = param_2;\n\
+                 \x20 local_10 = (char *)malloc(0x10);\n\
+                 \x20 local_18 = local_10;\n",
+            ),
+        );
+        program
+    }
+
+    fn local_finding<'a>(
+        result: &'a TypeInferenceResult,
+        function: &str,
+        variable_name: &str,
+    ) -> &'a InferredLocalType {
+        result
+            .for_function(function)
+            .find_map(|inference| match inference {
+                InferredType::Local(record) if record.variable_name == variable_name => Some(record),
+                _ => None,
+            })
+            .expect("local record")
+    }
+
+    fn local_count(result: &TypeInferenceResult, function: &str, variable_name: &str) -> usize {
+        result
+            .for_function(function)
+            .filter(|inference| {
+                matches!(
+                    inference,
+                    InferredType::Local(record) if record.variable_name == variable_name
+                )
+            })
+            .count()
+    }
+
+    #[tokio::test]
+    async fn scan_emits_local_records_from_assignment_chains() {
+        // A local assigned a surviving parameter reading, and one
+        // assigned a known routine's result, take the assignment-chain
+        // record; one hop from a typed local is chased, a second is not.
+        let result = scan(locals_program()).await;
+
+        let record = local_finding(&result, "FUN_18003ab00", "local_8");
+        assert_eq!(record.inferred_type, "char *");
+        assert_eq!(record.method, InferenceMethod::AssignmentChain);
+        assert_eq!(record.scope, InferenceScope::Function);
+        assert_eq!(record.confidence, Confidence::new(60));
+        assert_eq!(record.evidence, "local_8 = param_2;");
+
+        let record = local_finding(&result, "FUN_18003ab00", "local_10");
+        assert_eq!(record.inferred_type, "void *");
+
+        let record = local_finding(&result, "FUN_18003ab00", "local_18");
+        assert_eq!(record.inferred_type, "void *");
+        assert_eq!(local_count(&result, "FUN_18003ab00", "local_18"), 1);
+
+        // The record renders into the prompt type-info section under
+        // the variable's decompiled name.
+        let rendered = calxgloss_prompts::TypeInfo::from(&InferredType::Local(record.clone()));
+        assert_eq!(rendered.name, "local_18");
+        assert_eq!(
+            rendered.description,
+            "void * (via assignment_chain, confidence 60)"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_same_local_name_in_two_functions_does_not_conflict() {
+        // `local_8` is the decompiler's name for one stack slot in each
+        // of two bodies; the records key on function and name together,
+        // so both survive resolution.
+        let mut program = locals_program();
+        program.listing.push(summary("FUN_18003e750"));
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  local_8 = malloc(0x10);\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        assert_eq!(local_count(&result, "FUN_18003ab00", "local_8"), 1);
+        assert_eq!(local_count(&result, "FUN_18003e750", "local_8"), 1);
+        assert_eq!(
+            local_finding(&result, "FUN_18003ab00", "local_8").inferred_type,
+            "char *"
+        );
+        assert_eq!(
+            local_finding(&result, "FUN_18003e750", "local_8").inferred_type,
+            "void *"
+        );
     }
 
     /// The canned program for the cross-function pass: a helper whose

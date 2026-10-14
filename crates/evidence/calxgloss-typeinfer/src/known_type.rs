@@ -246,7 +246,7 @@ pub const KNOWN_SIGNATURES: &[KnownSignature] = &[
 ];
 /// The type words a Ghidra cast may spell, matching the decompiler's
 /// vocabulary the this-pointer scan already strips.
-fn is_type_word(word: &str) -> bool {
+pub(crate) fn is_type_word(word: &str) -> bool {
     matches!(
         word,
         "undefined"

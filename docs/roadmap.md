@@ -31,7 +31,7 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P2.5 | typeinfer Phase 5: cross-function call-site propagation, integer bit-pattern analysis, C++ mangling analysis, local-variable and return-type inference, **write inferred types back into Ghidra** | `calxgloss-typeinfer` + `calxgloss-ghidra` | — | 🔶 in progress | `/implement` — frontier: #145 #146 #147 #148 #149 | [#142](https://github.com/scriptandcompile/calxgloss/issues/142) |
+| P2.5 | typeinfer Phase 5: cross-function call-site propagation, integer bit-pattern analysis, C++ mangling analysis, local-variable and return-type inference, **write inferred types back into Ghidra** | `calxgloss-typeinfer` + `calxgloss-ghidra` | — | 🔶 in progress | `/implement` — frontier: #146 #147 #148 #149 | [#142](https://github.com/scriptandcompile/calxgloss/issues/142) |
 | P3.5 | algorithm Phase 5: confidence scoring improvements, dynamic (JSON) pattern database, multi-function correlation, parallelize across functions | `calxgloss-algorithm` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P4.5 | memory Phase 5: cross-function allocation tracking, ownership transfer detection, smart-pointer conversion, resource leak detection, per-type `Drop` suggestions | `calxgloss-memory` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P5.5 | sync Phase 5: data-race analysis, lock ordering, async runtime detection, thread-local storage, futex-based synchronization | `calxgloss-sync` | — | ⬜ not started | `/to-spec` when picked up | — |

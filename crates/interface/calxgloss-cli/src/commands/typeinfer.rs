@@ -121,6 +121,7 @@ fn print_type_inference_report(result: &TypeInferenceResult, path: &Path) {
         InferenceMethod::PointerArithmetic,
         InferenceMethod::KnownSignature,
         InferenceMethod::CrossFunction,
+        InferenceMethod::AssignmentChain,
     ]
     .into_iter()
     .map(|method| {
