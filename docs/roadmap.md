@@ -31,7 +31,7 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P3.5 | algorithm Phase 5: confidence scoring improvements, dynamic (JSON) pattern database, multi-function correlation, parallelize across functions | `calxgloss-algorithm` | — | 🔶 in progress | `/implement` (frontier: #154) | [#151](https://github.com/scriptandcompile/calxgloss/issues/151) |
+| P3.5 | algorithm Phase 5: confidence scoring improvements, dynamic (JSON) pattern database, multi-function correlation, parallelize across functions | `calxgloss-algorithm` | — | 🔶 in progress | `/implement` (frontier: #155 #156) | [#151](https://github.com/scriptandcompile/calxgloss/issues/151) |
 | P4.5 | memory Phase 5: cross-function allocation tracking, ownership transfer detection, smart-pointer conversion, resource leak detection, per-type `Drop` suggestions | `calxgloss-memory` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P5.5 | sync Phase 5: data-race analysis, lock ordering, async runtime detection, thread-local storage, futex-based synchronization | `calxgloss-sync` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P6.5 | callback Phase 5: full callback chain analysis, plugin architecture detection, event system reconstruction, closure signatures via type inference | `calxgloss-callback` | — | ⬜ not started | `/to-spec` when picked up | — |

@@ -1,9 +1,10 @@
 //! Algorithm recognition orchestration.
 //!
-//! [`AlgorithmEngine`] runs the three detectors — control flow signature
-//! matching, string-guided hints, and callback pattern detection — over
-//! every function of one open Ghidra program and assembles their records
-//! into a single [`AlgorithmRecognitionResult`] with its scan provenance.
+//! [`AlgorithmEngine`] runs the detectors — control flow signature
+//! matching, string-guided hints, and callback pattern detection over
+//! each function, then multi-function correlation over the whole listing
+//! — and assembles their records into a single
+//! [`AlgorithmRecognitionResult`] with its scan provenance.
 //!
 //! The control flow and callback detectors are pure text analysis over
 //! one decompiled body, and the string engine additionally reads the
@@ -20,15 +21,19 @@
 //! is the only reader of the call graph, and it runs only for functions
 //! whose arity a configured contract could fit: a function of the wrong
 //! arity fits no contract however it is used, so fetching its callers
-//! would be a round trip guaranteed to be refused.
+//! would be a round trip guaranteed to be refused. The correlation
+//! detector reads no graph at all: it derives the call map from the
+//! bodies this scan already fetched, so it adds no round trip and runs
+//! once the whole listing is in hand.
 
 use crate::callback_db::CallbackPatternDb;
 use crate::cfg_patterns::CfgPatternMatcher;
 use crate::confidence::resolve_conflicts;
+use crate::cross_function::CrossFunctionDetector;
 use crate::error::Result;
 use crate::string_hints::StringHintEngine;
 use crate::types::{AlgorithmHint, AlgorithmRecognitionResult, ScanMetadata};
-use calxgloss_ghidra::GhidraClient;
+use calxgloss_ghidra::{DecompiledFunction, GhidraClient};
 use std::time::Instant;
 use tracing::{info, warn};
 
@@ -42,16 +47,17 @@ use tracing::{info, warn};
 /// orchestrating task.
 pub use calxgloss_ghidra::ScanSource;
 
-/// Orchestrates the three detectors into one [`AlgorithmRecognitionResult`].
+/// Orchestrates the detectors into one [`AlgorithmRecognitionResult`].
 ///
 /// The engine is generic over its [`ScanSource`], so tests can run the
 /// whole orchestration over canned bodies; [`new`](Self::new) builds one
 /// over a live [`GhidraClient`]. Each detector carries no state and
 /// starts configured with its standard signature set —
 /// [`with_matcher`](Self::with_matcher), [`with_string_engine`](Self::with_string_engine),
-/// and [`with_callback_db`](Self::with_callback_db) swap a detector's set
-/// whole, and [`with_pattern_database`](Self::with_pattern_database)
-/// swaps all three at once from one
+/// [`with_callback_db`](Self::with_callback_db), and
+/// [`with_cross_detector`](Self::with_cross_detector) swap a detector's
+/// set whole, and [`with_pattern_database`](Self::with_pattern_database)
+/// swaps the three per-function sets at once from one
 /// [database document](crate::pattern_db) — so one instance of each
 /// serves the whole scan. A scan keeps every hint it resolves by
 /// default; [`with_min_confidence`](Self::with_min_confidence) sets a
@@ -62,11 +68,12 @@ pub struct AlgorithmEngine<S = GhidraClient> {
     cfg: CfgPatternMatcher,
     strings: StringHintEngine,
     callbacks: CallbackPatternDb,
+    cross: CrossFunctionDetector,
     min_confidence: u8,
 }
 
 impl AlgorithmEngine<GhidraClient> {
-    /// An engine over a live GhidraMCP client, scanning with the three
+    /// An engine over a live GhidraMCP client, scanning with the
     /// standard signature sets.
     pub fn new(client: &GhidraClient) -> AlgorithmEngine<GhidraClient> {
         AlgorithmEngine {
@@ -74,6 +81,7 @@ impl AlgorithmEngine<GhidraClient> {
             cfg: CfgPatternMatcher::with_default_patterns(),
             strings: StringHintEngine::with_default_signatures(),
             callbacks: CallbackPatternDb::with_default_patterns(),
+            cross: CrossFunctionDetector::with_default_relationships(),
             min_confidence: 0,
         }
     }
@@ -81,13 +89,14 @@ impl AlgorithmEngine<GhidraClient> {
 
 impl<S> AlgorithmEngine<S> {
     /// An engine whose program reads come from `source`, scanning with
-    /// the three standard signature sets.
+    /// the standard signature sets.
     pub fn with_source(source: S) -> Self {
         AlgorithmEngine {
             source,
             cfg: CfgPatternMatcher::with_default_patterns(),
             strings: StringHintEngine::with_default_signatures(),
             callbacks: CallbackPatternDb::with_default_patterns(),
+            cross: CrossFunctionDetector::with_default_relationships(),
             min_confidence: 0,
         }
     }
@@ -111,8 +120,15 @@ impl<S> AlgorithmEngine<S> {
         self
     }
 
-    /// Scan with `database`'s sets for all three detectors instead of
-    /// the standard sets.
+    /// Correlate call relationships with `detector`'s relationships
+    /// instead of the standard set.
+    pub fn with_cross_detector(mut self, detector: CrossFunctionDetector) -> Self {
+        self.cross = detector;
+        self
+    }
+
+    /// Scan with `database`'s sets for the detectors instead of the
+    /// standard sets.
     ///
     /// The swap is whole, never a merge: each detector reads exactly
     /// the entries the [database](crate::pattern_db) carries, and a
@@ -120,11 +136,14 @@ impl<S> AlgorithmEngine<S> {
     /// to read. Entries keep the detectors' semantics whole — the
     /// `{name}` placeholder, the lenient uncompilable-regex rule, and
     /// the per-entry confidence that overrides the standard score in
-    /// resolution.
+    /// resolution. The database carries no correlation section yet,
+    /// so the whole-swap contract means the correlation detector runs
+    /// with nothing to read until that section lands (#155).
     pub fn with_pattern_database(mut self, database: crate::pattern_db::PatternDatabase) -> Self {
         self.cfg = CfgPatternMatcher::with_patterns(database.control_flow);
         self.strings = StringHintEngine::with_signatures(database.string_signatures);
         self.callbacks = CallbackPatternDb::with_patterns(database.callback_contracts);
+        self.cross = CrossFunctionDetector::new();
         self
     }
 
@@ -141,13 +160,16 @@ impl<S> AlgorithmEngine<S> {
     }
 
     /// Recognize algorithms across `binary`, decompiling each function
-    /// exactly once and reading it with all three detectors.
+    /// exactly once and reading it with all three per-function
+    /// detectors, then correlating the whole listing.
     ///
     /// `binary` names the program the scan reads (e.g. `eqmain.dll`) and
     /// becomes the key a persisted result is filed under. The hints
     /// follow the function listing — function by function, and within one
     /// function the control flow matches, then the string-guided hints,
-    /// then the callback matches — so two scans of the same program diff
+    /// then the callback matches — and the correlation pass, which needs
+    /// every body in hand to derive the call map, then reports its own
+    /// hints in listing order, so two scans of the same program diff
     /// cleanly.
     ///
     /// Where several detectors claim the same algorithm for one function,
@@ -179,6 +201,7 @@ impl<S> AlgorithmEngine<S> {
         let literals = self.source.strings().await?;
 
         let mut hints = Vec::new();
+        let mut bodies: Vec<DecompiledFunction> = Vec::with_capacity(functions.len());
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
         for function in &functions {
@@ -250,7 +273,17 @@ impl<S> AlgorithmEngine<S> {
                         .map(|detection| detection.hint),
                 );
             }
+
+            // Keep the body: the correlation pass reads the call map off
+            // the bodies this scan already fetched, so it costs no extra
+            // round trip.
+            bodies.push(decompiled);
         }
+
+        // The correlation pass runs once the whole listing is in hand —
+        // a relationship spans a call, and the callee's body may sit
+        // anywhere in the listing — and reports in listing order.
+        hints.extend(self.cross.detect_correlations(&bodies));
 
         let mut metadata = ScanMetadata::new(binary);
         metadata.duration_secs = started.elapsed().as_secs();
@@ -565,6 +598,59 @@ mod tests {
         program.literals = vec![literal(0x1801_29350, "CRC32 verification failed")];
         program.callers.insert(AB00, vec!["FUN_180001900".into()]);
         program.callers.insert(A12A0, vec!["qsort".into()]);
+        program
+    }
+
+    /// A program whose bodies call each other: a recursive split that
+    /// halves its range, and a library sort that hands the host the
+    /// comparator sitting beside it in the listing. The default
+    /// relationship set reads both correlations from the call map the
+    /// scan already holds.
+    fn correlated_program() -> FakeProgram {
+        let mut program = FakeProgram::empty();
+        program.listing = vec![
+            summary("FUN_180050000", 0x1800_50000),
+            summary("FUN_180050100", 0x1800_50100),
+            summary("FUN_1800412a0", A12A0),
+        ];
+        program.bodies.insert(
+            "FUN_180050000".into(),
+            function(
+                "FUN_180050000",
+                "void FUN_180050000(int *param_1,int param_2)",
+                &[
+                    "  if (param_2 < 2) {",
+                    "    return;",
+                    "  }",
+                    "  FUN_180050000(param_1,param_2 / 2);",
+                    "  FUN_180050000(param_1 + (param_2 / 2),param_2 / 2);",
+                    "  return;",
+                ]
+                .join("\n"),
+            ),
+        );
+        program.bodies.insert(
+            "FUN_180050100".into(),
+            function(
+                "FUN_180050100",
+                "void FUN_180050100(int *param_1,int param_2)",
+                &["  qsort(param_1,param_2,4,FUN_1800412a0);", "  return;"].join("\n"),
+            ),
+        );
+        program.bodies.insert(
+            "FUN_1800412a0".into(),
+            function(
+                "FUN_1800412a0",
+                "int FUN_1800412a0(int *param_1,int *param_2)",
+                &[
+                    "  if (*param_1 < *param_2) {",
+                    "    return -1;",
+                    "  }",
+                    "  return 1;",
+                ]
+                .join("\n"),
+            ),
+        );
         program
     }
 
@@ -952,6 +1038,130 @@ mod tests {
                 ("http", DetectionMethod::StringHint),
             ],
             "the crc winner stands where crc first appeared, and different algorithms coexist"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_program_whose_bodies_call_each_other_yields_cross_function_hints() {
+        // Both built-in relationships read the correlation: the
+        // recursive split claims divide_and_conquer on the caller
+        // itself, and the library sort claims comparison_sort because
+        // the comparator it names compares its two arguments. Each
+        // hint's evidence is the body line naming the partner.
+        let result = scan(correlated_program()).await;
+
+        let split = finding(&result, "FUN_180050000", DetectionMethod::CrossFunction);
+        assert_eq!(split.algorithm, "divide_and_conquer");
+        assert_eq!(split.category, AlgorithmCategory::Recursion);
+        assert_eq!(split.confidence, Confidence::new(70));
+        assert_eq!(split.evidence, "FUN_180050000(param_1,param_2 / 2);");
+
+        let sort = finding(&result, "FUN_180050100", DetectionMethod::CrossFunction);
+        assert_eq!(sort.algorithm, "comparison_sort");
+        assert_eq!(sort.category, AlgorithmCategory::Sorting);
+        assert_eq!(sort.confidence, Confidence::new(70));
+        assert_eq!(sort.evidence, "qsort(param_1,param_2,4,FUN_1800412a0);");
+
+        assert!(
+            result.for_function("FUN_1800412a0").next().is_none(),
+            "the comparator carries no relationship of its own"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_call_map_adds_no_extra_program_reads() {
+        // The correlation pass reads the bodies the scan already
+        // fetched: emptying the cross detector changes which hints
+        // appear but not how many times the program was read.
+        let correlated = correlated_program();
+        scan(correlated.clone()).await;
+        let stripped = correlated_program();
+        let result = AlgorithmEngine::with_source(stripped.clone())
+            .with_cross_detector(CrossFunctionDetector::new())
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        assert!(
+            !methods_for(&result, "FUN_180050100").contains(&DetectionMethod::CrossFunction),
+            "the empty detector claims nothing"
+        );
+        assert_eq!(correlated.decompiled(), stripped.decompiled());
+        assert_eq!(correlated.string_fetches(), stripped.string_fetches());
+        assert_eq!(correlated.caller_fetches(), stripped.caller_fetches());
+    }
+
+    #[tokio::test]
+    async fn a_correlated_claim_wins_resolution_against_a_weaker_body_match() {
+        // A control flow signature naming the library host claims
+        // comparison_sort at the standard body-match score of 60; the
+        // correlation reads the same function at 70. Resolution keeps
+        // the stronger claim, and the scan reports the algorithm once.
+        let matcher = CfgPatternMatcher::with_patterns([AlgorithmPattern {
+            min_lines: 4,
+            ..AlgorithmPattern::new(
+                "comparison_sort",
+                AlgorithmCategory::Sorting,
+                [r"\bqsort\s*\("],
+            )
+        }]);
+        let result = AlgorithmEngine::with_source(correlated_program())
+            .with_matcher(matcher)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        let claims: Vec<&AlgorithmHint> = result
+            .for_function("FUN_180050100")
+            .filter(|hint| hint.algorithm == "comparison_sort")
+            .collect();
+        assert_eq!(claims.len(), 1, "one claim per algorithm per function");
+        assert_eq!(claims[0].method, DetectionMethod::CrossFunction);
+        assert_eq!(claims[0].confidence, Confidence::new(70));
+    }
+
+    #[tokio::test]
+    async fn the_minimum_confidence_filter_applies_to_correlated_hints() {
+        // Correlated hints sit at 70: a floor of 70 keeps them — the
+        // filter drops below the threshold, not at it — while a floor
+        // of 75, the callback contract's score, drops them.
+        let kept = AlgorithmEngine::with_source(correlated_program())
+            .with_min_confidence(70)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+        assert!(methods_for(&kept, "FUN_180050000").contains(&DetectionMethod::CrossFunction));
+        assert!(methods_for(&kept, "FUN_180050100").contains(&DetectionMethod::CrossFunction));
+
+        let dropped = AlgorithmEngine::with_source(correlated_program())
+            .with_min_confidence(75)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+        assert!(
+            !dropped
+                .hints
+                .iter()
+                .any(|hint| hint.method == DetectionMethod::CrossFunction),
+            "a floor above 70 drops every correlated hint"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pattern_database_silences_the_correlation_detector_too() {
+        // The whole-swap contract reaches the fourth detector: the
+        // database carries no correlation section yet, so a scan
+        // configured from a file correlates nothing — the file is
+        // exactly what the scan knows, and a file that retires the
+        // built-in qsort shape never keeps a built-in correlation.
+        let result = AlgorithmEngine::with_source(correlated_program())
+            .with_pattern_database(PatternDatabase::default())
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+        assert!(
+            result.is_empty(),
+            "the file leaves every detector nothing to read"
         );
     }
 

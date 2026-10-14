@@ -5,9 +5,10 @@
 //! where the algorithm scan's scoring model lives.
 //!
 //! The standard scores — [`CFG_CONFIDENCE`], [`BODY_CONFIDENCE`],
-//! [`LISTING_CONFIDENCE`], [`CALLBACK_CONFIDENCE`] — are the score
-//! composition per detection method: each detector reads its standard
-//! score from here, so tuning the model is a one-module change.
+//! [`LISTING_CONFIDENCE`], [`CALLBACK_CONFIDENCE`],
+//! [`CROSS_FUNCTION_CONFIDENCE`] — are the score composition per
+//! detection method: each detector reads its standard score from here,
+//! so tuning the model is a one-module change.
 //!
 //! [`resolve_conflicts`] is the cross-detector half of the model. Each
 //! detector already reports one algorithm once per function, but the
@@ -70,6 +71,16 @@ pub const LISTING_CONFIDENCE: u8 = 30;
 /// above a lone control flow or string match and below a direct vtable
 /// dispatch.
 pub const CALLBACK_CONFIDENCE: u8 = 75;
+
+/// Confidence of a cross-function correlation: two functions' bodies
+/// agree on a call relationship — a self-call beside a halving split, a
+/// `qsort` call beside a comparator-shaped callee — and a relationship
+/// two functions spell out is stronger evidence than one body fitting
+/// one signature, but the reading still rests on names appearing in
+/// decompiled pseudo-C rather than a resolved call graph, so it stands
+/// above a lone control flow or string match and below a callback
+/// contract the call graph confirms.
+pub const CROSS_FUNCTION_CONFIDENCE: u8 = 70;
 
 // ============================================================
 // Conflict resolution

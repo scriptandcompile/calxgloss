@@ -125,6 +125,7 @@ fn print_algorithm_recognition_report(result: &AlgorithmRecognitionResult, path:
         DetectionMethod::CfgPattern,
         DetectionMethod::StringHint,
         DetectionMethod::CallbackPattern,
+        DetectionMethod::CrossFunction,
     ]
     .into_iter()
     .map(|method| {

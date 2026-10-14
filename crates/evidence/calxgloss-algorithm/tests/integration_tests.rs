@@ -211,6 +211,60 @@ fn program() -> FakeProgram {
 }
 
 // ------------------------------------------------------------
+// The correlated canned program
+// ------------------------------------------------------------
+
+/// A canned program whose bodies call each other: a recursive split
+/// that halves its range, and a library sort that hands the host the
+/// comparator beside it in the listing — the pairs the correlation
+/// detector reads across function boundaries.
+fn correlated_program() -> FakeProgram {
+    let mut bodies = HashMap::new();
+    bodies.insert(
+        "FUN_180050000".into(),
+        function(
+            "FUN_180050000",
+            "void FUN_180050000(int *param_1,int param_2)",
+            "  if (param_2 < 2) {\n\
+             \x20   return;\n\
+             \x20 }\n\
+             \x20 FUN_180050000(param_1,param_2 / 2);\n\
+             \x20 FUN_180050000(param_1 + (param_2 / 2),param_2 / 2);\n\
+             \x20 return;",
+        ),
+    );
+    bodies.insert(
+        "FUN_180050100".into(),
+        function(
+            "FUN_180050100",
+            "void FUN_180050100(int *param_1,int param_2)",
+            "  qsort(param_1,param_2,4,FUN_1800412a0);\n\
+             \x20 return;",
+        ),
+    );
+    bodies.insert(
+        "FUN_1800412a0".into(),
+        function(
+            "FUN_1800412a0",
+            "int FUN_1800412a0(int *param_1,int *param_2)",
+            "  if (*param_1 < *param_2) {\n\
+             \x20   return -1;\n\
+             \x20 }\n\
+             \x20 return 1;",
+        ),
+    );
+    FakeProgram {
+        listing: vec![
+            summary("FUN_180050000", 0x1800_50000),
+            summary("FUN_180050100", 0x1800_50100),
+            summary("FUN_1800412a0", A12A0),
+        ],
+        bodies,
+        ..Default::default()
+    }
+}
+
+// ------------------------------------------------------------
 // Scan to disk
 // ------------------------------------------------------------
 
@@ -310,6 +364,46 @@ async fn resolved_and_floored_hints_are_what_reaches_the_disk() {
             ("FUN_18003e750", "crc", DetectionMethod::StringHint),
         ],
         "one resolved claim per algorithm, floor survivors only, in scan order"
+    );
+}
+
+#[tokio::test]
+async fn correlated_hints_reach_the_persisted_document_naming_their_partners() {
+    // The fourth detector's reading survives the whole flow: the scan
+    // correlates a recursive split and a qsort/comparator pair, the
+    // JSON on disk spells the method as `cross_function`, and each
+    // correlated hint's evidence quotes the body line naming its
+    // partner function.
+    let workspace = TempDir::new().unwrap();
+    let result = AlgorithmEngine::with_source(correlated_program())
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = AlgorithmPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let document =
+        std::fs::read_to_string(persistor.path_for("eqmain.dll")).expect("read document");
+    assert!(
+        document.contains("\"method\": \"cross_function\""),
+        "the persisted JSON spells the new detection method"
+    );
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    assert_eq!(loaded, result, "the document round-trips exactly");
+    let evidence: Vec<&str> = loaded
+        .hints
+        .iter()
+        .filter(|hint| hint.method == DetectionMethod::CrossFunction)
+        .map(|hint| hint.evidence.as_str())
+        .collect();
+    assert_eq!(
+        evidence,
+        [
+            "FUN_180050000(param_1,param_2 / 2);",
+            "qsort(param_1,param_2,4,FUN_1800412a0);",
+        ],
+        "each correlated hint quotes the body line naming its partner"
     );
 }
 

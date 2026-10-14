@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into nine modules:
+//! The crate is organized into ten modules:
 //!
 //! - [`types`] - Core data types: `AlgorithmHint`, `AlgorithmCategory`,
 //!   `DetectionMethod`, `AlgorithmPattern` for per-function detection
@@ -32,20 +32,29 @@
 //!   standard set `default_patterns` carries: qsort compare, bsearch
 //!   compare, and hash table comparator — with caller name pattern
 //!   matching through the call graph.
+//! - [`cross_function`] - Multi-function correlation: `CrossFunctionDetector`
+//!   recognizes algorithms that span a call relationship — the standard
+//!   set `default_relationships` carries: recursive divide-and-conquer
+//!   (a self-call plus a halving split) and a sort driven by a comparator
+//!   callback (a `qsort` call plus a comparator-shaped callee) — reading
+//!   a call map derived from the bodies the scan already decompiles, so
+//!   the pass costs no extra Ghidra round trips; hints name the partner
+//!   function in their evidence.
 //! - [`engine`] - Scan orchestration: `AlgorithmEngine` decompiles each
 //!   function of an open program exactly once, reads it with all three
-//!   detectors, resolves competing claims for one algorithm down to
+//!   per-function detectors and then the correlation pass over the whole
+//!   listing, resolves competing claims for one algorithm down to
 //!   their strongest reading, and assembles the survivors into one
 //!   `AlgorithmRecognitionResult` with its scan provenance;
 //!   `with_min_confidence` sets a floor below which hints never reach
 //!   the persisted result.
 //! - [`confidence`] - Shared confidence model: the standard score each
 //!   detection method pays out (control flow 60, string body match 60 /
-//!   listing-only match 30, callback contract 75), and
-//!   highest-confidence-wins resolution when several detectors claim
-//!   the same algorithm for one function — ties keep the claim the scan
-//!   surfaced first, and the survivor stands where that algorithm
-//!   first appeared.
+//!   listing-only match 30, callback contract 75, cross-function
+//!   correlation 70), and highest-confidence-wins resolution when
+//!   several detectors claim the same algorithm for one function — ties
+//!   keep the claim the scan surfaced first, and the survivor stands
+//!   where that algorithm first appeared.
 //! - [`persist`] - JSON persistence: `AlgorithmPersistor` saves and loads
 //!   the per-binary recognition results under `re/analysis/algorithm/`.
 //! - [`pattern_db`] - Dynamic pattern database: `PatternDatabase`, one
@@ -59,6 +68,7 @@
 pub mod callback_db;
 pub mod cfg_patterns;
 pub mod confidence;
+pub mod cross_function;
 pub mod engine;
 pub mod error;
 pub mod pattern_db;

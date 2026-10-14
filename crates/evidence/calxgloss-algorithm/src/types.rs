@@ -83,9 +83,10 @@ calxgloss_types::display_serde_label!(AlgorithmCategory {
 /// The detector that produced a hint.
 ///
 /// Each detector reads a different evidence class — control flow shapes,
-/// string signatures, callback contracts — and the method says how a hint
-/// was made, so confidence resolution and the prompt rendering can weigh
-/// and explain hints by their evidence.
+/// string signatures, callback contracts, call relationships between
+/// functions — and the method says how a hint was made, so confidence
+/// resolution and the prompt rendering can weigh and explain hints by
+/// their evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DetectionMethod {
@@ -97,12 +98,17 @@ pub enum DetectionMethod {
     /// The function's signature and usage match a known callback contract,
     /// e.g. a qsort compare function.
     CallbackPattern,
+    /// The algorithm spans a call relationship between functions the scan
+    /// decompiles — a recursive split, a sort driving a comparator — read
+    /// from the call map the fetched bodies already carry.
+    CrossFunction,
 }
 
 calxgloss_types::display_serde_label!(DetectionMethod {
     CfgPattern => "cfg_pattern",
     StringHint => "string_hint",
     CallbackPattern => "callback_pattern",
+    CrossFunction => "cross_function",
 });
 
 // ============================================================
@@ -231,10 +237,11 @@ impl From<&AlgorithmHint> for calxgloss_prompts::AlgorithmInfo {
 /// The recognition result for one binary — the document persisted to
 /// `re/analysis/algorithm/{dll}.json`.
 ///
-/// The hints are the three detectors' outputs, resolved and in scan
-/// order: function by function, and within one function the control
-/// flow matches, then the string-guided hints, then the callback
-/// matches. Each detector already reports one algorithm once per
+/// The hints are the four detectors' outputs, resolved and in scan
+/// order: function by function, the control flow matches, then the
+/// string-guided hints, then the callback matches; the correlation
+/// hints, which need the whole listing in hand, follow in listing
+/// order. Each detector already reports one algorithm once per
 /// function, and where several detectors claim the same algorithm for
 /// one function the scan reports it once with its strongest reading —
 /// the survivor standing where that algorithm first appeared. Detectors
@@ -295,10 +302,11 @@ mod tests {
         AlgorithmCategory::NetworkProtocol,
     ];
 
-    const ALL_METHODS: [DetectionMethod; 3] = [
+    const ALL_METHODS: [DetectionMethod; 4] = [
         DetectionMethod::CfgPattern,
         DetectionMethod::StringHint,
         DetectionMethod::CallbackPattern,
+        DetectionMethod::CrossFunction,
     ];
 
     fn hint() -> AlgorithmHint {
