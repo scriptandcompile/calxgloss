@@ -715,7 +715,8 @@ mod tests {
             "confidence": 65,
             "evidence": "RegOpenKeyExW(...); RegCloseKey(local_8);"
         }"#;
-        let back: HandleLifecycle = serde_json::from_str(json).unwrap();
+        let back: HandleLifecycle = serde_json::from_str(json)
+            .expect("a handle record written before the named type should read back");
         assert_eq!(back.type_name, None);
     }
 

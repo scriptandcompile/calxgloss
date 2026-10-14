@@ -12,6 +12,9 @@
 //!   order: function by function, and within one function the
 //!   allocation pairs, then the handle lifetimes, then the reference
 //!   counts.
+//! - **Cross-function claims** — the cross-function pass's release,
+//!   hand-off, and leak claims ride the persisted document like every
+//!   other kind, appended after the per-function findings in order.
 //! - **Cache behavior** — the `exists` check decides whether a scan
 //!   runs, and a rescan replaces the cached document.
 //!
@@ -26,7 +29,9 @@ use calxgloss_ghidra::{
 };
 use calxgloss_memory::engine::{MemoryEngine, ScanSource};
 use calxgloss_memory::persist::MemoryPersistor;
-use calxgloss_memory::types::{AllocationType, CountStyle, HandleType, MemoryFinding};
+use calxgloss_memory::types::{
+    AllocationType, CountStyle, HandleType, LeakResource, MemoryFinding, TransferDirection,
+};
 use tempfile::TempDir;
 
 // ------------------------------------------------------------
@@ -213,6 +218,106 @@ async fn the_persisted_document_keeps_findings_in_scan_order() {
             ("FUN_18003ab00", "handle"),
             ("FUN_18003ab00", "ref_count"),
         ]
+    );
+}
+
+// ------------------------------------------------------------
+// Cross-function claims
+// ------------------------------------------------------------
+
+/// A canned program for the cross-function pass: one function makes
+/// three allocations — one a scanned callee releases, one handed to a
+/// function outside the scanned set, one never touched again — and
+/// the releasing callee itself stands in the listing.
+fn cross_program() -> FakeProgram {
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18004b210")];
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  pvVar1 = malloc(0x20);\n\
+             \x20 FUN_18004b210(pvVar1);\n\
+             \x20 pvVar2 = malloc(0x30);\n\
+             \x20 FUN_180099999(pvVar2);\n\
+             \x20 pvVar3 = malloc(0x40);\n\
+             \x20 *(int *)pvVar3 = 5;\n",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_18004b210".into(),
+        function(
+            "FUN_18004b210",
+            "undefined FUN_18004b210(void *param_1)",
+            "  free(param_1);\n",
+        ),
+    );
+    program
+}
+
+#[tokio::test]
+async fn cross_function_claims_ride_the_persisted_document() {
+    // The pass's three readings — a scanned callee's release, a hand-off
+    // to an unscanned function, and an allocation that never leaves —
+    // walk scan to disk and back like every other kind: appended after
+    // the per-function findings in listing order, and within one
+    // function in allocation order.
+    let workspace = TempDir::new().unwrap();
+    let result = MemoryEngine::with_source(cross_program())
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = MemoryPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    assert_eq!(loaded, result, "the document round-trips exactly");
+    let order: Vec<(&str, &str)> = loaded
+        .findings
+        .iter()
+        .map(|finding| (finding.function(), finding.kind()))
+        .collect();
+    assert_eq!(
+        order,
+        vec![
+            ("FUN_18003ab00", "cross_function"),
+            ("FUN_18003ab00", "ownership"),
+            ("FUN_18003ab00", "leak"),
+        ]
+    );
+
+    // Each record keeps its claim's detail through the round trip.
+    let MemoryFinding::CrossFunction(lifecycle) = &loaded.findings[0] else {
+        unreachable!("the scanned release reads as a cross-function finding");
+    };
+    assert_eq!(lifecycle.partner, "FUN_18004b210");
+    assert_eq!(lifecycle.variable, "pvVar1");
+    assert_eq!(lifecycle.suggestion, "Box<T>");
+    assert_eq!(lifecycle.confidence, 70);
+
+    let MemoryFinding::Ownership(transfer) = &loaded.findings[1] else {
+        unreachable!("the hand-off to an unscanned function reads as an ownership finding");
+    };
+    assert_eq!(transfer.direction, TransferDirection::HandedToCallee);
+    assert_eq!(transfer.partner.as_deref(), Some("FUN_180099999"));
+    assert_eq!(transfer.variable, "pvVar2");
+    assert_eq!(transfer.confidence, 65);
+
+    let MemoryFinding::Leak(leak) = &loaded.findings[2] else {
+        unreachable!("the untouched allocation reads as a leak finding");
+    };
+    assert_eq!(leak.variable, "pvVar3");
+    assert_eq!(
+        leak.resource,
+        LeakResource::Allocation {
+            allocation_type: AllocationType::Malloc,
+        }
+    );
+    assert_eq!(leak.confidence, 60);
+    assert!(
+        leak.evidence.contains("pvVar3 = malloc(0x40);"),
+        "the acquisition line is a leak's only positive evidence"
     );
 }
 

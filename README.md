@@ -166,6 +166,13 @@ re-analysis, applied types, renames — while the binary's bytes stayed the same
 | `calxgloss-typeinfer` | This-pointer detection, parameter size detection, type propagation |
 | `calxgloss-algorithm` | Control-flow signature matching, string-guided hints, callback patterns |
 | `calxgloss-memory` | Allocation/deallocation pair tracking, handle lifecycle, refcount detection |
+| `calxgloss-sync` | Mutex/lock pair tracking, atomic operation detection, threading patterns |
+| `calxgloss-consts` | Bitflag group detection, sequential enum candidates, magic-number frequency analysis |
+| `calxgloss-callback` | Function-pointer array calls, callback registration sites, jump-table dispatches |
+| `calxgloss-controlflow` | Switch-shaped if-else chains, self-recursive functions, state-variable chains |
+| `calxgloss-stringctx` | Nine-category string classification, per-function string maps, format-string inference |
+| `calxgloss-apidetect` | Import-table extraction, library-to-Rust-crate mapping, per-function API summaries |
+| `calxgloss-serialize` | Byte-swap call matching, bit-packing pattern recognition, magic-byte format sniffing |
 | `calxgloss-testgen` | FFI bindings, test inputs, baseline execution |
 | `calxgloss-translator` | Ghidra → LLM → Rust pipeline |
 | `calxgloss-verify` | Compile and test verification |
@@ -173,7 +180,7 @@ re-analysis, applied types, renames — while the binary's bytes stayed the same
 | `calxgloss-reports` | Terminal output formatting |
 | `calxgloss` | Meta-lib, re-exports all public APIs |
 | `calxgloss-cli` | CLI entry point |
-| `calxgloss-web` | Web review UI (scaffolded) |
+| `calxgloss-web` | Web review UI (REST API, live events, accept/send-back/patch) |
 
 ## License
 

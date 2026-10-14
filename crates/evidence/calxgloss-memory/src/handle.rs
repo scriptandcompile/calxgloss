@@ -516,13 +516,13 @@ fn declaration_type(body: &str, name_start: usize, name_end: usize) -> Option<St
     {
         return None;
     }
-    // Before the name: whitespace, an optional pointer star, more
+    // Before the name: whitespace, any pointer stars, more
     // whitespace, then the end of a type word.
     let mut before = name_start;
     while before > 0 && bytes[before - 1].is_ascii_whitespace() {
         before -= 1;
     }
-    if before > 0 && bytes[before - 1] == b'*' {
+    while before > 0 && bytes[before - 1] == b'*' {
         before -= 1;
         while before > 0 && bytes[before - 1].is_ascii_whitespace() {
             before -= 1;
@@ -1282,6 +1282,20 @@ undefined FUN_18003ab00(void) {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].type_name.as_deref(), Some("FILE"));
         assert_eq!(records[0].suggestion, "impl Drop for FILE");
+    }
+
+    #[test]
+    fn a_pointer_to_pointer_declaration_names_its_type() {
+        // Past any number of stars, not just one.
+        let records = pairs(
+            "\
+  HANDLE **hFile;
+  hFile = CreateFileW(&DAT_3801a2b0,0xc0000000,0,(LPSECURITY_ATTRIBUTES)0x0,3,0x80,0);
+  CloseHandle(hFile);",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].type_name.as_deref(), Some("HANDLE"));
+        assert_eq!(records[0].suggestion, "impl Drop for HANDLE");
     }
 
     #[test]
