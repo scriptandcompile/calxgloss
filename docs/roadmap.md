@@ -31,7 +31,6 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P4.5 | memory Phase 5: cross-function allocation tracking, ownership transfer detection, smart-pointer conversion, resource leak detection, per-type `Drop` suggestions | `calxgloss-memory` | — | 🔶 in progress | work tickets #158–#162 | #157 |
 | P5.5 | sync Phase 5: data-race analysis, lock ordering, async runtime detection, thread-local storage, futex-based synchronization | `calxgloss-sync` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P6.5 | callback Phase 5: full callback chain analysis, plugin architecture detection, event system reconstruction, closure signatures via type inference | `calxgloss-callback` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P7.5 | controlflow Phase 5: full CFG, recursion depth limits, loop nesting, branch density | `calxgloss-controlflow` | — | ⬜ not started | `/to-spec` when picked up | — |
@@ -43,19 +42,14 @@ Test counts in the archive are indicative targets, not exact requirements.
 | X3 | `data_flow.md` updated to include all methodologies | docs | — | ⬜ not started | `/to-spec` when picked up | — |
 | X4 | Architecture diagrams in source docs match implementation | docs | — | ⬜ not started | `/to-spec` when picked up | — |
 
-Legend: ✅ done · 🔶 in progress · ⬜ not started. Rows P4.5–P11.5 and X1,
+Legend: ✅ done · 🔶 in progress · ⬜ not started. Rows P5.5–P11.5 and X1,
 X3–X4 are open future-work items — optional Phase 5 depth work and
 cross-cutting chores — verified still open in the code (2026-10-08); no
 effort estimates yet. P2.5 (typeinfer Phase 5) shipped through #150 and was
 pruned from this matrix when epic #142 closed (2026-10-14); P3.5 (algorithm
 Phase 5) shipped through #156 and was pruned when epic #151 closed
-(2026-10-14).
-
-## P4.5 — memory Phase 5 (`calxgloss-memory`)
-
-Optional depth work (archive §4, Phase 5): cross-function allocation
-tracking, ownership transfer detection, smart-pointer conversion, resource
-leak detection, per-type `Drop` suggestions.
+(2026-10-14); P4.5 (memory Phase 5) shipped through #162 and was pruned when
+epic #157 closed (2026-10-14).
 
 ## P5.5 — sync Phase 5 (`calxgloss-sync`)
 
