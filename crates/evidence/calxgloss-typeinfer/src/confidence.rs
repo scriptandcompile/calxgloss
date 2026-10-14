@@ -49,9 +49,7 @@ enum Target {
     },
     /// One function's return value — the function alone, since a
     /// function has exactly one return type.
-    Return {
-        function: String,
-    },
+    Return { function: String },
 }
 
 impl Target {

@@ -702,10 +702,7 @@ mod tests {
     fn a_return_reading_renders_under_the_name_return() {
         let info = calxgloss_prompts::TypeInfo::from(&InferredType::Return(return_record()));
         assert_eq!(info.name, "return");
-        assert_eq!(
-            info.description,
-            "char * (via return_usage, confidence 60)"
-        );
+        assert_eq!(info.description, "char * (via return_usage, confidence 60)");
     }
 
     #[test]

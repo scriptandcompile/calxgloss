@@ -126,7 +126,11 @@ impl CrossFunctionPropagator {
     /// Where two sites in one body share a target — the same callee at
     /// the same argument position — both records are emitted and the
     /// scan's conflict resolution keeps the strongest, first-seen one.
-    pub fn propagate(&self, func: &DecompiledFunction, callee_params: &CalleeParams) -> Vec<InferredType> {
+    pub fn propagate(
+        &self,
+        func: &DecompiledFunction,
+        callee_params: &CalleeParams,
+    ) -> Vec<InferredType> {
         let params = func.parameter_names();
         let mut records = Vec::new();
         for call in direct_calls(&func.body) {
@@ -511,8 +515,10 @@ mod tests {
         // sit past the call's arguments types nothing.
         let record = param_record("FUN_18004b210", 2, "char *", 70);
         let map: CalleeParams = HashMap::from([("FUN_18004b210", vec![&record])]);
-        let records = CrossFunctionPropagator::new()
-            .propagate(&function("undefined FUN_180051c00(void)", "  FUN_18004b210(a, b);"), &map);
+        let records = CrossFunctionPropagator::new().propagate(
+            &function("undefined FUN_180051c00(void)", "  FUN_18004b210(a, b);"),
+            &map,
+        );
         assert!(records.is_empty());
     }
 
@@ -560,7 +566,10 @@ mod tests {
         );
         let rendered = calxgloss_prompts::TypeInfo::from(&records[0]);
         assert_eq!(rendered.name, "FUN_18004b210(param_1)");
-        assert_eq!(rendered.description, "char * (via cross_function, confidence 70)");
+        assert_eq!(
+            rendered.description,
+            "char * (via cross_function, confidence 70)"
+        );
     }
 
     // ----------------------------------------------------------

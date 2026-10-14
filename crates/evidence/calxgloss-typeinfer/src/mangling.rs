@@ -287,10 +287,7 @@ fn parse_msvc_type(name: &str, i: &mut usize) -> Option<String> {
             if name.as_bytes().get(*i) == Some(&b'E') {
                 *i += 1;
             }
-            if matches!(
-                name.as_bytes().get(*i),
-                Some(b'A'..=b'D' | b'Q'..=b'T')
-            ) {
+            if matches!(name.as_bytes().get(*i), Some(b'A'..=b'D' | b'Q'..=b'T')) {
                 *i += 1;
             }
             let base = parse_msvc_type(name, i)?;
@@ -576,13 +573,7 @@ impl ManglingDetector {
         if signature.thiscall
             && let Some(class) = &signature.class
         {
-            records.push(param_record(
-                name,
-                index,
-                None,
-                &format!("{class} *"),
-                name,
-            ));
+            records.push(param_record(name, index, None, &format!("{class} *"), name));
             index += 1;
         }
         for arg in &signature.args {
@@ -738,7 +729,13 @@ impl ManglingDetector {
             records.push(param_record(key, 0, None, &format!("{class} *"), &evidence));
         }
         for (position, inferred_type) in types.iter().enumerate() {
-            records.push(param_record(key, position + offset, None, inferred_type, &evidence));
+            records.push(param_record(
+                key,
+                position + offset,
+                None,
+                inferred_type,
+                &evidence,
+            ));
         }
         Some(records)
     }
@@ -830,8 +827,9 @@ mod tests {
             params(&records),
             vec![(0, "Widget *".into()), (1, "char *".into())]
         );
-        let InferredType::Return(record) =
-            records.last().expect("a non-void symbol emits a return record")
+        let InferredType::Return(record) = records
+            .last()
+            .expect("a non-void symbol emits a return record")
         else {
             unreachable!("the symbol emits a return record");
         };
@@ -855,9 +853,13 @@ mod tests {
         // `int __cdecl compare(int, unsigned int)`: free (`Y`), int
         // return, `H` and `I` arguments.
         let records = from_listing("?compare@@YAHHI@Z");
-        assert_eq!(params(&records), vec![(0, "int".into()), (1, "unsigned int".into())]);
-        let InferredType::Return(record) =
-            records.last().expect("a non-void symbol emits a return record")
+        assert_eq!(
+            params(&records),
+            vec![(0, "int".into()), (1, "unsigned int".into())]
+        );
+        let InferredType::Return(record) = records
+            .last()
+            .expect("a non-void symbol emits a return record")
         else {
             unreachable!("the symbol emits a return record");
         };

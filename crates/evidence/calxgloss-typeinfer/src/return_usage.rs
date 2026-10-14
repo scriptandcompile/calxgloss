@@ -161,7 +161,12 @@ impl ReturnUsageDetector {
     /// names no value the contract reads), and an enclosing callee the
     /// database does not know, or a position the contract does not read,
     /// says nothing.
-    fn known_position_type(&self, call: &CallSite, calls: &[CallSite], body: &str) -> Option<String> {
+    fn known_position_type(
+        &self,
+        call: &CallSite,
+        calls: &[CallSite],
+        body: &str,
+    ) -> Option<String> {
         let enclosing = calls
             .iter()
             .filter(|outer| outer.offset < call.offset && call.offset < outer.close)
@@ -228,9 +233,7 @@ fn assignment_target(body: &str, offset: usize) -> Option<&str> {
     let last = before.as_bytes().last().copied();
     if matches!(
         last,
-        Some(
-            b'=' | b'<' | b'>' | b'!' | b'+' | b'-' | b'*' | b'/' | b'%' | b'&' | b'|' | b'^'
-        )
+        Some(b'=' | b'<' | b'>' | b'!' | b'+' | b'-' | b'*' | b'/' | b'%' | b'&' | b'|' | b'^')
     ) {
         return None;
     }
@@ -416,8 +419,14 @@ mod tests {
         assert!(records.is_empty(), "position 1 is not read");
 
         // A cast around the call names no value the contract reads.
-        let records = returned("  strlen((char *)FUN_180051c00());\n", &LocalReadings::new());
-        assert!(records.is_empty(), "a cast-wrapped result is not passed as-is");
+        let records = returned(
+            "  strlen((char *)FUN_180051c00());\n",
+            &LocalReadings::new(),
+        );
+        assert!(
+            records.is_empty(),
+            "a cast-wrapped result is not passed as-is"
+        );
     }
 
     #[test]
@@ -495,7 +504,11 @@ mod tests {
         assert_eq!(records[0].inferred_type(), "wchar_t *");
         assert_eq!(records[1].inferred_type(), "char *");
         let winners = crate::confidence::resolve_conflicts(records);
-        assert_eq!(winners.len(), 1, "one function never shows two return types");
+        assert_eq!(
+            winners.len(),
+            1,
+            "one function never shows two return types"
+        );
         assert_eq!(winners[0].inferred_type(), "wchar_t *");
     }
 

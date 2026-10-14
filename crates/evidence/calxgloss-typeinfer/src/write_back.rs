@@ -302,7 +302,10 @@ impl<'a, S: ScanSource, W: TypeWriteSource> WriteBack<'a, S, W> {
                 for record in typed {
                     report.failed.push(FailedRecord {
                         target: target_of(record),
-                        error: format!("could not parse the current prototype {:?}", body.signature),
+                        error: format!(
+                            "could not parse the current prototype {:?}",
+                            body.signature
+                        ),
                     });
                 }
                 continue;
@@ -350,7 +353,11 @@ impl<'a, S: ScanSource, W: TypeWriteSource> WriteBack<'a, S, W> {
             }
 
             let prototype = signature.reassemble(&return_type, &parameters);
-            match self.writer.set_function_prototype(*address, &prototype).await {
+            match self
+                .writer
+                .set_function_prototype(*address, &prototype)
+                .await
+            {
                 Ok(()) => report.applied += merged.len(),
                 Err(error) => {
                     for target in merged {
@@ -763,7 +770,9 @@ mod tests {
     }
 
     impl ScanSource for FakeProgram {
-        async fn functions(&self) -> calxgloss_ghidra::Result<Vec<calxgloss_ghidra::FunctionSummary>> {
+        async fn functions(
+            &self,
+        ) -> calxgloss_ghidra::Result<Vec<calxgloss_ghidra::FunctionSummary>> {
             Ok(self
                 .listing
                 .iter()
@@ -774,13 +783,10 @@ mod tests {
                 .collect())
         }
         async fn decompile(&self, name: &str) -> calxgloss_ghidra::Result<DecompiledFunction> {
-            self.bodies
-                .get(name)
-                .cloned()
-                .ok_or(GhidraError::NotFound {
-                    kind: "function",
-                    query: name.to_string(),
-                })
+            self.bodies.get(name).cloned().ok_or(GhidraError::NotFound {
+                kind: "function",
+                query: name.to_string(),
+            })
         }
         async fn data_types(
             &self,
@@ -830,7 +836,11 @@ mod tests {
         async fn image_base(&self) -> calxgloss_ghidra::Result<u64> {
             Ok(0x180000000)
         }
-        async fn read_memory(&self, _address: u64, _length: usize) -> calxgloss_ghidra::Result<Vec<u8>> {
+        async fn read_memory(
+            &self,
+            _address: u64,
+            _length: usize,
+        ) -> calxgloss_ghidra::Result<Vec<u8>> {
             Ok(Vec::new())
         }
     }
@@ -898,7 +908,11 @@ mod tests {
         ) -> calxgloss_ghidra::Result<()> {
             self.record(&format!("create_enum {name}"))
         }
-        async fn create_typedef(&self, name: &str, base_type: &str) -> calxgloss_ghidra::Result<()> {
+        async fn create_typedef(
+            &self,
+            name: &str,
+            base_type: &str,
+        ) -> calxgloss_ghidra::Result<()> {
             self.record(&format!("create_typedef {name} {base_type}"))
         }
         async fn add_struct_field(
@@ -918,7 +932,13 @@ mod tests {
     // Record builders
     // ------------------------------------------------------------
 
-    fn param(function: &str, index: usize, name: &str, inferred: &str, confidence: u8) -> InferredType {
+    fn param(
+        function: &str,
+        index: usize,
+        name: &str,
+        inferred: &str,
+        confidence: u8,
+    ) -> InferredType {
         InferredType::Param(InferredParamType {
             function: function.to_string(),
             param_index: index,
@@ -1155,8 +1175,12 @@ mod tests {
     #[tokio::test]
     async fn a_void_return_is_concrete_and_survives_a_return_reading() {
         let writer = RecordingWriter::default();
-        let program =
-            program().with_function(0x1800_99000, "FUN_180099000", "void FUN_180099000(void)", "");
+        let program = program().with_function(
+            0x1800_99000,
+            "FUN_180099000",
+            "void FUN_180099000(void)",
+            "",
+        );
         let report = apply(
             program,
             &writer,
@@ -1223,8 +1247,12 @@ mod tests {
             fail_containing: vec!["FUN_18003ab00".to_string()],
             ..Default::default()
         };
-        let program =
-            program().with_function(0x1800_99000, "FUN_180099000", "undefined FUN_180099000(void)", "");
+        let program = program().with_function(
+            0x1800_99000,
+            "FUN_180099000",
+            "undefined FUN_180099000(void)",
+            "",
+        );
         let report = apply(
             program,
             &writer,
@@ -1305,7 +1333,12 @@ mod tests {
         let report = apply(
             program(),
             &writer,
-            vec![call_site("FUN_18003ab00", "CloseHandle", "param_2", "void *")],
+            vec![call_site(
+                "FUN_18003ab00",
+                "CloseHandle",
+                "param_2",
+                "void *",
+            )],
             0,
         )
         .await;
@@ -1373,9 +1406,10 @@ mod tests {
 
     #[test]
     fn the_signature_split_keeps_everything_the_pass_does_not_narrow() {
-        let signature =
-            ParsedSignature::parse("undefined __thiscall FUN_18003ab00(undefined8 param_1,int param_2)")
-                .expect("a decompiler signature");
+        let signature = ParsedSignature::parse(
+            "undefined __thiscall FUN_18003ab00(undefined8 param_1,int param_2)",
+        )
+        .expect("a decompiler signature");
         assert_eq!(signature.return_type, "undefined");
         assert_eq!(signature.convention, ["__thiscall"]);
         assert_eq!(signature.name, "FUN_18003ab00");

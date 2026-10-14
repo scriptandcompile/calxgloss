@@ -711,7 +711,9 @@ mod tests {
         result
             .for_function(function)
             .find_map(|inference| match inference {
-                InferredType::Local(record) if record.variable_name == variable_name => Some(record),
+                InferredType::Local(record) if record.variable_name == variable_name => {
+                    Some(record)
+                }
                 _ => None,
             })
             .expect("local record")
@@ -1134,9 +1136,12 @@ mod tests {
         let result = scan(program).await;
 
         assert_eq!(param_count(&result, "FUN_180051c00", 0), 1);
-        let InferredType::Param(record) =
-            finding(&result, "FUN_180051c00", InferenceMethod::PointerArithmetic, 0)
-        else {
+        let InferredType::Param(record) = finding(
+            &result,
+            "FUN_180051c00",
+            InferenceMethod::PointerArithmetic,
+            0,
+        ) else {
             unreachable!("the pointer detector emits parameter records");
         };
         assert_eq!(record.inferred_type, "void *");
@@ -1526,12 +1531,14 @@ mod tests {
         let result = scan(program).await;
 
         assert_eq!(
-            finding(&result, "FUN_18004b210", InferenceMethod::StringFunction, 0)
-                .inferred_type(),
+            finding(&result, "FUN_18004b210", InferenceMethod::StringFunction, 0).inferred_type(),
             "char *"
         );
         assert_eq!(return_count(&result, "FUN_18004b210"), 1);
-        assert_eq!(return_finding(&result, "FUN_18004b210").inferred_type, "char *");
+        assert_eq!(
+            return_finding(&result, "FUN_18004b210").inferred_type,
+            "char *"
+        );
     }
 
     // ---- C++ mangling analysis ----
@@ -1582,7 +1589,12 @@ mod tests {
     async fn scan_emits_mangling_records_from_a_demangled_qualified_call() {
         let result = scan(mangling_program()).await;
 
-        let record = finding(&result, "Widget::Render(int,char *)", InferenceMethod::Mangling, 0);
+        let record = finding(
+            &result,
+            "Widget::Render(int,char *)",
+            InferenceMethod::Mangling,
+            0,
+        );
         let InferredType::Param(record) = record else {
             unreachable!("the spelled call emits parameter records");
         };
@@ -1594,8 +1606,12 @@ mod tests {
             "Widget::Render(int,char *)(param_1, param_2);"
         );
 
-        let second =
-            finding(&result, "Widget::Render(int,char *)", InferenceMethod::Mangling, 1);
+        let second = finding(
+            &result,
+            "Widget::Render(int,char *)",
+            InferenceMethod::Mangling,
+            1,
+        );
         assert_eq!(second.inferred_type(), "char *");
     }
 
@@ -1606,8 +1622,12 @@ mod tests {
         // non-`void` return — all keyed and evidenced by the symbol.
         let result = scan(mangling_program()).await;
 
-        let this_ptr =
-            finding(&result, "?copy@Widget@@QAGPADPAD@Z", InferenceMethod::Mangling, 0);
+        let this_ptr = finding(
+            &result,
+            "?copy@Widget@@QAGPADPAD@Z",
+            InferenceMethod::Mangling,
+            0,
+        );
         let InferredType::Param(record) = this_ptr else {
             unreachable!("the symbol emits parameter records");
         };
@@ -1615,8 +1635,12 @@ mod tests {
         assert_eq!(record.confidence, Confidence::new(80));
         assert_eq!(record.evidence, "?copy@Widget@@QAGPADPAD@Z");
 
-        let argument =
-            finding(&result, "?copy@Widget@@QAGPADPAD@Z", InferenceMethod::Mangling, 1);
+        let argument = finding(
+            &result,
+            "?copy@Widget@@QAGPADPAD@Z",
+            InferenceMethod::Mangling,
+            1,
+        );
         assert_eq!(argument.inferred_type(), "char *");
 
         let return_record = result
@@ -1650,8 +1674,13 @@ mod tests {
 
         assert_eq!(param_count(&result, "?setup@Widget@@QAEXH@Z", 1), 1);
         assert_eq!(
-            finding(&result, "?setup@Widget@@QAEXH@Z", InferenceMethod::Mangling, 1)
-                .inferred_type(),
+            finding(
+                &result,
+                "?setup@Widget@@QAEXH@Z",
+                InferenceMethod::Mangling,
+                1
+            )
+            .inferred_type(),
             "int"
         );
     }

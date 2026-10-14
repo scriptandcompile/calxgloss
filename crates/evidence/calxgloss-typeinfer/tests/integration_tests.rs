@@ -430,7 +430,11 @@ async fn mangling_records_survive_the_persistence_round_trip() {
         .for_function("?setup@Widget@@QAEXH@Z")
         .filter(|inference| matches!(inference, InferredType::Param(_)))
         .collect();
-    assert_eq!(params.len(), 2, "the this pointer and the argument round-trip");
+    assert_eq!(
+        params.len(),
+        2,
+        "the this pointer and the argument round-trip"
+    );
     let InferredType::Param(record) = params[0] else {
         unreachable!("the listing pass emits parameter records");
     };
@@ -603,11 +607,7 @@ impl RecordingWriter {
 }
 
 impl TypeWriteSource for RecordingWriter {
-    async fn set_function_prototype(
-        &self,
-        function_address: u64,
-        prototype: &str,
-    ) -> Result<()> {
+    async fn set_function_prototype(&self, function_address: u64, prototype: &str) -> Result<()> {
         self.record(&format!(
             "set_function_prototype {function_address:#x} {prototype}"
         ))

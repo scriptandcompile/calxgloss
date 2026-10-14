@@ -134,7 +134,9 @@ impl LocalChainDetector {
                 None
             };
             if let Some(inferred_type) = inferred_type {
-                direct.entry(target).or_insert_with(|| inferred_type.clone());
+                direct
+                    .entry(target)
+                    .or_insert_with(|| inferred_type.clone());
                 records.push(self.record(func, target, &inferred_type, line));
             }
         }
@@ -179,7 +181,19 @@ fn assignment(line: &str) -> Option<(&str, &str)> {
             let plain = after != Some(b'=')
                 && !matches!(
                     before,
-                    Some(b'=' | b'<' | b'>' | b'!' | b'+' | b'-' | b'*' | b'/' | b'%' | b'&' | b'|' | b'^')
+                    Some(
+                        b'=' | b'<'
+                            | b'>'
+                            | b'!'
+                            | b'+'
+                            | b'-'
+                            | b'*'
+                            | b'/'
+                            | b'%'
+                            | b'&'
+                            | b'|'
+                            | b'^'
+                    )
                 );
             if plain {
                 let target = line[..i].trim();
@@ -224,7 +238,10 @@ mod tests {
 
     fn detected(body: &str, readings: &[&InferredParamType]) -> Vec<InferredLocalType> {
         LocalChainDetector::new().detect_locals(
-            &function("undefined FUN_18003ab00(undefined8 param_1,undefined8 param_2)", body),
+            &function(
+                "undefined FUN_18003ab00(undefined8 param_1,undefined8 param_2)",
+                body,
+            ),
             readings,
         )
     }
