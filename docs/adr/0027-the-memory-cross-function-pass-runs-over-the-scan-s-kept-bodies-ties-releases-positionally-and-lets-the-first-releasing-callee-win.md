@@ -1,0 +1,81 @@
+# ADR-0027: The memory cross-function pass runs over the scan's kept bodies, ties releases positionally, and lets the first releasing callee win
+
+- **Status:** Accepted
+- **Date:** 2026-10-14 (P4.5-1 shipped, issue #158)
+- **Deciders:** Arthur (solo project)
+
+## Context
+
+All three memory detectors stop at a body's closing brace: an
+allocation the function never releases is invisible to the pairing
+("never released → not reported"), and the callee that does release it
+pairs nothing because no allocation sits in its own body. A lifecycle
+that crosses a call boundary — ownership moved into a helper that
+frees — was reported by neither half.
+
+Spec #157 asked for cross-function allocation tracking. The questions
+this had to settle: where the callee's body comes from (re-fetch
+through the graph, or the scan's own kept bodies), what counts as the
+callee releasing the value (name matching? positional binding?), what
+happens when several callees could release one block, where the new
+findings land in the persisted order, and how the pairing detector's
+pinned silence on unpaired allocations survives.
+
+## Decision
+
+- **The pass runs after the per-function walk, over the bodies the
+  scan already kept — no new Ghidra round trips.** The engine collects
+  the `DecompiledFunction` values the per-function pass decompiled and
+  hands them to a pure `CrossFunctionAnalyzer`; the call map is derived
+  from those bodies with the same pseudo-C call scan the pairing walk
+  uses. This is the ADR-0014/ADR-0024 precedent: every function in the
+  listing is already in hand, so the caller-fetch route the typeinfer
+  caller→callee pass needed buys nothing here. Exactly-once decompiles
+  and the skip-rate breaker are untouched.
+- **The pass starts from the pairing walk's own open-allocation list.**
+  `AllocatorTracker::open_allocations` runs the same walk as
+  `detect_pairs` — same configured name sets, same variable binding,
+  same most-recent-allocation-closing rule — and returns what it leaves
+  standing. The pairing's contract ("report only pairs, stay silent on
+  unpaired allocations") is untouched, and the two readings can never
+  disagree about what stands open.
+- **The callee's release is positional.** The argument sitting at
+  position *i* at the call site arrives in the parameter the callee's
+  signature declares at *i*; the release must name that parameter as
+  the deallocator's first argument, seen through any cast — the same
+  reading the in-body pairing applies to a local. The tie is the
+  decompiler's positional naming, not resolved data flow, and the
+  finding says so by carrying both bodies' lines as evidence.
+- **Only functions this scan decompiled can release.** A callee
+  outside the scanned set — a library routine, a thunk, a function
+  whose decompile failed — carries no visible release, so it claims
+  nothing. A missing half fabricates no cross-function claim.
+- **The first releasing callee in source order wins.** Where one open
+  variable reaches several releasing callees, only the first call site
+  claims it: one moved block moves once, and the rule keeps two scans
+  of one program byte-identical.
+- **Confidence 70 — level with an in-body pair.** Both sides are
+  explicit calls to recognized names and the hand-off site is
+  concrete, but the variable-to-parameter tie is positional naming
+  rather than one body's assignment, so it neither beats nor falls
+  below the direct pairing.
+- **Findings append after the per-function findings, in listing order
+  and within one function in allocation order.** The persisted list
+  stays stable and diffable, and the existing scan-order contract —
+  per-function findings grouped by function in listing order — holds
+  unchanged with the new group appended.
+
+## Consequences
+
+- The finding union gained a fourth kind, `cross_function`, riding the
+  existing accessors: the persisted JSON, the CLI report's kind
+  breakdown, and the prompt conversion picked it up with no shape
+  change.
+- The engine now holds every body for the scan's duration — the memory
+  cost of a scan is one program's worth of pseudo-C, which the
+  cross-function depth requires and the sequential walk alone did not.
+- The open-allocation reading is the seam the rest of P4.5 builds on:
+  ownership-transfer detection (#159) reads where those open variables
+  escape, leak detection (#160) reports the ones that escape nowhere,
+  and the smart-pointer upgrade (#161) reads what the callee does with
+  what it was handed.

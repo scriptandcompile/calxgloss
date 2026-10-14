@@ -16,11 +16,12 @@
 //! order.
 
 use crate::allocator::AllocatorTracker;
+use crate::cross_function::CrossFunctionAnalyzer;
 use crate::error::Result;
 use crate::handle::HandleDetector;
 use crate::refcount::ReferenceCountDetector;
 use crate::types::{MemoryFinding, MemoryResult, ScanMetadata};
-use calxgloss_ghidra::GhidraClient;
+use calxgloss_ghidra::{DecompiledFunction, GhidraClient};
 use std::time::Instant;
 use tracing::{info, warn};
 
@@ -49,6 +50,7 @@ pub struct MemoryEngine<S = GhidraClient> {
     allocator: AllocatorTracker,
     handles: HandleDetector,
     refcounts: ReferenceCountDetector,
+    cross_function: CrossFunctionAnalyzer,
 }
 
 impl MemoryEngine<GhidraClient> {
@@ -60,6 +62,7 @@ impl MemoryEngine<GhidraClient> {
             allocator: AllocatorTracker::with_default_names(),
             handles: HandleDetector::with_default_names(),
             refcounts: ReferenceCountDetector::with_default_names(),
+            cross_function: CrossFunctionAnalyzer::new(),
         }
     }
 }
@@ -73,6 +76,7 @@ impl<S> MemoryEngine<S> {
             allocator: AllocatorTracker::with_default_names(),
             handles: HandleDetector::with_default_names(),
             refcounts: ReferenceCountDetector::with_default_names(),
+            cross_function: CrossFunctionAnalyzer::new(),
         }
     }
 
@@ -125,6 +129,7 @@ impl<S> MemoryEngine<S> {
         let functions = self.source.functions().await?;
 
         let mut findings = Vec::new();
+        let mut bodies: Vec<DecompiledFunction> = Vec::new();
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
         for function in &functions {
@@ -183,7 +188,14 @@ impl<S> MemoryEngine<S> {
                     .into_iter()
                     .map(MemoryFinding::RefCount),
             );
+            bodies.push(decompiled);
         }
+
+        // The cross-function pass runs after the per-function walk,
+        // over the bodies the scan already decompiled — no extra
+        // Ghidra round trips — and its findings append in listing
+        // order, so the persisted list stays stable and diffable.
+        findings.extend(self.cross_function.analyze(&bodies, &self.allocator));
 
         let mut metadata = ScanMetadata::new(binary);
         metadata.duration_secs = started.elapsed().as_secs();
@@ -636,6 +648,132 @@ mod tests {
         };
         assert_eq!(record.increment, "retain");
         assert_eq!(record.decrement, "release");
+    }
+
+    #[tokio::test]
+    async fn a_scan_reports_an_allocation_released_by_a_callee() {
+        // The cross-function pair the per-function detectors cannot
+        // see: A allocates and hands the block to B, B's body releases
+        // the parameter it arrived in.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  pvVar1 = malloc(0x20);\n  FUN_18003e750(pvVar1);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void *param_1)",
+                "  free(param_1);\n",
+            ),
+        );
+        let result = scan(program).await;
+        let findings: Vec<&MemoryFinding> = result.for_function("FUN_18003ab00").collect();
+        assert_eq!(findings.len(), 1);
+        let MemoryFinding::CrossFunction(record) = findings[0] else {
+            unreachable!("the cross-function pass reads the hand-off pair");
+        };
+        assert_eq!(record.partner, "FUN_18003e750");
+        assert_eq!(record.variable, "pvVar1");
+        assert_eq!(record.confidence.value(), 70);
+        // The finding belongs to the allocating function; the callee's
+        // own release is its half of the pair, not a finding of its own.
+        assert!(result.for_function("FUN_18003e750").next().is_none());
+    }
+
+    #[tokio::test]
+    async fn cross_function_findings_append_after_the_per_function_findings() {
+        // One function carries an in-body pair and an open allocation
+        // handed to a releasing callee: the pairing finding rides the
+        // per-function walk, the cross-function finding lands after it.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  pvVar1 = malloc(0x20);\n  free(pvVar1);\n  pvVar2 = malloc(0x30);\n  FUN_18003e750(pvVar2);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void *param_1)",
+                "  free(param_1);\n",
+            ),
+        );
+        let result = scan(program).await;
+        assert_eq!(
+            kinds(&result, "FUN_18003ab00"),
+            ["allocation", "cross_function"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_function_that_will_not_decompile_fabricates_no_cross_function_claim() {
+        // A hands an open allocation to B, but B never decompiled: the
+        // pass reads only the bodies the scan holds, so a missing half
+        // claims nothing.
+        let mut program = program();
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(IUnknown *param_1)",
+                "  pvVar9 = malloc(0x20);\n  FUN_18003e750(pvVar9);\n",
+            ),
+        );
+        program.fail_decompiles = vec!["FUN_18003e750".into()];
+        let result = scan(program).await;
+        assert!(
+            result
+                .findings
+                .iter()
+                .all(|finding| finding.kind() != "cross_function"),
+            "a callee with no body releases nothing: {result:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_deallocator_names_reach_the_cross_function_pass() {
+        // The pass reads the tracker the engine was configured with,
+        // not a private default set.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_1800412a0"), summary("FUN_1800413b0")];
+        program.bodies.insert(
+            "FUN_1800412a0".into(),
+            function(
+                "FUN_1800412a0",
+                "undefined FUN_1800412a0(void)",
+                "  pvVar1 = CoTaskMemAlloc(0x10);\n  FUN_1800413b0(pvVar1);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_1800413b0".into(),
+            function(
+                "FUN_1800413b0",
+                "undefined FUN_1800413b0(void *param_1)",
+                "  CoTaskMemFree(param_1);\n",
+            ),
+        );
+        let engine =
+            MemoryEngine::with_source(program).with_allocator(AllocatorTracker::with_names(
+                [AllocatorSignature::new(
+                    "CoTaskMemAlloc",
+                    AllocationType::Malloc,
+                )],
+                ["CoTaskMemFree"],
+            ));
+        let result = engine.scan("eqmain.dll").await.expect("scan");
+        assert_eq!(kinds(&result, "FUN_1800412a0"), ["cross_function"]);
     }
 
     #[tokio::test]

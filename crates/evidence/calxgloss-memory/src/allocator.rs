@@ -155,6 +155,41 @@ impl AllocatorTracker {
         &self.deallocators
     }
 
+    /// The allocations one function's body leaves open: the blocks
+    /// bound to a plain variable that no release in this body closes.
+    ///
+    /// The same walk [`detect_pairs`](Self::detect_pairs) runs — same
+    /// name sets, same variable binding, same most-recent-allocation
+    /// closing rule — but where the pairing reports the closed pairs
+    /// and stays silent on the rest, this returns what the walk leaves
+    /// standing: the question of whether an open block escapes into a
+    /// callee or leaks is a cross-function one, and the cross-function
+    /// pass starts from exactly this list.
+    pub(crate) fn open_allocations(&self, func: &DecompiledFunction) -> Vec<OpenAllocation> {
+        let mut open: Vec<OpenAllocation> = Vec::new();
+        for call in direct_calls(&func.body) {
+            if let Some(signature) = self.allocators.iter().find(|a| a.name == call.callee) {
+                if let Some(variable) = assigned_variable(&func.body, call.offset) {
+                    open.push(OpenAllocation {
+                        variable: variable.to_string(),
+                        allocation_type: signature.allocation_type,
+                        constant_size: sizes_constant(signature.allocation_type, &call.args),
+                        offset: call.offset,
+                        line: line_at(&func.body, call.offset),
+                    });
+                }
+            } else if self.deallocators.iter().any(|d| d == call.callee) {
+                let freed = call.args.first().map(|arg| strip_casts(arg, is_type_word));
+                if let Some(freed) = freed.as_deref().and_then(plain_variable)
+                    && let Some(at) = open.iter().rposition(|o| o.variable == freed)
+                {
+                    open.remove(at);
+                }
+            }
+        }
+        open
+    }
+
     /// The allocation/release pairs one function's body carries.
     ///
     /// The reading walks the body's direct calls in source order —
@@ -297,12 +332,12 @@ fn is_short_lived(allocation: &OpenAllocation, body: &str, released_at: usize) -
 /// walked: the variable holding the block, the family behind it,
 /// whether the size arguments are plain constants, and where and on
 /// which line the allocation sits.
-struct OpenAllocation {
-    variable: String,
-    allocation_type: AllocationType,
-    constant_size: bool,
-    offset: usize,
-    line: String,
+pub(crate) struct OpenAllocation {
+    pub(crate) variable: String,
+    pub(crate) allocation_type: AllocationType,
+    pub(crate) constant_size: bool,
+    pub(crate) offset: usize,
+    pub(crate) line: String,
 }
 /// The variable a call's result is stored into, read from the call's
 /// own line: walking left from the callee to the `=` that assigns,
@@ -461,7 +496,7 @@ fn nulls_variable(body: &str, at: usize, name_len: usize) -> bool {
 }
 /// The type words a Ghidra cast may spell, matching the decompiler's
 /// vocabulary the other detectors' scans strip.
-fn is_type_word(word: &str) -> bool {
+pub(crate) fn is_type_word(word: &str) -> bool {
     matches!(
         word,
         "undefined"
@@ -501,7 +536,7 @@ fn is_type_word(word: &str) -> bool {
 /// a release names the block it closes by. Anything else — an offset
 /// into the block, an indexed element, a literal — names no variable
 /// the pairing can key on.
-fn plain_variable(arg: &str) -> Option<&str> {
+pub(crate) fn plain_variable(arg: &str) -> Option<&str> {
     let trimmed = arg.trim();
     let mut bytes = trimmed.bytes();
     let first = bytes.next()?;

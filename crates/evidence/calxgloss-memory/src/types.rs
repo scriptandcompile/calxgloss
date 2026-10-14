@@ -225,6 +225,43 @@ pub struct ReferenceCount {
 }
 
 // ============================================================
+// Cross-function lifecycle
+// ============================================================
+
+/// One memory lifecycle observation spanning two functions, with the
+/// evidence behind it.
+///
+/// A record says the [`function`](Self::function) allocated a block of
+/// [`allocation_type`](Self::allocation_type), bound it to
+/// [`variable`](Self::variable), handed that variable to
+/// [`partner`](Self::partner) at a call site, and the partner's body
+/// released the parameter it arrived in: ownership crossed the call
+/// boundary, which is what [`suggestion`](Self::suggestion) names. The
+/// allocation line, the hand-off call line, and the partner's release
+/// line are kept as [`evidence`](Self::evidence) so a reviewer (or a
+/// translation prompt) can check the reasoning across both bodies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrossFunctionLifecycle {
+    /// The function the record is about — the one that allocated.
+    pub function: String,
+    /// The callee that released the block.
+    pub partner: String,
+    /// The variable the allocation was bound to in the allocating
+    /// function.
+    pub variable: String,
+    /// The allocation family the block belongs to.
+    pub allocation_type: AllocationType,
+    /// The Rust pattern the cross-function pairing suggests, e.g.
+    /// `Box<T>` for ownership moved into the callee.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+    /// The decompiled lines that support the record — the allocation,
+    /// the hand-off call, and the partner's release.
+    pub evidence: String,
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -234,7 +271,7 @@ pub struct ReferenceCount {
 /// persisted result carries, so one list can hold every finding for a
 /// binary and a consumer reads the shared shape — function, suggestion,
 /// confidence, evidence — without naming which detector produced it.
-/// Unlike typeinfer's competing families, the three detectors read
+/// Unlike typeinfer's competing families, the detectors read
 /// disjoint body shapes and can't make competing claims for one target,
 /// so nothing is resolved between variants. The serde `kind` tag names
 /// the record shape in the persisted JSON.
@@ -247,6 +284,8 @@ pub enum MemoryFinding {
     Handle(HandleLifecycle),
     /// A reference-count bump paired with its drop.
     RefCount(ReferenceCount),
+    /// An allocation released by a callee it was handed to.
+    CrossFunction(CrossFunctionLifecycle),
 }
 
 impl MemoryFinding {
@@ -256,6 +295,7 @@ impl MemoryFinding {
             MemoryFinding::Allocation(record) => &record.function,
             MemoryFinding::Handle(record) => &record.function,
             MemoryFinding::RefCount(record) => &record.function,
+            MemoryFinding::CrossFunction(record) => &record.function,
         }
     }
 
@@ -265,6 +305,7 @@ impl MemoryFinding {
             MemoryFinding::Allocation(record) => &record.suggestion,
             MemoryFinding::Handle(record) => &record.suggestion,
             MemoryFinding::RefCount(record) => &record.suggestion,
+            MemoryFinding::CrossFunction(record) => &record.suggestion,
         }
     }
 
@@ -274,6 +315,7 @@ impl MemoryFinding {
             MemoryFinding::Allocation(record) => record.confidence,
             MemoryFinding::Handle(record) => record.confidence,
             MemoryFinding::RefCount(record) => record.confidence,
+            MemoryFinding::CrossFunction(record) => record.confidence,
         }
     }
 
@@ -283,26 +325,32 @@ impl MemoryFinding {
             MemoryFinding::Allocation(record) => &record.evidence,
             MemoryFinding::Handle(record) => &record.evidence,
             MemoryFinding::RefCount(record) => &record.evidence,
+            MemoryFinding::CrossFunction(record) => &record.evidence,
         }
     }
 
-    /// The serde `kind` tag — `allocation`, `handle`, or `ref_count` —
-    /// naming the detector behind the finding.
+    /// The serde `kind` tag — `allocation`, `handle`, `ref_count`, or
+    /// `cross_function` — naming the detector behind the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             MemoryFinding::Allocation(_) => "allocation",
             MemoryFinding::Handle(_) => "handle",
             MemoryFinding::RefCount(_) => "ref_count",
+            MemoryFinding::CrossFunction(_) => "cross_function",
         }
     }
 
     /// What the finding pairs, spelled for a report row: the allocation
-    /// family, the opener/closer spellings, or the bump/drop spellings.
+    /// family, the opener/closer spellings, the bump/drop spellings, or
+    /// the allocation family and the releasing partner.
     pub fn target(&self) -> String {
         match self {
             MemoryFinding::Allocation(record) => record.allocation_type.to_string(),
             MemoryFinding::Handle(record) => format!("{}→{}", record.opener, record.closer),
             MemoryFinding::RefCount(record) => format!("{}→{}", record.increment, record.decrement),
+            MemoryFinding::CrossFunction(record) => {
+                format!("{}→{}", record.allocation_type, record.partner)
+            }
         }
     }
 }
@@ -337,10 +385,11 @@ impl From<&MemoryFinding> for calxgloss_prompts::MemoryInfo {
 ///
 /// The findings are the three detectors' outputs in scan order: function
 /// by function, and within one function the allocation pairs, then the
-/// handle lifetimes, then the reference counts. The detectors read
-/// disjoint body shapes, so a function can carry findings of every kind
-/// at once and none competes with another; the stable order means two
-/// scans of the same program diff cleanly.
+/// handle lifetimes, then the reference counts — followed by the
+/// cross-function pass's findings, also in listing order. The detectors
+/// read disjoint body shapes, so a function can carry findings of every
+/// kind at once and none competes with another; the stable order means
+/// two scans of the same program diff cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryResult {
     /// Provenance of the scan that produced these findings.
@@ -612,11 +661,43 @@ mod tests {
     }
 
     #[test]
+    fn a_cross_function_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = MemoryFinding::CrossFunction(CrossFunctionLifecycle {
+            function: "FUN_18003ab00".into(),
+            partner: "FUN_18003e750".into(),
+            variable: "pvVar1".into(),
+            allocation_type: AllocationType::Malloc,
+            suggestion: "Box<T>".into(),
+            confidence: Confidence::new(70),
+            evidence: "pvVar1 = malloc(0x20); FUN_18003e750(pvVar1); free(param_1);".into(),
+        });
+        let json =
+            serde_json::to_string(&finding).expect("cross-function finding should serialize");
+        // The union is internally tagged: the kind names the record
+        // shape and the payload's own fields sit beside it.
+        assert!(json.contains("\"kind\":\"cross_function\""));
+        assert!(json.contains("\"partner\":\"FUN_18003e750\""));
+        assert!(json.contains("\"variable\":\"pvVar1\""));
+        let back: MemoryFinding =
+            serde_json::from_str(&json).expect("cross-function finding should read back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
     fn the_union_accessors_reach_through_every_variant() {
         let findings = [
             MemoryFinding::Allocation(hint()),
             MemoryFinding::Handle(handle_lifecycle()),
             MemoryFinding::RefCount(reference_count()),
+            MemoryFinding::CrossFunction(CrossFunctionLifecycle {
+                function: "FUN_18003ab00".into(),
+                partner: "FUN_18003e750".into(),
+                variable: "pvVar1".into(),
+                allocation_type: AllocationType::Malloc,
+                suggestion: "Box<T>".into(),
+                confidence: Confidence::new(70),
+                evidence: "pvVar1 = malloc(0x20); free(param_1);".into(),
+            }),
         ];
         for finding in &findings {
             assert_eq!(finding.function(), "FUN_18003ab00");
@@ -625,16 +706,29 @@ mod tests {
             assert!(!finding.evidence().is_empty());
         }
         let kinds: Vec<&str> = findings.iter().map(|f| f.kind()).collect();
-        assert_eq!(kinds, vec!["allocation", "handle", "ref_count"]);
+        assert_eq!(
+            kinds,
+            vec!["allocation", "handle", "ref_count", "cross_function"]
+        );
         let suggestions: Vec<&str> = findings.iter().map(|f| f.suggestion()).collect();
         assert_eq!(
             suggestions,
-            vec!["Box<T>", "RAII guard struct with Drop impl", "Rc<T>"]
+            vec![
+                "Box<T>",
+                "RAII guard struct with Drop impl",
+                "Rc<T>",
+                "Box<T>"
+            ]
         );
         let targets: Vec<String> = findings.iter().map(|f| f.target()).collect();
         assert_eq!(
             targets,
-            vec!["malloc", "CreateFileW→CloseHandle", "AddRef→Release"]
+            vec![
+                "malloc",
+                "CreateFileW→CloseHandle",
+                "AddRef→Release",
+                "malloc→FUN_18003e750"
+            ]
         );
     }
 
@@ -718,6 +812,20 @@ mod tests {
         let info = calxgloss_prompts::MemoryInfo::from(&ref_count);
         assert_eq!(info.kind, "ref_count");
         assert_eq!(info.suggestion, "Rc<T>");
+        assert_eq!(info.confidence, 70);
+
+        let cross_function = MemoryFinding::CrossFunction(CrossFunctionLifecycle {
+            function: "FUN_18003ab00".into(),
+            partner: "FUN_18003e750".into(),
+            variable: "pvVar1".into(),
+            allocation_type: AllocationType::Malloc,
+            suggestion: "Box<T>".into(),
+            confidence: Confidence::new(70),
+            evidence: "pvVar1 = malloc(0x20); free(param_1);".into(),
+        });
+        let info = calxgloss_prompts::MemoryInfo::from(&cross_function);
+        assert_eq!(info.kind, "cross_function");
+        assert_eq!(info.suggestion, "Box<T>");
         assert_eq!(info.confidence, 70);
     }
 }

@@ -26,6 +26,10 @@
 //! - [`refcount`] - Reference counting detection: detects
 //!   `ref_count++`/`ref_count--` and `AddRef`/`Release` patterns and
 //!   suggests `Rc<T>`/`Arc<T>`.
+//! - [`cross_function`] - Cross-function lifecycle tracking: an
+//!   allocation left open by one function and released by a callee it
+//!   was handed to, read over the bodies one scan already holds — no
+//!   extra Ghidra round trips.
 //! - [`engine`] - Scan orchestration: `MemoryEngine` runs the three
 //!   detectors over one open Ghidra program through a `ScanSource`
 //!   (function listing + decompile-by-name), one sequential pass that
@@ -36,6 +40,7 @@
 //! - [`error`] - [`MemoryError`] and the crate-wide [`Result`] alias.
 
 pub mod allocator;
+pub mod cross_function;
 pub mod engine;
 pub mod error;
 pub mod handle;

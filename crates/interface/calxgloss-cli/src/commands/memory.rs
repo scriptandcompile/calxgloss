@@ -96,7 +96,7 @@ fn print_memory_lifecycle_report(result: &MemoryResult, path: &Path) {
     println!();
 
     // Findings, broken down by the record kind the union carries.
-    let kind_breakdown: Vec<String> = ["allocation", "handle", "ref_count"]
+    let kind_breakdown: Vec<String> = ["allocation", "handle", "ref_count", "cross_function"]
         .into_iter()
         .map(|kind| {
             (
