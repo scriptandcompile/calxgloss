@@ -1,9 +1,10 @@
 //! Type inference orchestration.
 //!
-//! [`TypeInferEngine`] runs the three inline detectors — this-pointer
-//! detection, parameter-size detection, and known-type propagation — over
-//! every function of one open Ghidra program, then runs the post-inline
-//! passes over the same bodies: the assignment-chain pass types each
+//! [`TypeInferEngine`] runs the inline detectors — this-pointer
+//! detection, parameter-size detection, known-type propagation, and the
+//! name-borne readings of the mangling detector — over every function of
+//! one open Ghidra program, then runs the post-inline passes over the
+//! same bodies: the assignment-chain pass types each
 //! function's locals from its surviving parameter readings and known
 //! contracts, the cross-function passes carry readings across function
 //! boundaries in both directions, the return-usage pass types each
@@ -12,7 +13,7 @@
 //!
 //! The inline detectors are pure text analysis over one decompiled body,
 //! so the engine fetches each function's pseudo-C exactly once and reads
-//! it with all three, rather than having each detector pull its own copy
+//! it with all of them, rather than having each detector pull its own copy
 //! — and the cross-function passes re-read those same bodies, fetching a
 //! caller outside the listing at most once, keeping the scan at one
 //! decompile per function. The inline pass is then one
@@ -28,6 +29,7 @@ use crate::cross_function::{CalleeParams, CrossFunctionPropagator};
 use crate::error::Result;
 use crate::known_type::KnownTypePropagationEngine;
 use crate::local_chain::LocalChainDetector;
+use crate::mangling::ManglingDetector;
 use crate::param_size::ParameterSizeDetector;
 use crate::return_usage::{LocalReadings, ReturnUsageDetector};
 use crate::this_ptr::ThisPointerDetector;
@@ -62,6 +64,7 @@ pub struct TypeInferEngine<S = GhidraClient> {
     local_chain: LocalChainDetector,
     cross: CrossFunctionPropagator,
     return_usage: ReturnUsageDetector,
+    mangling: ManglingDetector,
 }
 
 impl TypeInferEngine<GhidraClient> {
@@ -75,6 +78,7 @@ impl TypeInferEngine<GhidraClient> {
             local_chain: LocalChainDetector::new(),
             cross: CrossFunctionPropagator::new(),
             return_usage: ReturnUsageDetector::new(),
+            mangling: ManglingDetector::new(),
         }
     }
 }
@@ -90,19 +94,22 @@ impl<S> TypeInferEngine<S> {
             local_chain: LocalChainDetector::new(),
             cross: CrossFunctionPropagator::new(),
             return_usage: ReturnUsageDetector::new(),
+            mangling: ManglingDetector::new(),
         }
     }
 
     /// Infer types across `binary`, decompiling each function exactly
-    /// once and reading it with all three inline detectors, then
+    /// once and reading it with all the inline detectors, then
     /// propagating the surviving readings across function boundaries in
     /// both directions.
     ///
     /// `binary` names the program the scan reads (e.g. `eqmain.dll`) and
     /// becomes the key a persisted result is filed under. The inferences
     /// follow the function listing — function by function, and within one
-    /// function the this-pointer readings, then the size readings, then
-    /// the known-signature readings — with the local records and the
+    /// function the name-borne readings of its listing symbol, then the
+    /// this-pointer readings, then the size readings, then
+    /// the known-signature readings, then the readings carried in names
+    /// inside the body — with the local records and the
     /// cross-function records appended after the inline ones, in listing
     /// order, so two scans of the same program diff cleanly.
     ///
@@ -155,6 +162,11 @@ impl<S> TypeInferEngine<S> {
                 skipped += 1;
                 continue;
             }
+            // The contract carried in the symbol itself: an MSVC-mangled
+            // listing name decodes without any body, so the reading
+            // stands even when the decompile below fails.
+            inferences.extend(self.mangling.detect_from_listing(&function.name));
+
             let decompiled = match self.source.decompile(&function.name).await {
                 Ok(decompiled) => decompiled,
                 Err(error) => {
@@ -188,6 +200,10 @@ impl<S> TypeInferEngine<S> {
                 .chain(self.param_size.detect_parameter_sizes(&decompiled))
                 .chain(self.known.propagate_known_types(&decompiled));
             inferences.extend(readings.map(InferredType::Param));
+            // The contract carried in names inside the body: the
+            // function's own demangled name with a spelled parameter
+            // list, and qualified calls whose callee spells one.
+            inferences.extend(self.mangling.detect_from_body(&decompiled));
             bodies.push(decompiled);
         }
 
@@ -1516,5 +1532,147 @@ mod tests {
         );
         assert_eq!(return_count(&result, "FUN_18004b210"), 1);
         assert_eq!(return_finding(&result, "FUN_18004b210").inferred_type, "char *");
+    }
+
+    // ---- C++ mangling analysis ----
+
+    /// The canned program for the mangling pass: one function whose body
+    /// carries a demangled qualified call with a spelled parameter list,
+    /// and one function whose listing name is an MSVC-mangled symbol —
+    /// `char * Widget::copy(char *)`, a member with an
+    /// implicit `this`.
+    fn mangling_program() -> FakeProgram {
+        let mut program = FakeProgram::empty();
+        program.listing = vec![
+            summary("FUN_18003ab00"),
+            summary("?copy@Widget@@QAGPADPAD@Z"),
+        ];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(undefined8 param_1,undefined8 param_2)",
+                "  Widget::Render(int,char *)(param_1, param_2);\n",
+            ),
+        );
+        program.bodies.insert(
+            "?copy@Widget@@QAGPADPAD@Z".into(),
+            function(
+                "?copy@Widget@@QAGPADPAD@Z",
+                "undefined ?copy@Widget@@QAGPADPAD@Z(undefined8 param_1,undefined8 param_2)",
+                "  return param_2;\n",
+            ),
+        );
+        program
+    }
+
+    fn mangling_count(result: &TypeInferenceResult) -> usize {
+        result
+            .inferences
+            .iter()
+            .filter(|inference| match inference {
+                InferredType::Param(record) => record.method == InferenceMethod::Mangling,
+                InferredType::Return(record) => record.method == InferenceMethod::Mangling,
+                _ => false,
+            })
+            .count()
+    }
+
+    #[tokio::test]
+    async fn scan_emits_mangling_records_from_a_demangled_qualified_call() {
+        let result = scan(mangling_program()).await;
+
+        let record = finding(&result, "Widget::Render(int,char *)", InferenceMethod::Mangling, 0);
+        let InferredType::Param(record) = record else {
+            unreachable!("the spelled call emits parameter records");
+        };
+        assert_eq!(record.inferred_type, "int");
+        assert_eq!(record.scope, InferenceScope::Function);
+        assert_eq!(record.confidence, Confidence::new(80));
+        assert_eq!(
+            record.evidence,
+            "Widget::Render(int,char *)(param_1, param_2);"
+        );
+
+        let second =
+            finding(&result, "Widget::Render(int,char *)", InferenceMethod::Mangling, 1);
+        assert_eq!(second.inferred_type(), "char *");
+    }
+
+    #[tokio::test]
+    async fn an_msvc_mangled_listing_symbol_types_the_function_from_its_own_name() {
+        // The unnamed wrapper typed from its own symbol: the member's
+        // implicit `this` at zero, the decoded argument at one, and the
+        // non-`void` return — all keyed and evidenced by the symbol.
+        let result = scan(mangling_program()).await;
+
+        let this_ptr =
+            finding(&result, "?copy@Widget@@QAGPADPAD@Z", InferenceMethod::Mangling, 0);
+        let InferredType::Param(record) = this_ptr else {
+            unreachable!("the symbol emits parameter records");
+        };
+        assert_eq!(record.inferred_type, "Widget *");
+        assert_eq!(record.confidence, Confidence::new(80));
+        assert_eq!(record.evidence, "?copy@Widget@@QAGPADPAD@Z");
+
+        let argument =
+            finding(&result, "?copy@Widget@@QAGPADPAD@Z", InferenceMethod::Mangling, 1);
+        assert_eq!(argument.inferred_type(), "char *");
+
+        let return_record = result
+            .for_function("?copy@Widget@@QAGPADPAD@Z")
+            .find(|inference| matches!(inference, InferredType::Return(_)))
+            .expect("the symbol's return reading");
+        let InferredType::Return(record) = return_record else {
+            unreachable!("the return reading is a return record");
+        };
+        assert_eq!(record.inferred_type, "char *");
+        assert_eq!(record.method, InferenceMethod::Mangling);
+    }
+
+    #[tokio::test]
+    async fn a_mangling_reading_beats_a_weaker_inline_reading_for_one_parameter() {
+        // The symbol spells `void __thiscall Widget::setup(int)` while
+        // the body's `strlen` reads the same position as `char *`: the
+        // symbol-borne fact (80) outranks the usage reading (70), and
+        // the target keeps one record.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("?setup@Widget@@QAEXH@Z")];
+        program.bodies.insert(
+            "?setup@Widget@@QAEXH@Z".into(),
+            function(
+                "?setup@Widget@@QAEXH@Z",
+                "undefined ?setup@Widget@@QAEXH@Z(undefined8 param_1,undefined8 param_2)",
+                "  strlen(param_2);\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        assert_eq!(param_count(&result, "?setup@Widget@@QAEXH@Z", 1), 1);
+        assert_eq!(
+            finding(&result, "?setup@Widget@@QAEXH@Z", InferenceMethod::Mangling, 1)
+                .inferred_type(),
+            "int"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_name_without_a_spelled_list_emits_no_mangling_records() {
+        // An ordinary qualified call and a plain `FUN_` listing name
+        // carry no spelled contract: the this-pointer detector reads
+        // what usage shows of them, the mangling pass says nothing.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(undefined8 param_1)",
+                "  Widget::paint(param_1);\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        assert_eq!(mangling_count(&result), 0);
     }
 }

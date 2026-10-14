@@ -124,6 +124,7 @@ fn print_type_inference_report(result: &TypeInferenceResult, path: &Path) {
         InferenceMethod::CrossFunction,
         InferenceMethod::AssignmentChain,
         InferenceMethod::ReturnUsage,
+        InferenceMethod::Mangling,
     ]
     .into_iter()
     .map(|method| {

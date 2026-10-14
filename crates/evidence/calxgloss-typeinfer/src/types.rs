@@ -68,6 +68,11 @@ pub enum InferenceMethod {
     /// typed local, passed at a known-signature position, or
     /// dereferenced — reads the function's return type.
     ReturnUsage,
+    /// A C++ name carries the contract: an MSVC-mangled symbol decoded
+    /// for convention and argument types, or a demangled qualified name
+    /// with a spelled parameter list, types the parameters (and where
+    /// the name spells one, the return) it names.
+    Mangling,
 }
 
 impl InferenceMethod {
@@ -94,6 +99,7 @@ calxgloss_types::display_serde_label!(InferenceMethod {
     CrossFunction => "cross_function",
     AssignmentChain => "assignment_chain",
     ReturnUsage => "return_usage",
+    Mangling => "mangling",
 });
 
 // ============================================================
@@ -480,6 +486,7 @@ mod tests {
             InferenceMethod::IntegerBitPattern.to_string(),
             "integer_bit_pattern"
         );
+        assert_eq!(InferenceMethod::Mangling.to_string(), "mangling");
         assert_eq!(InferenceScope::Function.to_string(), "function");
         assert_eq!(InferenceScope::Program.to_string(), "program");
     }

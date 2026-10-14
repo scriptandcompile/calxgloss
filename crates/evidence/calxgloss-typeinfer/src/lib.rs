@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into twelve modules:
+//! The crate is organized into thirteen modules:
 //!
 //! - [`types`] - Core data types: `InferredParamType`, `InferenceMethod`,
 //!   `InferenceScope` for per-parameter inference records; `InferredLocalType`,
@@ -17,9 +17,10 @@
 //!   `TypeInferenceResult`, `ScanMetadata` for the persisted per-binary
 //!   results.
 //! - [`engine`] - Scan orchestration: `TypeInferEngine` decompiles each
-//!   function of a program exactly once, reads it with all three inline
-//!   detectors, propagates the surviving readings across function
-//!   boundaries, and assembles everything into one `TypeInferenceResult`;
+//!   function of a program exactly once, reads it with the inline
+//!   detectors and its listing name with the mangling detector, and
+//!   propagates the surviving readings across function boundaries, and
+//!   assembles everything into one `TypeInferenceResult`;
 //!   the shared `ScanSource` trait abstracts the decompiler reads so tests
 //!   run the orchestration over canned bodies.
 //! - [`this_ptr`] - C++ this-pointer detection: `ThisPointerDetector`
@@ -46,6 +47,11 @@
 //!   `ReturnUsageDetector` types a function's return by how its callers
 //!   use the value — assigned to a typed local, passed at a
 //!   known-signature position, or dereferenced — as the return record kind.
+//! - [`mangling`] - C++ mangling analysis: `ManglingDetector` reads the
+//!   contract carried in a name — an MSVC-mangled listing symbol decoded
+//!   for convention, argument count, and rough argument types, and a
+//!   demangled qualified name with a spelled parameter list — typing the
+//!   parameters (and where the name spells one, the return) it names.
 //! - [`reading`] - Detector-internal accumulator: the single `Reading`
 //!   shape every detector feeds, with highest-confidence-wins resolution
 //!   and shared record assembly.
@@ -62,6 +68,7 @@ pub mod engine;
 pub mod error;
 pub mod known_type;
 pub mod local_chain;
+pub mod mangling;
 pub mod param_size;
 pub mod persist;
 pub(crate) mod reading;

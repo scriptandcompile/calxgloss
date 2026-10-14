@@ -400,6 +400,54 @@ async fn return_usage_records_survive_the_persistence_round_trip() {
 }
 
 #[tokio::test]
+async fn mangling_records_survive_the_persistence_round_trip() {
+    // A function whose only evidence is its own mangled symbol must
+    // have those name-borne readings reach disk and read back like any
+    // other record, so the pipeline's type-info extraction names the
+    // parameters after a plain load.
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("?setup@Widget@@QAEXH@Z")];
+    program.bodies.insert(
+        "?setup@Widget@@QAEXH@Z".into(),
+        function(
+            "?setup@Widget@@QAEXH@Z",
+            "undefined ?setup@Widget@@QAEXH@Z(undefined8 param_1,undefined8 param_2)",
+            "  return;\n",
+        ),
+    );
+
+    let workspace = TempDir::new().unwrap();
+    let result = TypeInferEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = TypeInferPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let params: Vec<&InferredType> = loaded
+        .for_function("?setup@Widget@@QAEXH@Z")
+        .filter(|inference| matches!(inference, InferredType::Param(_)))
+        .collect();
+    assert_eq!(params.len(), 2, "the this pointer and the argument round-trip");
+    let InferredType::Param(record) = params[0] else {
+        unreachable!("the listing pass emits parameter records");
+    };
+    assert_eq!(record.param_index, 0);
+    assert_eq!(record.inferred_type, "Widget *");
+    assert_eq!(record.method, InferenceMethod::Mangling);
+    assert_eq!(record.scope, InferenceScope::Function);
+    assert_eq!(record.confidence, Confidence::new(80));
+    assert_eq!(record.evidence, "?setup@Widget@@QAEXH@Z");
+
+    // And renders into the prompt type-info section, unnamed
+    // parameters falling back to their positions.
+    let rendered = TypeInfo::from(params[1]);
+    assert_eq!(rendered.name, "param_2");
+    assert_eq!(rendered.description, "int (via mangling, confidence 80)");
+}
+
+#[tokio::test]
 async fn a_loaded_result_answers_the_pipeline_lookups() {
     let workspace = TempDir::new().unwrap();
     let result = TypeInferEngine::with_source(program())
