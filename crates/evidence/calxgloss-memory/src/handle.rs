@@ -210,11 +210,14 @@ impl HandleDetector {
                     })
                 {
                     let handle = open.remove(at);
+                    let type_name = declared_type(&func.body, &handle.variable);
                     let (suggestion, confidence) =
                         if self.read_after_close(&func.body, &calls, closed, call.close) {
-                            (SCOPED_GUARD_SUGGESTION, SCOPED_GUARD_CONFIDENCE)
+                            (SCOPED_GUARD_SUGGESTION.to_string(), SCOPED_GUARD_CONFIDENCE)
+                        } else if let Some(name) = &type_name {
+                            (format!("impl Drop for {name}"), HANDLE_PAIR_CONFIDENCE)
                         } else {
-                            (GUARD_SUGGESTION, HANDLE_PAIR_CONFIDENCE)
+                            (GUARD_SUGGESTION.to_string(), HANDLE_PAIR_CONFIDENCE)
                         };
                     pairs.push((
                         handle.offset,
@@ -223,7 +226,8 @@ impl HandleDetector {
                             handle_type: handle.handle_type,
                             opener: handle.opener,
                             closer: signature.name.clone(),
-                            suggestion: suggestion.to_string(),
+                            type_name,
+                            suggestion,
                             confidence: confidence.into(),
                             evidence: format!(
                                 "{} {}",
@@ -447,6 +451,119 @@ fn assigned_variable(body: &str, callee_offset: usize) -> Option<&str> {
         return None;
     }
     Some(&line[start..end])
+}
+
+/// The named type the body declares for `variable`, when it declares
+/// one: a binding the decompiler spelled `<Type> <variable>;` or
+/// `<Type> <variable> = ...` — the type carried on the handle's own
+/// declaration, or on the opener's result binding where the
+/// decompiler declared and assigned in one statement. A primitive or
+/// `undefined`-family type names nothing worth putting a `Drop` impl
+/// on, a bare assignment without a type declares nothing, and the
+/// reading is blind inside string literals and to longer names that
+/// merely end where the variable's does.
+fn declared_type(body: &str, variable: &str) -> Option<String> {
+    let bytes = body.as_bytes();
+    let name = variable.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                i = skip_string(bytes, i + 1);
+                continue;
+            }
+            b if is_ident_byte(b) => {}
+            _ => {
+                i += 1;
+                continue;
+            }
+        }
+        if i > 0 && is_ident_byte(bytes[i - 1]) {
+            i += 1;
+            continue;
+        }
+        let end = i + name.len();
+        if bytes.get(i..end) != Some(name) || bytes.get(end).is_some_and(|b| is_ident_byte(*b)) {
+            while i < bytes.len() && is_ident_byte(bytes[i]) {
+                i += 1;
+            }
+            continue;
+        }
+        if let Some(kind) = declaration_type(body, i, end) {
+            return Some(kind);
+        }
+        i = end;
+    }
+    None
+}
+
+/// Whether the whole-word occurrence of a variable spanning
+/// `name_start..name_end` is a declared binding — the name followed
+/// by `;` or `=` and preceded, past any `*`, by a spelled type — and
+/// the named type it declares, or `None` when the occurrence is a
+/// use, an untyped assignment, or a binding to a primitive or a
+/// keyword.
+fn declaration_type(body: &str, name_start: usize, name_end: usize) -> Option<String> {
+    let bytes = body.as_bytes();
+    // After the name a declaration binds: `;` or a plain `=`, never
+    // a comparison.
+    let mut after = name_end;
+    while bytes.get(after).is_some_and(|b| b.is_ascii_whitespace()) {
+        after += 1;
+    }
+    if !matches!(bytes.get(after), Some(b';') | Some(b'='))
+        || bytes.get(after) == Some(&b'=') && bytes.get(after + 1) == Some(&b'=')
+    {
+        return None;
+    }
+    // Before the name: whitespace, an optional pointer star, more
+    // whitespace, then the end of a type word.
+    let mut before = name_start;
+    while before > 0 && bytes[before - 1].is_ascii_whitespace() {
+        before -= 1;
+    }
+    if before > 0 && bytes[before - 1] == b'*' {
+        before -= 1;
+        while before > 0 && bytes[before - 1].is_ascii_whitespace() {
+            before -= 1;
+        }
+    }
+    if before == 0 || !is_ident_byte(bytes[before - 1]) {
+        return None;
+    }
+    let line_start = body[..name_start]
+        .rfind('\n')
+        .map(|start| start + 1)
+        .unwrap_or(0);
+    named_type(body[line_start..before].trim())
+}
+
+/// Whether a declaration's spelled type names something worth
+/// putting a `Drop` impl on: plain identifier words, none of them a
+/// statement keyword, and at least one outside the primitive and
+/// `undefined` family the decompiler writes on untyped slots.
+fn named_type(ty: &str) -> Option<String> {
+    let words: Vec<&str> = ty.split_whitespace().collect();
+    let named = !words.is_empty()
+        && words.iter().all(|word| {
+            word.bytes().all(is_ident_byte)
+                && !NON_CALL_KEYWORDS.contains(word)
+                && !matches!(
+                    *word,
+                    "else"
+                        | "do"
+                        | "goto"
+                        | "break"
+                        | "continue"
+                        | "default"
+                        | "signed"
+                        | "unsigned"
+                )
+        })
+        && !words
+            .iter()
+            .all(|word| crate::allocator::is_type_word(word));
+    named.then(|| ty.to_string())
 }
 /// The type words a Ghidra cast may spell, the decompiler's
 /// vocabulary the other detectors' scans strip plus the handle
@@ -1118,6 +1235,125 @@ undefined FUN_18003ab00(void) {
         assert_eq!(records[0].handle_type, HandleType::KernelObject);
         assert_eq!(records[0].opener, "open");
         assert_eq!(records[0].closer, "close");
+    }
+
+    // ------------------------------------------------------------
+    // Named types
+    // ------------------------------------------------------------
+
+    #[test]
+    fn a_named_type_upgrades_the_suggestion_to_a_drop_impl() {
+        // The body spells the handle's own type, so the guard has a
+        // name to hang a Drop impl on.
+        let records = pairs(
+            "\
+  HANDLE hFile = CreateFileW(&DAT_3801a2b0,0xc0000000,0,(LPSECURITY_ATTRIBUTES)0x0,3,0x80,0);
+  CloseHandle(hFile);",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].type_name.as_deref(), Some("HANDLE"));
+        assert_eq!(records[0].suggestion, "impl Drop for HANDLE");
+        assert_eq!(records[0].confidence, HANDLE_PAIR_CONFIDENCE);
+    }
+
+    #[test]
+    fn a_separate_declaration_names_the_type() {
+        // The decompiler often hoists the declaration away from the
+        // opener's assignment; either spelling carries the type.
+        let records = pairs(
+            "\
+  HANDLE hFile;
+  hFile = CreateFileW(&DAT_3801a2b0,0xc0000000,0,(LPSECURITY_ATTRIBUTES)0x0,3,0x80,0);
+  CloseHandle(hFile);",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].type_name.as_deref(), Some("HANDLE"));
+        assert_eq!(records[0].suggestion, "impl Drop for HANDLE");
+    }
+
+    #[test]
+    fn a_pointer_declaration_names_its_type() {
+        let records = pairs(
+            "\
+  FILE *local_10;
+  local_10 = fopen(&DAT_3801a2b0,\"rb\");
+  fclose(local_10);",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].type_name.as_deref(), Some("FILE"));
+        assert_eq!(records[0].suggestion, "impl Drop for FILE");
+    }
+
+    #[test]
+    fn a_primitive_declaration_names_nothing() {
+        // `undefined8` is the decompiler writing no type at all; there
+        // is nothing named to put a Drop impl on.
+        let records = pairs(
+            "\
+  undefined8 local_10 = fopen(&DAT_3801a2b0,\"rb\");
+  fclose(local_10);",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].type_name, None);
+        assert_eq!(records[0].suggestion, "RAII guard struct with Drop impl");
+    }
+
+    #[test]
+    fn a_bare_assignment_declares_nothing() {
+        // `hFile = CreateFileW(...)` binds a variable, not a type.
+        let records = pairs(
+            "\
+  hFile = CreateFileW(&DAT_3801a2b0,0xc0000000,0,(LPSECURITY_ATTRIBUTES)0x0,3,0x80,0);
+  CloseHandle(hFile);",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].type_name, None);
+        assert_eq!(records[0].suggestion, "RAII guard struct with Drop impl");
+    }
+
+    #[test]
+    fn a_longer_name_ending_the_same_way_is_not_the_declaration() {
+        // The `HANDLE` belongs to `hFile2`; the reading must not let
+        // it name `hFile`'s type.
+        let records = pairs(
+            "\
+  HANDLE hFile2;
+  hFile = CreateFileW(&DAT_3801a2b0,0xc0000000,0,(LPSECURITY_ATTRIBUTES)0x0,3,0x80,0);
+  CloseHandle(hFile);",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].type_name, None);
+    }
+
+    #[test]
+    fn a_string_literal_never_declares_a_type() {
+        // A declaration-shaped fragment inside a literal is text, not
+        // code.
+        let records = pairs(
+            "\
+  local_10 = fopen(\"local_10 = HANDLE\",\"rb\");
+  fclose(local_10);",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].type_name, None);
+    }
+
+    #[test]
+    fn a_named_type_does_not_outrank_the_scoped_narrowing() {
+        // The handle is read after its close, so only a scoped guard
+        // is safe whatever its type is called.
+        let records = pairs(
+            "\
+  HANDLE hFile = CreateFileW(&DAT_3801a2b0,0xc0000000,0,(LPSECURITY_ATTRIBUTES)0x0,3,0x80,0);
+  CloseHandle(hFile);
+  iVar1 = ReadFile(hFile,&local_20,4,&local_18,(LPOVERLAPPED)0x0);",
+        );
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].suggestion,
+            "scoped RAII guard struct with Drop impl"
+        );
+        assert_eq!(records[0].confidence, SCOPED_GUARD_CONFIDENCE);
     }
 
     // ------------------------------------------------------------

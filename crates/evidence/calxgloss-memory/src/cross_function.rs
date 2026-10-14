@@ -158,7 +158,7 @@ impl CrossFunctionAnalyzer {
                 for call in call_sites(&func.body, &CALL_SCAN) {
                     let Some(position) = call.args.iter().position(|arg| {
                         let freed = strip_casts(arg, crate::allocator::is_type_word);
-                        crate::allocator::plain_variable(&freed).as_deref()
+                        crate::allocator::plain_variable(&freed)
                             == Some(allocation.variable.as_str())
                     }) else {
                         continue;
@@ -413,7 +413,7 @@ fn escapes(body: &str, variable: &str) -> bool {
     call_sites(body, &CALL_SCAN).into_iter().any(|call| {
         call.args.iter().any(|arg| {
             let freed = strip_casts(arg, crate::allocator::is_type_word);
-            crate::allocator::plain_variable(&freed).as_deref() == Some(variable)
+            crate::allocator::plain_variable(&freed) == Some(variable)
         })
     }) || return_site(body, variable).is_some()
 }

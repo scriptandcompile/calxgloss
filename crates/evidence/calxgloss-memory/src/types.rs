@@ -144,6 +144,13 @@ pub struct HandleLifecycle {
     pub opener: String,
     /// The closer spelling that released the handle, e.g. `CloseHandle`.
     pub closer: String,
+    /// The named type the body spells for the handle variable —
+    /// present only where the declaration names a non-primitive type,
+    /// and the name the `Drop` impl belongs on. Optional with a
+    /// serde default so documents written before it stand read back
+    /// unchanged.
+    #[serde(default)]
+    pub type_name: Option<String>,
     /// The Rust pattern the pairing suggests, e.g. `RAII guard struct
     /// with Drop impl`.
     pub suggestion: String,
@@ -636,6 +643,7 @@ mod tests {
             handle_type: HandleType::KernelObject,
             opener: "CreateFileW".into(),
             closer: "CloseHandle".into(),
+            type_name: None,
             suggestion: "RAII guard struct with Drop impl".into(),
             confidence: Confidence::new(70),
             evidence: "hFile = CreateFileW(&DAT_3801a2b0,0xc0000000,0,(LPSECURITY_ATTRIBUTES)0x0,3,0x80,0); CloseHandle(hFile);".into(),
@@ -692,6 +700,23 @@ mod tests {
         assert_eq!(back.closer, "fclose");
         assert_eq!(back.suggestion, "scoped RAII guard struct with Drop impl");
         assert_eq!(back.confidence, 65);
+    }
+
+    #[test]
+    fn a_handle_record_written_before_the_named_type_reads_back() {
+        // The type_name field arrived with p4.5-5; documents saved by earlier
+        // builds simply do not have it.
+        let json = r#"{
+            "function": "FUN_180001470",
+            "handle_type": "kernel_object",
+            "opener": "CreateFileW",
+            "closer": "CloseHandle",
+            "suggestion": "RAII guard struct with Drop impl",
+            "confidence": 65,
+            "evidence": "RegOpenKeyExW(...); RegCloseKey(local_8);"
+        }"#;
+        let back: HandleLifecycle = serde_json::from_str(json).unwrap();
+        assert_eq!(back.type_name, None);
     }
 
     fn reference_count() -> ReferenceCount {

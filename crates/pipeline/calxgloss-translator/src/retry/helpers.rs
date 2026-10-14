@@ -1503,6 +1503,7 @@ mod tests {
             handle_type: calxgloss_memory::types::HandleType::KernelObject,
             opener: "CreateFileW".into(),
             closer: "CloseHandle".into(),
+            type_name: None,
             suggestion: "RAII guard struct with Drop impl".into(),
             confidence: calxgloss_memory::types::Confidence::new(70),
             evidence: "hFile = CreateFileW(...); CloseHandle(hFile);".into(),

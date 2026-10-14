@@ -165,6 +165,7 @@ mod tests {
                     handle_type: HandleType::KernelObject,
                     opener: "CreateFileW".into(),
                     closer: "CloseHandle".into(),
+                    type_name: None,
                     suggestion: "RAII guard struct with Drop impl".into(),
                     confidence: Confidence::new(65),
                     evidence: "hFile = CreateFileW(&DAT_3801a2b0,0xc0000000,0,(LPSECURITY_ATTRIBUTES)0x0,3,0x80,0); CloseHandle(hFile);".into(),
