@@ -2,11 +2,12 @@
 //!
 //! [`ParameterSizeDetector`] scans decompiled functions for the usage
 //! shapes that pin a parameter's size: string-function calls (`strlen`,
-//! `strcpy`, `strcmp`, ...) that read a parameter as a character pointer,
-//! integer bit patterns (shifts, bitwise AND) that suggest a particular
-//! width, and pointer arithmetic (offsets, dereferences, field access)
-//! that says the parameter points at something. Each reading is emitted
-//! as an [`InferredParamType`] record whose method is one of
+//! `strcpy`, `strcmp`, ...) that read a parameter as a character
+//! pointer, integer bit patterns (shifts, masks, OR/XOR, comparisons,
+//! and compound assignments, whose constants bound the width), and
+//! pointer arithmetic (offsets, dereferences, field access) that says
+//! the parameter points at something. Each reading is emitted as an
+//! [`InferredParamType`] record whose method is one of
 //! [`StringFunction`], [`IntegerBitPattern`], or [`PointerArithmetic`] —
 //! the size readings beside the this-pointer detector's — and when
 //! several readings compete for one parameter, the highest-confidence
@@ -49,9 +50,10 @@ const POINTER_CONFIDENCE: u8 = 65;
 const INTEGER_CONFIDENCE: u8 = 55;
 
 /// Confidence of an integer reading whose constants outrun the default
-/// word: a mask wider than the word, or a shift count the word cannot
-/// hold, proves the parameter spans more than the decompiler's default
-/// — a pinned width, stronger evidence than the bare operation shape.
+/// word: a mask, compared value, or compound-assignment operand wider
+/// than the word, or a shift count the word cannot hold, proves the
+/// parameter spans more than the decompiler's default — a pinned
+/// width, stronger evidence than the bare operation shape.
 const WIDE_INTEGRAL_CONFIDENCE: u8 = 60;
 
 /// The type text for a parameter the body reads through: the arithmetic
@@ -304,64 +306,160 @@ fn inside_string(body: &str, offset: usize) -> bool {
     false
 }
 
-/// A shift or bitwise-AND operation sitting beside an occurrence, with
-/// what the constants beside it say about the parameter's width.
+/// A shift, bitwise, comparison, or compound-assignment operation
+/// sitting beside an occurrence, with what the constants beside it say
+/// about the parameter's width.
 struct BitOperation {
     /// The smallest width, in bits, the constants beside the operation
-    /// force on the parameter: a mask needs its own bit length, and a
-    /// shift the parameter is the operand of needs one bit more than
-    /// its count. `None` when the operation carries no constant that
-    /// bounds the parameter — a bare `param_1 & param_2`, a shift
-    /// whose count the parameter itself supplies, or a parameter
-    /// behind a cast, which types the expression rather than the
-    /// parameter.
+    /// force on the parameter: a mask, an OR or XOR value, a compared
+    /// value, or a compound-assignment operand needs its own bit
+    /// length, and a shift the parameter is the operand of needs one
+    /// bit more than its count. `None` when the operation carries no
+    /// constant that bounds the parameter — a bare `param_1 & param_2`,
+    /// a shift whose count the parameter itself supplies, or a
+    /// parameter behind a cast, which types the expression rather than
+    /// the parameter.
     width_bound: Option<u32>,
 }
 
-/// The shift or bitwise-AND operation at the occurrence, if any: the
-/// bytes after the name open with `<<`, `>>`, or a lone `&` (a
-/// compound `<<=`, `>>=`, `&=` included, the logical `&&` excluded),
-/// or the name closes a `<<`/`>>` or follows a binary `&` — one whose
-/// left side is an operand, not the unary address-of spelling.
-fn bit_operation(bytes: &[u8], occ: &Occurrence) -> Option<BitOperation> {
-    if let Some(a) = occ.after {
-        let shift = bytes[a..].starts_with(b"<<") || bytes[a..].starts_with(b">>");
-        let and = bytes[a] == b'&' && bytes.get(a + 1) != Some(&b'&');
-        if shift || and {
-            let constant = constant_after(bytes, if shift { a + 2 } else { a + 1 });
-            let bound = (!behind_cast(bytes, occ))
-                .then(|| constant.and_then(|n| if shift { shift_bound(n) } else { mask_bound(n) }));
-            return Some(BitOperation {
-                width_bound: bound.flatten(),
-            });
+/// The class of operator sitting beside an occurrence, naming what the
+/// operation shape alone — before any constant is weighed — says about
+/// the parameter.
+#[derive(Clone, Copy)]
+enum Operator {
+    /// `<<`, `>>`, and their compound forms: the parameter is the
+    /// shifted operand, so the shape alone reads it as an integer.
+    Shift,
+    /// `&`, `|`, `^`, and their compound forms: bitwise operations only
+    /// exist on integers, so the shape alone reads it as one.
+    Bitwise,
+    /// `==`, `!=`, `<`, `>`, `<=`, `>=`: pointers compare just as
+    /// readily as integers, so the shape alone says nothing — only a
+    /// non-zero constant beside the operator names an integer, and a
+    /// comparison against zero is the null-test spelling.
+    Comparison,
+    /// `+=`, `-=`, `*=`, `/=`, `%=`: a pointer advances by `+=`, so the
+    /// shape alone says nothing — only a non-zero constant names an
+    /// integer wide enough to hold it.
+    ArithmeticCompound,
+}
+
+impl Operator {
+    /// Whether the operation shape alone reads the parameter as an
+    /// integer, without a constant's help.
+    fn reads_as_integer(self) -> bool {
+        matches!(self, Operator::Shift | Operator::Bitwise)
+    }
+
+    /// The width the constant `n` beside the operator forces on the
+    /// parameter: a shift needs one bit past its count, every other
+    /// operation the bits the value itself spans.
+    fn width_bound(self, n: u64) -> Option<u32> {
+        match self {
+            Operator::Shift => shift_bound(n),
+            Operator::Bitwise | Operator::Comparison | Operator::ArithmeticCompound => {
+                mask_bound(n)
+            }
         }
     }
+}
+
+/// The operation at the occurrence, if any: the bytes after the name
+/// open with a shift (`<<`, `>>`), a bitwise `&`, `|`, or `^` (the
+/// compound `<<=`, `>>=`, `&=`, `|=`, `^=` included, the logical `&&`
+/// and `||` excluded), a comparison (`==`, `!=`, `<`, `>`, `<=`, `>=`),
+/// or an arithmetic compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`);
+/// or the name closes a `<<`/`>>` or their compound forms, follows a
+/// binary `&`, `|`, or `^` — one whose left side is an operand, not the
+/// unary address-of spelling — or closes a comparison.
+fn bit_operation(bytes: &[u8], occ: &Occurrence) -> Option<BitOperation> {
+    if let Some(a) = occ.after
+        && let Some((op, at)) = operator_after(bytes, a)
+    {
+        return operation_reading(op, bytes, occ, constant_after(bytes, at));
+    }
     if let Some(p) = occ.before {
-        match bytes[p] {
-            b'<' if p > 0 && bytes[p - 1] == b'<' => {
-                // The parameter supplies the shift count; the constant
-                // before the operator is the shifted value, which says
-                // nothing about the parameter's width.
-                return Some(BitOperation { width_bound: None });
-            }
-            b'>' if p > 0 && bytes[p - 1] == b'>' => {
-                return Some(BitOperation { width_bound: None });
-            }
-            b'&' if bytes.get(p.wrapping_sub(1)) != Some(&b'&') && operand_before(bytes, p) => {
-                // `0xff & param_1`: the mask sits on the operator's left.
-                let mask = constant_before(bytes, p);
-                let bound = (!behind_cast(bytes, occ)).then(|| mask.and_then(mask_bound));
-                return Some(BitOperation {
-                    width_bound: bound.flatten(),
-                });
-            }
-            _ => {}
+        if shift_count_position(bytes, p) {
+            // The parameter supplies the shift count; the constant
+            // before the operator is the shifted value, which says
+            // nothing about the parameter's width.
+            return Some(BitOperation { width_bound: None });
+        }
+        if let Some((op, at)) = operator_before(bytes, p) {
+            return operation_reading(op, bytes, occ, constant_before(bytes, at));
         }
     }
     None
 }
 
-/// The width a mask forces: the number of bits the mask itself spans.
+/// Whether the operator ending at `p` is a shift the parameter
+/// supplies the count of: `<<`, `>>`, or their compound forms.
+fn shift_count_position(bytes: &[u8], p: usize) -> bool {
+    match bytes[p] {
+        b'<' | b'>' => p > 0 && bytes[p - 1] == bytes[p],
+        b'=' => p > 1 && matches!(bytes[p - 1], b'<' | b'>') && bytes[p - 2] == bytes[p - 1],
+        _ => false,
+    }
+}
+
+/// The operator opening at `at` — the first non-space byte after the
+/// parameter's name — with the index its constant is searched from:
+/// just past the operator's leading byte, so `constant_after` steps
+/// over a compound or two-byte form's `=`.
+fn operator_after(bytes: &[u8], at: usize) -> Option<(Operator, usize)> {
+    let next = bytes.get(at + 1).copied().unwrap_or(0);
+    match (bytes[at], next) {
+        (b @ (b'<' | b'>'), n) if n == b => Some((Operator::Shift, at + 2)),
+        (b @ (b'&' | b'|'), n) if n != b => Some((Operator::Bitwise, at + 1)),
+        (b'^', _) => Some((Operator::Bitwise, at + 1)),
+        (b'=' | b'!' | b'<' | b'>', b'=') => Some((Operator::Comparison, at + 1)),
+        (b'<' | b'>', _) => Some((Operator::Comparison, at + 1)),
+        (b'+' | b'-' | b'*' | b'/' | b'%', b'=') => Some((Operator::ArithmeticCompound, at + 1)),
+        _ => None,
+    }
+}
+
+/// The operator ending at `p` — the first non-space byte before the
+/// parameter's name — with the index its left-hand constant is
+/// searched from, when the operator reaches the parameter from the
+/// left. A doubled `<`/`>` (or its compound form) is the shift whose
+/// count the parameter supplies, handled by the caller.
+fn operator_before(bytes: &[u8], p: usize) -> Option<(Operator, usize)> {
+    let prev = p.checked_sub(1).and_then(|i| bytes.get(i));
+    match bytes[p] {
+        b @ (b'&' | b'|') if prev != Some(&b) => {
+            operand_before(bytes, p).then_some((Operator::Bitwise, p))
+        }
+        b'^' => operand_before(bytes, p).then_some((Operator::Bitwise, p)),
+        b'=' if matches!(prev, Some(&b'=') | Some(&b'!') | Some(&b'<') | Some(&b'>')) => {
+            Some((Operator::Comparison, p - 1))
+        }
+        b @ (b'<' | b'>') if prev != Some(&b) => Some((Operator::Comparison, p)),
+        _ => None,
+    }
+}
+
+/// The reading the operation at an occurrence supports: the operation
+/// shape alone when it only exists on integers, otherwise only when a
+/// non-zero constant sits beside it — and the width that constant
+/// forces, unless the parameter stands behind a cast that carries it.
+fn operation_reading(
+    op: Operator,
+    bytes: &[u8],
+    occ: &Occurrence,
+    constant: Option<u64>,
+) -> Option<BitOperation> {
+    let names_integer = op.reads_as_integer() || constant.is_some_and(|n| n != 0);
+    names_integer.then(|| BitOperation {
+        width_bound: (!behind_cast(bytes, occ))
+            .then(|| constant.and_then(|n| op.width_bound(n)))
+            .flatten(),
+    })
+}
+
+/// The width a mask-shaped constant forces: the number of bits the
+/// value itself spans — the bound an AND, OR, or XOR operand, a
+/// compared value, and a compound-assignment operand all pay out.
 fn mask_bound(mask: u64) -> Option<u32> {
     Some(64 - mask.leading_zeros())
 }
@@ -442,7 +540,13 @@ fn parse_number(text: &str) -> Option<u64> {
     } else {
         (10, text)
     };
-    let digits = digits.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+    // A hex value's trailing `a`-`f` are digits, not a suffix: only
+    // the non-hex letters (`u`, `l`, and their capitals) end it.
+    let digits = if radix == 16 {
+        digits.trim_end_matches(|c: char| c.is_ascii_alphabetic() && !c.is_ascii_hexdigit())
+    } else {
+        digits.trim_end_matches(|c: char| c.is_ascii_alphabetic())
+    };
     let mut value: u64 = 0;
     for digit in digits.chars() {
         value = value
@@ -648,14 +752,20 @@ impl ParameterSizeDetector {
     ///   `char *` through [`InferenceMethod::StringFunction`]. An
     ///   argument behind a cast still names the value; a parameter in a
     ///   count, character, or buffer-size position gets no reading.
-    /// - A shift or bitwise-AND operation on the parameter reads it as
-    ///   an integer through [`InferenceMethod::IntegerBitPattern`]. The
-    ///   constants beside the operations are weighed: while every mask
-    ///   fits the word and every shift count the parameter is the
-    ///   operand of stays inside it, the reading is the default word
-    ///   ([`DEFAULT_WORD`]); a mask spanning more than [`WORD_BITS`] or
-    ///   a count reaching past it widens the reading to [`WIDE_WORD`],
-    ///   backed by the line carrying that constant. A logical `&&` and
+    /// - A shift, bitwise (`&`, `|`, `^`), comparison (`==`, `!=`, `<`,
+    ///   `>`, `<=`, `>=`), or compound-assignment (`<<=`, `&=`, `|=`,
+    ///   `+=`, ...) operation on the parameter reads it as an integer
+    ///   through [`InferenceMethod::IntegerBitPattern`]. The constants
+    ///   beside the operations are weighed: while every mask, compared
+    ///   value, and compound operand fits the word and every shift
+    ///   count the parameter is the operand of stays inside it, the
+    ///   reading is the default word ([`DEFAULT_WORD`]); any of them
+    ///   spanning more than [`WORD_BITS`] widens the reading to
+    ///   [`WIDE_WORD`], backed by the line carrying that constant. A
+    ///   comparison or arithmetic compound assignment names an integer
+    ///   only through a non-zero constant — `param_1 == 0` is the
+    ///   null-test spelling and `param_1 += 4` could advance a pointer,
+    ///   so neither reads a width on its own. A logical `&&` or `||` and
     ///   a unary address-of are not bit operations, a field's bit
     ///   operations (`param_1->flags & 0xff`) are not the parameter's,
     ///   a shift whose count the parameter supplies bounds no width,
@@ -1094,6 +1204,20 @@ mod tests {
     }
 
     #[test]
+    fn a_parameter_supplying_a_compound_shift_count_gets_no_width_bound() {
+        // `uVar2 >>= param_1` is the same count position in compound
+        // spelling: an integer use, no width bound.
+        let func = function(
+            "undefined FUN_18003ab00(undefined4 param_1)",
+            "  uVar2 >>= param_1;\n",
+        );
+        let records = readings(&func);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].inferred_type, "u32");
+        assert_eq!(records[0].confidence, INTEGER_CONFIDENCE);
+    }
+
+    #[test]
     fn a_parameter_behind_a_cast_keeps_the_default_word() {
         // The cast promotes the expression, not the parameter: the
         // beyond-the-word count belongs to the cast's type.
@@ -1132,6 +1256,220 @@ mod tests {
         let records = readings(&func);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].inferred_type, "u32");
+    }
+
+    #[test]
+    fn hex_digits_end_a_constant_and_only_the_suffix_is_stripped() {
+        // A hex value's trailing `a`-`f` are digits; only the `u`/`l`
+        // suffix letters end it.
+        assert_eq!(parse_number("0xff"), Some(0xff));
+        assert_eq!(parse_number("0xffu"), Some(0xff));
+        assert_eq!(parse_number("0xffffffffffffffffull"), Some(u64::MAX));
+        assert_eq!(parse_number("4294967296"), Some(0x1_0000_0000));
+    }
+
+    #[test]
+    fn a_bitwise_or_reads_the_parameter_as_an_integer() {
+        let func = function(
+            "undefined FUN_18003ab00(undefined4 param_1)",
+            "  param_1 |= 0xff;\n",
+        );
+        let records = readings(&func);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].inferred_type, "u32");
+        assert_eq!(records[0].method, InferenceMethod::IntegerBitPattern);
+        assert_eq!(records[0].confidence, INTEGER_CONFIDENCE);
+        assert_eq!(records[0].evidence, "param_1 |= 0xff;");
+    }
+
+    #[test]
+    fn a_bitwise_xor_reads_the_parameter_as_an_integer() {
+        let func = function(
+            "undefined FUN_18003ab00(undefined4 param_1)",
+            "  uVar2 = param_1 ^ 0x55;\n",
+        );
+        let records = readings(&func);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].inferred_type, "u32");
+        assert_eq!(records[0].confidence, INTEGER_CONFIDENCE);
+    }
+
+    #[test]
+    fn a_wide_or_constant_widens_the_reading_to_u64() {
+        let func = function(
+            "undefined FUN_18003ab00(undefined8 param_1)",
+            "  uVar2 = param_1 | 0x100000000;\n",
+        );
+        let records = readings(&func);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].inferred_type, "u64");
+        assert_eq!(records[0].confidence, WIDE_INTEGRAL_CONFIDENCE);
+        assert_eq!(records[0].evidence, "uVar2 = param_1 | 0x100000000;");
+    }
+
+    #[test]
+    fn a_left_hand_or_bounds_the_width() {
+        let func = function(
+            "undefined FUN_18003ab00(undefined8 param_1)",
+            "  uVar2 = 0x100000000 | param_1;\n",
+        );
+        let records = readings(&func);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].inferred_type, "u64");
+    }
+
+    #[test]
+    fn a_comparison_against_a_constant_reads_the_parameter_as_an_integer() {
+        let func = function(
+            "undefined FUN_18003ab00(undefined4 param_1)",
+            "  if (param_1 < 0xff) {\n    FUN_18001234();\n  }\n",
+        );
+        let records = readings(&func);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].inferred_type, "u32");
+        assert_eq!(records[0].method, InferenceMethod::IntegerBitPattern);
+        assert_eq!(records[0].confidence, INTEGER_CONFIDENCE);
+        assert_eq!(records[0].evidence, "if (param_1 < 0xff) {");
+    }
+
+    #[test]
+    fn a_wide_comparison_constant_widens_the_reading_to_u64() {
+        let func = function(
+            "undefined FUN_18003ab00(undefined8 param_1)",
+            "  if (param_1 == 0x100000000) {\n    FUN_18001234();\n  }\n",
+        );
+        let records = readings(&func);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].inferred_type, "u64");
+        assert_eq!(records[0].confidence, WIDE_INTEGRAL_CONFIDENCE);
+        assert_eq!(records[0].evidence, "if (param_1 == 0x100000000) {");
+    }
+
+    #[test]
+    fn a_left_hand_comparison_bounds_the_width() {
+        let func = function(
+            "undefined FUN_18003ab00(undefined8 param_1)",
+            "  if (0x100000000 <= param_1) {\n    FUN_18001234();\n  }\n",
+        );
+        let records = readings(&func);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].inferred_type, "u64");
+    }
+
+    #[test]
+    fn a_comparison_against_zero_reads_nothing() {
+        // `param_1 == 0` is the null-test spelling: a pointer tests
+        // against zero just as readily as an integer, so the shape
+        // names no width.
+        let func = function(
+            "undefined FUN_18003ab00(undefined8 param_1)",
+            "  if (param_1 == 0) {\n    return;\n  }\n",
+        );
+        assert!(readings(&func).is_empty());
+    }
+
+    #[test]
+    fn a_comparison_against_a_name_reads_nothing() {
+        let func = function(
+            "undefined FUN_18003ab00(undefined4 param_1,undefined4 param_2)",
+            "  if (param_1 == param_2) {\n    return;\n  }\n",
+        );
+        assert!(readings(&func).is_empty());
+    }
+
+    #[test]
+    fn an_arithmetic_compound_assignment_bounds_the_width() {
+        let func = function(
+            "undefined FUN_18003ab00(undefined8 param_1)",
+            "  param_1 += 0x100000000;\n",
+        );
+        let records = readings(&func);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].inferred_type, "u64");
+        assert_eq!(records[0].confidence, WIDE_INTEGRAL_CONFIDENCE);
+        assert_eq!(records[0].evidence, "param_1 += 0x100000000;");
+    }
+
+    #[test]
+    fn a_small_arithmetic_compound_assignment_keeps_the_default_word() {
+        let func = function(
+            "undefined FUN_18003ab00(undefined4 param_1)",
+            "  param_1 *= 3;\n",
+        );
+        let records = readings(&func);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].inferred_type, "u32");
+        assert_eq!(records[0].confidence, INTEGER_CONFIDENCE);
+    }
+
+    #[test]
+    fn a_logical_or_is_not_a_bit_operation() {
+        // `||` short-circuits like `&&`; it says nothing about an
+        // integer width.
+        let func = function(
+            "undefined FUN_18003ab00(undefined4 param_1)",
+            "  if (param_1 || bVar2) {\n    return;\n  }\n",
+        );
+        assert!(readings(&func).is_empty());
+    }
+
+    #[test]
+    fn a_parameter_behind_a_cast_bounds_nothing_in_a_new_operation() {
+        // The cast promotes the comparison, not the parameter.
+        let func = function(
+            "undefined FUN_18003ab00(undefined4 param_1)",
+            "  if ((ulonglong)param_1 == 0x100000000) {\n    FUN_18001234();\n  }\n",
+        );
+        let records = readings(&func);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].inferred_type, "u32");
+        assert_eq!(records[0].confidence, INTEGER_CONFIDENCE);
+    }
+
+    #[test]
+    fn a_field_s_new_operations_are_not_the_parameter_s() {
+        // The whole-word guard keeps `param_1->flags | 0x100000000`
+        // from reading the parameter as a wide integer; the arrow still
+        // reads it as a pointer.
+        let func = function(
+            "undefined FUN_18003ab00(undefined8 param_1)",
+            "  uVar2 = param_1->flags | 0x100000000;\n",
+        );
+        let records = readings(&func);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].method, InferenceMethod::PointerArithmetic);
+        assert_eq!(records[0].inferred_type, "void *");
+    }
+
+    #[test]
+    fn the_widest_constant_across_new_and_old_operations_pins_the_width() {
+        // A comparison first, a beyond-the-word OR later: the reading
+        // follows the widest constant whatever operation carries it.
+        let func = function(
+            "undefined FUN_18003ab00(undefined4 param_1)",
+            "  if (param_1 == 5) {\n    uVar2 = param_1 | 0x100000000;\n  }\n",
+        );
+        let records = readings(&func);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].inferred_type, "u64");
+        assert_eq!(records[0].evidence, "uVar2 = param_1 | 0x100000000;");
+    }
+
+    #[test]
+    fn every_added_operation_feeds_the_width_ladder() {
+        // The operators the tests above do not name individually: each
+        // still bounds the width the way a mask does.
+        for op in ["^=", "!=", ">", ">=", "-=", "/=", "%="] {
+            let body = format!("  param_1 {op} 0x100000000;\n");
+            let func = function("undefined FUN_18003ab00(undefined8 param_1)", &body);
+            let records = readings(&func);
+            assert_eq!(records.len(), 1, "operator {op}");
+            assert_eq!(records[0].inferred_type, "u64", "operator {op}");
+            assert_eq!(
+                records[0].confidence, WIDE_INTEGRAL_CONFIDENCE,
+                "operator {op}"
+            );
+        }
     }
 
     #[test]
