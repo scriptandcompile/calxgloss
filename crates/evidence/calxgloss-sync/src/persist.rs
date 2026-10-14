@@ -138,7 +138,7 @@ mod tests {
     use super::*;
     use crate::types::{
         AtomicOperation, ConcurrencyHint, Confidence, ScanMetadata, SyncFinding, SyncType,
-        ThreadSpawn,
+        ThreadSpawn, TlsUsage,
     };
     use calxgloss_types::persist::PersistError;
 
@@ -297,6 +297,47 @@ mod tests {
                 assert_eq!(t.spawn, "CreateThread");
             }
             other => panic!("expected a thread finding, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tls_findings_survive_the_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let persistor = SyncPersistor::new(dir.path());
+
+        let mut result = SyncResult::new(ScanMetadata::new("eqmain.dll"));
+        result.findings.push(SyncFinding::Tls(TlsUsage {
+            function: "WorkerMain".to_string(),
+            creation: Some("TlsAlloc".to_string()),
+            access: "TlsGetValue".to_string(),
+            suggestion: "thread_local!".to_string(),
+            confidence: Confidence::new(70),
+            evidence: "local_4 = TlsAlloc(); pvVar1 = TlsGetValue(local_4);".to_string(),
+        }));
+        result.findings.push(SyncFinding::Tls(TlsUsage {
+            function: "WorkerMain".to_string(),
+            creation: None,
+            access: "pthread_getspecific".to_string(),
+            suggestion: "thread_local!".to_string(),
+            confidence: Confidence::new(60),
+            evidence: "pvVar2 = pthread_getspecific(local_8);".to_string(),
+        }));
+        persistor.save(&result).unwrap();
+
+        let loaded = persistor.load("eqmain.dll").unwrap();
+        match &loaded.findings[0] {
+            SyncFinding::Tls(t) => {
+                assert_eq!(t.creation.as_deref(), Some("TlsAlloc"));
+                assert_eq!(t.access, "TlsGetValue");
+            }
+            other => panic!("expected a tls finding, got {other:?}"),
+        }
+        match &loaded.findings[1] {
+            SyncFinding::Tls(t) => {
+                assert_eq!(t.creation, None);
+                assert_eq!(t.confidence, Confidence::new(60));
+            }
+            other => panic!("expected a tls fragment finding, got {other:?}"),
         }
     }
 

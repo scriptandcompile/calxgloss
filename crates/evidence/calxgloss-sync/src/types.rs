@@ -6,9 +6,10 @@
 //! - `ConcurrencyHint`, `SyncType`: per-function mutex records — the
 //!   lock a function acquires and releases, and the Rust synchronization
 //!   type the pairing suggests.
-//! - `AtomicOperation`, `ThreadSpawn`: the atomic-call and thread-spawn
-//!   shapes beside plain lock pairings.
-//! - `SyncFinding`: the union over the three record kinds — one finding
+//! - `AtomicOperation`, `ThreadSpawn`, `TlsUsage`: the atomic-call,
+//!   thread-spawn, and thread-local-storage shapes beside plain lock
+//!   pairings.
+//! - `SyncFinding`: the union over the record kinds — one finding
 //!   whichever detector made it — serde-tagged by `kind`.
 //! - `SyncResult`, `ScanMetadata`: the persisted per-binary result and
 //!   its scan provenance.
@@ -173,6 +174,49 @@ pub struct ThreadSpawn {
 }
 
 // ============================================================
+// Thread-local storage
+// ============================================================
+
+/// One thread-local-storage observation about one function, with the
+/// evidence behind it.
+///
+/// A record says the function reaches per-thread data through the
+/// recognized access spelling [`access`](Self::access) —
+/// `TlsGetValue`, `pthread_getspecific`, and their kin — and, when
+/// the body also shows the key being created, names the creation
+/// spelling in [`creation`](Self::creation): `TlsAlloc` returning the
+/// index, `pthread_key_create` taking the key's address. A key
+/// created and accessed in one body is one finding at confidence 70;
+/// a lone access with no visible key creation is a fragment at 60 —
+/// the thread-local shape is there, but the key's origin sits
+/// elsewhere. Either way the data reads like
+/// [`suggestion`](Self::suggestion) `thread_local!`, the per-thread
+/// storage standing in for the key-indexed slot. The creation and
+/// access lines are kept as [`evidence`](Self::evidence) so a reviewer
+/// (or a translation prompt) can check the reasoning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TlsUsage {
+    /// The function the record is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The key-creation spelling that allocated the key, e.g.
+    /// `TlsAlloc`, when the body shows one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creation: Option<String>,
+    /// The access spelling that read or wrote the key, e.g.
+    /// `TlsGetValue`.
+    pub access: String,
+    /// The Rust storage pattern the record suggests, e.g.
+    /// `thread_local!`.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+    /// The decompiled lines that support the record — the key
+    /// creation and the access, when there is a creation — kept so a
+    /// reviewer (or a translation prompt) can check the reasoning.
+    pub evidence: String,
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -182,9 +226,9 @@ pub struct ThreadSpawn {
 /// persisted result carries, so one list can hold every finding for a
 /// binary and a consumer reads the shared shape — function, suggestion,
 /// confidence, evidence — without naming which detector produced it.
-/// Unlike typeinfer's competing families, the three detectors read
-/// disjoint body shapes and can't make competing claims for one target,
-/// so nothing is resolved between variants. The serde `kind` tag names
+/// Unlike typeinfer's competing families, the detectors read disjoint
+/// body shapes and can't make competing claims for one target, so
+/// nothing is resolved between variants. The serde `kind` tag names
 /// the record shape in the persisted JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -195,6 +239,8 @@ pub enum SyncFinding {
     Atomic(AtomicOperation),
     /// A thread spawned, joined or not.
     Thread(ThreadSpawn),
+    /// A thread-local key accessed, created in the body or not.
+    Tls(TlsUsage),
 }
 
 impl SyncFinding {
@@ -204,6 +250,7 @@ impl SyncFinding {
             SyncFinding::Mutex(record) => &record.function,
             SyncFinding::Atomic(record) => &record.function,
             SyncFinding::Thread(record) => &record.function,
+            SyncFinding::Tls(record) => &record.function,
         }
     }
 
@@ -213,6 +260,7 @@ impl SyncFinding {
             SyncFinding::Mutex(record) => &record.suggestion,
             SyncFinding::Atomic(record) => &record.suggestion,
             SyncFinding::Thread(record) => &record.suggestion,
+            SyncFinding::Tls(record) => &record.suggestion,
         }
     }
 
@@ -222,6 +270,7 @@ impl SyncFinding {
             SyncFinding::Mutex(record) => record.confidence,
             SyncFinding::Atomic(record) => record.confidence,
             SyncFinding::Thread(record) => record.confidence,
+            SyncFinding::Tls(record) => record.confidence,
         }
     }
 
@@ -231,22 +280,24 @@ impl SyncFinding {
             SyncFinding::Mutex(record) => &record.evidence,
             SyncFinding::Atomic(record) => &record.evidence,
             SyncFinding::Thread(record) => &record.evidence,
+            SyncFinding::Tls(record) => &record.evidence,
         }
     }
 
-    /// The serde `kind` tag — `mutex`, `atomic`, or `thread` — naming
-    /// the detector behind the finding.
+    /// The serde `kind` tag — `mutex`, `atomic`, `thread`, or `tls` —
+    /// naming the detector behind the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             SyncFinding::Mutex(_) => "mutex",
             SyncFinding::Atomic(_) => "atomic",
             SyncFinding::Thread(_) => "thread",
+            SyncFinding::Tls(_) => "tls",
         }
     }
 
     /// What the finding names, spelled for a report row: the acquire/
-    /// release spellings, the atomic call spelling, or the spawn/join
-    /// spellings.
+    /// release spellings, the atomic call spelling, the spawn/join
+    /// spellings, or the key-creation/access spellings.
     pub fn target(&self) -> String {
         match self {
             SyncFinding::Mutex(record) => format!("{}→{}", record.acquire, record.release),
@@ -254,6 +305,10 @@ impl SyncFinding {
             SyncFinding::Thread(record) => match &record.join {
                 Some(join) => format!("{}→{}", record.spawn, join),
                 None => record.spawn.clone(),
+            },
+            SyncFinding::Tls(record) => match &record.creation {
+                Some(creation) => format!("{}→{}", creation, record.access),
+                None => record.access.clone(),
             },
         }
     }
@@ -287,12 +342,12 @@ impl From<&SyncFinding> for calxgloss_prompts::ConcurrencyInfo {
 /// The concurrency result for one binary — the document persisted to
 /// `re/analysis/sync/{binary}.json`.
 ///
-/// The findings are the three detectors' outputs in scan order:
-/// function by function, and within one function the mutex pairings,
-/// then the atomic calls, then the thread spawns. The detectors read
-/// disjoint body shapes, so a function can carry findings of every
-/// kind at once and none competes with another; the stable order means
-/// two scans of the same program diff cleanly.
+/// The findings are the detectors' outputs in scan order: function by
+/// function, and within one function the mutex pairings, then the
+/// atomic calls, then the thread spawns, then the TLS records. The
+/// detectors read disjoint body shapes, so a function can carry
+/// findings of every kind at once and none competes with another; the
+/// stable order means two scans of the same program diff cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncResult {
     /// Provenance of the scan that produced these findings.
@@ -522,12 +577,72 @@ mod tests {
         assert_eq!(back, finding);
     }
 
+    fn tls_usage() -> TlsUsage {
+        TlsUsage {
+            function: "FUN_18003ab00".into(),
+            creation: Some("TlsAlloc".into()),
+            access: "TlsGetValue".into(),
+            suggestion: "thread_local!".into(),
+            confidence: Confidence::new(70),
+            evidence: "local_4 = TlsAlloc(); pvVar1 = TlsGetValue(local_4);".into(),
+        }
+    }
+
+    #[test]
+    fn a_paired_tls_usage_serde_round_trips() {
+        let record = tls_usage();
+        let json = serde_json::to_string(&record).unwrap();
+        assert!(json.contains("\"creation\":\"TlsAlloc\""));
+        assert!(json.contains("\"access\":\"TlsGetValue\""));
+        assert!(json.contains("\"confidence\":70"));
+        let back: TlsUsage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn a_fragment_tls_usage_omits_the_creation_and_reads_back_none() {
+        let record = TlsUsage {
+            creation: None,
+            access: "pthread_getspecific".into(),
+            confidence: Confidence::new(60),
+            evidence: "pvVar1 = pthread_getspecific(local_8);".into(),
+            ..tls_usage()
+        };
+        let json = serde_json::to_string(&record).unwrap();
+        assert!(!json.contains("\"creation\""));
+        let back: TlsUsage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, record);
+        assert_eq!(back.creation, None);
+    }
+
+    #[test]
+    fn a_tls_record_names_the_function_the_spellings_and_the_pattern() {
+        let json = serde_json::to_value(tls_usage()).unwrap();
+        assert_eq!(json["function"], "FUN_18003ab00");
+        assert_eq!(json["creation"], "TlsAlloc");
+        assert_eq!(json["access"], "TlsGetValue");
+        assert_eq!(json["suggestion"], "thread_local!");
+        assert_eq!(json["confidence"], 70);
+    }
+
+    #[test]
+    fn a_tls_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = SyncFinding::Tls(tls_usage());
+        let json = serde_json::to_string(&finding).expect("tls finding should serialize");
+        assert!(json.contains("\"kind\":\"tls\""));
+        assert!(json.contains("\"access\":\"TlsGetValue\""));
+        let back: SyncFinding =
+            serde_json::from_str(&json).expect("tls finding should read back");
+        assert_eq!(back, finding);
+    }
+
     #[test]
     fn the_union_accessors_reach_through_every_variant() {
         let findings = [
             SyncFinding::Mutex(mutex_hint()),
             SyncFinding::Atomic(atomic_operation()),
             SyncFinding::Thread(thread_spawn()),
+            SyncFinding::Tls(tls_usage()),
         ];
         for finding in &findings {
             assert_eq!(finding.function(), "FUN_18003ab00");
@@ -536,14 +651,15 @@ mod tests {
             assert!(!finding.evidence().is_empty());
         }
         let kinds: Vec<&str> = findings.iter().map(|f| f.kind()).collect();
-        assert_eq!(kinds, vec!["mutex", "atomic", "thread"]);
+        assert_eq!(kinds, vec!["mutex", "atomic", "thread", "tls"]);
         let suggestions: Vec<&str> = findings.iter().map(|f| f.suggestion()).collect();
         assert_eq!(
             suggestions,
             vec![
                 "std::sync::Mutex<T>",
                 "std::sync::atomic::AtomicU32",
-                "std::thread::spawn"
+                "std::thread::spawn",
+                "thread_local!"
             ]
         );
         let targets: Vec<String> = findings.iter().map(|f| f.target()).collect();
@@ -552,7 +668,8 @@ mod tests {
             vec![
                 "EnterCriticalSection→LeaveCriticalSection",
                 "InterlockedIncrement",
-                "CreateThread→WaitForSingleObject"
+                "CreateThread→WaitForSingleObject",
+                "TlsAlloc→TlsGetValue"
             ]
         );
     }
@@ -564,6 +681,15 @@ mod tests {
             ..thread_spawn()
         });
         assert_eq!(finding.target(), "CreateThread");
+    }
+
+    #[test]
+    fn a_fragment_tls_target_names_only_the_access() {
+        let finding = SyncFinding::Tls(TlsUsage {
+            creation: None,
+            ..tls_usage()
+        });
+        assert_eq!(finding.target(), "TlsGetValue");
     }
 
     #[test]
@@ -644,5 +770,15 @@ mod tests {
         assert_eq!(info.kind, "thread");
         assert_eq!(info.suggestion, "std::thread::spawn");
         assert_eq!(info.confidence, 70);
+
+        let tls = SyncFinding::Tls(tls_usage());
+        let info = calxgloss_prompts::ConcurrencyInfo::from(&tls);
+        assert_eq!(info.kind, "tls");
+        assert_eq!(info.suggestion, "thread_local!");
+        assert_eq!(info.confidence, 70);
+        assert_eq!(
+            info.evidence,
+            "local_4 = TlsAlloc(); pvVar1 = TlsGetValue(local_4);"
+        );
     }
 }

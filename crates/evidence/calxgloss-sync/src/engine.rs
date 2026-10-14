@@ -1,13 +1,14 @@
 //! Concurrency scan orchestration.
 //!
-//! [`SyncEngine`] runs the three detectors — mutex/lock pair tracking,
-//! atomic operation detection, and thread spawn detection — over every
-//! function of one open Ghidra program and assembles their findings
-//! into a single [`SyncResult`] with its scan provenance.
+//! [`SyncEngine`] runs the four detectors — mutex/lock pair tracking,
+//! atomic operation detection, thread spawn detection, and
+//! thread-local storage detection — over every function of one open
+//! Ghidra program and assembles their findings into a single
+//! [`SyncResult`] with its scan provenance.
 //!
 //! The detectors are pure text analysis over one decompiled body, so
 //! the engine fetches each function's pseudo-C exactly once and reads
-//! it with all three, rather than having each detector pull its own
+//! it with all four, rather than having each detector pull its own
 //! copy. The scan is then one sequential pass over the function
 //! listing: unlike typeinfer's competing families there is nothing to
 //! resolve between the detectors — they read disjoint body shapes —
@@ -18,6 +19,7 @@ use crate::atomic::AtomicDetector;
 use crate::error::Result;
 use crate::mutex::MutexDetector;
 use crate::threading::ThreadingDetector;
+use crate::tls::TlsDetector;
 use crate::types::{ScanMetadata, SyncFinding, SyncResult};
 use calxgloss_ghidra::GhidraClient;
 use std::time::Instant;
@@ -33,25 +35,27 @@ use tracing::{info, warn};
 /// orchestrating task.
 pub use calxgloss_ghidra::ScanSource;
 
-/// Orchestrates the three detectors into one [`SyncResult`].
+/// Orchestrates the four detectors into one [`SyncResult`].
 ///
 /// The engine is generic over its [`ScanSource`], so tests can run the
 /// whole orchestration over canned bodies; [`new`](Self::new) builds
 /// one over a live [`GhidraClient`]. Each detector carries no state
 /// and starts configured with its standard name sets —
 /// [`with_mutex`](Self::with_mutex), [`with_atomics`](Self::with_atomics),
-/// and [`with_threads`](Self::with_threads) swap a detector's sets
-/// whole — so one instance of each serves the whole scan.
+/// [`with_threads`](Self::with_threads), and [`with_tls`](Self::with_tls)
+/// swap a detector's sets whole — so one instance of each serves the
+/// whole scan.
 #[derive(Debug, Clone)]
 pub struct SyncEngine<S = GhidraClient> {
     source: S,
     mutex: MutexDetector,
     atomics: AtomicDetector,
     threads: ThreadingDetector,
+    tls: TlsDetector,
 }
 
 impl SyncEngine<GhidraClient> {
-    /// An engine over a live GhidraMCP client, scanning with the three
+    /// An engine over a live GhidraMCP client, scanning with the four
     /// detectors' standard name sets.
     pub fn new(client: &GhidraClient) -> SyncEngine<GhidraClient> {
         SyncEngine {
@@ -59,19 +63,21 @@ impl SyncEngine<GhidraClient> {
             mutex: MutexDetector::with_default_names(),
             atomics: AtomicDetector::with_default_names(),
             threads: ThreadingDetector::with_default_names(),
+            tls: TlsDetector::with_default_names(),
         }
     }
 }
 
 impl<S> SyncEngine<S> {
     /// An engine whose decompiles come from `source`, scanning with
-    /// the three detectors' standard name sets.
+    /// the four detectors' standard name sets.
     pub fn with_source(source: S) -> Self {
         SyncEngine {
             source,
             mutex: MutexDetector::with_default_names(),
             atomics: AtomicDetector::with_default_names(),
             threads: ThreadingDetector::with_default_names(),
+            tls: TlsDetector::with_default_names(),
         }
     }
 
@@ -96,16 +102,23 @@ impl<S> SyncEngine<S> {
         self
     }
 
+    /// Read thread-local keys against `detector`'s name sets instead
+    /// of the standard ones.
+    pub fn with_tls(mut self, detector: TlsDetector) -> Self {
+        self.tls = detector;
+        self
+    }
+
     /// Detect concurrency constructs across `binary`, decompiling
-    /// each function exactly once and reading it with all three
+    /// each function exactly once and reading it with all four
     /// detectors.
     ///
     /// `binary` names the program the scan reads (e.g. `eqmain.dll`)
     /// and becomes the key a persisted result is filed under. The
     /// findings follow the function listing — function by function,
     /// and within one function the mutex pairings, then the atomic
-    /// calls, then the thread spawns — so two scans of the same
-    /// program diff cleanly.
+    /// calls, then the thread spawns, then the TLS records — so two
+    /// scans of the same program diff cleanly.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad
     /// entry point) is skipped with a warning; only a failure of the
@@ -115,7 +128,7 @@ impl<S> SyncEngine<S> {
     /// skip-rate breaker aborts the run too: that is the signature of
     /// the bridge answering from the wrong program, and skipping on
     /// would persist a phantom-clean record (issue #71).
-    /// The three detectors read disjoint
+    /// The detectors read disjoint
     /// body shapes, so a function can carry findings of every kind at
     /// once and nothing is resolved between them.
     pub async fn scan(&self, binary: impl Into<String>) -> Result<SyncResult>
@@ -184,6 +197,12 @@ impl<S> SyncEngine<S> {
                     .into_iter()
                     .map(SyncFinding::Thread),
             );
+            findings.extend(
+                self.tls
+                    .detect(&decompiled)
+                    .into_iter()
+                    .map(SyncFinding::Tls),
+            );
         }
 
         let mut metadata = ScanMetadata::new(binary);
@@ -210,6 +229,7 @@ mod tests {
     use crate::atomic::AtomicSignature;
     use crate::mutex::MutexSignature;
     use crate::threading::{SpawnBinding, ThreadSpawnSignature};
+    use crate::tls::{KeyBinding, TlsKeySignature};
     use crate::types::SyncType;
     use calxgloss_ghidra::{
         DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
@@ -470,10 +490,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tls_findings_slot_after_the_thread_spawns() {
+        // A body carrying every shape: the TLS record lands after the
+        // thread spawn, so the within-function order — mutex, atomic,
+        // thread, tls — stays fixed and diffable.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_1800412a0")];
+        program.bodies.insert(
+            "FUN_1800412a0".into(),
+            function(
+                "FUN_1800412a0",
+                "undefined FUN_1800412a0(void)",
+                "\
+  EnterCriticalSection(&local_20);
+  LeaveCriticalSection(&local_20);
+  uVar1 = InterlockedIncrement(&local_28);
+  hThread = CreateThread((LPSECURITY_ATTRIBUTES)0x0,0,worker,0x0,0,&local_14);
+  WaitForSingleObject(hThread,0xffffffff);
+  local_4 = TlsAlloc();
+  pvVar2 = TlsGetValue(local_4);",
+            ),
+        );
+        let result = scan(program).await;
+
+        assert_eq!(
+            kinds(&result, "FUN_1800412a0"),
+            ["mutex", "atomic", "thread", "tls"]
+        );
+        let findings: Vec<&SyncFinding> = result.for_function("FUN_1800412a0").collect();
+        let SyncFinding::Tls(record) = findings[3] else {
+            unreachable!("the key creation and access read as a tls finding");
+        };
+        assert_eq!(record.creation.as_deref(), Some("TlsAlloc"));
+        assert_eq!(record.access, "TlsGetValue");
+        assert_eq!(record.suggestion, "thread_local!");
+        assert_eq!(record.confidence, 70);
+    }
+
+    #[tokio::test]
     async fn scan_decompiles_each_function_exactly_once() {
-        // The three detectors share one fetch per function; a scan
-        // that asked each detector for its own copy would triple the
-        // wall time.
+        // The four detectors share one fetch per function; a scan
+        // that asked each detector for its own copy would quadruple
+        // the wall time.
         let program = program();
         let result = scan(program.clone()).await;
         assert!(!result.is_empty());
@@ -582,7 +640,7 @@ mod tests {
     #[tokio::test]
     async fn custom_name_sets_reach_every_detector() {
         // Swapping a detector's sets whole reaches the scan: the
-        // configured custom spellings pair in all three families, and
+        // configured custom spellings pair in all four families, and
         // the standard names the swaps replaced pair nothing.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_1800412a0")];
@@ -596,7 +654,9 @@ mod tests {
   my_unlock(&local_20);
   my_atomic(&local_28);
   h = my_spawn(worker);
-  my_join(h);",
+  my_join(h);
+  k = my_key_new();
+  my_key_read(k);",
             ),
         );
 
@@ -615,12 +675,16 @@ mod tests {
                     SpawnBinding::ReturnValue,
                 )],
                 ["my_join"],
+            ))
+            .with_tls(TlsDetector::with_names(
+                [TlsKeySignature::new("my_key_new", KeyBinding::ReturnValue)],
+                ["my_key_read"],
             ));
         let result = engine.scan("eqmain.dll").await.expect("scan");
 
         assert_eq!(
             kinds(&result, "FUN_1800412a0"),
-            ["mutex", "atomic", "thread"]
+            ["mutex", "atomic", "thread", "tls"]
         );
         let findings: Vec<&SyncFinding> = result.for_function("FUN_1800412a0").collect();
         let SyncFinding::Mutex(hint) = findings[0] else {
@@ -637,6 +701,12 @@ mod tests {
         };
         assert_eq!(record.spawn, "my_spawn");
         assert_eq!(record.join.as_deref(), Some("my_join"));
+        let SyncFinding::Tls(record) = findings[3] else {
+            unreachable!("the configured key pair reads as a tls finding");
+        };
+        assert_eq!(record.creation.as_deref(), Some("my_key_new"));
+        assert_eq!(record.access, "my_key_read");
+        assert_eq!(record.suggestion, "thread_local!");
     }
 
     #[tokio::test]

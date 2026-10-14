@@ -1,9 +1,10 @@
 //! The `sync` command — detect concurrency constructs for the open binary.
 //!
-//! Runs the three concurrency detectors — mutex/lock pair tracking,
-//! atomic operation detection, and thread spawn detection — against the
-//! program currently open in Ghidra and saves the result to
-//! `re/analysis/sync/{binary}.json` in the workspace, the same file batch
+//! Runs the four concurrency detectors — mutex/lock pair tracking,
+//! atomic operation detection, thread spawn detection, and
+//! thread-local storage detection — against the program currently open
+//! in Ghidra and saves the result to `re/analysis/sync/{binary}.json`
+//! in the workspace, the same file batch
 //! translation will read as prompt context. Batch translation runs the
 //! same scan before its first batch when no result is cached; this
 //! command is the manual entry point: it rebuilds the result on demand
@@ -96,7 +97,7 @@ fn print_concurrency_report(result: &SyncResult, path: &Path) {
     println!();
 
     // Findings, broken down by the record kind the union carries.
-    let kind_breakdown: Vec<String> = ["mutex", "atomic", "thread"]
+    let kind_breakdown: Vec<String> = ["mutex", "atomic", "thread", "tls"]
         .into_iter()
         .map(|kind| {
             (
@@ -157,7 +158,7 @@ fn print_concurrency_report(result: &SyncResult, path: &Path) {
     hsep_bold();
     if result.is_empty() {
         println!(
-            "  {} The scan found nothing — no lock pairings, atomic calls, or thread spawns were found in the decompiled bodies.",
+            "  {} The scan found nothing — no lock pairings, atomic calls, thread spawns, or thread-local keys were found in the decompiled bodies.",
             yellow_bold("◉")
         );
     } else {
