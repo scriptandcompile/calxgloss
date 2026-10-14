@@ -11,8 +11,10 @@
 //! program's literal listing, so the engine fetches the listing and the
 //! literals exactly once and reads them with every function — the way
 //! the typeinfer detectors share one decompile. The scan is then one
-//! pass over the function listing, keeping the persisted hint list in a
-//! stable, diffable order. Where several detectors claim one algorithm
+//! pass over the function listing, run with bounded concurrency — at
+//! most eight decompiles in flight — while results are collected in
+//! listing order, so the persisted hint list stays stable and diffable.
+//! Where several detectors claim one algorithm
 //! for one function, the scan reports it once with the strongest
 //! evidence — the [`confidence`](crate::confidence) module's resolution
 //! — and a configured minimum-confidence floor
@@ -34,8 +36,91 @@ use crate::error::Result;
 use crate::string_hints::StringHintEngine;
 use crate::types::{AlgorithmHint, AlgorithmRecognitionResult, ScanMetadata};
 use calxgloss_ghidra::{DecompiledFunction, GhidraClient};
+use futures_util::stream::{self, StreamExt};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 use tracing::{info, warn};
+
+/// The cap on decompiles one scan keeps in flight at once.
+///
+/// The per-function pass runs several functions' program reads
+/// concurrently to hide the bridge's round-trip latency, but the
+/// bridge answers one program at a time: a bounded handful of
+/// in-flight decompiles is what shrinks wall time on a large binary
+/// without flooding it. The engine tests' concurrency accounting
+/// proves the scan never exceeds this cap (issue #156).
+const MAX_IN_FLIGHT_DECOMPILES: usize = 8;
+
+/// What one function's turn in the concurrent per-function pass produced.
+///
+/// The pass runs each function's reads and detectors off the listing
+/// and hands the result back in listing order, so the assembled hint
+/// list is exactly the sequential walk's; the variants say what the
+/// scan owes the skip count and the breaker.
+enum PassOutcome {
+    /// The body, with the per-function hints read from it in detector
+    /// order — control flow, then string-guided, then callback.
+    Read {
+        body: DecompiledFunction,
+        hints: Vec<AlgorithmHint>,
+    },
+    /// The decompile failed; the skip-rate breaker counts it.
+    Failed,
+    /// A nameless listing entry, skipped without a decompile.
+    Nameless,
+    /// The breaker had already tripped before this function's decompile
+    /// was issued — the pass read nothing. The collector normally
+    /// aborts at the counted [`Failed`](PassOutcome::Failed) that
+    /// tripped the breaker before one of these lands; this is the
+    /// backstop that keeps the abort with the counts either way.
+    Halted,
+}
+
+/// The skip-rate breaker: one shared decompile-failure count a
+/// concurrent scan judges against the listing's size.
+///
+/// The rule is the sequential scan's — the run is reading the wrong
+/// program once *most* of the listing has failed to decompile, more
+/// than half of it, and an empty result would persist as a
+/// phantom-clean record (issue #71). Under the concurrent pass the
+/// count lives beside the pass, not behind it: every failed decompile
+/// joins it as it lands, and every function not yet started consults
+/// it before issuing its decompile, so a tripped breaker stops new
+/// decompiles rather than merely ending the walk (issue #156).
+struct SkipRateBreaker {
+    failures: AtomicUsize,
+    total: usize,
+}
+
+impl SkipRateBreaker {
+    /// A breaker over a listing of `total` functions, nothing failed
+    /// yet.
+    fn new(total: usize) -> Self {
+        SkipRateBreaker {
+            failures: AtomicUsize::new(0),
+            total,
+        }
+    }
+
+    /// Record one failed decompile.
+    fn record_failure(&self) {
+        self.failures.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Whether more than half the listing has failed to decompile.
+    fn tripped(&self) -> bool {
+        self.failures.load(Ordering::SeqCst) * 2 > self.total
+    }
+
+    /// The abort error, carrying the counts the breaker holds.
+    fn error(&self) -> crate::AlgorithmError {
+        crate::AlgorithmError::DecompileBreaker {
+            failed: self.failures.load(Ordering::SeqCst),
+            total: self.total,
+        }
+    }
+}
 
 /// The program reads a recognition scan performs.
 ///
@@ -172,6 +257,12 @@ impl<S> AlgorithmEngine<S> {
     /// hints in listing order, so two scans of the same program diff
     /// cleanly.
     ///
+    /// The per-function pass is concurrent — up to eight functions'
+    /// reads in flight at once, so a large binary scans faster without
+    /// flooding the bridge — but each function's result is held until
+    /// the one before it lands, so the assembled hint list is identical
+    /// to the sequential walk's.
+    ///
     /// Where several detectors claim the same algorithm for one function,
     /// the scan reports it once with its strongest evidence: a tie keeps
     /// the claim the scan surfaced first, and the survivor stands where
@@ -191,7 +282,9 @@ impl<S> AlgorithmEngine<S> {
     /// But when more than half the listing fails to decompile, the
     /// skip-rate breaker aborts the run too: that is the signature of
     /// the bridge answering from the wrong program, and skipping on
-    /// would persist a phantom-clean record (issue #71).
+    /// would persist a phantom-clean record (issue #71). The breaker
+    /// counts failures across the concurrent pass, and once it trips no
+    /// new decompile is issued (issue #156).
     pub async fn scan(&self, binary: impl Into<String>) -> Result<AlgorithmRecognitionResult>
     where
         S: ScanSource,
@@ -199,85 +292,115 @@ impl<S> AlgorithmEngine<S> {
         let started = Instant::now();
         let functions = self.source.functions().await?;
         let literals = self.source.strings().await?;
+        let total = functions.len();
 
-        let mut hints = Vec::new();
-        let mut bodies: Vec<DecompiledFunction> = Vec::with_capacity(functions.len());
-        let mut skipped = 0usize;
-        let mut decompile_failures = 0usize;
-        for function in &functions {
-            if function.name.is_empty() {
-                // A nameless listing entry would send the name lookup
-                // wandering into some other function's body; nothing can
-                // be recognized about it, so it passes unrecorded.
-                warn!(
-                    address = format_args!("{:#x}", function.address),
-                    "Skipping function with no name"
-                );
-                skipped += 1;
-                continue;
-            }
-            let decompiled = match self.source.decompile(&function.name).await {
-                Ok(decompiled) => decompiled,
-                Err(error) => {
+        // The skip-rate breaker lives beside the concurrent pass, not
+        // behind it: every failed decompile joins the count as it
+        // lands, and every function not yet started reads the count
+        // before issuing its decompile — so once the run has clearly
+        // lost most of the listing, no new decompile is issued.
+        let breaker = Arc::new(SkipRateBreaker::new(total));
+
+        let mut pass = stream::iter(functions.iter().map(|function| {
+            let breaker = Arc::clone(&breaker);
+            // The literals are program-wide evidence read by every
+            // function: one fetch, shared by reference across the pass.
+            let literals = &literals;
+            async move {
+                if function.name.is_empty() {
+                    // A nameless listing entry would send the name lookup
+                    // wandering into some other function's body; nothing can
+                    // be recognized about it, so it passes unrecorded.
                     warn!(
-                        function = %function.name,
-                        error = %error,
-                        "Skipping function: decompile failed"
+                        address = format_args!("{:#x}", function.address),
+                        "Skipping function with no name"
                     );
-                    skipped += 1;
-                    decompile_failures += 1;
-                    // Skip-rate breaker: once most of the listing has
-                    // failed to decompile, the scan is reading the
-                    // wrong program (or a half-broken server), and an
-                    // empty result would persist as a phantom-clean
-                    // record. Abort with the counts instead of
-                    // skipping on.
-                    if decompile_failures * 2 > functions.len() {
-                        return Err(crate::AlgorithmError::DecompileBreaker {
-                            failed: decompile_failures,
-                            total: functions.len(),
-                        });
-                    }
-                    continue;
+                    return PassOutcome::Nameless;
                 }
-            };
-
-            hints.extend(self.cfg.match_patterns(&decompiled));
-            hints.extend(self.strings.detect_string_hints(&decompiled, &literals));
-
-            // A contract fits only a function of exactly its arity, so
-            // the caller fetch — the scan's only call-graph read — runs
-            // just where some contract could still fit.
-            let arity = decompiled.parameter_names().len();
-            if self
-                .callbacks
-                .patterns()
-                .iter()
-                .any(|p| p.param_count == arity)
-            {
-                let callers = match self.source.callers(function.address).await {
-                    Ok(callers) => callers,
+                if breaker.tripped() {
+                    // The breaker already tripped: this function's
+                    // decompile is never issued.
+                    return PassOutcome::Halted;
+                }
+                let decompiled = match self.source.decompile(&function.name).await {
+                    Ok(decompiled) => decompiled,
                     Err(error) => {
                         warn!(
                             function = %function.name,
                             error = %error,
-                            "Could not read callers: callback detection skips the function"
+                            "Skipping function: decompile failed"
                         );
-                        Vec::new()
+                        breaker.record_failure();
+                        return PassOutcome::Failed;
                     }
                 };
-                hints.extend(
-                    self.callbacks
-                        .detect_callback_patterns(&decompiled, callers)
-                        .into_iter()
-                        .map(|detection| detection.hint),
-                );
-            }
 
-            // Keep the body: the correlation pass reads the call map off
-            // the bodies this scan already fetched, so it costs no extra
-            // round trip.
-            bodies.push(decompiled);
+                let mut hints = Vec::new();
+                hints.extend(self.cfg.match_patterns(&decompiled));
+                hints.extend(self.strings.detect_string_hints(&decompiled, literals));
+
+                // A contract fits only a function of exactly its arity, so
+                // the caller fetch — the scan's only call-graph read — runs
+                // just where some contract could still fit.
+                let arity = decompiled.parameter_names().len();
+                if self
+                    .callbacks
+                    .patterns()
+                    .iter()
+                    .any(|p| p.param_count == arity)
+                {
+                    let callers = match self.source.callers(function.address).await {
+                        Ok(callers) => callers,
+                        Err(error) => {
+                            warn!(
+                                function = %function.name,
+                                error = %error,
+                                "Could not read callers: callback detection skips the function"
+                            );
+                            Vec::new()
+                        }
+                    };
+                    hints.extend(
+                        self.callbacks
+                            .detect_callback_patterns(&decompiled, callers)
+                            .into_iter()
+                            .map(|detection| detection.hint),
+                    );
+                }
+
+                PassOutcome::Read {
+                    body: decompiled,
+                    hints,
+                }
+            }
+        }))
+        .buffered(MAX_IN_FLIGHT_DECOMPILES);
+
+        // Results land in listing order — `buffered` holds each
+        // function's result until the one before it has been taken —
+        // so the assembled hints and the kept bodies see exactly the
+        // order the sequential walk saw.
+        let mut hints = Vec::new();
+        let mut bodies: Vec<DecompiledFunction> = Vec::with_capacity(total);
+        let mut skipped = 0usize;
+        while let Some(outcome) = pass.next().await {
+            match outcome {
+                PassOutcome::Read { body, hints: own } => {
+                    hints.extend(own);
+                    // Keep the body: the correlation pass reads the call map
+                    // off the bodies this scan already fetched, so it costs
+                    // no extra round trip.
+                    bodies.push(body);
+                }
+                PassOutcome::Nameless => skipped += 1,
+                PassOutcome::Failed => {
+                    skipped += 1;
+                    if breaker.tripped() {
+                        return Err(breaker.error());
+                    }
+                }
+                PassOutcome::Halted => return Err(breaker.error()),
+            }
         }
 
         // The correlation pass runs once the whole listing is in hand —
@@ -361,6 +484,8 @@ mod tests {
         decompiles: Mutex<Vec<String>>,
         string_fetches: AtomicUsize,
         caller_fetches: Mutex<Vec<u64>>,
+        in_flight: AtomicUsize,
+        max_in_flight: AtomicUsize,
     }
 
     /// A canned program implementing [`ScanSource`], so the whole
@@ -375,6 +500,10 @@ mod tests {
         fail_strings: bool,
         fail_decompiles: Vec<String>,
         fail_callers: Vec<u64>,
+        /// Hold each decompile open across an await so several are
+        /// genuinely in flight at once — what proves the scan's
+        /// concurrency cap is a real window, not a sequential walk.
+        slow_decompiles: bool,
         stats: Arc<Stats>,
     }
 
@@ -389,6 +518,7 @@ mod tests {
                 fail_strings: false,
                 fail_decompiles: Vec::new(),
                 fail_callers: Vec::new(),
+                slow_decompiles: false,
                 stats: Arc::new(Stats::default()),
             }
         }
@@ -403,6 +533,11 @@ mod tests {
 
         fn caller_fetches(&self) -> Vec<u64> {
             self.stats.caller_fetches.lock().unwrap().clone()
+        }
+
+        /// The most decompiles the scan ever had in flight at once.
+        fn max_in_flight(&self) -> usize {
+            self.stats.max_in_flight.load(Ordering::SeqCst)
         }
     }
 
@@ -419,6 +554,14 @@ mod tests {
 
         async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
             self.stats.decompiles.lock().unwrap().push(name.to_string());
+            let in_flight = self.stats.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.stats
+                .max_in_flight
+                .fetch_max(in_flight, Ordering::SeqCst);
+            if self.slow_decompiles {
+                tokio::task::yield_now().await;
+            }
+            self.stats.in_flight.fetch_sub(1, Ordering::SeqCst);
             if self.fail_decompiles.iter().any(|f| f == name) {
                 return Err(GhidraError::NotFound {
                     kind: "function",
@@ -690,6 +833,28 @@ mod tests {
         program
     }
 
+    /// A listing of `count` plain functions — wide enough to outstrip
+    /// the scan's in-flight cap, which is the shape the concurrency
+    /// tests need. The bodies carry no algorithm shape, so the scan
+    /// claims nothing and the tests read only the fetch accounting.
+    fn wide_program(count: usize) -> FakeProgram {
+        let mut program = FakeProgram::empty();
+        program.listing = (0..count)
+            .map(|i| summary(&format!("FUN_wide{i:04}"), 0x1800_60000 + i as u64))
+            .collect();
+        for entry in &program.listing {
+            program.bodies.insert(
+                entry.name.clone(),
+                function(
+                    &entry.name,
+                    &format!("void {}(void)", entry.name),
+                    "  return;\n",
+                ),
+            );
+        }
+        program
+    }
+
     async fn scan(program: FakeProgram) -> AlgorithmRecognitionResult {
         AlgorithmEngine::with_source(program)
             .scan("eqmain.dll")
@@ -849,6 +1014,74 @@ mod tests {
             vec!["FUN_18003ab00", "FUN_18003e750"],
             "the scan stopped once the breaker tripped"
         );
+    }
+
+    #[tokio::test]
+    async fn the_breaker_aborts_a_concurrent_run_with_the_right_counts() {
+        // A listing wider than the scan's in-flight cap, every decompile
+        // failing: the breaker counts failures across the concurrent
+        // pass, aborts with those counts, and stops issuing decompiles
+        // once it trips — the functions past the trip are never read
+        // at all (issue #156).
+        let mut program = wide_program(12);
+        program.fail_decompiles = program.listing.iter().map(|f| f.name.clone()).collect();
+        let result = AlgorithmEngine::with_source(program.clone())
+            .scan("eqmain.dll")
+            .await;
+
+        // The breaker trips at the first failure count that is most of
+        // the listing: 7 of 12.
+        assert!(matches!(
+            result,
+            Err(crate::AlgorithmError::DecompileBreaker {
+                failed: 7,
+                total: 12
+            })
+        ));
+        let names: Vec<String> = (0..12).map(|i| format!("FUN_wide{i:04}")).collect();
+        assert_eq!(
+            program.decompiled(),
+            names[..7],
+            "the pass stopped issuing decompiles once the breaker tripped"
+        );
+    }
+
+    #[tokio::test]
+    async fn decompiles_run_concurrently_but_never_exceed_the_cap() {
+        // The point of the parallel pass is overlap; the point of the
+        // cap is that the bridge never drowns. With every decompile
+        // held open, the fake's accounting proves the window: more than
+        // one in flight at a time, never more than the cap, and still
+        // exactly one decompile per function (issue #156).
+        let mut program = wide_program(20);
+        program.slow_decompiles = true;
+        let result = scan(program.clone()).await;
+        assert!(result.hints.is_empty(), "plain bodies claim nothing");
+        assert_eq!(
+            program.decompiled().len(),
+            20,
+            "each function still decompiled exactly once"
+        );
+        let max = program.max_in_flight();
+        assert!(max >= 2, "the pass really overlaps decompiles");
+        assert!(
+            max <= MAX_IN_FLIGHT_DECOMPILES,
+            "in-flight decompiles never exceed the cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_concurrent_pass_produces_the_hint_list_of_the_sequential_walk() {
+        // The cap reorders nothing: with every decompile held open, the
+        // assembled hints are still function by function in listing
+        // order, detector by detector — byte for byte what the same
+        // program produces when each read lands before the next is
+        // issued.
+        let mut slow = program();
+        slow.slow_decompiles = true;
+        let concurrent = scan(slow).await;
+        let sequential = scan(program()).await;
+        assert_eq!(concurrent.hints, sequential.hints);
     }
 
     #[tokio::test]

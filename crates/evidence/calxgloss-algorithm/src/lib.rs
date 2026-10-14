@@ -41,11 +41,13 @@
 //!   the pass costs no extra Ghidra round trips; hints name the partner
 //!   function in their evidence.
 //! - [`engine`] - Scan orchestration: `AlgorithmEngine` decompiles each
-//!   function of an open program exactly once, reads it with all three
-//!   per-function detectors and then the correlation pass over the whole
-//!   listing, resolves competing claims for one algorithm down to
-//!   their strongest reading, and assembles the survivors into one
-//!   `AlgorithmRecognitionResult` with its scan provenance;
+//!   function of an open program exactly once — the per-function pass
+//!   running with bounded concurrency, at most eight decompiles in
+//!   flight, while results land in listing order — reads it with all
+//!   three per-function detectors and then the correlation pass over
+//!   the whole listing, resolves competing claims for one algorithm
+//!   down to their strongest reading, and assembles the survivors into
+//!   one `AlgorithmRecognitionResult` with its scan provenance;
 //!   `with_min_confidence` sets a floor below which hints never reach
 //!   the persisted result.
 //! - [`confidence`] - Shared confidence model: the standard score each

@@ -366,6 +366,7 @@ dependencies = [
  "calxgloss-ghidra",
  "calxgloss-prompts",
  "calxgloss-types",
+ "futures-util",
  "regex",
  "serde",
  "serde_json",

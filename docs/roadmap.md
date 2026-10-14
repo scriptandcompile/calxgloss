@@ -31,7 +31,7 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P3.5 | algorithm Phase 5: confidence scoring improvements, dynamic (JSON) pattern database, multi-function correlation, parallelize across functions | `calxgloss-algorithm` | — | 🔶 in progress | `/implement` (frontier: #156) | [#151](https://github.com/scriptandcompile/calxgloss/issues/151) |
+| P3.5 | algorithm Phase 5: confidence scoring improvements, dynamic (JSON) pattern database, multi-function correlation, parallelize across functions | `calxgloss-algorithm` | — | ✅ done | — | [#151](https://github.com/scriptandcompile/calxgloss/issues/151) |
 | P4.5 | memory Phase 5: cross-function allocation tracking, ownership transfer detection, smart-pointer conversion, resource leak detection, per-type `Drop` suggestions | `calxgloss-memory` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P5.5 | sync Phase 5: data-race analysis, lock ordering, async runtime detection, thread-local storage, futex-based synchronization | `calxgloss-sync` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P6.5 | callback Phase 5: full callback chain analysis, plugin architecture detection, event system reconstruction, closure signatures via type inference | `calxgloss-callback` | — | ⬜ not started | `/to-spec` when picked up | — |
@@ -44,11 +44,12 @@ Test counts in the archive are indicative targets, not exact requirements.
 | X3 | `data_flow.md` updated to include all methodologies | docs | — | ⬜ not started | `/to-spec` when picked up | — |
 | X4 | Architecture diagrams in source docs match implementation | docs | — | ⬜ not started | `/to-spec` when picked up | — |
 
-Legend: ✅ done · 🔶 in progress · ⬜ not started. Rows P3.5–P11.5 and X1,
+Legend: ✅ done · 🔶 in progress · ⬜ not started. Rows P4.5–P11.5 and X1,
 X3–X4 are open future-work items — optional Phase 5 depth work and
 cross-cutting chores — verified still open in the code (2026-10-08); no
 effort estimates yet. P2.5 (typeinfer Phase 5) shipped through #150 and was
-pruned from this matrix when epic #142 closed (2026-10-14).
+pruned from this matrix when epic #142 closed (2026-10-14); P3.5 (algorithm
+Phase 5) shipped through #156 (2026-10-14).
 
 ## P3.5 — algorithm Phase 5 (`calxgloss-algorithm`)
 
