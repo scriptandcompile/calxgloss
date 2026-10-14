@@ -239,6 +239,43 @@ impl HandleDetector {
         pairs.into_iter().map(|(_, record)| record).collect()
     }
 
+    /// The handles one function's body opens and never closes.
+    ///
+    /// Runs the same walk as [`detect_handles`] — same configured
+    /// sets, same variable binding, same most-recent-still-open
+    /// handle of the closer's own family closing rule — and returns
+    /// what it leaves standing: opens no recognized closer names.
+    /// Whether such a handle escapes the function or leaks is a
+    /// cross-function question, answered by that pass from this
+    /// list, exactly as the allocator's open list feeds it for
+    /// blocks.
+    pub(crate) fn open_handles(&self, func: &DecompiledFunction) -> Vec<OpenHandle> {
+        let mut open: Vec<OpenHandle> = Vec::new();
+        for call in direct_calls(&func.body) {
+            if let Some(signature) = self.openers.iter().find(|o| o.name == call.callee) {
+                if let Some(variable) = assigned_variable(&func.body, call.offset) {
+                    open.push(OpenHandle {
+                        variable: variable.to_string(),
+                        handle_type: signature.handle_type,
+                        opener: signature.name.clone(),
+                        offset: call.offset,
+                        line: line_at(&func.body, call.offset),
+                    });
+                }
+            } else if let Some(signature) = self.closers.iter().find(|c| c.name == call.callee) {
+                let closed = call.args.first().map(|arg| strip_casts(arg, is_type_word));
+                if let Some(closed) = closed.as_deref().and_then(plain_variable)
+                    && let Some(at) = open.iter().rposition(|o| {
+                        o.variable == closed && o.handle_type == signature.handle_type
+                    })
+                {
+                    open.remove(at);
+                }
+            }
+        }
+        open
+    }
+
     /// Whether the body reads a closed handle's variable after the
     /// close that released it: a whole-word occurrence of the name
     /// outside string literals, past the closing `)` at `closed_at`,
@@ -320,7 +357,7 @@ const HANDLE_PAIR_CONFIDENCE: u8 = 70;
 /// struct that owns the handle and calls the closer in its `Drop`, so
 /// the manual close disappears and every exit path — including the
 /// early returns a failure check invites — still releases the handle.
-const GUARD_SUGGESTION: &str = "RAII guard struct with Drop impl";
+pub(crate) const GUARD_SUGGESTION: &str = "RAII guard struct with Drop impl";
 
 /// The pattern a pairing reads as where the body reads the handle
 /// value after the close: the value outlives the close, so a guard
@@ -340,12 +377,12 @@ const SCOPED_GUARD_CONFIDENCE: u8 = 65;
 /// variable holding it, the family behind it, the recognized opener
 /// spelling that obtained it, and where and on which line the open
 /// sits.
-struct OpenHandle {
-    variable: String,
-    handle_type: HandleType,
-    opener: String,
-    offset: usize,
-    line: String,
+pub(crate) struct OpenHandle {
+    pub(crate) variable: String,
+    pub(crate) handle_type: HandleType,
+    pub(crate) opener: String,
+    pub(crate) offset: usize,
+    pub(crate) line: String,
 }
 /// The variable a call's result is stored into, read from the call's
 /// own line: walking left from the callee to the `=` that assigns,
@@ -1081,5 +1118,57 @@ undefined FUN_18003ab00(void) {
         assert_eq!(records[0].handle_type, HandleType::KernelObject);
         assert_eq!(records[0].opener, "open");
         assert_eq!(records[0].closer, "close");
+    }
+
+    // ------------------------------------------------------------
+    // Open handles
+    // ------------------------------------------------------------
+
+    fn opens(body: &str) -> Vec<OpenHandle> {
+        HandleDetector::with_default_names().open_handles(&function(body))
+    }
+
+    #[test]
+    fn an_open_with_no_close_stands_open() {
+        let handles = opens(
+            "\
+  hFile = CreateFileW(&DAT_3801a2b0,0xc0000000,0,(LPSECURITY_ATTRIBUTES)0x0,3,0x80,0);
+  iVar1 = ReadFile(hFile,&local_20,4,&local_18,(LPOVERLAPPED)0x0);",
+        );
+        assert_eq!(handles.len(), 1);
+        assert_eq!(handles[0].variable, "hFile");
+        assert_eq!(handles[0].handle_type, HandleType::KernelObject);
+        assert_eq!(handles[0].opener, "CreateFileW");
+        assert!(handles[0].line.contains("hFile = CreateFileW("));
+    }
+
+    #[test]
+    fn a_closed_handle_stands_no_open() {
+        // The pairing already owns this lifecycle; the open list is
+        // what it leaves over, exactly as for allocations.
+        assert!(
+            opens(
+                "\
+  hFile = CreateFileW(&DAT_3801a2b0,0xc0000000,0,(LPSECURITY_ATTRIBUTES)0x0,3,0x80,0);
+  CloseHandle(hFile);"
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_open_list_answers_the_same_walk_as_the_pairing() {
+        // Two opens, one close: the close answers the most recent
+        // still-open handle of its family, and the first stands —
+        // the same rule the pairing applies, so the two readings
+        // cannot disagree about what stands open.
+        let handles = opens(
+            "\
+  hFile = CreateFileW(&DAT_3801a2b0,0xc0000000,0,(LPSECURITY_ATTRIBUTES)0x0,3,0x80,0);
+  hFile = CreateFileW(&DAT_3801a2c0,0xc0000000,0,(LPSECURITY_ATTRIBUTES)0x0,3,0x80,0);
+  CloseHandle(hFile);",
+        );
+        assert_eq!(handles.len(), 1);
+        assert!(handles[0].line.contains("&DAT_3801a2b0"));
     }
 }

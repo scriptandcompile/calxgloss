@@ -319,6 +319,58 @@ pub struct OwnershipTransfer {
 }
 
 // ============================================================
+// Resource leak
+// ============================================================
+
+/// The resource a leak record is about: which recognized family the
+/// unreleased resource belongs to — and for a handle, the opener
+/// spelling that produced it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "resource", rename_all = "snake_case")]
+pub enum LeakResource {
+    /// A heap block of a recognized allocation family.
+    Allocation {
+        /// The allocation family the block belongs to.
+        allocation_type: AllocationType,
+    },
+    /// A handle of a known family opened by a recognized opener.
+    Handle {
+        /// The handle family the opener belongs to.
+        handle_type: HandleType,
+        /// The opener spelling that produced the handle.
+        opener: String,
+    },
+}
+
+/// One resource-leak observation about one function, with the
+/// evidence behind it.
+///
+/// A record says the [`function`](Self::function) acquired a
+/// resource — a heap block or a handle — bound it to
+/// [`variable`](Self::variable), and the body neither released it nor
+/// let it escape: no release names the variable, no call site hands
+/// it over as a plain argument, no return carries it out whole. The
+/// leak is an absence, and the acquisition line is the only positive
+/// fact, kept as [`evidence`](Self::evidence).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceLeak {
+    /// The function the record is about — the one that acquired.
+    pub function: String,
+    /// The variable the resource was bound to.
+    pub variable: String,
+    /// The resource that went unreleased: the allocation family, or
+    /// the handle family and its opener.
+    pub resource: LeakResource,
+    /// The Rust pattern the leak suggests, e.g. `Box<T>` for a block
+    /// the scope should have owned, or a guard struct for a handle.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+    /// The decompiled line that acquired the resource.
+    pub evidence: String,
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -345,6 +397,8 @@ pub enum MemoryFinding {
     CrossFunction(CrossFunctionLifecycle),
     /// An allocated pointer that escaped its function without releasing.
     Ownership(OwnershipTransfer),
+    /// A resource acquired and never released or handed on.
+    Leak(ResourceLeak),
 }
 
 impl MemoryFinding {
@@ -356,6 +410,7 @@ impl MemoryFinding {
             MemoryFinding::RefCount(record) => &record.function,
             MemoryFinding::CrossFunction(record) => &record.function,
             MemoryFinding::Ownership(record) => &record.function,
+            MemoryFinding::Leak(record) => &record.function,
         }
     }
 
@@ -367,6 +422,7 @@ impl MemoryFinding {
             MemoryFinding::RefCount(record) => &record.suggestion,
             MemoryFinding::CrossFunction(record) => &record.suggestion,
             MemoryFinding::Ownership(record) => &record.suggestion,
+            MemoryFinding::Leak(record) => &record.suggestion,
         }
     }
 
@@ -378,6 +434,7 @@ impl MemoryFinding {
             MemoryFinding::RefCount(record) => record.confidence,
             MemoryFinding::CrossFunction(record) => record.confidence,
             MemoryFinding::Ownership(record) => record.confidence,
+            MemoryFinding::Leak(record) => record.confidence,
         }
     }
 
@@ -389,12 +446,13 @@ impl MemoryFinding {
             MemoryFinding::RefCount(record) => &record.evidence,
             MemoryFinding::CrossFunction(record) => &record.evidence,
             MemoryFinding::Ownership(record) => &record.evidence,
+            MemoryFinding::Leak(record) => &record.evidence,
         }
     }
 
     /// The serde `kind` tag — `allocation`, `handle`, `ref_count`,
-    /// `cross_function`, or `ownership` — naming the detector behind
-    /// the finding.
+    /// `cross_function`, `ownership`, or `leak` — naming the detector
+    /// behind the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             MemoryFinding::Allocation(_) => "allocation",
@@ -402,13 +460,15 @@ impl MemoryFinding {
             MemoryFinding::RefCount(_) => "ref_count",
             MemoryFinding::CrossFunction(_) => "cross_function",
             MemoryFinding::Ownership(_) => "ownership",
+            MemoryFinding::Leak(_) => "leak",
         }
     }
 
     /// What the finding pairs, spelled for a report row: the allocation
     /// family, the opener/closer spellings, the bump/drop spellings, the
-    /// allocation family and the releasing partner, or the allocation
-    /// family and the transfer direction.
+    /// allocation family and the releasing partner, the allocation
+    /// family and the transfer direction, or the leaked resource — its
+    /// allocation family or its opener.
     pub fn target(&self) -> String {
         match self {
             MemoryFinding::Allocation(record) => record.allocation_type.to_string(),
@@ -420,6 +480,10 @@ impl MemoryFinding {
             MemoryFinding::Ownership(record) => {
                 format!("{}→{}", record.allocation_type, record.direction)
             }
+            MemoryFinding::Leak(record) => match &record.resource {
+                LeakResource::Allocation { allocation_type } => allocation_type.to_string(),
+                LeakResource::Handle { opener, .. } => opener.clone(),
+            },
         }
     }
 }
@@ -792,6 +856,48 @@ mod tests {
     }
 
     #[test]
+    fn a_leaked_allocation_serde_round_trips_under_its_kind_tag() {
+        let finding = MemoryFinding::Leak(ResourceLeak {
+            function: "FUN_18003ab00".into(),
+            variable: "pvVar1".into(),
+            resource: LeakResource::Allocation {
+                allocation_type: AllocationType::Malloc,
+            },
+            suggestion: "Box<T>".into(),
+            confidence: Confidence::new(60),
+            evidence: "pvVar1 = malloc(0x20);".into(),
+        });
+        let json = serde_json::to_string(&finding).expect("leak finding should serialize");
+        assert!(json.contains("\"kind\":\"leak\""));
+        assert!(json.contains("\"resource\":\"allocation\""));
+        let back: MemoryFinding =
+            serde_json::from_str(&json).expect("leak finding should read back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
+    fn a_leaked_handle_names_its_opener_and_round_trips() {
+        let finding = MemoryFinding::Leak(ResourceLeak {
+            function: "FUN_18003ab00".into(),
+            variable: "hFile".into(),
+            resource: LeakResource::Handle {
+                handle_type: HandleType::KernelObject,
+                opener: "CreateFileW".into(),
+            },
+            suggestion: "RAII guard struct with Drop impl".into(),
+            confidence: Confidence::new(60),
+            evidence: "hFile = CreateFileW(...);".into(),
+        });
+        let json = serde_json::to_string(&finding).expect("handle leak should serialize");
+        assert!(json.contains("\"resource\":\"handle\""));
+        assert!(json.contains("\"opener\":\"CreateFileW\""));
+        let back: MemoryFinding =
+            serde_json::from_str(&json).expect("handle leak should read back");
+        assert_eq!(back, finding);
+        assert_eq!(back.target(), "CreateFileW");
+    }
+
+    #[test]
     fn the_union_accessors_reach_through_every_variant() {
         let findings = [
             MemoryFinding::Allocation(hint()),
@@ -816,6 +922,16 @@ mod tests {
                 confidence: Confidence::new(70),
                 evidence: "pvVar1 = malloc(0x20); FUN_18003e750(pvVar1);".into(),
             }),
+            MemoryFinding::Leak(ResourceLeak {
+                function: "FUN_18003ab00".into(),
+                variable: "pvVar1".into(),
+                resource: LeakResource::Allocation {
+                    allocation_type: AllocationType::Malloc,
+                },
+                suggestion: "Box<T>".into(),
+                confidence: Confidence::new(70),
+                evidence: "pvVar1 = malloc(0x20);".into(),
+            }),
         ];
         for finding in &findings {
             assert_eq!(finding.function(), "FUN_18003ab00");
@@ -831,7 +947,8 @@ mod tests {
                 "handle",
                 "ref_count",
                 "cross_function",
-                "ownership"
+                "ownership",
+                "leak"
             ]
         );
         let suggestions: Vec<&str> = findings.iter().map(|f| f.suggestion()).collect();
@@ -841,6 +958,7 @@ mod tests {
                 "Box<T>",
                 "RAII guard struct with Drop impl",
                 "Rc<T>",
+                "Box<T>",
                 "Box<T>",
                 "Box<T>"
             ]
@@ -853,7 +971,8 @@ mod tests {
                 "CreateFileW→CloseHandle",
                 "AddRef→Release",
                 "malloc→FUN_18003e750",
-                "malloc→handed_to_callee"
+                "malloc→handed_to_callee",
+                "malloc"
             ]
         );
     }

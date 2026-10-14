@@ -195,7 +195,10 @@ impl<S> MemoryEngine<S> {
         // over the bodies the scan already decompiled — no extra
         // Ghidra round trips — and its findings append in listing
         // order, so the persisted list stays stable and diffable.
-        findings.extend(self.cross_function.analyze(&bodies, &self.allocator));
+        findings.extend(
+            self.cross_function
+                .analyze(&bodies, &self.allocator, &self.handles),
+        );
 
         let mut metadata = ScanMetadata::new(binary);
         metadata.duration_secs = started.elapsed().as_secs();
@@ -220,7 +223,7 @@ mod tests {
     use super::*;
     use crate::allocator::AllocatorSignature;
     use crate::handle::HandleSignature;
-    use crate::types::{AllocationType, CountStyle, HandleType, TransferDirection};
+    use crate::types::{AllocationType, CountStyle, HandleType, LeakResource, TransferDirection};
     use calxgloss_ghidra::{
         DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
         Result, StringLiteral, StructLayout, Symbol, Xref,
@@ -743,6 +746,66 @@ mod tests {
         };
         assert_eq!(record.direction, TransferDirection::ReturnedToCaller);
         assert_eq!(record.partner, None);
+    }
+
+    #[tokio::test]
+    async fn a_scan_reports_an_allocation_never_released_or_handed_on() {
+        // The thing the crate promises to find: the block is taken,
+        // never freed, never passed, never returned — a leak.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  pvVar1 = malloc(0x20);\n  *pvVar1 = 0;\n",
+            ),
+        );
+        let result = scan(program).await;
+        let findings: Vec<&MemoryFinding> = result.for_function("FUN_18003ab00").collect();
+        assert_eq!(findings.len(), 1);
+        let MemoryFinding::Leak(record) = findings[0] else {
+            unreachable!("an open allocation that goes nowhere is a leak");
+        };
+        assert_eq!(record.variable, "pvVar1");
+        assert_eq!(
+            record.resource,
+            LeakResource::Allocation {
+                allocation_type: AllocationType::Malloc,
+            }
+        );
+        assert_eq!(record.confidence.value(), 60);
+        assert_eq!(record.suggestion, "Box<T>");
+    }
+
+    #[tokio::test]
+    async fn a_scan_reports_an_unclosed_handle_that_escapes_nowhere() {
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  hFile = CreateFileW(&DAT_3801a2b0,0xc0000000,0,(LPSECURITY_ATTRIBUTES)0x0,3,0x80,0);\n  bVar1 = hFile != (void *)0x0;\n",
+            ),
+        );
+        let result = scan(program).await;
+        let findings: Vec<&MemoryFinding> = result.for_function("FUN_18003ab00").collect();
+        assert_eq!(findings.len(), 1);
+        let MemoryFinding::Leak(record) = findings[0] else {
+            unreachable!("an unclosed handle that goes nowhere is a leak");
+        };
+        assert_eq!(record.variable, "hFile");
+        assert_eq!(
+            record.resource,
+            LeakResource::Handle {
+                handle_type: HandleType::KernelObject,
+                opener: "CreateFileW".into(),
+            }
+        );
+        assert_eq!(record.suggestion, "RAII guard struct with Drop impl");
     }
 
     #[tokio::test]

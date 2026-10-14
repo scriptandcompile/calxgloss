@@ -102,6 +102,7 @@ fn print_memory_lifecycle_report(result: &MemoryResult, path: &Path) {
         "ref_count",
         "cross_function",
         "ownership",
+        "leak",
     ]
     .into_iter()
     .map(|kind| {
