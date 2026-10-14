@@ -53,12 +53,12 @@ const BYTE_BUFFER: &str = "void *";
 
 /// The type text for an argument a contract reads as a NUL-terminated
 /// character string.
-const CHAR_STRING: &str = "char *";
+pub(crate) const CHAR_STRING: &str = "char *";
 
 /// The type text for an argument a contract reads as a NUL-terminated
 /// wide-character string — the `W` half of the Win32 A/W split, which is
 /// what separates a `CreateFileW` name argument from its `A` twin's.
-const WIDE_STRING: &str = "wchar_t *";
+pub(crate) const WIDE_STRING: &str = "wchar_t *";
 
 /// The type text for an argument a contract reads as a byte count: the
 /// allocator and byte-routine sizes are unsigned counts of the platform
@@ -84,16 +84,23 @@ pub struct SignatureArg {
 }
 
 /// A well-known library routine and what one of its call sites implies:
-/// the callee name to match, the per-position contract readings, and the
-/// confidence the signature carries wherever it matches. Names are
-/// spelled exactly as decompiled text shows them; A/W-suffix tolerance
-/// happens when a call is looked up, not in the entry itself.
+/// the callee name to match, the per-position contract readings, the
+/// type its return value carries, and the confidence the signature
+/// carries wherever it matches. Names are spelled exactly as decompiled
+/// text shows them; A/W-suffix tolerance happens when a call is looked
+/// up, not in the entry itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KnownSignature {
     /// The callee name as decompiled text spells it, e.g. `CreateFileW`.
     pub name: &'static str,
     /// The contract's per-argument readings, in position order.
     pub args: &'static [SignatureArg],
+    /// The type the routine's return value carries, as C text — the
+    /// reading the caller→callee pass lends to a callee parameter when a
+    /// caller passes this routine's result as an argument. `None` when
+    /// the routine returns nothing useful (`void`, or a bare success
+    /// flag whose width says nothing about the callee).
+    pub returns: Option<&'static str>,
     /// Confidence the signature carries at a matching call site, 0–100.
     pub confidence: u8,
 }
@@ -114,6 +121,7 @@ pub const KNOWN_SIGNATURES: &[KnownSignature] = &[
             position: 0,
             inferred_type: BYTE_BUFFER,
         }],
+        returns: None,
         confidence: LIBC_CONFIDENCE,
     },
     KnownSignature {
@@ -122,6 +130,7 @@ pub const KNOWN_SIGNATURES: &[KnownSignature] = &[
             position: 0,
             inferred_type: BYTE_COUNT,
         }],
+        returns: Some(BYTE_BUFFER),
         confidence: LIBC_CONFIDENCE,
     },
     KnownSignature {
@@ -136,6 +145,7 @@ pub const KNOWN_SIGNATURES: &[KnownSignature] = &[
                 inferred_type: BYTE_COUNT,
             },
         ],
+        returns: Some(BYTE_BUFFER),
         confidence: LIBC_CONFIDENCE,
     },
     KnownSignature {
@@ -144,6 +154,7 @@ pub const KNOWN_SIGNATURES: &[KnownSignature] = &[
             position: 0,
             inferred_type: CHAR_STRING,
         }],
+        returns: Some(BYTE_COUNT),
         confidence: LIBC_CONFIDENCE,
     },
     KnownSignature {
@@ -158,6 +169,7 @@ pub const KNOWN_SIGNATURES: &[KnownSignature] = &[
                 inferred_type: CHAR_STRING,
             },
         ],
+        returns: None,
         confidence: LIBC_CONFIDENCE,
     },
     KnownSignature {
@@ -172,6 +184,7 @@ pub const KNOWN_SIGNATURES: &[KnownSignature] = &[
                 inferred_type: CHAR_STRING,
             },
         ],
+        returns: Some(CHAR_STRING),
         confidence: LIBC_CONFIDENCE,
     },
     KnownSignature {
@@ -190,6 +203,7 @@ pub const KNOWN_SIGNATURES: &[KnownSignature] = &[
                 inferred_type: BYTE_COUNT,
             },
         ],
+        returns: Some(BYTE_BUFFER),
         confidence: LIBC_CONFIDENCE,
     },
     KnownSignature {
@@ -208,6 +222,7 @@ pub const KNOWN_SIGNATURES: &[KnownSignature] = &[
                 inferred_type: BYTE_COUNT,
             },
         ],
+        returns: Some(BYTE_BUFFER),
         confidence: LIBC_CONFIDENCE,
     },
     KnownSignature {
@@ -216,6 +231,7 @@ pub const KNOWN_SIGNATURES: &[KnownSignature] = &[
             position: 0,
             inferred_type: BYTE_BUFFER,
         }],
+        returns: None,
         confidence: WIN32_CONFIDENCE,
     },
     KnownSignature {
@@ -224,6 +240,7 @@ pub const KNOWN_SIGNATURES: &[KnownSignature] = &[
             position: 0,
             inferred_type: WIDE_STRING,
         }],
+        returns: Some(BYTE_BUFFER),
         confidence: WIN32_CONFIDENCE,
     },
 ];
@@ -436,6 +453,17 @@ impl KnownTypePropagationEngine {
     /// to nothing.
     pub fn match_signature<'a>(&self, callee: &'a str) -> Option<SignatureMatch<'a>> {
         find_signature(callee).map(|signature| SignatureMatch { signature, callee })
+    }
+
+    /// The type a callee's return value carries, if its signature names
+    /// one. Resolves the callee through the same A/W-tolerant lookup as
+    /// [`match_signature`](Self::match_signature) and reports the entry's
+    /// [`returns`](KnownSignature::returns); a routine outside the
+    /// database, or one whose return says nothing useful (`void`, a bare
+    /// success flag), reports nothing. The caller→callee pass reads this
+    /// when a caller passes a known routine's result as an argument.
+    pub fn return_type(&self, callee: &str) -> Option<&'static str> {
+        find_signature(callee).and_then(|signature| signature.returns)
     }
 
     /// The readings the body's known call sites propagate to its
@@ -930,6 +958,39 @@ return (iVar1);";
         );
         let positions: Vec<usize> = resolved("memcpy").iter().map(|arg| arg.position).collect();
         assert_eq!(positions, [0, 1, 2]);
+    }
+
+    fn return_type(callee: &str) -> Option<&'static str> {
+        KnownTypePropagationEngine::new().return_type(callee)
+    }
+
+    #[test]
+    fn a_known_routine_reports_its_return_type() {
+        // The allocator hands back a buffer, `strlen` a byte count, and
+        // `strcpy` the destination string — the readings the caller→callee
+        // pass lends when a caller passes one of these results along.
+        assert_eq!(return_type("malloc"), Some(BYTE_BUFFER));
+        assert_eq!(return_type("strlen"), Some(BYTE_COUNT));
+        assert_eq!(return_type("strcpy"), Some(CHAR_STRING));
+        // The A twin resolves through the family and keeps the entry's
+        // return.
+        assert_eq!(return_type("CreateFileA"), Some(BYTE_BUFFER));
+    }
+
+    #[test]
+    fn a_void_or_flag_return_reports_nothing() {
+        // `free` returns nothing and `CloseHandle` a bare success flag:
+        // neither says anything about a callee parameter, so neither
+        // lends a reading.
+        assert_eq!(return_type("free"), None);
+        assert_eq!(return_type("CloseHandle"), None);
+        assert_eq!(return_type("strcmp"), None);
+    }
+
+    #[test]
+    fn an_unknown_callee_reports_no_return_type() {
+        assert_eq!(return_type("FUN_18001234"), None);
+        assert_eq!(return_type("myMalloc"), None);
     }
 
     fn propagated(signature: &str, body: &str) -> Vec<InferredParamType> {

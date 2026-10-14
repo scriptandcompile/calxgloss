@@ -3,16 +3,19 @@
 //! [`TypeInferEngine`] runs the three inline detectors — this-pointer
 //! detection, parameter-size detection, and known-type propagation — over
 //! every function of one open Ghidra program, then runs the
-//! cross-function pass: each function's surviving parameter readings
+//! cross-function passes: each function's surviving parameter readings
 //! type the arguments at that callee's call sites, and the caller's own
-//! parameter when the argument is one. Their records are assembled into
-//! a single [`TypeInferenceResult`] with its scan provenance.
+//! parameter when the argument is one; and what a function's callers
+//! actually pass at their sites types that function's own parameters.
+//! Their records are assembled into a single [`TypeInferenceResult`]
+//! with its scan provenance.
 //!
 //! The inline detectors are pure text analysis over one decompiled body,
 //! so the engine fetches each function's pseudo-C exactly once and reads
 //! it with all three, rather than having each detector pull its own copy
-//! — and the cross-function pass re-reads those same bodies, keeping the
-//! whole scan at one decompile per function. The inline pass is then one
+//! — and the cross-function passes re-read those same bodies, fetching a
+//! caller outside the listing at most once, keeping the scan at one
+//! decompile per function. The inline pass is then one
 //! sequential pass over the function listing: there are no disjoint
 //! endpoint sets to overlap the way the type-database scans have, and
 //! keeping the pass sequential keeps the persisted inference list in a
@@ -84,7 +87,8 @@ impl<S> TypeInferEngine<S> {
 
     /// Infer types across `binary`, decompiling each function exactly
     /// once and reading it with all three inline detectors, then
-    /// propagating the surviving readings across function boundaries.
+    /// propagating the surviving readings across function boundaries in
+    /// both directions.
     ///
     /// `binary` names the program the scan reads (e.g. `eqmain.dll`) and
     /// becomes the key a persisted result is filed under. The inferences
@@ -93,6 +97,11 @@ impl<S> TypeInferEngine<S> {
     /// the known-signature readings — with the cross-function records
     /// appended after the inline ones, in listing order, so two scans of
     /// the same program diff cleanly.
+    ///
+    /// The caller→callee direction fetches each analyzed function's
+    /// callers; a caller whose body the listing pass did not already
+    /// produce is decompiled once and cached (a failed fetch is cached
+    /// too), so no function's body is ever requested twice in one scan.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad entry
     /// point) is skipped with a warning; only a failure of the listing
@@ -189,12 +198,84 @@ impl<S> TypeInferEngine<S> {
             propagated.extend(self.cross.propagate(body, &callee_params));
         }
 
+        // Caller to callee: what each function's callers actually hand
+        // in at their sites types that function's own parameters. The
+        // caller bodies are the ones already in hand wherever the caller
+        // is in the listing; any other caller is fetched once and kept
+        // in the cache — failures included — so no function's body is
+        // decompiled twice across the whole scan.
+        let inline_bodies: HashMap<&str, &DecompiledFunction> = bodies
+            .iter()
+            .map(|body| (body.name.as_str(), body))
+            .collect();
+        let mut fetched: HashMap<String, Option<DecompiledFunction>> = HashMap::new();
+        let mut to_callee: Vec<InferredType> = Vec::new();
+        for function in &functions {
+            if function.name.is_empty() {
+                continue;
+            }
+            let Some(callee) = inline_bodies.get(function.name.as_str()) else {
+                continue; // never decompiled — there is no body to type
+            };
+            let callers = match self.source.callers(function.address).await {
+                Ok(callers) => callers,
+                Err(error) => {
+                    warn!(
+                        function = %function.name,
+                        error = %error,
+                        "Skipping caller-to-callee pass: caller lookup failed"
+                    );
+                    continue;
+                }
+            };
+            // Fetch what the listing pass did not already produce, once
+            // each — a failed fetch is cached too, so a caller that will
+            // not decompile is never asked for twice.
+            for caller in &callers {
+                if inline_bodies.contains_key(caller.as_str())
+                    || fetched.contains_key(caller.as_str())
+                {
+                    continue;
+                }
+                let body = self.source.decompile(caller).await.ok();
+                if body.is_none() {
+                    warn!(function = %caller, "Skipping caller: decompile failed");
+                }
+                fetched.insert(caller.clone(), body);
+            }
+            let mut caller_bodies: Vec<&DecompiledFunction> = Vec::new();
+            for caller in &callers {
+                let body = inline_bodies
+                    .get(caller.as_str())
+                    .copied()
+                    .or_else(|| fetched.get(caller.as_str()).and_then(|body| body.as_ref()));
+                if let Some(body) = body {
+                    caller_bodies.push(body);
+                }
+            }
+            if !caller_bodies.is_empty() {
+                to_callee.extend(self.cross.propagate_to_callee(
+                    callee,
+                    &caller_bodies,
+                    &callee_params,
+                ));
+            }
+        }
+
         // The propagated records compete with the inline ones — one
         // parameter can stand read by its own body and by a callee's
-        // contract at once — so the assembled list resolves once more,
-        // and the result carries at most one inference per target.
-        collected += propagated.len();
-        let inferences = resolve_conflicts(inline.into_iter().chain(propagated).collect());
+        // contract or its callers' arguments at once — so the assembled
+        // list resolves once more, and the result carries at most one
+        // inference per target. The inline chain is first, so an inline
+        // reading wins every tie against a propagated one.
+        collected += propagated.len() + to_callee.len();
+        let inferences = resolve_conflicts(
+            inline
+                .into_iter()
+                .chain(propagated)
+                .chain(to_callee)
+                .collect(),
+        );
 
         let mut metadata = ScanMetadata::new(binary);
         metadata.duration_secs = started.elapsed().as_secs();
@@ -249,8 +330,17 @@ mod tests {
     fn summary(name: &str) -> FunctionSummary {
         FunctionSummary {
             name: name.to_string(),
-            address: 0x1800_3ab00,
+            address: addr(name),
         }
+    }
+
+    /// A deterministic per-name address, so a test's caller map can name
+    /// one function without every summary sharing a single address.
+    fn addr(name: &str) -> u64 {
+        0x1800_0000
+            + name.bytes().fold(0u64, |hash, byte| {
+                hash.wrapping_mul(31).wrapping_add(byte as u64)
+            })
     }
 
     fn function(name: &str, signature: &str, body: &str) -> DecompiledFunction {
@@ -274,6 +364,9 @@ mod tests {
     struct FakeProgram {
         listing: Vec<FunctionSummary>,
         bodies: HashMap<String, DecompiledFunction>,
+        /// Which functions call which, keyed by the callee's address —
+        /// what the caller→callee pass reads.
+        callers: HashMap<u64, Vec<String>>,
         fail_decompiles: Vec<String>,
         fail_listing: bool,
         stats: Arc<Stats>,
@@ -284,6 +377,7 @@ mod tests {
             Self {
                 listing: Vec::new(),
                 bodies: HashMap::new(),
+                callers: HashMap::new(),
                 fail_decompiles: Vec::new(),
                 fail_listing: false,
                 stats: Arc::new(Stats::default()),
@@ -329,8 +423,8 @@ mod tests {
             Ok(Vec::new())
         }
 
-        async fn callers(&self, _address: u64) -> Result<Vec<String>> {
-            Ok(Vec::new())
+        async fn callers(&self, address: u64) -> Result<Vec<String>> {
+            Ok(self.callers.get(&address).cloned().unwrap_or_default())
         }
 
         async fn xrefs_to(&self, _address: u64) -> Result<Vec<Xref>> {
@@ -863,5 +957,233 @@ mod tests {
             unreachable!("the pointer detector emits parameter records");
         };
         assert_eq!(record.inferred_type, "void *");
+    }
+
+    /// The canned program for the caller→callee pass: a helper whose own
+    /// body shows nothing interesting, and two callers that reveal its
+    /// contract — one passing its own typed parameter and a `malloc`
+    /// result, one passing a wide string literal and a bare number.
+    fn callers_program() -> FakeProgram {
+        let mut program = FakeProgram::empty();
+        program.listing = vec![
+            summary("FUN_18004b210"),
+            summary("FUN_180051c00"),
+            summary("FUN_180052000"),
+        ];
+        program.bodies.insert(
+            "FUN_18004b210".into(),
+            function(
+                "FUN_18004b210",
+                "undefined FUN_18004b210(undefined8 param_1,undefined8 param_2)",
+                "  return;\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_180051c00".into(),
+            function(
+                "FUN_180051c00",
+                "undefined FUN_180051c00(undefined8 param_1)",
+                "  uVar1 = strlen(param_1);\n  FUN_18004b210(param_1, malloc(0x10));\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_180052000".into(),
+            function(
+                "FUN_180052000",
+                "undefined FUN_180052000(void)",
+                "  FUN_18004b210(L\"name\", 0x10);\n",
+            ),
+        );
+        program.callers.insert(
+            addr("FUN_18004b210"),
+            vec!["FUN_180051c00".into(), "FUN_180052000".into()],
+        );
+        program
+    }
+
+    #[tokio::test]
+    async fn callers_recognizable_arguments_type_the_callee_s_parameters() {
+        // The helper's body says nothing; its callers do. The first
+        // parameter takes the first caller's typed parameter (`char *`,
+        // first-seen over the second caller's wide literal); the second
+        // takes the `malloc` result, since the bare number beside it
+        // says nothing.
+        let result = scan(callers_program()).await;
+
+        let InferredType::Param(record) =
+            finding(&result, "FUN_18004b210", InferenceMethod::CrossFunction, 0)
+        else {
+            unreachable!("the caller→callee pass emits parameter records");
+        };
+        assert_eq!(record.param_name.as_deref(), Some("param_1"));
+        assert_eq!(record.inferred_type, "char *");
+        assert_eq!(record.scope, InferenceScope::Function);
+        assert_eq!(record.confidence, Confidence::new(65));
+        assert_eq!(record.evidence, "FUN_180051c00 passes FUN_18004b210");
+
+        let InferredType::Param(record) =
+            finding(&result, "FUN_18004b210", InferenceMethod::CrossFunction, 1)
+        else {
+            unreachable!("the caller→callee pass emits parameter records");
+        };
+        assert_eq!(record.inferred_type, "void *");
+        assert_eq!(record.evidence, "FUN_180051c00 passes FUN_18004b210");
+    }
+
+    #[tokio::test]
+    async fn a_caller_body_is_fetched_at_most_once_per_scan() {
+        // One caller outside the listing calls both helpers: its body is
+        // fetched once and cached, and a caller that will not decompile
+        // is attempted once — the failure is cached too. The analyzed
+        // functions themselves are still decompiled exactly once.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18004b210"), summary("FUN_18004b300")];
+        program.bodies.insert(
+            "FUN_18004b210".into(),
+            function(
+                "FUN_18004b210",
+                "undefined FUN_18004b210(undefined8 param_1)",
+                "  return;\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18004b300".into(),
+            function(
+                "FUN_18004b300",
+                "undefined FUN_18004b300(undefined8 param_1)",
+                "  return;\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_180051c00".into(),
+            function(
+                "FUN_180051c00",
+                "undefined FUN_180051c00(void)",
+                "  FUN_18004b210(\"name\");\n  FUN_18004b300(L\"name\");\n",
+            ),
+        );
+        program.callers.insert(
+            addr("FUN_18004b210"),
+            vec!["FUN_180051c00".into(), "FUN_180052000".into()],
+        );
+        program
+            .callers
+            .insert(addr("FUN_18004b300"), vec!["FUN_180051c00".into()]);
+        program.fail_decompiles = vec!["FUN_180052000".into()];
+        let result = scan(program.clone()).await;
+
+        assert_eq!(
+            program.decompiled(),
+            vec![
+                "FUN_18004b210",
+                "FUN_18004b300",
+                "FUN_180051c00",
+                "FUN_180052000"
+            ],
+            "the shared caller was fetched once, and the failed one only attempted once"
+        );
+        assert_eq!(
+            finding(&result, "FUN_18004b210", InferenceMethod::CrossFunction, 0).inferred_type(),
+            "char *"
+        );
+        assert_eq!(
+            finding(&result, "FUN_18004b300", InferenceMethod::CrossFunction, 0).inferred_type(),
+            "wchar_t *"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_literal_argument_types_no_callee_parameter_though_the_callee_still_types_its_sites()
+    {
+        // The helper reads its own parameter as `char *`; a caller
+        // passing a bare number gets nothing at that site — the
+        // callee's contract types only the bare-identifier site beside
+        // it — and the number is no evidence about the helper's
+        // parameter, which keeps only its inline reading.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18004b210"), summary("FUN_180051c00")];
+        program.bodies.insert(
+            "FUN_18004b210".into(),
+            function(
+                "FUN_18004b210",
+                "undefined FUN_18004b210(undefined8 param_1)",
+                "  uVar1 = strlen(param_1);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_180051c00".into(),
+            function(
+                "FUN_180051c00",
+                "undefined FUN_180051c00(void)",
+                "  FUN_18004b210(0x10);\n  FUN_18004b210(local_8);\n",
+            ),
+        );
+        program
+            .callers
+            .insert(addr("FUN_18004b210"), vec!["FUN_180051c00".into()]);
+        let result = scan(program).await;
+
+        // The callee's contract still types the bare-name site beside
+        // the literal — the literal's own site stays untyped.
+        assert_eq!(call_site_count(&result, "FUN_180051c00"), 1);
+        let site = call_site_finding(&result, "FUN_180051c00", "FUN_18004b210", 0);
+        assert_eq!(site.arg_name.as_deref(), Some("local_8"));
+        assert_eq!(site.inferred_type, "char *");
+
+        // The helper's parameter: one record, the inline one — the
+        // caller's number contributed nothing.
+        assert_eq!(param_count(&result, "FUN_18004b210", 0), 1);
+        assert_eq!(
+            finding(&result, "FUN_18004b210", InferenceMethod::StringFunction, 0).inferred_type(),
+            "char *"
+        );
+        // No cross-function parameter record for the helper at all.
+        assert!(
+            !result
+                .for_function("FUN_18004b210")
+                .any(|inference| matches!(
+                    inference,
+                    InferredType::Param(record) if record.method == InferenceMethod::CrossFunction
+                )),
+            "a bare number types no callee parameter"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_inline_vtable_reading_beats_a_propagated_one() {
+        // The helper dispatches through its first parameter (85) and a
+        // caller hands it a string literal (65): the direct body
+        // evidence wins the parameter, and the propagated record drops.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18004b210"), summary("FUN_180051c00")];
+        program.bodies.insert(
+            "FUN_18004b210".into(),
+            function(
+                "FUN_18004b210",
+                "undefined FUN_18004b210(undefined8 param_1)",
+                "  (**(code **)*param_1)(param_1);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_180051c00".into(),
+            function(
+                "FUN_180051c00",
+                "undefined FUN_180051c00(void)",
+                "  FUN_18004b210(\"name\");\n",
+            ),
+        );
+        program
+            .callers
+            .insert(addr("FUN_18004b210"), vec!["FUN_180051c00".into()]);
+        let result = scan(program).await;
+
+        assert_eq!(param_count(&result, "FUN_18004b210", 0), 1);
+        let InferredType::Param(record) =
+            finding(&result, "FUN_18004b210", InferenceMethod::VtableCall, 0)
+        else {
+            unreachable!("the this-pointer detector emits parameter records");
+        };
+        assert_eq!(record.inferred_type, "void *");
+        assert!(record.confidence > Confidence::new(65));
     }
 }

@@ -1,25 +1,34 @@
-//! Cross-function type propagation: callee to caller.
+//! Cross-function type propagation, in both directions.
 //!
 //! The inline detectors read one body at a time, so a type recovered
 //! inside a helper stops at its closing brace. [`CrossFunctionPropagator`]
-//! carries those readings across the boundary: when a function's
-//! *surviving* parameter readings describe a user-defined callee, the
-//! readings type the arguments sitting at that callee's call sites —
-//! emitted as the call-site record kind the vocabulary already defines —
-//! and when a typed argument is one of the caller's own parameters, that
-//! parameter gets a reading too, so the type climbs the call chain.
+//! carries those readings across the boundary in two directions:
+//!
+//! - **callee → caller** ([`propagate`](CrossFunctionPropagator::propagate)):
+//!   when a function's *surviving* parameter readings describe a
+//!   user-defined callee, the readings type the arguments sitting at that
+//!   callee's call sites — emitted as the call-site record kind the
+//!   vocabulary already defines — and when a typed argument is one of the
+//!   caller's own parameters, that parameter gets a reading too, so the
+//!   type climbs the call chain.
+//! - **caller → callee** ([`propagate_to_callee`](CrossFunctionPropagator::propagate_to_callee)):
+//!   what a function's callers actually pass at their call sites types
+//!   that function's own parameters, so a helper whose body shows no
+//!   interesting usage still gets typed from the contract its callers
+//!   reveal.
 //!
 //! Unlike [`KnownSignature`] propagation, there is no database to look
-//! the callee's contract up in: the contract is what this very scan
-//! inferred about the callee, which is why the pass runs after the inline
-//! detectors and reads only their resolved survivors. A callee the scan
-//! never typed — or a library routine it never decompiles — carries no
-//! readings and propagates nothing.
+//! the contract up in: it is what this very scan inferred, which is why
+//! both passes run after the inline detectors and read only their
+//! resolved survivors. A callee the scan never typed — or a library
+//! routine it never decompiles — carries no readings and propagates
+//! nothing.
 //!
 //! [`KnownSignature`]: crate::types::InferenceMethod::KnownSignature
 
 use std::collections::HashMap;
 
+use crate::known_type::{CHAR_STRING, KnownTypePropagationEngine, WIDE_STRING};
 use crate::types::{
     InferenceMethod, InferenceScope, InferredCallType, InferredParamType, InferredType,
 };
@@ -59,6 +68,15 @@ const CALLSITE_CONFIDENCE: u8 = 70;
 /// site — so it sits at the bottom of the band, where it loses any tie
 /// against a direct inline reading of the same parameter.
 const PARAM_CONFIDENCE: u8 = 65;
+
+/// Confidence of a reading propagated from a caller's argument back to
+/// the callee's own parameter: the callee's type is inferred from what
+/// its callers pass, one step removed from the callee's direct body
+/// evidence and aggregated across call sites, so it sits at the bottom
+/// of the cross-function band — level with the caller-parameter climb —
+/// where it loses any tie against the callee's own inline reading and
+/// every stronger inline reading outright.
+const CALLER_PARAM_CONFIDENCE: u8 = 65;
 
 /// The surviving parameter readings a scan propagates from, grouped by
 /// the function that carries them: a callee name maps to its resolved
@@ -152,6 +170,142 @@ impl CrossFunctionPropagator {
         }
         records
     }
+
+    /// Read what `callers` pass at their call sites of `callee`, and type
+    /// `callee`'s own parameters with it.
+    ///
+    /// This is the reverse direction of [`propagate`](Self::propagate):
+    /// instead of a helper's contract reaching out to its callers, the
+    /// values callers actually hand in reach back to the helper's
+    /// parameters — so a function whose own body shows no interesting
+    /// usage still gets typed from the contract its callers reveal.
+    ///
+    /// An argument types a parameter only when it carries a recognizable
+    /// type on its own, without needing the callee's body to say so:
+    ///
+    /// - a bare identifier naming one of the *caller's* parameters, read
+    ///   through that caller's surviving inline readings — the caller
+    ///   passes along, untouched, something it was itself handed;
+    /// - a string literal — `"…"` is a character string, `L"…"` a wide
+    ///   one, whatever the callee then does with it;
+    /// - a call to a known-signature routine — the allocator hands back
+    ///   a buffer, `strlen` a byte count
+    ///   ([`KnownTypePropagationEngine::return_type`]).
+    ///
+    /// Anything else — a numeric literal, a cast, an indexing or member
+    /// operand, an identifier the scan never typed — says nothing about
+    /// the parameter, and the position gets no reading. The call site
+    /// itself may still be typed by the callee→caller pass when the
+    /// callee's own contract says something; that is not this pass's
+    /// business, and typing the callee's parameter from a bare literal
+    /// would be.
+    ///
+    /// Readings land at [`CALLER_PARAM_CONFIDENCE`], the bottom of the
+    /// cross-function band, so the callee's own inline evidence — a vtable
+    /// call at 85, or any inline reading on a tie — still wins. A position
+    /// only gets a record when the callee's signature actually has a
+    /// parameter there; a caller passing more arguments than the callee
+    /// declares (a Ghidra prototype gap) types nothing.
+    ///
+    /// [`KnownTypePropagationEngine::return_type`]: crate::known_type::KnownTypePropagationEngine::return_type
+    pub fn propagate_to_callee(
+        &self,
+        callee: &DecompiledFunction,
+        callers: &[&DecompiledFunction],
+        caller_readings: &CalleeParams,
+    ) -> Vec<InferredType> {
+        let params = callee.parameter_names();
+        let known = KnownTypePropagationEngine::new();
+        let mut records = Vec::new();
+        for caller in callers {
+            for call in direct_calls(&caller.body) {
+                if call.callee != callee.name {
+                    continue;
+                }
+                let evidence = format!("{} passes {}", caller.name, callee.name);
+                for (position, arg) in call.args.iter().enumerate() {
+                    if position >= params.len() {
+                        continue;
+                    }
+                    let Some(inferred_type) =
+                        self.argument_type(arg, caller, caller_readings, &known)
+                    else {
+                        continue;
+                    };
+                    records.push(InferredType::Param(InferredParamType {
+                        function: callee.name.clone(),
+                        param_index: position,
+                        param_name: params.get(position).cloned(),
+                        inferred_type,
+                        method: InferenceMethod::CrossFunction,
+                        scope: InferenceScope::Function,
+                        confidence: CALLER_PARAM_CONFIDENCE.into(),
+                        evidence: evidence.clone(),
+                    }));
+                }
+            }
+        }
+        records
+    }
+
+    /// The type an argument text carries on its own, or nothing when it
+    /// carries none. See [`propagate_to_callee`](Self::propagate_to_callee)
+    /// for the three recognizable shapes.
+    fn argument_type(
+        &self,
+        arg: &str,
+        caller: &DecompiledFunction,
+        caller_readings: &CalleeParams,
+        known: &KnownTypePropagationEngine,
+    ) -> Option<String> {
+        if is_bare_identifier(arg) {
+            // The caller passes along, untouched, one of its own
+            // parameters: whatever the inline detectors settled on for
+            // that parameter is what the callee receives. A parameter
+            // the scan never typed, or a local or global the scan has no
+            // reading for, carries nothing.
+            let index = caller.parameter_names().iter().position(|p| p == arg)?;
+            let readings = caller_readings.get(caller.name.as_str())?;
+            readings
+                .iter()
+                .find(|r| r.param_index == index)
+                .map(|r| r.inferred_type.clone())
+        } else if let Some(text) = string_literal_type(arg) {
+            Some(text.to_string())
+        } else if let Some(callee) = call_callee(arg) {
+            // A known routine's result: the signature database knows what
+            // the call hands back.
+            known.return_type(callee).map(str::to_string)
+        } else {
+            None
+        }
+    }
+}
+
+/// The type a string literal argument carries: `"…"` is a character
+/// string, `L"…"` a wide one. Only a whole literal counts — an operand
+/// that merely starts with a quote (`"name"[0]`) is an expression, not
+/// a literal, and anything else reports nothing.
+fn string_literal_type(arg: &str) -> Option<&'static str> {
+    let text = arg.trim();
+    if text.len() < 2 || !text.ends_with('"') {
+        return None;
+    }
+    if text.starts_with('"') {
+        Some(CHAR_STRING)
+    } else if text.starts_with("L\"") {
+        Some(WIDE_STRING)
+    } else {
+        None
+    }
+}
+
+/// The callee name of a plain `name(...)` argument, or nothing when the
+/// argument is not shaped like a direct call.
+fn call_callee(arg: &str) -> Option<&str> {
+    let open = arg.find('(')?;
+    let name = arg[..open].trim();
+    is_bare_identifier(name).then_some(name)
 }
 
 /// Whether the argument text is a plain variable name — the only shape
@@ -407,5 +561,176 @@ mod tests {
         let rendered = calxgloss_prompts::TypeInfo::from(&records[0]);
         assert_eq!(rendered.name, "FUN_18004b210(param_1)");
         assert_eq!(rendered.description, "char * (via cross_function, confidence 70)");
+    }
+
+    // ----------------------------------------------------------
+    // caller → callee
+    // ----------------------------------------------------------
+
+    /// The canned caller→callee scenario: `FUN_18004b210` is the callee,
+    /// one caller `FUN_180051c00` calls it with `caller_body`, and the
+    /// caller's own first parameter carries a surviving inline reading
+    /// of `char *`.
+    fn from_callers(callee_signature: &str, caller_body: &str) -> Vec<InferredType> {
+        let callee = DecompiledFunction {
+            name: "FUN_18004b210".into(),
+            signature: callee_signature.into(),
+            body: "  return;".into(),
+        };
+        let caller = DecompiledFunction {
+            name: "FUN_180051c00".into(),
+            signature: "undefined FUN_180051c00(undefined8 param_1)".into(),
+            body: caller_body.into(),
+        };
+        let reading = param_record("FUN_180051c00", 0, "char *", 70);
+        let caller_readings: CalleeParams = HashMap::from([("FUN_180051c00", vec![&reading])]);
+        CrossFunctionPropagator::new().propagate_to_callee(&callee, &[&caller], &caller_readings)
+    }
+
+    #[test]
+    fn a_typed_caller_parameter_types_the_callee_parameter() {
+        // The caller hands along, untouched, a parameter it was itself
+        // typed as holding: the callee receives a `char *`.
+        let records = from_callers(
+            "undefined FUN_18004b210(undefined8 param_1)",
+            "  FUN_18004b210(param_1);",
+        );
+        let params = params_of(&records);
+        assert_eq!(params.len(), 1);
+        let record = params[0];
+        assert_eq!(record.function, "FUN_18004b210");
+        assert_eq!(record.param_index, 0);
+        assert_eq!(record.param_name.as_deref(), Some("param_1"));
+        assert_eq!(record.inferred_type, "char *");
+        assert_eq!(record.method, InferenceMethod::CrossFunction);
+        assert_eq!(record.scope, InferenceScope::Function);
+        assert_eq!(record.confidence, CALLER_PARAM_CONFIDENCE);
+        assert_eq!(record.evidence, "FUN_180051c00 passes FUN_18004b210");
+    }
+
+    #[test]
+    fn a_string_literal_argument_types_the_callee_parameter() {
+        // A literal says what it is no matter what the callee does with
+        // it: `"…"` is a character string, `L"…"` a wide one.
+        let narrow = from_callers(
+            "undefined FUN_18004b210(undefined8 param_1)",
+            "  FUN_18004b210(\"name\");",
+        );
+        assert_eq!(params_of(&narrow)[0].inferred_type, "char *");
+        let wide = from_callers(
+            "undefined FUN_18004b210(undefined8 param_1)",
+            "  FUN_18004b210(L\"name\");",
+        );
+        assert_eq!(params_of(&wide)[0].inferred_type, "wchar_t *");
+    }
+
+    #[test]
+    fn a_known_routine_result_types_the_callee_parameter() {
+        // The signature database knows what the call hands back: an
+        // allocator a buffer, `strlen` a byte count.
+        let buffer = from_callers(
+            "undefined FUN_18004b210(undefined8 param_1)",
+            "  FUN_18004b210(malloc(0x10));",
+        );
+        assert_eq!(params_of(&buffer)[0].inferred_type, "void *");
+        let count = from_callers(
+            "undefined FUN_18004b210(undefined8 param_1)",
+            "  FUN_18004b210(strlen(local_8));",
+        );
+        assert_eq!(params_of(&count)[0].inferred_type, "size_t");
+    }
+
+    #[test]
+    fn an_unrecognizable_argument_types_nothing() {
+        // A numeric literal, a cast, an indexed operand, an untyped
+        // local, and an untyped call all say nothing about the callee's
+        // parameter — the call site may be typed elsewhere, but this
+        // pass lends no reading.
+        let records = from_callers(
+            "undefined FUN_18004b210(undefined8 param_1)",
+            "  FUN_18004b210(0x10);\n\
+             \x20 FUN_18004b210((char *)param_1);\n\
+             \x20 FUN_18004b210(param_1[0]);\n\
+             \x20 FUN_18004b210(\"name\"[0]);\n\
+             \x20 FUN_18004b210(local_8);\n\
+             \x20 FUN_18004b210(FUN_180099999(param_1));",
+        );
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn an_untyped_caller_parameter_types_nothing() {
+        // Passing a typed-looking name is not enough: the reading only
+        // travels when the scan actually typed the caller's parameter.
+        let callee = DecompiledFunction {
+            name: "FUN_18004b210".into(),
+            signature: "undefined FUN_18004b210(undefined8 param_1)".into(),
+            body: "  return;".into(),
+        };
+        let caller = DecompiledFunction {
+            name: "FUN_180051c00".into(),
+            signature: "undefined FUN_180051c00(undefined8 param_1)".into(),
+            body: "  FUN_18004b210(param_1);".into(),
+        };
+        let records = CrossFunctionPropagator::new().propagate_to_callee(
+            &callee,
+            &[&caller],
+            &HashMap::new(),
+        );
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn a_position_the_callee_does_not_declare_types_nothing() {
+        // The callee declares one parameter; a caller passing two
+        // arguments (a Ghidra prototype gap) types only the first.
+        let records = from_callers(
+            "undefined FUN_18004b210(undefined8 param_1)",
+            "  FUN_18004b210(param_1, \"name\");",
+        );
+        let params = params_of(&records);
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].param_index, 0);
+    }
+
+    #[test]
+    fn every_caller_contributes_and_the_scan_resolves_them() {
+        // Two callers, two readings for the same callee parameter: the
+        // detector emits both and conflict resolution picks between
+        // them, so the detector itself does not aggregate.
+        let callee = DecompiledFunction {
+            name: "FUN_18004b210".into(),
+            signature: "undefined FUN_18004b210(undefined8 param_1)".into(),
+            body: "  return;".into(),
+        };
+        let first = DecompiledFunction {
+            name: "FUN_180051c00".into(),
+            signature: "undefined FUN_180051c00(void)".into(),
+            body: "  FUN_18004b210(\"name\");".into(),
+        };
+        let second = DecompiledFunction {
+            name: "FUN_180052000".into(),
+            signature: "undefined FUN_180052000(void)".into(),
+            body: "  FUN_18004b210(L\"name\");".into(),
+        };
+        let records = CrossFunctionPropagator::new().propagate_to_callee(
+            &callee,
+            &[&first, &second],
+            &HashMap::new(),
+        );
+        let params = params_of(&records);
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].inferred_type, "char *");
+        assert_eq!(params[1].inferred_type, "wchar_t *");
+    }
+
+    #[test]
+    fn a_call_to_another_function_does_not_type_the_callee() {
+        // Only sites of the callee itself are read.
+        let records = from_callers(
+            "undefined FUN_18004b210(undefined8 param_1)",
+            "  FUN_180099999(param_1, \"name\");",
+        );
+        assert!(records.is_empty());
     }
 }

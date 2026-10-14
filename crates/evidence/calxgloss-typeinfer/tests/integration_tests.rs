@@ -34,8 +34,17 @@ use tempfile::TempDir;
 fn summary(name: &str) -> FunctionSummary {
     FunctionSummary {
         name: name.to_string(),
-        address: 0x1800_3ab00,
+        address: addr(name),
     }
+}
+
+/// A deterministic per-name address, so a test's caller map can name
+/// one function without every summary sharing a single address.
+fn addr(name: &str) -> u64 {
+    0x1800_0000
+        + name.bytes().fold(0u64, |hash, byte| {
+            hash.wrapping_mul(31).wrapping_add(byte as u64)
+        })
 }
 
 fn function(name: &str, signature: &str, body: &str) -> DecompiledFunction {
@@ -54,6 +63,9 @@ fn function(name: &str, signature: &str, body: &str) -> DecompiledFunction {
 struct FakeProgram {
     listing: Vec<FunctionSummary>,
     bodies: HashMap<String, DecompiledFunction>,
+    /// Which functions call which, keyed by the callee's address —
+    /// what the caller→callee pass reads.
+    callers: HashMap<u64, Vec<String>>,
 }
 
 impl FakeProgram {
@@ -83,8 +95,8 @@ impl ScanSource for FakeProgram {
         Ok(Vec::new())
     }
 
-    async fn callers(&self, _address: u64) -> Result<Vec<String>> {
-        Ok(Vec::new())
+    async fn callers(&self, address: u64) -> Result<Vec<String>> {
+        Ok(self.callers.get(&address).cloned().unwrap_or_default())
     }
 
     async fn xrefs_to(&self, _address: u64) -> Result<Vec<Xref>> {
@@ -212,6 +224,65 @@ async fn the_persisted_document_carries_at_most_one_inference_per_parameter() {
     };
     assert_eq!(record.method, InferenceMethod::StringFunction);
     assert_eq!(record.inferred_type, "char *");
+}
+
+#[tokio::test]
+async fn caller_propagated_parameter_records_survive_the_persistence_round_trip() {
+    // A helper whose own body proves nothing, typed by what its caller
+    // hands it: the propagated record must reach disk and read back
+    // like any inline record, so the pipeline sees the caller-revealed
+    // contract after a rescan-free load.
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("FUN_18004b210"), summary("FUN_180051c00")];
+    program.bodies.insert(
+        "FUN_18004b210".into(),
+        function(
+            "FUN_18004b210",
+            "undefined FUN_18004b210(undefined8 param_1)",
+            "  return;\n",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_180051c00".into(),
+        function(
+            "FUN_180051c00",
+            "undefined FUN_180051c00(void)",
+            "  FUN_18004b210(\"name\");\n",
+        ),
+    );
+    program
+        .callers
+        .insert(addr("FUN_18004b210"), vec!["FUN_180051c00".into()]);
+
+    let workspace = TempDir::new().unwrap();
+    let result = TypeInferEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = TypeInferPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let propagated: Vec<&InferredType> = loaded
+        .for_function("FUN_18004b210")
+        .filter(|inference| {
+            matches!(
+                inference,
+                InferredType::Param(record) if record.method == InferenceMethod::CrossFunction
+            )
+        })
+        .collect();
+    assert_eq!(
+        propagated.len(),
+        1,
+        "the caller's literal typed the helper once"
+    );
+    let InferredType::Param(record) = propagated[0] else {
+        unreachable!("the caller→callee pass emits parameter records");
+    };
+    assert_eq!(record.param_index, 0);
+    assert_eq!(record.inferred_type, "char *");
+    assert_eq!(record.scope, InferenceScope::Function);
 }
 
 // ------------------------------------------------------------
