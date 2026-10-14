@@ -50,6 +50,7 @@ use serde::{Deserialize, Serialize};
 /// it is built [`case_insensitive`](Self::case_insensitive), which
 /// folds case away so one marker answers every casing of it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StringSignature {
     /// The algorithm this signature suggests, e.g. `crc32`.
     pub name: String,
@@ -63,11 +64,22 @@ pub struct StringSignature {
     /// the exact spellings its markers carry.
     #[serde(default, skip_serializing_if = "is_false")]
     pub case_insensitive: bool,
+    /// Optional per-entry confidence (0–100) overriding the scores the
+    /// detector pays — body match
+    /// ([`BODY_CONFIDENCE`](crate::confidence::BODY_CONFIDENCE)),
+    /// listing-only match
+    /// ([`LISTING_CONFIDENCE`](crate::confidence::LISTING_CONFIDENCE)) —
+    /// so a hand-tuned signature from a
+    /// [pattern database](crate::pattern_db) can claim more (or less)
+    /// trust than the standard set. Absent means the standard scores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<u8>,
 }
 
 impl StringSignature {
     /// A signature named `name` in `category`, suggested by any of
-    /// `markers`, matching their exact spellings.
+    /// `markers`, matching their exact spellings at the detector's
+    /// standard scores.
     pub fn new(
         name: impl Into<String>,
         category: AlgorithmCategory,
@@ -78,6 +90,7 @@ impl StringSignature {
             category,
             markers: markers.into_iter().map(Into::into).collect(),
             case_insensitive: false,
+            confidence: None,
         }
     }
 
@@ -161,7 +174,9 @@ impl StringHintEngine {
     /// text carries ties the algorithm to the function, while a
     /// marker only the listing carries ties it to the program, so a
     /// body match wins the hint's evidence and [`BODY_CONFIDENCE`],
-    /// and a listing-only match stands at [`LISTING_CONFIDENCE`]. Each
+    /// and a listing-only match stands at [`LISTING_CONFIDENCE`]. A
+    /// signature carrying its own [`confidence`](StringSignature::confidence)
+    /// stands at that score for either reading instead. Each
     /// signature yields at most one hint per function, however many of
     /// its markers appear and however many places carry them; a
     /// signature that asserts no marker fits nothing.
@@ -183,7 +198,7 @@ impl StringHintEngine {
     ) -> Vec<AlgorithmHint> {
         let mut hints: Vec<AlgorithmHint> = Vec::new();
         for signature in &self.signatures {
-            let (confidence, evidence) = match body_hit(&func.body, signature) {
+            let (score, evidence) = match body_hit(&func.body, signature) {
                 Some(line) => (BODY_CONFIDENCE, line),
                 None => match listing_hit(binary_strings, signature) {
                     Some(value) => (LISTING_CONFIDENCE, value),
@@ -195,7 +210,7 @@ impl StringHintEngine {
                 algorithm: signature.name.clone(),
                 category: signature.category,
                 method: DetectionMethod::StringHint,
-                confidence: Confidence::new(confidence),
+                confidence: Confidence::new(signature.confidence.unwrap_or(score)),
                 evidence,
             };
             // One algorithm is reported once per function however

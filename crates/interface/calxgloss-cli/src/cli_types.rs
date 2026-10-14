@@ -381,12 +381,18 @@ pub(super) enum Command {
     ///   `eqmain.dll`. Names the persisted file.
     /// * `--show` — Print a summary of the cached result without
     ///   connecting to Ghidra.
+    /// * `--patterns` — JSON pattern database file: run the scan with
+    ///   the file's control flow signatures, string signatures, and
+    ///   callback contracts instead of the built-in standard sets. A
+    ///   malformed file fails the run naming its path. Ignored on the
+    ///   `--show` path, which reads a cached result.
     ///
     /// # Examples
     ///
     /// ```text
     /// calxgloss algorithm --binary eqmain.dll
     /// calxgloss algorithm --binary eqmain.dll --show
+    /// calxgloss algorithm --binary eqmain.dll --patterns my-patterns.json
     /// ```
     Algorithm {
         /// Binary the open Ghidra program was loaded from, e.g. `eqmain.dll`
@@ -396,6 +402,10 @@ pub(super) enum Command {
         /// Show the cached result instead of running the scan
         #[arg(long)]
         show: bool,
+
+        /// JSON pattern database replacing the built-in signature sets
+        #[arg(long, value_name = "FILE")]
+        patterns: Option<PathBuf>,
     },
 
     /// Detect memory lifecycles (allocation/release pairs, handle

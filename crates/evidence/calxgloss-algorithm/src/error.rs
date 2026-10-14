@@ -41,11 +41,26 @@ pub enum AlgorithmError {
     /// An algorithm recognition scan failed for a DLL.
     #[error("algorithm recognition scan failed for '{binary}': {reason}")]
     ScanFailed { binary: String, reason: String },
+
+    /// A `--patterns` pattern database file could not be read: it is
+    /// missing, unreadable, or not a valid pattern document. The path is
+    /// named so the operator knows which file to fix — a malformed
+    /// database fails the run loudly rather than silently degrading
+    /// recognition to a partial set.
+    #[error("could not read pattern database {}: {source}", .path.display())]
+    PatternDatabase {
+        path: std::path::PathBuf,
+        #[source]
+        source: calxgloss_types::persist::PersistError,
+    },
 }
 
 /// Maps the shared JSON store's errors onto this crate's error type: the
 /// store's not-found becomes [`AlgorithmError::NotFound`], and its I/O and
-/// JSON errors fold into the existing pass-through variants.
+/// JSON errors fold into the existing pass-through variants. Pattern
+/// database loading deliberately does not use this conversion — it maps
+/// to [`AlgorithmError::PatternDatabase`] instead, so the failure names
+/// the file the operator passed.
 impl From<calxgloss_types::persist::PersistError> for AlgorithmError {
     fn from(error: calxgloss_types::persist::PersistError) -> Self {
         use calxgloss_types::persist::PersistError;

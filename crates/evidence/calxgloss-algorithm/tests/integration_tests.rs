@@ -21,6 +21,7 @@ use std::collections::HashMap;
 
 use calxgloss_algorithm::callback_db::{CallbackPattern, CallbackPatternDb};
 use calxgloss_algorithm::engine::{AlgorithmEngine, ScanSource};
+use calxgloss_algorithm::pattern_db::PatternDatabase;
 use calxgloss_algorithm::persist::AlgorithmPersistor;
 use calxgloss_algorithm::types::{AlgorithmCategory, DetectionMethod};
 use calxgloss_ghidra::{
@@ -309,6 +310,73 @@ async fn resolved_and_floored_hints_are_what_reaches_the_disk() {
             ("FUN_18003e750", "crc", DetectionMethod::StringHint),
         ],
         "one resolved claim per algorithm, floor survivors only, in scan order"
+    );
+}
+
+// ------------------------------------------------------------
+// Pattern database
+// ------------------------------------------------------------
+
+#[tokio::test]
+async fn a_pattern_file_configures_the_scan_and_reaches_the_persisted_document() {
+    // The whole teaching path in one flow: a JSON file on disk names a
+    // control flow shape and a callback contract no built-in set
+    // carries, each with its own confidence; the scan configured from
+    // the file recognizes them, and the persisted document carries
+    // exactly those claims — the built-in sets, replaced whole, are
+    // absent.
+    let workspace = TempDir::new().unwrap();
+    let patterns = workspace.path().join("patterns.json");
+    std::fs::write(
+        &patterns,
+        r#"{
+            "control_flow": [{
+                "name": "crc32_variant",
+                "category": "checksum",
+                "match_patterns": ["crc_table\\["],
+                "min_lines": 5,
+                "confidence": 85
+            }],
+            "callback_contracts": [{
+                "name": "my_qsort_compare",
+                "category": "sorting",
+                "host_patterns": ["\\bqsort\\b"],
+                "param_count": 2,
+                "confidence": 90
+            }]
+        }"#,
+    )
+    .unwrap();
+
+    let database = PatternDatabase::load(&patterns).expect("pattern file");
+    let result = AlgorithmEngine::with_source(program())
+        .with_pattern_database(database)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+
+    let persistor = AlgorithmPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+    let loaded = persistor.load("eqmain.dll").expect("load");
+
+    let order: Vec<(&str, &str, u8)> = loaded
+        .hints
+        .iter()
+        .map(|hint| {
+            (
+                hint.function.as_str(),
+                hint.algorithm.as_str(),
+                hint.confidence.value(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        order,
+        [
+            ("FUN_18003e750", "crc32_variant", 85),
+            ("FUN_1800412a0", "my_qsort_compare", 90),
+        ],
+        "only the file's entries claim, each at its own confidence, in scan order"
     );
 }
 

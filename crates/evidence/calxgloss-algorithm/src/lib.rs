@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into eight modules:
+//! The crate is organized into nine modules:
 //!
 //! - [`types`] - Core data types: `AlgorithmHint`, `AlgorithmCategory`,
 //!   `DetectionMethod`, `AlgorithmPattern` for per-function detection
@@ -48,6 +48,12 @@
 //!   first appeared.
 //! - [`persist`] - JSON persistence: `AlgorithmPersistor` saves and loads
 //!   the per-binary recognition results under `re/analysis/algorithm/`.
+//! - [`pattern_db`] - Dynamic pattern database: `PatternDatabase`, one
+//!   JSON document with a section per detector, lets a scan read the
+//!   operator's own signature sets — exactly the pattern types' serde
+//!   shapes plus an optional per-entry confidence — instead of the
+//!   built-in standard sets; a malformed file fails the run naming its
+//!   path.
 //! - [`error`] - [`AlgorithmError`] and the crate-wide [`Result`] alias.
 
 pub mod callback_db;
@@ -55,6 +61,7 @@ pub mod cfg_patterns;
 pub mod confidence;
 pub mod engine;
 pub mod error;
+pub mod pattern_db;
 pub mod persist;
 pub mod string_hints;
 pub mod types;

@@ -117,6 +117,7 @@ impl TypeHint {
 /// contract implies for the callback's signature, which a fit carries
 /// over to the analyzed function.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CallbackPattern {
     /// The callback role this pattern recognizes, e.g. `qsort_compare`.
     pub name: String,
@@ -138,12 +139,20 @@ pub struct CallbackPattern {
     /// The types the contract implies for the callback's signature.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub type_hints: Vec<TypeHint>,
+    /// Optional per-entry confidence (0–100) overriding the detector's
+    /// standard score ([`CALLBACK_CONFIDENCE`](crate::confidence::CALLBACK_CONFIDENCE))
+    /// for the hints this contract makes — a hand-tuned contract from a
+    /// [pattern database](crate::pattern_db) can claim more (or less)
+    /// trust than the standard set pays. Absent means the standard score.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<u8>,
 }
 
 impl CallbackPattern {
     /// A contract named `name` in `category` for callbacks taken by
     /// hosts whose names match `host_patterns` and taking `param_count`
-    /// parameters, with no required body shapes and no type hints.
+    /// parameters, with no required body shapes, no type hints, and the
+    /// detector's standard score.
     pub fn new(
         name: impl Into<String>,
         category: AlgorithmCategory,
@@ -157,6 +166,7 @@ impl CallbackPattern {
             param_count,
             body_patterns: Vec::new(),
             type_hints: Vec::new(),
+            confidence: None,
         }
     }
 
@@ -333,9 +343,10 @@ impl CallbackPatternDb {
     /// Each fit is reported in configuration order as a
     /// [`CallbackDetection`]: an [`AlgorithmHint`] marked
     /// [`CallbackPattern`](DetectionMethod::CallbackPattern) at
-    /// [`CALLBACK_CONFIDENCE`], naming the contract and its category,
-    /// beside the contract itself, whose
-    /// [`type_hints`](CallbackPattern::type_hints) the fit carries
+    /// [`CALLBACK_CONFIDENCE`] — or at the contract's own
+    /// [`confidence`](CallbackPattern::confidence) when it carries one —
+    /// naming the contract and its category, beside the contract itself,
+    /// whose [`type_hints`](CallbackPattern::type_hints) the fit carries
     /// over to the function's signature. A contract whose hosts never
     /// reach the function claims nothing, a function of the wrong
     /// arity fits no contract, and a body pattern that will not
@@ -365,7 +376,7 @@ impl CallbackPatternDb {
                     algorithm: pattern.name.clone(),
                     category: pattern.category,
                     method: DetectionMethod::CallbackPattern,
-                    confidence: Confidence::new(CALLBACK_CONFIDENCE),
+                    confidence: Confidence::new(pattern.confidence.unwrap_or(CALLBACK_CONFIDENCE)),
                     evidence: host.caller,
                 },
                 pattern,

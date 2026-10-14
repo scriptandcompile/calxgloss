@@ -288,13 +288,23 @@ fn main() -> Result<()> {
                     &settings,
                 ))
         }
-        Command::Algorithm { binary, show } => {
+        Command::Algorithm {
+            binary,
+            show,
+            patterns,
+        } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_algorithm(&binary, &workspace, show, &settings))
+                .block_on(handle_algorithm(
+                    &binary,
+                    &workspace,
+                    show,
+                    patterns.as_deref(),
+                    &settings,
+                ))
         }
         Command::Memory { binary, show } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);

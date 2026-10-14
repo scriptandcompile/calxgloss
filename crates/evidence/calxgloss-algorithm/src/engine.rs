@@ -50,10 +50,12 @@ pub use calxgloss_ghidra::ScanSource;
 /// starts configured with its standard signature set —
 /// [`with_matcher`](Self::with_matcher), [`with_string_engine`](Self::with_string_engine),
 /// and [`with_callback_db`](Self::with_callback_db) swap a detector's set
-/// whole — so one instance of each serves the whole scan. A scan keeps
-/// every hint it resolves by default;
-/// [`with_min_confidence`](Self::with_min_confidence) sets a floor
-/// below which hints never reach the persisted result.
+/// whole, and [`with_pattern_database`](Self::with_pattern_database)
+/// swaps all three at once from one
+/// [database document](crate::pattern_db) — so one instance of each
+/// serves the whole scan. A scan keeps every hint it resolves by
+/// default; [`with_min_confidence`](Self::with_min_confidence) sets a
+/// floor below which hints never reach the persisted result.
 #[derive(Debug, Clone)]
 pub struct AlgorithmEngine<S = GhidraClient> {
     source: S,
@@ -106,6 +108,23 @@ impl<S> AlgorithmEngine<S> {
     /// Match callback contracts from `db` instead of the standard set.
     pub fn with_callback_db(mut self, db: CallbackPatternDb) -> Self {
         self.callbacks = db;
+        self
+    }
+
+    /// Scan with `database`'s sets for all three detectors instead of
+    /// the standard sets.
+    ///
+    /// The swap is whole, never a merge: each detector reads exactly
+    /// the entries the [database](crate::pattern_db) carries, and a
+    /// section the document omitted leaves that detector with nothing
+    /// to read. Entries keep the detectors' semantics whole — the
+    /// `{name}` placeholder, the lenient uncompilable-regex rule, and
+    /// the per-entry confidence that overrides the standard score in
+    /// resolution.
+    pub fn with_pattern_database(mut self, database: crate::pattern_db::PatternDatabase) -> Self {
+        self.cfg = CfgPatternMatcher::with_patterns(database.control_flow);
+        self.strings = StringHintEngine::with_signatures(database.string_signatures);
+        self.callbacks = CallbackPatternDb::with_patterns(database.callback_contracts);
         self
     }
 
@@ -264,6 +283,7 @@ impl<S> AlgorithmEngine<S> {
 mod tests {
     use super::*;
     use crate::callback_db::CallbackPattern;
+    use crate::pattern_db::PatternDatabase;
     use crate::types::{
         AlgorithmCategory, AlgorithmHint, AlgorithmPattern, Confidence, DetectionMethod,
     };
@@ -990,5 +1010,238 @@ mod tests {
             .find(|hint| hint.algorithm == "crc")
             .expect("the listing-only crc claim survives at exactly the floor");
         assert_eq!(listing_claim.confidence, Confidence::new(30));
+    }
+
+    /// Parse a pattern-file document, for the tests that configure a
+    /// scan from a database. The documents are spelled as file contents
+    /// on purpose: these tests pin the file format at the scan seam.
+    fn database_document(json: &str) -> PatternDatabase {
+        serde_json::from_str(json).expect("the database document parses")
+    }
+
+    #[tokio::test]
+    async fn a_scan_configured_from_a_pattern_database_recognizes_a_shape_only_the_file_carries() {
+        // A database document teaches the scan a shape no built-in set
+        // knows: the crc32 variant reads on the CRC loop, at the
+        // standard control flow score. And the swap is whole — the
+        // file replaces the standard sets, so the built-in sort shape
+        // is gone.
+        let db = database_document(
+            r#"{
+                "control_flow": [{
+                    "name": "crc32_variant",
+                    "category": "checksum",
+                    "match_patterns": ["crc_table\\["],
+                    "min_lines": 5
+                }]
+            }"#,
+        );
+        let result = AlgorithmEngine::with_source(program())
+            .with_pattern_database(db)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        let variant: Vec<&AlgorithmHint> = result
+            .for_function("FUN_18003e750")
+            .filter(|hint| hint.algorithm == "crc32_variant")
+            .collect();
+        assert_eq!(variant.len(), 1);
+        assert_eq!(variant[0].method, DetectionMethod::CfgPattern);
+        assert_eq!(variant[0].confidence.value(), 60);
+        assert_eq!(
+            variant[0].evidence,
+            "uVar1 = (uVar1 >> 8) ^ crc_table[uVar1];"
+        );
+        assert!(
+            methods_for(&result, "FUN_18003ab00").is_empty(),
+            "the file replaces the standard sets whole — the built-in sort claim is gone"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_per_entry_confidence_in_the_database_outweighs_a_standard_score_claim() {
+        // The file's string signature claims `crc` at 90 while its
+        // control flow signature claims the same algorithm at the
+        // standard 60; resolution keeps the stronger per-entry
+        // reading, standing where crc first appeared in scan order.
+        let db = database_document(
+            r#"{
+                "control_flow": [{
+                    "name": "crc",
+                    "category": "checksum",
+                    "match_patterns": ["crc_table\\["],
+                    "min_lines": 5
+                }],
+                "string_signatures": [{
+                    "name": "crc",
+                    "category": "checksum",
+                    "markers": ["crc_table"],
+                    "confidence": 90
+                }]
+            }"#,
+        );
+        let result = AlgorithmEngine::with_source(program())
+            .with_pattern_database(db)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        let claims: Vec<(DetectionMethod, u8)> = result
+            .for_function("FUN_18003e750")
+            .map(|hint| (hint.method, hint.confidence.value()))
+            .collect();
+        assert_eq!(
+            claims,
+            [(DetectionMethod::StringHint, 90)],
+            "one claim for crc, the per-entry confidence wins resolution"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_per_entry_confidence_below_the_standard_score_loses_resolution() {
+        // A file entry that distrusts itself — the crc string
+        // signature at 20 — still loses to the control flow claim at
+        // the standard 60: the override moves the entry's score, it
+        // does not privilege the entry.
+        let db = database_document(
+            r#"{
+                "control_flow": [{
+                    "name": "crc",
+                    "category": "checksum",
+                    "match_patterns": ["crc_table\\["],
+                    "min_lines": 5
+                }],
+                "string_signatures": [{
+                    "name": "crc",
+                    "category": "checksum",
+                    "markers": ["crc_table"],
+                    "confidence": 20
+                }]
+            }"#,
+        );
+        let result = AlgorithmEngine::with_source(program())
+            .with_pattern_database(db)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        let claims: Vec<(DetectionMethod, u8)> = result
+            .for_function("FUN_18003e750")
+            .map(|hint| (hint.method, hint.confidence.value()))
+            .collect();
+        assert_eq!(claims, [(DetectionMethod::CfgPattern, 60)]);
+    }
+
+    #[tokio::test]
+    async fn a_database_entry_with_an_uncompilable_regex_claims_nothing_and_vetoes_nothing() {
+        // The detectors' lenient semantics survive the file: an entry
+        // whose required regex will not compile makes no claim, and an
+        // entry carrying an uncompilable exclusion is vetoed by nothing
+        // — one bad entry never corrupts the rest of the scan.
+        let db = database_document(
+            r#"{
+                "control_flow": [
+                    {
+                        "name": "broken_claim",
+                        "category": "checksum",
+                        "match_patterns": ["crc_table\\[", "("],
+                        "min_lines": 5
+                    },
+                    {
+                        "name": "crc32_variant",
+                        "category": "checksum",
+                        "match_patterns": ["crc_table\\["],
+                        "exclude_patterns": ["("],
+                        "min_lines": 5
+                    }
+                ]
+            }"#,
+        );
+        let result = AlgorithmEngine::with_source(program())
+            .with_pattern_database(db)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        let claims: Vec<&str> = result
+            .for_function("FUN_18003e750")
+            .map(|hint| hint.algorithm.as_str())
+            .collect();
+        assert_eq!(claims, ["crc32_variant"]);
+    }
+
+    #[tokio::test]
+    async fn the_name_placeholder_is_substituted_in_database_entries() {
+        // `{name}` in a file entry speaks of the scanned function
+        // itself, exactly as in the built-ins: the entry reads the
+        // signature line carrying the function's own name, and every
+        // function of the program fits it. Unsubstituted, the literal
+        // `{name}(` would match nothing.
+        let db = database_document(
+            r#"{
+                "control_flow": [{
+                    "name": "names_itself",
+                    "category": "recursion",
+                    "match_patterns": ["{name}\\("],
+                    "min_lines": 5
+                }]
+            }"#,
+        );
+        let result = AlgorithmEngine::with_source(program())
+            .with_pattern_database(db)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        let claims: Vec<&str> = result
+            .hints
+            .iter()
+            .map(|hint| hint.algorithm.as_str())
+            .collect();
+        assert_eq!(
+            claims,
+            ["names_itself", "names_itself", "names_itself"],
+            "one hint per function, each from the substituted placeholder"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_per_entry_confidence_in_the_database_outweighs_a_built_in_claim() {
+        // The acceptance criterion in its literal shape: a file entry
+        // at 90 outweighs a built-in entry at the standard 60. The
+        // database carries the crc control flow shape at a per-entry
+        // 90, and the built-in string set is configured back in on top
+        // of the swap, so the same algorithm is claimed from both sides
+        // on the CRC loop — resolution keeps the file's stronger
+        // reading, standing where crc first appeared in scan order.
+        let db = database_document(
+            r#"{
+                "control_flow": [{
+                    "name": "crc",
+                    "category": "checksum",
+                    "match_patterns": ["crc_table\\["],
+                    "min_lines": 5,
+                    "confidence": 90
+                }]
+            }"#,
+        );
+        let result = AlgorithmEngine::with_source(program())
+            .with_pattern_database(db)
+            .with_string_engine(StringHintEngine::with_default_signatures())
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        let claims: Vec<(DetectionMethod, u8)> = result
+            .for_function("FUN_18003e750")
+            .filter(|hint| hint.algorithm == "crc")
+            .map(|hint| (hint.method, hint.confidence.value()))
+            .collect();
+        assert_eq!(
+            claims,
+            [(DetectionMethod::CfgPattern, 90)],
+            "the built-in body claim at 60 and the file claim at 90 merge into one, at 90"
+        );
     }
 }

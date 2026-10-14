@@ -93,12 +93,13 @@ impl CfgPatternMatcher {
     ///
     /// Each hint names the pattern and its category, is marked
     /// [`CfgPattern`](DetectionMethod::CfgPattern) at
-    /// [`CFG_CONFIDENCE`], and carries as its evidence the body line
-    /// holding the first match of the signature's first required
-    /// regex. A signature that asserts nothing — no required regexes —
-    /// fits nothing, and a signature carrying a regex that will not
-    /// compile can make no claim: it matches nothing, and an
-    /// uncompilable exclusion rejects nothing.
+    /// [`CFG_CONFIDENCE`] — or at the pattern's own
+    /// [`confidence`](AlgorithmPattern::confidence) when it carries one —
+    /// and carries as its evidence the body line holding the first match
+    /// of the signature's first required regex. A signature that asserts
+    /// nothing — no required regexes — fits nothing, and a signature
+    /// carrying a regex that will not compile can make no claim: it
+    /// matches nothing, and an uncompilable exclusion rejects nothing.
     ///
     /// A regex source may carry the `{name}` placeholder: the matcher
     /// replaces it with the scanned function's name, escaped for literal
@@ -156,7 +157,7 @@ impl CfgPatternMatcher {
                 algorithm: pattern.name.clone(),
                 category: pattern.category,
                 method: DetectionMethod::CfgPattern,
-                confidence: Confidence::new(CFG_CONFIDENCE),
+                confidence: Confidence::new(pattern.confidence.unwrap_or(CFG_CONFIDENCE)),
                 evidence: evidence.unwrap_or_default(),
             });
         }

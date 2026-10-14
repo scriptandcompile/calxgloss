@@ -7,11 +7,18 @@
 //! translation runs the same scan before its first batch when no result
 //! is cached; this command is the manual entry point: it rebuilds the
 //! result on demand and can print what a cached one holds.
+//!
+//! With `--patterns <file>`, the scan reads its signature sets from a
+//! JSON [pattern database](calxgloss_algorithm::pattern_db) instead of
+//! the built-in standard sets — a malformed file fails the run naming
+//! its path. The flag is ignored on the `--show` path, which prints a
+//! cached result without scanning.
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use calxgloss_algorithm::engine::AlgorithmEngine;
+use calxgloss_algorithm::pattern_db::PatternDatabase;
 use calxgloss_algorithm::persist::AlgorithmPersistor;
 use calxgloss_algorithm::types::AlgorithmRecognitionResult;
 use calxgloss_algorithm::types::DetectionMethod;
@@ -26,11 +33,15 @@ use crate::utils::*;
 const DETAIL_LIMIT: usize = 10;
 
 /// Handle the `algorithm` subcommand: recognize algorithms in `binary`,
-/// or print the cached result when `show` is set.
+/// or print the cached result when `show` is set. With `patterns`, run
+/// the scan with that [database](PatternDatabase)'s signature sets
+/// instead of the built-in standard sets; the flag means nothing to a
+/// cached result, so `show` ignores it.
 pub async fn handle_algorithm(
     binary: &str,
     workspace: &Path,
     show: bool,
+    patterns: Option<&Path>,
     settings: &Settings,
 ) -> Result<()> {
     let persistor = AlgorithmPersistor::new(workspace);
@@ -58,6 +69,17 @@ pub async fn handle_algorithm(
         .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))?;
 
     let engine = AlgorithmEngine::new(&ghidra);
+    // A malformed database fails the run loudly — the error already
+    // names the file path and the reason, so a typo never silently
+    // degrades recognition to a partial set.
+    let engine = match patterns {
+        Some(path) => {
+            engine.with_pattern_database(PatternDatabase::load(path).with_context(|| {
+                format!("Failed to load the pattern database: {}", path.display())
+            })?)
+        }
+        None => engine,
+    };
     let result = engine
         .scan(binary)
         .await

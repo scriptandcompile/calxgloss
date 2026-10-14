@@ -121,6 +121,7 @@ calxgloss_types::display_serde_label!(DetectionMethod {
 /// [`min_lines`](Self::min_lines) lines — tiny functions accidentally fit
 /// broad shapes, so the floor refuses them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AlgorithmPattern {
     /// The algorithm this pattern recognizes, e.g. `comparison_sort`.
     pub name: String,
@@ -139,6 +140,13 @@ pub struct AlgorithmPattern {
     /// Minimum number of body lines for the pattern to be considered.
     #[serde(default)]
     pub min_lines: usize,
+    /// Optional per-entry confidence (0–100) overriding the detector's
+    /// standard score ([`CFG_CONFIDENCE`](crate::confidence::CFG_CONFIDENCE))
+    /// for the hints this pattern makes — a hand-tuned signature from a
+    /// [pattern database](crate::pattern_db) can claim more (or less)
+    /// trust than the standard set pays. Absent means the standard score.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<u8>,
 }
 
 impl AlgorithmPattern {
@@ -147,8 +155,8 @@ impl AlgorithmPattern {
     pub const DEFAULT_MIN_LINES: usize = 10;
 
     /// A pattern named `name` in `category` requiring every one of
-    /// `match_patterns`, with no exclusions and the default line-count
-    /// floor.
+    /// `match_patterns`, with no exclusions, the default line-count
+    /// floor, and the detector's standard score.
     pub fn new(
         name: impl Into<String>,
         category: AlgorithmCategory,
@@ -160,6 +168,7 @@ impl AlgorithmPattern {
             match_patterns: match_patterns.into_iter().map(Into::into).collect(),
             exclude_patterns: Vec::new(),
             min_lines: Self::DEFAULT_MIN_LINES,
+            confidence: None,
         }
     }
 }
