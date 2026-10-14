@@ -27,7 +27,9 @@
 //! On top of the raw client, [`ScanSource`] is the shared read-only seam the
 //! evidence engines pull their program facts through; [`GhidraClient`]
 //! implements it, and [`CachedGhidraSource`] implements it once more as the
-//! two-tier read cache every engine will read through.
+//! two-tier read cache every engine will read through. Beside it,
+//! [`TypeWriteSource`] is the write-side seam — the v6 bridge's type-writing
+//! calls — implemented by [`GhidraClient`] alone: writes are never cached.
 //!
 //! The [`lifecycle`] module holds the read-only stack checks — Ghidra install
 //! discovery, the per-version GhidraMCP extension pairing, and the server
@@ -48,6 +50,7 @@ pub mod lifecycle;
 mod model;
 pub mod parse;
 mod scan_source;
+mod type_write_source;
 
 pub use cache::CachedGhidraSource;
 pub use client::{
@@ -61,3 +64,4 @@ pub use model::{
     StructFieldLayout, StructLayout, Symbol, Xref,
 };
 pub use scan_source::{PipelineSource, ScanSource};
+pub use type_write_source::{NewStructField, TypeWriteSource};

@@ -23,7 +23,7 @@ running server as the authoritative endpoint/param list.
 | `segments` / `image_base` | `segments` | `list_segments`; prefer `get_metadata` for image base |
 | `current_address` / `current_function` | same | same (GUI only) |
 | `probe` | `get_current_address` + `get_current_function` | `check_connection` + `get_metadata` |
-| *(wrappers added by the port)* | — | `list_data_items` (paged), `list_data_items_by_xrefs`, `list_data_types`, `get_struct_layout`, `get_enum_values`, `get_function_callers`/`get_function_callees`, `get_bulk_xrefs`, `read_memory`, `add_function_tag` |
+| *(wrappers added by the port)* | — | `list_data_items` (paged), `list_data_items_by_xrefs`, `list_data_types`, `get_struct_layout`, `get_enum_values`, `get_function_callers`/`get_function_callees`, `get_bulk_xrefs`, `read_memory`, `add_function_tag`, `set_function_prototype`, `set_local_variable_type`, `create_struct`, `create_enum`, `create_typedef`, `add_struct_field` |
 
 > **v6.0.0 naming:** the dev-branch docs' `set_variable_type` is
 > `set_local_variable_type`/`set_decompiler_variable_type`/`batch_set_variable_types`

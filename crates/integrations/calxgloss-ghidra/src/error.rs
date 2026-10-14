@@ -45,6 +45,30 @@ const SERVER_ERROR_PREFIXES: &[&str] = &[
     "Error setting function prototype",
     "Error setting variable type",
     "Base type not found",
+    // Type write-back (the v6.0.0 write endpoints answer these as prose).
+    // `Structure not found: …` is deliberately absent: the read side turns
+    // that sentinel into `NotFound` itself, and the write side mirrors it.
+    "Failed to set function prototype",
+    "Structure name is required",
+    "Fields JSON is required",
+    "fields parameter must be a JSON array",
+    "No valid fields parsed",
+    "Unknown field type",
+    "Structure with name",
+    "Enumeration name is required",
+    "Values JSON is required",
+    "Invalid size",
+    "No valid enum values could be parsed",
+    "Enumeration with name",
+    "Typedef name is required",
+    "Base type is required",
+    "Could not resolve base type",
+    "Field name is required",
+    "Field type is required",
+    "Field data type not found",
+    "Error adding struct field",
+    "Error creating enumeration",
+    "Error parsing values JSON",
 ];
 
 /// What a response turned out to be.
@@ -245,5 +269,45 @@ mod tests {
             classify("address is required"),
             Classification::Failure(_)
         ));
+    }
+
+    #[test]
+    fn test_recognises_type_write_back_failures() {
+        // The v6.0.0 write endpoints answer refusals as prose; a client
+        // that trusted the 200 would report a write that never landed.
+        for body in [
+            "Failed to set function prototype: could not parse",
+            "Structure with name 'Widget' already exists",
+            "No valid fields parsed",
+            "Unknown field type: Widget",
+            "Enumeration with name 'Color' already exists",
+            "Could not resolve base type: Widget *",
+            "Field data type not found: Widget",
+            "Error adding struct field: boom",
+        ] {
+            assert!(
+                matches!(classify(body), Classification::Failure(_)),
+                "should be a failure: {body:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_write_success_bodies_stay_content() {
+        // The write endpoints' own success answers must not trip the
+        // prefixes above — a successful write read as a failure would
+        // abort a whole write-back pass.
+        for body in [
+            "Function prototype set to: int main(void)",
+            "struct Widget\n{\n  int x;\n};\n\n",
+            "Field y added to struct Widget",
+            "typedef int WidgetHandle;\n\n",
+        ] {
+            assert_eq!(
+                classify(body),
+                Classification::Content,
+                "should be content: {body:?}"
+            );
+        }
     }
 }

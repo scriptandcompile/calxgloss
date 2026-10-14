@@ -16,7 +16,9 @@
 //!
 //! * **Write-side calls** (function tags, type write-back) — the cache only
 //!   ever serves read-only facts. `calxgloss-typesdb`'s vtable scan keeps a
-//!   slim local `TagSink` trait for its one write.
+//!   slim local `TagSink` trait for its one write; the type write-back seam
+//!   lives beside this module as [`TypeWriteSource`](crate::TypeWriteSource),
+//!   implemented by the raw client alone.
 //! * **The string-listing filter** — only `calxgloss-typesdb`'s string
 //!   inference takes one, and no production caller sets it; the engine-facing
 //!   shape carries an unfiltered listing, so this trait matches it and the

@@ -8,6 +8,7 @@ use crate::model::{
     Segment, ServerInfo, ServerKind, StringLiteral, StructLayout, Symbol, Xref,
 };
 use crate::parse;
+use crate::type_write_source::NewStructField;
 use calxgloss_types::{BinaryIdentity, ProgressEvent, TranslationEvents};
 use reqwest::Client;
 use std::collections::HashMap;
@@ -628,6 +629,19 @@ impl GhidraClient {
         format!("{address:x}")
     }
 
+    /// The bridge's shared sentinel for a structure the Type Manager does
+    /// not have, answered by both the read and the write structure
+    /// endpoints — recognised here rather than by [`classify`](crate::error::classify)
+    /// so it lands as [`NotFound`](GhidraError::NotFound).
+    fn structure_not_found(body: &str) -> Option<GhidraError> {
+        body.trim()
+            .strip_prefix("Structure not found: ")
+            .map(|missing| GhidraError::NotFound {
+                kind: "structure",
+                query: missing.trim().to_string(),
+            })
+    }
+
     /// Make an error-status body readable, stripping the HTML the PicoServer
     /// wraps its 404 pages in.
     fn describe_error_body(body: &str) -> String {
@@ -1128,11 +1142,8 @@ impl GhidraClient {
         let body = self
             .get_text("get_struct_layout", &[("struct_name", name.to_string())])
             .await?;
-        if let Some(missing) = body.trim().strip_prefix("Structure not found: ") {
-            return Err(GhidraError::NotFound {
-                kind: "structure",
-                query: missing.trim().to_string(),
-            });
+        if let Some(missing) = Self::structure_not_found(&body) {
+            return Err(missing);
         }
         parse::parse_struct_layout(&body).ok_or_else(|| GhidraError::Malformed {
             kind: "structure layout",
@@ -1218,6 +1229,128 @@ impl GhidraClient {
     pub async fn add_function_tag(&self, function: &str, tag: &str) -> Result<()> {
         let payload = serde_json::json!({ "function": function, "tags": tag });
         self.post_json("add_function_tag", &payload).await?;
+        Ok(())
+    }
+
+    /// Set the full prototype — return type and parameter types — of the
+    /// function at `function_address`.
+    ///
+    /// The name inside the prototype text does not rename the function: the
+    /// bridge parses the signature and applies it at the address. A calling
+    /// convention spelled inside the text is honoured; the function's plate
+    /// comment survives the change. The bridge answers a failure as prose
+    /// (`Failed to set function prototype: …`), which the error prefixes in
+    /// [`error`](crate::error) turn into a [`Reported`](GhidraError::Reported).
+    #[instrument(skip(self), fields(function_address, prototype))]
+    pub async fn set_function_prototype(
+        &self,
+        function_address: u64,
+        prototype: &str,
+    ) -> Result<()> {
+        let payload = serde_json::json!({
+            "function_address": Self::addr(function_address),
+            "prototype": prototype,
+        });
+        self.post_json("set_function_prototype", &payload).await?;
+        Ok(())
+    }
+
+    /// Set the type of the variable (local or parameter) named `variable`
+    /// in the function at `function_address`.
+    ///
+    /// The bridge decompiles the function, finds the symbol by its
+    /// high-level name, and refuses an `undefined*` target; a miss on
+    /// `variable` answers with the variable names it does know, which the
+    /// error message carries.
+    #[instrument(skip(self), fields(function_address, variable, type_name))]
+    pub async fn set_local_variable_type(
+        &self,
+        function_address: u64,
+        variable: &str,
+        type_name: &str,
+    ) -> Result<()> {
+        let payload = serde_json::json!({
+            "function_address": Self::addr(function_address),
+            "variable_name": variable,
+            "new_type": type_name,
+        });
+        self.post_json("set_local_variable_type", &payload).await?;
+        Ok(())
+    }
+
+    /// Create a new structure named `name` with `fields`.
+    ///
+    /// Every field type must already resolve in the Type Manager — create
+    /// the named types a layout refers to before the layout that uses them
+    /// — and a same-named type already in the manager is an error, not a
+    /// silent replace.
+    #[instrument(skip(self, fields), fields(name, field_count = fields.len()))]
+    pub async fn create_struct(&self, name: &str, fields: &[NewStructField<'_>]) -> Result<()> {
+        let fields: Vec<serde_json::Value> = fields
+            .iter()
+            .map(|field| {
+                let mut entry = serde_json::json!({ "name": field.name, "type": field.type_name });
+                if let Some(offset) = field.offset {
+                    entry["offset"] = serde_json::json!(offset);
+                }
+                entry
+            })
+            .collect();
+        let payload = serde_json::json!({ "name": name, "fields": fields });
+        self.post_json("create_struct", &payload).await?;
+        Ok(())
+    }
+
+    /// Create a new enumeration named `name`, `size` bytes wide (1, 2, 4,
+    /// or 8), whose members are `values` (member name → value).
+    #[instrument(skip(self, values), fields(name, member_count = values.len(), size))]
+    pub async fn create_enum(&self, name: &str, values: &[(&str, i64)], size: u32) -> Result<()> {
+        // The bridge takes the members as a JSON object, name to value.
+        let mut members = serde_json::Map::new();
+        for (member, value) in values {
+            members.insert((*member).to_string(), serde_json::json!(value));
+        }
+        let payload = serde_json::json!({ "name": name, "values": members, "size": size });
+        self.post_json("create_enum", &payload).await?;
+        Ok(())
+    }
+
+    /// Create a typedef `name` as an alias for `base_type` — any type
+    /// Ghidra can resolve, pointer spellings (`char *`) included.
+    #[instrument(skip(self), fields(name, base_type))]
+    pub async fn create_typedef(&self, name: &str, base_type: &str) -> Result<()> {
+        let payload = serde_json::json!({ "name": name, "base_type": base_type });
+        self.post_json("create_typedef", &payload).await?;
+        Ok(())
+    }
+
+    /// Add one field to the existing structure `struct_name`.
+    ///
+    /// `offset` of `Some` places the field at that byte offset (growing the
+    /// structure to fit); `None` appends it at the end. A missing structure
+    /// answers the same prose sentinel the read side refuses
+    /// (`Structure not found: X`), so it becomes a named
+    /// [`NotFound`](GhidraError::NotFound) here too.
+    #[instrument(skip(self), fields(struct_name, field_name, field_type, offset))]
+    pub async fn add_struct_field(
+        &self,
+        struct_name: &str,
+        field_name: &str,
+        field_type: &str,
+        offset: Option<u32>,
+    ) -> Result<()> {
+        let mut payload = serde_json::json!({
+            "struct_name": struct_name,
+            "field_name": field_name,
+            "field_type": field_type,
+        });
+        if let Some(offset) = offset {
+            payload["offset"] = serde_json::json!(offset);
+        }
+        let body = self.post_json("add_struct_field", &payload).await?;
+        if let Some(missing) = Self::structure_not_found(&body) {
+            return Err(missing);
+        }
         Ok(())
     }
 

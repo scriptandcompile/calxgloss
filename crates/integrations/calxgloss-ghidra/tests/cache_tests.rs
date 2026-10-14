@@ -9,8 +9,9 @@
 //! the only instrumentation — no cache internals are inspected.
 
 use calxgloss_ghidra::{
-    CachedGhidraSource, DataItem, DataTypeEntry, FunctionSummary, GhidraClient, ScanSource,
-    StringLiteral, StructFieldLayout, StructLayout, Symbol, Xref,
+    CachedGhidraSource, DataItem, DataTypeEntry, FunctionSummary, GhidraClient, GhidraError,
+    NewStructField, ScanSource, StringLiteral, StructFieldLayout, StructLayout, Symbol,
+    TypeWriteSource, Xref,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -48,8 +49,13 @@ const READ_ENDPOINTS: &[&str] = &[
 struct FakeServer {
     base_url: String,
     calls: Arc<Mutex<HashMap<String, usize>>>,
+    /// endpoint → request bodies received, in arrival order.
+    bodies: Arc<Mutex<HashMap<String, Vec<String>>>>,
     /// When positive, the next N endpoint calls answer 500 instead of data.
     fail_next: Arc<AtomicUsize>,
+    /// endpoint → canned 200 body, for write failures the bridge reports
+    /// as prose rather than HTTP status.
+    failures: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl FakeServer {
@@ -64,19 +70,26 @@ impl FakeServer {
         let addr = listener.local_addr().expect("fake server address");
         let calls: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
         let counted = Arc::clone(&calls);
+        let bodies: Arc<Mutex<HashMap<String, Vec<String>>>> = Arc::new(Mutex::new(HashMap::new()));
+        let recorded = Arc::clone(&bodies);
         let failing = Arc::new(AtomicUsize::new(0));
         let failing_task = Arc::clone(&failing);
+        let failures: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+        let injected = Arc::clone(&failures);
         let program = program.to_string();
         tokio::spawn(async move {
             while let Ok((mut stream, _)) = listener.accept().await {
                 let counted = Arc::clone(&counted);
+                let recorded = Arc::clone(&recorded);
                 let failing = Arc::clone(&failing_task);
+                let injected = Arc::clone(&injected);
                 let program = program.clone();
                 tokio::spawn(async move {
                     use tokio::io::{AsyncReadExt, AsyncWriteExt};
                     let mut request = [0u8; 2048];
                     let read = stream.read(&mut request).await.unwrap_or(0);
-                    let path = String::from_utf8_lossy(&request[..read])
+                    let head = String::from_utf8_lossy(&request[..read]).to_string();
+                    let path = head
                         .split_whitespace()
                         .nth(1)
                         .unwrap_or_default()
@@ -87,6 +100,33 @@ impl FakeServer {
                         .unwrap_or_default()
                         .trim_start_matches('/');
                     if endpoint != "favicon.ico" {
+                        let content_length = head
+                            .lines()
+                            .find_map(|line| match line.split_once(':') {
+                                Some((name, value))
+                                    if name.trim().eq_ignore_ascii_case("content-length") =>
+                                {
+                                    value.trim().parse::<usize>().ok()
+                                }
+                                _ => None,
+                            })
+                            .unwrap_or(0);
+                        let header_end = head.find("\r\n\r\n").map(|e| e + 4).unwrap_or(0);
+                        let mut body_so_far = head[header_end.min(head.len())..].to_string();
+                        while body_so_far.len() < content_length {
+                            let mut extra = [0u8; 1024];
+                            let n = stream.read(&mut extra).await.unwrap_or(0);
+                            if n == 0 {
+                                break;
+                            }
+                            body_so_far.push_str(&String::from_utf8_lossy(&extra[..n]));
+                        }
+                        recorded
+                            .lock()
+                            .expect("bodies lock")
+                            .entry(endpoint.to_string())
+                            .or_default()
+                            .push(body_so_far);
                         *counted
                             .lock()
                             .expect("counts lock")
@@ -135,14 +175,29 @@ impl FakeServer {
                             .to_string()
                     } else if endpoint == "add_function_tag" {
                         "Tag added".to_string()
+                    } else if endpoint == "set_function_prototype" {
+                        "Function prototype set to: int LaunchPad_main(void)".to_string()
+                    } else if endpoint == "set_local_variable_type" {
+                        "Local variable type set successfully".to_string()
+                    } else if endpoint == "create_struct" {
+                        "struct Widget\n{\n  int x;\n};\n\n".to_string()
+                    } else if endpoint == "create_enum" {
+                        "enum Color\n{\n  RED = 0,\n};\n\n".to_string()
+                    } else if endpoint == "create_typedef" {
+                        "typedef int WidgetHandle;\n\n".to_string()
+                    } else if endpoint == "add_struct_field" {
+                        "Field y added to struct Widget".to_string()
                     } else {
                         "Error 404: No context found for request".to_string()
                     };
+                    let injected_failure = injected.lock().expect("failures lock").remove(endpoint);
                     let fail = endpoint != "favicon.ico" && failing.load(Ordering::SeqCst) > 0;
                     if fail {
                         failing.fetch_sub(1, Ordering::SeqCst);
                     }
-                    let (status, body) = if fail {
+                    let (status, body) = if let Some(body) = injected_failure {
+                        ("200 OK", body)
+                    } else if fail {
                         ("500 Internal Server Error", "boom".to_string())
                     } else {
                         ("200 OK", body)
@@ -158,7 +213,9 @@ impl FakeServer {
         Self {
             base_url: format!("http://{addr}"),
             calls,
+            bodies,
             fail_next: failing,
+            failures,
         }
     }
 
@@ -171,9 +228,29 @@ impl FakeServer {
             .unwrap_or(&0)
     }
 
+    /// The `i`th request body the server received for `endpoint`.
+    fn body(&self, endpoint: &str, i: usize) -> String {
+        self.bodies
+            .lock()
+            .expect("bodies lock")
+            .get(endpoint)
+            .and_then(|bodies| bodies.get(i))
+            .cloned()
+            .unwrap_or_else(|| panic!("no body recorded for {endpoint} #{i}"))
+    }
+
     /// Make the next `n` endpoint calls answer 500 instead of data.
     fn fail_next_calls(&self, n: usize) {
         self.fail_next.store(n, Ordering::SeqCst);
+    }
+
+    /// Make the next call to `endpoint` answer 200 with `body` — the
+    /// bridge's prose-failure shape, invisible to the HTTP status.
+    fn fail_endpoint(&self, endpoint: &str, body: &str) {
+        self.failures
+            .lock()
+            .expect("failures lock")
+            .insert(endpoint.to_string(), body.to_string());
     }
 
     /// How many read-endpoint calls the server has served in total.
@@ -854,4 +931,140 @@ fn has_temp_residue(dir: &Path) -> bool {
         }
     }
     false
+}
+
+// ============================================================
+// TypeWriteSource: the write side of the seam (issue #149)
+// ============================================================
+
+/// Drive every `TypeWriteSource` method through one instance of the seam —
+/// generic over it, so the same driver proves the client's implementation
+/// whatever else implements the trait later.
+async fn drive_writes<W: TypeWriteSource>(source: &W) {
+    source
+        .set_function_prototype(0x18003e750, "int LaunchPad_main(void)")
+        .await
+        .expect("set prototype");
+    source
+        .set_local_variable_type(0x18003e750, "pvVar1", "char *")
+        .await
+        .expect("set local");
+    source
+        .create_struct(
+            "Widget",
+            &[
+                NewStructField::new("x", "int"),
+                NewStructField::new("y", "char *").at_offset(4),
+            ],
+        )
+        .await
+        .expect("create struct");
+    source
+        .create_enum("Color", &[("RED", 0), ("GREEN", 1)], 4)
+        .await
+        .expect("create enum");
+    source
+        .create_typedef("WidgetHandle", "Widget *")
+        .await
+        .expect("create typedef");
+    source
+        .add_struct_field("Widget", "z", "int", None)
+        .await
+        .expect("add field");
+}
+
+#[tokio::test]
+async fn write_payloads_reach_the_v6_endpoints_in_the_bridge_s_shape() {
+    let fake = FakeServer::start().await;
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+    drive_writes(&client).await;
+
+    for endpoint in [
+        "set_function_prototype",
+        "set_local_variable_type",
+        "create_struct",
+        "create_enum",
+        "create_typedef",
+        "add_struct_field",
+    ] {
+        assert_eq!(fake.count(endpoint), 1, "{endpoint} hit exactly once");
+    }
+
+    // Addresses ride as bare hex, names as strings — the exact keys the
+    // 6.0.0 bridge's @RequestBody maps read.
+    assert_eq!(
+        fake.body("set_function_prototype", 0),
+        r#"{"function_address":"18003e750","prototype":"int LaunchPad_main(void)"}"#
+    );
+    assert_eq!(
+        fake.body("set_local_variable_type", 0),
+        r#"{"function_address":"18003e750","new_type":"char *","variable_name":"pvVar1"}"#
+    );
+    assert_eq!(
+        fake.body("create_struct", 0),
+        r#"{"fields":[{"name":"x","type":"int"},{"name":"y","offset":4,"type":"char *"}],"name":"Widget"}"#
+    );
+    // The bridge maps values as a Map<String, Integer> — a JSON object,
+    // not an array.
+    assert_eq!(
+        fake.body("create_enum", 0),
+        r#"{"name":"Color","size":4,"values":{"GREEN":1,"RED":0}}"#
+    );
+    assert_eq!(
+        fake.body("create_typedef", 0),
+        r#"{"base_type":"Widget *","name":"WidgetHandle"}"#
+    );
+    // An omitted offset is absent from the payload, not null.
+    assert_eq!(
+        fake.body("add_struct_field", 0),
+        r#"{"field_name":"z","field_type":"int","struct_name":"Widget"}"#
+    );
+}
+
+#[tokio::test]
+async fn write_failures_parse_into_the_named_error_kinds() {
+    let fake = FakeServer::start().await;
+    let client = GhidraClient::new(&fake.base_url).expect("client");
+
+    // A JSON-shaped failure body classifies as Reported.
+    fake.fail_endpoint(
+        "set_local_variable_type",
+        r#"{"error":"Variable not found"}"#,
+    );
+    let err = client
+        .set_local_variable_type(0x18003e750, "missing", "char *")
+        .await
+        .expect_err("the bridge said no");
+    assert!(
+        matches!(&err, GhidraError::Reported { message, .. } if message == "Variable not found"),
+        "{err}"
+    );
+
+    // A prose failure from Response.text classifies as Reported too —
+    // invisible to the HTTP status, caught by the error prefixes.
+    fake.fail_endpoint(
+        "create_struct",
+        "Structure with name 'Widget' already exists",
+    );
+    let err = client
+        .create_struct("Widget", &[])
+        .await
+        .expect_err("the bridge said no");
+    assert!(
+        matches!(&err, GhidraError::Reported { message, .. }
+            if message == "Structure with name 'Widget' already exists"),
+        "{err}"
+    );
+
+    // The add-struct-field not-found sentinel becomes NotFound.
+    fake.fail_endpoint("add_struct_field", "Structure not found: Widget");
+    let err = client
+        .add_struct_field("Widget", "z", "int", None)
+        .await
+        .expect_err("the bridge said no");
+    assert!(
+        matches!(&err, GhidraError::NotFound { kind, query }
+            if *kind == "structure" && query == "Widget"),
+        "{err}"
+    );
 }
