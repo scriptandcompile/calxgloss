@@ -262,6 +262,63 @@ pub struct CrossFunctionLifecycle {
 }
 
 // ============================================================
+// Ownership transfer
+// ============================================================
+
+/// The direction an allocated pointer crosses its function's boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferDirection {
+    /// The pointer was handed as a plain argument at a call site —
+    /// ownership moves into the callee.
+    HandedToCallee,
+    /// The pointer was returned from the function — ownership moves
+    /// out to the caller.
+    ReturnedToCaller,
+}
+
+calxgloss_types::display_serde_label!(TransferDirection {
+    HandedToCallee => "handed_to_callee",
+    ReturnedToCaller => "returned_to_caller",
+});
+
+/// One ownership-transfer observation about one function, with the
+/// evidence behind it.
+///
+/// A record says the [`function`](Self::function) allocated a block of
+/// [`allocation_type`](Self::allocation_type), bound it to
+/// [`variable`](Self::variable), and never released it in its own
+/// body: the block crossed the function boundary in the direction of
+/// [`direction`](Self::direction) — handed to
+/// [`partner`](Self::partner) at a call site, or returned to whoever
+/// calls this function — which is what [`suggestion`](Self::suggestion)
+/// names as moved ownership. The allocation line and the escape line
+/// are kept as [`evidence`](Self::evidence) so a reviewer (or a
+/// translation prompt) can see the move.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnershipTransfer {
+    /// The function the record is about — the one that allocated.
+    pub function: String,
+    /// The direction the pointer crossed the boundary.
+    pub direction: TransferDirection,
+    /// The callee the pointer was handed to; `None` for a return,
+    /// whose receiving caller is not one known function.
+    pub partner: Option<String>,
+    /// The variable the allocation was bound to.
+    pub variable: String,
+    /// The allocation family the block belongs to.
+    pub allocation_type: AllocationType,
+    /// The Rust pattern the transfer suggests, e.g. `Box<T>` for
+    /// ownership moved out of the allocating function.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+    /// The decompiled lines that support the record — the allocation
+    /// and the escape.
+    pub evidence: String,
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -286,6 +343,8 @@ pub enum MemoryFinding {
     RefCount(ReferenceCount),
     /// An allocation released by a callee it was handed to.
     CrossFunction(CrossFunctionLifecycle),
+    /// An allocated pointer that escaped its function without releasing.
+    Ownership(OwnershipTransfer),
 }
 
 impl MemoryFinding {
@@ -296,6 +355,7 @@ impl MemoryFinding {
             MemoryFinding::Handle(record) => &record.function,
             MemoryFinding::RefCount(record) => &record.function,
             MemoryFinding::CrossFunction(record) => &record.function,
+            MemoryFinding::Ownership(record) => &record.function,
         }
     }
 
@@ -306,6 +366,7 @@ impl MemoryFinding {
             MemoryFinding::Handle(record) => &record.suggestion,
             MemoryFinding::RefCount(record) => &record.suggestion,
             MemoryFinding::CrossFunction(record) => &record.suggestion,
+            MemoryFinding::Ownership(record) => &record.suggestion,
         }
     }
 
@@ -316,6 +377,7 @@ impl MemoryFinding {
             MemoryFinding::Handle(record) => record.confidence,
             MemoryFinding::RefCount(record) => record.confidence,
             MemoryFinding::CrossFunction(record) => record.confidence,
+            MemoryFinding::Ownership(record) => record.confidence,
         }
     }
 
@@ -326,23 +388,27 @@ impl MemoryFinding {
             MemoryFinding::Handle(record) => &record.evidence,
             MemoryFinding::RefCount(record) => &record.evidence,
             MemoryFinding::CrossFunction(record) => &record.evidence,
+            MemoryFinding::Ownership(record) => &record.evidence,
         }
     }
 
-    /// The serde `kind` tag — `allocation`, `handle`, `ref_count`, or
-    /// `cross_function` — naming the detector behind the finding.
+    /// The serde `kind` tag — `allocation`, `handle`, `ref_count`,
+    /// `cross_function`, or `ownership` — naming the detector behind
+    /// the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             MemoryFinding::Allocation(_) => "allocation",
             MemoryFinding::Handle(_) => "handle",
             MemoryFinding::RefCount(_) => "ref_count",
             MemoryFinding::CrossFunction(_) => "cross_function",
+            MemoryFinding::Ownership(_) => "ownership",
         }
     }
 
     /// What the finding pairs, spelled for a report row: the allocation
-    /// family, the opener/closer spellings, the bump/drop spellings, or
-    /// the allocation family and the releasing partner.
+    /// family, the opener/closer spellings, the bump/drop spellings, the
+    /// allocation family and the releasing partner, or the allocation
+    /// family and the transfer direction.
     pub fn target(&self) -> String {
         match self {
             MemoryFinding::Allocation(record) => record.allocation_type.to_string(),
@@ -350,6 +416,9 @@ impl MemoryFinding {
             MemoryFinding::RefCount(record) => format!("{}→{}", record.increment, record.decrement),
             MemoryFinding::CrossFunction(record) => {
                 format!("{}→{}", record.allocation_type, record.partner)
+            }
+            MemoryFinding::Ownership(record) => {
+                format!("{}→{}", record.allocation_type, record.direction)
             }
         }
     }
@@ -684,6 +753,45 @@ mod tests {
     }
 
     #[test]
+    fn an_ownership_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = MemoryFinding::Ownership(OwnershipTransfer {
+            function: "FUN_18003ab00".into(),
+            direction: TransferDirection::HandedToCallee,
+            partner: Some("FUN_18003e750".into()),
+            variable: "pvVar1".into(),
+            allocation_type: AllocationType::Malloc,
+            suggestion: "Box<T>".into(),
+            confidence: Confidence::new(65),
+            evidence: "pvVar1 = malloc(0x20); FUN_18003e750(pvVar1);".into(),
+        });
+        let json = serde_json::to_string(&finding).expect("ownership finding should serialize");
+        assert!(json.contains("\"kind\":\"ownership\""));
+        assert!(json.contains("\"direction\":\"handed_to_callee\""));
+        let back: MemoryFinding =
+            serde_json::from_str(&json).expect("ownership finding should read back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
+    fn a_returned_ownership_finding_carries_no_partner() {
+        let finding = MemoryFinding::Ownership(OwnershipTransfer {
+            function: "FUN_18003ab00".into(),
+            direction: TransferDirection::ReturnedToCaller,
+            partner: None,
+            variable: "pvVar1".into(),
+            allocation_type: AllocationType::Malloc,
+            suggestion: "Box<T>".into(),
+            confidence: Confidence::new(65),
+            evidence: "pvVar1 = malloc(0x20); return pvVar1;".into(),
+        });
+        let json = serde_json::to_string(&finding).expect("ownership finding should serialize");
+        assert!(json.contains("\"direction\":\"returned_to_caller\""));
+        let back: MemoryFinding =
+            serde_json::from_str(&json).expect("ownership finding should read back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
     fn the_union_accessors_reach_through_every_variant() {
         let findings = [
             MemoryFinding::Allocation(hint()),
@@ -698,6 +806,16 @@ mod tests {
                 confidence: Confidence::new(70),
                 evidence: "pvVar1 = malloc(0x20); free(param_1);".into(),
             }),
+            MemoryFinding::Ownership(OwnershipTransfer {
+                function: "FUN_18003ab00".into(),
+                direction: TransferDirection::HandedToCallee,
+                partner: Some("FUN_18003e750".into()),
+                variable: "pvVar1".into(),
+                allocation_type: AllocationType::Malloc,
+                suggestion: "Box<T>".into(),
+                confidence: Confidence::new(70),
+                evidence: "pvVar1 = malloc(0x20); FUN_18003e750(pvVar1);".into(),
+            }),
         ];
         for finding in &findings {
             assert_eq!(finding.function(), "FUN_18003ab00");
@@ -708,7 +826,13 @@ mod tests {
         let kinds: Vec<&str> = findings.iter().map(|f| f.kind()).collect();
         assert_eq!(
             kinds,
-            vec!["allocation", "handle", "ref_count", "cross_function"]
+            vec![
+                "allocation",
+                "handle",
+                "ref_count",
+                "cross_function",
+                "ownership"
+            ]
         );
         let suggestions: Vec<&str> = findings.iter().map(|f| f.suggestion()).collect();
         assert_eq!(
@@ -717,6 +841,7 @@ mod tests {
                 "Box<T>",
                 "RAII guard struct with Drop impl",
                 "Rc<T>",
+                "Box<T>",
                 "Box<T>"
             ]
         );
@@ -727,7 +852,8 @@ mod tests {
                 "malloc",
                 "CreateFileW→CloseHandle",
                 "AddRef→Release",
-                "malloc→FUN_18003e750"
+                "malloc→FUN_18003e750",
+                "malloc→handed_to_callee"
             ]
         );
     }
@@ -827,5 +953,20 @@ mod tests {
         assert_eq!(info.kind, "cross_function");
         assert_eq!(info.suggestion, "Box<T>");
         assert_eq!(info.confidence, 70);
+
+        let ownership = MemoryFinding::Ownership(OwnershipTransfer {
+            function: "FUN_18003ab00".into(),
+            direction: TransferDirection::ReturnedToCaller,
+            partner: None,
+            variable: "pvVar1".into(),
+            allocation_type: AllocationType::Malloc,
+            suggestion: "Box<T>".into(),
+            confidence: Confidence::new(65),
+            evidence: "pvVar1 = malloc(0x20); return pvVar1;".into(),
+        });
+        let info = calxgloss_prompts::MemoryInfo::from(&ownership);
+        assert_eq!(info.kind, "ownership");
+        assert_eq!(info.suggestion, "Box<T>");
+        assert_eq!(info.confidence, 65);
     }
 }

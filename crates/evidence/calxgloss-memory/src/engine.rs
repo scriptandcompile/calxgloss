@@ -220,7 +220,7 @@ mod tests {
     use super::*;
     use crate::allocator::AllocatorSignature;
     use crate::handle::HandleSignature;
-    use crate::types::{AllocationType, CountStyle, HandleType};
+    use crate::types::{AllocationType, CountStyle, HandleType, TransferDirection};
     use calxgloss_ghidra::{
         DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
         Result, StringLiteral, StructLayout, Symbol, Xref,
@@ -685,6 +685,64 @@ mod tests {
         // The finding belongs to the allocating function; the callee's
         // own release is its half of the pair, not a finding of its own.
         assert!(result.for_function("FUN_18003e750").next().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_scan_reports_a_pointer_handed_to_a_non_releasing_callee() {
+        // The block escapes into a callee that keeps it: no pair forms,
+        // but the move itself is the ownership transfer a Rust author
+        // would express as `Box`.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  pvVar1 = malloc(0x20);\n  FUN_18003e750(pvVar1);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void *param_1)",
+                "  use(param_1);\n",
+            ),
+        );
+        let result = scan(program).await;
+        let findings: Vec<&MemoryFinding> = result.for_function("FUN_18003ab00").collect();
+        assert_eq!(findings.len(), 1);
+        let MemoryFinding::Ownership(record) = findings[0] else {
+            unreachable!("the escape reads as an ownership transfer");
+        };
+        assert_eq!(record.direction, TransferDirection::HandedToCallee);
+        assert_eq!(record.partner.as_deref(), Some("FUN_18003e750"));
+        assert_eq!(record.variable, "pvVar1");
+        assert_eq!(record.confidence.value(), 65);
+        assert_eq!(record.suggestion, "Box<T>");
+    }
+
+    #[tokio::test]
+    async fn a_scan_reports_a_pointer_returned_to_the_caller() {
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  pvVar1 = malloc(0x20);\n  return pvVar1;\n",
+            ),
+        );
+        let result = scan(program).await;
+        let findings: Vec<&MemoryFinding> = result.for_function("FUN_18003ab00").collect();
+        assert_eq!(findings.len(), 1);
+        let MemoryFinding::Ownership(record) = findings[0] else {
+            unreachable!("the return hands the block to the caller");
+        };
+        assert_eq!(record.direction, TransferDirection::ReturnedToCaller);
+        assert_eq!(record.partner, None);
     }
 
     #[tokio::test]

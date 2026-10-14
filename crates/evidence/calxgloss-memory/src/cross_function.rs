@@ -8,22 +8,23 @@
 //! fetched bodies — no extra Ghidra round trips — and reports the
 //! lifecycles that cross a call boundary.
 //!
-//! [`CrossFunctionAnalyzer::analyze`] runs the reading for this ticket:
-//! an allocation left open by [`open_allocations`](AllocatorTracker::open_allocations),
-//! handed as a plain argument at a call site to a function this scan
-//! decompiled, and released in that callee's body through a configured
-//! deallocator naming the parameter it arrived in — one
-//! [`MemoryFinding::CrossFunction`] on the allocating function, naming
-//! the partner and the variable.
+//! [`CrossFunctionAnalyzer::analyze`] runs the reading: an allocation
+//! left open by [`open_allocations`](AllocatorTracker::open_allocations)
+//! either pairs — handed as a plain argument to a function this scan
+//! decompiled whose body releases the parameter it arrived in, one
+//! [`MemoryFinding::CrossFunction`] naming the partner and the
+//! variable — or escapes: handed to any callee or returned whole, one
+//! [`MemoryFinding::Ownership`] naming the direction of the move.
 
 use std::collections::HashMap;
 
 use crate::allocator::AllocatorTracker;
-use crate::types::{CrossFunctionLifecycle, MemoryFinding};
+use crate::types::{CrossFunctionLifecycle, MemoryFinding, OwnershipTransfer, TransferDirection};
 use calxgloss_ghidra::DecompiledFunction;
 
 use calxgloss_types::{
-    NON_CALL_KEYWORDS, NameContinuation, ScanOptions, call_sites, line_at, strip_casts,
+    NON_CALL_KEYWORDS, NameContinuation, ScanOptions, call_sites, is_ident_byte, line_at,
+    skip_string, strip_casts,
 };
 
 /// The scan: demangled `operator.new` spellings stay whole (including
@@ -49,6 +50,19 @@ const CROSS_CONFIDENCE: u8 = 70;
 /// is exactly what a boxed value owns when it is handed over.
 const CROSS_SUGGESTION: &str = "Box<T>";
 
+/// Confidence of a transfer read from one body alone: the allocation
+/// and the escape are both explicit body evidence, but what the far
+/// side does with the value is unseen — the callee may store it, free
+/// it, or just borrow it — so a transfer sits below a pair whose
+/// release was actually read, at the same rung as the short-lived
+/// stack reading.
+const TRANSFER_CONFIDENCE: u8 = 65;
+
+/// The ownership pattern a transfer reads as: the block outlives its
+/// allocating function by moving out — into a callee or to the caller
+/// — which is what a boxed value owns when it is moved.
+const TRANSFER_SUGGESTION: &str = "Box<T>";
+
 /// Cross-function lifecycle readings over the bodies one scan holds.
 ///
 /// The analyzer is stateless: every reading comes from the bodies it
@@ -67,17 +81,23 @@ impl CrossFunctionAnalyzer {
     }
 
     /// The cross-function findings the program carries, in listing
-    /// order and, within one function, in allocation order.
+    /// order and, within one function, in allocation order — one claim
+    /// per open allocation.
     ///
     /// For every allocation the body leaves open, the reading looks
     /// for a direct call site where the variable appears as a plain
     /// argument (seen through any cast) to a callee this scan
     /// decompiled, and checks that callee's body for a release of the
-    /// parameter that position names. The first such callee in source
-    /// order wins — one moved block moves once — and a callee outside
-    /// the scanned set (a library routine, a thunk that never
-    /// decompiled) releases nothing this scan can see, so it claims
-    /// nothing.
+    /// parameter that position names: a releasing callee makes a
+    /// [`MemoryFinding::CrossFunction`] pair. An open allocation that
+    /// reaches no releasing callee but does escape — handed as a plain
+    /// argument at any call site, or returned whole to the caller —
+    /// makes a [`MemoryFinding::Ownership`] transfer naming the
+    /// direction. A callee outside the scanned set (a library routine,
+    /// a thunk that never decompiled) releases nothing this scan can
+    /// see, so it forms no pair — but the hand-off itself is still an
+    /// escape, and the transfer reads it. Where one open variable both
+    /// pairs and escapes, the pair wins: one moved block moves once.
     pub fn analyze(
         &self,
         functions: &[DecompiledFunction],
@@ -91,10 +111,9 @@ impl CrossFunctionAnalyzer {
         let mut findings = Vec::new();
         for func in functions {
             for allocation in tracker.open_allocations(func) {
+                let mut pair: Option<(&DecompiledFunction, String)> = None;
+                let mut escape: Option<Escape<'_>> = None;
                 for call in call_sites(&func.body, &CALL_SCAN) {
-                    let Some(&callee_index) = scanned.get(call.callee) else {
-                        continue;
-                    };
                     let Some(position) = call.args.iter().position(|arg| {
                         let freed = strip_casts(arg, crate::allocator::is_type_word);
                         crate::allocator::plain_variable(&freed).as_deref()
@@ -102,10 +121,32 @@ impl CrossFunctionAnalyzer {
                     }) else {
                         continue;
                     };
-                    let callee = &functions[callee_index];
-                    let Some(release) = release_of_parameter(callee, position, tracker) else {
-                        continue;
-                    };
+                    if escape.is_none() {
+                        escape = Some(Escape {
+                            direction: TransferDirection::HandedToCallee,
+                            partner: Some(call.callee),
+                            line: line_at(&func.body, call.offset),
+                        });
+                    }
+                    if pair.is_none()
+                        && let Some(&callee_index) = scanned.get(call.callee)
+                    {
+                        let callee = &functions[callee_index];
+                        if let Some(release) = release_of_parameter(callee, position, tracker) {
+                            pair = Some((callee, release));
+                        }
+                    }
+                }
+                if let Some(offset) = return_site(&func.body, &allocation.variable)
+                    && escape.is_none()
+                {
+                    escape = Some(Escape {
+                        direction: TransferDirection::ReturnedToCaller,
+                        partner: None,
+                        line: line_at(&func.body, offset),
+                    });
+                }
+                if let Some((callee, release)) = pair {
                     findings.push(MemoryFinding::CrossFunction(CrossFunctionLifecycle {
                         function: func.name.clone(),
                         partner: callee.name.clone(),
@@ -116,16 +157,91 @@ impl CrossFunctionAnalyzer {
                         evidence: format!(
                             "{} {} {}",
                             allocation.line,
-                            line_at(&func.body, call.offset),
+                            // The releasing call is the first hand-off
+                            // to the partner that named the variable.
+                            line_at(
+                                &func.body,
+                                first_handoff(&func.body, &allocation.variable, callee)
+                            ),
                             release
                         ),
                     }));
-                    break;
+                } else if let Some(escape) = escape {
+                    findings.push(MemoryFinding::Ownership(OwnershipTransfer {
+                        function: func.name.clone(),
+                        direction: escape.direction,
+                        partner: escape.partner.map(str::to_string),
+                        variable: allocation.variable.clone(),
+                        allocation_type: allocation.allocation_type,
+                        suggestion: TRANSFER_SUGGESTION.to_string(),
+                        confidence: TRANSFER_CONFIDENCE.into(),
+                        evidence: format!("{} {}", allocation.line, escape.line),
+                    }));
                 }
             }
         }
         findings
     }
+}
+
+/// The escape an open allocation took: the direction it crossed the
+/// boundary and the line that shows it.
+struct Escape<'a> {
+    direction: TransferDirection,
+    partner: Option<&'a str>,
+    line: String,
+}
+
+/// The offset of the first call site handing `variable` (as a plain
+/// argument, seen through any cast) to `callee`, for the pair's
+/// evidence line. Falls back to the allocation line's own position —
+/// the pair cannot form without such a site, so this only guards the
+/// type.
+fn first_handoff(body: &str, variable: &str, callee: &DecompiledFunction) -> usize {
+    call_sites(body, &CALL_SCAN)
+        .into_iter()
+        .find(|call| {
+            call.callee == callee.name
+                && call.args.iter().any(|arg| {
+                    let freed = strip_casts(arg, crate::allocator::is_type_word);
+                    crate::allocator::plain_variable(&freed) == Some(variable)
+                })
+        })
+        .map(|call| call.offset)
+        .unwrap_or(0)
+}
+
+/// The offset of the `return` statement that hands `variable` whole to
+/// the caller — seen through any cast — or `None` when the body never
+/// returns it. `return pvVar1;` and `return (void *)pvVar1;` return
+/// the block; `return;`, `return pvVar1 + 1;`, and a return of
+/// anything else move nothing.
+fn return_site(body: &str, variable: &str) -> Option<usize> {
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            i = skip_string(bytes, i + 1);
+            continue;
+        }
+        if bytes[i..].starts_with(b"return")
+            && (i == 0 || !is_ident_byte(bytes[i - 1]))
+            && !bytes.get(i + 6).is_some_and(|b| is_ident_byte(*b))
+        {
+            let expression_end = body[i + 6..].find(';').map(|rest| i + 6 + rest);
+            if let Some(end) = expression_end {
+                let expression = body[i + 6..end].trim();
+                let seen = strip_casts(expression, crate::allocator::is_type_word);
+                if crate::allocator::plain_variable(&seen) == Some(variable) {
+                    return Some(i);
+                }
+            }
+            i += 6;
+            continue;
+        }
+        i += 1;
+    }
+    None
 }
 
 /// The line in `callee`'s body where a configured deallocator releases
@@ -180,16 +296,34 @@ mod tests {
         CrossFunctionAnalyzer::new().analyze(functions, &AllocatorTracker::with_default_names())
     }
 
-    fn cross(records: &[MemoryFinding]) -> Vec<(&str, &str, &str)> {
+    fn claims(records: &[MemoryFinding]) -> Vec<(&str, &str, &str)> {
         records
             .iter()
-            .map(|finding| match finding {
-                MemoryFinding::CrossFunction(record) => (
+            .filter_map(|finding| match finding {
+                MemoryFinding::CrossFunction(record) => Some((
                     record.function.as_str(),
                     record.partner.as_str(),
                     record.variable.as_str(),
-                ),
-                other => panic!("expected a cross-function finding, got {other:?}"),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn transfers(records: &[MemoryFinding]) -> Vec<(&str, &str, &str, Option<&str>)> {
+        records
+            .iter()
+            .filter_map(|finding| match finding {
+                MemoryFinding::Ownership(record) => Some((
+                    record.function.as_str(),
+                    record.variable.as_str(),
+                    match record.direction {
+                        TransferDirection::HandedToCallee => "handed_to_callee",
+                        TransferDirection::ReturnedToCaller => "returned_to_caller",
+                    },
+                    record.partner.as_deref(),
+                )),
+                _ => None,
             })
             .collect()
     }
@@ -221,7 +355,7 @@ mod tests {
         ];
         let findings = analyze(&program);
         assert_eq!(
-            cross(&findings),
+            claims(&findings),
             vec![("FUN_18003ab00", "FUN_18003e750", "pvVar1")]
         );
         let MemoryFinding::CrossFunction(record) = &findings[0] else {
@@ -257,19 +391,30 @@ mod tests {
     }
 
     #[test]
-    fn a_callee_outside_the_scanned_set_releases_nothing() {
-        // `free` on a library callee's parameter is invisible: the
-        // callee is not a function this scan decompiled.
+    fn a_callee_outside_the_scanned_set_hands_the_pointer_over() {
+        // The release cannot be *named* — the callee was not scanned —
+        // but the hand-off itself is still what a Rust author should
+        // see, so the escape reads as a transfer.
         let program = vec![function(
             "FUN_18003ab00",
             "undefined FUN_18003ab00(void)",
             "  pvVar1 = malloc(0x20);\n  external_free(pvVar1);\n",
         )];
-        assert!(analyze(&program).is_empty());
+        let findings = analyze(&program);
+        assert!(claims(&findings).is_empty());
+        assert_eq!(
+            transfers(&findings),
+            vec![(
+                "FUN_18003ab00",
+                "pvVar1",
+                "handed_to_callee",
+                Some("external_free")
+            )]
+        );
     }
 
     #[test]
-    fn a_callee_that_never_releases_the_parameter_claims_nothing() {
+    fn a_callee_that_never_releases_the_parameter_hands_it_over() {
         let program = vec![
             function(
                 "FUN_18003ab00",
@@ -282,13 +427,24 @@ mod tests {
                 "  use(param_1);\n",
             ),
         ];
-        assert!(analyze(&program).is_empty());
+        let findings = analyze(&program);
+        assert!(claims(&findings).is_empty());
+        assert_eq!(
+            transfers(&findings),
+            vec![(
+                "FUN_18003ab00",
+                "pvVar1",
+                "handed_to_callee",
+                Some("FUN_18003e750")
+            )]
+        );
     }
 
     #[test]
-    fn a_release_of_another_parameter_claims_nothing() {
+    fn a_release_of_another_parameter_claims_nothing_but_the_hand_off() {
         // The hand-off is at position 0; the callee releases the
-        // parameter at position 1 — a different value.
+        // parameter at position 1 — a different value. The pair fails,
+        // the escape stands.
         let program = vec![
             function(
                 "FUN_18003ab00",
@@ -301,7 +457,17 @@ mod tests {
                 "  free(param_2);\n",
             ),
         ];
-        assert!(analyze(&program).is_empty());
+        let findings = analyze(&program);
+        assert!(claims(&findings).is_empty());
+        assert_eq!(
+            transfers(&findings),
+            vec![(
+                "FUN_18003ab00",
+                "pvVar1",
+                "handed_to_callee",
+                Some("FUN_18003e750")
+            )]
+        );
     }
 
     #[test]
@@ -318,7 +484,7 @@ mod tests {
                 "  free(param_1);\n",
             ),
         ];
-        assert_eq!(cross(&analyze(&program)).len(), 1);
+        assert_eq!(claims(&analyze(&program)).len(), 1);
     }
 
     #[test]
@@ -339,7 +505,12 @@ mod tests {
     }
 
     #[test]
-    fn a_member_or_vtable_call_is_not_a_plain_call_site() {
+    fn a_member_call_pairs_with_nothing_but_hands_the_pointer_over() {
+        // `obj.FUN_18003e750` is not a plain call to the scanned
+        // function — the implicit receiver shifts the positional tie,
+        // so no pair is claimed against that body — but the pointer
+        // still leaves at this site, so the escape reads it with the
+        // dotted callee as the named partner.
         let program = vec![
             function(
                 "FUN_18003ab00",
@@ -352,7 +523,17 @@ mod tests {
                 "  free(param_1);\n",
             ),
         ];
-        assert!(analyze(&program).is_empty());
+        let findings = analyze(&program);
+        assert!(claims(&findings).is_empty());
+        assert_eq!(
+            transfers(&findings),
+            vec![(
+                "FUN_18003ab00",
+                "pvVar1",
+                "handed_to_callee",
+                Some("obj.FUN_18003e750")
+            )]
+        );
     }
 
     #[test]
@@ -377,7 +558,7 @@ mod tests {
             ),
         ];
         assert_eq!(
-            cross(&analyze(&program)),
+            claims(&analyze(&program)),
             vec![("FUN_18003ab00", "FUN_18003e750", "pvVar1")]
         );
     }
@@ -397,7 +578,7 @@ mod tests {
             ),
         ];
         assert_eq!(
-            cross(&analyze(&program)),
+            claims(&analyze(&program)),
             vec![
                 ("FUN_18003ab00", "FUN_18003e750", "pvVar1"),
                 ("FUN_18003ab00", "FUN_18003e750", "pvVar2"),
@@ -406,9 +587,9 @@ mod tests {
     }
 
     #[test]
-    fn a_void_callee_releases_nothing() {
+    fn a_void_callee_releases_nothing_but_hands_the_pointer_over() {
         // A `(void)` signature declares no parameter for the argument
-        // to arrive in.
+        // to arrive in — the pair fails, the escape stands.
         let program = vec![
             function(
                 "FUN_18003ab00",
@@ -421,7 +602,105 @@ mod tests {
                 "  free(global_ptr);\n",
             ),
         ];
+        let findings = analyze(&program);
+        assert!(claims(&findings).is_empty());
+        assert_eq!(
+            transfers(&findings),
+            vec![(
+                "FUN_18003ab00",
+                "pvVar1",
+                "handed_to_callee",
+                Some("FUN_18003e750")
+            )]
+        );
+    }
+
+    #[test]
+    fn a_pointer_returned_whole_is_a_transfer_to_the_caller() {
+        let program = vec![function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  pvVar1 = malloc(0x20);\n  return pvVar1;\n",
+        )];
+        assert_eq!(
+            transfers(&analyze(&program)),
+            vec![("FUN_18003ab00", "pvVar1", "returned_to_caller", None)]
+        );
+    }
+
+    #[test]
+    fn a_pointer_returned_through_a_cast_is_still_a_transfer() {
+        let program = vec![function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  pvVar1 = malloc(0x20);\n  return (void *)pvVar1;\n",
+        )];
+        assert_eq!(
+            transfers(&analyze(&program)),
+            vec![("FUN_18003ab00", "pvVar1", "returned_to_caller", None)]
+        );
+    }
+
+    #[test]
+    fn a_return_of_something_else_transfers_nothing() {
+        // `return pvVar1 + 1;` hands back an interior pointer, not the
+        // block; a bare `return;` hands back nothing at all.
+        let program = vec![
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  pvVar1 = malloc(0x20);\n  return pvVar1 + 1;\n",
+            ),
+            function(
+                "FUN_18003abcd",
+                "undefined FUN_18003abcd(void)",
+                "  pvVar1 = malloc(0x20);\n  return;\n",
+            ),
+        ];
         assert!(analyze(&program).is_empty());
+    }
+
+    #[test]
+    fn a_pair_wins_over_an_escape_of_the_same_allocation() {
+        // The variable is both handed to a releasing callee and
+        // returned — one moved block moves once, and the pair, whose
+        // release was actually read, is the stronger claim.
+        let program = vec![
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  pvVar1 = malloc(0x20);\n  FUN_18003e750(pvVar1);\n  return pvVar1;\n",
+            ),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void *param_1)",
+                "  free(param_1);\n",
+            ),
+        ];
+        let findings = analyze(&program);
+        assert_eq!(
+            claims(&findings),
+            vec![("FUN_18003ab00", "FUN_18003e750", "pvVar1")]
+        );
+        assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn a_transfer_carries_the_move_evidence_and_confidence() {
+        let program = vec![function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  pvVar1 = malloc(0x20);\n  parse(pvVar1);\n",
+        )];
+        let findings = analyze(&program);
+        let MemoryFinding::Ownership(record) = &findings[0] else {
+            unreachable!()
+        };
+        assert_eq!(record.allocation_type, AllocationType::Malloc);
+        assert_eq!(record.suggestion, "Box<T>");
+        assert_eq!(record.confidence.value(), 65);
+        assert!(record.evidence.contains("pvVar1 = malloc(0x20);"));
+        assert!(record.evidence.contains("parse(pvVar1);"));
     }
 
     #[test]
@@ -445,6 +724,6 @@ mod tests {
             ),
         ];
         let findings = CrossFunctionAnalyzer::new().analyze(&program, &tracker);
-        assert_eq!(cross(&findings).len(), 1);
+        assert_eq!(claims(&findings).len(), 1);
     }
 }
