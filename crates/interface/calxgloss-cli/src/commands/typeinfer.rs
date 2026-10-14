@@ -1,12 +1,15 @@
 //! The `typeinfer` command — infer parameter types for the open binary.
 //!
-//! Runs the three inference detectors — C++ this-pointer detection,
-//! parameter-size detection, and known-type propagation — against the
-//! program currently open in Ghidra and saves the result to
+//! Runs the inference detectors — C++ this-pointer detection,
+//! parameter-size detection, known-type propagation, cross-function
+//! propagation, assignment chains, caller return usage, and name mangling —
+//! against the program currently open in Ghidra and saves the result to
 //! `re/analysis/typeinfer/{binary}.json` in the workspace. Batch translation
 //! runs the same scan before its first batch when no result is cached;
 //! this command is the manual entry point: it rebuilds the result on
-//! demand and can print what a cached one holds.
+//! demand and can print what a cached one holds. With `--write-back` it
+//! also applies the surviving inferences into the program through the
+//! type-write seam, narrowed by a confidence floor.
 
 use std::path::Path;
 
@@ -14,7 +17,8 @@ use anyhow::{Context, Result};
 use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use calxgloss_typeinfer::engine::TypeInferEngine;
 use calxgloss_typeinfer::persist::TypeInferPersistor;
-use calxgloss_typeinfer::types::{InferenceMethod, InferredType, TypeInferenceResult};
+use calxgloss_typeinfer::types::{Confidence, InferenceMethod, InferredType, TypeInferenceResult};
+use calxgloss_typeinfer::write_back::{WriteBack, WriteBackReport};
 use chrono::DateTime;
 use tracing::info;
 
@@ -24,12 +28,28 @@ use crate::utils::*;
 /// How many entries a detail section lists before collapsing the rest.
 const DETAIL_LIMIT: usize = 10;
 
+/// Connect to the GhidraMCP server the settings point at.
+async fn connect_ghidra(settings: &Settings) -> Result<GhidraClient> {
+    let ghidra_url = &settings.ghidra_url.value;
+    let mut config = GhidraConfig::new(ghidra_url)
+        .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
+    if let Some(key) = &settings.ghidra_api_key {
+        config = config.with_api_key(key.value.clone());
+    }
+    GhidraClient::from_config(config)
+        .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))
+}
+
 /// Handle the `typeinfer` subcommand: infer parameter types for `binary`,
-/// or print the cached result when `show` is set.
+/// or print the cached result when `show` is set. With `write_back`, apply
+/// the surviving inferences into the open program — the scan's result or
+/// the cached one — keeping only records at `confidence_floor` or above.
 pub async fn handle_typeinfer(
     binary: &str,
     workspace: &Path,
     show: bool,
+    write_back: bool,
+    confidence_floor: u8,
     settings: &Settings,
 ) -> Result<()> {
     let persistor = TypeInferPersistor::new(workspace);
@@ -42,19 +62,16 @@ pub async fn handle_typeinfer(
             )
         })?;
         print_type_inference_report(&result, &persistor.path_for(binary));
+        if write_back {
+            let ghidra = connect_ghidra(settings).await?;
+            run_write_back(&ghidra, &result, binary, confidence_floor).await?;
+        }
         return Ok(());
     }
 
     info!(binary, workspace = %workspace.display(), "Inferring parameter types");
 
-    let ghidra_url = &settings.ghidra_url.value;
-    let mut config = GhidraConfig::new(ghidra_url)
-        .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
-    if let Some(key) = &settings.ghidra_api_key {
-        config = config.with_api_key(key.value.clone());
-    }
-    let ghidra = GhidraClient::from_config(config)
-        .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))?;
+    let ghidra = connect_ghidra(settings).await?;
 
     let engine = TypeInferEngine::new(&ghidra);
     let result = engine
@@ -66,6 +83,27 @@ pub async fn handle_typeinfer(
         .with_context(|| format!("Failed to save the type inference result for {binary}"))?;
 
     print_type_inference_report(&result, &persistor.path_for(binary));
+    if write_back {
+        run_write_back(&ghidra, &result, binary, confidence_floor).await?;
+    }
+    Ok(())
+}
+
+/// Apply the result into the open program through the write seam and
+/// print the applied / skipped / failed report. The raw client answers
+/// both seams — the read cache never implements the write trait
+/// (ADR-0020).
+async fn run_write_back(
+    ghidra: &GhidraClient,
+    result: &TypeInferenceResult,
+    binary: &str,
+    confidence_floor: u8,
+) -> Result<()> {
+    let report = WriteBack::new(ghidra, ghidra, Confidence::new(confidence_floor))
+        .apply(result)
+        .await
+        .with_context(|| format!("Type write-back failed for {binary}"))?;
+    print_write_back_report(&report, confidence_floor);
     Ok(())
 }
 
@@ -184,6 +222,89 @@ fn print_type_inference_report(result: &TypeInferenceResult, path: &Path) {
         println!(
             "  {} Type inference ready — batch translation reads it as prompt context.",
             green_bold("✓")
+        );
+    }
+    println!();
+}
+
+/// Print the outcome of a `--write-back` pass: what landed in the
+/// program, what was skipped and why, and what the program refused.
+fn print_write_back_report(report: &WriteBackReport, floor: u8) {
+    println!();
+    hsep_bold();
+    println_content(format!("  Type Write-Back — floor {floor}"));
+    hsep();
+    println!();
+
+    println_content(format!(
+        "  {}{}",
+        white_bold("Applied:   "),
+        green_bold(&report.applied.to_string())
+    ));
+    println_content(format!(
+        "  {}{}{}",
+        white_bold("Types:     "),
+        report.types_created,
+        dim(" (named types created)")
+    ));
+    println_content(format!(
+        "  {}{}{}",
+        white_bold("Skipped:   "),
+        report.skipped.len(),
+        dim(" (below floor, concrete slot, not found)")
+    ));
+    println_content(format!(
+        "  {}{}",
+        white_bold("Failed:    "),
+        if report.failed.is_empty() {
+            report.failed.len().to_string()
+        } else {
+            red_bold(&report.failed.len().to_string())
+        }
+    ));
+    println!();
+
+    if !report.skipped.is_empty() {
+        hsep();
+        println_content("  Skipped:");
+        hsep();
+        for skipped in report.skipped.iter().take(DETAIL_LIMIT) {
+            println_content(format!(
+                "  ●  {:<28} {}",
+                skipped.target,
+                dim(&skipped.reason.to_string())
+            ));
+        }
+        print_hidden_count("skipped record", report.skipped.len());
+        println!();
+    }
+
+    if !report.failed.is_empty() {
+        hsep();
+        println_content("  Failed:");
+        hsep();
+        for failed in report.failed.iter().take(DETAIL_LIMIT) {
+            println_content(format!(
+                "  ●  {:<28} {}",
+                failed.target,
+                red_bold(&failed.error)
+            ));
+        }
+        print_hidden_count("failed write", report.failed.len());
+        println!();
+    }
+
+    hsep_bold();
+    if report.applied == 0 && report.types_created == 0 {
+        println!(
+            "  {} Nothing was written back — every record was skipped or refused.",
+            yellow_bold("◉")
+        );
+    } else {
+        println!(
+            "  {} {} records written back into the program.",
+            green_bold("✓"),
+            report.applied
         );
     }
     println!();

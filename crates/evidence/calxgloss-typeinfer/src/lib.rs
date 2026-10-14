@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into thirteen modules:
+//! The crate is organized into fourteen modules:
 //!
 //! - [`types`] - Core data types: `InferredParamType`, `InferenceMethod`,
 //!   `InferenceScope` for per-parameter inference records; `InferredLocalType`,
@@ -60,6 +60,12 @@
 //!   parameter, local, call-site argument, or return differently.
 //! - [`persist`] - JSON persistence: `TypeInferPersistor` saves and loads
 //!   the per-binary inference results under `re/analysis/typeinfer/`.
+//! - [`write_back`] - Writing the surviving inferences into the open
+//!   program: `WriteBack` applies records through the `TypeWriteSource`
+//!   seam in program order — missing named types first, then function
+//!   prototypes, then local-variable types — gated by a confidence floor,
+//!   never overwriting a concretely-typed slot, and reporting what it
+//!   applied, skipped, and failed.
 //! - [`error`] - [`TypeInferError`] and the crate-wide [`Result`] alias.
 
 pub mod confidence;
@@ -75,5 +81,6 @@ pub(crate) mod reading;
 pub mod return_usage;
 pub mod this_ptr;
 pub mod types;
+pub mod write_back;
 
 pub use error::{Result, TypeInferError};

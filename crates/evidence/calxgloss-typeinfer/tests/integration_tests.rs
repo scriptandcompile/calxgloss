@@ -19,12 +19,13 @@ use std::collections::HashMap;
 
 use calxgloss_ghidra::{
     DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
-    Result, StringLiteral, StructLayout, Symbol, Xref,
+    NewStructField, Result, StringLiteral, StructLayout, Symbol, TypeWriteSource, Xref,
 };
 use calxgloss_prompts::TypeInfo;
 use calxgloss_typeinfer::engine::{ScanSource, TypeInferEngine};
 use calxgloss_typeinfer::persist::TypeInferPersistor;
 use calxgloss_typeinfer::types::{Confidence, InferenceMethod, InferenceScope, InferredType};
+use calxgloss_typeinfer::write_back::WriteBack;
 use tempfile::TempDir;
 
 // ------------------------------------------------------------
@@ -577,4 +578,123 @@ async fn results_for_two_binaries_stay_independent() {
     assert_eq!(persistor.load("eqmain.dll").unwrap(), eqmain);
     assert_eq!(persistor.load("eqgame.dll").unwrap(), eqgame);
     assert!(!persistor.exists("other.dll"));
+}
+
+// ------------------------------------------------------------
+// Writing the persisted result back into the program
+// ------------------------------------------------------------
+
+/// A writer recording every call it receives, so the write-back pass can
+/// be checked without a Ghidra server.
+#[derive(Default)]
+struct RecordingWriter {
+    calls: std::sync::Mutex<Vec<String>>,
+}
+
+impl RecordingWriter {
+    fn record(&self, line: &str) -> Result<()> {
+        self.calls.lock().expect("lock").push(line.to_string());
+        Ok(())
+    }
+
+    fn log(&self) -> Vec<String> {
+        self.calls.lock().expect("lock").clone()
+    }
+}
+
+impl TypeWriteSource for RecordingWriter {
+    async fn set_function_prototype(
+        &self,
+        function_address: u64,
+        prototype: &str,
+    ) -> Result<()> {
+        self.record(&format!(
+            "set_function_prototype {function_address:#x} {prototype}"
+        ))
+    }
+
+    async fn set_local_variable_type(
+        &self,
+        function_address: u64,
+        variable: &str,
+        type_name: &str,
+    ) -> Result<()> {
+        self.record(&format!(
+            "set_local_variable_type {function_address:#x} {variable} {type_name}"
+        ))
+    }
+
+    async fn create_struct(&self, name: &str, _fields: &[NewStructField<'_>]) -> Result<()> {
+        self.record(&format!("create_struct {name}"))
+    }
+
+    async fn create_enum(&self, name: &str, _values: &[(&str, i64)], _size: u32) -> Result<()> {
+        self.record(&format!("create_enum {name}"))
+    }
+
+    async fn create_typedef(&self, name: &str, base_type: &str) -> Result<()> {
+        self.record(&format!("create_typedef {name} {base_type}"))
+    }
+
+    async fn add_struct_field(
+        &self,
+        struct_name: &str,
+        field_name: &str,
+        field_type: &str,
+        _offset: Option<u32>,
+    ) -> Result<()> {
+        self.record(&format!(
+            "add_struct_field {struct_name} {field_name} {field_type}"
+        ))
+    }
+}
+
+#[tokio::test]
+async fn a_persisted_scan_reads_back_and_writes_into_the_program() {
+    // The full --write-back shape: scan, persist, read the document back,
+    // and apply it through the write seam — no Ghidra server anywhere.
+    let workspace = TempDir::new().unwrap();
+    let program = program();
+    let result = TypeInferEngine::with_source(program.clone())
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = TypeInferPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+    let loaded = persistor.load("eqmain.dll").expect("load");
+
+    let writer = RecordingWriter::default();
+    let report = WriteBack::new(&program, &writer, Confidence::new(0))
+        .apply(&loaded)
+        .await
+        .expect("write-back");
+
+    // The surviving parameter readings land in one merged prototype —
+    // the this-pointer reading, `strlen`'s char *, and `CloseHandle`'s
+    // void * — while the return type and the name ride on verbatim.
+    let log = writer.log();
+    let prototypes: Vec<&String> = log
+        .iter()
+        .filter(|call| call.starts_with("set_function_prototype"))
+        .collect();
+    assert_eq!(prototypes.len(), 1, "one write per function: {log:?}");
+    assert_eq!(
+        prototypes[0],
+        &format!(
+            "set_function_prototype {:#x} undefined FUN_18003ab00(void * param_1, char * param_2, void * param_3)",
+            addr("FUN_18003ab00")
+        )
+    );
+
+    // Every surviving parameter reading applied, and the pass refused
+    // nothing: the program holds the function, every slot was undefined.
+    let params = loaded
+        .inferences
+        .iter()
+        .filter(|inference| matches!(inference, InferredType::Param(_)))
+        .count();
+    assert!(params > 0, "the scan produced parameter readings");
+    assert_eq!(report.applied, params);
+    assert!(report.skipped.is_empty());
+    assert!(report.failed.is_empty());
 }

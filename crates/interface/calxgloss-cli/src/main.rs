@@ -268,13 +268,25 @@ fn main() -> Result<()> {
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_typesdb(&binary, &workspace, show, no_tag, &settings))
         }
-        Command::Typeinfer { binary, show } => {
+        Command::Typeinfer {
+            binary,
+            show,
+            write_back,
+            confidence_floor,
+        } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .context("Failed to create tokio runtime")?
-                .block_on(handle_typeinfer(&binary, &workspace, show, &settings))
+                .block_on(handle_typeinfer(
+                    &binary,
+                    &workspace,
+                    show,
+                    write_back,
+                    confidence_floor,
+                    &settings,
+                ))
         }
         Command::Algorithm { binary, show } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);

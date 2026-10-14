@@ -329,12 +329,22 @@ pub(super) enum Command {
     ///   `eqmain.dll`. Names the persisted file.
     /// * `--show` — Print a summary of the cached result without
     ///   connecting to Ghidra.
+    /// * `--write-back` — After the scan, apply the surviving inferences
+    ///   back into the open program through the Ghidra type-write API:
+    ///   missing named types are created, undefined-typed parameters,
+    ///   returns, and locals are narrowed, and a concrete slot is never
+    ///   overwritten. Works with `--show` too, applying the cached result.
+    /// * `--confidence-floor` — Minimum confidence (0–100) a record needs
+    ///   to be written back. Records below it are skipped with the reason
+    ///   reported. Default 70.
     ///
     /// # Examples
     ///
     /// ```text
     /// calxgloss typeinfer --binary eqmain.dll
     /// calxgloss typeinfer --binary eqmain.dll --show
+    /// calxgloss typeinfer --binary eqmain.dll --write-back
+    /// calxgloss typeinfer --binary eqmain.dll --write-back --confidence-floor 85
     /// ```
     Typeinfer {
         /// Binary the open Ghidra program was loaded from, e.g. `eqmain.dll`
@@ -344,6 +354,14 @@ pub(super) enum Command {
         /// Show the cached result instead of running the scan
         #[arg(long)]
         show: bool,
+
+        /// Apply the inferences back into the open Ghidra program
+        #[arg(long)]
+        write_back: bool,
+
+        /// Minimum confidence (0-100) a record needs to be written back
+        #[arg(long, default_value_t = 70, value_name = "CONFIDENCE")]
+        confidence_floor: u8,
     },
 
     /// Recognize algorithms in the binary open in Ghidra.
