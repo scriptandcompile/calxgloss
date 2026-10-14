@@ -49,7 +49,8 @@ const WIN32_CONFIDENCE: u8 = 75;
 /// The type text for an argument a contract reads as a byte buffer: the
 /// call proves the argument points into memory, not at what — a heap
 /// block, a handle, and a raw buffer all read the same way.
-const BYTE_BUFFER: &str = "void *";
+/// The buffer reading the allocator and byte-routine contracts share.
+pub(crate) const BYTE_BUFFER: &str = "void *";
 
 /// The type text for an argument a contract reads as a NUL-terminated
 /// character string.

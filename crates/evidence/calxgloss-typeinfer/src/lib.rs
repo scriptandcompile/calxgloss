@@ -7,12 +7,13 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into eleven modules:
+//! The crate is organized into twelve modules:
 //!
 //! - [`types`] - Core data types: `InferredParamType`, `InferenceMethod`,
-//!   `InferenceScope` for per-parameter inference records; `InferredLocalType`
-//!   and `InferredCallType` for inferred local variables and call-site
-//!   arguments; `InferredType` as the union over the three record kinds;
+//!   `InferenceScope` for per-parameter inference records; `InferredLocalType`,
+//!   `InferredCallType`, and `InferredReturnType` for inferred local
+//!   variables, call-site arguments, and function return values;
+//!   `InferredType` as the union over the four record kinds;
 //!   `TypeInferenceResult`, `ScanMetadata` for the persisted per-binary
 //!   results.
 //! - [`engine`] - Scan orchestration: `TypeInferEngine` decompiles each
@@ -41,12 +42,16 @@
 //!   `LocalChainDetector` types a stack slot assigned a parameter with a
 //!   surviving reading, a known-signature call's result, or an
 //!   already-typed local — one hop per chain — as the local record kind.
+//! - [`return_usage`] - Return-type inference from caller usage:
+//!   `ReturnUsageDetector` types a function's return by how its callers
+//!   use the value — assigned to a typed local, passed at a
+//!   known-signature position, or dereferenced — as the return record kind.
 //! - [`reading`] - Detector-internal accumulator: the single `Reading`
 //!   shape every detector feeds, with highest-confidence-wins resolution
 //!   and shared record assembly.
 //! - [`confidence`] - Shared confidence model: `resolve_conflicts` —
 //!   highest-confidence-wins resolution when several detectors read one
-//!   parameter, local, or call-site argument differently.
+//!   parameter, local, call-site argument, or return differently.
 //! - [`persist`] - JSON persistence: `TypeInferPersistor` saves and loads
 //!   the per-binary inference results under `re/analysis/typeinfer/`.
 //! - [`error`] - [`TypeInferError`] and the crate-wide [`Result`] alias.
@@ -60,6 +65,7 @@ pub mod local_chain;
 pub mod param_size;
 pub mod persist;
 pub(crate) mod reading;
+pub mod return_usage;
 pub mod this_ptr;
 pub mod types;
 

@@ -6,8 +6,9 @@
 //! passes over the same bodies: the assignment-chain pass types each
 //! function's locals from its surviving parameter readings and known
 //! contracts, the cross-function passes carry readings across function
-//! boundaries in both directions, and everything assembles into one
-//! [`TypeInferenceResult`] with its scan provenance.
+//! boundaries in both directions, the return-usage pass types each
+//! function's return from how its callers use the value, and everything
+//! assembles into one [`TypeInferenceResult`] with its scan provenance.
 //!
 //! The inline detectors are pure text analysis over one decompiled body,
 //! so the engine fetches each function's pseudo-C exactly once and reads
@@ -28,6 +29,7 @@ use crate::error::Result;
 use crate::known_type::KnownTypePropagationEngine;
 use crate::local_chain::LocalChainDetector;
 use crate::param_size::ParameterSizeDetector;
+use crate::return_usage::{LocalReadings, ReturnUsageDetector};
 use crate::this_ptr::ThisPointerDetector;
 use crate::types::{InferredType, ScanMetadata, TypeInferenceResult};
 use calxgloss_ghidra::{DecompiledFunction, GhidraClient};
@@ -59,6 +61,7 @@ pub struct TypeInferEngine<S = GhidraClient> {
     known: KnownTypePropagationEngine,
     local_chain: LocalChainDetector,
     cross: CrossFunctionPropagator,
+    return_usage: ReturnUsageDetector,
 }
 
 impl TypeInferEngine<GhidraClient> {
@@ -71,6 +74,7 @@ impl TypeInferEngine<GhidraClient> {
             known: KnownTypePropagationEngine::new(),
             local_chain: LocalChainDetector::new(),
             cross: CrossFunctionPropagator::new(),
+            return_usage: ReturnUsageDetector::new(),
         }
     }
 }
@@ -85,6 +89,7 @@ impl<S> TypeInferEngine<S> {
             known: KnownTypePropagationEngine::new(),
             local_chain: LocalChainDetector::new(),
             cross: CrossFunctionPropagator::new(),
+            return_usage: ReturnUsageDetector::new(),
         }
     }
 
@@ -105,6 +110,9 @@ impl<S> TypeInferEngine<S> {
     /// callers; a caller whose body the listing pass did not already
     /// produce is decompiled once and cached (a failed fetch is cached
     /// too), so no function's body is ever requested twice in one scan.
+    /// The return-usage pass reads the same fetched caller bodies — how
+    /// a caller uses the returned value types the callee's return — so
+    /// one caller lookup per function serves both passes.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad entry
     /// point) is skipped with a warning; only a failure of the listing
@@ -211,6 +219,21 @@ impl<S> TypeInferEngine<S> {
             );
         }
 
+        // The surviving local readings, by function and name: the types
+        // a caller's `local_8 = FUN_x();` can lend back to the callee as
+        // its return type. First-seen per name, matching what the final
+        // resolution will keep for an equal-confidence tie.
+        let mut local_types: LocalReadings = HashMap::new();
+        for inference in &locals {
+            if let InferredType::Local(record) = inference {
+                local_types
+                    .entry(record.function.as_str())
+                    .or_default()
+                    .entry(record.variable_name.as_str())
+                    .or_insert(record.inferred_type.as_str());
+            }
+        }
+
         // Callee to caller: each body's calls to a user-defined callee
         // take that callee's surviving readings as the arguments' types,
         // and a caller's own parameter is read when the argument names
@@ -233,6 +256,7 @@ impl<S> TypeInferEngine<S> {
             .collect();
         let mut fetched: HashMap<String, Option<DecompiledFunction>> = HashMap::new();
         let mut to_callee: Vec<InferredType> = Vec::new();
+        let mut to_return: Vec<InferredType> = Vec::new();
         for function in &functions {
             if function.name.is_empty() {
                 continue;
@@ -282,6 +306,15 @@ impl<S> TypeInferEngine<S> {
                     &caller_bodies,
                     &callee_params,
                 ));
+                // The same caller bodies answer the return question: how
+                // each caller *uses* the value the callee hands back
+                // types the callee's return. No extra fetch — the two
+                // passes share one caller lookup per function.
+                to_return.extend(self.return_usage.infer_returns(
+                    callee,
+                    &caller_bodies,
+                    &local_types,
+                ));
             }
         }
 
@@ -291,13 +324,14 @@ impl<S> TypeInferEngine<S> {
         // list resolves once more, and the result carries at most one
         // inference per target. The inline chain is first, so an inline
         // reading wins every tie against a propagated one.
-        collected += locals.len() + propagated.len() + to_callee.len();
+        collected += locals.len() + propagated.len() + to_callee.len() + to_return.len();
         let inferences = resolve_conflicts(
             inline
                 .into_iter()
                 .chain(locals)
                 .chain(propagated)
                 .chain(to_callee)
+                .chain(to_return)
                 .collect(),
         );
 
@@ -1318,5 +1352,169 @@ mod tests {
         };
         assert_eq!(record.inferred_type, "void *");
         assert!(record.confidence > Confidence::new(65));
+    }
+
+    /// The canned program for the return-usage pass: a helper whose own
+    /// body says nothing about its return, and two callers that do —
+    /// one assigns the result to a local its own scan typed `char *`,
+    /// one passes it where `strlen` reads a character string.
+    fn returns_program() -> FakeProgram {
+        let mut program = FakeProgram::empty();
+        program.listing = vec![
+            summary("FUN_18004b210"),
+            summary("FUN_180051c00"),
+            summary("FUN_180052000"),
+        ];
+        program.bodies.insert(
+            "FUN_18004b210".into(),
+            function(
+                "FUN_18004b210",
+                "undefined FUN_18004b210(void)",
+                "  return uVar1;\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_180051c00".into(),
+            function(
+                "FUN_180051c00",
+                "undefined FUN_180051c00(undefined8 param_1)",
+                "  strlen(param_1);\n\
+                 \x20 local_8 = param_1;\n\
+                 \x20 local_8 = FUN_18004b210();\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_180052000".into(),
+            function(
+                "FUN_180052000",
+                "undefined FUN_180052000(void)",
+                "  strlen(FUN_18004b210());\n",
+            ),
+        );
+        program.callers.insert(
+            addr("FUN_18004b210"),
+            vec!["FUN_180051c00".into(), "FUN_180052000".into()],
+        );
+        program
+    }
+
+    fn return_finding<'a>(
+        result: &'a TypeInferenceResult,
+        function: &str,
+    ) -> &'a crate::types::InferredReturnType {
+        result
+            .for_function(function)
+            .find_map(|inference| match inference {
+                InferredType::Return(record) => Some(record),
+                _ => None,
+            })
+            .expect("return record")
+    }
+
+    fn return_count(result: &TypeInferenceResult, function: &str) -> usize {
+        result
+            .for_function(function)
+            .filter(|inference| matches!(inference, InferredType::Return(_)))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn scan_emits_a_return_record_from_how_callers_use_the_result() {
+        // The helper's body never reads its own return; its callers do.
+        // The first caller's typed-local reading wins the tie and its
+        // line is the evidence the record carries.
+        let program = returns_program();
+        let result = scan(program.clone()).await;
+
+        let record = return_finding(&result, "FUN_18004b210");
+        assert_eq!(record.function, "FUN_18004b210");
+        assert_eq!(record.inferred_type, "char *");
+        assert_eq!(record.method, InferenceMethod::ReturnUsage);
+        assert_eq!(record.scope, InferenceScope::Function);
+        assert_eq!(record.confidence, Confidence::new(60));
+        assert_eq!(record.evidence, "local_8 = FUN_18004b210();");
+
+        // The record renders into the prompt type-info section under the
+        // name `return`.
+        let rendered = calxgloss_prompts::TypeInfo::from(&InferredType::Return(record.clone()));
+        assert_eq!(rendered.name, "return");
+        assert_eq!(
+            rendered.description,
+            "char * (via return_usage, confidence 60)"
+        );
+
+        // The return pass rides the caller lookup the caller→callee pass
+        // already made: still one decompile per function.
+        assert_eq!(
+            program.decompiled(),
+            vec!["FUN_18004b210", "FUN_180051c00", "FUN_180052000"],
+            "one decompile per function, in listing order"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_function_never_keeps_two_return_types() {
+        // Two callers read the return differently — `char *` from the
+        // typed local, `void *` from a dereference — both at 60: the
+        // scan keeps the reading the callers showed first.
+        let mut program = returns_program();
+        program.bodies.insert(
+            "FUN_180052000".into(),
+            function(
+                "FUN_180052000",
+                "undefined FUN_180052000(void)",
+                "  iVar1 = *FUN_18004b210();\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        assert_eq!(return_count(&result, "FUN_18004b210"), 1);
+        let record = return_finding(&result, "FUN_18004b210");
+        assert_eq!(record.inferred_type, "char *");
+        assert_eq!(record.evidence, "local_8 = FUN_18004b210();");
+    }
+
+    #[tokio::test]
+    async fn a_dereferenced_result_lends_a_pointer_return() {
+        // With no stronger reading in any caller, the dereference's
+        // pointer reading survives on its own.
+        let mut program = returns_program();
+        program.bodies.insert(
+            "FUN_180051c00".into(),
+            function(
+                "FUN_180051c00",
+                "undefined FUN_180051c00(void)",
+                "  iVar1 = *FUN_18004b210();\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let record = return_finding(&result, "FUN_18004b210");
+        assert_eq!(record.inferred_type, "void *");
+        assert_eq!(record.evidence, "iVar1 = *FUN_18004b210();");
+    }
+
+    #[tokio::test]
+    async fn a_return_reading_does_not_compete_with_a_parameter_reading() {
+        // The helper's own body types its parameter and its callers
+        // type its return: different targets, both survive.
+        let mut program = returns_program();
+        program.bodies.insert(
+            "FUN_18004b210".into(),
+            function(
+                "FUN_18004b210",
+                "undefined FUN_18004b210(undefined8 param_1)",
+                "  strlen(param_1);\n  return param_1;\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        assert_eq!(
+            finding(&result, "FUN_18004b210", InferenceMethod::StringFunction, 0)
+                .inferred_type(),
+            "char *"
+        );
+        assert_eq!(return_count(&result, "FUN_18004b210"), 1);
+        assert_eq!(return_finding(&result, "FUN_18004b210").inferred_type, "char *");
     }
 }

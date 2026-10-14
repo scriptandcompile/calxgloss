@@ -24,7 +24,7 @@ use calxgloss_ghidra::{
 use calxgloss_prompts::TypeInfo;
 use calxgloss_typeinfer::engine::{ScanSource, TypeInferEngine};
 use calxgloss_typeinfer::persist::TypeInferPersistor;
-use calxgloss_typeinfer::types::{InferenceMethod, InferenceScope, InferredType};
+use calxgloss_typeinfer::types::{Confidence, InferenceMethod, InferenceScope, InferredType};
 use tempfile::TempDir;
 
 // ------------------------------------------------------------
@@ -334,6 +334,68 @@ async fn assignment_chain_local_records_survive_the_persistence_round_trip() {
     assert_eq!(
         rendered.description,
         "char * (via assignment_chain, confidence 60)"
+    );
+}
+
+#[tokio::test]
+async fn return_usage_records_survive_the_persistence_round_trip() {
+    // A helper whose callers use its result must have that return
+    // reading reach disk and read back like any other record, so the
+    // pipeline's type-info extraction names the return after a plain
+    // load.
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("FUN_18004b210"), summary("FUN_180051c00")];
+    program.bodies.insert(
+        "FUN_18004b210".into(),
+        function(
+            "FUN_18004b210",
+            "undefined FUN_18004b210(void)",
+            "  return uVar1;\n",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_180051c00".into(),
+        function(
+            "FUN_180051c00",
+            "undefined FUN_180051c00(void)",
+            "  strlen(FUN_18004b210());\n",
+        ),
+    );
+    program
+        .callers
+        .insert(addr("FUN_18004b210"), vec!["FUN_180051c00".into()]);
+
+    let workspace = TempDir::new().unwrap();
+    let result = TypeInferEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = TypeInferPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let returns: Vec<&InferredType> = loaded
+        .for_function("FUN_18004b210")
+        .filter(|inference| matches!(inference, InferredType::Return(_)))
+        .collect();
+    assert_eq!(returns.len(), 1, "the return record round-trips");
+    let InferredType::Return(record) = returns[0] else {
+        unreachable!("the return-usage pass emits return records");
+    };
+    assert_eq!(record.function, "FUN_18004b210");
+    assert_eq!(record.inferred_type, "char *");
+    assert_eq!(record.method, InferenceMethod::ReturnUsage);
+    assert_eq!(record.scope, InferenceScope::Function);
+    assert_eq!(record.confidence, Confidence::new(60));
+    assert_eq!(record.evidence, "strlen(FUN_18004b210());");
+
+    // And renders into the prompt type-info section under the name
+    // `return`.
+    let rendered = TypeInfo::from(returns[0]);
+    assert_eq!(rendered.name, "return");
+    assert_eq!(
+        rendered.description,
+        "char * (via return_usage, confidence 60)"
     );
 }
 

@@ -99,6 +99,7 @@ fn print_type_inference_report(result: &TypeInferenceResult, path: &Path) {
         ("param", count_kind(result, InferenceKind::Param)),
         ("local", count_kind(result, InferenceKind::Local)),
         ("call_site", count_kind(result, InferenceKind::CallSite)),
+        ("return", count_kind(result, InferenceKind::Return)),
     ]
     .into_iter()
     .filter(|(_, count)| *count > 0)
@@ -122,6 +123,7 @@ fn print_type_inference_report(result: &TypeInferenceResult, path: &Path) {
         InferenceMethod::KnownSignature,
         InferenceMethod::CrossFunction,
         InferenceMethod::AssignmentChain,
+        InferenceMethod::ReturnUsage,
     ]
     .into_iter()
     .map(|method| {
@@ -209,12 +211,13 @@ fn print_method_breakdown(items: &[String]) {
     println_content(&line);
 }
 
-/// Which record kind an inference is — the union's three variants.
+/// Which record kind an inference is — the union's four variants.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum InferenceKind {
     Param,
     Local,
     CallSite,
+    Return,
 }
 
 /// How many inferences of one record kind the result carries.
@@ -228,6 +231,7 @@ fn count_kind(result: &TypeInferenceResult, kind: InferenceKind) -> usize {
                 (InferenceKind::Param, InferredType::Param(_))
                     | (InferenceKind::Local, InferredType::Local(_))
                     | (InferenceKind::CallSite, InferredType::CallSite(_))
+                    | (InferenceKind::Return, InferredType::Return(_))
             )
         })
         .count()
@@ -240,12 +244,13 @@ fn inference_method(inference: &InferredType) -> InferenceMethod {
         InferredType::Param(record) => record.method,
         InferredType::Local(record) => record.method,
         InferredType::CallSite(record) => record.method,
+        InferredType::Return(record) => record.method,
     }
 }
 
 /// The name of what an inference types: a parameter (its decompiled name,
-/// falling back to its position), a local variable, or a call-site
-/// argument spelled as the site that produced it.
+/// falling back to its position), a local variable, a call-site argument
+/// spelled as the site that produced it, or a function's return.
 fn inference_target(inference: &InferredType) -> String {
     match inference {
         InferredType::Param(record) => record
@@ -257,6 +262,7 @@ fn inference_target(inference: &InferredType) -> String {
             Some(arg) => format!("{}({arg})", record.callee),
             None => format!("{} arg {}", record.callee, record.arg_index + 1),
         },
+        InferredType::Return(_) => "return".to_string(),
     }
 }
 

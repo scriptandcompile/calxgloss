@@ -9,11 +9,11 @@
 //! scan can still carry several records for one target — `strlen`'s
 //! argument stands read by the size detector and by the known-signature
 //! engine at once. Conflict resolution collapses each target — a
-//! parameter, a local variable, or a call-site argument — to its single
-//! strongest record: the highest confidence wins, a tie keeps the record
-//! the scan showed first, and the survivor stands where its target first
-//! appeared, so the list keeps scan order and two scans of the same
-//! program diff cleanly.
+//! parameter, a local variable, a call-site argument, or a function's
+//! return value — to its single strongest record: the highest confidence
+//! wins, a tie keeps the record the scan showed first, and the survivor
+//! stands where its target first appeared, so the list keeps scan order
+//! and two scans of the same program diff cleanly.
 //!
 //! [`calxgloss_types::Confidence`]: calxgloss_types::Confidence
 
@@ -22,12 +22,13 @@ use std::collections::HashMap;
 use crate::types::InferredType;
 
 /// What a set of competing inferences is keyed on: one parameter, one
-/// local variable, or one call-site argument.
+/// local variable, one call-site argument, or one function's return.
 ///
-/// The three record kinds identify their targets differently — a
+/// The four record kinds identify their targets differently — a
 /// parameter by position, a local by its decompiled name, a call-site
-/// argument by the callee and position — so one key shape names all
-/// three and records of different kinds never collide.
+/// argument by the callee and position, a return by the function alone —
+/// so one key shape names all four and records of different kinds never
+/// collide.
 #[derive(Debug, PartialEq, Eq, Hash)]
 enum Target {
     /// One parameter of one function, by position.
@@ -45,6 +46,11 @@ enum Target {
         function: String,
         callee: String,
         arg_index: usize,
+    },
+    /// One function's return value — the function alone, since a
+    /// function has exactly one return type.
+    Return {
+        function: String,
     },
 }
 
@@ -65,18 +71,21 @@ impl Target {
                 callee: record.callee.clone(),
                 arg_index: record.arg_index,
             },
+            InferredType::Return(record) => Target::Return {
+                function: record.function.clone(),
+            },
         }
     }
 }
 
 /// Resolve competing inferences down to one per target.
 ///
-/// Where several detectors read the same parameter, local, or call-site
-/// argument differently, the highest-confidence record wins and the rest
-/// drop; a tie keeps the record the scan showed first. The survivor
-/// stands where its target first appeared in the list, so the resolved
-/// list keeps scan order — function by function, targets in the order
-/// the bodies showed them — exactly as the raw scan did.
+/// Where several detectors read the same parameter, local, call-site
+/// argument, or return value differently, the highest-confidence record
+/// wins and the rest drop; a tie keeps the record the scan showed first.
+/// The survivor stands where its target first appeared in the list, so
+/// the resolved list keeps scan order — function by function, targets in
+/// the order the bodies showed them — exactly as the raw scan did.
 pub fn resolve_conflicts(inferences: Vec<InferredType>) -> Vec<InferredType> {
     let mut winners: Vec<InferredType> = Vec::new();
     let mut positions: HashMap<Target, usize> = HashMap::new();
@@ -105,7 +114,7 @@ mod tests {
     use super::*;
     use crate::types::{
         Confidence, InferenceMethod, InferenceScope, InferredCallType, InferredLocalType,
-        InferredParamType,
+        InferredParamType, InferredReturnType,
     };
 
     fn param(
@@ -156,6 +165,17 @@ mod tests {
             scope: InferenceScope::Program,
             confidence: Confidence::new(confidence),
             evidence: format!("{callee}(param_2);"),
+        })
+    }
+
+    fn ret(function: &str, inferred_type: &str, confidence: u8) -> InferredType {
+        InferredType::Return(InferredReturnType {
+            function: function.into(),
+            inferred_type: inferred_type.into(),
+            method: InferenceMethod::ReturnUsage,
+            scope: InferenceScope::Function,
+            confidence: Confidence::new(confidence),
+            evidence: format!("local_8 = {function}();"),
         })
     }
 
@@ -306,6 +326,37 @@ mod tests {
     }
 
     #[test]
+    fn one_function_never_keeps_two_return_types() {
+        // Two callers read one helper's return differently: the
+        // stronger reading survives, the weaker drops.
+        let winners = resolve_conflicts(vec![
+            ret("FUN_180051c00", "void *", 60),
+            ret("FUN_180051c00", "char *", 65),
+        ]);
+        assert_eq!(winners.len(), 1);
+        assert_eq!(winners[0].inferred_type(), "char *");
+    }
+
+    #[test]
+    fn a_return_tie_keeps_the_reading_the_scan_showed_first() {
+        let winners = resolve_conflicts(vec![
+            ret("FUN_180051c00", "char *", 60),
+            ret("FUN_180051c00", "void *", 60),
+        ]);
+        assert_eq!(winners.len(), 1);
+        assert_eq!(winners[0].inferred_type(), "char *");
+    }
+
+    #[test]
+    fn returns_of_two_functions_do_not_conflict() {
+        let winners = resolve_conflicts(vec![
+            ret("FUN_180051c00", "char *", 60),
+            ret("FUN_18004b210", "void *", 60),
+        ]);
+        assert_eq!(winners.len(), 2);
+    }
+
+    #[test]
     fn a_winner_stands_where_its_target_first_appeared() {
         // The stronger record for param_1 arrives after param_2's record;
         // the resolved list keeps the order the scan showed the targets.
@@ -349,6 +400,7 @@ mod tests {
             ),
             local("FUN_18003ab00", "local_8", 60),
             call("FUN_1800412a0", "CloseHandle", 0, "void *", 75),
+            ret("FUN_180051c00", "char *", 60),
         ];
         assert_eq!(resolve_conflicts(inferences.clone()), inferences);
         assert!(resolve_conflicts(Vec::new()).is_empty());

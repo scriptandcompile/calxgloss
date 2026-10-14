@@ -8,7 +8,9 @@
 //!   how far the inference reaches.
 //! - `InferredLocalType`, `InferredCallType`: the same record shape for
 //!   inferred local variables and call-site arguments.
-//! - `InferredType`: the union over the three record kinds — one inference
+//! - `InferredReturnType`: the reading a function's *callers* give its
+//!   return value.
+//! - `InferredType`: the union over the four record kinds — one inference
 //!   wherever it lands.
 //! - `TypeInferenceResult`, `ScanMetadata`: the persisted per-binary result
 //!   and its scan provenance.
@@ -62,6 +64,10 @@ pub enum InferenceMethod {
     /// an already-typed local takes that type through the assignment —
     /// the local-variable reading's only evidence family.
     AssignmentChain,
+    /// The callers' use of a function's returned value — assigned to a
+    /// typed local, passed at a known-signature position, or
+    /// dereferenced — reads the function's return type.
+    ReturnUsage,
 }
 
 impl InferenceMethod {
@@ -87,6 +93,7 @@ calxgloss_types::display_serde_label!(InferenceMethod {
     KnownSignature => "known_signature",
     CrossFunction => "cross_function",
     AssignmentChain => "assignment_chain",
+    ReturnUsage => "return_usage",
 });
 
 // ============================================================
@@ -225,12 +232,37 @@ pub struct InferredCallType {
     pub evidence: String,
 }
 
+/// One function's inferred return type, with the evidence behind it.
+///
+/// The return value is the fourth place an inference can land: no body
+/// reads its own return, so this record is the only kind whose evidence
+/// lives in *other* bodies — how the callers use the value the function
+/// hands back. It carries the same hypothesis shape as its siblings —
+/// narrowed type, method, scope, confidence, evidence — keyed by the
+/// function whose return it reads, so one function never shows two
+/// return types.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InferredReturnType {
+    /// The function whose return is typed, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The narrowed type as C text, e.g. `char *`, `void *`, `u32`.
+    pub inferred_type: String,
+    /// The technique that produced the inference.
+    pub method: InferenceMethod,
+    /// How far the inference reaches beyond this function.
+    pub scope: InferenceScope,
+    /// Confidence that the inference is right, 0–100.
+    pub confidence: Confidence,
+    /// The caller's decompiled line showing the return value used.
+    pub evidence: String,
+}
+
 // ============================================================
 // Inference union
 // ============================================================
 
 /// One inferred type wherever it lands — a parameter, a local variable,
-/// or a call-site argument.
+/// a call-site argument, or a function's return value.
 ///
 /// The detectors emit the concrete records; the union is what the
 /// persisted result carries, so one list can hold every inference for a
@@ -246,6 +278,8 @@ pub enum InferredType {
     Local(InferredLocalType),
     /// A narrowed call-site argument.
     CallSite(InferredCallType),
+    /// A narrowed function return value.
+    Return(InferredReturnType),
 }
 
 impl InferredType {
@@ -255,6 +289,7 @@ impl InferredType {
             InferredType::Param(record) => &record.function,
             InferredType::Local(record) => &record.function,
             InferredType::CallSite(record) => &record.function,
+            InferredType::Return(record) => &record.function,
         }
     }
 
@@ -264,6 +299,7 @@ impl InferredType {
             InferredType::Param(record) => &record.inferred_type,
             InferredType::Local(record) => &record.inferred_type,
             InferredType::CallSite(record) => &record.inferred_type,
+            InferredType::Return(record) => &record.inferred_type,
         }
     }
 
@@ -273,6 +309,7 @@ impl InferredType {
             InferredType::Param(record) => record.confidence,
             InferredType::Local(record) => record.confidence,
             InferredType::CallSite(record) => record.confidence,
+            InferredType::Return(record) => record.confidence,
         }
     }
 }
@@ -282,10 +319,10 @@ impl InferredType {
 // ============================================================
 
 /// Render an inference as prompt data. The name is what the inference
-/// types — a parameter, a local variable, or a call-site argument — and
-/// the description carries the narrowed type with the method and
-/// confidence behind it, so the prompt shows the reading and the
-/// evidence class that produced it.
+/// types — a parameter, a local variable, a call-site argument, or the
+/// function's return value — and the description carries the narrowed
+/// type with the method and confidence behind it, so the prompt shows
+/// the reading and the evidence class that produced it.
 impl From<&InferredType> for calxgloss_prompts::TypeInfo {
     fn from(inference: &InferredType) -> Self {
         let name = match inference {
@@ -298,11 +335,13 @@ impl From<&InferredType> for calxgloss_prompts::TypeInfo {
                 Some(arg) => format!("{}({arg})", record.callee),
                 None => format!("{} arg {}", record.callee, record.arg_index + 1),
             },
+            InferredType::Return(_) => "return".to_string(),
         };
         let (method, confidence) = match inference {
             InferredType::Param(record) => (record.method, record.confidence),
             InferredType::Local(record) => (record.method, record.confidence),
             InferredType::CallSite(record) => (record.method, record.confidence),
+            InferredType::Return(record) => (record.method, record.confidence),
         };
         Self {
             name,
@@ -484,6 +523,17 @@ mod tests {
         }
     }
 
+    fn return_record() -> InferredReturnType {
+        InferredReturnType {
+            function: "FUN_180051c00".into(),
+            inferred_type: "char *".into(),
+            method: InferenceMethod::ReturnUsage,
+            scope: InferenceScope::Function,
+            confidence: Confidence::new(60),
+            evidence: "local_8 = FUN_180051c00();".into(),
+        }
+    }
+
     fn metadata() -> ScanMetadata {
         ScanMetadata {
             binary: "eqmain.dll".into(),
@@ -518,18 +568,58 @@ mod tests {
     }
 
     #[test]
+    fn a_return_inference_serde_round_trips() {
+        let record = return_record();
+        let json = serde_json::to_string(&record).unwrap();
+        let back: InferredReturnType = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, record);
+    }
+
+    #[test]
     fn the_inference_union_tags_its_kind_in_json() {
         let inferences = vec![
             InferredType::Param(param_record()),
             InferredType::Local(local_record()),
             InferredType::CallSite(call_record()),
+            InferredType::Return(return_record()),
         ];
         let json = serde_json::to_string(&inferences).unwrap();
         assert!(json.contains("\"kind\":\"param\""));
         assert!(json.contains("\"kind\":\"local\""));
         assert!(json.contains("\"kind\":\"call_site\""));
+        assert!(json.contains("\"kind\":\"return\""));
         let back: Vec<InferredType> = serde_json::from_str(&json).unwrap();
         assert_eq!(back, inferences);
+    }
+
+    #[test]
+    fn a_document_written_before_the_return_kind_still_loads() {
+        // The union is additive: a persisted list carrying only the three
+        // kinds that existed before the return record reads back exactly.
+        let json = r#"[
+            {"kind": "param", "function": "FUN_18003ab00", "param_index": 0,
+             "param_name": "param_1", "inferred_type": "Widget *",
+             "method": "vtable_call", "scope": "class", "confidence": 85,
+             "evidence": "(*(code *)(**param_1))[3](param_1)"},
+            {"kind": "local", "function": "FUN_18003ab00",
+             "variable_name": "local_8", "inferred_type": "char *",
+             "method": "known_signature", "scope": "function", "confidence": 60,
+             "evidence": "local_8 = (char *)malloc(0x10);"},
+            {"kind": "call_site", "function": "FUN_1800412a0",
+             "callee": "CloseHandle", "arg_index": 0, "arg_name": "param_2",
+             "inferred_type": "void *", "method": "known_signature",
+             "scope": "program", "confidence": 75,
+             "evidence": "CloseHandle(param_2);"}
+        ]"#;
+        let back: Vec<InferredType> = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            back,
+            vec![
+                InferredType::Param(param_record()),
+                InferredType::Local(local_record()),
+                InferredType::CallSite(call_record()),
+            ]
+        );
     }
 
     #[test]
@@ -538,15 +628,19 @@ mod tests {
             InferredType::Param(param_record()),
             InferredType::Local(local_record()),
             InferredType::CallSite(call_record()),
+            InferredType::Return(return_record()),
         ];
         assert_eq!(inferences[0].function(), "FUN_18003ab00");
         assert_eq!(inferences[1].function(), "FUN_18003ab00");
         assert_eq!(inferences[2].function(), "FUN_1800412a0");
+        assert_eq!(inferences[3].function(), "FUN_180051c00");
         assert_eq!(inferences[0].inferred_type(), "Widget *");
         assert_eq!(inferences[1].inferred_type(), "char *");
         assert_eq!(inferences[2].inferred_type(), "void *");
+        assert_eq!(inferences[3].inferred_type(), "char *");
         assert_eq!(inferences[0].confidence(), Confidence::new(85));
         assert_eq!(inferences[2].confidence(), Confidence::new(75));
+        assert_eq!(inferences[3].confidence(), Confidence::new(60));
     }
 
     #[test]
@@ -598,13 +692,24 @@ mod tests {
     }
 
     #[test]
-    fn type_inference_result_serde_round_trips_all_three_kinds() {
+    fn a_return_reading_renders_under_the_name_return() {
+        let info = calxgloss_prompts::TypeInfo::from(&InferredType::Return(return_record()));
+        assert_eq!(info.name, "return");
+        assert_eq!(
+            info.description,
+            "char * (via return_usage, confidence 60)"
+        );
+    }
+
+    #[test]
+    fn type_inference_result_serde_round_trips_all_four_kinds() {
         let result = TypeInferenceResult {
             metadata: metadata(),
             inferences: vec![
                 InferredType::Param(param_record()),
                 InferredType::Local(local_record()),
                 InferredType::CallSite(call_record()),
+                InferredType::Return(return_record()),
             ],
         };
         let json = serde_json::to_string(&result).unwrap();

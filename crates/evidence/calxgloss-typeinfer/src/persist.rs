@@ -138,7 +138,7 @@ mod tests {
     use super::*;
     use crate::types::{
         Confidence, InferenceMethod, InferenceScope, InferredCallType, InferredLocalType,
-        InferredParamType, InferredType, ScanMetadata, TypeInferenceResult,
+        InferredParamType, InferredReturnType, InferredType, ScanMetadata, TypeInferenceResult,
     };
     use tempfile::TempDir;
 
@@ -193,6 +193,14 @@ mod tests {
                     scope: InferenceScope::Function,
                     confidence: Confidence::new(70),
                     evidence: "FUN_18004b210(param_1, local_8);".into(),
+                }),
+                InferredType::Return(InferredReturnType {
+                    function: "FUN_18004b210".into(),
+                    inferred_type: "char *".into(),
+                    method: InferenceMethod::ReturnUsage,
+                    scope: InferenceScope::Function,
+                    confidence: Confidence::new(60),
+                    evidence: "strlen(FUN_18004b210());".into(),
                 }),
             ],
         }
