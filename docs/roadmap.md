@@ -31,7 +31,6 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P2.5 | typeinfer Phase 5: cross-function call-site propagation, integer bit-pattern analysis, C++ mangling analysis, local-variable and return-type inference, **write inferred types back into Ghidra** | `calxgloss-typeinfer` + `calxgloss-ghidra` | — | ✅ done | shipped through #150; prune row when epic #142 closes | [#142](https://github.com/scriptandcompile/calxgloss/issues/142) |
 | P3.5 | algorithm Phase 5: confidence scoring improvements, dynamic (JSON) pattern database, multi-function correlation, parallelize across functions | `calxgloss-algorithm` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P4.5 | memory Phase 5: cross-function allocation tracking, ownership transfer detection, smart-pointer conversion, resource leak detection, per-type `Drop` suggestions | `calxgloss-memory` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P5.5 | sync Phase 5: data-race analysis, lock ordering, async runtime detection, thread-local storage, futex-based synchronization | `calxgloss-sync` | — | ⬜ not started | `/to-spec` when picked up | — |
@@ -45,19 +44,11 @@ Test counts in the archive are indicative targets, not exact requirements.
 | X3 | `data_flow.md` updated to include all methodologies | docs | — | ⬜ not started | `/to-spec` when picked up | — |
 | X4 | Architecture diagrams in source docs match implementation | docs | — | ⬜ not started | `/to-spec` when picked up | — |
 
-Legend: ✅ done · 🔶 in progress · ⬜ not started. Rows P2.5–P11.5 and X1,
+Legend: ✅ done · 🔶 in progress · ⬜ not started. Rows P3.5–P11.5 and X1,
 X3–X4 are open future-work items — optional Phase 5 depth work and
 cross-cutting chores — verified still open in the code (2026-10-08); no
-effort estimates yet.
-
-## P2.5 — typeinfer Phase 5 (`calxgloss-typeinfer` + `calxgloss-ghidra`)
-
-Optional depth work (archive §2, Phase 5): cross-function call-site
-propagation, integer bit-pattern analysis, C++ mangling analysis,
-local-variable and return-type inference, and **write inferred types back
-into Ghidra** — `set_function_prototype`/`set_local_variable_type`, creating
-missing types first via `create_struct`/`create_enum`/`create_typedef`; the
-bridge supports it (ADR-0001, endpoint map in `docs/ghidra_endpoint_map.md`).
+effort estimates yet. P2.5 (typeinfer Phase 5) shipped through #150 and was
+pruned from this matrix when epic #142 closed (2026-10-14).
 
 ## P3.5 — algorithm Phase 5 (`calxgloss-algorithm`)
 
