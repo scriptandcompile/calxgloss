@@ -10,7 +10,8 @@
 //!   translation pipeline makes (the findings recorded for one
 //!   function), and the persisted list keeps every finding in scan
 //!   order: function by function, and within one function the
-//!   classified strings, then the format-string calls.
+//!   classified strings, then the format-string calls, then the
+//!   localization reading.
 //! - **Cache behavior** — the `exists` check decides whether a scan
 //!   runs, and a rescan replaces the cached document.
 //!
@@ -48,9 +49,9 @@ fn function(name: &str, body: &str) -> DecompiledFunction {
 }
 
 /// A canned program implementing [`ScanSource`]: one function whose body
-/// carries a direct literal, a `DAT_` reference, and a `sprintf` call —
-/// both finding kinds — and one plain function covered only through the
-/// xref fallback.
+/// carries a direct literal, a `DAT_` reference, a language-name `DAT_`
+/// reference, and a `sprintf` call — all three finding kinds — and one
+/// plain function covered only through the xref fallback.
 #[derive(Clone, Default)]
 struct FakeProgram {
     listing: Vec<FunctionSummary>,
@@ -138,7 +139,8 @@ fn program() -> FakeProgram {
             "FUN_18003ab00",
             "  lFile = CreateFileA(\"Journal.txt\",0xc0000000,0,0,3,0x80,0);\n\
              \x20 puVar3 = (uint *)DAT_180128cf0;\n\
-             \x20 sprintf(local_10, \"%s: %d hits\", pcVar2, uVar3);\n",
+             \x20 pcVar4 = (char *)DAT_180129b00;\n\
+             \x20 sprintf(local_10, \"%s: %d hits\", pcVar4, uVar3);\n",
         ),
     );
     program.bodies.insert(
@@ -153,6 +155,10 @@ fn program() -> FakeProgram {
         StringLiteral {
             address: 0x180129a00,
             value: "%s: %d hits".to_string(),
+        },
+        StringLiteral {
+            address: 0x180129b00,
+            value: "English".to_string(),
         },
     ];
     program.xrefs.insert(
@@ -198,8 +204,8 @@ async fn a_scan_files_its_result_in_the_workspace_and_reads_back() {
 async fn the_persisted_document_keeps_findings_in_scan_order() {
     // One pass over the listing, so what reaches disk is function by
     // function in listing order and, within one function, the
-    // classified strings then the format-string calls — the order two
-    // scans diff against.
+    // classified strings then the format-string calls then the
+    // localization reading — the order two scans diff against.
     let workspace = TempDir::new().unwrap();
     let result = StringContextEngine::with_source(program())
         .scan("eqmain.dll")
@@ -219,7 +225,9 @@ async fn the_persisted_document_keeps_findings_in_scan_order() {
         vec![
             ("FUN_18003ab00", "classified"),
             ("FUN_18003ab00", "classified"),
+            ("FUN_18003ab00", "classified"),
             ("FUN_18003ab00", "format_string"),
+            ("FUN_18003ab00", "localization"),
             ("FUN_18003e750", "classified"),
         ]
     );
@@ -244,7 +252,7 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     // The pipeline asks what was found for the function it is about to
     // translate.
     let findings: Vec<&StringFinding> = loaded.for_function("FUN_18003ab00").collect();
-    assert_eq!(findings.len(), 3);
+    assert_eq!(findings.len(), 5);
     assert_eq!(loaded.for_function("FUN_18003e750").count(), 1);
     assert!(loaded.for_function("FUN_180099999").next().is_none());
 
@@ -258,7 +266,7 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     assert_eq!(record.purpose, "file or registry path");
     assert!(record.evidence.contains("CreateFileA"));
 
-    let StringFinding::FormatString(record) = findings[2] else {
+    let StringFinding::FormatString(record) = findings[3] else {
         unreachable!("the sprintf call reads as a format_string finding");
     };
     assert_eq!(record.format_string, "%s: %d hits");
@@ -266,6 +274,21 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     assert_eq!(record.arg_types[0].rust_type, "*const i8");
     assert_eq!(record.arg_types[1].rust_type, "i32");
     assert!(record.call_site.contains("sprintf"));
+
+    // The localization reading survives the round trip beside the
+    // classified records, which stand unchanged.
+    let StringFinding::Localization(record) = findings[4] else {
+        unreachable!("the language-name reference reads as a localization finding");
+    };
+    assert_eq!(
+        record.signal_kinds,
+        [calxgloss_stringctx::types::LocalizationSignalKind::LanguageName]
+    );
+    assert_eq!(record.signals, ["English"]);
+    assert_eq!(record.confidence.value(), 60);
+    assert!(record.evidence.contains("DAT_180129b00"));
+    assert_eq!(findings[2].target(), "English");
+    assert_eq!(findings[2].kind(), "classified");
 }
 
 // ------------------------------------------------------------
@@ -360,7 +383,7 @@ async fn the_loaded_findings_render_into_the_escalate_prompt() {
         .for_function("FUN_18003ab00")
         .map(calxgloss_prompts::StringContextInfo::from)
         .collect();
-    assert_eq!(findings.len(), 3, "the target function's three findings");
+    assert_eq!(findings.len(), 5, "the target function's five findings");
 
     let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
         "FUN_18003ab00".into(),
@@ -392,4 +415,12 @@ async fn the_loaded_findings_render_into_the_escalate_prompt() {
     assert!(prompt.contains("format_string string, confidence 70"));
     assert!(prompt.contains("CreateFileA"));
     assert!(prompt.contains("sprintf"));
+    // The localization finding rides the union accessors into the prompt:
+    // its kind tag, its below-a-classified-record confidence, its
+    // language-enum suggestion, and its signal line as evidence.
+    assert!(prompt.contains("localization string, confidence 60"));
+    assert!(prompt.contains(
+        "model the language switch as a Rust enum with the localized strings held in a table"
+    ));
+    assert!(prompt.contains("DAT_180129b00"));
 }

@@ -96,7 +96,7 @@ fn print_string_context_report(result: &StringContextResult, path: &Path) {
     println!();
 
     // Findings, broken down by the record kind the union carries.
-    let kind_breakdown: Vec<String> = ["classified", "format_string"]
+    let kind_breakdown: Vec<String> = ["classified", "format_string", "localization"]
         .into_iter()
         .map(|kind| {
             (

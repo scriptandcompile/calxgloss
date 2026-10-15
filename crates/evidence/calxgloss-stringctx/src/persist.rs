@@ -137,8 +137,9 @@ impl StringContextPersistor {
 mod tests {
     use super::*;
     use crate::types::{
-        ClassifiedString, Confidence, FormatHint, FormatStringUse, ScanMetadata,
-        StringClassification, StringContextResult, StringFinding, StringSource,
+        ClassifiedString, Confidence, FormatHint, FormatStringUse, LocalizationSignalKind,
+        LocalizationSignals, ScanMetadata, StringClassification, StringContextResult,
+        StringFinding, StringSource,
     };
     use calxgloss_types::persist::PersistError;
 
@@ -321,6 +322,84 @@ mod tests {
             }
             other => panic!("expected a format_string finding, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn localization_findings_survive_the_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let persistor = StringContextPersistor::new(dir.path());
+
+        let mut result = StringContextResult::new(ScanMetadata::new("eqmain.dll"));
+        result
+            .findings
+            .push(StringFinding::Localization(LocalizationSignals {
+                function: "FUN_1800412a0".to_string(),
+                signal_kinds: vec![
+                    LocalizationSignalKind::LanguageName,
+                    LocalizationSignalKind::NonAsciiText,
+                ],
+                signals: vec!["English".to_string(), "Welcome to the Café".to_string()],
+                evidence: "pcVar1 = (char *)DAT_180129b00;".to_string(),
+                confidence: Confidence::new(60),
+            }));
+        persistor.save(&result).unwrap();
+
+        let loaded = persistor.load("eqmain.dll").unwrap();
+        match &loaded.findings[0] {
+            StringFinding::Localization(f) => {
+                assert_eq!(
+                    f.signal_kinds,
+                    [
+                        LocalizationSignalKind::LanguageName,
+                        LocalizationSignalKind::NonAsciiText,
+                    ]
+                );
+                assert_eq!(f.signals, ["English", "Welcome to the Café"]);
+                assert_eq!(f.confidence, Confidence::new(60));
+            }
+            other => panic!("expected a localization finding, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_document_saved_before_localization_detection_loads_unchanged() {
+        // The localization kind arrived with p8.5-1; documents saved by
+        // earlier builds simply never carry one, and they must still read
+        // back whole.
+        let json = r#"{
+            "metadata": {"binary": "eqmain.dll", "scanned_at": 1759488000, "duration_secs": 12},
+            "findings": [
+                {
+                    "kind": "classified",
+                    "function": "FUN_18003ab00",
+                    "string_address": 6445484248,
+                    "string_value": "Journal.txt",
+                    "classification": "file_path",
+                    "purpose": "config file path",
+                    "source": "body_parse",
+                    "confidence": 70,
+                    "evidence": "pcVar1 = (char *)DAT_180127cd8;"
+                },
+                {
+                    "kind": "format_string",
+                    "function": "FUN_18003ab00",
+                    "format_string": "%s: %d hits",
+                    "string_address": 6445484248,
+                    "call_site": "sprintf(pcVar1, (char *)DAT_180127cd8, pcVar2, iVar1);",
+                    "arg_types": [
+                        {"specifier": "%s", "position": 0, "rust_type": "*const i8"},
+                        {"specifier": "%d", "position": 1, "rust_type": "i32"}
+                    ],
+                    "confidence": 70
+                }
+            ]
+        }"#;
+        let back: StringContextResult = serde_json::from_str(json)
+            .expect("a document saved before localization detection should load unchanged");
+        assert_eq!(back.findings.len(), 2);
+        assert_eq!(back.findings[0].kind(), "classified");
+        assert_eq!(back.findings[1].kind(), "format_string");
+        assert_eq!(back.for_function("FUN_18003ab00").count(), 2);
     }
 
     #[test]

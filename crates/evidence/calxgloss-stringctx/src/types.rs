@@ -12,6 +12,9 @@
 //! - `ClassifiedString`, `FormatStringUse`: the per-function records — a
 //!   string the function uses with its classification and purpose, and a
 //!   format-string call with its inferred argument types.
+//! - `LocalizationSignalKind`, `LocalizationSignals`: the localization
+//!   reading — the signal kinds and strings one function's mapped strings
+//!   carry.
 //!
 //! All types derive `Serialize`/`Deserialize`.
 
@@ -23,6 +26,7 @@ pub use calxgloss_types::{Confidence, ScanMetadata};
 use serde::{Deserialize, Serialize};
 
 use crate::format_str::summarize_hints;
+use crate::localization::LOCALIZATION_SUGGESTION;
 
 // ============================================================
 // String classification
@@ -180,6 +184,57 @@ pub struct FormatStringUse {
 }
 
 // ============================================================
+// Localization signals
+// ============================================================
+
+/// The kinds of localization signal the detector reads in a function's
+/// strings.
+///
+/// Each kind is one shape the language machinery leaves in the string
+/// listing — see
+/// [`localization`](crate::localization::LocalizationDetector::detect)
+/// for the gates that claim each.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalizationSignalKind {
+    /// The whole string value is a language name, e.g. `English`.
+    LanguageName,
+    /// The whole value matches the `xx-YY`/`xx_YY` locale shape, e.g.
+    /// `en-US` or `fr_FR`.
+    LocaleCode,
+    /// A user-facing value carrying non-ASCII characters — accented
+    /// Latin, CJK — read off the decoded program string listing.
+    NonAsciiText,
+}
+
+/// One function's localization signals — the language machinery its
+/// mapped strings reveal.
+///
+/// A record says the function uses strings carrying the signal kinds in
+/// [`signal_kinds`](Self::signal_kinds) — the kinds seen, in the order
+/// the scan first saw each — and names the signal strings themselves in
+/// [`signals`](Self::signals), in scan order, each value once however
+/// often the function uses it. The lines that showed the signals are
+/// joined into [`evidence`](Self::evidence) so a reviewer can check the
+/// reading against the body. The confidence sits visibly below a directly
+/// classified record's: the claim is a pattern inference over string
+/// shapes, and it rides **beside** the classified records — nothing here
+/// reclassifies them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalizationSignals {
+    /// The function the record is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The signal kinds seen, in the order the scan first saw each.
+    pub signal_kinds: Vec<LocalizationSignalKind>,
+    /// The signal strings themselves, in scan order.
+    pub signals: Vec<String>,
+    /// The lines showing the signals, one per signal, joined.
+    pub evidence: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -197,6 +252,9 @@ pub enum StringFinding {
     Classified(ClassifiedString),
     /// A format-string call with the argument types the specifiers imply.
     FormatString(FormatStringUse),
+    /// A function whose mapped strings carry localization signals —
+    /// language names, locale codes, non-ASCII user-facing text.
+    Localization(LocalizationSignals),
 }
 
 impl StringFinding {
@@ -205,15 +263,19 @@ impl StringFinding {
         match self {
             StringFinding::Classified(record) => &record.function,
             StringFinding::FormatString(record) => &record.function,
+            StringFinding::Localization(record) => &record.function,
         }
     }
 
     /// What the finding suggests about the function: the string's one-line
-    /// purpose, or the argument types the format string implies.
+    /// purpose, the argument types the format string implies, or the Rust
+    /// language-enum-plus-string-table shape the localization signals
+    /// point at.
     pub fn suggestion(&self) -> String {
         match self {
             StringFinding::Classified(record) => record.purpose.clone(),
             StringFinding::FormatString(record) => summarize_hints(&record.arg_types),
+            StringFinding::Localization(_) => LOCALIZATION_SUGGESTION.to_string(),
         }
     }
 
@@ -222,6 +284,7 @@ impl StringFinding {
         match self {
             StringFinding::Classified(record) => record.confidence,
             StringFinding::FormatString(record) => record.confidence,
+            StringFinding::Localization(record) => record.confidence,
         }
     }
 
@@ -230,24 +293,28 @@ impl StringFinding {
         match self {
             StringFinding::Classified(record) => &record.evidence,
             StringFinding::FormatString(record) => &record.call_site,
+            StringFinding::Localization(record) => &record.evidence,
         }
     }
 
-    /// The serde `kind` tag — `classified` or `format_string` — naming
-    /// the engine behind the finding.
+    /// The serde `kind` tag — `classified`, `format_string`, or
+    /// `localization` — naming the engine behind the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             StringFinding::Classified(_) => "classified",
             StringFinding::FormatString(_) => "format_string",
+            StringFinding::Localization(_) => "localization",
         }
     }
 
     /// What the finding names, spelled for a report row: the string value
-    /// itself, or the format string behind the call.
+    /// itself, the format string behind the call, or the signal strings
+    /// the localization reading saw.
     pub fn target(&self) -> String {
         match self {
             StringFinding::Classified(record) => record.string_value.clone(),
             StringFinding::FormatString(record) => record.format_string.clone(),
+            StringFinding::Localization(record) => record.signals.join(", "),
         }
     }
 }
@@ -269,6 +336,7 @@ impl From<&StringFinding> for calxgloss_prompts::StringContextInfo {
             kind: match finding {
                 StringFinding::Classified(record) => record.classification.to_string(),
                 StringFinding::FormatString(_) => "format_string".to_string(),
+                StringFinding::Localization(_) => "localization".to_string(),
             },
             suggestion: finding.suggestion(),
             confidence: finding.confidence().value(),
@@ -285,9 +353,9 @@ impl From<&StringFinding> for calxgloss_prompts::StringContextInfo {
 /// `re/analysis/stringctx/{dll}.json`.
 ///
 /// The findings are the scan's outputs in scan order: function by
-/// function, and within one function the classified strings first and
-/// then the format-string calls. The stable order means two scans of the
-/// same program diff cleanly.
+/// function, and within one function the classified strings first, then
+/// the format-string calls, then the localization reading. The stable
+/// order means two scans of the same program diff cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StringContextResult {
     /// Provenance of the scan that produced these findings.
@@ -464,6 +532,19 @@ mod tests {
         }
     }
 
+    fn localization_signals() -> LocalizationSignals {
+        LocalizationSignals {
+            function: "FUN_18003ab00".into(),
+            signal_kinds: vec![
+                LocalizationSignalKind::LanguageName,
+                LocalizationSignalKind::LocaleCode,
+            ],
+            signals: vec!["English".into(), "en-US".into()],
+            evidence: "pcVar1 = (char *)DAT_180129b00; puVar2 = DAT_180129b10;".into(),
+            confidence: Confidence::new(60),
+        }
+    }
+
     #[test]
     fn a_classified_finding_serde_round_trips_under_its_kind_tag() {
         let finding = StringFinding::Classified(classified_record());
@@ -489,23 +570,49 @@ mod tests {
     }
 
     #[test]
+    fn a_localization_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = StringFinding::Localization(localization_signals());
+        let json = serde_json::to_string(&finding).expect("localization finding should serialize");
+        assert!(json.contains("\"kind\":\"localization\""));
+        assert!(json.contains("\"signal_kinds\":[\"language_name\",\"locale_code\"]"));
+        assert!(json.contains("\"signals\":[\"English\",\"en-US\"]"));
+        assert!(json.contains("\"confidence\":60"));
+        let back: StringFinding =
+            serde_json::from_str(&json).expect("localization finding should read back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
     fn the_union_accessors_reach_through_every_variant() {
         let findings = [
             StringFinding::Classified(classified_record()),
             StringFinding::FormatString(format_use_record()),
+            StringFinding::Localization(localization_signals()),
         ];
         for finding in &findings {
             assert_eq!(finding.function(), "FUN_18003ab00");
-            assert_eq!(finding.confidence(), Confidence::new(70));
             assert!(!finding.suggestion().is_empty());
             assert!(!finding.evidence().is_empty());
         }
+        assert_eq!(findings[0].confidence(), Confidence::new(70));
+        assert_eq!(findings[1].confidence(), Confidence::new(70));
+        assert_eq!(findings[2].confidence(), Confidence::new(60));
         let kinds: Vec<&str> = findings.iter().map(|f| f.kind()).collect();
-        assert_eq!(kinds, vec!["classified", "format_string"]);
+        assert_eq!(kinds, vec!["classified", "format_string", "localization"]);
         let suggestions: Vec<String> = findings.iter().map(|f| f.suggestion()).collect();
-        assert_eq!(suggestions, vec!["config file path", "`*const i8`, `i32`"]);
+        assert_eq!(
+            suggestions,
+            vec![
+                "config file path",
+                "`*const i8`, `i32`",
+                "model the language switch as a Rust enum with the localized strings held in a table",
+            ]
+        );
         let targets: Vec<String> = findings.iter().map(|f| f.target()).collect();
-        assert_eq!(targets, vec!["Journal.txt", "%s: %d hits"]);
+        assert_eq!(
+            targets,
+            vec!["Journal.txt", "%s: %d hits", "English, en-US"]
+        );
     }
 
     #[test]
@@ -519,6 +626,7 @@ mod tests {
             findings: vec![
                 StringFinding::Classified(classified_record()),
                 StringFinding::FormatString(format_use_record()),
+                StringFinding::Localization(localization_signals()),
             ],
         };
         let json = serde_json::to_string(&result).expect("string context result should serialize");

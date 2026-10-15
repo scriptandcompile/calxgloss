@@ -161,9 +161,9 @@ pub use calxgloss_memory::types::{
 // named here.
 pub use calxgloss_stringctx::{
     ClassifiedString, FormatCall, FormatHint, FormatStringEngine, FormatStringUse,
-    HybridXrefMapper, MappedString, StringClassification, StringClassifyEngine,
-    StringContextEngine, StringContextPersistor, StringContextResult, StringCtxError,
-    StringFinding, StringSource,
+    HybridXrefMapper, LocalizationDetector, LocalizationSignalKind, LocalizationSignals,
+    MappedString, StringClassification, StringClassifyEngine, StringContextEngine,
+    StringContextPersistor, StringContextResult, StringCtxError, StringFinding, StringSource,
 };
 
 // ============================================================

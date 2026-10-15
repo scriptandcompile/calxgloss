@@ -11,6 +11,8 @@
 //! - [`FormatStringEngine`] — extracts Rust type hints from format specifiers
 //! - [`HybridXrefMapper`] — maps strings to functions via decompiled-body
 //!   parsing with an xref fallback
+//! - [`LocalizationDetector`] — reads localization signals (language names,
+//!   locale codes, non-ASCII user-facing text) off a function's mapped strings
 //! - [`StringContextEngine`] — orchestrates the above over a scan source
 //! - [`StringContextPersistor`] — saves/loads results as per-binary JSON
 //!
@@ -31,6 +33,7 @@ pub mod engine;
 pub mod error;
 pub mod format_str;
 pub mod hybrid_mapper;
+pub mod localization;
 pub mod persist;
 pub mod types;
 
@@ -41,8 +44,9 @@ pub use format_str::{FormatStringEngine, extract_format_hints, summarize_hints};
 pub use hybrid_mapper::{
     BODY_CONFIDENCE, FormatCall, HybridXrefMapper, MappedString, XREF_CONFIDENCE,
 };
+pub use localization::{LOCALIZATION_CONFIDENCE, LOCALIZATION_SUGGESTION, LocalizationDetector};
 pub use persist::StringContextPersistor;
 pub use types::{
-    ClassifiedString, FormatHint, FormatStringUse, StringClassification, StringContextResult,
-    StringFinding, StringSource,
+    ClassifiedString, FormatHint, FormatStringUse, LocalizationSignalKind, LocalizationSignals,
+    StringClassification, StringContextResult, StringFinding, StringSource,
 };

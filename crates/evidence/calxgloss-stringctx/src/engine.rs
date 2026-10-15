@@ -1,9 +1,10 @@
 //! String-context scan orchestration.
 //!
 //! [`StringContextEngine`] runs the string classifier, the hybrid
-//! string-to-function mapper, and the format-string engine over one open
-//! Ghidra program and assembles their findings into a single
-//! [`StringContextResult`] with its scan provenance.
+//! string-to-function mapper, the format-string engine, and the
+//! localization detector over one open Ghidra program and assembles
+//! their findings into a single [`StringContextResult`] with its scan
+//! provenance.
 //!
 //! The scan is one sequential pass over the function listing: one
 //! `strings()` call up front, one decompile per function, and xref
@@ -23,6 +24,7 @@ use crate::classify::StringClassifyEngine;
 use crate::error::Result;
 use crate::format_str::FormatStringEngine;
 use crate::hybrid_mapper::{BODY_CONFIDENCE, HybridXrefMapper, XREF_CONFIDENCE};
+use crate::localization::{LocalizationDetector, MappedStringSignal};
 use crate::types::{
     ClassifiedString, Confidence, FormatStringUse, ScanMetadata, StringClassification,
     StringContextResult, StringFinding, StringSource,
@@ -38,15 +40,16 @@ use crate::types::{
 /// scan can be driven from an orchestrating task.
 pub use calxgloss_ghidra::ScanSource;
 
-/// Orchestrates the classifier, hybrid mapper, and format-string engine
-/// into one [`StringContextResult`].
+/// Orchestrates the classifier, hybrid mapper, format-string engine, and
+/// localization detector into one [`StringContextResult`].
 ///
 /// The engine is generic over its [`ScanSource`], so tests can run the
 /// whole orchestration over canned program data; [`new`](Self::new)
 /// builds one over a live [`GhidraClient`]. Each sub-engine carries no
 /// per-scan state — [`with_classifier`](Self::with_classifier),
-/// [`with_mapper`](Self::with_mapper), and
-/// [`with_format_engine`](Self::with_format_engine) swap one whole — so
+/// [`with_mapper`](Self::with_mapper),
+/// [`with_format_engine`](Self::with_format_engine), and
+/// [`with_localization`](Self::with_localization) swap one whole — so
 /// one of each serves the whole scan.
 #[derive(Debug, Clone)]
 pub struct StringContextEngine<S = GhidraClient> {
@@ -54,6 +57,7 @@ pub struct StringContextEngine<S = GhidraClient> {
     classifier: StringClassifyEngine,
     mapper: HybridXrefMapper,
     format_engine: FormatStringEngine,
+    localization: LocalizationDetector,
 }
 
 impl StringContextEngine<GhidraClient> {
@@ -65,6 +69,7 @@ impl StringContextEngine<GhidraClient> {
             classifier: StringClassifyEngine::with_default_patterns(),
             mapper: HybridXrefMapper::new(),
             format_engine: FormatStringEngine::new(),
+            localization: LocalizationDetector::new(),
         }
     }
 }
@@ -78,6 +83,7 @@ impl<S> StringContextEngine<S> {
             classifier: StringClassifyEngine::with_default_patterns(),
             mapper: HybridXrefMapper::new(),
             format_engine: FormatStringEngine::new(),
+            localization: LocalizationDetector::new(),
         }
     }
 
@@ -102,6 +108,13 @@ impl<S> StringContextEngine<S> {
         self
     }
 
+    /// Read localization signals through `localization`'s language-name
+    /// set instead of the standard one.
+    pub fn with_localization(mut self, localization: LocalizationDetector) -> Self {
+        self.localization = localization;
+        self
+    }
+
     /// Map the program's strings to its functions across `binary`,
     /// decompiling each function exactly once and consulting xrefs only
     /// where a body parse came up empty.
@@ -110,7 +123,8 @@ impl<S> StringContextEngine<S> {
     /// becomes the key a persisted result is filed under. The findings
     /// follow the function listing — function by function, and within
     /// one function the classified strings, then the format-string
-    /// calls — so two scans of the same program diff cleanly.
+    /// calls, then the localization reading — so two scans of the same
+    /// program diff cleanly.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad entry
     /// point) is skipped with a warning, as is a nameless listing entry;
@@ -146,6 +160,13 @@ impl<S> StringContextEngine<S> {
         let string_table: HashMap<u64, String> = program_strings
             .iter()
             .map(|string| (string.address, string.value.clone()))
+            .collect();
+        // The decoded listing values, for the localization detector's
+        // non-ASCII gate: only these can carry that signal, so an
+        // escaped body literal never fakes or hides one.
+        let listing_values: HashSet<&str> = program_strings
+            .iter()
+            .map(|string| string.value.as_str())
             .collect();
 
         // Classification is a property of the string, not of the
@@ -205,6 +226,9 @@ impl<S> StringContextEngine<S> {
             let format_calls =
                 self.mapper
                     .extract_format_calls(&function.name, &decompiled.body, &string_table);
+            // Where this function's findings begin, so the localization
+            // reading can look at the classified records just made.
+            let function_findings_start = findings.len();
 
             // The hybrid rule: a function whose body parse found strings
             // gets no xref lookups; only a function the body came up
@@ -288,6 +312,28 @@ impl<S> StringContextEngine<S> {
                     arg_types,
                     confidence: Confidence::new(BODY_CONFIDENCE),
                 }));
+            }
+
+            // The localization reading slots after the format-string
+            // reading within one function. It reads the string values
+            // the scan just mapped and classified for this function —
+            // no new ScanSource reads — and lands at most one finding,
+            // beside the classified records and never reclassifying
+            // them.
+            let candidates: Vec<MappedStringSignal<'_>> = findings[function_findings_start..]
+                .iter()
+                .filter_map(|finding| match finding {
+                    StringFinding::Classified(record) => Some(MappedStringSignal {
+                        value: &record.string_value,
+                        classification: record.classification,
+                        from_listing: listing_values.contains(record.string_value.as_str()),
+                        evidence: &record.evidence,
+                    }),
+                    _ => None,
+                })
+                .collect();
+            if let Some(signals) = self.localization.detect(&function.name, &candidates) {
+                findings.push(StringFinding::Localization(signals));
             }
         }
 
@@ -737,5 +783,155 @@ mod tests {
         assert_eq!(result.metadata.binary, "eqmain.dll");
         assert!(result.metadata.scanned_at > 0);
         assert!(result.metadata.duration_secs < 60);
+    }
+
+    /// The shared fixture plus a language-selection function: `English`
+    /// and `en-US` references, a user-visible listing value carrying an
+    /// accented character, a language word buried in a sentence, an
+    /// escaped body literal, and a `sprintf` call.
+    fn localization_program() -> FakeProgram {
+        let mut program = program();
+        program.listing.push(summary("FUN_1800412a0"));
+        program.bodies.insert(
+            "FUN_1800412a0".into(),
+            function(
+                "FUN_1800412a0",
+                "  pcVar1 = (char *)DAT_180129b00;\n\
+                 \x20 pcVar2 = (char *)DAT_180129b10;\n\
+                 \x20 pcVar3 = (char *)DAT_180129b20;\n\
+                 \x20 pcVar4 = (char *)DAT_180129b30;\n\
+                 \x20 pcVar5 = \"caf\\xe9\";\n\
+                 \x20 sprintf(local_10, \"%s: %d hits\", pcVar1, iVar2);\n",
+            ),
+        );
+        program.literals.extend(
+            [
+                (0x180129b00, "English"),
+                (0x180129b10, "en-US"),
+                (0x180129b20, "Welcome to the Café"),
+                (0x180129b30, "Do you speak English?"),
+            ]
+            .map(|(address, value)| StringLiteral {
+                address,
+                value: value.to_string(),
+            }),
+        );
+        program
+    }
+
+    #[tokio::test]
+    async fn localization_signals_land_one_finding_after_the_format_string_reading() {
+        let program = localization_program();
+        let result = StringContextEngine::with_source(program)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        // The scan-order contract extended: within one function the
+        // classified strings, then the format-string call, then the
+        // localization reading. The escaped literal and the buried
+        // language word stand as classified records — they claim no
+        // signal.
+        let findings: Vec<&StringFinding> = result.for_function("FUN_1800412a0").collect();
+        let kinds: Vec<&str> = findings.iter().map(|finding| finding.kind()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "classified",
+                "classified",
+                "classified",
+                "classified",
+                "classified",
+                "format_string",
+                "localization",
+            ]
+        );
+
+        // One finding for the whole function, naming every signal kind
+        // seen and the signal strings — the buried language word and the
+        // escaped body literal claim nothing.
+        let StringFinding::Localization(record) = findings.last().unwrap() else {
+            unreachable!("the language machinery reads as a localization finding");
+        };
+        assert_eq!(
+            record.signal_kinds,
+            [
+                crate::types::LocalizationSignalKind::LanguageName,
+                crate::types::LocalizationSignalKind::LocaleCode,
+                crate::types::LocalizationSignalKind::NonAsciiText,
+            ]
+        );
+        assert_eq!(record.signals, ["English", "en-US", "Welcome to the Café"]);
+        assert_eq!(
+            record.evidence,
+            "pcVar1 = (char *)DAT_180129b00; pcVar2 = (char *)DAT_180129b10; \
+             pcVar3 = (char *)DAT_180129b20;"
+        );
+        // The pattern inference sits visibly below a classified record.
+        assert_eq!(record.confidence, Confidence::new(60));
+        assert_eq!(
+            findings.last().unwrap().suggestion(),
+            "model the language switch as a Rust enum with the localized strings held in a table"
+        );
+        assert_eq!(
+            findings.last().unwrap().target(),
+            "English, en-US, Welcome to the Café"
+        );
+
+        // The classified records stand unchanged beside the reading.
+        assert_eq!(findings[0].target(), "English");
+        assert_eq!(findings[2].target(), "Welcome to the Café");
+        assert!(
+            findings[..5]
+                .iter()
+                .any(|finding| finding.target() == "caf\\xe9"),
+            "the escaped literal is still a classified record — just no signal"
+        );
+
+        // A function with no signals reports nothing.
+        assert!(
+            result
+                .for_function("FUN_18003ab00")
+                .all(|finding| finding.kind() != "localization")
+        );
+        assert!(
+            result
+                .for_function("FUN_18003e750")
+                .all(|finding| finding.kind() != "localization")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_localization_setter_reaches_the_scan() {
+        // A binary's own language spelling, reachable through the builder
+        // mirroring the other sub-engine setters.
+        let mut program = localization_program();
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function("FUN_18003e750", "  pcVar1 = \"Klingon\";\n"),
+        );
+
+        // The default set claims nothing for "Klingon".
+        let result = StringContextEngine::with_source(program.clone())
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+        assert!(
+            result
+                .for_function("FUN_18003e750")
+                .all(|finding| finding.kind() != "localization")
+        );
+
+        // The configured set reaches the scan.
+        let result = StringContextEngine::with_source(program)
+            .with_localization(LocalizationDetector::with_names(["Klingon"]))
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+        let findings: Vec<&StringFinding> = result.for_function("FUN_18003e750").collect();
+        let StringFinding::Localization(record) = findings.last().unwrap() else {
+            unreachable!("the configured name reads as a localization signal");
+        };
+        assert_eq!(record.signals, ["Klingon"]);
     }
 }
