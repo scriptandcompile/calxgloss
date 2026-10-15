@@ -47,6 +47,7 @@
 //!   the per-binary detection results under `re/analysis/sync/`.
 //! - [`error`] - [`SyncError`] and the crate-wide [`Result`] alias.
 
+pub mod async_runtime;
 pub mod atomic;
 pub mod engine;
 pub mod error;
@@ -56,4 +57,10 @@ pub mod threading;
 pub mod tls;
 pub mod types;
 
+pub use async_runtime::AsyncDetector;
+pub use async_runtime::default_async_runtime_names;
 pub use error::{Result, SyncError};
+pub use types::AsyncLoop;
+pub use types::AsyncOperation;
+pub use types::AsyncRuntime;
+pub use types::AsyncRuntimeUsage;

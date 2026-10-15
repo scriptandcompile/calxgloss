@@ -217,6 +217,46 @@ pub struct TlsUsage {
 }
 
 // ============================================================
+// Async runtime
+// ============================================================
+
+/// One async-runtime observation about one function, with the evidence
+/// behind it.
+///
+/// A record says the function reaches an event loop through the
+/// recognized call spelling [`operation`](Self::operation) —
+/// `GetQueuedCompletionStatus`, `epoll_wait`, `select`/`poll`,
+/// `GetMessage` and their kin — which reads like
+/// [`suggestion`](Self::suggestion): `tokio` for the completion-port
+/// and epoll families, an explicit event loop for the message pump.
+/// Unlike the lock pairing, one call site is a whole finding — an
+/// event loop needs no release to complete the picture. The call line
+/// is kept as [`evidence`](Self::evidence) so a reviewer (or a
+/// translation prompt) can check the reasoning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AsyncRuntime {
+    /// The function the record is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The call spelling that performed the event-loop operation, e.g.
+    /// `GetQueuedCompletionStatus`.
+    pub operation: String,
+    /// The Rust async runtime pattern the call suggests, e.g.
+    /// `tokio` or `explicit event loop`.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+    /// The decompiled line that supports the record — the event-loop
+    /// call — kept so a reviewer (or a translation prompt) can check
+    /// the reasoning.
+    pub evidence: String,
+}
+
+// Compatibility aliases for the async runtime record's spelling.
+pub type AsyncRuntimeUsage = AsyncRuntime;
+pub type AsyncLoop = AsyncRuntime;
+pub type AsyncOperation = AsyncRuntime;
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -241,6 +281,8 @@ pub enum SyncFinding {
     Thread(ThreadSpawn),
     /// A thread-local key accessed, created in the body or not.
     Tls(TlsUsage),
+    /// An event loop an async runtime stands in for.
+    AsyncRuntime(AsyncRuntime),
 }
 
 impl SyncFinding {
@@ -251,6 +293,7 @@ impl SyncFinding {
             SyncFinding::Atomic(record) => &record.function,
             SyncFinding::Thread(record) => &record.function,
             SyncFinding::Tls(record) => &record.function,
+            SyncFinding::AsyncRuntime(record) => &record.function,
         }
     }
 
@@ -261,6 +304,7 @@ impl SyncFinding {
             SyncFinding::Atomic(record) => &record.suggestion,
             SyncFinding::Thread(record) => &record.suggestion,
             SyncFinding::Tls(record) => &record.suggestion,
+            SyncFinding::AsyncRuntime(record) => &record.suggestion,
         }
     }
 
@@ -271,6 +315,7 @@ impl SyncFinding {
             SyncFinding::Atomic(record) => record.confidence,
             SyncFinding::Thread(record) => record.confidence,
             SyncFinding::Tls(record) => record.confidence,
+            SyncFinding::AsyncRuntime(record) => record.confidence,
         }
     }
 
@@ -281,6 +326,7 @@ impl SyncFinding {
             SyncFinding::Atomic(record) => &record.evidence,
             SyncFinding::Thread(record) => &record.evidence,
             SyncFinding::Tls(record) => &record.evidence,
+            SyncFinding::AsyncRuntime(record) => &record.evidence,
         }
     }
 
@@ -292,6 +338,7 @@ impl SyncFinding {
             SyncFinding::Atomic(_) => "atomic",
             SyncFinding::Thread(_) => "thread",
             SyncFinding::Tls(_) => "tls",
+            SyncFinding::AsyncRuntime(_) => "async_runtime",
         }
     }
 
@@ -310,6 +357,7 @@ impl SyncFinding {
                 Some(creation) => format!("{}→{}", creation, record.access),
                 None => record.access.clone(),
             },
+            SyncFinding::AsyncRuntime(record) => record.operation.clone(),
         }
     }
 }
@@ -631,8 +679,7 @@ mod tests {
         let json = serde_json::to_string(&finding).expect("tls finding should serialize");
         assert!(json.contains("\"kind\":\"tls\""));
         assert!(json.contains("\"access\":\"TlsGetValue\""));
-        let back: SyncFinding =
-            serde_json::from_str(&json).expect("tls finding should read back");
+        let back: SyncFinding = serde_json::from_str(&json).expect("tls finding should read back");
         assert_eq!(back, finding);
     }
 

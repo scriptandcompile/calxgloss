@@ -15,6 +15,7 @@
 //! and keeping the pass sequential keeps the persisted finding list in
 //! a stable, diffable order.
 
+use crate::async_runtime::AsyncDetector;
 use crate::atomic::AtomicDetector;
 use crate::error::Result;
 use crate::mutex::MutexDetector;
@@ -52,6 +53,7 @@ pub struct SyncEngine<S = GhidraClient> {
     atomics: AtomicDetector,
     threads: ThreadingDetector,
     tls: TlsDetector,
+    async_runtime: AsyncDetector,
 }
 
 impl SyncEngine<GhidraClient> {
@@ -64,6 +66,7 @@ impl SyncEngine<GhidraClient> {
             atomics: AtomicDetector::with_default_names(),
             threads: ThreadingDetector::with_default_names(),
             tls: TlsDetector::with_default_names(),
+            async_runtime: AsyncDetector::with_default_names(),
         }
     }
 }
@@ -78,6 +81,7 @@ impl<S> SyncEngine<S> {
             atomics: AtomicDetector::with_default_names(),
             threads: ThreadingDetector::with_default_names(),
             tls: TlsDetector::with_default_names(),
+            async_runtime: AsyncDetector::with_default_names(),
         }
     }
 
@@ -106,6 +110,20 @@ impl<S> SyncEngine<S> {
     /// of the standard ones.
     pub fn with_tls(mut self, detector: TlsDetector) -> Self {
         self.tls = detector;
+        self
+    }
+
+    /// Read async runtime loops against `detector`'s name sets instead
+    /// of the standard ones.
+    pub fn with_async(mut self, detector: AsyncDetector) -> Self {
+        self.async_runtime = detector;
+        self
+    }
+
+    /// Read async runtime loops against `detector`'s name sets instead
+    /// of the standard ones.
+    pub fn with_async_runtime(mut self, detector: AsyncDetector) -> Self {
+        self.async_runtime = detector;
         self
     }
 
@@ -202,6 +220,12 @@ impl<S> SyncEngine<S> {
                     .detect(&decompiled)
                     .into_iter()
                     .map(SyncFinding::Tls),
+            );
+            findings.extend(
+                self.async_runtime
+                    .detect(&decompiled)
+                    .into_iter()
+                    .map(SyncFinding::AsyncRuntime),
             );
         }
 

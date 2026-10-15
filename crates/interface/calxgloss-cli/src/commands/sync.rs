@@ -97,7 +97,7 @@ fn print_concurrency_report(result: &SyncResult, path: &Path) {
     println!();
 
     // Findings, broken down by the record kind the union carries.
-    let kind_breakdown: Vec<String> = ["mutex", "atomic", "thread", "tls"]
+    let kind_breakdown: Vec<String> = ["mutex", "atomic", "thread", "tls", "async_runtime"]
         .into_iter()
         .map(|kind| {
             (

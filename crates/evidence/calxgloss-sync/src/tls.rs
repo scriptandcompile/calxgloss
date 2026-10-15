@@ -230,14 +230,12 @@ impl TlsDetector {
                 let key = call.args.first().and_then(|arg| key_object(arg));
                 let open = key.as_deref().and_then(|name| {
                     keys.iter().rposition(|k| {
-                        k.key.as_deref() == Some(name)
-                            && k.creation.is_some()
-                            && k.access.is_none()
+                        k.key.as_deref() == Some(name) && k.creation.is_some() && k.access.is_none()
                     })
                 });
-                let seen = key.as_deref().is_some_and(|name| {
-                    keys.iter().any(|k| k.key.as_deref() == Some(name))
-                });
+                let seen = key
+                    .as_deref()
+                    .is_some_and(|name| keys.iter().any(|k| k.key.as_deref() == Some(name)));
                 match open {
                     Some(at) => keys[at].access = Some(record),
                     None if seen => {
@@ -519,10 +517,7 @@ mod tests {
     #[test]
     fn added_names_join_their_sets_in_order() {
         let mut detector = TlsDetector::new();
-        detector.add_creation(TlsKeySignature::new(
-            "TlsAlloc",
-            KeyBinding::ReturnValue,
-        ));
+        detector.add_creation(TlsKeySignature::new("TlsAlloc", KeyBinding::ReturnValue));
         detector.add_creation(TlsKeySignature::new(
             "pthread_key_create",
             KeyBinding::FirstArg,
