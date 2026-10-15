@@ -3,25 +3,29 @@
 //! [`CallbackEngine`] runs the callback detectors — function-pointer
 //! array calls, callback registrations, jump-table dispatches, and
 //! dynamic-loading plugin shapes — over every function of one open
-//! Ghidra program and assembles their findings into a single
+//! Ghidra program, then the cross-function pass over the bodies it
+//! kept, and assembles their findings into a single
 //! [`CallbackResult`] with its scan provenance.
 //!
 //! The detectors are pure text analysis over one decompiled body, so
 //! the engine fetches each function's pseudo-C exactly once and reads
 //! it with every wired detector, rather than having each detector pull
-//! its own copy. The scan is then one sequential pass over the
-//! function listing: unlike typeinfer's competing families there is
-//! nothing to resolve between the detectors — they read disjoint body
-//! shapes — and keeping the pass sequential keeps the persisted
-//! finding list in a stable, diffable order.
+//! its own copy; the cross-function pass reads those same kept
+//! bodies, so the scan stays at one decompile per function. The scan
+//! is then one sequential pass over the function listing: unlike
+//! typeinfer's competing families there is nothing to resolve between
+//! the detectors — they read disjoint body shapes — and keeping the
+//! pass sequential keeps the persisted finding list in a stable,
+//! diffable order.
 
 use crate::callback_reg::CallbackRegDetector;
+use crate::cross_function::CrossFunctionAnalyzer;
 use crate::error::Result;
 use crate::fp_array::FpArrayDetector;
 use crate::jump_table::JumpTableDetector;
 use crate::plugin::PluginDetector;
 use crate::types::{CallbackFinding, CallbackResult, ScanMetadata};
-use calxgloss_ghidra::GhidraClient;
+use calxgloss_ghidra::{DecompiledFunction, GhidraClient};
 use std::time::Instant;
 use tracing::{info, warn};
 
@@ -53,6 +57,7 @@ pub struct CallbackEngine<S = GhidraClient> {
     registration: CallbackRegDetector,
     jump_table: JumpTableDetector,
     plugin: PluginDetector,
+    cross_function: CrossFunctionAnalyzer,
 }
 
 impl CallbackEngine<GhidraClient> {
@@ -65,6 +70,7 @@ impl CallbackEngine<GhidraClient> {
             registration: CallbackRegDetector::with_default_names(),
             jump_table: JumpTableDetector::with_default_prefixes(),
             plugin: PluginDetector::with_default_names(),
+            cross_function: CrossFunctionAnalyzer::new(),
         }
     }
 }
@@ -79,6 +85,7 @@ impl<S> CallbackEngine<S> {
             registration: CallbackRegDetector::with_default_names(),
             jump_table: JumpTableDetector::with_default_prefixes(),
             plugin: PluginDetector::with_default_names(),
+            cross_function: CrossFunctionAnalyzer::new(),
         }
     }
 
@@ -118,7 +125,10 @@ impl<S> CallbackEngine<S> {
     /// findings follow the function listing — function by function,
     /// and within one function the function-pointer array calls, then
     /// the registrations, then the jump tables, then the plugin
-    /// shapes — so two scans of the same program diff cleanly.
+    /// shapes — and after every function the cross-function pass adds
+    /// its chain findings, in listing order, over the bodies this
+    /// walk already decompiled: no extra Ghidra round trips. So two
+    /// scans of the same program diff cleanly.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad
     /// entry point) is skipped with a warning; only a failure of the
@@ -138,6 +148,7 @@ impl<S> CallbackEngine<S> {
         let functions = self.source.functions().await?;
 
         let mut findings = Vec::new();
+        let mut bodies: Vec<DecompiledFunction> = Vec::new();
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
         for function in &functions {
@@ -202,7 +213,19 @@ impl<S> CallbackEngine<S> {
                     .into_iter()
                     .map(CallbackFinding::Plugin),
             );
+            bodies.push(decompiled);
         }
+
+        // The cross-function pass runs after the per-function walk,
+        // over the bodies the scan already decompiled — no extra
+        // Ghidra round trips — and its findings append in listing
+        // order, after the per-function findings.
+        findings.extend(self.cross_function.analyze(
+            &bodies,
+            &self.registration,
+            &self.fp_array,
+            &self.jump_table,
+        ));
 
         let mut metadata = ScanMetadata::new(binary);
         metadata.duration_secs = started.elapsed().as_secs();
@@ -694,6 +717,219 @@ mod tests {
         assert_eq!(record.resolve.as_deref(), Some("my_bind"));
         assert_eq!(record.entry_point.as_deref(), Some("InitPlugin"));
         assert_eq!(record.host_table.as_deref(), Some("custom_api"));
+    }
+
+    #[tokio::test]
+    async fn a_callback_registered_in_one_function_and_called_in_another_lands_a_chain() {
+        // The lifecycle the per-body readings each see only half of:
+        // one function hands the handler over, another calls it by
+        // name. The chain lands on the earlier function in listing
+        // order, naming the partner, with both ends' call lines as
+        // evidence.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  register_callback(my_handler);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  my_handler(param_1);\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let chains: Vec<&CallbackFinding> = result
+            .findings
+            .iter()
+            .filter(|finding| finding.kind() == "chain")
+            .collect();
+        assert_eq!(chains.len(), 1, "one chain per function pair");
+        let CallbackFinding::Chain(record) = chains[0] else {
+            unreachable!("the cross-function pass lands a chain finding");
+        };
+        assert_eq!(record.function, "FUN_18003ab00");
+        assert_eq!(record.partner, "FUN_18003e750");
+        assert_eq!(record.callback, "my_handler");
+        assert_eq!(record.table, None);
+        assert_eq!(record.confidence.value(), 70);
+        assert!(record.evidence.contains("register_callback(my_handler);"));
+        assert!(record.evidence.contains("my_handler(param_1);"));
+    }
+
+    #[tokio::test]
+    async fn a_chain_names_the_table_both_ends_share() {
+        // One function registers the table itself; the other calls
+        // through that same name — the chain names the table it runs
+        // through.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  register_callback(handlers);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  (*(int (**)(int))handlers[uVar1])(param_1);\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let CallbackFinding::Chain(record) = result
+            .findings
+            .iter()
+            .find(|finding| finding.kind() == "chain")
+            .expect("the shared table name lands a chain")
+        else {
+            unreachable!("the cross-function pass lands a chain finding");
+        };
+        assert_eq!(record.callback, "handlers");
+        assert_eq!(record.table.as_deref(), Some("handlers"));
+    }
+
+    #[tokio::test]
+    async fn a_registration_whose_callback_is_never_called_lands_no_chain() {
+        // The handler is handed away but no kept body ever calls it:
+        // an un-wired registration stays a registration, not a chain.
+        let result = scan(program()).await;
+        assert!(
+            result
+                .findings
+                .iter()
+                .all(|finding| finding.kind() != "chain")
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_function_findings_append_after_the_per_function_findings() {
+        // The calling function stands first in the listing and carries
+        // its own fp-array finding; the chain still lands after every
+        // per-function finding, both groups in listing order.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003e750"), summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  dispatch[uVar2](param_2);\n  my_handler(param_1);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  register_callback(my_handler);\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let order: Vec<(&str, &str)> = result
+            .findings
+            .iter()
+            .map(|finding| (finding.function(), finding.kind()))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                ("FUN_18003e750", "fp_array"),
+                ("FUN_18003ab00", "registration"),
+                ("FUN_18003e750", "chain"),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_function_that_will_not_decompile_fabricates_no_chain() {
+        // The registering body never arrived: the kept calling body
+        // names the callback, but with no registration in the kept
+        // bodies the pass claims nothing.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![
+            summary("FUN_18003ab00"),
+            summary("FUN_18003e750"),
+            summary("FUN_180040b10"),
+        ];
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  my_handler(param_1);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_180040b10".into(),
+            function(
+                "FUN_180040b10",
+                "undefined FUN_180040b10(void)",
+                "  return;\n",
+            ),
+        );
+        program.fail_decompiles = vec!["FUN_18003ab00".into()];
+        let result = scan(program).await;
+
+        assert!(
+            result.is_empty(),
+            "a body that never made it registers nothing and chains nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_name_sets_reach_the_cross_function_pass() {
+        // The pass keys on the configured sets, not a private default:
+        // a custom registration spelling and a custom table name chain
+        // across the two bodies, and the standard names the swaps
+        // replaced claim nothing there.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  HookMessage(msg_table);\n  register_callback(handlers);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  (*(code *)msg_table[uVar1])(param_1);\n  handlers[uVar2](param_2);\n",
+            ),
+        );
+        let engine = CallbackEngine::with_source(program)
+            .with_registration(CallbackRegDetector::with_names(["HookMessage"]))
+            .with_fp_array(FpArrayDetector::with_names(["msg_table"]));
+        let result = engine.scan("eqmain.dll").await.expect("scan");
+
+        let chains: Vec<&CallbackFinding> = result
+            .findings
+            .iter()
+            .filter(|finding| finding.kind() == "chain")
+            .collect();
+        assert_eq!(chains.len(), 1, "only the configured spellings chain");
+        let CallbackFinding::Chain(record) = chains[0] else {
+            unreachable!("the cross-function pass lands a chain finding");
+        };
+        assert_eq!(record.callback, "msg_table");
+        assert_eq!(record.table.as_deref(), Some("msg_table"));
     }
 
     #[tokio::test]

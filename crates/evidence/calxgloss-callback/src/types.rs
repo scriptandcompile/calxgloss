@@ -13,8 +13,13 @@
 //! - `PluginArchitecture`: a dynamic-load shape — a loader pair
 //!   (`LoadLibrary`/`GetProcAddress`, `dlopen`/`dlsym`), a plugin
 //!   entry-point name, and the host API table passed into one.
-//! - `CallbackFinding`: the union over the four record kinds — one
-//!   finding whichever detector made it — serde-tagged by `kind`.
+//! - `CallbackChain`: a callback registered in one function and
+//!   called in another — the lifecycle the per-body detectors each
+//!   saw only half of — read by the cross-function pass over the
+//!   bodies the scan keeps.
+//! - `CallbackFinding`: the union over the five record kinds — one
+//!   finding whichever detector or pass made it — serde-tagged by
+//!   `kind`.
 //! - `CallbackResult`, `ScanMetadata`: the persisted per-binary result
 //!   and its scan provenance.
 //!
@@ -195,19 +200,75 @@ pub struct PluginArchitecture {
 }
 
 // ============================================================
+// Callback chains
+// ============================================================
+
+/// One cross-function callback-chain observation about one function,
+/// with the evidence behind it.
+///
+/// A record says a callback registered in one function — the name the
+/// registration detector binds at a recognized registration call — is
+/// called in another kept body: either its own spelling stands as a
+/// direct call target in the partner body, or the name the
+/// registration site names is a configured table and the partner body
+/// dispatches through that same [`table`](Self::table) — one
+/// callback's lifecycle spanning two bodies, each of which the
+/// per-function detectors saw only half of. The finding is attached
+/// to the earlier of the two functions in listing order and names the
+/// other as [`partner`](Self::partner); the callback rides in
+/// [`callback`](Self::callback) and the table it is called through,
+/// when the chain runs through one, in [`table`](Self::table). Both
+/// ends are explicit body evidence, so the record reads at
+/// [`confidence`](Self::confidence) 70 — level with an in-body
+/// registration — and reads like [`suggestion`](Self::suggestion):
+/// one boxed closure shared across the boundary. Both ends' call
+/// lines ride as [`evidence`](Self::evidence) — the registration line
+/// and the call line — so a reviewer (or a translation prompt) can
+/// check the reasoning against both bodies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallbackChain {
+    /// The function the record is about — the earlier of the pair in
+    /// listing order, whichever end made the registration.
+    pub function: String,
+    /// The other function in the chain: the one that called when this
+    /// one registered, or registered when this one called.
+    pub partner: String,
+    /// The callback the chain carries, spelled as the registration
+    /// bound it, e.g. `my_handler`.
+    pub callback: String,
+    /// The table the callback is called through — the same table name
+    /// the registration site named, read through an fp-array or
+    /// jump-table dispatch in the partner body — e.g. `handlers`, when
+    /// the chain runs through a table rather than a direct call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table: Option<String>,
+    /// The Rust pattern the chain suggests, e.g. one boxed closure
+    /// shared between the registering and the calling function.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+    /// Both ends' call lines — the registration line and the call
+    /// line, each prefixed with its function — kept so a reviewer (or
+    /// a translation prompt) can check the reasoning against both
+    /// bodies.
+    pub evidence: String,
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
-/// One callback finding, whichever detector made it.
+/// One callback finding, whichever detector or pass made it.
 ///
-/// The detectors emit the concrete records; the union is what the
-/// persisted result carries, so one list can hold every finding for a
-/// binary and a consumer reads the shared shape — function, suggestion,
-/// confidence, evidence — without naming which detector produced it.
-/// Unlike typeinfer's competing families, the four detectors read
-/// disjoint body shapes and can't make competing claims for one target,
-/// so nothing is resolved between variants. The serde `kind` tag names
-/// the record shape in the persisted JSON.
+/// The detectors and the cross-function pass emit the concrete
+/// records; the union is what the persisted result carries, so one
+/// list can hold every finding for a binary and a consumer reads the
+/// shared shape — function, suggestion, confidence, evidence —
+/// without naming which reading produced it. Unlike typeinfer's
+/// competing families, the readings read disjoint body shapes and
+/// can't make competing claims for one target, so nothing is resolved
+/// between variants. The serde `kind` tag names the record shape in
+/// the persisted JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CallbackFinding {
@@ -219,6 +280,8 @@ pub enum CallbackFinding {
     JumpTable(JumpTable),
     /// A dynamic-loading plugin shape.
     Plugin(PluginArchitecture),
+    /// A callback registered in one function and called in another.
+    Chain(CallbackChain),
 }
 
 impl CallbackFinding {
@@ -229,6 +292,7 @@ impl CallbackFinding {
             CallbackFinding::Registration(record) => &record.function,
             CallbackFinding::JumpTable(record) => &record.function,
             CallbackFinding::Plugin(record) => &record.function,
+            CallbackFinding::Chain(record) => &record.function,
         }
     }
 
@@ -239,6 +303,7 @@ impl CallbackFinding {
             CallbackFinding::Registration(record) => &record.suggestion,
             CallbackFinding::JumpTable(record) => &record.suggestion,
             CallbackFinding::Plugin(record) => &record.suggestion,
+            CallbackFinding::Chain(record) => &record.suggestion,
         }
     }
 
@@ -249,6 +314,7 @@ impl CallbackFinding {
             CallbackFinding::Registration(record) => record.confidence,
             CallbackFinding::JumpTable(record) => record.confidence,
             CallbackFinding::Plugin(record) => record.confidence,
+            CallbackFinding::Chain(record) => record.confidence,
         }
     }
 
@@ -259,24 +325,27 @@ impl CallbackFinding {
             CallbackFinding::Registration(record) => &record.evidence,
             CallbackFinding::JumpTable(record) => &record.evidence,
             CallbackFinding::Plugin(record) => &record.evidence,
+            CallbackFinding::Chain(record) => &record.evidence,
         }
     }
 
     /// The serde `kind` tag — `fp_array`, `registration`, `jump_table`,
-    /// or `plugin` — naming the detector behind the finding.
+    /// `plugin`, or `chain` — naming the reading behind the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             CallbackFinding::FpArray(_) => "fp_array",
             CallbackFinding::Registration(_) => "registration",
             CallbackFinding::JumpTable(_) => "jump_table",
             CallbackFinding::Plugin(_) => "plugin",
+            CallbackFinding::Chain(_) => "chain",
         }
     }
 
     /// What the finding names, spelled for a report row: the table the
     /// indexed call reads through, the registration call and its bound
-    /// callback, the table and index of the computed dispatch, or the
-    /// loader pair / entry point behind the plugin shape.
+    /// callback, the table and index of the computed dispatch, the
+    /// loader pair / entry point behind the plugin shape, or the
+    /// callback and the partner function it reaches across.
     pub fn target(&self) -> String {
         match self {
             CallbackFinding::FpArray(record) => record.table.clone(),
@@ -291,6 +360,12 @@ impl CallbackFinding {
                     (Some(entry), None) => entry.clone(),
                     (None, _) => record.resolve.clone().unwrap_or_default(),
                 },
+            },
+            CallbackFinding::Chain(record) => match &record.table {
+                Some(table) if table != &record.callback => {
+                    format!("{}({})→{}", record.callback, table, record.partner)
+                }
+                _ => format!("{}→{}", record.callback, record.partner),
             },
         }
     }
@@ -320,12 +395,14 @@ impl From<&CallbackFinding> for calxgloss_prompts::CallbackInfo {
 /// The callback result for one binary — the document persisted to
 /// `re/analysis/callback/{dll}.json`.
 ///
-/// The findings are the four detectors' outputs in scan order: function
-/// by function, and within one function the function-pointer array
-/// calls, then the registrations, then the jump tables, then the plugin
-/// shapes. The detectors read disjoint body shapes, so a function can
-/// carry findings of every kind at once and none competes with another;
-/// the stable order means two scans of the same program diff cleanly.
+/// The findings are the detectors' outputs in scan order: function by
+/// function, and within one function the function-pointer array
+/// calls, then the registrations, then the jump tables, then the
+/// plugin shapes — and after every function, the cross-function
+/// pass's chain findings, in listing order. The readings cover
+/// disjoint shapes, so a function can carry findings of every kind at
+/// once and none competes with another; the stable order means two
+/// scans of the same program diff cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallbackResult {
     /// Provenance of the scan that produced these findings.
@@ -534,6 +611,64 @@ mod tests {
         assert_eq!(json["confidence"], 70);
     }
 
+    fn chain() -> CallbackChain {
+        CallbackChain {
+            function: "FUN_18003ab00".into(),
+            partner: "FUN_18003e750".into(),
+            callback: "my_handler".into(),
+            table: Some("handlers".into()),
+            suggestion: "Box<dyn Fn(...)> shared between the registering and calling functions"
+                .into(),
+            confidence: Confidence::new(70),
+            evidence: "FUN_18003ab00: register_callback(handlers); FUN_18003e750: \
+                       (*(int (**)(int))handlers[uVar1])(param_1);"
+                .into(),
+        }
+    }
+
+    #[test]
+    fn a_chain_serde_round_trips() {
+        let record = chain();
+        let json = serde_json::to_string(&record).expect("chain record should serialize");
+        assert!(json.contains("\"partner\":\"FUN_18003e750\""));
+        assert!(json.contains("\"callback\":\"my_handler\""));
+        assert!(json.contains("\"table\":\"handlers\""));
+        let back: CallbackChain =
+            serde_json::from_str(&json).expect("chain document should read back");
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn a_chain_without_a_table_omits_it_and_reads_back_none() {
+        // A direct-name chain — the callback itself called in the
+        // partner body — keeps the absent table off disk and reads
+        // back as none.
+        let record = CallbackChain {
+            table: None,
+            ..chain()
+        };
+        let json = serde_json::to_string(&record).expect("table-less chain should serialize");
+        assert!(!json.contains("\"table\""));
+        let back: CallbackChain =
+            serde_json::from_str(&json).expect("table-less chain should read back");
+        assert_eq!(back, record);
+        assert_eq!(back.table, None);
+    }
+
+    #[test]
+    fn a_chain_record_names_both_functions_the_callback_and_the_table() {
+        let json = serde_json::to_value(chain()).expect("chain record should serialize");
+        assert_eq!(json["function"], "FUN_18003ab00");
+        assert_eq!(json["partner"], "FUN_18003e750");
+        assert_eq!(json["callback"], "my_handler");
+        assert_eq!(json["table"], "handlers");
+        assert_eq!(
+            json["suggestion"],
+            "Box<dyn Fn(...)> shared between the registering and calling functions"
+        );
+        assert_eq!(json["confidence"], 70);
+    }
+
     #[test]
     fn an_fp_array_finding_serde_round_trips_under_its_kind_tag() {
         let finding = CallbackFinding::FpArray(fp_array_call());
@@ -581,12 +716,24 @@ mod tests {
     }
 
     #[test]
+    fn a_chain_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = CallbackFinding::Chain(chain());
+        let json = serde_json::to_string(&finding).expect("chain finding should serialize");
+        assert!(json.contains("\"kind\":\"chain\""));
+        assert!(json.contains("\"partner\":\"FUN_18003e750\""));
+        let back: CallbackFinding =
+            serde_json::from_str(&json).expect("chain finding should read back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
     fn the_union_accessors_reach_through_every_variant() {
         let findings = [
             CallbackFinding::FpArray(fp_array_call()),
             CallbackFinding::Registration(registration()),
             CallbackFinding::JumpTable(jump_table()),
             CallbackFinding::Plugin(plugin_architecture()),
+            CallbackFinding::Chain(chain()),
         ];
         for finding in &findings {
             assert_eq!(finding.function(), "FUN_18003ab00");
@@ -597,7 +744,7 @@ mod tests {
         let kinds: Vec<&str> = findings.iter().map(|f| f.kind()).collect();
         assert_eq!(
             kinds,
-            vec!["fp_array", "registration", "jump_table", "plugin"]
+            vec!["fp_array", "registration", "jump_table", "plugin", "chain"]
         );
         let suggestions: Vec<&str> = findings.iter().map(|f| f.suggestion()).collect();
         assert_eq!(
@@ -606,7 +753,8 @@ mod tests {
                 "Vec<Box<dyn Fn(...)>>",
                 "Box<dyn Fn(...)>",
                 "[fn(...); 5]",
-                "Box<dyn Plugin> (loader crate)"
+                "Box<dyn Plugin> (loader crate)",
+                "Box<dyn Fn(...)> shared between the registering and calling functions",
             ]
         );
         let targets: Vec<String> = findings.iter().map(|f| f.target()).collect();
@@ -616,9 +764,35 @@ mod tests {
                 "handlers",
                 "register_callback→my_handler",
                 "DAT_1400a1b60[uVar2]",
-                "LoadLibrary→GetProcAddress"
+                "LoadLibrary→GetProcAddress",
+                "my_handler(handlers)→FUN_18003e750",
             ]
         );
+    }
+
+    #[test]
+    fn a_chain_finding_target_names_its_visible_shape() {
+        // The report row names the callback and the partner it reaches
+        // across; a table the chain runs through shows when it is not
+        // just the callback's own spelling.
+        let direct = CallbackFinding::Chain(CallbackChain {
+            table: None,
+            ..chain()
+        });
+        assert_eq!(direct.target(), "my_handler→FUN_18003e750");
+
+        let through_table = CallbackFinding::Chain(CallbackChain {
+            callback: "handlers".into(),
+            ..chain()
+        });
+        assert_eq!(through_table.target(), "handlers→FUN_18003e750");
+
+        let named_table = CallbackFinding::Chain(CallbackChain {
+            callback: "my_handler".into(),
+            table: Some("handlers".into()),
+            ..chain()
+        });
+        assert_eq!(named_table.target(), "my_handler(handlers)→FUN_18003e750");
     }
 
     #[test]
@@ -676,6 +850,17 @@ mod tests {
         assert_eq!(info.suggestion, "Box<dyn Plugin> (loader crate)");
         assert_eq!(info.confidence, 70);
         assert_eq!(info.evidence, "hMod = LoadLibrary(\"plugin.dll\");");
+
+        let chain = CallbackFinding::Chain(chain());
+        let info = calxgloss_prompts::CallbackInfo::from(&chain);
+        assert_eq!(info.function, "FUN_18003ab00");
+        assert_eq!(info.kind, "chain");
+        assert_eq!(
+            info.suggestion,
+            "Box<dyn Fn(...)> shared between the registering and calling functions"
+        );
+        assert_eq!(info.confidence, 70);
+        assert!(info.evidence.contains("register_callback(handlers);"));
     }
 
     #[test]
@@ -691,6 +876,7 @@ mod tests {
                 CallbackFinding::Registration(registration()),
                 CallbackFinding::JumpTable(jump_table()),
                 CallbackFinding::Plugin(plugin_architecture()),
+                CallbackFinding::Chain(chain()),
             ],
         };
         let json = serde_json::to_string(&result).expect("callback result should serialize");

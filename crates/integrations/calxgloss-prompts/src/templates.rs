@@ -213,7 +213,7 @@ pub struct CallbackInfo {
     /// The function the finding is about, e.g. `FUN_18003ab00`.
     pub function: String,
     /// The kind of finding, e.g. `fp_array`, `registration`, `jump_table`,
-    /// `plugin`.
+    /// `plugin`, `chain`.
     pub kind: String,
     /// The Rust pattern the finding suggests, e.g. `Vec<Box<dyn Fn(...)>>`.
     pub suggestion: String,

@@ -2,29 +2,31 @@
 //!
 //! Analyzes function-pointer array calls, callback registration sites,
 //! jump-table dispatches, and dynamic-loading plugin shapes within each
-//! function of an open Ghidra program. Results are injected as
-//! structured CALLBACKS sections that name the Rust dispatch pattern —
+//! function of an open Ghidra program, and chains a callback
+//! registered in one function to another function that calls it across
+//! the kept bodies. Results are injected as structured CALLBACKS
+//! sections that name the Rust dispatch pattern —
 //! `Vec<Box<dyn Fn(...)>>` for handler arrays, `Box<dyn Fn(...)>`
 //! closures for registered callbacks, `match` for jump tables,
-//! `Box<dyn Plugin>` trait objects for plugin boundaries — the
-//! translation should aim at, so a binary's polymorphic dispatch
-//! survives translation instead of collapsing into opaque indirect
-//! calls.
+//! `Box<dyn Plugin>` trait objects for plugin boundaries, a shared
+//! boxed closure for a register-then-call chain — the translation
+//! should aim at, so a binary's polymorphic dispatch survives
+//! translation instead of collapsing into opaque indirect calls.
 //!
 //! # Architecture
 //!
-//! The crate is organized into eight modules:
+//! The crate is organized into nine modules:
 //!
 //! - [`types`] - Core data types: `FpArrayCall`, `CallbackRegistration`,
-//!   `JumpTable`, and `PluginArchitecture` for the per-function
-//!   detection records; `CallbackFinding` as the union over the four
+//!   `JumpTable`, `PluginArchitecture`, and `CallbackChain` for the
+//!   detection records; `CallbackFinding` as the union over the five
 //!   record kinds; `CallbackResult`, `ScanMetadata` for the persisted
 //!   per-binary results.
 //! - [`engine`] - Scan orchestration: `CallbackEngine` runs the four
-//!   detectors over one open Ghidra program through a `ScanSource`
-//!   (function listing + decompile-by-name), one sequential pass that
-//!   decompiles each function exactly once and keeps the findings in
-//!   scan order.
+//!   per-body detectors and then the cross-function pass over one open
+//!   Ghidra program through a `ScanSource` (function listing +
+//!   decompile-by-name), one sequential pass that decompiles each
+//!   function exactly once and keeps the findings in scan order.
 //! - [`fp_array`] - Function-pointer array detection: `FpArrayDetector`
 //!   recognizes the indexed indirect-call shapes Ghidra decompiles out
 //!   of `*(handlers[i])(args)` and suggests boxed closures for the
@@ -42,11 +44,17 @@
 //!   `GetProcAddress` and `dlopen`/`dlsym` pairs, plugin entry-point
 //!   names, and the host API table passed into one — and suggests a
 //!   trait-object plugin boundary.
+//! - [`cross_function`] - Cross-function callback readings:
+//!   `CrossFunctionAnalyzer` chains a registration in one kept body to
+//!   a direct call of the bound callback — or a call through a table
+//!   the registration site named — in another, over the bodies the
+//!   scan already holds.
 //! - [`persist`] - JSON persistence: `CallbackPersistor` saves and loads
 //!   the per-binary detection results under `re/analysis/callback/`.
 //! - [`error`] - [`CallbackError`] and the crate-wide [`Result`] alias.
 
 pub mod callback_reg;
+pub mod cross_function;
 pub mod engine;
 pub mod error;
 pub mod fp_array;

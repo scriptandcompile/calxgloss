@@ -11,7 +11,8 @@
 //!   function), and the persisted list keeps every finding in scan
 //!   order: function by function, and within one function the
 //!   function-pointer array calls, then the registrations, then the
-//!   jump tables, then the plugin shapes.
+//!   jump tables, then the plugin shapes, and after them the
+//!   cross-function chain findings in listing order.
 //! - **Cache behavior** — the `exists` check decides whether a scan
 //!   runs, and a rescan replaces the cached document.
 //!
@@ -427,4 +428,116 @@ async fn results_for_two_binaries_stay_independent() {
     assert_eq!(persistor.load("eqmain.dll").unwrap(), eqmain);
     assert_eq!(persistor.load("eqgame.dll").unwrap(), eqgame);
     assert!(!persistor.exists("other.dll"));
+}
+
+// ------------------------------------------------------------
+// Cross-function chain findings
+// ------------------------------------------------------------
+
+#[tokio::test]
+async fn chain_findings_survive_the_scan_persist_and_prompt_walk() {
+    // The callback lifecycle across two functions: one hands
+    // `my_handler` to `register_callback`, the other calls it by
+    // name. The chain rides the tagged union to disk and back, and
+    // renders into the escalate prompt through the usual accessors.
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  register_callback(my_handler);\n",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_18003e750".into(),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(void)",
+            "  my_handler(param_1);\n",
+        ),
+    );
+
+    let workspace = TempDir::new().expect("workspace temp dir");
+    let result = CallbackEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = CallbackPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let chains: Vec<&CallbackFinding> = loaded
+        .findings
+        .iter()
+        .filter(|finding| finding.kind() == "chain")
+        .collect();
+    assert_eq!(chains.len(), 1, "one chain per function pair");
+
+    // The record keeps both functions and the callback through the
+    // round trip, at the pairing's own confidence.
+    let CallbackFinding::Chain(record) = chains[0] else {
+        unreachable!("the register-then-call shape reads as a chain finding");
+    };
+    assert_eq!(record.function, "FUN_18003ab00");
+    assert_eq!(record.partner, "FUN_18003e750");
+    assert_eq!(record.callback, "my_handler");
+    assert_eq!(record.table, None, "a direct call runs through no table");
+    assert_eq!(record.confidence.value(), 70);
+    assert!(record.evidence.contains("register_callback(my_handler);"));
+    assert!(record.evidence.contains("my_handler(param_1);"));
+    assert!(chains[0].target().contains("my_handler"));
+
+    // The cross-function finding lands after the per-function
+    // findings, so the persisted document stays diffable.
+    let order: Vec<(&str, &str)> = loaded
+        .findings
+        .iter()
+        .map(|finding| (finding.function(), finding.kind()))
+        .collect();
+    assert_eq!(
+        order,
+        vec![
+            ("FUN_18003ab00", "registration"),
+            ("FUN_18003ab00", "chain"),
+        ]
+    );
+
+    // The escalate prompt describes the chain with its kind and
+    // confidence, like every other detector's records.
+    let findings: Vec<calxgloss_prompts::CallbackInfo> = loaded
+        .findings
+        .iter()
+        .map(calxgloss_prompts::CallbackInfo::from)
+        .collect();
+    let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
+        "FUN_18003ab00".into(),
+        "eqmain.dll".into(),
+        "fn fun_18003ab00() { /* hands the handler out */ }".into(),
+        "Wrong result".into(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        findings,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("the escalate prompt should render");
+
+    assert!(prompt.contains("CALLBACKS"));
+    assert!(
+        prompt.contains("Box<dyn Fn(...)> shared between the registering and calling functions")
+    );
+    assert!(prompt.contains("chain pattern, confidence 70"));
+    assert!(prompt.contains("my_handler(param_1);"));
 }

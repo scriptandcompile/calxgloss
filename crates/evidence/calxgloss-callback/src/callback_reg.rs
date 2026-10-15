@@ -117,6 +117,24 @@ impl CallbackRegDetector {
     /// and passes unrecorded. Findings come back in call order, so
     /// two scans of one body diff cleanly.
     pub fn detect(&self, func: &DecompiledFunction) -> Vec<CallbackRegistration> {
+        self.detect_sites(func)
+            .into_iter()
+            .map(|site| site.record)
+            .collect()
+    }
+
+    /// The same reading as [`detect`](Self::detect), but each bound
+    /// registration keeps its **site**: every plain identifier the
+    /// call's arguments spell, in argument order, bound callback
+    /// included.
+    ///
+    /// The cross-function pass reads through this so a table handed
+    /// over at a registration site — `register_callback(&handler_table,
+    /// on_message)` naming `handler_table` beside its handler — is
+    /// matched against a partner body's table calls without a second
+    /// walk or a second argument parse: the two readings cannot
+    /// disagree about what a registration site names.
+    pub(crate) fn detect_sites(&self, func: &DecompiledFunction) -> Vec<RegistrationSite> {
         let mut registrations = Vec::new();
         for call in direct_calls(&func.body) {
             if !self.names.iter().any(|n| n == call.callee) {
@@ -128,20 +146,40 @@ impl CallbackRegDetector {
             let Some(close) = closing_paren(&func.body, open) else {
                 continue;
             };
-            let Some(callback) = bound_callback(&func.body[open + 1..close]) else {
+            let named = argument_names(&func.body[open + 1..close]);
+            let Some(callback) = named
+                .iter()
+                .find(|name| !is_decompiler_minted(name) && name.as_str() != "NULL")
+                .cloned()
+            else {
                 continue;
             };
-            registrations.push(CallbackRegistration {
-                function: func.name.clone(),
-                registration: call.callee.to_string(),
-                callback,
-                suggestion: REGISTRATION_SUGGESTION.to_string(),
-                confidence: REGISTRATION_CONFIDENCE.into(),
-                evidence: line_at(&func.body, call.offset),
+            registrations.push(RegistrationSite {
+                record: CallbackRegistration {
+                    function: func.name.clone(),
+                    registration: call.callee.to_string(),
+                    callback,
+                    suggestion: REGISTRATION_SUGGESTION.to_string(),
+                    confidence: REGISTRATION_CONFIDENCE.into(),
+                    evidence: line_at(&func.body, call.offset),
+                },
+                named,
             });
         }
         registrations
     }
+}
+
+/// A bound registration and the identifier names its call site spells.
+pub(crate) struct RegistrationSite {
+    /// The registration finding the per-body reading reports.
+    pub(crate) record: CallbackRegistration,
+    /// Every top-level argument that strips to a plain identifier, in
+    /// argument order — the bound callback among them. A decompiler-
+    /// minted name is kept: it names storage, and the cross-function
+    /// pass only matches against configured table names it could never
+    /// collide with.
+    pub(crate) named: Vec<String>,
 }
 
 // ============================================================
@@ -167,23 +205,18 @@ fn argument_open(body: &str, after_callee: usize) -> Option<usize> {
     (bytes.get(open) == Some(&b'(')).then_some(open)
 }
 
-/// The callback a registration call's arguments bind: the first
-/// top-level argument that names a function once its cast and
-/// leading `&` are stripped.
+/// The plain identifiers a registration call's arguments spell: each
+/// top-level argument read as a candidate name — `(callback_t)handler`
+/// and `&handler` name the same handler the bare spelling does — with
+/// the ones that are not bare identifiers dropped.
 ///
-/// Arguments split at top-level commas; each is read as a candidate
-/// function reference — `(callback_t)handler` and `&handler` name the
-/// same handler the bare spelling does — and the first candidate that
-/// is a plain identifier the decompiler did not mint itself wins.
-/// Decompiler-minted names (`local_10`, `param_2`, `uVar3`, `this`)
-/// name storage, not handlers, so they pass by; a literal, a call
-/// expression, or nothing left to bind yields no callback, and the
-/// registration passes unrecorded rather than inventing one.
-fn bound_callback(args: &str) -> Option<String> {
+/// [`bound_callback`] picks the callback from these; the cross-function
+/// pass reads the whole list to match a table named at the site.
+fn argument_names(args: &str) -> Vec<String> {
     top_level_args(args)
         .into_iter()
         .filter_map(strip_to_identifier)
-        .find(|name| !is_decompiler_minted(name) && name != "NULL")
+        .collect()
 }
 
 /// The argument list split at top-level commas — commas inside
