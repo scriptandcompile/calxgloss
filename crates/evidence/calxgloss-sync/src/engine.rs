@@ -18,6 +18,7 @@
 use crate::async_runtime::AsyncDetector;
 use crate::atomic::AtomicDetector;
 use crate::error::Result;
+use crate::futex::FutexDetector;
 use crate::mutex::MutexDetector;
 use crate::threading::ThreadingDetector;
 use crate::tls::TlsDetector;
@@ -54,6 +55,7 @@ pub struct SyncEngine<S = GhidraClient> {
     threads: ThreadingDetector,
     tls: TlsDetector,
     async_runtime: AsyncDetector,
+    futex: FutexDetector,
 }
 
 impl SyncEngine<GhidraClient> {
@@ -67,6 +69,7 @@ impl SyncEngine<GhidraClient> {
             threads: ThreadingDetector::with_default_names(),
             tls: TlsDetector::with_default_names(),
             async_runtime: AsyncDetector::with_default_names(),
+            futex: FutexDetector::with_default_names(),
         }
     }
 }
@@ -82,6 +85,7 @@ impl<S> SyncEngine<S> {
             threads: ThreadingDetector::with_default_names(),
             tls: TlsDetector::with_default_names(),
             async_runtime: AsyncDetector::with_default_names(),
+            futex: FutexDetector::with_default_names(),
         }
     }
 
@@ -124,6 +128,42 @@ impl<S> SyncEngine<S> {
     /// of the standard ones.
     pub fn with_async_runtime(mut self, detector: AsyncDetector) -> Self {
         self.async_runtime = detector;
+        self
+    }
+
+    /// Read futex synchronization against `detector`'s name sets instead
+    /// of the standard ones.
+    pub fn with_futex(mut self, detector: FutexDetector) -> Self {
+        self.futex = detector;
+        self
+    }
+
+    /// Read futex synchronization against `detector`'s name sets instead
+    /// of the standard ones.
+    pub fn with_futexes(mut self, detector: FutexDetector) -> Self {
+        self.futex = detector;
+        self
+    }
+
+    /// Read futex synchronization against `detector`'s name sets instead
+    /// of the standard ones.
+    pub fn with_futex_detector(mut self, detector: FutexDetector) -> Self {
+        self.futex = detector;
+        self
+    }
+
+    pub fn with_futexes_detector(mut self, detector: FutexDetector) -> Self {
+        self.futex = detector;
+        self
+    }
+
+    pub fn with_futex_runtime(mut self, detector: FutexDetector) -> Self {
+        self.futex = detector;
+        self
+    }
+
+    pub fn with_futex_detection(mut self, detector: FutexDetector) -> Self {
+        self.futex = detector;
         self
     }
 
@@ -226,6 +266,12 @@ impl<S> SyncEngine<S> {
                     .detect(&decompiled)
                     .into_iter()
                     .map(SyncFinding::AsyncRuntime),
+            );
+            findings.extend(
+                self.futex
+                    .detect(&decompiled)
+                    .into_iter()
+                    .map(SyncFinding::Futex),
             );
         }
 

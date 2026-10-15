@@ -257,6 +257,47 @@ pub type AsyncLoop = AsyncRuntime;
 pub type AsyncOperation = AsyncRuntime;
 
 // ============================================================
+// Futex
+// ============================================================
+
+/// One futex-based synchronization observation about one function,
+/// with the evidence behind it.
+///
+/// A record says the function reaches raw futex synchronization
+/// through a recognized call spelling [`operation`](Self::operation) —
+/// a direct `futex` call, or `syscall(SYS_futex, …)` — which reads
+/// like [`suggestion`](Self::suggestion): standard synchronization
+/// (`std::sync::Mutex`/`Condvar`) rather than transliterated syscalls.
+/// Unlike the lock pairing, one call site is a whole finding — a
+/// futex call needs no release to complete the picture. The call
+/// line is kept as [`evidence`](Self::evidence) so a reviewer (or a
+/// translation prompt) can check the reasoning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Futex {
+    /// The function the record is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The futex operation the call spells — `FUTEX_WAIT` or
+    /// `FUTEX_WAKE` when the body spells it — or the call spelling
+    /// alone otherwise.
+    pub operation: String,
+    /// The Rust synchronization pattern the call suggests, e.g.
+    /// `std::sync::Mutex/Condvar`.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+    /// The decompiled line that supports the record — the futex
+    /// call — kept so a reviewer (or a translation prompt) can check
+    /// the reasoning.
+    pub evidence: String,
+}
+
+// Compatibility aliases for the futex record's spelling.
+pub type FutexUsage = Futex;
+pub type FutexOperation = Futex;
+pub type FutexRecord = Futex;
+pub type FutexCall = Futex;
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -283,6 +324,8 @@ pub enum SyncFinding {
     Tls(TlsUsage),
     /// An event loop an async runtime stands in for.
     AsyncRuntime(AsyncRuntime),
+    /// A futex-based synchronization call.
+    Futex(Futex),
 }
 
 impl SyncFinding {
@@ -294,6 +337,7 @@ impl SyncFinding {
             SyncFinding::Thread(record) => &record.function,
             SyncFinding::Tls(record) => &record.function,
             SyncFinding::AsyncRuntime(record) => &record.function,
+            SyncFinding::Futex(record) => &record.function,
         }
     }
 
@@ -305,6 +349,7 @@ impl SyncFinding {
             SyncFinding::Thread(record) => &record.suggestion,
             SyncFinding::Tls(record) => &record.suggestion,
             SyncFinding::AsyncRuntime(record) => &record.suggestion,
+            SyncFinding::Futex(record) => &record.suggestion,
         }
     }
 
@@ -316,6 +361,7 @@ impl SyncFinding {
             SyncFinding::Thread(record) => record.confidence,
             SyncFinding::Tls(record) => record.confidence,
             SyncFinding::AsyncRuntime(record) => record.confidence,
+            SyncFinding::Futex(record) => record.confidence,
         }
     }
 
@@ -327,6 +373,7 @@ impl SyncFinding {
             SyncFinding::Thread(record) => &record.evidence,
             SyncFinding::Tls(record) => &record.evidence,
             SyncFinding::AsyncRuntime(record) => &record.evidence,
+            SyncFinding::Futex(record) => &record.evidence,
         }
     }
 
@@ -339,6 +386,7 @@ impl SyncFinding {
             SyncFinding::Thread(_) => "thread",
             SyncFinding::Tls(_) => "tls",
             SyncFinding::AsyncRuntime(_) => "async_runtime",
+            SyncFinding::Futex(_) => "futex",
         }
     }
 
@@ -358,6 +406,7 @@ impl SyncFinding {
                 None => record.access.clone(),
             },
             SyncFinding::AsyncRuntime(record) => record.operation.clone(),
+            SyncFinding::Futex(record) => record.operation.clone(),
         }
     }
 }

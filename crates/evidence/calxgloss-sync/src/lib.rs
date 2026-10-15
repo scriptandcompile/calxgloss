@@ -38,6 +38,10 @@
 //!   `pthread_setspecific`/`pthread_key_delete` families, ties each
 //!   access to the key creation naming the same variable, and suggests
 //!   `thread_local!` storage.
+//! - [`futex`] - Futex-based synchronization detection: `FutexDetector`
+//!   recognizes direct `futex` calls and `syscall(SYS_futex, …)` shapes
+//!   and suggests standard synchronization (`std::sync::Mutex`/
+//!   `Condvar`).
 //! - [`engine`] - Scan orchestration: `SyncEngine` runs the four
 //!   detectors over one open Ghidra program through a `ScanSource`
 //!   (function listing + decompile-by-name), one sequential pass that
@@ -51,6 +55,7 @@ pub mod async_runtime;
 pub mod atomic;
 pub mod engine;
 pub mod error;
+pub mod futex;
 pub mod mutex;
 pub mod persist;
 pub mod threading;
@@ -60,7 +65,15 @@ pub mod types;
 pub use async_runtime::AsyncDetector;
 pub use async_runtime::default_async_runtime_names;
 pub use error::{Result, SyncError};
+pub use futex::FutexDetector;
+pub use futex::default_futex_names;
+pub use futex::default_futexes;
 pub use types::AsyncLoop;
 pub use types::AsyncOperation;
 pub use types::AsyncRuntime;
 pub use types::AsyncRuntimeUsage;
+pub use types::Futex;
+pub use types::FutexCall;
+pub use types::FutexOperation;
+pub use types::FutexRecord;
+pub use types::FutexUsage;

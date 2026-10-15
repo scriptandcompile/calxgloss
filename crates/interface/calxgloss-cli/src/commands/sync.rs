@@ -97,21 +97,22 @@ fn print_concurrency_report(result: &SyncResult, path: &Path) {
     println!();
 
     // Findings, broken down by the record kind the union carries.
-    let kind_breakdown: Vec<String> = ["mutex", "atomic", "thread", "tls", "async_runtime"]
-        .into_iter()
-        .map(|kind| {
-            (
-                kind,
-                result
-                    .findings
-                    .iter()
-                    .filter(|finding| finding.kind() == kind)
-                    .count(),
-            )
-        })
-        .filter(|(_, count)| *count > 0)
-        .map(|(kind, count)| format!("{kind} {count}"))
-        .collect();
+    let kind_breakdown: Vec<String> =
+        ["mutex", "atomic", "thread", "tls", "async_runtime", "futex"]
+            .into_iter()
+            .map(|kind| {
+                (
+                    kind,
+                    result
+                        .findings
+                        .iter()
+                        .filter(|finding| finding.kind() == kind)
+                        .count(),
+                )
+            })
+            .filter(|(_, count)| *count > 0)
+            .map(|(kind, count)| format!("{kind} {count}"))
+            .collect();
     println_content(format!(
         "  {}{:<5}{}",
         white_bold("Findings:  "),
