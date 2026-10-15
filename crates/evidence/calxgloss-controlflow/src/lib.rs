@@ -1,7 +1,8 @@
 //! Control-flow pattern recognition for calxgloss.
 //!
 //! Analyzes switch-shaped if/else-if chains, self-recursion,
-//! state-machine patterns, and loop structure within each function of
+//! state-machine patterns, loop structure, and branch density within
+//! each function of
 //! an open Ghidra
 //! program. Results are injected as structured CONTROL FLOW sections
 //! that name the Rust pattern — `match`, a dispatch table, `loop`,
@@ -11,12 +12,13 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into ten modules:
+//! The crate is organized into eleven modules:
 //!
 //! - [`types`] - Core data types: `SwitchChain`, `SelfRecursion`,
-//!   `StateMachine`, and `LoopNesting` (with `LoopKind`) for the
-//!   per-function detection records;
-//!   `ControlFlowFinding` as the union over the four record kinds;
+//!   `StateMachine`, `LoopNesting` (with `LoopKind`), and `BranchDensity`
+//!   (with `BranchClassification`) for the per-function detection
+//!   records;
+//!   `ControlFlowFinding` as the union over the five record kinds;
 //!   `ControlFlowResult`, `ScanMetadata` for the persisted per-binary
 //!   results.
 //! - `chain` (crate-internal) - Shared chain walker: brace-depth-aware
@@ -39,8 +41,13 @@
 //! - `loop_detect` - Loop structure detection: `LoopDetector` reads
 //!   for/while/do-while/goto loops and their nesting depth off the CFG,
 //!   landing one `LoopNesting` finding per function.
+//! - `branch_density` - Branch density classification:
+//!   `BranchDensityDetector` counts the conditional edges out of
+//!   `if`/`else if` heads against the CFG's basic blocks, landing one
+//!   `BranchDensity` finding per function — dispatch-table candidate or
+//!   sequential scan — and nothing for bodies too small to classify.
 //! - [`engine`] - Scan orchestration: `ControlFlowEngine` runs the
-//!   four detectors over one open Ghidra program through a
+//!   five detectors over one open Ghidra program through a
 //!   `ScanSource` (function listing + decompile-by-name), one
 //!   sequential pass that decompiles each function exactly once and
 //!   keeps the findings in scan order.
@@ -50,11 +57,12 @@
 //! - [`error`] - [`ControlFlowError`] and the crate-wide [`Result`]
 //!   alias.
 
+pub mod branch_density;
 pub(crate) mod chain;
-// The loop detector (issue #176) builds graphs and reads loops off the
-// CFG; the block, edge, and reachability accessors still wait on the
-// branch-density and call-graph tickets (#177, #178), so the dead-code
-// warning stays allowed for those.
+// The loop and branch-density detectors (issues #176, #177) read loops,
+// blocks, and edges off the CFG; the entry, reachability, and back-edge
+// accessors still wait on the call-graph and recursion tickets
+// (#178, #179), so the dead-code warning stays allowed for those.
 #[allow(dead_code)]
 pub(crate) mod cfg;
 pub mod engine;

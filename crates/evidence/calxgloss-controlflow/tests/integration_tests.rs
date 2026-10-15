@@ -11,7 +11,7 @@
 //!   function), and the persisted list keeps every finding in scan
 //!   order: function by function, and within one function the switch
 //!   chains, then the recursion, then the state machines, then the
-//!   loop reading.
+//!   loop reading, then the branch density.
 //! - **Cache behavior** — the `exists` check decides whether a scan
 //!   runs, and a rescan replaces the cached document.
 //!
@@ -220,11 +220,11 @@ async fn a_scan_files_its_result_in_the_workspace_and_reads_back() {
 
 #[tokio::test]
 async fn the_persisted_document_keeps_findings_in_scan_order() {
-    // The four detectors read one body in one pass, so what reaches
+    // The five detectors read one body in one pass, so what reaches
     // disk is function by function in listing order and, within one
     // function, the switch chains, then the recursion, then the state
-    // machines, then the loop reading — the order two scans diff
-    // against.
+    // machines, then the loop reading, then the branch density — the
+    // order two scans diff against.
     let workspace = TempDir::new().unwrap();
     let result = ControlFlowEngine::with_source(program())
         .scan("eqmain.dll")
@@ -245,8 +245,10 @@ async fn the_persisted_document_keeps_findings_in_scan_order() {
             ("FUN_18003ab00", "switch"),
             ("FUN_18003ab00", "recursion"),
             ("FUN_18003ab00", "loop"),
+            ("FUN_18003ab00", "branch_density"),
             ("FUN_1800412a0", "switch"),
             ("FUN_1800412a0", "state_machine"),
+            ("FUN_1800412a0", "branch_density"),
         ]
     );
 }
@@ -270,7 +272,7 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     // The pipeline asks what was found for the function it is about to
     // translate; the plain function carries nothing.
     let findings: Vec<&ControlFlowFinding> = loaded.for_function("FUN_18003ab00").collect();
-    assert_eq!(findings.len(), 3);
+    assert_eq!(findings.len(), 4);
     assert!(loaded.for_function("FUN_18003e750").next().is_none());
     assert!(loaded.for_function("FUN_180099999").next().is_none());
 
@@ -318,10 +320,26 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     assert_eq!(record.evidence, "1 loop: while (max depth 2)");
     assert_eq!(record.confidence.value(), 70);
 
+    let ControlFlowFinding::BranchDensity(record) = findings[3] else {
+        unreachable!("the chain's six conditional edges over ten blocks read as branch-heavy");
+    };
+    assert_eq!(record.branch_count, 6);
+    assert_eq!(record.block_count, 10);
+    assert_eq!(
+        record.classification,
+        calxgloss_controlflow::types::BranchClassification::DispatchTable
+    );
+    assert_eq!(record.suggestion, "express as a match or dispatch table");
+    assert_eq!(
+        record.evidence,
+        "6 conditional edges / 10 blocks (density 0.60)"
+    );
+    assert_eq!(record.confidence.value(), 60);
+
     // The state chain reads as both a switch and a state machine —
     // nothing is suppressed between the detectors.
     let state_findings: Vec<&ControlFlowFinding> = loaded.for_function("FUN_1800412a0").collect();
-    assert_eq!(state_findings.len(), 2);
+    assert_eq!(state_findings.len(), 3);
     assert!(matches!(state_findings[0], ControlFlowFinding::Switch(_)));
 
     let ControlFlowFinding::StateMachine(record) = state_findings[1] else {
@@ -339,6 +357,15 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
         "enum State + match state { /* 3 states */ }"
     );
     assert_eq!(record.confidence.value(), 70);
+
+    let ControlFlowFinding::BranchDensity(record) = state_findings[2] else {
+        unreachable!("the state chain carries a branch-density reading too");
+    };
+    assert_eq!(
+        record.classification,
+        calxgloss_controlflow::types::BranchClassification::DispatchTable
+    );
+    assert_eq!(record.confidence.value(), 60);
 }
 
 #[tokio::test]
@@ -361,7 +388,7 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
         .for_function("FUN_18003ab00")
         .map(calxgloss_prompts::ControlFlowInfo::from)
         .collect();
-    assert_eq!(findings.len(), 3, "the target function's three findings");
+    assert_eq!(findings.len(), 4, "the target function's four findings");
 
     let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
         "FUN_18003ab00".into(),
@@ -395,6 +422,9 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
     assert!(prompt.contains("express as Rust while at nesting depth 2"));
     assert!(prompt.contains("loop construct, confidence 70"));
     assert!(prompt.contains("1 loop: while (max depth 2)"));
+    assert!(prompt.contains("express as a match or dispatch table"));
+    assert!(prompt.contains("branch_density construct, confidence 60"));
+    assert!(prompt.contains("6 conditional edges / 10 blocks (density 0.60)"));
 }
 
 // ------------------------------------------------------------

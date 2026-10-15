@@ -1,19 +1,20 @@
 //! Control-flow scan orchestration.
 //!
-//! [`ControlFlowEngine`] runs the four detectors — switch-shaped
-//! if/else-if chains, self-recursion, state machines, and loop
-//! structure — over every function of one open Ghidra program and
+//! [`ControlFlowEngine`] runs the five detectors — switch-shaped
+//! if/else-if chains, self-recursion, state machines, loop
+//! structure, and branch density — over every function of one open Ghidra program and
 //! assembles their findings
 //! into a single [`ControlFlowResult`] with its scan provenance.
 //!
 //! The detectors are pure text analysis over one decompiled body, so
 //! the engine fetches each function's pseudo-C exactly once and reads
-//! it with all four, rather than having each detector pull its own
+//! it with all five, rather than having each detector pull its own
 //! copy. The scan is then one sequential pass over the function
 //! listing: like sync's disjoint families there is nothing to resolve
 //! between the detectors, and keeping the pass sequential keeps the
 //! persisted finding list in a stable, diffable order.
 
+use crate::branch_density::BranchDensityDetector;
 use crate::error::Result;
 use crate::loop_detect::LoopDetector;
 use crate::recursion::RecursionDetector;
@@ -34,15 +35,15 @@ use tracing::{info, warn};
 /// orchestrating task.
 pub use calxgloss_ghidra::ScanSource;
 
-/// Orchestrates the four detectors into one [`ControlFlowResult`].
+/// Orchestrates the five detectors into one [`ControlFlowResult`].
 ///
 /// The engine is generic over its [`ScanSource`], so tests can run the
 /// whole orchestration over canned bodies; [`new`](Self::new) builds
 /// one over a live [`GhidraClient`]. Each detector carries no state and
 /// starts configured with its standard thresholds and name set —
 /// [`with_switch`](Self::with_switch), [`with_recursion`](Self::with_recursion),
-/// [`with_state_machine`](Self::with_state_machine), and
-/// [`with_loop`](Self::with_loop) swap a detector
+/// [`with_state_machine`](Self::with_state_machine), [`with_loop`](Self::with_loop),
+/// and [`with_branch_density`](Self::with_branch_density) swap a detector
 /// whole — so one instance of each serves the whole scan.
 #[derive(Debug, Clone)]
 pub struct ControlFlowEngine<S = GhidraClient> {
@@ -51,10 +52,11 @@ pub struct ControlFlowEngine<S = GhidraClient> {
     recursion: RecursionDetector,
     state_machine: StateMachineDetector,
     loops: LoopDetector,
+    branch_density: BranchDensityDetector,
 }
 
 impl ControlFlowEngine<GhidraClient> {
-    /// An engine over a live GhidraMCP client, scanning with the four
+    /// An engine over a live GhidraMCP client, scanning with the five
     /// detectors' standard thresholds and name set.
     pub fn new(client: &GhidraClient) -> ControlFlowEngine<GhidraClient> {
         ControlFlowEngine {
@@ -63,13 +65,14 @@ impl ControlFlowEngine<GhidraClient> {
             recursion: RecursionDetector,
             state_machine: StateMachineDetector::default(),
             loops: LoopDetector::default(),
+            branch_density: BranchDensityDetector::default(),
         }
     }
 }
 
 impl<S> ControlFlowEngine<S> {
     /// An engine whose decompiles come from `source`, scanning with
-    /// the four detectors' standard thresholds and name set.
+    /// the five detectors' standard thresholds and name set.
     pub fn with_source(source: S) -> Self {
         ControlFlowEngine {
             source,
@@ -77,6 +80,7 @@ impl<S> ControlFlowEngine<S> {
             recursion: RecursionDetector,
             state_machine: StateMachineDetector::default(),
             loops: LoopDetector::default(),
+            branch_density: BranchDensityDetector::default(),
         }
     }
 
@@ -108,15 +112,22 @@ impl<S> ControlFlowEngine<S> {
         self
     }
 
+    /// Read branch density against `detector`'s thresholds and minimum
+    /// body size instead of the standard ones.
+    pub fn with_branch_density(mut self, detector: BranchDensityDetector) -> Self {
+        self.branch_density = detector;
+        self
+    }
+
     /// Detect control-flow patterns across `binary`, decompiling each
-    /// function exactly once and reading it with all four detectors.
+    /// function exactly once and reading it with all five detectors.
     ///
     /// `binary` names the program the scan reads (e.g. `eqmain.dll`)
     /// and becomes the key a persisted result is filed under. The
     /// findings follow the function listing — function by function, and
     /// within one function the switch chains, then the recursion, then
-    /// the state machines, then the loop reading — so two scans of the
-    /// same program diff cleanly.
+    /// the state machines, then the loop reading, then the branch
+    /// density — so two scans of the same program diff cleanly.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad
     /// entry point) is skipped with a warning; only a failure of the
@@ -202,6 +213,12 @@ impl<S> ControlFlowEngine<S> {
                     .into_iter()
                     .map(ControlFlowFinding::Loop),
             );
+            findings.extend(
+                self.branch_density
+                    .detect(&function.name, body)
+                    .into_iter()
+                    .map(ControlFlowFinding::BranchDensity),
+            );
         }
 
         let mut metadata = ScanMetadata::new(binary);
@@ -225,7 +242,7 @@ impl<S> ControlFlowEngine<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::LoopKind;
+    use crate::types::{BranchClassification, LoopKind};
     use calxgloss_ghidra::{
         DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
         Result, StringLiteral, StructLayout, Symbol, Xref,
@@ -428,14 +445,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scan_collects_findings_from_all_four_detectors() {
+    async fn scan_collects_findings_from_all_five_detectors() {
         let result = scan(program()).await;
 
         assert_eq!(result.metadata.binary, "eqmain.dll");
         assert!(result.metadata.scanned_at > 0);
 
         let findings: Vec<&ControlFlowFinding> = result.for_function("FUN_18003ab00").collect();
-        assert_eq!(findings.len(), 4);
+        assert_eq!(findings.len(), 5);
 
         let ControlFlowFinding::Switch(record) = findings[0] else {
             unreachable!("the if/else-if chain reads as a switch finding");
@@ -467,6 +484,18 @@ mod tests {
         assert_eq!(record.max_depth, 2);
         assert_eq!(record.kinds_seen, [LoopKind::While]);
         assert_eq!(u8::from(record.confidence), 70);
+
+        let ControlFlowFinding::BranchDensity(record) = findings[4] else {
+            unreachable!("the three-arm chain over eight blocks reads as branch-heavy");
+        };
+        // The chain's five conditional edges over the chain-and-loop
+        // graph's eight blocks — the last arm's not-taken edge leaves
+        // the body, and the loop conditions stay out of the branch
+        // count: iteration is not dispatch.
+        assert_eq!(record.branch_count, 5);
+        assert_eq!(record.block_count, 8);
+        assert_eq!(record.classification, BranchClassification::DispatchTable);
+        assert_eq!(u8::from(record.confidence), 60);
     }
 
     #[tokio::test]
@@ -474,7 +503,7 @@ mod tests {
         // Both functions carry every shape, so the persisted list must
         // group their findings by function in listing order — and
         // within one function run switch, recursion, state machine,
-        // then loop — never interleaved.
+        // loop, then branch density — never interleaved.
         let mut program = program();
         program.listing = vec![summary("FUN_18003e750"), summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -499,18 +528,20 @@ mod tests {
                 ("FUN_18003e750", "recursion"),
                 ("FUN_18003e750", "state_machine"),
                 ("FUN_18003e750", "loop"),
+                ("FUN_18003e750", "branch_density"),
                 ("FUN_18003ab00", "switch"),
                 ("FUN_18003ab00", "recursion"),
                 ("FUN_18003ab00", "state_machine"),
                 ("FUN_18003ab00", "loop"),
+                ("FUN_18003ab00", "branch_density"),
             ]
         );
     }
 
     #[tokio::test]
     async fn scan_decompiles_each_function_exactly_once() {
-        // The four detectors share one fetch per function; a scan
-        // that asked each detector for its own copy would quadruple
+        // The five detectors share one fetch per function; a scan
+        // that asked each detector for its own copy would quintuple
         // the wall time.
         let program = program();
         let result = scan(program.clone()).await;
@@ -653,7 +684,10 @@ mod tests {
             .with_state_machine(StateMachineDetector::default().with_state_names(&["MODE_*"]));
         let result = engine.scan("eqmain.dll").await.expect("scan");
 
-        assert_eq!(kinds(&result, "FUN_1800412a0"), ["state_machine"]);
+        assert_eq!(
+            kinds(&result, "FUN_1800412a0"),
+            ["state_machine", "branch_density"]
+        );
         let findings: Vec<&ControlFlowFinding> = result.for_function("FUN_1800412a0").collect();
         let ControlFlowFinding::StateMachine(record) = findings[0] else {
             unreachable!("the configured name set reads the chain as a state machine");
@@ -699,6 +733,69 @@ mod tests {
             result.is_empty(),
             "the raised threshold skips the single-loop body"
         );
+    }
+
+    #[tokio::test]
+    async fn a_configured_branch_density_detector_reaches_the_scan() {
+        // Swapping the branch-density detector whole reaches the scan
+        // too: the default classifies the four-condition body as
+        // branch-heavy, a raised minimum size skips it, and a raised
+        // heavy threshold reads the same body as a scan.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_1800412a0")];
+        program.bodies.insert(
+            "FUN_1800412a0".into(),
+            function(
+                "FUN_1800412a0",
+                "undefined FUN_1800412a0(void)",
+                "\
+  if (local_4 == 1) {
+    a();
+  }
+  if (local_4 == 2) {
+    b();
+  }
+  if (local_4 == 3) {
+    c();
+  }
+  if (local_4 == 4) {
+    d();
+  }",
+            ),
+        );
+
+        let result = scan(program.clone()).await;
+        assert_eq!(kinds(&result, "FUN_1800412a0"), ["branch_density"]);
+        let findings: Vec<&ControlFlowFinding> = result.for_function("FUN_1800412a0").collect();
+        let ControlFlowFinding::BranchDensity(record) = findings[0] else {
+            unreachable!("four conditionals in eight blocks read as branch-heavy");
+        };
+        // Seven conditional edges, not eight: the last test's
+        // not-taken edge leaves the body.
+        assert_eq!(record.branch_count, 7);
+        assert_eq!(record.block_count, 8);
+        assert_eq!(record.classification, BranchClassification::DispatchTable);
+
+        let result = ControlFlowEngine::with_source(program.clone())
+            .with_branch_density(BranchDensityDetector::default().with_min_blocks(10))
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+        assert!(
+            result.is_empty(),
+            "the raised minimum size skips the eight-block body"
+        );
+
+        let result = ControlFlowEngine::with_source(program)
+            .with_branch_density(BranchDensityDetector::default().with_heavy_threshold(0.9))
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+        let findings: Vec<&ControlFlowFinding> = result.for_function("FUN_1800412a0").collect();
+        let ControlFlowFinding::BranchDensity(record) = findings[0] else {
+            unreachable!("the raised threshold still classifies the body");
+        };
+        assert_eq!(record.classification, BranchClassification::SequentialScan);
     }
 
     #[tokio::test]

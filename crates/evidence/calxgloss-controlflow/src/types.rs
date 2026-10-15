@@ -12,6 +12,10 @@
 //! - `LoopNesting` (with `LoopKind`): the loop structure of one body —
 //!   loop count, maximum nesting depth, and the shapes seen, read off
 //!   the control flow graph.
+//! - `BranchDensity` (with `BranchClassification`): the branching
+//!   structure of one body — conditional-edge count against basic-block
+//!   count, classified as a dispatch-table candidate or a sequential
+//!   scan, read off the same graph.
 //! - `ControlFlowFinding`: the union over the record kinds — one
 //!   finding whichever detector made it — serde-tagged by `kind`.
 //! - `ControlFlowResult`, `ScanMetadata`: the persisted per-binary result
@@ -242,6 +246,74 @@ pub struct LoopNesting {
 }
 
 // ============================================================
+// Branch density
+// ============================================================
+
+/// How branch-heavy a body reads, decided from its control flow graph.
+///
+/// The branch-density detector makes the call and the persisted record
+/// names it, so one enum carries the verdict vocabulary on both sides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchClassification {
+    /// Enough conditional edges per block that the body reads as a
+    /// dispatcher — a wide if/else-if ladder or many conditionals — and
+    /// a `match` or dispatch table would express it better than the
+    /// ladder it was decompiled into.
+    DispatchTable,
+    /// Few enough conditional edges that the body reads as a
+    /// straight-line scan with the odd test; keeping it sequential (or
+    /// reaching for an iterator) beats inventing dispatch for it.
+    SequentialScan,
+}
+
+impl BranchClassification {
+    /// The verdict spelled for a report row: `dispatch-table candidate`
+    /// or `sequential scan`.
+    pub fn label(&self) -> &'static str {
+        match self {
+            BranchClassification::DispatchTable => "dispatch-table candidate",
+            BranchClassification::SequentialScan => "sequential scan",
+        }
+    }
+}
+
+/// One branch-density observation about one function, with the evidence
+/// behind it.
+///
+/// A record says the body's [`branch_count`](Self::branch_count)
+/// conditional edges spread over [`block_count`](Self::block_count)
+/// basic blocks classify it as [`classification`](Self::classification):
+/// at or above the detector's heavy threshold the body reads as a
+/// dispatch-table candidate, below it as a sequential scan. Loop
+/// conditions are iteration, not branching, so a loop scan stays a scan
+/// — the loop finding already tells the loop story. Confidence is 60 —
+/// the classification is a structural inference over the graph, visibly
+/// weaker than a named shape like a switch chain. The two counts are
+/// kept as [`evidence`](Self::evidence) so a reviewer (or a translation
+/// prompt) can check the reasoning against the body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchDensity {
+    /// The function the record is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// How many conditional edges (branch taken / not-taken out of an
+    /// `if`/`else if` head) the graph carries.
+    pub branch_count: usize,
+    /// How many basic blocks the graph carries.
+    pub block_count: usize,
+    /// The classification the ratio came out at.
+    pub classification: BranchClassification,
+    /// The Rust pattern the classification suggests, e.g.
+    /// `express as a match or dispatch table`.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+    /// The branch and block counts behind the classification, kept so a
+    /// reviewer (or a translation prompt) can check the reasoning.
+    pub evidence: String,
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -267,6 +339,10 @@ pub enum ControlFlowFinding {
     StateMachine(StateMachine),
     /// The loop structure of a body — count, nesting depth, kinds seen.
     Loop(LoopNesting),
+    /// The branching structure of a body — conditional edges against
+    /// basic blocks, classified dispatch-table candidate or sequential
+    /// scan.
+    BranchDensity(BranchDensity),
 }
 
 impl ControlFlowFinding {
@@ -277,6 +353,7 @@ impl ControlFlowFinding {
             ControlFlowFinding::Recursion(record) => &record.function,
             ControlFlowFinding::StateMachine(record) => &record.function,
             ControlFlowFinding::Loop(record) => &record.function,
+            ControlFlowFinding::BranchDensity(record) => &record.function,
         }
     }
 
@@ -287,6 +364,7 @@ impl ControlFlowFinding {
             ControlFlowFinding::Recursion(record) => &record.suggestion,
             ControlFlowFinding::StateMachine(record) => &record.suggestion,
             ControlFlowFinding::Loop(record) => &record.suggestion,
+            ControlFlowFinding::BranchDensity(record) => &record.suggestion,
         }
     }
 
@@ -297,6 +375,7 @@ impl ControlFlowFinding {
             ControlFlowFinding::Recursion(record) => record.confidence,
             ControlFlowFinding::StateMachine(record) => record.confidence,
             ControlFlowFinding::Loop(record) => record.confidence,
+            ControlFlowFinding::BranchDensity(record) => record.confidence,
         }
     }
 
@@ -307,30 +386,34 @@ impl ControlFlowFinding {
             ControlFlowFinding::Recursion(record) => &record.evidence,
             ControlFlowFinding::StateMachine(record) => &record.evidence,
             ControlFlowFinding::Loop(record) => &record.evidence,
+            ControlFlowFinding::BranchDensity(record) => &record.evidence,
         }
     }
 
     /// The serde `kind` tag — `switch`, `recursion`, `state_machine`,
-    /// or `loop` — naming the detector behind the finding.
+    /// `loop`, or `branch_density` — naming the detector behind the
+    /// finding.
     pub fn kind(&self) -> &'static str {
         match self {
             ControlFlowFinding::Switch(_) => "switch",
             ControlFlowFinding::Recursion(_) => "recursion",
             ControlFlowFinding::StateMachine(_) => "state_machine",
             ControlFlowFinding::Loop(_) => "loop",
+            ControlFlowFinding::BranchDensity(_) => "branch_density",
         }
     }
 
     /// What the finding names, spelled for a report row: the variable
     /// the switch chain compares, the function that recurses, the state
-    /// variable the machine dispatches on, or the loop shapes the body
-    /// carries.
+    /// variable the machine dispatches on, the loop shapes the body
+    /// carries, or the branch-density verdict.
     pub fn target(&self) -> String {
         match self {
             ControlFlowFinding::Switch(record) => record.variable.clone(),
             ControlFlowFinding::Recursion(record) => record.function.clone(),
             ControlFlowFinding::StateMachine(record) => record.state_var.clone(),
             ControlFlowFinding::Loop(record) => LoopKind::labels(&record.kinds_seen),
+            ControlFlowFinding::BranchDensity(record) => record.classification.label().to_string(),
         }
     }
 }
@@ -361,7 +444,8 @@ impl From<&ControlFlowFinding> for calxgloss_prompts::ControlFlowInfo {
 ///
 /// The findings are the detectors' outputs in scan order: function by
 /// function, and within one function the switch chains, then the
-/// recursion, then the state machines, then the loop structure. A
+/// recursion, then the state machines, then the loop structure, then
+/// the branch density. A
 /// function can carry findings of several kinds at once — the switch
 /// and state-machine detectors read the same chain shape from opposite
 /// sides — and the stable order means two scans of the same program
@@ -457,6 +541,18 @@ mod tests {
         }
     }
 
+    fn branch_density() -> BranchDensity {
+        BranchDensity {
+            function: "FUN_18003ab00".into(),
+            branch_count: 6,
+            block_count: 8,
+            classification: BranchClassification::DispatchTable,
+            suggestion: "express as a match or dispatch table".into(),
+            confidence: Confidence::new(60),
+            evidence: "6 conditional edges / 8 blocks (density 0.75)".into(),
+        }
+    }
+
     #[test]
     fn a_switch_chain_serde_round_trips() {
         let record = switch_chain();
@@ -522,6 +618,20 @@ mod tests {
     }
 
     #[test]
+    fn a_branch_density_serde_round_trips() {
+        let record = branch_density();
+        let json = serde_json::to_string(&record).expect("branch density record should serialize");
+        // The classification serializes as its snake_case spelling,
+        // matching the union's serde convention.
+        assert!(json.contains("\"branch_count\":6"));
+        assert!(json.contains("\"block_count\":8"));
+        assert!(json.contains("\"classification\":\"dispatch_table\""));
+        let back: BranchDensity =
+            serde_json::from_str(&json).expect("branch density record should read back");
+        assert_eq!(back, record);
+    }
+
+    #[test]
     fn a_switch_finding_serde_round_trips_under_its_kind_tag() {
         let finding = ControlFlowFinding::Switch(switch_chain());
         let json = serde_json::to_string(&finding).expect("switch finding should serialize");
@@ -568,12 +678,25 @@ mod tests {
     }
 
     #[test]
+    fn a_branch_density_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = ControlFlowFinding::BranchDensity(branch_density());
+        let json =
+            serde_json::to_string(&finding).expect("branch density finding should serialize");
+        assert!(json.contains("\"kind\":\"branch_density\""));
+        assert!(json.contains("\"branch_count\":6"));
+        let back: ControlFlowFinding =
+            serde_json::from_str(&json).expect("branch density finding should read back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
     fn the_union_accessors_reach_through_every_variant() {
         let findings = [
             ControlFlowFinding::Switch(switch_chain()),
             ControlFlowFinding::Recursion(recursion()),
             ControlFlowFinding::StateMachine(state_machine()),
             ControlFlowFinding::Loop(loop_nesting()),
+            ControlFlowFinding::BranchDensity(branch_density()),
         ];
         for finding in &findings {
             assert!(!finding.function().is_empty());
@@ -581,7 +704,16 @@ mod tests {
             assert!(!finding.evidence().is_empty());
         }
         let kinds: Vec<&str> = findings.iter().map(|f| f.kind()).collect();
-        assert_eq!(kinds, vec!["switch", "recursion", "state_machine", "loop"]);
+        assert_eq!(
+            kinds,
+            vec![
+                "switch",
+                "recursion",
+                "state_machine",
+                "loop",
+                "branch_density"
+            ]
+        );
         let functions: Vec<&str> = findings.iter().map(|f| f.function()).collect();
         assert_eq!(
             functions,
@@ -589,7 +721,8 @@ mod tests {
                 "FUN_18003ab00",
                 "FUN_18003e750",
                 "FUN_1800412a0",
-                "FUN_18003e750"
+                "FUN_18003e750",
+                "FUN_18003ab00"
             ]
         );
         assert_eq!(u8::from(findings[0].confidence()), 70);
@@ -597,7 +730,13 @@ mod tests {
         let targets: Vec<String> = findings.iter().map(|f| f.target()).collect();
         assert_eq!(
             targets,
-            vec!["local_4", "FUN_18003e750", "local_4", "for/while/do-while"]
+            vec![
+                "local_4",
+                "FUN_18003e750",
+                "local_4",
+                "for/while/do-while",
+                "dispatch-table candidate"
+            ]
         );
     }
 
@@ -635,6 +774,16 @@ mod tests {
         assert!(
             info.evidence
                 .contains("3 loops: for/while/do-while (max depth 2)")
+        );
+
+        let density = ControlFlowFinding::BranchDensity(branch_density());
+        let info = calxgloss_prompts::ControlFlowInfo::from(&density);
+        assert_eq!(info.kind, "branch_density");
+        assert_eq!(info.confidence, 60);
+        assert_eq!(info.suggestion, "express as a match or dispatch table");
+        assert!(
+            info.evidence
+                .contains("6 conditional edges / 8 blocks (density 0.75)")
         );
     }
 

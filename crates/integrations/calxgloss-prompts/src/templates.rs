@@ -235,7 +235,7 @@ pub struct ControlFlowInfo {
     /// The function the finding is about, e.g. `FUN_18003ab00`.
     pub function: String,
     /// The kind of finding, e.g. `switch`, `recursion`, `state_machine`,
-    /// `loop`.
+    /// `loop`, `branch_density`.
     pub kind: String,
     /// The Rust pattern the finding suggests, e.g. `match local_4 { ... }`.
     pub suggestion: String,
