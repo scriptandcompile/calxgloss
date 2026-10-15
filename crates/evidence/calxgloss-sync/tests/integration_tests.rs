@@ -566,6 +566,117 @@ async fn lock_order_findings_survive_the_scan_persist_and_prompt_walk() {
 }
 
 // ------------------------------------------------------------
+// Data-race findings
+// ------------------------------------------------------------
+
+#[tokio::test]
+async fn data_race_findings_survive_the_scan_persist_and_prompt_walk() {
+    // The unsynchronized-global shape across two functions: one
+    // stores into `DAT_counter` under no lock, the other reads it
+    // under a lock of its own — neither side holds a lock the other
+    // respects. The race rides the tagged union to disk and back, and
+    // renders into the escalate prompt through the usual accessors.
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  DAT_counter = iVar1 + 1;\n",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_18003e750".into(),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(void)",
+            "  EnterCriticalSection(&local_20);\n\
+             \x20 uVar1 = DAT_counter;\n\
+             \x20 LeaveCriticalSection(&local_20);\n",
+        ),
+    );
+
+    let workspace = TempDir::new().expect("workspace temp dir");
+    let result = SyncEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = SyncPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let races: Vec<&SyncFinding> = loaded
+        .findings
+        .iter()
+        .filter(|finding| finding.kind() == "data_race")
+        .collect();
+    assert_eq!(races.len(), 1, "one race per function pair and global");
+
+    // The record keeps both functions and the shared variable through
+    // the round trip, one rung below the evidence-based kinds.
+    let SyncFinding::DataRace(record) = races[0] else {
+        unreachable!("the shared global reads as a data race");
+    };
+    assert_eq!(record.function, "FUN_18003ab00");
+    assert_eq!(record.partner, "FUN_18003e750");
+    assert_eq!(record.variable, "DAT_counter");
+    assert_eq!(record.confidence, 60);
+    assert_eq!(
+        record.evidence,
+        "FUN_18003ab00: DAT_counter = iVar1 + 1; FUN_18003e750: uVar1 = DAT_counter;"
+    );
+    assert!(races[0].target().contains("DAT_counter"));
+
+    // The cross-function finding lands after the per-function
+    // findings, so the persisted document stays diffable.
+    let order: Vec<(&str, &str)> = loaded
+        .findings
+        .iter()
+        .map(|finding| (finding.function(), finding.kind()))
+        .collect();
+    assert_eq!(
+        order,
+        vec![("FUN_18003e750", "mutex"), ("FUN_18003ab00", "data_race"),]
+    );
+
+    // The escalate prompt describes the race with its kind and
+    // confidence, like every other detector's records.
+    let findings: Vec<calxgloss_prompts::ConcurrencyInfo> = loaded
+        .findings
+        .iter()
+        .map(calxgloss_prompts::ConcurrencyInfo::from)
+        .collect();
+    let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
+        "FUN_18003ab00".into(),
+        "eqmain.dll".into(),
+        "fn fun_18003ab00() { /* reads and writes a shared counter */ }".into(),
+        "Wrong result".into(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        findings,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("the escalate prompt should render");
+
+    assert!(prompt.contains("CONCURRENCY"));
+    assert!(prompt.contains("guard the shared global with one lock held by both functions"));
+    assert!(prompt.contains("data_race construct, confidence 60"));
+    assert!(prompt.contains("FUN_18003ab00: DAT_counter = iVar1 + 1"));
+}
+
+// ------------------------------------------------------------
 // Cache behavior
 // ------------------------------------------------------------
 

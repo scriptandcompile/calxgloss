@@ -852,6 +852,170 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn two_functions_sharing_an_unprotected_global_land_a_data_race_finding() {
+        // The shape neither body reads on its own: one function stores
+        // into a program global under no lock, another reads the same
+        // global, and nothing guards either side.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  DAT_counter = iVar1 + 1;\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  uVar1 = DAT_counter;\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let race = result
+            .findings
+            .iter()
+            .find(|finding| finding.kind() == "data_race")
+            .expect("the shared global reads as a data race");
+        let SyncFinding::DataRace(record) = race else {
+            unreachable!("the shared global reads as a data race");
+        };
+        assert_eq!(record.function, "FUN_18003ab00");
+        assert_eq!(record.partner, "FUN_18003e750");
+        assert_eq!(record.variable, "DAT_counter");
+        assert_eq!(
+            record.suggestion,
+            "guard the shared global with one lock held by both functions"
+        );
+        // The unprotected side is absence-of-evidence: one rung below
+        // the evidence-based kinds.
+        assert_eq!(record.confidence, 60);
+        assert_eq!(
+            record.evidence,
+            "FUN_18003ab00: DAT_counter = iVar1 + 1; FUN_18003e750: uVar1 = DAT_counter;"
+        );
+        assert_eq!(race.target(), "DAT_counter");
+    }
+
+    #[tokio::test]
+    async fn the_same_lock_object_held_by_both_functions_suppresses_the_race() {
+        // Both sides guard the global with one lock object: the scan
+        // pairs the locks in-body and the race claim is withdrawn.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  EnterCriticalSection(&guard);\n  DAT_counter = 5;\n  LeaveCriticalSection(&guard);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  EnterCriticalSection(&guard);\n  uVar1 = DAT_counter;\n  LeaveCriticalSection(&guard);\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        assert!(
+            result
+                .findings
+                .iter()
+                .all(|finding| finding.kind() != "data_race"),
+            "both sides hold the same lock over the data"
+        );
+        assert_eq!(
+            result
+                .findings
+                .iter()
+                .filter(|finding| finding.kind() == "mutex")
+                .count(),
+            2,
+            "the pairs still read as mutex findings on their own"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_function_that_will_not_decompile_contributes_no_race() {
+        // The pass reads only the bodies the scan kept: the surviving
+        // function's store has no partner to pair with, so the scan
+        // claims no race against the function whose body never arrived.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  DAT_counter = 5;\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  uVar1 = DAT_counter;\n",
+            ),
+        );
+        program.fail_decompiles = vec!["FUN_18003e750".into()];
+        let result = scan(program).await;
+
+        assert!(
+            result
+                .findings
+                .iter()
+                .all(|finding| finding.kind() != "data_race"),
+            "a missing body names no access and forms no pair"
+        );
+    }
+
+    #[tokio::test]
+    async fn data_race_findings_append_after_the_per_function_findings() {
+        // One function carries an in-body lock pair and an unprotected
+        // store the other function reads: the pairings ride the
+        // per-function walk, the race lands after every function's own
+        // findings.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  EnterCriticalSection(&local_20);\n  DAT_counter = 5;\n  LeaveCriticalSection(&local_20);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  uVar1 = DAT_counter;\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let order: Vec<(&str, &str)> = result
+            .findings
+            .iter()
+            .map(|finding| (finding.function(), finding.kind()))
+            .collect();
+        assert_eq!(
+            order,
+            vec![("FUN_18003ab00", "mutex"), ("FUN_18003ab00", "data_race"),]
+        );
+    }
+
+    #[tokio::test]
     async fn scan_decompiles_each_function_exactly_once() {
         // The four detectors share one fetch per function; a scan
         // that asked each detector for its own copy would quadruple

@@ -51,7 +51,10 @@
 //!   scan keeps: `CrossFunctionAnalyzer` derives each body's lock
 //!   acquisition sequence from the already-fetched decompiles and
 //!   reports two functions acquiring the same two locks in opposite
-//!   orders as a `lock_order` conflict — no extra Ghidra round trips.
+//!   orders as a `lock_order` conflict, then reads the same bodies for
+//!   one function writing a program global another reads with no lock
+//!   both sides respect, as a `data_race` claim — no extra Ghidra
+//!   round trips.
 //! - [`engine`] - Scan orchestration: `SyncEngine` runs the per-body
 //!   detectors over one open Ghidra program through a `ScanSource`
 //!   (function listing + decompile-by-name), one sequential pass that
@@ -84,7 +87,11 @@ pub use types::AsyncLoop;
 pub use types::AsyncOperation;
 pub use types::AsyncRuntime;
 pub use types::AsyncRuntimeUsage;
+pub use types::CrossFunctionDataRace;
 pub use types::CrossFunctionLockOrder;
+pub use types::DataRace;
+pub use types::DataRaceConflict;
+pub use types::DataRaceRecord;
 pub use types::Futex;
 pub use types::FutexCall;
 pub use types::FutexOperation;

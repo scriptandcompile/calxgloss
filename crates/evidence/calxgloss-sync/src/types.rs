@@ -347,6 +347,55 @@ pub type LockOrderRecord = LockOrder;
 pub type CrossFunctionLockOrder = LockOrder;
 
 // ============================================================
+// Data races
+// ============================================================
+
+/// One data-race observation spanning two functions, with the evidence
+/// behind it.
+///
+/// A record says two functions access the same global —
+/// [`function`](Self::function) and [`partner`](Self::partner) both
+/// name [`variable`](Self::variable) in their bodies — and no single
+/// lock object covers the accesses: at least one side sits outside
+/// every recognized acquire→release span, or the two sides protect
+/// their accesses with different locks. That is the shape a data race
+/// takes when both run at once, which neither body reveals on its own.
+/// It reads as [`suggestion`](Self::suggestion): one lock guarding the
+/// global, held on both sides. The unprotected side is
+/// absence-of-evidence — the body shows no lock, not proof none exists
+/// — so the claim sits one rung below the evidence-based kinds (60
+/// against 70). Both access lines are kept as
+/// [`evidence`](Self::evidence) so a reviewer (or a translation prompt)
+/// can check the reasoning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DataRace {
+    /// The function the record is about — the earlier one in listing
+    /// order, the one whose access line the evidence names first.
+    pub function: String,
+    /// The other function accessing the same global, the later one in
+    /// listing order.
+    pub partner: String,
+    /// The shared global both bodies name.
+    pub variable: String,
+    /// The Rust pattern the race suggests, e.g. one lock guarding the
+    /// global with both functions holding it.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+    /// The two functions' access lines, kept so a reviewer (or a
+    /// translation prompt) can check the reasoning.
+    pub evidence: String,
+}
+
+// Compatibility aliases for the data-race record's spelling.
+/// Alias of [`DataRace`], for consumers that name the reading after the shape.
+pub type DataRaceConflict = DataRace;
+/// Alias of [`DataRace`], for consumers that name the reading after the record.
+pub type DataRaceRecord = DataRace;
+/// Alias of [`DataRace`], naming the cross-function origin of the claim.
+pub type CrossFunctionDataRace = DataRace;
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -377,6 +426,8 @@ pub enum SyncFinding {
     Futex(Futex),
     /// A lock-order conflict spanning two functions.
     LockOrder(LockOrder),
+    /// Two functions accessing one global with no lock both sides hold.
+    DataRace(DataRace),
 }
 
 impl SyncFinding {
@@ -390,6 +441,7 @@ impl SyncFinding {
             SyncFinding::AsyncRuntime(record) => &record.function,
             SyncFinding::Futex(record) => &record.function,
             SyncFinding::LockOrder(record) => &record.function,
+            SyncFinding::DataRace(record) => &record.function,
         }
     }
 
@@ -403,6 +455,7 @@ impl SyncFinding {
             SyncFinding::AsyncRuntime(record) => &record.suggestion,
             SyncFinding::Futex(record) => &record.suggestion,
             SyncFinding::LockOrder(record) => &record.suggestion,
+            SyncFinding::DataRace(record) => &record.suggestion,
         }
     }
 
@@ -416,6 +469,7 @@ impl SyncFinding {
             SyncFinding::AsyncRuntime(record) => record.confidence,
             SyncFinding::Futex(record) => record.confidence,
             SyncFinding::LockOrder(record) => record.confidence,
+            SyncFinding::DataRace(record) => record.confidence,
         }
     }
 
@@ -429,6 +483,7 @@ impl SyncFinding {
             SyncFinding::AsyncRuntime(record) => &record.evidence,
             SyncFinding::Futex(record) => &record.evidence,
             SyncFinding::LockOrder(record) => &record.evidence,
+            SyncFinding::DataRace(record) => &record.evidence,
         }
     }
 
@@ -443,6 +498,7 @@ impl SyncFinding {
             SyncFinding::AsyncRuntime(_) => "async_runtime",
             SyncFinding::Futex(_) => "futex",
             SyncFinding::LockOrder(_) => "lock_order",
+            SyncFinding::DataRace(_) => "data_race",
         }
     }
 
@@ -466,6 +522,7 @@ impl SyncFinding {
             SyncFinding::LockOrder(record) => {
                 format!("{}→{}", record.first_lock, record.second_lock)
             }
+            SyncFinding::DataRace(record) => record.variable.clone(),
         }
     }
 }
@@ -503,7 +560,8 @@ impl From<&SyncFinding> for calxgloss_prompts::ConcurrencyInfo {
 /// pairings, then the atomic calls, then the thread spawns, then the
 /// TLS records, then the async-runtime shapes, then the futex calls —
 /// and after every function, the cross-function findings in listing
-/// order. The detectors read disjoint body shapes, so a function can
+/// order, the lock-order conflicts before the data races. The detectors
+/// read disjoint body shapes, so a function can
 /// carry findings of every kind at once and none competes with
 /// another; the stable order means two scans of the same program diff
 /// cleanly.
@@ -838,6 +896,46 @@ mod tests {
         assert_eq!(finding.target(), "local_20→local_40");
     }
 
+    fn data_race() -> DataRace {
+        DataRace {
+            function: "FUN_18003ab00".into(),
+            partner: "FUN_18003e750".into(),
+            variable: "DAT_counter".into(),
+            suggestion: "guard the shared global with one lock held by both functions".into(),
+            confidence: Confidence::new(60),
+            evidence: "FUN_18003ab00: DAT_counter = iVar1 + 1; \
+                       FUN_18003e750: uVar1 = DAT_counter;"
+                .into(),
+        }
+    }
+
+    #[test]
+    fn a_data_race_record_serde_round_trips() {
+        let record = data_race();
+        let json = serde_json::to_string(&record).expect("data-race record should serialize");
+        let back: DataRace =
+            serde_json::from_str(&json).expect("data-race record should read back");
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn a_data_race_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = SyncFinding::DataRace(data_race());
+        let json = serde_json::to_string(&finding).expect("data-race finding should serialize");
+        assert!(json.contains("\"kind\":\"data_race\""));
+        assert!(json.contains("\"partner\":\"FUN_18003e750\""));
+        assert!(json.contains("\"variable\":\"DAT_counter\""));
+        let back: SyncFinding =
+            serde_json::from_str(&json).expect("data-race finding should read back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
+    fn a_data_race_target_names_the_shared_variable() {
+        let finding = SyncFinding::DataRace(data_race());
+        assert_eq!(finding.target(), "DAT_counter");
+    }
+
     #[test]
     fn the_union_accessors_reach_through_every_variant() {
         let findings = [
@@ -995,6 +1093,20 @@ mod tests {
         assert_eq!(
             info.evidence,
             "FUN_18003ab00: local_20 -> local_40; FUN_18003e750: local_40 -> local_20"
+        );
+
+        let data_race = SyncFinding::DataRace(data_race());
+        let info = calxgloss_prompts::ConcurrencyInfo::from(&data_race);
+        assert_eq!(info.function, "FUN_18003ab00");
+        assert_eq!(info.kind, "data_race");
+        assert_eq!(
+            info.suggestion,
+            "guard the shared global with one lock held by both functions"
+        );
+        assert_eq!(info.confidence, 60);
+        assert_eq!(
+            info.evidence,
+            "FUN_18003ab00: DAT_counter = iVar1 + 1; FUN_18003e750: uVar1 = DAT_counter;"
         );
     }
 }

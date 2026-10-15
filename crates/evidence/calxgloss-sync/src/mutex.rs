@@ -286,7 +286,12 @@ fn plain_variable(arg: &str) -> Option<&str> {
 /// vocabulary the other detectors' scans strip, plus the lock struct
 /// names the decompiler writes when the program carries pthread debug
 /// info.
-fn is_type_word(word: &str) -> bool {
+///
+/// The cross-function data-race reading reuses this vocabulary so the
+/// two readings cannot disagree about what a type word is — a word the
+/// pairing strips out of a cast is a word the race reading never reads
+/// as a global.
+pub(crate) fn is_type_word(word: &str) -> bool {
     matches!(
         word,
         "undefined"

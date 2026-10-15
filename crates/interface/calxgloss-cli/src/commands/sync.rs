@@ -105,6 +105,7 @@ fn print_concurrency_report(result: &SyncResult, path: &Path) {
         "async_runtime",
         "futex",
         "lock_order",
+        "data_race",
     ]
     .into_iter()
     .map(|kind| {
