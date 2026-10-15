@@ -16,6 +16,8 @@
 //!   structure of one body — conditional-edge count against basic-block
 //!   count, classified as a dispatch-table candidate or a sequential
 //!   scan, read off the same graph.
+//! - `MutualRecursion`: a call cycle of two or more functions —
+//!   `A ↔ B`, `A → B → C → A` — read across the bodies one scan keeps.
 //! - `ControlFlowFinding`: the union over the record kinds — one
 //!   finding whichever detector made it — serde-tagged by `kind`.
 //! - `ControlFlowResult`, `ScanMetadata`: the persisted per-binary result
@@ -314,6 +316,46 @@ pub struct BranchDensity {
 }
 
 // ============================================================
+// Mutual recursion
+// ============================================================
+
+/// One mutual-recursion observation spanning two or more functions,
+/// with the evidence behind it.
+///
+/// A record says the functions named in [`cycle`](Self::cycle) call
+/// each other in a ring — `A ↔ B`, `A → B → C → A` — the recursion
+/// shape no single body can see because every call sits in somebody
+/// else's closing brace. The record attaches to the cycle's earliest
+/// member in listing order ([`function`](Self::function)) and names
+/// every member in cycle order, the ring closing back onto the first.
+/// The cycle reads like [`suggestion`](Self::suggestion): translate it
+/// together — an explicit stack, a trampoline, or an enum-driven loop.
+/// Every edge of the cycle is an explicit call in a kept body, so the
+/// claim sits level with an in-body self-call, at confidence **70**.
+/// The cycle's call edges, spelled in cycle order and closing back on
+/// the first member, are kept as [`evidence`](Self::evidence) so a
+/// reviewer (or a translation prompt) can check the reasoning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MutualRecursion {
+    /// The function the record is attached to — the cycle's earliest
+    /// member in listing order.
+    pub function: String,
+    /// Every function in the cycle, in cycle order, starting from
+    /// [`function`](Self::function); the ring closes back onto it.
+    pub cycle: Vec<String>,
+    /// The Rust pattern the cycle suggests, e.g. translating the cycle
+    /// together via an explicit stack, a trampoline, or an enum-driven
+    /// loop.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+    /// The cycle's call edges in cycle order, closing back on the first
+    /// member, kept so a reviewer (or a translation prompt) can check
+    /// the reasoning.
+    pub evidence: String,
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -343,6 +385,9 @@ pub enum ControlFlowFinding {
     /// basic blocks, classified dispatch-table candidate or sequential
     /// scan.
     BranchDensity(BranchDensity),
+    /// A call cycle of two or more functions — mutual recursion read
+    /// across the bodies one scan keeps.
+    MutualRecursion(MutualRecursion),
 }
 
 impl ControlFlowFinding {
@@ -354,6 +399,7 @@ impl ControlFlowFinding {
             ControlFlowFinding::StateMachine(record) => &record.function,
             ControlFlowFinding::Loop(record) => &record.function,
             ControlFlowFinding::BranchDensity(record) => &record.function,
+            ControlFlowFinding::MutualRecursion(record) => &record.function,
         }
     }
 
@@ -365,6 +411,7 @@ impl ControlFlowFinding {
             ControlFlowFinding::StateMachine(record) => &record.suggestion,
             ControlFlowFinding::Loop(record) => &record.suggestion,
             ControlFlowFinding::BranchDensity(record) => &record.suggestion,
+            ControlFlowFinding::MutualRecursion(record) => &record.suggestion,
         }
     }
 
@@ -376,6 +423,7 @@ impl ControlFlowFinding {
             ControlFlowFinding::StateMachine(record) => record.confidence,
             ControlFlowFinding::Loop(record) => record.confidence,
             ControlFlowFinding::BranchDensity(record) => record.confidence,
+            ControlFlowFinding::MutualRecursion(record) => record.confidence,
         }
     }
 
@@ -387,12 +435,13 @@ impl ControlFlowFinding {
             ControlFlowFinding::StateMachine(record) => &record.evidence,
             ControlFlowFinding::Loop(record) => &record.evidence,
             ControlFlowFinding::BranchDensity(record) => &record.evidence,
+            ControlFlowFinding::MutualRecursion(record) => &record.evidence,
         }
     }
 
     /// The serde `kind` tag — `switch`, `recursion`, `state_machine`,
-    /// `loop`, or `branch_density` — naming the detector behind the
-    /// finding.
+    /// `loop`, `branch_density`, or `mutual_recursion` — naming the
+    /// detector behind the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             ControlFlowFinding::Switch(_) => "switch",
@@ -400,13 +449,15 @@ impl ControlFlowFinding {
             ControlFlowFinding::StateMachine(_) => "state_machine",
             ControlFlowFinding::Loop(_) => "loop",
             ControlFlowFinding::BranchDensity(_) => "branch_density",
+            ControlFlowFinding::MutualRecursion(_) => "mutual_recursion",
         }
     }
 
     /// What the finding names, spelled for a report row: the variable
     /// the switch chain compares, the function that recurses, the state
     /// variable the machine dispatches on, the loop shapes the body
-    /// carries, or the branch-density verdict.
+    /// carries, the branch-density verdict, or the functions in the
+    /// call cycle.
     pub fn target(&self) -> String {
         match self {
             ControlFlowFinding::Switch(record) => record.variable.clone(),
@@ -414,6 +465,7 @@ impl ControlFlowFinding {
             ControlFlowFinding::StateMachine(record) => record.state_var.clone(),
             ControlFlowFinding::Loop(record) => LoopKind::labels(&record.kinds_seen),
             ControlFlowFinding::BranchDensity(record) => record.classification.label().to_string(),
+            ControlFlowFinding::MutualRecursion(record) => record.cycle.join(" → "),
         }
     }
 }
@@ -445,7 +497,8 @@ impl From<&ControlFlowFinding> for calxgloss_prompts::ControlFlowInfo {
 /// The findings are the detectors' outputs in scan order: function by
 /// function, and within one function the switch chains, then the
 /// recursion, then the state machines, then the loop structure, then
-/// the branch density. A
+/// the branch density — and after every function, the cross-function
+/// mutual-recursion cycles in listing order. A
 /// function can carry findings of several kinds at once — the switch
 /// and state-machine detectors read the same chain shape from opposite
 /// sides — and the stable order means two scans of the same program
@@ -550,6 +603,18 @@ mod tests {
             suggestion: "express as a match or dispatch table".into(),
             confidence: Confidence::new(60),
             evidence: "6 conditional edges / 8 blocks (density 0.75)".into(),
+        }
+    }
+
+    fn mutual_recursion() -> MutualRecursion {
+        MutualRecursion {
+            function: "FUN_18003ab00".into(),
+            cycle: vec!["FUN_18003ab00".into(), "FUN_18003e750".into()],
+            suggestion: "translate the cycle together via an explicit stack, a trampoline, or an \
+                         enum-driven loop"
+                .into(),
+            confidence: Confidence::new(70),
+            evidence: "FUN_18003ab00() -> FUN_18003e750() -> FUN_18003ab00()".into(),
         }
     }
 
@@ -690,6 +755,31 @@ mod tests {
     }
 
     #[test]
+    fn a_mutual_recursion_serde_round_trips() {
+        let record = mutual_recursion();
+        let json =
+            serde_json::to_string(&record).expect("mutual recursion record should serialize");
+        // The cycle serializes as a plain list of names in cycle order.
+        assert!(json.contains("\"cycle\":[\"FUN_18003ab00\",\"FUN_18003e750\"]"));
+        assert!(json.contains("\"confidence\":70"));
+        let back: MutualRecursion =
+            serde_json::from_str(&json).expect("mutual recursion record should read back");
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn a_mutual_recursion_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = ControlFlowFinding::MutualRecursion(mutual_recursion());
+        let json =
+            serde_json::to_string(&finding).expect("mutual recursion finding should serialize");
+        assert!(json.contains("\"kind\":\"mutual_recursion\""));
+        assert!(json.contains("\"cycle\":[\"FUN_18003ab00\",\"FUN_18003e750\"]"));
+        let back: ControlFlowFinding =
+            serde_json::from_str(&json).expect("mutual recursion finding should read back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
     fn the_union_accessors_reach_through_every_variant() {
         let findings = [
             ControlFlowFinding::Switch(switch_chain()),
@@ -697,6 +787,7 @@ mod tests {
             ControlFlowFinding::StateMachine(state_machine()),
             ControlFlowFinding::Loop(loop_nesting()),
             ControlFlowFinding::BranchDensity(branch_density()),
+            ControlFlowFinding::MutualRecursion(mutual_recursion()),
         ];
         for finding in &findings {
             assert!(!finding.function().is_empty());
@@ -711,7 +802,8 @@ mod tests {
                 "recursion",
                 "state_machine",
                 "loop",
-                "branch_density"
+                "branch_density",
+                "mutual_recursion"
             ]
         );
         let functions: Vec<&str> = findings.iter().map(|f| f.function()).collect();
@@ -722,6 +814,7 @@ mod tests {
                 "FUN_18003e750",
                 "FUN_1800412a0",
                 "FUN_18003e750",
+                "FUN_18003ab00",
                 "FUN_18003ab00"
             ]
         );
@@ -735,7 +828,8 @@ mod tests {
                 "FUN_18003e750",
                 "local_4",
                 "for/while/do-while",
-                "dispatch-table candidate"
+                "dispatch-table candidate",
+                "FUN_18003ab00 → FUN_18003e750"
             ]
         );
     }
@@ -784,6 +878,17 @@ mod tests {
         assert!(
             info.evidence
                 .contains("6 conditional edges / 8 blocks (density 0.75)")
+        );
+
+        let mutual = ControlFlowFinding::MutualRecursion(mutual_recursion());
+        let info = calxgloss_prompts::ControlFlowInfo::from(&mutual);
+        assert_eq!(info.function, "FUN_18003ab00");
+        assert_eq!(info.kind, "mutual_recursion");
+        assert_eq!(info.confidence, 70);
+        assert!(info.suggestion.contains("explicit stack"));
+        assert!(
+            info.evidence
+                .contains("FUN_18003ab00() -> FUN_18003e750() -> FUN_18003ab00()")
         );
     }
 

@@ -11,7 +11,9 @@
 //!   function), and the persisted list keeps every finding in scan
 //!   order: function by function, and within one function the switch
 //!   chains, then the recursion, then the state machines, then the
-//!   loop reading, then the branch density.
+//!   loop reading, then the branch density — and after every
+//!   function, the cross-function mutual-recursion cycles in listing
+//!   order.
 //! - **Cache behavior** — the `exists` check decides whether a scan
 //!   runs, and a rescan replaces the cached document.
 //!
@@ -53,7 +55,9 @@ fn function(name: &str, signature: &str, body: &str) -> DecompiledFunction {
 /// trailing default, a self-call inside one arm, and a `while` loop
 /// inside another, one function whose
 /// body is a named-constant state chain over `state` with transition
-/// assignments, and one plain function that finds nothing.
+/// assignments, and one plain function that finds nothing. The first
+/// two functions also call each other, so the cross-function pass has
+/// a mutual-recursion cycle to read.
 #[derive(Clone, Default)]
 struct FakeProgram {
     listing: Vec<FunctionSummary>,
@@ -156,7 +160,7 @@ fn program() -> FakeProgram {
              \x20   FUN_18003ab00(param_1 - 1);\n\
              \x20 }\n\
              \x20 else if (local_4 == 0x10) {\n\
-             \x20   puts(\"sixteen\");\n\
+             \x20   FUN_1800412a0();\n\
              \x20 }\n\
              \x20 else {\n\
              \x20   puts(\"other\");\n\
@@ -175,7 +179,7 @@ fn program() -> FakeProgram {
              \x20   state = STATE_DONE;\n\
              \x20 }\n\
              \x20 else if (state == STATE_DONE) {\n\
-             \x20   return;\n\
+             \x20   FUN_18003ab00(1);\n\
              \x20 }\n",
         ),
     );
@@ -220,11 +224,13 @@ async fn a_scan_files_its_result_in_the_workspace_and_reads_back() {
 
 #[tokio::test]
 async fn the_persisted_document_keeps_findings_in_scan_order() {
-    // The five detectors read one body in one pass, so what reaches
-    // disk is function by function in listing order and, within one
-    // function, the switch chains, then the recursion, then the state
-    // machines, then the loop reading, then the branch density — the
-    // order two scans diff against.
+    // The five detectors read one body in one pass and the
+    // cross-function pass reads the kept bodies after the walk, so
+    // what reaches disk is function by function in listing order and,
+    // within one function, the switch chains, then the recursion,
+    // then the state machines, then the loop reading, then the branch
+    // density — and only then the mutual-recursion cycle, attached to
+    // the cycle's earliest member — the order two scans diff against.
     let workspace = TempDir::new().unwrap();
     let result = ControlFlowEngine::with_source(program())
         .scan("eqmain.dll")
@@ -249,6 +255,7 @@ async fn the_persisted_document_keeps_findings_in_scan_order() {
             ("FUN_1800412a0", "switch"),
             ("FUN_1800412a0", "state_machine"),
             ("FUN_1800412a0", "branch_density"),
+            ("FUN_18003ab00", "mutual_recursion"),
         ]
     );
 }
@@ -272,7 +279,7 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     // The pipeline asks what was found for the function it is about to
     // translate; the plain function carries nothing.
     let findings: Vec<&ControlFlowFinding> = loaded.for_function("FUN_18003ab00").collect();
-    assert_eq!(findings.len(), 4);
+    assert_eq!(findings.len(), 5);
     assert!(loaded.for_function("FUN_18003e750").next().is_none());
     assert!(loaded.for_function("FUN_180099999").next().is_none());
 
@@ -336,6 +343,24 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     );
     assert_eq!(record.confidence.value(), 60);
 
+    // The cross-function cycle rode the walk's kept bodies: it lands
+    // last, attached to the cycle's earliest member, naming both
+    // members in cycle order through the round trip.
+    let ControlFlowFinding::MutualRecursion(record) = findings[4] else {
+        unreachable!("the mutual calls read as a mutual_recursion finding");
+    };
+    assert_eq!(record.function, "FUN_18003ab00");
+    assert_eq!(record.cycle, ["FUN_18003ab00", "FUN_1800412a0"]);
+    assert_eq!(
+        record.suggestion,
+        "translate the cycle together via an explicit stack, a trampoline, or an enum-driven loop"
+    );
+    assert_eq!(
+        record.evidence,
+        "FUN_18003ab00() -> FUN_1800412a0() -> FUN_18003ab00()"
+    );
+    assert_eq!(record.confidence.value(), 70);
+
     // The state chain reads as both a switch and a state machine —
     // nothing is suppressed between the detectors.
     let state_findings: Vec<&ControlFlowFinding> = loaded.for_function("FUN_1800412a0").collect();
@@ -388,7 +413,7 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
         .for_function("FUN_18003ab00")
         .map(calxgloss_prompts::ControlFlowInfo::from)
         .collect();
-    assert_eq!(findings.len(), 4, "the target function's four findings");
+    assert_eq!(findings.len(), 5, "the target function's five findings");
 
     let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
         "FUN_18003ab00".into(),
@@ -425,6 +450,11 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
     assert!(prompt.contains("express as a match or dispatch table"));
     assert!(prompt.contains("branch_density construct, confidence 60"));
     assert!(prompt.contains("6 conditional edges / 10 blocks (density 0.60)"));
+    assert!(prompt.contains(
+        "translate the cycle together via an explicit stack, a trampoline, or an enum-driven loop"
+    ));
+    assert!(prompt.contains("mutual_recursion construct, confidence 70"));
+    assert!(prompt.contains("FUN_18003ab00() -> FUN_1800412a0() -> FUN_18003ab00()"));
 }
 
 // ------------------------------------------------------------

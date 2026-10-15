@@ -238,7 +238,7 @@ pub use calxgloss_callback::types::{
 pub use calxgloss_controlflow::ControlFlowError;
 pub use calxgloss_controlflow::types::{
     BranchClassification, BranchDensity, ControlFlowFinding, ControlFlowResult, LoopKind,
-    LoopNesting, SelfRecursion, StateMachine, SwitchChain,
+    LoopNesting, MutualRecursion, SelfRecursion, StateMachine, SwitchChain,
 };
 
 // ============================================================

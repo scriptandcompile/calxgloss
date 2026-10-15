@@ -13,15 +13,23 @@
 //! listing: like sync's disjoint families there is nothing to resolve
 //! between the detectors, and keeping the pass sequential keeps the
 //! persisted finding list in a stable, diffable order.
+//!
+//! The walk keeps each body it successfully decompiled, and after the
+//! per-function walk the cross-function pass reads mutual-recursion
+//! call cycles off those kept bodies — like the memory (ADR-0027),
+//! sync (ADR-0033), and callback (ADR-0035) passes, no new
+//! [`ScanSource`] reads, so the exactly-once-decompile guarantee and
+//! the skip-rate breaker survive untouched.
 
 use crate::branch_density::BranchDensityDetector;
+use crate::cross_function::CrossFunctionAnalyzer;
 use crate::error::Result;
 use crate::loop_detect::LoopDetector;
 use crate::recursion::RecursionDetector;
 use crate::state_machine::StateMachineDetector;
 use crate::switch::SwitchChainDetector;
 use crate::types::{ControlFlowFinding, ControlFlowResult, ScanMetadata};
-use calxgloss_ghidra::GhidraClient;
+use calxgloss_ghidra::{DecompiledFunction, GhidraClient};
 use std::time::Instant;
 use tracing::{info, warn};
 
@@ -53,6 +61,7 @@ pub struct ControlFlowEngine<S = GhidraClient> {
     state_machine: StateMachineDetector,
     loops: LoopDetector,
     branch_density: BranchDensityDetector,
+    cross_function: CrossFunctionAnalyzer,
 }
 
 impl ControlFlowEngine<GhidraClient> {
@@ -66,6 +75,7 @@ impl ControlFlowEngine<GhidraClient> {
             state_machine: StateMachineDetector::default(),
             loops: LoopDetector::default(),
             branch_density: BranchDensityDetector::default(),
+            cross_function: CrossFunctionAnalyzer::new(),
         }
     }
 }
@@ -81,6 +91,7 @@ impl<S> ControlFlowEngine<S> {
             state_machine: StateMachineDetector::default(),
             loops: LoopDetector::default(),
             branch_density: BranchDensityDetector::default(),
+            cross_function: CrossFunctionAnalyzer::new(),
         }
     }
 
@@ -127,7 +138,9 @@ impl<S> ControlFlowEngine<S> {
     /// findings follow the function listing — function by function, and
     /// within one function the switch chains, then the recursion, then
     /// the state machines, then the loop reading, then the branch
-    /// density — so two scans of the same program diff cleanly.
+    /// density — and after every function the cross-function
+    /// mutual-recursion cycles, in listing order of their earliest
+    /// member; two scans of the same program diff cleanly.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad
     /// entry point) is skipped with a warning; only a failure of the
@@ -148,6 +161,7 @@ impl<S> ControlFlowEngine<S> {
         let functions = self.source.functions().await?;
 
         let mut findings = Vec::new();
+        let mut kept: Vec<DecompiledFunction> = Vec::new();
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
         for function in &functions {
@@ -219,7 +233,14 @@ impl<S> ControlFlowEngine<S> {
                     .into_iter()
                     .map(ControlFlowFinding::BranchDensity),
             );
+            kept.push(decompiled);
         }
+
+        // The cross-function pass runs after the per-function walk,
+        // over the bodies the scan already decompiled — no extra
+        // Ghidra round trips — and its mutual-recursion cycles append
+        // in listing order, after the per-function findings.
+        findings.extend(self.cross_function.analyze(&kept));
 
         let mut metadata = ScanMetadata::new(binary);
         metadata.duration_secs = started.elapsed().as_secs();
@@ -406,6 +427,13 @@ mod tests {
         )
     }
 
+    /// The every-shape body plus a call to `partner`, so two of these
+    /// bodies spelled to name each other close a mutual-recursion
+    /// cycle the cross-function pass can read.
+    fn mutual_shape_body(name: &str, partner: &str) -> String {
+        format!("{}\n  {partner}(0);", every_shape_body(name))
+    }
+
     /// The canned program: one function whose body carries every
     /// shape, and one plain function that finds nothing.
     fn program() -> FakeProgram {
@@ -500,10 +528,12 @@ mod tests {
 
     #[tokio::test]
     async fn scan_keeps_findings_in_scan_order() {
-        // Both functions carry every shape, so the persisted list must
-        // group their findings by function in listing order — and
-        // within one function run switch, recursion, state machine,
-        // loop, then branch density — never interleaved.
+        // Both functions carry every shape and call each other, so the
+        // persisted list must group their findings by function in
+        // listing order — and within one function run switch,
+        // recursion, state machine, loop, then branch density — never
+        // interleaved, with the cross-function mutual-recursion cycle
+        // appended after every per-function finding.
         let mut program = program();
         program.listing = vec![summary("FUN_18003e750"), summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -511,7 +541,15 @@ mod tests {
             function(
                 "FUN_18003e750",
                 "undefined FUN_18003e750(void)",
-                &every_shape_body("FUN_18003e750"),
+                &mutual_shape_body("FUN_18003e750", "FUN_18003ab00"),
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                &mutual_shape_body("FUN_18003ab00", "FUN_18003e750"),
             ),
         );
         let result = scan(program).await;
@@ -534,7 +572,190 @@ mod tests {
                 ("FUN_18003ab00", "state_machine"),
                 ("FUN_18003ab00", "loop"),
                 ("FUN_18003ab00", "branch_density"),
+                ("FUN_18003e750", "mutual_recursion"),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn mutual_recursion_across_two_bodies_lands_one_finding_on_the_earlier_function() {
+        // FUN_a calls FUN_b and FUN_b calls FUN_a: the ring is
+        // invisible to every per-body detector, so the cross-function
+        // pass lands one mutual_recursion finding on the earlier
+        // function in listing order, naming both members in cycle
+        // order at the self-call's own confidence.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(int param_1)",
+                "  FUN_18003e750(param_1);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(int param_1)",
+                "  FUN_18003ab00(param_1);\n",
+            ),
+        );
+        let program_for_checks = program.clone();
+        let result = scan(program).await;
+
+        let findings: Vec<&ControlFlowFinding> = result.for_function("FUN_18003ab00").collect();
+        assert_eq!(
+            findings.len(),
+            1,
+            "one cycle finding on the earlier function"
+        );
+        let ControlFlowFinding::MutualRecursion(record) = findings[0] else {
+            unreachable!("the call ring reads as a mutual_recursion finding");
+        };
+        assert_eq!(record.cycle, ["FUN_18003ab00", "FUN_18003e750"]);
+        assert_eq!(u8::from(record.confidence), 70);
+        assert_eq!(
+            record.suggestion,
+            "translate the cycle together via an explicit stack, a trampoline, or an enum-driven loop"
+        );
+        assert_eq!(
+            record.evidence,
+            "FUN_18003ab00() -> FUN_18003e750() -> FUN_18003ab00()"
+        );
+        assert!(
+            result.for_function("FUN_18003e750").next().is_none(),
+            "the cycle lands once, not once per member"
+        );
+        assert_eq!(
+            program_for_checks.decompiled(),
+            vec!["FUN_18003ab00", "FUN_18003e750"],
+            "the pass reads the kept bodies — no extra decompiles",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_three_function_cycle_lands_one_finding_naming_all_three_members() {
+        // FUN_a → FUN_b → FUN_c → FUN_a: indirect recursion is not
+        // missed by a pairwise-only reading — one finding names every
+        // member in cycle order.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![
+            summary("FUN_18003ab00"),
+            summary("FUN_1800412a0"),
+            summary("FUN_18003e750"),
+        ];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  FUN_1800412a0();\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_1800412a0".into(),
+            function(
+                "FUN_1800412a0",
+                "undefined FUN_1800412a0(void)",
+                "  FUN_18003e750();\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  FUN_18003ab00();\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let findings: Vec<&ControlFlowFinding> = result.findings.iter().collect();
+        assert_eq!(findings.len(), 1, "one finding for the whole ring");
+        let ControlFlowFinding::MutualRecursion(record) = findings[0] else {
+            unreachable!("the three-function ring reads as a mutual_recursion finding");
+        };
+        assert_eq!(record.function, "FUN_18003ab00");
+        assert_eq!(
+            record.cycle,
+            ["FUN_18003ab00", "FUN_1800412a0", "FUN_18003e750"]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_acyclic_call_shape_lands_no_mutual_recursion() {
+        // An ordinary call tree — FUN_a calls FUN_b, FUN_b returns —
+        // is not over-read as recursion.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(int param_1)",
+                "  FUN_18003e750(param_1);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(int param_1)",
+                "  return;\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        assert!(result.is_empty(), "a one-way call is not a recursion cycle",);
+    }
+
+    #[tokio::test]
+    async fn a_plain_self_call_lands_no_mutual_recursion() {
+        // The per-body recursion finding already covers the self-call;
+        // the cross-function pass must not double-report it as a
+        // cycle of one.
+        let result = scan(program()).await;
+
+        assert!(
+            result
+                .findings
+                .iter()
+                .all(|finding| finding.kind() != "mutual_recursion"),
+            "the fixture's self-calls stay the per-body recursion finding's story",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_function_that_will_not_decompile_fabricates_no_cycle() {
+        // FUN_a calls FUN_b and FUN_b calls FUN_a, but FUN_b's
+        // decompile fails: the kept bodies hold only FUN_a, whose call
+        // names no edge back, so the missing body fabricates no ring.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(int param_1)",
+                "  FUN_18003e750(param_1);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(int param_1)",
+                "  FUN_18003ab00(param_1);\n",
+            ),
+        );
+        program.fail_decompiles = vec!["FUN_18003e750".into()];
+        let result = scan(program).await;
+
+        assert!(
+            result.is_empty(),
+            "the skipped body carries no edges and claims no cycle",
         );
     }
 

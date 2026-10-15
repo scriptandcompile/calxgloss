@@ -123,8 +123,10 @@ fn returns_call_result(rest: &str) -> bool {
 
 /// How many times `needle` ("name(") appears in `line` outside a string
 /// literal and not as part of a longer identifier (`foo_bar(` must not
-/// match `foo(`).
-fn count_ident_calls(line: &str, needle: &str) -> usize {
+/// match `foo(`). The cross-function pass reuses this same scan to
+/// derive its call edges, so the recursion reading and the cycle
+/// reading cannot disagree about what a call site is.
+pub(crate) fn count_ident_calls(line: &str, needle: &str) -> usize {
     let bytes = line.as_bytes();
     let mut in_string = false;
     let mut escaped = false;

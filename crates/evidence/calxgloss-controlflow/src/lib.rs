@@ -4,7 +4,8 @@
 //! state-machine patterns, loop structure, and branch density within
 //! each function of
 //! an open Ghidra
-//! program. Results are injected as structured CONTROL FLOW sections
+//! program, and reads mutual-recursion call cycles across the bodies
+//! one scan keeps. Results are injected as structured CONTROL FLOW sections
 //! that name the Rust pattern — `match`, a dispatch table, `loop`,
 //! `enum State` — the translation should aim at, so a binary's
 //! dispatching and looping structure survives translation instead of
@@ -12,13 +13,13 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into eleven modules:
+//! The crate is organized into twelve modules:
 //!
 //! - [`types`] - Core data types: `SwitchChain`, `SelfRecursion`,
-//!   `StateMachine`, `LoopNesting` (with `LoopKind`), and `BranchDensity`
-//!   (with `BranchClassification`) for the per-function detection
-//!   records;
-//!   `ControlFlowFinding` as the union over the five record kinds;
+//!   `StateMachine`, `LoopNesting` (with `LoopKind`), `BranchDensity`
+//!   (with `BranchClassification`), and `MutualRecursion` for the
+//!   detection records;
+//!   `ControlFlowFinding` as the union over the six record kinds;
 //!   `ControlFlowResult`, `ScanMetadata` for the persisted per-binary
 //!   results.
 //! - `chain` (crate-internal) - Shared chain walker: brace-depth-aware
@@ -46,11 +47,18 @@
 //!   `if`/`else if` heads against the CFG's basic blocks, landing one
 //!   `BranchDensity` finding per function — dispatch-table candidate or
 //!   sequential scan — and nothing for bodies too small to classify.
+//! - [`cross_function`] - Cross-function recursion readings:
+//!   `CrossFunctionAnalyzer` derives call edges from the bodies the
+//!   scan keeps — with the recursion detector's own call-site scan, no
+//!   new `ScanSource` reads — and lands one `MutualRecursion` finding
+//!   per call cycle of two or more functions, attached to the cycle's
+//!   earliest member in listing order.
 //! - [`engine`] - Scan orchestration: `ControlFlowEngine` runs the
 //!   five detectors over one open Ghidra program through a
 //!   `ScanSource` (function listing + decompile-by-name), one
-//!   sequential pass that decompiles each function exactly once and
-//!   keeps the findings in scan order.
+//!   sequential pass that decompiles each function exactly once,
+//!   keeps the bodies for the cross-function pass, and keeps the
+//!   findings in scan order.
 //! - [`persist`] - JSON persistence: `ControlFlowPersistor` saves and
 //!   loads the per-binary detection results under
 //!   `re/analysis/controlflow/`.
@@ -61,10 +69,12 @@ pub mod branch_density;
 pub(crate) mod chain;
 // The loop and branch-density detectors (issues #176, #177) read loops,
 // blocks, and edges off the CFG; the entry, reachability, and back-edge
-// accessors still wait on the call-graph and recursion tickets
-// (#178, #179), so the dead-code warning stays allowed for those.
+// accessors still wait on the self-recursion deepening ticket (#179) —
+// the cross-function pass (#178) derives its edges from the kept body
+// text, not the graph — so the dead-code warning stays allowed for those.
 #[allow(dead_code)]
 pub(crate) mod cfg;
+pub mod cross_function;
 pub mod engine;
 pub mod error;
 pub mod loop_detect;

@@ -102,6 +102,7 @@ fn print_controlflow_report(result: &ControlFlowResult, path: &Path) {
         "state_machine",
         "loop",
         "branch_density",
+        "mutual_recursion",
     ]
     .into_iter()
     .map(|kind| {
