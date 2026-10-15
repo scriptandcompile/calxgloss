@@ -47,8 +47,9 @@
 //! - [`cross_function`] - Cross-function callback readings:
 //!   `CrossFunctionAnalyzer` chains a registration in one kept body to
 //!   a direct call of the bound callback — or a call through a table
-//!   the registration site named — in another, over the bodies the
-//!   scan already holds.
+//!   the registration site named — in another, and reconstructs event
+//!   systems from many registrations to one point plus a visible
+//!   dispatch site, over the bodies the scan already holds.
 //! - [`persist`] - JSON persistence: `CallbackPersistor` saves and loads
 //!   the per-binary detection results under `re/analysis/callback/`.
 //! - [`error`] - [`CallbackError`] and the crate-wide [`Result`] alias.

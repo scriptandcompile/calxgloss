@@ -255,6 +255,59 @@ pub struct CallbackChain {
 }
 
 // ============================================================
+// Event systems
+// ============================================================
+
+/// One reconstructed event system across the kept bodies, with the
+/// evidence behind it.
+///
+/// A record says the scan handed callbacks to one registration point —
+/// [`registration`](Self::registration), spelled e.g.
+/// `register_callback` — at two or more sites across the kept bodies,
+/// the bound handlers named in [`callbacks`](Self::callbacks), while
+/// at least one kept body dispatches through a table: the functions
+/// named in [`dispatchers`](Self::dispatchers) each carry an fp-array
+/// or jump-table reading. Many hands handing handlers to one point and
+/// a table being called through — the observer shape, reconstructed
+/// as a pattern inference over fragments rather than seen whole from
+/// two ends like a chain, so the record reads at
+/// [`confidence`](Self::confidence) 60, one rung under the chain's
+/// two-ended evidence. The shape reads like
+/// [`suggestion`](Self::suggestion): an observer registry of boxed
+/// closures dispatched through a table. The registration lines and
+/// the dispatch lines ride as [`evidence`](Self::evidence), each
+/// prefixed with its function, so a reviewer (or a translation
+/// prompt) can check the reconstruction against the bodies. The
+/// finding attaches to the earliest registering function in listing
+/// order; registrations with no visible dispatch site claim nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventSystem {
+    /// The function the record is about — the earliest of the
+    /// registering functions in listing order.
+    pub function: String,
+    /// The registration point the handlers pile onto, e.g.
+    /// `register_callback`.
+    pub registration: String,
+    /// The callbacks the registrations bound, spelled as the
+    /// registration bound them, in registration order, duplicates
+    /// collapsed.
+    pub callbacks: Vec<String>,
+    /// The functions carrying a visible dispatch site — an fp-array
+    /// or jump-table reading — in listing order.
+    pub dispatchers: Vec<String>,
+    /// The Rust pattern the reconstruction suggests, e.g. an observer
+    /// registry of boxed closures behind a dispatch table.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+    /// The registration and dispatch lines, each prefixed with its
+    /// function and joined by a pipe — kept so a reviewer (or a
+    /// translation prompt) can check the reconstruction against the
+    /// bodies.
+    pub evidence: String,
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -282,6 +335,9 @@ pub enum CallbackFinding {
     Plugin(PluginArchitecture),
     /// A callback registered in one function and called in another.
     Chain(CallbackChain),
+    /// Many registrations to one point plus a visible dispatch site —
+    /// a reconstructed observer.
+    EventSystem(EventSystem),
 }
 
 impl CallbackFinding {
@@ -293,6 +349,7 @@ impl CallbackFinding {
             CallbackFinding::JumpTable(record) => &record.function,
             CallbackFinding::Plugin(record) => &record.function,
             CallbackFinding::Chain(record) => &record.function,
+            CallbackFinding::EventSystem(record) => &record.function,
         }
     }
 
@@ -304,6 +361,7 @@ impl CallbackFinding {
             CallbackFinding::JumpTable(record) => &record.suggestion,
             CallbackFinding::Plugin(record) => &record.suggestion,
             CallbackFinding::Chain(record) => &record.suggestion,
+            CallbackFinding::EventSystem(record) => &record.suggestion,
         }
     }
 
@@ -315,6 +373,7 @@ impl CallbackFinding {
             CallbackFinding::JumpTable(record) => record.confidence,
             CallbackFinding::Plugin(record) => record.confidence,
             CallbackFinding::Chain(record) => record.confidence,
+            CallbackFinding::EventSystem(record) => record.confidence,
         }
     }
 
@@ -326,11 +385,13 @@ impl CallbackFinding {
             CallbackFinding::JumpTable(record) => &record.evidence,
             CallbackFinding::Plugin(record) => &record.evidence,
             CallbackFinding::Chain(record) => &record.evidence,
+            CallbackFinding::EventSystem(record) => &record.evidence,
         }
     }
 
     /// The serde `kind` tag — `fp_array`, `registration`, `jump_table`,
-    /// `plugin`, or `chain` — naming the reading behind the finding.
+    /// `plugin`, `chain`, or `event_system` — naming the reading behind
+    /// the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             CallbackFinding::FpArray(_) => "fp_array",
@@ -338,14 +399,17 @@ impl CallbackFinding {
             CallbackFinding::JumpTable(_) => "jump_table",
             CallbackFinding::Plugin(_) => "plugin",
             CallbackFinding::Chain(_) => "chain",
+            CallbackFinding::EventSystem(_) => "event_system",
         }
     }
 
     /// What the finding names, spelled for a report row: the table the
     /// indexed call reads through, the registration call and its bound
     /// callback, the table and index of the computed dispatch, the
-    /// loader pair / entry point behind the plugin shape, or the
-    /// callback and the partner function it reaches across.
+    /// loader pair / entry point behind the plugin shape, the callback
+    /// and the partner function it reaches across, or the registration
+    /// point with its handlers and the functions dispatching through a
+    /// table.
     pub fn target(&self) -> String {
         match self {
             CallbackFinding::FpArray(record) => record.table.clone(),
@@ -367,6 +431,12 @@ impl CallbackFinding {
                 }
                 _ => format!("{}→{}", record.callback, record.partner),
             },
+            CallbackFinding::EventSystem(record) => format!(
+                "{}({})→{}",
+                record.registration,
+                record.callbacks.join(","),
+                record.dispatchers.join(",")
+            ),
         }
     }
 }
@@ -399,8 +469,9 @@ impl From<&CallbackFinding> for calxgloss_prompts::CallbackInfo {
 /// function, and within one function the function-pointer array
 /// calls, then the registrations, then the jump tables, then the
 /// plugin shapes — and after every function, the cross-function
-/// pass's chain findings, in listing order. The readings cover
-/// disjoint shapes, so a function can carry findings of every kind at
+/// pass's chain findings and then its event-system findings, in
+/// listing order. The readings cover disjoint shapes, so a function
+/// can carry findings of every kind at
 /// once and none competes with another; the stable order means two
 /// scans of the same program diff cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -669,6 +740,51 @@ mod tests {
         assert_eq!(json["confidence"], 70);
     }
 
+    fn event_system() -> EventSystem {
+        EventSystem {
+            function: "FUN_18003ab00".into(),
+            registration: "register_callback".into(),
+            callbacks: vec!["handler_a".into(), "handler_b".into()],
+            dispatchers: vec!["FUN_18003e750".into()],
+            suggestion: "Observer pattern: registered Box<dyn Fn(...)> handlers dispatched \
+                         through a table"
+                .into(),
+            confidence: Confidence::new(60),
+            evidence: "FUN_18003ab00: register_callback(handler_a); | \
+                       FUN_18003ab00: register_callback(handler_b); | \
+                       FUN_18003e750: handlers[uVar1](param_1);"
+                .into(),
+        }
+    }
+
+    #[test]
+    fn an_event_system_serde_round_trips() {
+        let record = event_system();
+        let json = serde_json::to_string(&record).expect("event system record should serialize");
+        assert!(json.contains("\"registration\":\"register_callback\""));
+        assert!(json.contains("\"callbacks\":[\"handler_a\",\"handler_b\"]"));
+        assert!(json.contains("\"dispatchers\":[\"FUN_18003e750\"]"));
+        let back: EventSystem =
+            serde_json::from_str(&json).expect("event system record should read back");
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn an_event_system_record_names_the_registration_the_callbacks_and_the_dispatchers() {
+        let json =
+            serde_json::to_value(event_system()).expect("event system record should serialize");
+        assert_eq!(json["function"], "FUN_18003ab00");
+        assert_eq!(json["registration"], "register_callback");
+        assert_eq!(json["callbacks"][0], "handler_a");
+        assert_eq!(json["callbacks"][1], "handler_b");
+        assert_eq!(json["dispatchers"][0], "FUN_18003e750");
+        assert_eq!(
+            json["suggestion"],
+            "Observer pattern: registered Box<dyn Fn(...)> handlers dispatched through a table"
+        );
+        assert_eq!(json["confidence"], 60);
+    }
+
     #[test]
     fn an_fp_array_finding_serde_round_trips_under_its_kind_tag() {
         let finding = CallbackFinding::FpArray(fp_array_call());
@@ -727,6 +843,17 @@ mod tests {
     }
 
     #[test]
+    fn an_event_system_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = CallbackFinding::EventSystem(event_system());
+        let json = serde_json::to_string(&finding).expect("event system finding should serialize");
+        assert!(json.contains("\"kind\":\"event_system\""));
+        assert!(json.contains("\"dispatchers\":[\"FUN_18003e750\"]"));
+        let back: CallbackFinding =
+            serde_json::from_str(&json).expect("event system finding should read back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
     fn the_union_accessors_reach_through_every_variant() {
         let findings = [
             CallbackFinding::FpArray(fp_array_call()),
@@ -734,18 +861,27 @@ mod tests {
             CallbackFinding::JumpTable(jump_table()),
             CallbackFinding::Plugin(plugin_architecture()),
             CallbackFinding::Chain(chain()),
+            CallbackFinding::EventSystem(event_system()),
         ];
         for finding in &findings {
             assert_eq!(finding.function(), "FUN_18003ab00");
-            assert_eq!(finding.confidence(), Confidence::new(70));
             assert!(!finding.suggestion().is_empty());
             assert!(!finding.evidence().is_empty());
         }
         let kinds: Vec<&str> = findings.iter().map(|f| f.kind()).collect();
         assert_eq!(
             kinds,
-            vec!["fp_array", "registration", "jump_table", "plugin", "chain"]
+            vec![
+                "fp_array",
+                "registration",
+                "jump_table",
+                "plugin",
+                "chain",
+                "event_system",
+            ]
         );
+        let confidences: Vec<u8> = findings.iter().map(|f| f.confidence().value()).collect();
+        assert_eq!(confidences, vec![70, 70, 70, 70, 70, 60]);
         let suggestions: Vec<&str> = findings.iter().map(|f| f.suggestion()).collect();
         assert_eq!(
             suggestions,
@@ -755,6 +891,7 @@ mod tests {
                 "[fn(...); 5]",
                 "Box<dyn Plugin> (loader crate)",
                 "Box<dyn Fn(...)> shared between the registering and calling functions",
+                "Observer pattern: registered Box<dyn Fn(...)> handlers dispatched through a table",
             ]
         );
         let targets: Vec<String> = findings.iter().map(|f| f.target()).collect();
@@ -766,6 +903,7 @@ mod tests {
                 "DAT_1400a1b60[uVar2]",
                 "LoadLibrary→GetProcAddress",
                 "my_handler(handlers)→FUN_18003e750",
+                "register_callback(handler_a,handler_b)→FUN_18003e750",
             ]
         );
     }
@@ -861,6 +999,18 @@ mod tests {
         );
         assert_eq!(info.confidence, 70);
         assert!(info.evidence.contains("register_callback(handlers);"));
+
+        let event_system = CallbackFinding::EventSystem(event_system());
+        let info = calxgloss_prompts::CallbackInfo::from(&event_system);
+        assert_eq!(info.function, "FUN_18003ab00");
+        assert_eq!(info.kind, "event_system");
+        assert_eq!(
+            info.suggestion,
+            "Observer pattern: registered Box<dyn Fn(...)> handlers dispatched through a table"
+        );
+        assert_eq!(info.confidence, 60);
+        assert!(info.evidence.contains("register_callback(handler_b);"));
+        assert!(info.evidence.contains("handlers[uVar1](param_1);"));
     }
 
     #[test]

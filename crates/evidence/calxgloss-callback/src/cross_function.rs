@@ -5,14 +5,14 @@
 //! actual lifecycle of a callback — is invisible to each body read on
 //! its own. This module closes that gap over the bodies one scan
 //! already holds, mirroring the memory crate's cross-function pass
-//! (ADR-0027) and the sync crate's (ADR-0033): the chain map is
-//! derived from the fetched bodies with the same call-site scans the
-//! detectors already use, so no new
+//! (ADR-0027) and the sync crate's (ADR-0033): the chain and
+//! event-system maps are derived from the fetched bodies with the
+//! same call-site scans the detectors already use, so no new
 //! [`ScanSource`](crate::engine::ScanSource) reads are made and the
 //! exactly-once-decompile guarantee and the skip-rate breaker survive
 //! untouched.
 //!
-//! [`CrossFunctionAnalyzer::analyze`] runs the reading: per body, the
+//! [`CrossFunctionAnalyzer::analyze`] runs the readings: per body, the
 //! registrations the registration detector binds, the direct-call
 //! targets the shared call-site scan walks, and the tables the
 //! fp-array and jump-table detectors read being called — all keyed on
@@ -26,11 +26,24 @@
 //! function, calling function) pair on the earlier function in
 //! listing order, naming the partner function, the callback, and the
 //! table, with both ends' call lines as evidence.
+//!
+//! The pass then reconstructs **event systems**: two or more
+//! registrations to the same registration name across the scan, plus
+//! at least one dispatch site — an fp-array or jump-table reading —
+//! in any kept body, are the observer shape, landed as one
+//! [`CallbackFinding::EventSystem`] naming the registration point,
+//! the registered callbacks, and the dispatching functions. The
+//! reconstruction is a pattern inference over fragments, visibly
+//! weaker than the chain's two-ended evidence, and registrations with
+//! no visible dispatch site report nothing: a handful of unrelated
+//! callbacks is not over-read as an event architecture. Cross-function
+//! findings — chains first, then event systems — append after the
+//! per-function findings, in listing order.
 
 use crate::callback_reg::{CallbackRegDetector, RegistrationSite, direct_calls};
 use crate::fp_array::FpArrayDetector;
 use crate::jump_table::JumpTableDetector;
-use crate::types::{CallbackChain, CallbackFinding};
+use crate::types::{CallbackChain, CallbackFinding, EventSystem};
 use calxgloss_ghidra::DecompiledFunction;
 use calxgloss_types::line_at;
 
@@ -47,6 +60,21 @@ const CHAIN_CONFIDENCE: u8 = 70;
 /// across the boundary instead of inside one body.
 const CHAIN_SUGGESTION: &str =
     "Box<dyn Fn(...)> shared between the registering and calling functions";
+
+/// Confidence of an event system reconstructed over the scan: many
+/// registrations to one point and a dispatch site somewhere speak of
+/// an observer architecture without either end being seen whole, a
+/// pattern inference over fragments — so the claim sits one rung
+/// below the chain's two-ended evidence.
+const EVENT_SYSTEM_CONFIDENCE: u8 = 60;
+
+/// The Rust pattern an event system suggests: handlers pile onto one
+/// registration point and run through a dispatch table — the observer
+/// pattern, a registry of boxed closures behind the table, so the
+/// event architecture survives translation instead of scattering
+/// callbacks across opaque calls.
+const EVENT_SYSTEM_SUGGESTION: &str =
+    "Observer pattern: registered Box<dyn Fn(...)> handlers dispatched through a table";
 
 /// Cross-function callback readings over the bodies one scan holds.
 ///
@@ -76,9 +104,20 @@ impl CrossFunctionAnalyzer {
     /// in body order winning, so one registration pair reads once
     /// however many callbacks tie the two bodies.
     ///
+    /// After the chains, event-system reconstruction: registrations
+    /// grouped by the registration name they call, and two or more to
+    /// one name across the scan — with at least one dispatch site, an
+    /// fp-array or jump-table reading, in any kept body — land one
+    /// [`CallbackFinding::EventSystem`] naming the registration point,
+    /// the registered callbacks, and the dispatching functions,
+    /// attached to the earliest registering function. Groups with
+    /// fewer than two registrations, and registrations with no
+    /// dispatch site anywhere in sight, claim nothing.
+    ///
     /// A function whose body never made it — skipped by the engine —
     /// is simply absent from `functions`, so it binds no registration,
-    /// calls nothing, and fabricates no chain.
+    /// calls nothing, dispatches through nothing, and fabricates no
+    /// chain or event system.
     pub fn analyze(
         &self,
         functions: &[DecompiledFunction],
@@ -122,6 +161,8 @@ impl CrossFunctionAnalyzer {
                 }
             }
         }
+
+        findings.extend(event_systems(functions, &registrations, &tables));
         findings
     }
 }
@@ -229,6 +270,84 @@ fn chain_for_pair(
     None
 }
 
+/// The event systems the scan reconstructs: registrations grouped by
+/// the registration name they call, in first-seen listing order, and
+/// the bodies carrying a visible dispatch site — an fp-array or
+/// jump-table reading, keyed on the table detectors' configured
+/// names. Two or more registrations to one name, with a dispatch site
+/// anywhere in the kept bodies, reconstruct one observer: one finding
+/// naming the registration point, the registered callbacks, and the
+/// dispatching functions, attached to the earliest registering
+/// function, carrying every registration and dispatch line as
+/// evidence. A group with fewer than two registrations, and
+/// registrations with no dispatch site in sight, claim nothing — a
+/// handful of unrelated callbacks is not an event architecture.
+fn event_systems(
+    functions: &[DecompiledFunction],
+    registrations: &[Vec<RegistrationSite>],
+    tables: &[Vec<TableCall>],
+) -> Vec<CallbackFinding> {
+    // The bodies that dispatch through a configured table, in listing
+    // order: their existence gates every reconstruction, and their
+    // names and call lines ride into each finding.
+    let dispatchers: Vec<usize> = (0..functions.len())
+        .filter(|&idx| !tables[idx].is_empty())
+        .collect();
+    if dispatchers.is_empty() {
+        return Vec::new();
+    }
+
+    // Registrations grouped by the registration name they call, in
+    // first-seen order: the group's first site names the function the
+    // finding attaches to, so the findings come back in listing order
+    // of their earliest registering body.
+    let mut groups: Vec<(&str, Vec<(usize, &RegistrationSite)>)> = Vec::new();
+    for (idx, sites) in registrations.iter().enumerate() {
+        for site in sites {
+            let name = site.record.registration.as_str();
+            match groups.iter_mut().find(|(group, _)| *group == name) {
+                Some((_, members)) => members.push((idx, site)),
+                None => groups.push((name, vec![(idx, site)])),
+            }
+        }
+    }
+
+    groups
+        .into_iter()
+        .filter(|(_, members)| members.len() >= 2)
+        .map(|(registration, members)| {
+            let mut callbacks: Vec<String> = Vec::new();
+            let mut evidence: Vec<String> = Vec::new();
+            for (idx, site) in &members {
+                if !callbacks.contains(&site.record.callback) {
+                    callbacks.push(site.record.callback.clone());
+                }
+                evidence.push(format!(
+                    "{}: {}",
+                    functions[*idx].name, site.record.evidence
+                ));
+            }
+            for &idx in &dispatchers {
+                for call in &tables[idx] {
+                    evidence.push(format!("{}: {}", functions[idx].name, call.line));
+                }
+            }
+            CallbackFinding::EventSystem(EventSystem {
+                function: functions[members[0].0].name.clone(),
+                registration: registration.to_string(),
+                callbacks,
+                dispatchers: dispatchers
+                    .iter()
+                    .map(|&idx| functions[idx].name.clone())
+                    .collect(),
+                suggestion: EVENT_SYSTEM_SUGGESTION.to_string(),
+                confidence: EVENT_SYSTEM_CONFIDENCE.into(),
+                evidence: evidence.join(" | "),
+            })
+        })
+        .collect()
+}
+
 // ============================================================
 // Tests
 // ============================================================
@@ -275,6 +394,16 @@ mod tests {
         assert_eq!(findings.len(), 1, "exactly one chain");
         let CallbackFinding::Chain(record) = &findings[0] else {
             unreachable!("the reading lands a chain finding");
+        };
+        record.clone()
+    }
+
+    /// The single event system a program lands, unwrapped.
+    fn one_event_system(bodies: &[(&str, &str)]) -> EventSystem {
+        let findings = analyze(bodies);
+        assert_eq!(findings.len(), 1, "exactly one event system");
+        let CallbackFinding::EventSystem(record) = &findings[0] else {
+            unreachable!("the reconstruction lands an event_system finding");
         };
         record.clone()
     }
@@ -594,6 +723,301 @@ mod tests {
     fn a_single_function_or_an_empty_program_claims_nothing() {
         assert!(analyze(&[("FUN_a", "  register_callback(my_handler);\n")]).is_empty());
         assert!(analyze(&[]).is_empty());
+    }
+
+    // ------------------------------------------------------------
+    // Event-system reconstruction
+    // ------------------------------------------------------------
+
+    #[test]
+    fn two_registrations_to_one_name_and_a_dispatch_site_reconstruct_one_event_system() {
+        // Two hands hand handlers to one registration point, and a
+        // third body dispatches through a table: the observer shape,
+        // reconstructed at its own visibly weaker confidence.
+        let record = one_event_system(&[
+            ("FUN_18003ab00", "  register_callback(handler_a);\n"),
+            ("FUN_18003e750", "  register_callback(handler_b);\n"),
+            ("FUN_1800412a0", "  handlers[uVar1](param_1);\n"),
+        ]);
+        assert_eq!(record.function, "FUN_18003ab00");
+        assert_eq!(record.registration, "register_callback");
+        assert_eq!(record.callbacks, ["handler_a", "handler_b"]);
+        assert_eq!(record.dispatchers, ["FUN_1800412a0"]);
+        assert_eq!(record.confidence.value(), EVENT_SYSTEM_CONFIDENCE);
+        assert_eq!(record.suggestion, EVENT_SYSTEM_SUGGESTION);
+        // The registration lines and the dispatch line ride as
+        // evidence, each named by its function.
+        assert_eq!(
+            record.evidence,
+            "FUN_18003ab00: register_callback(handler_a); | \
+             FUN_18003e750: register_callback(handler_b); | \
+             FUN_1800412a0: handlers[uVar1](param_1);"
+        );
+    }
+
+    #[test]
+    fn registrations_with_no_visible_dispatch_site_reconstruct_no_event_system() {
+        // The callbacks reach each other across bodies by direct
+        // call — chains — but no kept body dispatches through a
+        // table: a handful of unrelated callbacks is not over-read
+        // as an event architecture.
+        let findings = analyze(&[
+            (
+                "FUN_18003ab00",
+                "  register_callback(handler_a);\n  handler_b(param_2);\n",
+            ),
+            (
+                "FUN_18003e750",
+                "  register_callback(handler_b);\n  handler_a(param_1);\n",
+            ),
+        ]);
+        assert_eq!(findings.len(), 2, "the two directions still chain");
+        assert!(
+            findings
+                .iter()
+                .all(|finding| finding.kind() != "event_system")
+        );
+    }
+
+    #[test]
+    fn one_registration_to_a_name_reconstructs_no_event_system() {
+        // A dispatch site stands in the program, but only one body
+        // registers to the name: fewer than two registrations to one
+        // point claims no architecture.
+        assert!(
+            analyze(&[
+                ("FUN_18003ab00", "  register_callback(handler_a);\n"),
+                ("FUN_18003e750", "  handlers[uVar1](param_1);\n"),
+            ])
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn two_registrations_in_one_body_still_reconstruct() {
+        // The gate counts registration sites across the scan, not
+        // bodies: one body handing two handlers to one point, with a
+        // dispatch site elsewhere, is the observer shape.
+        let record = one_event_system(&[
+            (
+                "FUN_18003ab00",
+                "  register_callback(handler_a);\n  register_callback(handler_b);\n",
+            ),
+            ("FUN_18003e750", "  handlers[uVar1](param_1);\n"),
+        ]);
+        assert_eq!(record.function, "FUN_18003ab00");
+        assert_eq!(record.callbacks, ["handler_a", "handler_b"]);
+        assert_eq!(record.dispatchers, ["FUN_18003e750"]);
+    }
+
+    #[test]
+    fn a_dispatch_site_in_the_registering_body_itself_counts_too() {
+        // The dispatch gate reads any kept body: a body that piles
+        // handlers onto one point and dispatches through a table
+        // itself carries the observer shape.
+        let record = one_event_system(&[(
+            "FUN_18003ab00",
+            "  register_callback(handler_a);\n  register_callback(handler_b);\n  \
+             handlers[uVar1](param_1);\n",
+        )]);
+        assert_eq!(record.function, "FUN_18003ab00");
+        assert_eq!(record.dispatchers, ["FUN_18003ab00"]);
+    }
+
+    #[test]
+    fn the_event_system_attaches_to_the_earliest_registering_function() {
+        // The dispatching body stands first in the listing; the
+        // finding still rides on the first body that registers to the
+        // point, and names the dispatching one as its dispatcher.
+        let record = one_event_system(&[
+            ("FUN_18003ab00", "  handlers[uVar1](param_1);\n"),
+            ("FUN_18003e750", "  register_callback(handler_a);\n"),
+            ("FUN_1800412a0", "  register_callback(handler_b);\n"),
+        ]);
+        assert_eq!(record.function, "FUN_18003e750");
+        assert_eq!(record.dispatchers, ["FUN_18003ab00"]);
+    }
+
+    #[test]
+    fn one_event_system_per_registration_name_in_first_registration_order() {
+        // Two registration points, each with its own crowd of
+        // handlers: two reconstructions, in listing order of their
+        // earliest registering bodies.
+        let findings = analyze(&[
+            ("FUN_a", "  set_handler(handler_a);\n"),
+            ("FUN_b", "  register_callback(handler_b);\n"),
+            ("FUN_c", "  set_handler(handler_c);\n"),
+            ("FUN_d", "  register_callback(handler_d);\n"),
+            ("FUN_e", "  dispatch[uVar1](param_1);\n"),
+        ]);
+        let names: Vec<&str> = findings
+            .iter()
+            .map(|finding| match finding {
+                CallbackFinding::EventSystem(record) => record.registration.as_str(),
+                other => unreachable!("every finding is an event system, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(names, ["set_handler", "register_callback"]);
+        let attached: Vec<&str> = findings.iter().map(|f| f.function()).collect();
+        assert_eq!(attached, ["FUN_a", "FUN_b"]);
+    }
+
+    #[test]
+    fn a_jump_table_reading_counts_as_a_dispatch_site() {
+        // The dispatch gate opens for either table reading: the
+        // switch-table dispatch names its body as a dispatcher.
+        let record = one_event_system(&[
+            ("FUN_18003ab00", "  register_callback(handler_a);\n"),
+            ("FUN_18003e750", "  register_callback(handler_b);\n"),
+            (
+                "FUN_1800412a0",
+                "  if (uVar3 < 5) {\n    (*(code *)(&switchD_1800412a0)[uVar3])();\n  }\n",
+            ),
+        ]);
+        assert_eq!(record.dispatchers, ["FUN_1800412a0"]);
+        assert!(
+            record
+                .evidence
+                .contains("(*(code *)(&switchD_1800412a0)[uVar3])();")
+        );
+    }
+
+    #[test]
+    fn a_custom_jump_table_prefix_reaches_the_dispatch_gate() {
+        // The dispatch gate keys on the jump-table detector's
+        // configured prefixes, not a private default: a table under a
+        // project spelling is a dispatch site, while the standard
+        // switchD_ spelling the swap retired joins nothing on the
+        // same bodies.
+        let jump_table = JumpTableDetector::with_prefixes(["branchTable_"]);
+        let bodies = [
+            ("FUN_18003ab00", "  register_callback(handler_a);\n"),
+            ("FUN_18003e750", "  register_callback(handler_b);\n"),
+            (
+                "FUN_1800412a0",
+                "  (*(code *)(&switchD_1800412a0)[uVar3])();\n  (*(code *)(&branchTable_1800412a0)[uVar4])();\n",
+            ),
+        ];
+        let findings = analyze_with(
+            &bodies,
+            &CallbackRegDetector::with_default_names(),
+            &FpArrayDetector::with_default_names(),
+            &jump_table,
+        );
+        assert_eq!(findings.len(), 1, "only the configured prefix dispatches");
+        let CallbackFinding::EventSystem(record) = &findings[0] else {
+            unreachable!("the reconstruction lands an event_system finding");
+        };
+        assert_eq!(record.dispatchers, ["FUN_1800412a0"]);
+        assert!(record.evidence.contains("branchTable_1800412a0"));
+        assert!(
+            !record.evidence.contains("switchD_"),
+            "the retired standard prefix is read by no one here"
+        );
+    }
+
+    #[test]
+    fn the_same_callback_registered_twice_collapses_in_the_callback_list() {
+        // The callbacks name the handlers the point received, not
+        // every site: a handler handed over twice is named once,
+        // while both registration lines still stand in the evidence.
+        let record = one_event_system(&[
+            ("FUN_18003ab00", "  register_callback(my_handler);\n"),
+            ("FUN_18003e750", "  register_callback(my_handler);\n"),
+            ("FUN_1800412a0", "  handlers[uVar1](param_1);\n"),
+        ]);
+        assert_eq!(record.callbacks, ["my_handler"]);
+        assert_eq!(
+            record
+                .evidence
+                .matches("register_callback(my_handler);")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_registration_binding_nothing_counts_as_no_registration() {
+        // A call to a configured name whose callback argument is a
+        // decompiler temporary binds nothing and joins no group: one
+        // bound site is fewer than two, and nothing reconstructs.
+        assert!(
+            analyze(&[
+                (
+                    "FUN_18003ab00",
+                    "  register_callback(uVar1);\n  register_callback(handler_a);\n",
+                ),
+                ("FUN_18003e750", "  handlers[uVar1](param_1);\n"),
+            ])
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn custom_registration_spellings_and_table_names_reach_the_reconstruction() {
+        // The reconstruction keys on the detectors' configured sets,
+        // not a private default: a custom registration spelling and a
+        // custom table name reconstruct together, while the standard
+        // names the swaps replaced claim nothing on the same bodies.
+        let registration = CallbackRegDetector::with_names(["HookMessage"]);
+        let fp_array = FpArrayDetector::with_names(["msg_table"]);
+        let jump_table = JumpTableDetector::with_default_prefixes();
+        let bodies = [
+            (
+                "FUN_a",
+                "  HookMessage(handler_a);\n  register_callback(other_a);\n",
+            ),
+            (
+                "FUN_b",
+                "  HookMessage(handler_b);\n  register_callback(other_b);\n",
+            ),
+            (
+                "FUN_c",
+                "  (*(code *)msg_table[uVar1])(param_1);\n  handlers[uVar2](param_2);\n",
+            ),
+        ];
+        let findings = analyze_with(&bodies, &registration, &fp_array, &jump_table);
+        assert_eq!(
+            findings.len(),
+            1,
+            "only the configured spellings reconstruct"
+        );
+        let CallbackFinding::EventSystem(record) = &findings[0] else {
+            unreachable!("the reconstruction lands an event_system finding");
+        };
+        assert_eq!(record.registration, "HookMessage");
+        assert_eq!(record.callbacks, ["handler_a", "handler_b"]);
+        assert_eq!(record.dispatchers, ["FUN_c"]);
+    }
+
+    #[test]
+    fn a_truncated_registration_contributes_no_site_to_the_reconstruction() {
+        // An unclosed registration call binds nothing: the one bound
+        // site left over is fewer than two, and nothing reconstructs.
+        assert!(
+            analyze(&[
+                ("FUN_a", "  register_callback(handler_a;\n"),
+                ("FUN_b", "  register_callback(handler_b);\n"),
+                ("FUN_c", "  handlers[uVar1](param_1);\n"),
+            ])
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn event_system_findings_come_after_the_chain_findings() {
+        // One pair of bodies ties a chain and feeds the crowd: the
+        // two-ended chain reads first, the reconstruction follows.
+        let findings = analyze(&[
+            (
+                "FUN_18003ab00",
+                "  register_callback(my_handler);\n  register_callback(other_handler);\n",
+            ),
+            ("FUN_18003e750", "  my_handler(param_1);\n"),
+            ("FUN_1800412a0", "  handlers[uVar2](param_2);\n"),
+        ]);
+        let kinds: Vec<&str> = findings.iter().map(|f| f.kind()).collect();
+        assert_eq!(kinds, ["chain", "event_system"]);
     }
 
     #[test]

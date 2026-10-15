@@ -96,21 +96,28 @@ fn print_callback_report(result: &CallbackResult, path: &Path) {
     println!();
 
     // Findings, broken down by the record kind the union carries.
-    let kind_breakdown: Vec<String> = ["fp_array", "registration", "jump_table", "plugin", "chain"]
-        .into_iter()
-        .map(|kind| {
-            (
-                kind,
-                result
-                    .findings
-                    .iter()
-                    .filter(|finding| finding.kind() == kind)
-                    .count(),
-            )
-        })
-        .filter(|(_, count)| *count > 0)
-        .map(|(kind, count)| format!("{kind} {count}"))
-        .collect();
+    let kind_breakdown: Vec<String> = [
+        "fp_array",
+        "registration",
+        "jump_table",
+        "plugin",
+        "chain",
+        "event_system",
+    ]
+    .into_iter()
+    .map(|kind| {
+        (
+            kind,
+            result
+                .findings
+                .iter()
+                .filter(|finding| finding.kind() == kind)
+                .count(),
+        )
+    })
+    .filter(|(_, count)| *count > 0)
+    .map(|(kind, count)| format!("{kind} {count}"))
+    .collect();
     println_content(format!(
         "  {}{:<5}{}",
         white_bold("Findings:  "),
@@ -157,7 +164,7 @@ fn print_callback_report(result: &CallbackResult, path: &Path) {
     hsep_bold();
     if result.is_empty() {
         println!(
-            "  {} The scan found nothing — no function-pointer arrays, registration calls, jump tables, plugin shapes or cross-function callback chains were found in the decompiled bodies.",
+            "  {} The scan found nothing — no function-pointer arrays, registration calls, jump tables, plugin shapes, cross-function callback chains or event systems were found in the decompiled bodies.",
             yellow_bold("◉")
         );
     } else {

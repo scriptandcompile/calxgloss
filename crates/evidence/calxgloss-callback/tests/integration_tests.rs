@@ -12,7 +12,7 @@
 //!   order: function by function, and within one function the
 //!   function-pointer array calls, then the registrations, then the
 //!   jump tables, then the plugin shapes, and after them the
-//!   cross-function chain findings in listing order.
+//!   cross-function chain and event-system findings in listing order.
 //! - **Cache behavior** — the `exists` check decides whether a scan
 //!   runs, and a rescan replaces the cached document.
 //!
@@ -540,4 +540,131 @@ async fn chain_findings_survive_the_scan_persist_and_prompt_walk() {
     );
     assert!(prompt.contains("chain pattern, confidence 70"));
     assert!(prompt.contains("my_handler(param_1);"));
+}
+
+// ------------------------------------------------------------
+// Event-system reconstruction
+// ------------------------------------------------------------
+
+#[tokio::test]
+async fn event_system_findings_survive_the_scan_persist_and_prompt_walk() {
+    // The event architecture across three functions: two hand
+    // handlers to `register_callback`, a third dispatches through a
+    // table. The reconstructed observer rides the tagged union to
+    // disk and back, and renders into the escalate prompt through the
+    // usual accessors.
+    let mut program = FakeProgram::empty();
+    program.listing = vec![
+        summary("FUN_18003ab00"),
+        summary("FUN_18003e750"),
+        summary("FUN_1800412a0"),
+    ];
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  register_callback(handler_a);\n",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_18003e750".into(),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(void)",
+            "  register_callback(handler_b);\n",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_1800412a0".into(),
+        function(
+            "FUN_1800412a0",
+            "undefined FUN_1800412a0(void)",
+            "  handlers[uVar1](param_1);\n",
+        ),
+    );
+
+    let workspace = TempDir::new().expect("workspace temp dir");
+    let result = CallbackEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = CallbackPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let events: Vec<&CallbackFinding> = loaded
+        .findings
+        .iter()
+        .filter(|finding| finding.kind() == "event_system")
+        .collect();
+    assert_eq!(events.len(), 1, "one event system per registration point");
+
+    // The record keeps the point, the handlers, and the dispatchers
+    // through the round trip, at the reconstruction's own confidence.
+    let CallbackFinding::EventSystem(record) = events[0] else {
+        unreachable!("the register-crowd-plus-dispatch shape reads as an event_system finding");
+    };
+    assert_eq!(record.function, "FUN_18003ab00");
+    assert_eq!(record.registration, "register_callback");
+    assert_eq!(record.callbacks, ["handler_a", "handler_b"]);
+    assert_eq!(record.dispatchers, ["FUN_1800412a0"]);
+    assert_eq!(record.confidence.value(), 60);
+    assert!(record.evidence.contains("register_callback(handler_a);"));
+    assert!(record.evidence.contains("handlers[uVar1](param_1);"));
+    assert!(events[0].target().contains("register_callback"));
+
+    // The cross-function finding lands after the per-function
+    // findings, so the persisted document stays diffable.
+    let order: Vec<(&str, &str)> = loaded
+        .findings
+        .iter()
+        .map(|finding| (finding.function(), finding.kind()))
+        .collect();
+    assert_eq!(
+        order,
+        vec![
+            ("FUN_18003ab00", "registration"),
+            ("FUN_18003e750", "registration"),
+            ("FUN_1800412a0", "fp_array"),
+            ("FUN_18003ab00", "event_system"),
+        ]
+    );
+
+    // The escalate prompt describes the event system with its kind
+    // and confidence, like every other detector's records.
+    let findings: Vec<calxgloss_prompts::CallbackInfo> = loaded
+        .findings
+        .iter()
+        .map(calxgloss_prompts::CallbackInfo::from)
+        .collect();
+    let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
+        "FUN_18003ab00".into(),
+        "eqmain.dll".into(),
+        "fn fun_18003ab00() { /* hands a handler to the event loop */ }".into(),
+        "Wrong result".into(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        findings,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("the escalate prompt should render");
+
+    assert!(prompt.contains("CALLBACKS"));
+    assert!(prompt.contains(
+        "Observer pattern: registered Box<dyn Fn(...)> handlers dispatched through a table"
+    ));
+    assert!(prompt.contains("event_system pattern, confidence 60"));
+    assert!(prompt.contains("handlers[uVar1](param_1);"));
 }

@@ -494,7 +494,9 @@ mod tests {
     async fn scan_keeps_findings_in_scan_order() {
         // Both functions carry the shape, so the persisted list must
         // group their findings by function in listing order — never
-        // interleaved.
+        // interleaved — and the cross-function findings, the
+        // event-system reconstruction included, append after every
+        // per-function finding.
         let mut program = program();
         program.listing = vec![summary("FUN_18003e750"), summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -525,6 +527,7 @@ mod tests {
                 ("FUN_18003ab00", "registration"),
                 ("FUN_18003ab00", "jump_table"),
                 ("FUN_18003ab00", "plugin"),
+                ("FUN_18003e750", "event_system"),
             ]
         );
     }
@@ -930,6 +933,249 @@ mod tests {
         };
         assert_eq!(record.callback, "msg_table");
         assert_eq!(record.table.as_deref(), Some("msg_table"));
+    }
+
+    #[tokio::test]
+    async fn two_registrations_and_a_dispatch_site_reconstruct_one_event_system() {
+        // The scan's whole view: two bodies hand handlers to one
+        // registration point and a third dispatches through a table —
+        // the event architecture surfaces as one finding naming the
+        // point, the handlers, and the dispatching function.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![
+            summary("FUN_18003ab00"),
+            summary("FUN_18003e750"),
+            summary("FUN_1800412a0"),
+        ];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  register_callback(handler_a);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  register_callback(handler_b);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_1800412a0".into(),
+            function(
+                "FUN_1800412a0",
+                "undefined FUN_1800412a0(void)",
+                "  handlers[uVar1](param_1);\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let events: Vec<&CallbackFinding> = result
+            .findings
+            .iter()
+            .filter(|finding| finding.kind() == "event_system")
+            .collect();
+        assert_eq!(events.len(), 1, "one event system per point");
+        let CallbackFinding::EventSystem(record) = events[0] else {
+            unreachable!("the cross-function pass lands an event_system finding");
+        };
+        assert_eq!(record.function, "FUN_18003ab00");
+        assert_eq!(record.registration, "register_callback");
+        assert_eq!(record.callbacks, ["handler_a", "handler_b"]);
+        assert_eq!(record.dispatchers, ["FUN_1800412a0"]);
+        assert_eq!(record.confidence.value(), 60);
+    }
+
+    #[tokio::test]
+    async fn registrations_with_no_visible_dispatch_site_report_no_event_system() {
+        // The handlers reach each other across bodies by direct call —
+        // the chains read them — but no kept body dispatches through
+        // a table: the scan reports no event architecture.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  register_callback(handler_a);\n  handler_b(param_2);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  register_callback(handler_b);\n  handler_a(param_1);\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|finding| finding.kind() == "chain"),
+            "the direct calls still chain"
+        );
+        assert!(
+            result
+                .findings
+                .iter()
+                .all(|finding| finding.kind() != "event_system"),
+            "no dispatch site in sight, no event system claimed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_function_that_will_not_decompile_fabricates_no_event_system() {
+        // Three registrations to one point, one of them in a body
+        // that never made it, and a dispatch site in a kept body:
+        // with only one kept registration the pass has fewer than
+        // two sites to group and claims no architecture.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![
+            summary("FUN_18003ab00"),
+            summary("FUN_18003e750"),
+            summary("FUN_1800412a0"),
+        ];
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  register_callback(handler_b);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_1800412a0".into(),
+            function(
+                "FUN_1800412a0",
+                "undefined FUN_1800412a0(void)",
+                "  handlers[uVar1](param_1);\n",
+            ),
+        );
+        program.fail_decompiles = vec!["FUN_18003ab00".into()];
+        let result = scan(program).await;
+
+        assert!(
+            result
+                .findings
+                .iter()
+                .all(|finding| finding.kind() != "event_system"),
+            "a body that never made it registers nothing and reconstructs nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_name_sets_reach_the_event_system_reading() {
+        // The reconstruction keys on the configured sets, not a
+        // private default: a custom registration spelling and a
+        // custom table name reconstruct together, and the standard
+        // names the swaps replaced claim nothing on the same bodies.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![
+            summary("FUN_18003ab00"),
+            summary("FUN_18003e750"),
+            summary("FUN_1800412a0"),
+        ];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  HookMessage(handler_a);\n  register_callback(other_a);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  HookMessage(handler_b);\n  register_callback(other_b);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_1800412a0".into(),
+            function(
+                "FUN_1800412a0",
+                "undefined FUN_1800412a0(void)",
+                "  (*(code *)msg_table[uVar1])(param_1);\n  handlers[uVar2](param_2);\n",
+            ),
+        );
+        let engine = CallbackEngine::with_source(program)
+            .with_registration(CallbackRegDetector::with_names(["HookMessage"]))
+            .with_fp_array(FpArrayDetector::with_names(["msg_table"]));
+        let result = engine.scan("eqmain.dll").await.expect("scan");
+
+        let events: Vec<&CallbackFinding> = result
+            .findings
+            .iter()
+            .filter(|finding| finding.kind() == "event_system")
+            .collect();
+        assert_eq!(events.len(), 1, "only the configured spellings reconstruct");
+        let CallbackFinding::EventSystem(record) = events[0] else {
+            unreachable!("the cross-function pass lands an event_system finding");
+        };
+        assert_eq!(record.registration, "HookMessage");
+        assert_eq!(record.dispatchers, ["FUN_1800412a0"]);
+    }
+
+    #[tokio::test]
+    async fn event_system_findings_append_after_the_per_function_findings() {
+        // The dispatching function stands last in the listing and
+        // carries its own fp-array finding; the reconstruction still
+        // lands after every per-function finding, keeping the
+        // persisted document diffable.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![
+            summary("FUN_18003ab00"),
+            summary("FUN_18003e750"),
+            summary("FUN_1800412a0"),
+        ];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  register_callback(handler_a);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  register_callback(handler_b);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_1800412a0".into(),
+            function(
+                "FUN_1800412a0",
+                "undefined FUN_1800412a0(void)",
+                "  dispatch[uVar1](param_1);\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let order: Vec<(&str, &str)> = result
+            .findings
+            .iter()
+            .map(|finding| (finding.function(), finding.kind()))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                ("FUN_18003ab00", "registration"),
+                ("FUN_18003e750", "registration"),
+                ("FUN_1800412a0", "fp_array"),
+                ("FUN_18003ab00", "event_system"),
+            ]
+        );
     }
 
     #[tokio::test]
