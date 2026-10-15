@@ -29,25 +29,46 @@ pub(crate) struct IfChain {
     pub default_body: Option<(usize, usize)>,
 }
 
-/// Net brace delta of a line, ignoring braces inside string literals.
-pub(crate) fn net_braces(line: &str) -> i32 {
-    let mut depth = 0i32;
+/// Blank the inside of string literals with spaces, keeping the quotes and
+/// every byte position, so a later scan of the line sees the same shape
+/// without anything the strings spell: nothing a literal says counts.
+pub(crate) fn outside_strings(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
     let mut in_string = false;
     let mut escaped = false;
     for c in line.chars() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match c {
-            '\\' if in_string => escaped = true,
-            '"' => in_string = !in_string,
-            '{' if !in_string => depth += 1,
-            '}' if !in_string => depth -= 1,
-            _ => {}
+        if in_string {
+            if escaped {
+                escaped = false;
+                out.push(' ');
+            } else if c == '\\' {
+                escaped = true;
+                out.push(' ');
+            } else if c == '"' {
+                in_string = false;
+                out.push('"');
+            } else {
+                out.push(' ');
+            }
+        } else if c == '"' {
+            in_string = true;
+            out.push('"');
+        } else {
+            out.push(c);
         }
     }
-    depth
+    out
+}
+
+/// Net brace delta of a line, ignoring braces inside string literals.
+pub(crate) fn net_braces(line: &str) -> i32 {
+    outside_strings(line)
+        .chars()
+        .fold(0i32, |depth, c| match c {
+            '{' => depth + 1,
+            '}' => depth - 1,
+            _ => depth,
+        })
 }
 
 fn match_head(trimmed: &str) -> Option<(String, String)> {

@@ -7,21 +7,24 @@
 //! finding union; the graph itself is never written out.
 //!
 //! Blocks are cut where the pseudo-C says control can part company with
-//! the straight line: `if`/`else` heads, `for`/`while`/`do` heads, labels,
-//! `goto` statements, and `return`s. Edges are fall-through, branch
-//! taken/not-taken, `goto` jumps, and loop back edges — a `goto` back to an
-//! earlier block is a back edge, and the graph exposes every back edge with
-//! its loop header. The line scan reuses the chain walker's brace-depth
-//! discipline ([`net_braces`]) and adds the same string-literal blindness,
-//! so braces, keywords, and names spelled inside string literals invent no
-//! blocks and no edges. A truncated body (Ghidra cutting a decompile off
-//! mid-brace) degrades to a partial graph instead of panicking.
+//! the straight line: `if`/`else` heads, `for`/`while`/`do` heads, labels
+//! (including `case`/`default` arms, though the switch's own dispatch and
+//! `break` edges are not modelled — the chain detector reads switches
+//! textually), `goto` statements, and `return`s. Edges are fall-through,
+//! branch taken/not-taken, `goto` jumps, and loop back edges — a `goto`
+//! back to an earlier block is a back edge, and the graph exposes every
+//! back edge with its loop header. The line scan reuses the chain walker's
+//! brace-depth discipline ([`net_braces`]) and adds the same string-literal
+//! blindness, so braces, keywords, and names spelled inside string
+//! literals invent no blocks and no edges. A truncated body (Ghidra
+//! cutting a decompile off mid-brace) degrades to a partial graph instead
+//! of panicking.
 //!
 //! Nesting comes out at its real depth: brace depth is recorded per block
 //! and per loop header, so a loop inside a chain case body nests under that
 //! chain rather than reading as a top-level loop.
 
-use crate::chain::net_braces;
+use crate::chain::{net_braces, outside_strings};
 
 /// Identity of a basic block within one [`Cfg`].
 pub(crate) type BlockId = usize;
@@ -88,8 +91,11 @@ pub(crate) struct Block {
 /// The loop shapes Ghidra's pseudo-C spells out, plus the goto-driven one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LoopKind {
+    /// A counted `for (..; ..; ..) { }` header.
     For,
+    /// A conditional `while (..) { }` header.
     While,
+    /// A `do { } while (..);` shape, head and tail read together.
     DoWhile,
     /// A `goto` back to an earlier label — the flattened-loop shape.
     Goto,
@@ -134,35 +140,12 @@ enum LineKind<'a> {
     Close,
 }
 
-/// Blank the inside of string literals with spaces, keeping the quotes and
-/// every byte position, so keyword matching sees the same shape the chain
-/// walker's brace counting does: nothing a string spells counts.
-fn outside_strings(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut in_string = false;
-    let mut escaped = false;
-    for c in line.chars() {
-        if in_string {
-            if escaped {
-                escaped = false;
-                out.push(' ');
-            } else if c == '\\' {
-                escaped = true;
-                out.push(' ');
-            } else if c == '"' {
-                in_string = false;
-                out.push('"');
-            } else {
-                out.push(' ');
-            }
-        } else if c == '"' {
-            in_string = true;
-            out.push('"');
-        } else {
-            out.push(c);
-        }
+impl LineKind<'_> {
+    /// Whether this line opens an `else`/`else if` arm — the shape a taken
+    /// branch must route around rather than fall through into.
+    fn is_else_like(self) -> bool {
+        matches!(self, LineKind::Else | LineKind::ElseIf)
     }
-    out
 }
 
 /// `s` opens with `word` as a whole word, not as the prefix of a longer name.
@@ -341,15 +324,20 @@ impl Cfg {
             })
             .collect();
 
-        // The line closing the body a head opens: the first line back at the
-        // head's own depth that carries a closing brace. A head with no
-        // brace on its line has a single-statement body instead.
-        let body_close = |head: usize| -> Option<usize> {
-            let r = depth_before[head];
-            (head + 1..n).find(|&j| {
-                depth_before[j] == r + 1 && (depth_after[j] < r + 1 || trimmed[j].starts_with('}'))
+        // The line closing a body: the first line at or after `start` that
+        // sits inside depth `inner` and carries a brace back out of it.
+        let close_from = |start: usize, inner: i32| -> Option<usize> {
+            (start..n).find(|&j| {
+                depth_before[j] == inner && (depth_after[j] < inner || trimmed[j].starts_with('}'))
             })
         };
+        // The line closing the body a head opens: the first line back at the
+        // head's own depth that carries a closing brace. A head with no
+        // brace on its line has a single-statement body instead — Ghidra
+        // always braces its bodies, so the braceless form is an
+        // approximation kept only so a hand-written or truncated body
+        // still reads as a graph.
+        let body_close = |head: usize| close_from(head + 1, depth_before[head] + 1);
         let body_end = |head: usize| -> Option<usize> {
             body_close(head)
                 .or_else(|| (net_braces(&code[head]) == 0 && head + 1 < n).then_some(head + 1))
@@ -361,18 +349,14 @@ impl Cfg {
         let chain_join = |close: usize| -> Option<BlockId> {
             let mut cur = close;
             loop {
-                let el = if matches!(kinds.get(cur), Some(LineKind::Else | LineKind::ElseIf)) {
+                let el = if kinds.get(cur).is_some_and(|k| k.is_else_like()) {
                     cur
-                } else if matches!(kinds.get(cur + 1), Some(LineKind::Else | LineKind::ElseIf)) {
+                } else if kinds.get(cur + 1).is_some_and(|k| k.is_else_like()) {
                     cur + 1
                 } else {
                     break;
                 };
-                let inner = depth_after[el];
-                match (el + 1..n).find(|&j| {
-                    depth_before[j] == inner
-                        && (depth_after[j] < inner || trimmed[j].starts_with('}'))
-                }) {
+                match close_from(el + 1, depth_after[el]) {
                     Some(c2) => cur = c2,
                     None => break,
                 }
@@ -396,12 +380,10 @@ impl Cfg {
                         // The matching `else` sits on the closing line
                         // (`} else {`) or on the line right after it, at
                         // this head's own depth.
-                        let else_line = if matches!(kinds[c], LineKind::Else | LineKind::ElseIf) {
+                        let else_line = if kinds[c].is_else_like() {
                             Some(c)
-                        } else if matches!(
-                            kinds.get(c + 1),
-                            Some(LineKind::Else | LineKind::ElseIf)
-                        ) && depth_before.get(c + 1).copied() == Some(r)
+                        } else if kinds.get(c + 1).is_some_and(|k| k.is_else_like())
+                            && depth_before.get(c + 1).copied() == Some(r)
                         {
                             Some(c + 1)
                         } else {
@@ -552,7 +534,7 @@ impl Cfg {
                     // Fall through — unless the very next line is the
                     // `else` this branch's head already routed around, in
                     // which case the flow skips the whole else chain.
-                    if matches!(kinds.get(head + 1), Some(LineKind::Else | LineKind::ElseIf)) {
+                    if kinds.get(head + 1).is_some_and(|k| k.is_else_like()) {
                         if let Some(to) = chain_join(head) {
                             edges.push(Edge {
                                 from: block.id,
@@ -653,9 +635,18 @@ else {
 }");
         // if head, then body, else body: three blocks.
         assert_eq!(spans(&graph), vec![(0, 1), (1, 3), (4, 6)]);
-        assert_eq!(graph.block(0).unwrap().terminator, Terminator::Branch);
-        assert_eq!(graph.block(1).unwrap().terminator, Terminator::FallThrough);
-        assert_eq!(graph.block(2).unwrap().terminator, Terminator::FallThrough);
+        assert_eq!(
+            graph.block(0).expect("if head block").terminator,
+            Terminator::Branch
+        );
+        assert_eq!(
+            graph.block(1).expect("then body block").terminator,
+            Terminator::FallThrough
+        );
+        assert_eq!(
+            graph.block(2).expect("else body block").terminator,
+            Terminator::FallThrough
+        );
     }
 
     #[test]
@@ -688,12 +679,30 @@ return;");
                 (10, 12)
             ]
         );
-        assert_eq!(graph.block(0).unwrap().terminator, Terminator::Loop);
-        assert_eq!(graph.block(2).unwrap().terminator, Terminator::Loop);
-        assert_eq!(graph.block(4).unwrap().terminator, Terminator::Loop);
-        assert_eq!(graph.block(5).unwrap().terminator, Terminator::DoWhileTail);
-        assert_eq!(graph.block(6).unwrap().terminator, Terminator::Goto);
-        assert_eq!(graph.block(7).unwrap().terminator, Terminator::Return);
+        assert_eq!(
+            graph.block(0).expect("for head block").terminator,
+            Terminator::Loop
+        );
+        assert_eq!(
+            graph.block(2).expect("while head block").terminator,
+            Terminator::Loop
+        );
+        assert_eq!(
+            graph.block(4).expect("do head block").terminator,
+            Terminator::Loop
+        );
+        assert_eq!(
+            graph.block(5).expect("do-while tail block").terminator,
+            Terminator::DoWhileTail
+        );
+        assert_eq!(
+            graph.block(6).expect("goto block").terminator,
+            Terminator::Goto
+        );
+        assert_eq!(
+            graph.block(7).expect("return block").terminator,
+            Terminator::Return
+        );
     }
 
     #[test]
@@ -781,7 +790,10 @@ do {
         assert_eq!(edge(&graph, 1, 0), Some(EdgeKind::BackEdge));
         assert_eq!(edge(&graph, 3, 2), Some(EdgeKind::BackEdge));
         // The do-while tail also exits forward.
-        assert_eq!(graph.block(3).unwrap().terminator, Terminator::DoWhileTail);
+        assert_eq!(
+            graph.block(3).expect("do-while tail block").terminator,
+            Terminator::DoWhileTail
+        );
     }
 
     #[test]
@@ -793,7 +805,10 @@ LAB_top:
 return;");
         // 0: label body ending in goto, 1: return.
         assert_eq!(edge(&graph, 0, 0), Some(EdgeKind::BackEdge));
-        assert_eq!(graph.block(0).unwrap().terminator, Terminator::Goto);
+        assert_eq!(
+            graph.block(0).expect("goto block").terminator,
+            Terminator::Goto
+        );
         assert_eq!(graph.loops().len(), 1);
         assert_eq!(graph.loops()[0].header, 0);
         assert_eq!(graph.loops()[0].kind, LoopKind::Goto);
@@ -822,7 +837,10 @@ if (x) {
 f();");
         // 0: if head, 1: return, 2: closing brace, 3: f().
         assert_eq!(graph.successors(1).count(), 0);
-        assert_eq!(graph.block(1).unwrap().terminator, Terminator::Return);
+        assert_eq!(
+            graph.block(1).expect("return block").terminator,
+            Terminator::Return
+        );
     }
 
     #[test]
@@ -846,7 +864,7 @@ if (x) {
     f();
 }");
         // The puts line sits inside the if body at depth 1, not back at 0.
-        let body = graph.block(1).unwrap();
+        let body = graph.block(1).expect("if body block");
         assert_eq!(body.depth, 1);
         assert_eq!(body.end, 4);
     }
@@ -888,15 +906,73 @@ else if (local_4 == 2) {
         let loop_ = &graph.loops()[0];
         assert_eq!(loop_.kind, LoopKind::While);
         assert_eq!(loop_.depth, 1);
-        let chain_head = graph.block_at(0).unwrap();
-        assert_eq!(graph.block(chain_head).unwrap().depth, 0);
-        assert_eq!(graph.block(loop_.header).unwrap().depth, 1);
+        let chain_head = graph.block_at(0).expect("chain head at line 0");
+        assert_eq!(graph.block(chain_head).expect("chain head block").depth, 0);
+        assert_eq!(
+            graph.block(loop_.header).expect("loop header block").depth,
+            1
+        );
         // The chain's arms still route around each other.
-        let else_if_head = graph.block_at(5).unwrap();
+        let else_if_head = graph.block_at(5).expect("else-if head at line 5");
         assert_eq!(
             edge(&graph, chain_head, else_if_head),
             Some(EdgeKind::BranchNotTaken)
         );
+    }
+
+    #[test]
+    fn loop_nested_inside_a_loop_reads_at_real_depth() {
+        let graph = cfg("\
+for (i = 0; i < 3; i = i + 1) {
+    while (x) {
+        f();
+    }
+}");
+        // Outer for at depth 0, inner while at depth 1: the inner loop
+        // nests under the outer, and each keeps its own back edge.
+        assert_eq!(graph.loops().len(), 2);
+        assert_eq!(graph.loops()[0].kind, LoopKind::For);
+        assert_eq!(graph.loops()[0].depth, 0);
+        assert_eq!(graph.loops()[1].kind, LoopKind::While);
+        assert_eq!(graph.loops()[1].depth, 1);
+        // 0: for head, 1: while head, 2: f body + while close, 3: for close.
+        let inner_header = graph.loops()[1].header;
+        let outer_header = graph.loops()[0].header;
+        assert_eq!(
+            edge(&graph, inner_header, inner_header + 1),
+            Some(EdgeKind::BranchTaken)
+        );
+        assert_eq!(
+            edge(&graph, inner_header + 1, inner_header),
+            Some(EdgeKind::BackEdge)
+        );
+        assert_eq!(
+            edge(&graph, outer_header + 3, outer_header),
+            Some(EdgeKind::BackEdge)
+        );
+        assert_eq!(graph.back_edges().count(), 2);
+    }
+
+    #[test]
+    fn case_labels_split_the_switch_body_into_blocks() {
+        let graph = cfg("\
+switch (x) {
+    case 1:
+        f();
+        break;
+    case 2:
+        g();
+        break;
+}");
+        // The switch head line, then one block per case arm: case labels
+        // cut blocks like any other label. The switch's own dispatch and
+        // `break` edges are not modelled — the chain detector reads
+        // switches textually, and the follow-up tickets only need the
+        // loops and branches around them.
+        assert_eq!(spans(&graph), vec![(0, 1), (1, 4), (4, 8)]);
+        assert_eq!(edge(&graph, 0, 1), Some(EdgeKind::FallThrough));
+        assert_eq!(edge(&graph, 1, 2), Some(EdgeKind::FallThrough));
+        assert!(graph.loops().is_empty());
     }
 
     #[test]
@@ -929,9 +1005,9 @@ else {
 }");
         // The inner if's not-taken lands on the block closing the outer
         // body, not inside the outer else.
-        let inner_head = graph.block_at(1).unwrap();
-        let inner_body = graph.block_at(2).unwrap();
-        let outer_else = graph.block_at(6).unwrap();
+        let inner_head = graph.block_at(1).expect("inner if head at line 1");
+        let inner_body = graph.block_at(2).expect("inner body at line 2");
+        let outer_else = graph.block_at(6).expect("outer else body at line 6");
         assert_ne!(
             graph
                 .edges()
