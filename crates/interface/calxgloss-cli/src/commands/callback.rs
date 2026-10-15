@@ -7,7 +7,10 @@
 //! batch translation will read as prompt context. Batch translation runs
 //! the same scan before its first batch when no result is cached; this
 //! command is the manual entry point: it rebuilds the result on demand
-//! and can print what a cached one holds.
+//! and can print what a cached one holds. When the workspace also caches
+//! a type-inference result, its records are composed into a signature
+//! map and injected, so registration and chain suggestions carry real
+//! closure contracts — and without one the scan is exactly what it was.
 
 use std::path::Path;
 
@@ -21,6 +24,7 @@ use tracing::info;
 
 use crate::Settings;
 use crate::utils::*;
+use calxgloss_translator::callback_signature_map;
 
 /// How many entries a detail section lists before collapsing the rest.
 const DETAIL_LIMIT: usize = 10;
@@ -57,7 +61,12 @@ pub async fn handle_callback(
     let ghidra = GhidraClient::from_config(config)
         .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))?;
 
-    let engine = CallbackEngine::new(&ghidra);
+    // The type-inference scan's cached document, when the workspace
+    // has one, composes into a signature map the engine injects —
+    // no extra flags, and no document just means today's open
+    // suggestions (issue #173).
+    let signatures = callback_signature_map(workspace, binary);
+    let engine = CallbackEngine::new(&ghidra).with_signatures(signatures);
     let result = engine
         .scan(binary)
         .await

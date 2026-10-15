@@ -15,7 +15,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into nine modules:
+//! The crate is organized into ten modules:
 //!
 //! - [`types`] - Core data types: `FpArrayCall`, `CallbackRegistration`,
 //!   `JumpTable`, `PluginArchitecture`, and `CallbackChain` for the
@@ -50,6 +50,11 @@
 //!   the registration site named — in another, and reconstructs event
 //!   systems from many registrations to one point plus a visible
 //!   dispatch site, over the bodies the scan already holds.
+//! - [`signatures`] - Injected callable contracts: `CallableSignature`
+//!   and `SignatureMap` carry a caller-composed map of callback name
+//!   to known parameter and return types, and the enrichment renders
+//!   the real `Fn(...)` contract into the registration and chain
+//!   suggestions without any dependency on the type-inference crate.
 //! - [`persist`] - JSON persistence: `CallbackPersistor` saves and loads
 //!   the per-binary detection results under `re/analysis/callback/`.
 //! - [`error`] - [`CallbackError`] and the crate-wide [`Result`] alias.
@@ -62,6 +67,7 @@ pub mod fp_array;
 pub mod jump_table;
 pub mod persist;
 pub mod plugin;
+pub mod signatures;
 pub mod types;
 
 pub use error::{CallbackError, Result};

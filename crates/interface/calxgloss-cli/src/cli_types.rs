@@ -505,7 +505,10 @@ pub(super) enum Command {
     /// The callback findings are persisted per binary to
     /// `re/analysis/callback/<binary>.json` in the workspace — the same
     /// file batch translation will read as prompt context. `--show`
-    /// prints a cached result without connecting to Ghidra.
+    /// prints a cached result without connecting to Ghidra. When the
+    /// workspace also caches a type-inference result, its records fill
+    /// real closure contracts into the registration and chain
+    /// suggestions; without one the scan is exactly what it was.
     ///
     /// # Arguments
     ///

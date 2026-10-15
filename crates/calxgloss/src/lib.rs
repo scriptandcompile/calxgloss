@@ -220,6 +220,7 @@ pub use calxgloss_apidetect::{ApiDetectionResult, ApiError, ApiFinding, ApiUsage
 // `ScanMetadata` is the shared one from calxgloss-types, already
 // named here.
 pub use calxgloss_callback::CallbackError;
+pub use calxgloss_callback::signatures::{CallableSignature, SignatureMap};
 pub use calxgloss_callback::types::{
     CallbackChain, CallbackFinding, CallbackRegistration, CallbackResult, FpArrayCall, JumpTable,
     PluginArchitecture,

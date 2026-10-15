@@ -29,6 +29,8 @@
 //! # }
 //! ```
 
+use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -40,6 +42,7 @@ use calxgloss_apidetect::engine::ApiEngine;
 use calxgloss_apidetect::persist::ApiPersistor;
 use calxgloss_callback::engine::CallbackEngine;
 use calxgloss_callback::persist::CallbackPersistor;
+use calxgloss_callback::signatures::{CallableSignature, SignatureMap};
 use calxgloss_callgraph::{ContextEnricher, FunctionContext, NodeCategory};
 use calxgloss_consts::engine::ConstEngine;
 use calxgloss_consts::persist::ConstPersistor;
@@ -61,7 +64,9 @@ use calxgloss_sync::engine::SyncEngine;
 use calxgloss_sync::persist::SyncPersistor;
 use calxgloss_testgen::TestGenerator;
 use calxgloss_typeinfer::engine::TypeInferEngine;
+use calxgloss_typeinfer::error::TypeInferError;
 use calxgloss_typeinfer::persist::TypeInferPersistor;
+use calxgloss_typeinfer::types::{InferredType, TypeInferenceResult};
 use calxgloss_types::{
     BinaryIdentity, ContextTier, Export, FunctionInfo, PipelineControl, PipelineState,
     ProgressEvent, ScopeControl, StopSignal, TestCase, TranslationEvents, TranslationRequest,
@@ -2322,7 +2327,10 @@ impl TranslationPipeline {
     /// running the detection scan once up front means every function in
     /// the batch can see callback context instead of none. The persisted
     /// file is the cache: when a result is already saved for `binary`, the
-    /// scan is skipped entirely.
+    /// scan is skipped entirely. When a type-inference result is cached
+    /// too — the batch runs that scan first — its records are composed
+    /// into a signature map and injected, so the persisted suggestions
+    /// carry real closure contracts (see [`callback_signature_map`]).
     ///
     /// Returns whether a result is available afterwards. A missing workspace,
     /// an unreachable Ghidra server, or a failed save only log a warning and
@@ -2348,7 +2356,13 @@ impl TranslationPipeline {
         }
 
         info!(binary, "Detecting callback tables before batch translation");
-        let engine = CallbackEngine::with_source(self.scan_source());
+        // The type-inference scan runs before this one in the batch
+        // pre-analysis, so its cached document is usually in place:
+        // its records deepen the registration and chain suggestions
+        // into real closure contracts. No document, no enrichment —
+        // the scan degrades silently (issue #173).
+        let signatures = callback_signature_map(workspace, binary);
+        let engine = CallbackEngine::with_source(self.scan_source()).with_signatures(signatures);
         self.begin_scan_pass(binary, "callback detection");
         let scan = engine.scan(binary).await;
         self.end_scan_pass();
@@ -3425,6 +3439,107 @@ pub async fn build_hallucination_detector(
     HallucinationDetector::new(ghidra_functions, ghidra_imports)
 }
 
+/// Compose the callback scan's signature map from the type-inference
+/// document cached for `binary` under `workspace`.
+///
+/// The callback engine takes callable contracts by injection (see
+/// [`calxgloss_callback::signatures`]); this is the one place that
+/// reads the type-inference scan's persisted per-binary document and
+/// composes those contracts, so the CLI `callback` command and the
+/// batch pre-analysis wire the enrichment identically (issue #173,
+/// ADR-0036). A missing or corrupt document — the type-inference scan
+/// never ran, or its artifact is broken — yields an empty map and the
+/// callback scan degrades silently to its un-enriched suggestions: a
+/// bad neighbor artifact never fails the scan.
+///
+/// The composition is honest about what the records prove. A function
+/// joins the map only when its parameter records cover positions
+/// `0..n` **contiguously** and a return record stands: a gap proves a
+/// middle parameter the records never typed, and a contract that
+/// skipped it would misplace every type after it; no parameter
+/// records at all cannot tell a zero-parameter callback from one
+/// whose parameters were never read; and with no return reading the
+/// contract would assert a unit return nobody read.
+pub fn callback_signature_map(workspace: &Path, binary: &str) -> SignatureMap {
+    let persistor = TypeInferPersistor::new(workspace);
+    match persistor.load(binary) {
+        Ok(result) => compose_signature_map(&result),
+        Err(TypeInferError::NotFound { path }) => {
+            debug!(
+                binary,
+                path = %path.display(),
+                "No type-inference document cached; the callback scan runs without signature enrichment"
+            );
+            SignatureMap::new()
+        }
+        Err(error) => {
+            warn!(
+                binary,
+                error = %error,
+                "Type-inference document unreadable; the callback scan runs without signature enrichment"
+            );
+            SignatureMap::new()
+        }
+    }
+}
+
+/// Group one type-inference document's per-function records into the
+/// callable contracts the callback engine consumes: the parameter
+/// records by position, and the function's return record.
+fn compose_signature_map(result: &TypeInferenceResult) -> SignatureMap {
+    // First-seen wins per slot, mirroring the inference scan's own
+    // conflict-resolution tie: a well-formed document carries one
+    // record per slot anyway.
+    let mut params: HashMap<&str, Vec<(usize, &str)>> = HashMap::new();
+    let mut returns: HashMap<&str, &str> = HashMap::new();
+    for inference in &result.inferences {
+        match inference {
+            InferredType::Param(record) => params
+                .entry(record.function.as_str())
+                .or_default()
+                .push((record.param_index, record.inferred_type.as_str())),
+            InferredType::Return(record) => {
+                returns
+                    .entry(record.function.as_str())
+                    .or_insert(record.inferred_type.as_str());
+            }
+            // Locals and call-site readings type storage, not the
+            // callable's contract.
+            _ => {}
+        }
+    }
+
+    let mut signatures = SignatureMap::new();
+    for (function, mut slots) in params {
+        // A stable sort keeps first-seen in front among equal
+        // positions, and the dedup then folds a repeated position to
+        // its first reading.
+        slots.sort_by_key(|(index, _)| *index);
+        slots.dedup_by_key(|(index, _)| *index);
+        if slots
+            .iter()
+            .enumerate()
+            .any(|(position, (index, _))| position != *index)
+        {
+            continue;
+        }
+        let Some(return_type) = returns.get(function) else {
+            continue;
+        };
+        signatures.insert(
+            function.to_string(),
+            CallableSignature {
+                param_types: slots
+                    .into_iter()
+                    .map(|(_, inferred_type)| inferred_type.to_string())
+                    .collect(),
+                return_type: Some(return_type.to_string()),
+            },
+        );
+    }
+    signatures
+}
+
 // ============================================================
 // Tests
 // ============================================================
@@ -3451,7 +3566,11 @@ mod tests {
     use calxgloss_sync::persist::SyncPersistor;
     use calxgloss_sync::types::SyncResult;
     use calxgloss_typeinfer::persist::TypeInferPersistor;
-    use calxgloss_typeinfer::types::TypeInferenceResult;
+    use calxgloss_typeinfer::types::{
+        InferenceMethod, InferenceScope, InferredLocalType, InferredParamType, InferredReturnType,
+        TypeInferenceResult,
+    };
+    use calxgloss_types::Confidence;
     use calxgloss_types::TranslationConstraints;
     use calxgloss_typesdb::types::{ScanMetadata, TypeDatabase};
     use tempfile::TempDir;
@@ -5229,6 +5348,142 @@ mod tests {
             result.results.len(),
             1,
             "the unit ran and failed live, as it did before the cache"
+        );
+    }
+
+    // ------------------------------------------------------------
+    // Callback signature map composition (issue #173)
+    // ------------------------------------------------------------
+
+    fn param_reading(function: &str, index: usize, inferred_type: &str) -> InferredType {
+        InferredType::Param(InferredParamType {
+            function: function.to_string(),
+            param_index: index,
+            param_name: Some(format!("param_{}", index + 1)),
+            inferred_type: inferred_type.to_string(),
+            method: InferenceMethod::IntegerBitPattern,
+            scope: InferenceScope::Function,
+            confidence: Confidence::new(65),
+            evidence: format!("{function} masks param_{}", index + 1),
+        })
+    }
+
+    fn return_reading(function: &str, inferred_type: &str) -> InferredType {
+        InferredType::Return(InferredReturnType {
+            function: function.to_string(),
+            inferred_type: inferred_type.to_string(),
+            method: InferenceMethod::ReturnUsage,
+            scope: InferenceScope::Function,
+            confidence: Confidence::new(65),
+            evidence: format!("FUN_caller uses {function}'s return"),
+        })
+    }
+
+    fn local_reading(function: &str, variable: &str, inferred_type: &str) -> InferredType {
+        InferredType::Local(InferredLocalType {
+            function: function.to_string(),
+            variable_name: variable.to_string(),
+            inferred_type: inferred_type.to_string(),
+            method: InferenceMethod::AssignmentChain,
+            scope: InferenceScope::Function,
+            confidence: Confidence::new(60),
+            evidence: format!("{function} assigns {variable}"),
+        })
+    }
+
+    fn typeinfer_document(inferences: Vec<InferredType>) -> TypeInferenceResult {
+        let mut result = TypeInferenceResult::new(ScanMetadata::new("eqmain.dll"));
+        result.inferences = inferences;
+        result
+    }
+
+    #[test]
+    fn the_signature_map_composes_contracts_from_param_and_return_readings() {
+        // `my_handler`'s contract was read on both sides: two
+        // parameters its body uses, a return its callers consume.
+        // A local record types storage, not the callable; a function
+        // with no return reading and one with no parameter readings
+        // both stay out — neither contract is fully known.
+        let map = compose_signature_map(&typeinfer_document(vec![
+            param_reading("my_handler", 0, "i32"),
+            param_reading("my_handler", 1, "char *"),
+            return_reading("my_handler", "bool"),
+            local_reading("my_handler", "local_8", "u32"),
+            param_reading("no_return", 0, "u32"),
+            return_reading("no_params", "bool"),
+        ]));
+        assert_eq!(map.len(), 1, "only the fully-read contract joins the map");
+        assert_eq!(
+            map["my_handler"],
+            CallableSignature {
+                param_types: vec!["i32".to_string(), "char *".to_string()],
+                return_type: Some("bool".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn record_order_never_matters_and_a_void_return_rides_the_map() {
+        // Records arrive in whatever order the scan persisted them;
+        // the positions sort out. A `void` return rides as read —
+        // dropping the clause is the contract renderer's call, not
+        // the composition's.
+        let map = compose_signature_map(&typeinfer_document(vec![
+            return_reading("notify", "void"),
+            param_reading("notify", 1, "u32"),
+            param_reading("notify", 0, "char *"),
+        ]));
+        assert_eq!(
+            map["notify"].contract(),
+            "Fn(char *, u32)",
+            "a void return drops its clause at render time"
+        );
+    }
+
+    #[test]
+    fn a_param_gap_composes_no_entry() {
+        // The hole at position 1 proves a middle parameter the
+        // records never typed: a contract that skipped it would
+        // misplace every type after it, so the function stays out
+        // and its suggestion stays open.
+        let map = compose_signature_map(&typeinfer_document(vec![
+            param_reading("gapped", 0, "i32"),
+            param_reading("gapped", 2, "bool"),
+            return_reading("gapped", "bool"),
+        ]));
+        assert!(
+            map.is_empty(),
+            "a hole in the parameter positions claims nothing"
+        );
+    }
+
+    #[test]
+    fn a_missing_or_corrupt_document_yields_an_empty_map() {
+        // The scan degrades silently either way: no document, and a
+        // document that will not parse, both compose to nothing.
+        let workspace = TempDir::new().expect("temp workspace");
+        assert!(
+            callback_signature_map(workspace.path(), "eqmain.dll").is_empty(),
+            "no cached document, no enrichment"
+        );
+
+        let persistor = TypeInferPersistor::new(workspace.path());
+        persistor
+            .save(&typeinfer_document(vec![
+                param_reading("my_handler", 0, "i32"),
+                return_reading("my_handler", "bool"),
+            ]))
+            .expect("save");
+        assert_eq!(
+            callback_signature_map(workspace.path(), "eqmain.dll").len(),
+            1,
+            "a cached document feeds the enrichment"
+        );
+
+        std::fs::write(persistor.path_for("eqmain.dll"), "{ not json").expect("corrupt write");
+        assert!(
+            callback_signature_map(workspace.path(), "eqmain.dll").is_empty(),
+            "a corrupt document degrades the scan, never fails it"
         );
     }
 }

@@ -15,6 +15,10 @@
 //!   cross-function chain and event-system findings in listing order.
 //! - **Cache behavior** — the `exists` check decides whether a scan
 //!   runs, and a rescan replaces the cached document.
+//! - **Signature enrichment** — a contract rendered from an injected
+//!   [`SignatureMap`] at scan time rides the finding through the
+//!   persisted document into the prompt data unchanged, and a scan
+//!   without the map keeps the open `(...)` suggestion.
 //!
 //! The fake program implements [`ScanSource`], so the whole flow runs
 //! without a Ghidra server.
@@ -23,6 +27,7 @@ use std::collections::HashMap;
 
 use calxgloss_callback::engine::{CallbackEngine, ScanSource};
 use calxgloss_callback::persist::CallbackPersistor;
+use calxgloss_callback::signatures::{CallableSignature, SignatureMap};
 use calxgloss_callback::types::CallbackFinding;
 use calxgloss_ghidra::{
     DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
@@ -667,4 +672,105 @@ async fn event_system_findings_survive_the_scan_persist_and_prompt_walk() {
     ));
     assert!(prompt.contains("event_system pattern, confidence 60"));
     assert!(prompt.contains("handlers[uVar1](param_1);"));
+}
+
+// ------------------------------------------------------------
+// Signature enrichment (issue #173)
+// ------------------------------------------------------------
+
+#[tokio::test]
+async fn enriched_suggestions_survive_the_scan_persist_and_prompt_walk() {
+    // The enrichment is scan-time, not prompt-time: the contract an
+    // injected signature map renders rides the registration and the
+    // chain into the persisted document and reaches the escalate
+    // prompt as the same string the CLI report prints.
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  register_callback(my_handler);\n",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_18003e750".into(),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(void)",
+            "  my_handler(param_1);\n",
+        ),
+    );
+
+    let signatures: SignatureMap = [(
+        "my_handler".to_string(),
+        CallableSignature {
+            param_types: vec!["i32".to_string()],
+            return_type: Some("bool".to_string()),
+        },
+    )]
+    .into_iter()
+    .collect();
+    let workspace = TempDir::new().expect("workspace temp dir");
+    let result = CallbackEngine::with_source(program)
+        .with_signatures(signatures)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = CallbackPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let suggestions: Vec<(&str, &str)> = loaded
+        .findings
+        .iter()
+        .map(|finding| (finding.kind(), finding.suggestion()))
+        .collect();
+    assert_eq!(
+        suggestions,
+        vec![
+            ("registration", "Box<dyn Fn(i32) -> bool>"),
+            (
+                "chain",
+                "Box<dyn Fn(i32) -> bool> shared between the registering and calling functions"
+            ),
+        ],
+        "the enriched contract round-trips through the persisted document"
+    );
+
+    // The prompt sees the enriched contract verbatim — the open
+    // `(...)` placeholder is gone from the rendered CALLBACKS
+    // section.
+    let findings: Vec<calxgloss_prompts::CallbackInfo> = loaded
+        .findings
+        .iter()
+        .map(calxgloss_prompts::CallbackInfo::from)
+        .collect();
+    let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
+        "FUN_18003ab00".into(),
+        "eqmain.dll".into(),
+        "fn fun_18003ab00() { /* hands the handler out */ }".into(),
+        "Wrong result".into(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        findings,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("the escalate prompt should render");
+
+    assert!(prompt.contains("CALLBACKS"));
+    assert!(prompt.contains("Box<dyn Fn(i32) -> bool>"));
+    assert!(!prompt.contains("Box<dyn Fn(...)>"));
 }

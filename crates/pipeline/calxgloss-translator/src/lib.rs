@@ -25,7 +25,7 @@ pub mod batch;
 
 pub use batch::{BatchTranslationResult, FunctionResult};
 pub use error::{Result, TranslatorError};
-pub use pipeline::{TranslationPipeline, build_hallucination_detector};
+pub use pipeline::{TranslationPipeline, build_hallucination_detector, callback_signature_map};
 pub use retry::{
     RetryConfig, RetryResult, RetryStrategy, TranslationAttempt, try_translate_with_retry,
 };

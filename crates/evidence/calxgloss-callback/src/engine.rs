@@ -24,6 +24,7 @@ use crate::error::Result;
 use crate::fp_array::FpArrayDetector;
 use crate::jump_table::JumpTableDetector;
 use crate::plugin::PluginDetector;
+use crate::signatures::{SignatureMap, enrich_suggestion};
 use crate::types::{CallbackFinding, CallbackResult, ScanMetadata};
 use calxgloss_ghidra::{DecompiledFunction, GhidraClient};
 use std::time::Instant;
@@ -49,7 +50,11 @@ pub use calxgloss_ghidra::ScanSource;
 /// [`with_registration`](Self::with_registration),
 /// [`with_jump_table`](Self::with_jump_table) and
 /// [`with_plugin`](Self::with_plugin) swap a detector's set
-/// whole — so one instance of each serves the whole scan.
+/// whole — so one instance of each serves the whole scan. A
+/// caller-composed [`SignatureMap`] injected through
+/// [`with_signatures`](Self::with_signatures) deepens the
+/// registration and chain suggestions in place; with no map the scan
+/// is exactly what it was.
 #[derive(Debug, Clone)]
 pub struct CallbackEngine<S = GhidraClient> {
     source: S,
@@ -58,6 +63,7 @@ pub struct CallbackEngine<S = GhidraClient> {
     jump_table: JumpTableDetector,
     plugin: PluginDetector,
     cross_function: CrossFunctionAnalyzer,
+    signatures: SignatureMap,
 }
 
 impl CallbackEngine<GhidraClient> {
@@ -71,6 +77,7 @@ impl CallbackEngine<GhidraClient> {
             jump_table: JumpTableDetector::with_default_prefixes(),
             plugin: PluginDetector::with_default_names(),
             cross_function: CrossFunctionAnalyzer::new(),
+            signatures: SignatureMap::new(),
         }
     }
 }
@@ -86,6 +93,7 @@ impl<S> CallbackEngine<S> {
             jump_table: JumpTableDetector::with_default_prefixes(),
             plugin: PluginDetector::with_default_names(),
             cross_function: CrossFunctionAnalyzer::new(),
+            signatures: SignatureMap::new(),
         }
     }
 
@@ -117,6 +125,34 @@ impl<S> CallbackEngine<S> {
         self
     }
 
+    /// Fill the real closure contract into the suggestions whose
+    /// callback `signatures` names.
+    ///
+    /// A registration's bound callback — and a chain's callback — is
+    /// looked up by its spelled name in the map, and a hit renders
+    /// `Box<dyn Fn(i32) -> bool>` in place of the open
+    /// `Box<dyn Fn(...)>` (see [`crate::signatures`]). The map is
+    /// composed by the **caller** from another scan's persisted
+    /// records — the CLI `callback` command and the batch
+    /// pre-analysis read the type-inference document — because this
+    /// crate takes no dependency on the type-inference crate
+    /// (ADR-0036). An empty map, or a name the map does not carry,
+    /// leaves every suggestion exactly as the detectors wrote it;
+    /// function-pointer-array and jump-table suggestions are never
+    /// touched, because their callees are unnamed.
+    pub fn with_signatures(mut self, signatures: SignatureMap) -> Self {
+        self.signatures = signatures;
+        self
+    }
+
+    /// Deepen `suggestion` in place when `callback` has a known
+    /// callable contract; anything else stands as written.
+    fn enrich(&self, callback: &str, suggestion: &mut String) {
+        if let Some(signature) = self.signatures.get(callback) {
+            *suggestion = enrich_suggestion(suggestion, signature);
+        }
+    }
+
     /// Detect callback tables across `binary`, decompiling each
     /// function exactly once and reading it with every wired detector.
     ///
@@ -139,7 +175,11 @@ impl<S> CallbackEngine<S> {
     /// program, and skipping on would persist a phantom-clean record
     /// (issue #71). The detectors read disjoint body shapes, so a
     /// function can carry findings of every kind at once and nothing
-    /// is resolved between them.
+    /// is resolved between them. Where a [`with_signatures`](Self::with_signatures)
+    /// map names a bound callback, the registration and chain
+    /// suggestions carry its real closure contract out of the scan —
+    /// into the persisted document, the CLI report, and the escalate
+    /// prompt alike.
     pub async fn scan(&self, binary: impl Into<String>) -> Result<CallbackResult>
     where
         S: ScanSource,
@@ -199,7 +239,10 @@ impl<S> CallbackEngine<S> {
                 self.registration
                     .detect(&decompiled)
                     .into_iter()
-                    .map(CallbackFinding::Registration),
+                    .map(|mut record| {
+                        self.enrich(&record.callback, &mut record.suggestion);
+                        CallbackFinding::Registration(record)
+                    }),
             );
             findings.extend(
                 self.jump_table
@@ -219,13 +262,23 @@ impl<S> CallbackEngine<S> {
         // The cross-function pass runs after the per-function walk,
         // over the bodies the scan already decompiled — no extra
         // Ghidra round trips — and its findings append in listing
-        // order, after the per-function findings.
-        findings.extend(self.cross_function.analyze(
+        // order, after the per-function findings. A chain's callback
+        // is enriched like a registration's; the event-system
+        // suggestion names a crowd of handlers whose contracts can
+        // differ, so no single one of them stands for the crowd and
+        // the map never reaches it (ADR-0036).
+        let mut cross_findings = self.cross_function.analyze(
             &bodies,
             &self.registration,
             &self.fp_array,
             &self.jump_table,
-        ));
+        );
+        for finding in &mut cross_findings {
+            if let CallbackFinding::Chain(record) = finding {
+                self.enrich(&record.callback, &mut record.suggestion);
+            }
+        }
+        findings.extend(cross_findings);
 
         let mut metadata = ScanMetadata::new(binary);
         metadata.duration_secs = started.elapsed().as_secs();
@@ -248,6 +301,7 @@ impl<S> CallbackEngine<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::signatures::{CallableSignature, SignatureMap};
     use calxgloss_ghidra::{
         DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
         Result, StringLiteral, StructLayout, Symbol, Xref,
@@ -1196,5 +1250,165 @@ mod tests {
         assert!(result.is_empty());
         assert_eq!(result.metadata.binary, "eqmain.dll");
         assert!(result.metadata.scanned_at > 0);
+    }
+
+    // ------------------------------------------------------------
+    // Injected signature enrichment (issue #173)
+    // ------------------------------------------------------------
+
+    fn callable_signature(params: &[&str], return_type: Option<&str>) -> CallableSignature {
+        CallableSignature {
+            param_types: params.iter().map(|param| (*param).to_string()).collect(),
+            return_type: return_type.map(|return_type| return_type.to_string()),
+        }
+    }
+
+    fn handler_signature_map() -> SignatureMap {
+        [(
+            "my_handler".to_string(),
+            callable_signature(&["i32"], Some("bool")),
+        )]
+        .into_iter()
+        .collect()
+    }
+
+    fn registered_handler_program() -> FakeProgram {
+        // One function hands `my_handler` to `register_callback`,
+        // another calls it by name: one scan carries both a
+        // registration finding and a chain finding for the same
+        // callback.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  register_callback(my_handler);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  my_handler(param_1);\n",
+            ),
+        );
+        program
+    }
+
+    fn suggestion_for<'a>(result: &'a CallbackResult, kind: &str, function: &str) -> &'a str {
+        result
+            .findings
+            .iter()
+            .find(|finding| finding.kind() == kind && finding.function() == function)
+            .unwrap_or_else(|| panic!("a {kind} finding on {function}"))
+            .suggestion()
+    }
+
+    #[tokio::test]
+    async fn a_known_signature_fills_the_registration_closure_contract() {
+        // The contrast at the engine seam: the same canned body,
+        // scanned with a map naming the bound callback, renders the
+        // real contract; scanned without one, it stays open.
+        let enriched = CallbackEngine::with_source(registered_handler_program())
+            .with_signatures(handler_signature_map())
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+        assert_eq!(
+            suggestion_for(&enriched, "registration", "FUN_18003ab00"),
+            "Box<dyn Fn(i32) -> bool>"
+        );
+
+        let plain = scan(registered_handler_program()).await;
+        assert_eq!(
+            suggestion_for(&plain, "registration", "FUN_18003ab00"),
+            "Box<dyn Fn(...)>"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_known_signature_fills_the_chain_closure_contract() {
+        // The chain's callback is enriched the same way, and the
+        // prose around the placeholder rides on unchanged.
+        let enriched = CallbackEngine::with_source(registered_handler_program())
+            .with_signatures(handler_signature_map())
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+        assert_eq!(
+            suggestion_for(&enriched, "chain", "FUN_18003ab00"),
+            "Box<dyn Fn(i32) -> bool> shared between the registering and calling functions"
+        );
+
+        let plain = scan(registered_handler_program()).await;
+        assert_eq!(
+            suggestion_for(&plain, "chain", "FUN_18003ab00"),
+            "Box<dyn Fn(...)> shared between the registering and calling functions"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_signature_map_leaves_the_table_suggestions_untouched() {
+        // An fp-array or jump-table callee is unnamed — there is no
+        // name to look up — so even a map naming the tables keeps
+        // their suggestions open. The registered callback in the same
+        // body is the only suggestion the map reaches.
+        let mut signatures = handler_signature_map();
+        signatures.insert(
+            "handlers".to_string(),
+            callable_signature(&["i32"], Some("bool")),
+        );
+        signatures.insert(
+            "dispatch".to_string(),
+            callable_signature(&["i32"], Some("bool")),
+        );
+        let result = CallbackEngine::with_source(program())
+            .with_signatures(signatures)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+        let plain = scan(program()).await;
+        assert_eq!(
+            suggestion_for(&result, "fp_array", "FUN_18003ab00"),
+            "Vec<Box<dyn Fn(...)>>"
+        );
+        assert_eq!(
+            suggestion_for(&result, "jump_table", "FUN_18003ab00"),
+            suggestion_for(&plain, "jump_table", "FUN_18003ab00"),
+            "a jump-table suggestion rides the map untouched"
+        );
+        assert_eq!(
+            suggestion_for(&result, "registration", "FUN_18003ab00"),
+            "Box<dyn Fn(i32) -> bool>"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_name_or_an_empty_map_leaves_suggestions_as_today() {
+        // A map that names no bound callback — and the default no-map
+        // scan — leave every suggestion exactly as the detectors
+        // wrote it.
+        let unrelated: SignatureMap = [(
+            "some_other_function".to_string(),
+            callable_signature(&["i32"], Some("bool")),
+        )]
+        .into_iter()
+        .collect();
+        let result = CallbackEngine::with_source(registered_handler_program())
+            .with_signatures(unrelated)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+        assert_eq!(
+            suggestion_for(&result, "registration", "FUN_18003ab00"),
+            "Box<dyn Fn(...)>"
+        );
+        assert_eq!(
+            suggestion_for(&result, "chain", "FUN_18003ab00"),
+            "Box<dyn Fn(...)> shared between the registering and calling functions"
+        );
     }
 }
