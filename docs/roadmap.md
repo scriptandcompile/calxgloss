@@ -31,7 +31,7 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P7.5 | controlflow Phase 5: full CFG, recursion depth limits, loop nesting, branch density | `calxgloss-controlflow` | — | 🔶 in progress | `/to-tickets` | [#174](https://github.com/scriptandcompile/calxgloss/issues/174) |
+| P7.5 | controlflow Phase 5: full CFG, recursion depth limits, loop nesting, branch density | `calxgloss-controlflow` | — | 🔶 in progress | `/implement` | [#174](https://github.com/scriptandcompile/calxgloss/issues/174) |
 | P8.5 | stringctx Phase 5: localization detection, cross-function string correlation | `calxgloss-stringctx` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P9.5 | apidetect Phase 5: API category enrichment (incl. feature flags), Windows-vs-POSIX divergence, COM interface method suggestions, auto-generated FFI bindings, per-DLL dependency manifests | `calxgloss-apidetect` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P10.5 | consts Phase 5: full bitmask enum reconstruction, named constants from context, protocol constants, RGB grouping, codegen output | `calxgloss-consts` | — | ⬜ not started | `/to-spec` when picked up | — |
