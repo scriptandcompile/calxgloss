@@ -11,7 +11,7 @@
 //!   function), and the persisted list keeps every finding in scan
 //!   order: function by function, and within one function the
 //!   function-pointer array calls, then the registrations, then the
-//!   jump tables.
+//!   jump tables, then the plugin shapes.
 //! - **Cache behavior** — the `exists` check decides whether a scan
 //!   runs, and a rescan replaces the cached document.
 //!
@@ -50,9 +50,10 @@ fn function(name: &str, signature: &str, body: &str) -> DecompiledFunction {
 
 /// A canned program implementing [`ScanSource`]: one function whose
 /// body carries a cast-dereference call through `handlers`, a bare
-/// indexed call through `dispatch`, a `register_callback` call, and a
-/// bounds-checked switch-table dispatch, and one plain function that
-/// finds nothing.
+/// indexed call through `dispatch`, a `register_callback` call, a
+/// bounds-checked switch-table dispatch, and a load-and-resolve plugin
+/// shape with a host API table, and one plain function that finds
+/// nothing.
 #[derive(Clone, Default)]
 struct FakeProgram {
     listing: Vec<FunctionSummary>,
@@ -146,7 +147,10 @@ fn program() -> FakeProgram {
              \x20 register_callback(my_handler);\n\
              \x20 if (uVar3 < 6) {\n\
              \x20   (*(code *)(&switchdataD_1800412a0)[uVar3])();\n\
-             \x20 }\n",
+             \x20 }\n\
+             \x20 hMod = LoadLibrary(\"plugin.dll\");\n\
+             \x20 init = (code *)GetProcAddress(hMod, \"Plugin_Init\");\n\
+             \x20 Plugin_Init(&host_api);\n",
         ),
     );
     program.bodies.insert(
@@ -215,6 +219,7 @@ async fn the_persisted_document_keeps_findings_in_scan_order() {
             ("FUN_18003ab00", "fp_array"),
             ("FUN_18003ab00", "registration"),
             ("FUN_18003ab00", "jump_table"),
+            ("FUN_18003ab00", "plugin"),
         ]
     );
 }
@@ -238,7 +243,7 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     // The pipeline asks what was found for the function it is about to
     // translate; the plain function carries nothing.
     let findings: Vec<&CallbackFinding> = loaded.for_function("FUN_18003ab00").collect();
-    assert_eq!(findings.len(), 4);
+    assert_eq!(findings.len(), 5);
     assert!(loaded.for_function("FUN_18003e750").next().is_none());
     assert!(loaded.for_function("FUN_180099999").next().is_none());
 
@@ -282,6 +287,17 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
             .evidence
             .contains("(*(code *)(&switchdataD_1800412a0)[uVar3])();")
     );
+
+    let CallbackFinding::Plugin(record) = findings[4] else {
+        unreachable!("the load-and-resolve shape reads as a plugin finding");
+    };
+    assert_eq!(record.load.as_deref(), Some("LoadLibrary"));
+    assert_eq!(record.resolve.as_deref(), Some("GetProcAddress"));
+    assert_eq!(record.entry_point.as_deref(), Some("Plugin_Init"));
+    assert_eq!(record.host_table.as_deref(), Some("host_api"));
+    assert_eq!(record.suggestion, "Box<dyn Plugin> (loader crate)");
+    assert_eq!(record.confidence.value(), 70);
+    assert!(record.evidence.contains("LoadLibrary"));
 }
 
 #[tokio::test]
@@ -304,7 +320,7 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
         .for_function("FUN_18003ab00")
         .map(calxgloss_prompts::CallbackInfo::from)
         .collect();
-    assert_eq!(findings.len(), 4, "the target function's four findings");
+    assert_eq!(findings.len(), 5, "the target function's five findings");
 
     let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
         "FUN_18003ab00".into(),
@@ -336,6 +352,8 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
     assert!(prompt.contains("registration pattern, confidence 70"));
     assert!(prompt.contains("match index { /* 6 arms */ }"));
     assert!(prompt.contains("jump_table pattern, confidence 70"));
+    assert!(prompt.contains("Box<dyn Plugin> (loader crate)"));
+    assert!(prompt.contains("plugin pattern, confidence 70"));
     assert!(prompt.contains("register_callback(my_handler);"));
 }
 

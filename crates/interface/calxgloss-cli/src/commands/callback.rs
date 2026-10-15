@@ -96,7 +96,7 @@ fn print_callback_report(result: &CallbackResult, path: &Path) {
     println!();
 
     // Findings, broken down by the record kind the union carries.
-    let kind_breakdown: Vec<String> = ["fp_array", "registration", "jump_table"]
+    let kind_breakdown: Vec<String> = ["fp_array", "registration", "jump_table", "plugin"]
         .into_iter()
         .map(|kind| {
             (
@@ -157,7 +157,7 @@ fn print_callback_report(result: &CallbackResult, path: &Path) {
     hsep_bold();
     if result.is_empty() {
         println!(
-            "  {} The scan found nothing — no function-pointer arrays, registration calls, or jump tables were found in the decompiled bodies.",
+            "  {} The scan found nothing — no function-pointer arrays, registration calls, jump tables or plugin shapes were found in the decompiled bodies.",
             yellow_bold("◉")
         );
     } else {

@@ -31,15 +31,18 @@ use calxgloss_types::{
 /// accesses skipped, and C keywords are not calls. The registration
 /// read re-derives the argument text itself, so the scan's arguments
 /// go unused.
-const CALL_SCAN: ScanOptions = ScanOptions {
+///
+/// Shared with the plugin detector, which reads the same direct-call
+/// shape for its loader pairs and entry-point calls.
+pub(crate) const CALL_SCAN: ScanOptions = ScanOptions {
     continuation: NameContinuation::Ident,
     reject_preceding: b".>:",
     skip_keywords: &NON_CALL_KEYWORDS,
 };
 
 /// Every direct call in the body — the shared pseudo-C scan configured
-/// by [`CALL_SCAN`].
-fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
+/// by [`CALL_SCAN`]. Shared with the plugin detector.
+pub(crate) fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
     call_sites(body, &CALL_SCAN)
 }
 
@@ -221,7 +224,10 @@ fn top_level_args(args: &str) -> Vec<&str> {
 /// The plain identifier an argument names, once a leading cast
 /// `(type)` and a leading `&` are stripped — or `None` when what is
 /// left is not a bare identifier.
-fn strip_to_identifier(arg: &str) -> Option<String> {
+///
+/// Shared with the plugin detector, which reads the same shape for the
+/// host API table handed to an entry point.
+pub(crate) fn strip_to_identifier(arg: &str) -> Option<String> {
     let mut rest = arg;
     // A cast wraps the argument: `(callback_t)handler`. A cast's own
     // parentheses balance, so the matching `)` marks where the
@@ -266,7 +272,10 @@ fn strip_to_identifier(arg: &str) -> Option<String> {
 /// Whether an identifier is one the decompiler minted for storage —
 /// a local, a parameter, a variable, or the receiver — rather than a
 /// name the program itself gave a handler.
-fn is_decompiler_minted(name: &str) -> bool {
+///
+/// Shared with the plugin detector, which reads the same rule for the
+/// host API table an entry-point call names.
+pub(crate) fn is_decompiler_minted(name: &str) -> bool {
     const MINTED_PREFIXES: [&str; 7] = ["local_", "param_", "uVar", "iVar", "sVar", "cVar", "fVar"];
     name == "this" || MINTED_PREFIXES.iter().any(|p| name.starts_with(p))
 }

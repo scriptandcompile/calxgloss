@@ -137,7 +137,8 @@ impl CallbackPersistor {
 mod tests {
     use super::*;
     use crate::types::{
-        CallbackFinding, CallbackRegistration, Confidence, FpArrayCall, JumpTable, ScanMetadata,
+        CallbackFinding, CallbackRegistration, Confidence, FpArrayCall, JumpTable,
+        PluginArchitecture, ScanMetadata,
     };
     use calxgloss_types::persist::PersistError;
 
@@ -297,6 +298,60 @@ mod tests {
                 assert_eq!(t.target_count, Some(5));
             }
             other => panic!("expected a jump table finding, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plugin_findings_survive_the_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let persistor = CallbackPersistor::new(dir.path());
+
+        let mut result = CallbackResult::new(ScanMetadata::new("eqmain.dll"));
+        result
+            .findings
+            .push(CallbackFinding::Plugin(PluginArchitecture {
+                function: "LoadPlugin".to_string(),
+                load: Some("LoadLibrary".to_string()),
+                resolve: Some("GetProcAddress".to_string()),
+                entry_point: Some("Plugin_Init".to_string()),
+                host_table: Some("host_api".to_string()),
+                suggestion: "Box<dyn Plugin> (loader crate)".to_string(),
+                confidence: Confidence::new(70),
+                evidence: "hMod = LoadLibrary(\"plugin.dll\");".to_string(),
+            }));
+        result
+            .findings
+            .push(CallbackFinding::Plugin(PluginArchitecture {
+                function: "ResolveEntry".to_string(),
+                load: None,
+                resolve: Some("dlsym".to_string()),
+                entry_point: None,
+                host_table: None,
+                suggestion: "Box<dyn Plugin> (loader crate)".to_string(),
+                confidence: Confidence::new(60),
+                evidence: "init = dlsym(handle, \"Plugin_Init\");".to_string(),
+            }));
+        persistor.save(&result).unwrap();
+
+        let loaded = persistor.load("eqmain.dll").unwrap();
+        match &loaded.findings[0] {
+            CallbackFinding::Plugin(record) => {
+                assert_eq!(record.load.as_deref(), Some("LoadLibrary"));
+                assert_eq!(record.entry_point.as_deref(), Some("Plugin_Init"));
+                assert_eq!(record.host_table.as_deref(), Some("host_api"));
+                assert_eq!(record.confidence.value(), 70);
+            }
+            other => panic!("expected a plugin finding, got {other:?}"),
+        }
+        match &loaded.findings[1] {
+            CallbackFinding::Plugin(record) => {
+                // The fragment's absent spellings stay off disk and
+                // read back as none.
+                assert_eq!(record.load, None);
+                assert_eq!(record.entry_point, None);
+                assert_eq!(record.confidence.value(), 60);
+            }
+            other => panic!("expected a plugin fragment finding, got {other:?}"),
         }
     }
 

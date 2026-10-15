@@ -10,7 +10,10 @@
 //! - `JumpTable`: a call through a table of function addresses at a
 //!   computed index — the shape Ghidra leaves behind for
 //!   `jmp [table + index*N]`.
-//! - `CallbackFinding`: the union over the three record kinds — one
+//! - `PluginArchitecture`: a dynamic-load shape — a loader pair
+//!   (`LoadLibrary`/`GetProcAddress`, `dlopen`/`dlsym`), a plugin
+//!   entry-point name, and the host API table passed into one.
+//! - `CallbackFinding`: the union over the four record kinds — one
 //!   finding whichever detector made it — serde-tagged by `kind`.
 //! - `CallbackResult`, `ScanMetadata`: the persisted per-binary result
 //!   and its scan provenance.
@@ -137,6 +140,61 @@ pub struct JumpTable {
 }
 
 // ============================================================
+// Plugin architectures
+// ============================================================
+
+/// One plugin-architecture observation about one function, with the
+/// evidence behind it.
+///
+/// A record says the function carries a dynamic-loading shape: the
+/// loader pair [`load`](Self::load) and [`resolve`](Self::resolve) —
+/// `LoadLibrary`/`GetProcAddress` or `dlopen`/`dlsym` — loading a
+/// module and resolving entry points through it, and/or a direct call
+/// to a configured plugin entry-point name
+/// ([`entry_point`](Self::entry_point), spelled e.g. `Plugin_Init`)
+/// that takes the host API table named in [`host_table`](Self::host_table)
+/// as its argument. A full load-and-resolve pair reads at
+/// [`confidence`](Self::confidence) 70; a lone resolve call or a lone
+/// entry-point name is a fragment, kept at 60. The shape reads like
+/// [`suggestion`](Self::suggestion): a trait-object plugin boundary —
+/// a `Box<dyn Plugin>` handed out by a loader crate — so the plugin
+/// contract survives translation instead of collapsing into opaque
+/// loader calls. The loader call line is kept as
+/// [`evidence`](Self::evidence) so a reviewer (or a translation prompt)
+/// can check the reasoning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginArchitecture {
+    /// The function the record is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The module-load call spelling the body resolves through, e.g.
+    /// `LoadLibrary`, when a load call was visible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load: Option<String>,
+    /// The entry-point-resolve call spelling, e.g. `GetProcAddress`,
+    /// when a resolve call was visible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolve: Option<String>,
+    /// The plugin entry-point name the body calls directly, e.g.
+    /// `Plugin_Init`, when one was visible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_point: Option<String>,
+    /// The host API table passed into the entry point — a struct of
+    /// function pointers — e.g. `host_api`, when one was visible.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_table: Option<String>,
+    /// The Rust pattern the shape suggests, e.g.
+    /// `Box<dyn Plugin> (loader crate)`.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+    /// The decompiled line that supports the record — the loader call
+    /// for a full pair, the lone resolve or entry-point call for a
+    /// fragment — kept so a reviewer (or a translation prompt) can
+    /// check the reasoning.
+    pub evidence: String,
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -146,7 +204,7 @@ pub struct JumpTable {
 /// persisted result carries, so one list can hold every finding for a
 /// binary and a consumer reads the shared shape — function, suggestion,
 /// confidence, evidence — without naming which detector produced it.
-/// Unlike typeinfer's competing families, the three detectors read
+/// Unlike typeinfer's competing families, the four detectors read
 /// disjoint body shapes and can't make competing claims for one target,
 /// so nothing is resolved between variants. The serde `kind` tag names
 /// the record shape in the persisted JSON.
@@ -159,6 +217,8 @@ pub enum CallbackFinding {
     Registration(CallbackRegistration),
     /// A dispatch through a table of function addresses.
     JumpTable(JumpTable),
+    /// A dynamic-loading plugin shape.
+    Plugin(PluginArchitecture),
 }
 
 impl CallbackFinding {
@@ -168,6 +228,7 @@ impl CallbackFinding {
             CallbackFinding::FpArray(record) => &record.function,
             CallbackFinding::Registration(record) => &record.function,
             CallbackFinding::JumpTable(record) => &record.function,
+            CallbackFinding::Plugin(record) => &record.function,
         }
     }
 
@@ -177,6 +238,7 @@ impl CallbackFinding {
             CallbackFinding::FpArray(record) => &record.suggestion,
             CallbackFinding::Registration(record) => &record.suggestion,
             CallbackFinding::JumpTable(record) => &record.suggestion,
+            CallbackFinding::Plugin(record) => &record.suggestion,
         }
     }
 
@@ -186,6 +248,7 @@ impl CallbackFinding {
             CallbackFinding::FpArray(record) => record.confidence,
             CallbackFinding::Registration(record) => record.confidence,
             CallbackFinding::JumpTable(record) => record.confidence,
+            CallbackFinding::Plugin(record) => record.confidence,
         }
     }
 
@@ -195,22 +258,25 @@ impl CallbackFinding {
             CallbackFinding::FpArray(record) => &record.evidence,
             CallbackFinding::Registration(record) => &record.evidence,
             CallbackFinding::JumpTable(record) => &record.evidence,
+            CallbackFinding::Plugin(record) => &record.evidence,
         }
     }
 
-    /// The serde `kind` tag — `fp_array`, `registration`, or
-    /// `jump_table` — naming the detector behind the finding.
+    /// The serde `kind` tag — `fp_array`, `registration`, `jump_table`,
+    /// or `plugin` — naming the detector behind the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             CallbackFinding::FpArray(_) => "fp_array",
             CallbackFinding::Registration(_) => "registration",
             CallbackFinding::JumpTable(_) => "jump_table",
+            CallbackFinding::Plugin(_) => "plugin",
         }
     }
 
     /// What the finding names, spelled for a report row: the table the
     /// indexed call reads through, the registration call and its bound
-    /// callback, or the table and index of the computed dispatch.
+    /// callback, the table and index of the computed dispatch, or the
+    /// loader pair / entry point behind the plugin shape.
     pub fn target(&self) -> String {
         match self {
             CallbackFinding::FpArray(record) => record.table.clone(),
@@ -218,6 +284,14 @@ impl CallbackFinding {
                 format!("{}→{}", record.registration, record.callback)
             }
             CallbackFinding::JumpTable(record) => format!("{}[{}]", record.table, record.index),
+            CallbackFinding::Plugin(record) => match (&record.load, &record.resolve) {
+                (Some(load), Some(resolve)) => format!("{load}→{resolve}"),
+                _ => match (&record.entry_point, &record.host_table) {
+                    (Some(entry), Some(table)) => format!("{entry}({table})"),
+                    (Some(entry), None) => entry.clone(),
+                    (None, _) => record.resolve.clone().unwrap_or_default(),
+                },
+            },
         }
     }
 }
@@ -246,12 +320,12 @@ impl From<&CallbackFinding> for calxgloss_prompts::CallbackInfo {
 /// The callback result for one binary — the document persisted to
 /// `re/analysis/callback/{dll}.json`.
 ///
-/// The findings are the three detectors' outputs in scan order: function
+/// The findings are the four detectors' outputs in scan order: function
 /// by function, and within one function the function-pointer array
-/// calls, then the registrations, then the jump tables. The detectors
-/// read disjoint body shapes, so a function can carry findings of every
-/// kind at once and none competes with another; the stable order means
-/// two scans of the same program diff cleanly.
+/// calls, then the registrations, then the jump tables, then the plugin
+/// shapes. The detectors read disjoint body shapes, so a function can
+/// carry findings of every kind at once and none competes with another;
+/// the stable order means two scans of the same program diff cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallbackResult {
     /// Provenance of the scan that produced these findings.
@@ -400,6 +474,66 @@ mod tests {
         assert_eq!(json["confidence"], 70);
     }
 
+    fn plugin_architecture() -> PluginArchitecture {
+        PluginArchitecture {
+            function: "FUN_18003ab00".into(),
+            load: Some("LoadLibrary".into()),
+            resolve: Some("GetProcAddress".into()),
+            entry_point: Some("Plugin_Init".into()),
+            host_table: Some("host_api".into()),
+            suggestion: "Box<dyn Plugin> (loader crate)".into(),
+            confidence: Confidence::new(70),
+            evidence: "hMod = LoadLibrary(\"plugin.dll\");".into(),
+        }
+    }
+
+    #[test]
+    fn a_plugin_architecture_serde_round_trips() {
+        let record = plugin_architecture();
+        let json = serde_json::to_string(&record).unwrap();
+        assert!(json.contains("\"load\":\"LoadLibrary\""));
+        assert!(json.contains("\"resolve\":\"GetProcAddress\""));
+        assert!(json.contains("\"entry_point\":\"Plugin_Init\""));
+        assert!(json.contains("\"host_table\":\"host_api\""));
+        let back: PluginArchitecture = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn a_plugin_architecture_without_visible_partners_omits_them_and_reads_back_none() {
+        // A fragment record — a lone entry-point name with no loader
+        // pair and no host table — keeps the absent spellings off disk
+        // and reads back as none.
+        let record = PluginArchitecture {
+            load: None,
+            resolve: None,
+            entry_point: Some("Plugin_Init".into()),
+            host_table: None,
+            confidence: Confidence::new(60),
+            ..plugin_architecture()
+        };
+        let json = serde_json::to_string(&record).unwrap();
+        assert!(!json.contains("\"load\""));
+        assert!(!json.contains("\"resolve\""));
+        assert!(!json.contains("\"host_table\""));
+        let back: PluginArchitecture = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, record);
+        assert_eq!(back.load, None);
+        assert_eq!(back.host_table, None);
+    }
+
+    #[test]
+    fn a_plugin_architecture_record_names_the_loader_pair_the_entry_point_and_the_pattern() {
+        let json = serde_json::to_value(plugin_architecture()).unwrap();
+        assert_eq!(json["function"], "FUN_18003ab00");
+        assert_eq!(json["load"], "LoadLibrary");
+        assert_eq!(json["resolve"], "GetProcAddress");
+        assert_eq!(json["entry_point"], "Plugin_Init");
+        assert_eq!(json["host_table"], "host_api");
+        assert_eq!(json["suggestion"], "Box<dyn Plugin> (loader crate)");
+        assert_eq!(json["confidence"], 70);
+    }
+
     #[test]
     fn an_fp_array_finding_serde_round_trips_under_its_kind_tag() {
         let finding = CallbackFinding::FpArray(fp_array_call());
@@ -436,11 +570,23 @@ mod tests {
     }
 
     #[test]
+    fn a_plugin_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = CallbackFinding::Plugin(plugin_architecture());
+        let json = serde_json::to_string(&finding).expect("plugin finding should serialize");
+        assert!(json.contains("\"kind\":\"plugin\""));
+        assert!(json.contains("\"resolve\":\"GetProcAddress\""));
+        let back: CallbackFinding =
+            serde_json::from_str(&json).expect("plugin finding should read back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
     fn the_union_accessors_reach_through_every_variant() {
         let findings = [
             CallbackFinding::FpArray(fp_array_call()),
             CallbackFinding::Registration(registration()),
             CallbackFinding::JumpTable(jump_table()),
+            CallbackFinding::Plugin(plugin_architecture()),
         ];
         for finding in &findings {
             assert_eq!(finding.function(), "FUN_18003ab00");
@@ -449,11 +595,19 @@ mod tests {
             assert!(!finding.evidence().is_empty());
         }
         let kinds: Vec<&str> = findings.iter().map(|f| f.kind()).collect();
-        assert_eq!(kinds, vec!["fp_array", "registration", "jump_table"]);
+        assert_eq!(
+            kinds,
+            vec!["fp_array", "registration", "jump_table", "plugin"]
+        );
         let suggestions: Vec<&str> = findings.iter().map(|f| f.suggestion()).collect();
         assert_eq!(
             suggestions,
-            vec!["Vec<Box<dyn Fn(...)>>", "Box<dyn Fn(...)>", "[fn(...); 5]"]
+            vec![
+                "Vec<Box<dyn Fn(...)>>",
+                "Box<dyn Fn(...)>",
+                "[fn(...); 5]",
+                "Box<dyn Plugin> (loader crate)"
+            ]
         );
         let targets: Vec<String> = findings.iter().map(|f| f.target()).collect();
         assert_eq!(
@@ -461,9 +615,39 @@ mod tests {
             vec![
                 "handlers",
                 "register_callback→my_handler",
-                "DAT_1400a1b60[uVar2]"
+                "DAT_1400a1b60[uVar2]",
+                "LoadLibrary→GetProcAddress"
             ]
         );
+    }
+
+    #[test]
+    fn a_plugin_finding_target_names_its_visible_shape() {
+        // The report row names what the record actually saw: the loader
+        // pair for a full shape, the entry point and its host table for
+        // a fragment, the lone resolve when that is all there is.
+        let full = CallbackFinding::Plugin(plugin_architecture());
+        assert_eq!(full.target(), "LoadLibrary→GetProcAddress");
+
+        let entry_fragment = CallbackFinding::Plugin(PluginArchitecture {
+            load: None,
+            resolve: None,
+            entry_point: Some("GetPluginInfo".into()),
+            host_table: Some("host_api".into()),
+            confidence: Confidence::new(60),
+            ..plugin_architecture()
+        });
+        assert_eq!(entry_fragment.target(), "GetPluginInfo(host_api)");
+
+        let resolve_fragment = CallbackFinding::Plugin(PluginArchitecture {
+            load: None,
+            resolve: Some("dlsym".into()),
+            entry_point: None,
+            host_table: None,
+            confidence: Confidence::new(60),
+            ..plugin_architecture()
+        });
+        assert_eq!(resolve_fragment.target(), "dlsym");
     }
 
     #[test]
@@ -485,6 +669,13 @@ mod tests {
         let info = calxgloss_prompts::CallbackInfo::from(&jump_table);
         assert_eq!(info.kind, "jump_table");
         assert_eq!(info.suggestion, "[fn(...); 5]");
+
+        let plugin = CallbackFinding::Plugin(plugin_architecture());
+        let info = calxgloss_prompts::CallbackInfo::from(&plugin);
+        assert_eq!(info.kind, "plugin");
+        assert_eq!(info.suggestion, "Box<dyn Plugin> (loader crate)");
+        assert_eq!(info.confidence, 70);
+        assert_eq!(info.evidence, "hMod = LoadLibrary(\"plugin.dll\");");
     }
 
     #[test]
@@ -499,6 +690,7 @@ mod tests {
                 CallbackFinding::FpArray(fp_array_call()),
                 CallbackFinding::Registration(registration()),
                 CallbackFinding::JumpTable(jump_table()),
+                CallbackFinding::Plugin(plugin_architecture()),
             ],
         };
         let json = serde_json::to_string(&result).expect("callback result should serialize");

@@ -1,9 +1,10 @@
 //! Callback-table scan orchestration.
 //!
 //! [`CallbackEngine`] runs the callback detectors — function-pointer
-//! array calls, callback registrations, and jump-table dispatches —
-//! over every function of one open Ghidra program and assembles their
-//! findings into a single [`CallbackResult`] with its scan provenance.
+//! array calls, callback registrations, jump-table dispatches, and
+//! dynamic-loading plugin shapes — over every function of one open
+//! Ghidra program and assembles their findings into a single
+//! [`CallbackResult`] with its scan provenance.
 //!
 //! The detectors are pure text analysis over one decompiled body, so
 //! the engine fetches each function's pseudo-C exactly once and reads
@@ -18,6 +19,7 @@ use crate::callback_reg::CallbackRegDetector;
 use crate::error::Result;
 use crate::fp_array::FpArrayDetector;
 use crate::jump_table::JumpTableDetector;
+use crate::plugin::PluginDetector;
 use crate::types::{CallbackFinding, CallbackResult, ScanMetadata};
 use calxgloss_ghidra::GhidraClient;
 use std::time::Instant;
@@ -40,8 +42,9 @@ pub use calxgloss_ghidra::ScanSource;
 /// one over a live [`GhidraClient`]. Each detector carries no state
 /// and starts configured with its standard name set —
 /// [`with_fp_array`](Self::with_fp_array),
-/// [`with_registration`](Self::with_registration) and
-/// [`with_jump_table`](Self::with_jump_table) swap a detector's set
+/// [`with_registration`](Self::with_registration),
+/// [`with_jump_table`](Self::with_jump_table) and
+/// [`with_plugin`](Self::with_plugin) swap a detector's set
 /// whole — so one instance of each serves the whole scan.
 #[derive(Debug, Clone)]
 pub struct CallbackEngine<S = GhidraClient> {
@@ -49,6 +52,7 @@ pub struct CallbackEngine<S = GhidraClient> {
     fp_array: FpArrayDetector,
     registration: CallbackRegDetector,
     jump_table: JumpTableDetector,
+    plugin: PluginDetector,
 }
 
 impl CallbackEngine<GhidraClient> {
@@ -60,6 +64,7 @@ impl CallbackEngine<GhidraClient> {
             fp_array: FpArrayDetector::with_default_names(),
             registration: CallbackRegDetector::with_default_names(),
             jump_table: JumpTableDetector::with_default_prefixes(),
+            plugin: PluginDetector::with_default_names(),
         }
     }
 }
@@ -73,6 +78,7 @@ impl<S> CallbackEngine<S> {
             fp_array: FpArrayDetector::with_default_names(),
             registration: CallbackRegDetector::with_default_names(),
             jump_table: JumpTableDetector::with_default_prefixes(),
+            plugin: PluginDetector::with_default_names(),
         }
     }
 
@@ -97,6 +103,13 @@ impl<S> CallbackEngine<S> {
         self
     }
 
+    /// Read dynamic-loading plugin shapes against `detector`'s name
+    /// sets instead of the standard ones.
+    pub fn with_plugin(mut self, detector: PluginDetector) -> Self {
+        self.plugin = detector;
+        self
+    }
+
     /// Detect callback tables across `binary`, decompiling each
     /// function exactly once and reading it with every wired detector.
     ///
@@ -104,8 +117,8 @@ impl<S> CallbackEngine<S> {
     /// and becomes the key a persisted result is filed under. The
     /// findings follow the function listing — function by function,
     /// and within one function the function-pointer array calls, then
-    /// the registrations, then the jump tables — so two scans of the
-    /// same program diff cleanly.
+    /// the registrations, then the jump tables, then the plugin
+    /// shapes — so two scans of the same program diff cleanly.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad
     /// entry point) is skipped with a warning; only a failure of the
@@ -182,6 +195,12 @@ impl<S> CallbackEngine<S> {
                     .detect(&decompiled)
                     .into_iter()
                     .map(CallbackFinding::JumpTable),
+            );
+            findings.extend(
+                self.plugin
+                    .detect(&decompiled)
+                    .into_iter()
+                    .map(CallbackFinding::Plugin),
             );
         }
 
@@ -346,13 +365,17 @@ mod tests {
 
     /// A body carrying a cast-dereference call through `handlers`, a
     /// bare indexed call through `dispatch`, a `register_callback`
-    /// call, and a switch-table dispatch — one finding family per
-    /// detector — all in one function.
+    /// call, a switch-table dispatch, and a load-and-resolve plugin
+    /// shape with a host API table — one finding family per detector —
+    /// all in one function.
     const EVERY_SHAPE_BODY: &str = "\
   (*(int (**)(int))handlers[uVar1])(param_1);
   dispatch[uVar2](param_2);
   register_callback(my_handler);
-  (*(code *)(&switchD_1800412a0)[uVar3])();";
+  (*(code *)(&switchD_1800412a0)[uVar3])();
+  hMod = LoadLibrary(\"plugin.dll\");
+  init = (code *)GetProcAddress(hMod, \"Plugin_Init\");
+  Plugin_Init(&host_api);";
 
     /// The canned program: one function whose body carries every
     /// shape, and one plain function that finds nothing.
@@ -400,7 +423,7 @@ mod tests {
         assert!(result.metadata.scanned_at > 0);
 
         let findings: Vec<&CallbackFinding> = result.for_function("FUN_18003ab00").collect();
-        assert_eq!(findings.len(), 4);
+        assert_eq!(findings.len(), 5);
 
         let CallbackFinding::FpArray(record) = findings[0] else {
             unreachable!("the cast-dereference call reads as an fp-array finding");
@@ -430,6 +453,16 @@ mod tests {
         assert_eq!(record.table, "switchD_1800412a0");
         assert_eq!(record.index, "uVar3");
         assert_eq!(record.suggestion, "match index { ... }");
+
+        let CallbackFinding::Plugin(record) = findings[4] else {
+            unreachable!("the load-and-resolve shape reads as a plugin finding");
+        };
+        assert_eq!(record.load.as_deref(), Some("LoadLibrary"));
+        assert_eq!(record.resolve.as_deref(), Some("GetProcAddress"));
+        assert_eq!(record.entry_point.as_deref(), Some("Plugin_Init"));
+        assert_eq!(record.host_table.as_deref(), Some("host_api"));
+        assert_eq!(record.suggestion, "Box<dyn Plugin> (loader crate)");
+        assert_eq!(record.confidence.value(), 70);
 
         assert!(result.for_function("FUN_18003e750").next().is_none());
     }
@@ -463,10 +496,12 @@ mod tests {
                 ("FUN_18003e750", "fp_array"),
                 ("FUN_18003e750", "registration"),
                 ("FUN_18003e750", "jump_table"),
+                ("FUN_18003e750", "plugin"),
                 ("FUN_18003ab00", "fp_array"),
                 ("FUN_18003ab00", "fp_array"),
                 ("FUN_18003ab00", "registration"),
                 ("FUN_18003ab00", "jump_table"),
+                ("FUN_18003ab00", "plugin"),
             ]
         );
     }
@@ -598,7 +633,9 @@ mod tests {
     async fn custom_name_sets_reach_every_detector() {
         // Swapping a detector's set whole reaches the scan: the
         // configured custom spelling calls in the body, and the
-        // standard names the swap replaced call nothing.
+        // standard names the swap replaced call nothing — the plugin
+        // body spells both, standard first, and only the custom
+        // spellings land in the record.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_1800412a0")];
         program.bodies.insert(
@@ -609,19 +646,30 @@ mod tests {
                 "\
   (*(code *)msg_table[uVar1])(param_1);
   HookMessage(wnd_proc);
-  (*(&tbl_events[uVar2]))(param_2);",
+  (*(&tbl_events[uVar2]))(param_2);
+  LoadLibrary(\"standard.dll\");
+  GetProcAddress(hMod, \"Plugin_Init\");
+  Plugin_Init(&standard_api);
+  my_load(\"custom.mod\");
+  my_bind(hMod, \"InitPlugin\");
+  InitPlugin(&custom_api);",
             ),
         );
 
         let engine = CallbackEngine::with_source(program)
             .with_fp_array(FpArrayDetector::with_names(["msg_table"]))
             .with_registration(CallbackRegDetector::with_names(["HookMessage"]))
-            .with_jump_table(JumpTableDetector::with_prefixes(["tbl_"]));
+            .with_jump_table(JumpTableDetector::with_prefixes(["tbl_"]))
+            .with_plugin(PluginDetector::with_names(
+                ["my_load"],
+                ["my_bind"],
+                ["InitPlugin"],
+            ));
         let result = engine.scan("eqmain.dll").await.expect("scan");
 
         assert_eq!(
             kinds(&result, "FUN_1800412a0"),
-            ["fp_array", "registration", "jump_table"]
+            ["fp_array", "registration", "jump_table", "plugin"]
         );
         let findings: Vec<&CallbackFinding> = result.for_function("FUN_1800412a0").collect();
         let CallbackFinding::FpArray(record) = findings[0] else {
@@ -639,6 +687,13 @@ mod tests {
         };
         assert_eq!(record.table, "tbl_events");
         assert_eq!(record.index, "uVar2");
+        let CallbackFinding::Plugin(record) = findings[3] else {
+            unreachable!("the configured loader pair reads as a plugin finding");
+        };
+        assert_eq!(record.load.as_deref(), Some("my_load"));
+        assert_eq!(record.resolve.as_deref(), Some("my_bind"));
+        assert_eq!(record.entry_point.as_deref(), Some("InitPlugin"));
+        assert_eq!(record.host_table.as_deref(), Some("custom_api"));
     }
 
     #[tokio::test]

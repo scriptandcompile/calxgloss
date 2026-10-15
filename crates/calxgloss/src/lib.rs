@@ -222,6 +222,7 @@ pub use calxgloss_apidetect::{ApiDetectionResult, ApiError, ApiFinding, ApiUsage
 pub use calxgloss_callback::CallbackError;
 pub use calxgloss_callback::types::{
     CallbackFinding, CallbackRegistration, CallbackResult, FpArrayCall, JumpTable,
+    PluginArchitecture,
 };
 
 // ============================================================
