@@ -10,7 +10,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into eight modules:
+//! The crate is organized into nine modules:
 //!
 //! - [`types`] - Core data types: `SwitchChain`, `SelfRecursion`, and
 //!   `StateMachine` for the per-function detection records;
@@ -20,6 +20,12 @@
 //! - `chain` (crate-internal) - Shared chain walker: brace-depth-aware
 //!   discovery of if/else-if chains over one decompiled body, used by both
 //!   the switch and state-machine detectors.
+//! - `cfg` (crate-internal) - Per-body control flow graph: basic blocks
+//!   split at branch heads, loop heads, labels, `goto`s, and `return`s,
+//!   wired with fall-through, branch, jump, and back edges on the chain
+//!   walker's brace and string-literal discipline. Machinery, not an
+//!   artifact: the loop, branch-density, and recursion readings share one
+//!   graph per body so their nesting and depth claims cannot disagree.
 //! - [`switch`] - Switch-shaped chain detection: `SwitchChainDetector`
 //!   collects the compared constants, flags a trailing-`else` default,
 //!   and suggests a dispatch table for very wide chains.
@@ -40,6 +46,11 @@
 //!   alias.
 
 pub(crate) mod chain;
+// The CFG foundation lands ahead of its consumers (issues #176-#178): no
+// detector builds a graph in the scan yet, so the dead-code warning is
+// allowed until the loop, branch-density, and recursion readings wire it in.
+#[allow(dead_code)]
+pub(crate) mod cfg;
 pub mod engine;
 pub mod error;
 pub mod persist;
