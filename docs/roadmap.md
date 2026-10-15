@@ -31,7 +31,7 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P8.5 | stringctx Phase 5: localization detection, cross-function string correlation | `calxgloss-stringctx` | — | 🔶 in progress | `/to-tickets` | [#180](https://github.com/scriptandcompile/calxgloss/issues/180) |
+| P8.5 | stringctx Phase 5: localization detection, cross-function string correlation | `calxgloss-stringctx` | — | 🔶 in progress | `/implement` | [#180](https://github.com/scriptandcompile/calxgloss/issues/180) |
 | P9.5 | apidetect Phase 5: API category enrichment (incl. feature flags), Windows-vs-POSIX divergence, COM interface method suggestions, auto-generated FFI bindings, per-DLL dependency manifests | `calxgloss-apidetect` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P10.5 | consts Phase 5: full bitmask enum reconstruction, named constants from context, protocol constants, RGB grouping, codegen output | `calxgloss-consts` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P11.5 | serialize Phase 5: full serialization format inference, cross-field validation, protocol message / network protocol identification, per-type endianness mapping | `calxgloss-serialize` | — | ⬜ not started | `/to-spec` when picked up | — |
