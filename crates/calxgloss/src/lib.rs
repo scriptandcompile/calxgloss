@@ -160,10 +160,11 @@ pub use calxgloss_memory::types::{
 // `ScanMetadata` is the shared one from calxgloss-types, already
 // named here.
 pub use calxgloss_stringctx::{
-    ClassifiedString, FormatCall, FormatHint, FormatStringEngine, FormatStringUse,
-    HybridXrefMapper, LocalizationDetector, LocalizationSignalKind, LocalizationSignals,
-    MappedString, StringClassification, StringClassifyEngine, StringContextEngine,
-    StringContextPersistor, StringContextResult, StringCtxError, StringFinding, StringSource,
+    ClassifiedString, CrossFunctionAnalyzer, CrossFunctionFlow, FormatCall, FormatHint,
+    FormatStringEngine, FormatStringUse, HybridXrefMapper, LocalizationDetector,
+    LocalizationSignalKind, LocalizationSignals, MappedString, StringClassification,
+    StringClassifyEngine, StringContextEngine, StringContextPersistor, StringContextResult,
+    StringCtxError, StringFinding, StringSource,
 };
 
 // ============================================================

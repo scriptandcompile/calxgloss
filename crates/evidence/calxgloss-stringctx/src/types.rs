@@ -15,6 +15,8 @@
 //! - `LocalizationSignalKind`, `LocalizationSignals`: the localization
 //!   reading — the signal kinds and strings one function's mapped strings
 //!   carry.
+//! - `CrossFunctionFlow`: the cross-function reading — a string one
+//!   program function hands into another across a call boundary.
 //!
 //! All types derive `Serialize`/`Deserialize`.
 
@@ -25,6 +27,7 @@
 pub use calxgloss_types::{Confidence, ScanMetadata};
 use serde::{Deserialize, Serialize};
 
+use crate::cross_function::CROSS_FUNCTION_SUGGESTION;
 use crate::format_str::summarize_hints;
 use crate::localization::LOCALIZATION_SUGGESTION;
 
@@ -235,6 +238,47 @@ pub struct LocalizationSignals {
 }
 
 // ============================================================
+// Cross-function string flow
+// ============================================================
+
+/// A string one program function hands into another across a call
+/// boundary — the correlation the cross-function pass reads over the
+/// bodies the scan keeps.
+///
+/// The record says [`passing_function`](Self::passing_function) calls
+/// [`receiving_function`](Self::receiving_function) with
+/// [`string_value`](Self::string_value) as a readable argument — a
+/// direct literal or a `DAT_` the string table resolves. It attaches to
+/// whichever of the two functions comes earlier in the function listing
+/// (the callback-chain precedent), so one flow reads the same however
+/// the listing orders the pair, and the passing call's own line is the
+/// evidence. The confidence sits level with an in-body call claim: the
+/// edge is an explicit call in a body the scan holds. One record per
+/// (passing, receiving, string) triple, the first matching call site
+/// winning; a string handed to an import, or held in a variable the
+/// mapper cannot resolve, claims nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrossFunctionFlow {
+    /// The function the record is attached to — the earlier of the two
+    /// ends in listing order.
+    pub function: String,
+    /// The function that passes the string.
+    pub passing_function: String,
+    /// The function that receives it.
+    pub receiving_function: String,
+    /// The string that flows across the call boundary.
+    pub string_value: String,
+    /// The string's address in the program's string listing — 0 when
+    /// the body spelled a direct literal the table names no address
+    /// for, mirroring the classified records' convention.
+    pub string_address: u64,
+    /// The passing call's own line.
+    pub evidence: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -255,6 +299,9 @@ pub enum StringFinding {
     /// A function whose mapped strings carry localization signals —
     /// language names, locale codes, non-ASCII user-facing text.
     Localization(LocalizationSignals),
+    /// A string one program function hands into another across a call
+    /// boundary — the cross-function correlation.
+    CrossFunction(CrossFunctionFlow),
 }
 
 impl StringFinding {
@@ -264,6 +311,7 @@ impl StringFinding {
             StringFinding::Classified(record) => &record.function,
             StringFinding::FormatString(record) => &record.function,
             StringFinding::Localization(record) => &record.function,
+            StringFinding::CrossFunction(record) => &record.function,
         }
     }
 
@@ -276,6 +324,7 @@ impl StringFinding {
             StringFinding::Classified(record) => record.purpose.clone(),
             StringFinding::FormatString(record) => summarize_hints(&record.arg_types),
             StringFinding::Localization(_) => LOCALIZATION_SUGGESTION.to_string(),
+            StringFinding::CrossFunction(_) => CROSS_FUNCTION_SUGGESTION.to_string(),
         }
     }
 
@@ -285,6 +334,7 @@ impl StringFinding {
             StringFinding::Classified(record) => record.confidence,
             StringFinding::FormatString(record) => record.confidence,
             StringFinding::Localization(record) => record.confidence,
+            StringFinding::CrossFunction(record) => record.confidence,
         }
     }
 
@@ -294,27 +344,35 @@ impl StringFinding {
             StringFinding::Classified(record) => &record.evidence,
             StringFinding::FormatString(record) => &record.call_site,
             StringFinding::Localization(record) => &record.evidence,
+            StringFinding::CrossFunction(record) => &record.evidence,
         }
     }
 
-    /// The serde `kind` tag — `classified`, `format_string`, or
-    /// `localization` — naming the engine behind the finding.
+    /// The serde `kind` tag — `classified`, `format_string`,
+    /// `localization`, or `cross_function` — naming the engine behind
+    /// the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             StringFinding::Classified(_) => "classified",
             StringFinding::FormatString(_) => "format_string",
             StringFinding::Localization(_) => "localization",
+            StringFinding::CrossFunction(_) => "cross_function",
         }
     }
 
     /// What the finding names, spelled for a report row: the string value
-    /// itself, the format string behind the call, or the signal strings
-    /// the localization reading saw.
+    /// itself, the format string behind the call, the signal strings
+    /// the localization reading saw, or the two functions and the string
+    /// the cross-function reading ties.
     pub fn target(&self) -> String {
         match self {
             StringFinding::Classified(record) => record.string_value.clone(),
             StringFinding::FormatString(record) => record.format_string.clone(),
             StringFinding::Localization(record) => record.signals.join(", "),
+            StringFinding::CrossFunction(record) => format!(
+                "{}→{}:{}",
+                record.passing_function, record.receiving_function, record.string_value
+            ),
         }
     }
 }
@@ -337,6 +395,7 @@ impl From<&StringFinding> for calxgloss_prompts::StringContextInfo {
                 StringFinding::Classified(record) => record.classification.to_string(),
                 StringFinding::FormatString(_) => "format_string".to_string(),
                 StringFinding::Localization(_) => "localization".to_string(),
+                StringFinding::CrossFunction(_) => "cross_function".to_string(),
             },
             suggestion: finding.suggestion(),
             confidence: finding.confidence().value(),
@@ -354,8 +413,9 @@ impl From<&StringFinding> for calxgloss_prompts::StringContextInfo {
 ///
 /// The findings are the scan's outputs in scan order: function by
 /// function, and within one function the classified strings first, then
-/// the format-string calls, then the localization reading. The stable
-/// order means two scans of the same program diff cleanly.
+/// the format-string calls, then the localization reading — and after
+/// every function, the cross-function string flows in listing order.
+/// The stable order means two scans of the same program diff cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StringContextResult {
     /// Provenance of the scan that produced these findings.
@@ -545,6 +605,18 @@ mod tests {
         }
     }
 
+    fn cross_function_flow() -> CrossFunctionFlow {
+        CrossFunctionFlow {
+            function: "FUN_18003ab00".into(),
+            passing_function: "FUN_18003ab00".into(),
+            receiving_function: "FUN_18003e750".into(),
+            string_value: "Journal.txt".into(),
+            string_address: 0x180127cd8,
+            evidence: "FUN_18003e750(\"Journal.txt\");".into(),
+            confidence: Confidence::new(70),
+        }
+    }
+
     #[test]
     fn a_classified_finding_serde_round_trips_under_its_kind_tag() {
         let finding = StringFinding::Classified(classified_record());
@@ -583,11 +655,27 @@ mod tests {
     }
 
     #[test]
+    fn a_cross_function_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = StringFinding::CrossFunction(cross_function_flow());
+        let json =
+            serde_json::to_string(&finding).expect("cross-function finding should serialize");
+        assert!(json.contains("\"kind\":\"cross_function\""));
+        assert!(json.contains("\"passing_function\":\"FUN_18003ab00\""));
+        assert!(json.contains("\"receiving_function\":\"FUN_18003e750\""));
+        assert!(json.contains("\"string_value\":\"Journal.txt\""));
+        assert!(json.contains("\"confidence\":70"));
+        let back: StringFinding =
+            serde_json::from_str(&json).expect("cross-function finding should read back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
     fn the_union_accessors_reach_through_every_variant() {
         let findings = [
             StringFinding::Classified(classified_record()),
             StringFinding::FormatString(format_use_record()),
             StringFinding::Localization(localization_signals()),
+            StringFinding::CrossFunction(cross_function_flow()),
         ];
         for finding in &findings {
             assert_eq!(finding.function(), "FUN_18003ab00");
@@ -597,8 +685,17 @@ mod tests {
         assert_eq!(findings[0].confidence(), Confidence::new(70));
         assert_eq!(findings[1].confidence(), Confidence::new(70));
         assert_eq!(findings[2].confidence(), Confidence::new(60));
+        assert_eq!(findings[3].confidence(), Confidence::new(70));
         let kinds: Vec<&str> = findings.iter().map(|f| f.kind()).collect();
-        assert_eq!(kinds, vec!["classified", "format_string", "localization"]);
+        assert_eq!(
+            kinds,
+            vec![
+                "classified",
+                "format_string",
+                "localization",
+                "cross_function"
+            ]
+        );
         let suggestions: Vec<String> = findings.iter().map(|f| f.suggestion()).collect();
         assert_eq!(
             suggestions,
@@ -606,12 +703,18 @@ mod tests {
                 "config file path",
                 "`*const i8`, `i32`",
                 "model the language switch as a Rust enum with the localized strings held in a table",
+                "the receiving parameter translates as a string type (`*const i8`/`&str`) and the caller's payload is that string",
             ]
         );
         let targets: Vec<String> = findings.iter().map(|f| f.target()).collect();
         assert_eq!(
             targets,
-            vec!["Journal.txt", "%s: %d hits", "English, en-US"]
+            vec![
+                "Journal.txt",
+                "%s: %d hits",
+                "English, en-US",
+                "FUN_18003ab00→FUN_18003e750:Journal.txt",
+            ]
         );
     }
 
@@ -627,6 +730,7 @@ mod tests {
                 StringFinding::Classified(classified_record()),
                 StringFinding::FormatString(format_use_record()),
                 StringFinding::Localization(localization_signals()),
+                StringFinding::CrossFunction(cross_function_flow()),
             ],
         };
         let json = serde_json::to_string(&result).expect("string context result should serialize");

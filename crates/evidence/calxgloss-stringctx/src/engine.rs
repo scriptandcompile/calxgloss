@@ -1,10 +1,11 @@
 //! String-context scan orchestration.
 //!
 //! [`StringContextEngine`] runs the string classifier, the hybrid
-//! string-to-function mapper, the format-string engine, and the
-//! localization detector over one open Ghidra program and assembles
-//! their findings into a single [`StringContextResult`] with its scan
-//! provenance.
+//! string-to-function mapper, the format-string engine, the
+//! localization detector, and — after the per-function walk, over the
+//! bodies it keeps — the cross-function correlation pass over one open
+//! Ghidra program and assembles their findings into a single
+//! [`StringContextResult`] with its scan provenance.
 //!
 //! The scan is one sequential pass over the function listing: one
 //! `strings()` call up front, one decompile per function, and xref
@@ -17,10 +18,11 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use calxgloss_ghidra::{GhidraClient, Xref};
+use calxgloss_ghidra::{DecompiledFunction, GhidraClient, Xref};
 use tracing::{info, warn};
 
 use crate::classify::StringClassifyEngine;
+use crate::cross_function::CrossFunctionAnalyzer;
 use crate::error::Result;
 use crate::format_str::FormatStringEngine;
 use crate::hybrid_mapper::{BODY_CONFIDENCE, HybridXrefMapper, XREF_CONFIDENCE};
@@ -40,8 +42,9 @@ use crate::types::{
 /// scan can be driven from an orchestrating task.
 pub use calxgloss_ghidra::ScanSource;
 
-/// Orchestrates the classifier, hybrid mapper, format-string engine, and
-/// localization detector into one [`StringContextResult`].
+/// Orchestrates the classifier, hybrid mapper, format-string engine,
+/// localization detector, and cross-function analyzer into one
+/// [`StringContextResult`].
 ///
 /// The engine is generic over its [`ScanSource`], so tests can run the
 /// whole orchestration over canned program data; [`new`](Self::new)
@@ -58,6 +61,7 @@ pub struct StringContextEngine<S = GhidraClient> {
     mapper: HybridXrefMapper,
     format_engine: FormatStringEngine,
     localization: LocalizationDetector,
+    cross_function: CrossFunctionAnalyzer,
 }
 
 impl StringContextEngine<GhidraClient> {
@@ -70,6 +74,7 @@ impl StringContextEngine<GhidraClient> {
             mapper: HybridXrefMapper::new(),
             format_engine: FormatStringEngine::new(),
             localization: LocalizationDetector::new(),
+            cross_function: CrossFunctionAnalyzer::new(),
         }
     }
 }
@@ -84,6 +89,7 @@ impl<S> StringContextEngine<S> {
             mapper: HybridXrefMapper::new(),
             format_engine: FormatStringEngine::new(),
             localization: LocalizationDetector::new(),
+            cross_function: CrossFunctionAnalyzer::new(),
         }
     }
 
@@ -123,8 +129,11 @@ impl<S> StringContextEngine<S> {
     /// becomes the key a persisted result is filed under. The findings
     /// follow the function listing — function by function, and within
     /// one function the classified strings, then the format-string
-    /// calls, then the localization reading — so two scans of the same
-    /// program diff cleanly.
+    /// calls, then the localization reading — and after every function
+    /// the cross-function pass adds its string-flow findings, in listing
+    /// order, over the bodies this walk already decompiled: no extra
+    /// Ghidra round trips. So two scans of the same program diff
+    /// cleanly.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad entry
     /// point) is skipped with a warning, as is a nameless listing entry;
@@ -178,6 +187,9 @@ impl<S> StringContextEngine<S> {
         let mut xref_cache: HashMap<u64, Vec<Xref>> = HashMap::new();
 
         let mut findings = Vec::new();
+        // The bodies the walk successfully decompiled, kept in listing
+        // order for the cross-function pass — no re-decompiling.
+        let mut bodies: Vec<DecompiledFunction> = Vec::new();
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
         for function in &functions {
@@ -335,7 +347,23 @@ impl<S> StringContextEngine<S> {
             if let Some(signals) = self.localization.detect(&function.name, &candidates) {
                 findings.push(StringFinding::Localization(signals));
             }
+            bodies.push(decompiled);
         }
+
+        // The cross-function pass runs after the per-function walk, over
+        // the bodies the scan already decompiled and the string table it
+        // already holds — no new `ScanSource` reads, so the
+        // exactly-once-decompile contract and the skip-rate breaker
+        // stand untouched — and its findings append after the
+        // per-function findings, in listing order. A function whose
+        // decompile failed contributed no body, so it passes nothing,
+        // receives nothing, and binds no edge.
+        findings.extend(
+            self.cross_function
+                .analyze(&bodies, &string_table, &self.mapper)
+                .into_iter()
+                .map(StringFinding::CrossFunction),
+        );
 
         let mut metadata = ScanMetadata::new(binary);
         metadata.duration_secs = started.elapsed().as_secs();
@@ -933,5 +961,166 @@ mod tests {
             unreachable!("the configured name reads as a localization signal");
         };
         assert_eq!(record.signals, ["Klingon"]);
+    }
+
+    /// The shared fixture plus strings handed across call boundaries:
+    /// `FUN_18003ab00` passes a direct literal (twice) and a resolved
+    /// `DAT_` string into `FUN_18003e750`, and `FUN_1800412a0` — later
+    /// in the listing — hands one back to `FUN_18003e750`. The
+    /// `CreateFileA` import call and the `pcVar2` variable argument
+    /// claim no flow.
+    fn correlation_program() -> FakeProgram {
+        let mut program = program();
+        program.listing.push(summary("FUN_1800412a0"));
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "  lFile = CreateFileA(\"Journal.txt\",0xc0000000,0,0,3,0x80,0);\n\
+                 \x20 puVar3 = (uint *)DAT_180128cf0;\n\
+                 \x20 sprintf(local_10, \"%s: %d hits\", pcVar2, uVar3);\n\
+                 \x20 FUN_18003e750(\"Journal.txt\");\n\
+                 \x20 FUN_18003e750(\"Journal.txt\");\n\
+                 \x20 FUN_18003e750(DAT_180128cf0);\n\
+                 \x20 FUN_18003e750(pcVar2);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_1800412a0".into(),
+            function(
+                "FUN_1800412a0",
+                "  FUN_18003e750(\"%s: %d hits\");\n  return;\n",
+            ),
+        );
+        program
+    }
+
+    #[tokio::test]
+    async fn cross_function_flows_append_after_the_per_function_findings_in_listing_order() {
+        let program = correlation_program();
+        let result = StringContextEngine::with_source(program)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+
+        // The scan-order contract extended: every per-function finding
+        // first, then the cross-function flows attached to the listing's
+        // functions in order — the pair's earlier end, whichever way the
+        // string flows.
+        let order: Vec<(&str, &str)> = result
+            .findings
+            .iter()
+            .map(|finding| (finding.function(), finding.kind()))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                ("FUN_18003ab00", "classified"),
+                ("FUN_18003ab00", "classified"),
+                ("FUN_18003ab00", "format_string"),
+                ("FUN_18003e750", "classified"),
+                ("FUN_1800412a0", "classified"),
+                ("FUN_18003ab00", "cross_function"),
+                ("FUN_18003ab00", "cross_function"),
+                ("FUN_18003e750", "cross_function"),
+            ]
+        );
+
+        // The literal flow: one per (passing, receiving, string) triple
+        // however often the call repeats, the first call site's line as
+        // evidence, the literal the table names no address for at 0.
+        let StringFinding::CrossFunction(flow) = &result.findings[5] else {
+            unreachable!("the passing call reads as a cross_function finding");
+        };
+        assert_eq!(flow.function, "FUN_18003ab00");
+        assert_eq!(flow.passing_function, "FUN_18003ab00");
+        assert_eq!(flow.receiving_function, "FUN_18003e750");
+        assert_eq!(flow.string_value, "Journal.txt");
+        assert_eq!(flow.string_address, 0);
+        assert_eq!(flow.evidence, "FUN_18003e750(\"Journal.txt\");");
+        assert_eq!(flow.confidence, Confidence::new(70));
+        assert_eq!(
+            result.findings[5].suggestion(),
+            "the receiving parameter translates as a string type (`*const i8`/`&str`) and the \
+             caller's payload is that string"
+        );
+        assert_eq!(
+            result.findings[5].target(),
+            "FUN_18003ab00→FUN_18003e750:Journal.txt"
+        );
+
+        // The DAT_ flow resolves against the scan's own string table.
+        let StringFinding::CrossFunction(flow) = &result.findings[6] else {
+            unreachable!("the DAT_ hand-off reads as a cross_function finding");
+        };
+        assert_eq!(flow.string_value, "********** Chat logging turned OFF.");
+        assert_eq!(flow.string_address, 0x180128cf0);
+        assert_eq!(flow.evidence, "FUN_18003e750(DAT_180128cf0);");
+
+        // The later function's string attaches to the earlier end of the
+        // pair, naming the later one as the passer.
+        let StringFinding::CrossFunction(flow) = &result.findings[7] else {
+            unreachable!("the reverse hand-off reads as a cross_function finding");
+        };
+        assert_eq!(flow.function, "FUN_18003e750");
+        assert_eq!(flow.passing_function, "FUN_1800412a0");
+        assert_eq!(flow.receiving_function, "FUN_18003e750");
+        assert_eq!(flow.string_value, "%s: %d hits");
+        assert_eq!(flow.string_address, 0x180129a00);
+
+        // The import call and the variable argument claim no flow: the
+        // two ab00 flows are the literal and the DAT_, nothing else. The
+        // 412a0 flow attaches to the earlier end of the pair, so 412a0
+        // itself carries only its classified string.
+        assert_eq!(result.for_function("FUN_18003ab00").count(), 5);
+        assert_eq!(result.for_function("FUN_1800412a0").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_function_whose_decompile_failed_contributes_no_body_and_binds_no_edge() {
+        // The passer missing: its body never made it, so the strings it
+        // would have handed claim nothing.
+        let mut program = correlation_program();
+        program.fail_decompile = vec!["FUN_18003ab00".to_string()];
+        let result = StringContextEngine::with_source(program)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+        for finding in result
+            .findings
+            .iter()
+            .filter(|f| f.kind() == "cross_function")
+        {
+            let StringFinding::CrossFunction(flow) = finding else {
+                unreachable!("filtered on the kind tag");
+            };
+            assert_ne!(flow.passing_function, "FUN_18003ab00");
+            assert_ne!(flow.receiving_function, "FUN_18003ab00");
+        }
+        // The e750 ↔ 412a0 flow stands — both bodies were kept.
+        assert_eq!(
+            result
+                .findings
+                .iter()
+                .filter(|f| f.kind() == "cross_function")
+                .count(),
+            1
+        );
+
+        // The receiver missing: a callee whose body never made it is not
+        // a kept program function, so no edge binds to it either.
+        let mut program = correlation_program();
+        program.fail_decompile = vec!["FUN_18003e750".to_string()];
+        let result = StringContextEngine::with_source(program)
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+        assert!(
+            result
+                .findings
+                .iter()
+                .all(|finding| finding.kind() != "cross_function"),
+            "a skipped function fabricates no flow"
+        );
     }
 }

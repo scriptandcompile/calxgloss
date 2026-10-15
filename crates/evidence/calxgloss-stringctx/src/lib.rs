@@ -13,6 +13,8 @@
 //!   parsing with an xref fallback
 //! - [`LocalizationDetector`] — reads localization signals (language names,
 //!   locale codes, non-ASCII user-facing text) off a function's mapped strings
+//! - [`CrossFunctionAnalyzer`] — correlates strings handed across call
+//!   boundaries between decompiled bodies
 //! - [`StringContextEngine`] — orchestrates the above over a scan source
 //! - [`StringContextPersistor`] — saves/loads results as per-binary JSON
 //!
@@ -29,6 +31,7 @@
 //! ```
 
 pub mod classify;
+pub mod cross_function;
 pub mod engine;
 pub mod error;
 pub mod format_str;
@@ -38,6 +41,9 @@ pub mod persist;
 pub mod types;
 
 pub use classify::{CategoryPatterns, StringClassifyEngine};
+pub use cross_function::{
+    CROSS_FUNCTION_CONFIDENCE, CROSS_FUNCTION_SUGGESTION, CrossFunctionAnalyzer,
+};
 pub use engine::{ScanSource, StringContextEngine};
 pub use error::{Result, StringCtxError};
 pub use format_str::{FormatStringEngine, extract_format_hints, summarize_hints};
@@ -47,6 +53,6 @@ pub use hybrid_mapper::{
 pub use localization::{LOCALIZATION_CONFIDENCE, LOCALIZATION_SUGGESTION, LocalizationDetector};
 pub use persist::StringContextPersistor;
 pub use types::{
-    ClassifiedString, FormatHint, FormatStringUse, LocalizationSignalKind, LocalizationSignals,
-    StringClassification, StringContextResult, StringFinding, StringSource,
+    ClassifiedString, CrossFunctionFlow, FormatHint, FormatStringUse, LocalizationSignalKind,
+    LocalizationSignals, StringClassification, StringContextResult, StringFinding, StringSource,
 };

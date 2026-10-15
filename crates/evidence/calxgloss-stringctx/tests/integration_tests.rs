@@ -11,7 +11,8 @@
 //!   function), and the persisted list keeps every finding in scan
 //!   order: function by function, and within one function the
 //!   classified strings, then the format-string calls, then the
-//!   localization reading.
+//!   localization reading, with the cross-function flows appended
+//!   after the per-function walk.
 //! - **Cache behavior** — the `exists` check decides whether a scan
 //!   runs, and a rescan replaces the cached document.
 //!
@@ -50,8 +51,9 @@ fn function(name: &str, body: &str) -> DecompiledFunction {
 
 /// A canned program implementing [`ScanSource`]: one function whose body
 /// carries a direct literal, a `DAT_` reference, a language-name `DAT_`
-/// reference, and a `sprintf` call — all three finding kinds — and one
-/// plain function covered only through the xref fallback.
+/// reference, a `sprintf` call, and a call handing a literal to the
+/// listing's other function — all four finding kinds — and one plain
+/// function covered only through the xref fallback.
 #[derive(Clone, Default)]
 struct FakeProgram {
     listing: Vec<FunctionSummary>,
@@ -138,6 +140,7 @@ fn program() -> FakeProgram {
         function(
             "FUN_18003ab00",
             "  lFile = CreateFileA(\"Journal.txt\",0xc0000000,0,0,3,0x80,0);\n\
+             \x20 FUN_18003e750(\"Journal.txt\");\n\
              \x20 puVar3 = (uint *)DAT_180128cf0;\n\
              \x20 pcVar4 = (char *)DAT_180129b00;\n\
              \x20 sprintf(local_10, \"%s: %d hits\", pcVar4, uVar3);\n",
@@ -205,7 +208,9 @@ async fn the_persisted_document_keeps_findings_in_scan_order() {
     // One pass over the listing, so what reaches disk is function by
     // function in listing order and, within one function, the
     // classified strings then the format-string calls then the
-    // localization reading — the order two scans diff against.
+    // localization reading — with the cross-function flows appended
+    // after the walk, attached to the pair's earlier end. The order
+    // two scans diff against.
     let workspace = TempDir::new().unwrap();
     let result = StringContextEngine::with_source(program())
         .scan("eqmain.dll")
@@ -229,6 +234,7 @@ async fn the_persisted_document_keeps_findings_in_scan_order() {
             ("FUN_18003ab00", "format_string"),
             ("FUN_18003ab00", "localization"),
             ("FUN_18003e750", "classified"),
+            ("FUN_18003ab00", "cross_function"),
         ]
     );
 }
@@ -252,7 +258,7 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     // The pipeline asks what was found for the function it is about to
     // translate.
     let findings: Vec<&StringFinding> = loaded.for_function("FUN_18003ab00").collect();
-    assert_eq!(findings.len(), 5);
+    assert_eq!(findings.len(), 6);
     assert_eq!(loaded.for_function("FUN_18003e750").count(), 1);
     assert!(loaded.for_function("FUN_180099999").next().is_none());
 
@@ -289,6 +295,18 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     assert!(record.evidence.contains("DAT_180129b00"));
     assert_eq!(findings[2].target(), "English");
     assert_eq!(findings[2].kind(), "classified");
+
+    // The cross-function flow survives too: the literal the body hands to
+    // the listing's other function, attached to the pair's earlier end —
+    // this function — with the passing call's line as evidence.
+    let StringFinding::CrossFunction(record) = findings[5] else {
+        unreachable!("the hand-off to FUN_18003e750 reads as a cross_function finding");
+    };
+    assert_eq!(record.passing_function, "FUN_18003ab00");
+    assert_eq!(record.receiving_function, "FUN_18003e750");
+    assert_eq!(record.string_value, "Journal.txt");
+    assert_eq!(record.evidence, "FUN_18003e750(\"Journal.txt\");");
+    assert_eq!(record.confidence.value(), 70);
 }
 
 // ------------------------------------------------------------
@@ -383,7 +401,7 @@ async fn the_loaded_findings_render_into_the_escalate_prompt() {
         .for_function("FUN_18003ab00")
         .map(calxgloss_prompts::StringContextInfo::from)
         .collect();
-    assert_eq!(findings.len(), 5, "the target function's five findings");
+    assert_eq!(findings.len(), 6, "the target function's six findings");
 
     let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
         "FUN_18003ab00".into(),
@@ -423,4 +441,13 @@ async fn the_loaded_findings_render_into_the_escalate_prompt() {
         "model the language switch as a Rust enum with the localized strings held in a table"
     ));
     assert!(prompt.contains("DAT_180129b00"));
+    // The cross-function flow rides the same union accessors into the
+    // prompt: its kind tag, its in-body-call-level confidence, its
+    // string-type suggestion, and the passing call's line as evidence.
+    assert!(prompt.contains("cross_function string, confidence 70"));
+    assert!(prompt.contains(
+        "the receiving parameter translates as a string type (`*const i8`/`&str`) and the \
+         caller's payload is that string"
+    ));
+    assert!(prompt.contains("FUN_18003e750(\"Journal.txt\");"));
 }

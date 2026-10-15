@@ -137,9 +137,9 @@ impl StringContextPersistor {
 mod tests {
     use super::*;
     use crate::types::{
-        ClassifiedString, Confidence, FormatHint, FormatStringUse, LocalizationSignalKind,
-        LocalizationSignals, ScanMetadata, StringClassification, StringContextResult,
-        StringFinding, StringSource,
+        ClassifiedString, Confidence, CrossFunctionFlow, FormatHint, FormatStringUse,
+        LocalizationSignalKind, LocalizationSignals, ScanMetadata, StringClassification,
+        StringContextResult, StringFinding, StringSource,
     };
     use calxgloss_types::persist::PersistError;
 
@@ -400,6 +400,77 @@ mod tests {
         assert_eq!(back.findings[0].kind(), "classified");
         assert_eq!(back.findings[1].kind(), "format_string");
         assert_eq!(back.for_function("FUN_18003ab00").count(), 2);
+    }
+
+    #[test]
+    fn cross_function_findings_survive_the_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let persistor = StringContextPersistor::new(dir.path());
+
+        let mut result = StringContextResult::new(ScanMetadata::new("eqmain.dll"));
+        result
+            .findings
+            .push(StringFinding::CrossFunction(CrossFunctionFlow {
+                function: "FUN_18003ab00".to_string(),
+                passing_function: "FUN_18003ab00".to_string(),
+                receiving_function: "FUN_18003e750".to_string(),
+                string_value: "Journal.txt".to_string(),
+                string_address: 0,
+                evidence: "FUN_18003e750(\"Journal.txt\");".to_string(),
+                confidence: Confidence::new(70),
+            }));
+        persistor.save(&result).unwrap();
+
+        let loaded = persistor.load("eqmain.dll").unwrap();
+        match &loaded.findings[0] {
+            StringFinding::CrossFunction(f) => {
+                assert_eq!(f.function, "FUN_18003ab00");
+                assert_eq!(f.passing_function, "FUN_18003ab00");
+                assert_eq!(f.receiving_function, "FUN_18003e750");
+                assert_eq!(f.string_value, "Journal.txt");
+                assert_eq!(f.string_address, 0);
+                assert_eq!(f.evidence, "FUN_18003e750(\"Journal.txt\");");
+                assert_eq!(f.confidence, Confidence::new(70));
+            }
+            other => panic!("expected a cross_function finding, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_document_saved_before_cross_function_correlation_loads_unchanged() {
+        // The cross-function kind arrived with p8.5-2; documents saved by
+        // earlier builds simply never carry one, and they must still read
+        // back whole — including the localization kind p8.5-1 added.
+        let json = r#"{
+            "metadata": {"binary": "eqmain.dll", "scanned_at": 1759488000, "duration_secs": 12},
+            "findings": [
+                {
+                    "kind": "classified",
+                    "function": "FUN_18003ab00",
+                    "string_address": 6445484248,
+                    "string_value": "Journal.txt",
+                    "classification": "file_path",
+                    "purpose": "config file path",
+                    "source": "body_parse",
+                    "confidence": 70,
+                    "evidence": "pcVar1 = (char *)DAT_180127cd8;"
+                },
+                {
+                    "kind": "localization",
+                    "function": "FUN_1800412a0",
+                    "signal_kinds": ["language_name", "non_ascii_text"],
+                    "signals": ["English", "Welcome to the Café"],
+                    "evidence": "pcVar1 = (char *)DAT_180129b00;",
+                    "confidence": 60
+                }
+            ]
+        }"#;
+        let back: StringContextResult = serde_json::from_str(json)
+            .expect("a document saved before cross-function correlation should load unchanged");
+        assert_eq!(back.findings.len(), 2);
+        assert_eq!(back.findings[0].kind(), "classified");
+        assert_eq!(back.findings[1].kind(), "localization");
+        assert_eq!(back.for_function("FUN_1800412a0").count(), 1);
     }
 
     #[test]

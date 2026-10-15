@@ -135,7 +135,7 @@ fn token_re() -> &'static Regex {
 
 /// Turns a decompiled literal's inner text into the string's value,
 /// resolving the escapes the decompiler writes.
-fn unescape(inner: &str) -> String {
+pub(crate) fn unescape(inner: &str) -> String {
     let mut out = String::with_capacity(inner.len());
     let mut chars = inner.chars();
     while let Some(c) = chars.next() {
@@ -205,6 +205,13 @@ impl HybridXrefMapper {
                 })
                 .collect(),
         }
+    }
+
+    /// The format-function names this mapper reads calls for, in
+    /// configuration order — the cross-function pass excludes these
+    /// callees so a format call is read once, as a format call.
+    pub(crate) fn format_function_names(&self) -> impl Iterator<Item = &str> {
+        self.format_functions.iter().map(|f| f.name)
     }
 
     /// Read the string uses out of one decompiled body.
@@ -290,19 +297,9 @@ impl HybridXrefMapper {
                     continue;
                 };
                 let arg = arg.trim();
-                let (format_string, string_address) = if let Some(inner) = quoted_inner(arg) {
-                    let value = unescape(inner);
-                    let address = by_value.get(value.as_str()).copied().unwrap_or(0);
-                    (value, address)
-                } else if let Some(hex) = dat_reference(arg) {
-                    let Ok(address) = u64::from_str_radix(hex, 16) else {
-                        continue;
-                    };
-                    match string_table.get(&address) {
-                        Some(value) => (value.clone(), address),
-                        None => continue,
-                    }
-                } else {
+                let Some((format_string, string_address)) =
+                    read_string_arg(arg, string_table, &by_value)
+                else {
                     continue;
                 };
                 calls.push(FormatCall {
@@ -367,7 +364,7 @@ impl HybridXrefMapper {
 
 /// Index the string table by value for direct-literal lookups, taking the
 /// lowest address when several addresses carry the same value.
-fn index_by_value(string_table: &HashMap<u64, String>) -> HashMap<&str, u64> {
+pub(crate) fn index_by_value(string_table: &HashMap<u64, String>) -> HashMap<&str, u64> {
     let mut by_value: HashMap<&str, u64> = HashMap::new();
     let mut entries: Vec<(&u64, &String)> = string_table.iter().collect();
     entries.sort_by_key(|(address, _)| **address);
@@ -447,14 +444,43 @@ fn split_arguments(line: &str) -> Option<Vec<String>> {
 }
 
 /// The inner text of `arg` when it is a whole quoted literal.
-fn quoted_inner(arg: &str) -> Option<&str> {
+pub(crate) fn quoted_inner(arg: &str) -> Option<&str> {
     arg.strip_prefix('"')?.strip_suffix('"')
 }
 
 /// The hex digits of `arg` when it is a whole `DAT_xxxxxxxx` reference.
-fn dat_reference(arg: &str) -> Option<&str> {
+pub(crate) fn dat_reference(arg: &str) -> Option<&str> {
     arg.strip_prefix("DAT_")
         .filter(|hex| !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// The string one call argument carries — the reading both call-site
+/// walks share: a whole quoted literal unescapes to its value (its
+/// address comes from the string table when the table names one, 0 when
+/// it does not — the classified records' convention), and a whole `DAT_`
+/// reference resolves against the string table — one the table names no
+/// string for is some other data reference and claims nothing. Anything
+/// else — a variable, an expression, a cast — is not a string the scan
+/// can read, and yields nothing.
+pub(crate) fn read_string_arg(
+    arg: &str,
+    string_table: &HashMap<u64, String>,
+    by_value: &HashMap<&str, u64>,
+) -> Option<(String, u64)> {
+    if let Some(inner) = quoted_inner(arg) {
+        let value = unescape(inner);
+        let address = by_value.get(value.as_str()).copied().unwrap_or(0);
+        return Some((value, address));
+    }
+    if let Some(hex) = dat_reference(arg) {
+        let Ok(address) = u64::from_str_radix(hex, 16) else {
+            return None;
+        };
+        return string_table
+            .get(&address)
+            .map(|value| (value.clone(), address));
+    }
+    None
 }
 
 // ============================================================

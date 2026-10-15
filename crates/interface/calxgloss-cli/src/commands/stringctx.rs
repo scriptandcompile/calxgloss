@@ -96,21 +96,26 @@ fn print_string_context_report(result: &StringContextResult, path: &Path) {
     println!();
 
     // Findings, broken down by the record kind the union carries.
-    let kind_breakdown: Vec<String> = ["classified", "format_string", "localization"]
-        .into_iter()
-        .map(|kind| {
-            (
-                kind,
-                result
-                    .findings
-                    .iter()
-                    .filter(|finding| finding.kind() == kind)
-                    .count(),
-            )
-        })
-        .filter(|(_, count)| *count > 0)
-        .map(|(kind, count)| format!("{kind} {count}"))
-        .collect();
+    let kind_breakdown: Vec<String> = [
+        "classified",
+        "format_string",
+        "localization",
+        "cross_function",
+    ]
+    .into_iter()
+    .map(|kind| {
+        (
+            kind,
+            result
+                .findings
+                .iter()
+                .filter(|finding| finding.kind() == kind)
+                .count(),
+        )
+    })
+    .filter(|(_, count)| *count > 0)
+    .map(|(kind, count)| format!("{kind} {count}"))
+    .collect();
     println_content(format!(
         "  {}{:<5}{}",
         white_bold("Findings:  "),
