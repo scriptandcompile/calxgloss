@@ -1,29 +1,34 @@
 //! Concurrency scan orchestration.
 //!
-//! [`SyncEngine`] runs the four detectors — mutex/lock pair tracking,
-//! atomic operation detection, thread spawn detection, and
-//! thread-local storage detection — over every function of one open
-//! Ghidra program and assembles their findings into a single
-//! [`SyncResult`] with its scan provenance.
+//! [`SyncEngine`] runs the per-body detectors — mutex/lock pair
+//! tracking, atomic operation detection, thread spawn detection,
+//! thread-local storage detection, async-runtime shape detection, and
+//! futex-based synchronization detection — over every function of one
+//! open Ghidra program, then the cross-function pass over the bodies
+//! it kept, and assembles their findings into a single [`SyncResult`]
+//! with its scan provenance.
 //!
 //! The detectors are pure text analysis over one decompiled body, so
 //! the engine fetches each function's pseudo-C exactly once and reads
-//! it with all four, rather than having each detector pull its own
-//! copy. The scan is then one sequential pass over the function
-//! listing: unlike typeinfer's competing families there is nothing to
-//! resolve between the detectors — they read disjoint body shapes —
-//! and keeping the pass sequential keeps the persisted finding list in
-//! a stable, diffable order.
+//! it with all of them, rather than having each detector pull its own
+//! copy; the cross-function pass reads those same kept bodies, so the
+//! scan stays at one decompile per function. The scan is then one
+//! sequential pass over the function listing: unlike typeinfer's
+//! competing families there is nothing to resolve between the
+//! detectors — they read disjoint body shapes — and keeping the pass
+//! sequential keeps the persisted finding list in a stable, diffable
+//! order.
 
 use crate::async_runtime::AsyncDetector;
 use crate::atomic::AtomicDetector;
+use crate::cross_function::CrossFunctionAnalyzer;
 use crate::error::Result;
 use crate::futex::FutexDetector;
 use crate::mutex::MutexDetector;
 use crate::threading::ThreadingDetector;
 use crate::tls::TlsDetector;
 use crate::types::{ScanMetadata, SyncFinding, SyncResult};
-use calxgloss_ghidra::GhidraClient;
+use calxgloss_ghidra::{DecompiledFunction, GhidraClient};
 use std::time::Instant;
 use tracing::{info, warn};
 
@@ -37,7 +42,8 @@ use tracing::{info, warn};
 /// orchestrating task.
 pub use calxgloss_ghidra::ScanSource;
 
-/// Orchestrates the four detectors into one [`SyncResult`].
+/// Orchestrates the per-body detectors and the cross-function pass
+/// into one [`SyncResult`].
 ///
 /// The engine is generic over its [`ScanSource`], so tests can run the
 /// whole orchestration over canned bodies; [`new`](Self::new) builds
@@ -46,7 +52,9 @@ pub use calxgloss_ghidra::ScanSource;
 /// [`with_mutex`](Self::with_mutex), [`with_atomics`](Self::with_atomics),
 /// [`with_threads`](Self::with_threads), and [`with_tls`](Self::with_tls)
 /// swap a detector's sets whole — so one instance of each serves the
-/// whole scan.
+/// whole scan. The cross-function pass has no name set of its own: it
+/// reads the mutex detector's configured acquire names, so custom
+/// spellings reach it through [`with_mutex`](Self::with_mutex).
 #[derive(Debug, Clone)]
 pub struct SyncEngine<S = GhidraClient> {
     source: S,
@@ -56,6 +64,7 @@ pub struct SyncEngine<S = GhidraClient> {
     tls: TlsDetector,
     async_runtime: AsyncDetector,
     futex: FutexDetector,
+    cross_function: CrossFunctionAnalyzer,
 }
 
 impl SyncEngine<GhidraClient> {
@@ -70,6 +79,7 @@ impl SyncEngine<GhidraClient> {
             tls: TlsDetector::with_default_names(),
             async_runtime: AsyncDetector::with_default_names(),
             futex: FutexDetector::with_default_names(),
+            cross_function: CrossFunctionAnalyzer::new(),
         }
     }
 }
@@ -86,6 +96,7 @@ impl<S> SyncEngine<S> {
             tls: TlsDetector::with_default_names(),
             async_runtime: AsyncDetector::with_default_names(),
             futex: FutexDetector::with_default_names(),
+            cross_function: CrossFunctionAnalyzer::new(),
         }
     }
 
@@ -168,15 +179,19 @@ impl<S> SyncEngine<S> {
     }
 
     /// Detect concurrency constructs across `binary`, decompiling
-    /// each function exactly once and reading it with all four
+    /// each function exactly once and reading it with all the per-body
     /// detectors.
     ///
     /// `binary` names the program the scan reads (e.g. `eqmain.dll`)
     /// and becomes the key a persisted result is filed under. The
     /// findings follow the function listing — function by function,
     /// and within one function the mutex pairings, then the atomic
-    /// calls, then the thread spawns, then the TLS records — so two
-    /// scans of the same program diff cleanly.
+    /// calls, then the thread spawns, then the TLS records, then the
+    /// async-runtime shapes, then the futex calls — and after every
+    /// function the cross-function pass adds its findings, in listing
+    /// order, over the bodies this walk already decompiled: no extra
+    /// Ghidra round trips. So two scans of the same program diff
+    /// cleanly.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad
     /// entry point) is skipped with a warning; only a failure of the
@@ -197,6 +212,7 @@ impl<S> SyncEngine<S> {
         let functions = self.source.functions().await?;
 
         let mut findings = Vec::new();
+        let mut bodies: Vec<DecompiledFunction> = Vec::new();
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
         for function in &functions {
@@ -273,7 +289,14 @@ impl<S> SyncEngine<S> {
                     .into_iter()
                     .map(SyncFinding::Futex),
             );
+            bodies.push(decompiled);
         }
+
+        // The cross-function pass runs after the per-function walk,
+        // over the bodies the scan already decompiled — no extra
+        // Ghidra round trips — and its findings append in listing
+        // order, after the per-function findings.
+        findings.extend(self.cross_function.analyze(&bodies, &self.mutex));
 
         let mut metadata = ScanMetadata::new(binary);
         metadata.duration_secs = started.elapsed().as_secs();
@@ -595,6 +618,237 @@ mod tests {
         assert_eq!(record.access, "TlsGetValue");
         assert_eq!(record.suggestion, "thread_local!");
         assert_eq!(record.confidence, 70);
+    }
+
+    #[tokio::test]
+    async fn two_functions_that_lock_the_same_objects_in_opposite_orders_land_a_lock_order_finding()
+    {
+        // The classic deadlock shape, invisible to either body read
+        // on its own: one function takes `local_20` before `local_40`,
+        // the other the other way round.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "\
+  EnterCriticalSection(&local_20);
+  EnterCriticalSection(&local_40);
+  LeaveCriticalSection(&local_40);
+  LeaveCriticalSection(&local_20);",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "\
+  EnterCriticalSection(&local_40);
+  EnterCriticalSection(&local_20);
+  LeaveCriticalSection(&local_20);
+  LeaveCriticalSection(&local_40);",
+            ),
+        );
+        let result = scan(program).await;
+
+        let finding = result
+            .findings
+            .iter()
+            .find(|finding| finding.kind() == "lock_order")
+            .expect("the reversed orders read as a lock-order finding");
+        let SyncFinding::LockOrder(record) = finding else {
+            unreachable!("the reversed orders read as a lock-order finding");
+        };
+        assert_eq!(record.function, "FUN_18003ab00");
+        assert_eq!(record.partner, "FUN_18003e750");
+        assert_eq!(record.first_lock, "local_20");
+        assert_eq!(record.second_lock, "local_40");
+        assert_eq!(
+            record.suggestion,
+            "pick one consistent lock acquisition order"
+        );
+        assert_eq!(record.confidence, 70);
+        // The evidence carries both functions' acquire orders.
+        assert_eq!(
+            record.evidence,
+            "FUN_18003ab00: local_20 -> local_40; \
+             FUN_18003e750: local_40 -> local_20"
+        );
+    }
+
+    #[tokio::test]
+    async fn functions_that_lock_shared_objects_in_a_consistent_order_claim_nothing() {
+        // Clean code stays clean: both functions take `local_20`
+        // before `local_40`, so there is no order to disagree about.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "\
+  EnterCriticalSection(&local_20);
+  EnterCriticalSection(&local_40);
+  LeaveCriticalSection(&local_40);
+  LeaveCriticalSection(&local_20);",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "\
+  EnterCriticalSection(&local_20);
+  EnterCriticalSection(&local_40);
+  LeaveCriticalSection(&local_40);
+  LeaveCriticalSection(&local_20);",
+            ),
+        );
+        let result = scan(program).await;
+
+        assert!(
+            result
+                .findings
+                .iter()
+                .all(|finding| finding.kind() != "lock_order"),
+            "one shared order is not a conflict"
+        );
+    }
+
+    #[tokio::test]
+    async fn custom_acquire_names_reach_the_lock_order_pass() {
+        // The pass reads the mutex detector's configured set, not a
+        // private default: custom acquire and release spellings reach
+        // the scan together — the pairing completes through the
+        // configured releases and the conflict still reads through
+        // the configured acquires.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  my_lock(&a);\n  my_lock(&b);\n  my_unlock(&b);\n  my_unlock(&a);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  my_lock(&b);\n  my_lock(&a);\n  my_unlock(&a);\n  my_unlock(&b);\n",
+            ),
+        );
+        let engine = SyncEngine::with_source(program).with_mutex(MutexDetector::with_names(
+            [MutexSignature::new("my_lock", SyncType::ParkingMutex)],
+            ["my_unlock"],
+        ));
+        let result = engine.scan("eqmain.dll").await.expect("scan");
+
+        let conflicts: Vec<&SyncFinding> = result
+            .findings
+            .iter()
+            .filter(|finding| finding.kind() == "lock_order")
+            .collect();
+        assert_eq!(conflicts.len(), 1, "the configured spellings conflict");
+        let SyncFinding::LockOrder(record) = conflicts[0] else {
+            unreachable!("the reversed orders read as a lock-order finding");
+        };
+        assert_eq!(record.first_lock, "a");
+        assert_eq!(record.second_lock, "b");
+        // The configured releases paired the acquisitions in-body, so
+        // both name sets — not just the acquires — reached the scan.
+        assert_eq!(
+            result
+                .findings
+                .iter()
+                .filter(|finding| finding.kind() == "mutex")
+                .count(),
+            4,
+            "the configured release spellings closed the pairs"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_function_that_will_not_decompile_fabricates_no_cross_function_claim() {
+        // A skipped body has no sequence to compare: the surviving
+        // function's order stands against nothing, so the pass claims
+        // nothing about the function whose body never arrived.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "\
+  EnterCriticalSection(&local_20);
+  EnterCriticalSection(&local_40);
+  LeaveCriticalSection(&local_40);
+  LeaveCriticalSection(&local_20);",
+            ),
+        );
+        program.fail_decompiles = vec!["FUN_18003e750".into()];
+        let result = scan(program).await;
+
+        assert!(
+            result
+                .findings
+                .iter()
+                .all(|finding| finding.kind() != "lock_order"),
+            "a missing body forms no sequence and no conflict"
+        );
+    }
+
+    #[tokio::test]
+    async fn lock_order_findings_append_after_the_per_function_findings() {
+        // One function carries in-body pairs and a cross-function
+        // conflict: the pairings ride the per-function walk, the
+        // cross-function finding lands after every function's own
+        // findings.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "\
+  EnterCriticalSection(&local_20);
+  EnterCriticalSection(&local_40);
+  LeaveCriticalSection(&local_40);
+  LeaveCriticalSection(&local_20);",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  EnterCriticalSection(&local_40);\n  EnterCriticalSection(&local_20);\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let order: Vec<(&str, &str)> = result
+            .findings
+            .iter()
+            .map(|finding| (finding.function(), finding.kind()))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                ("FUN_18003ab00", "mutex"),
+                ("FUN_18003ab00", "mutex"),
+                ("FUN_18003ab00", "lock_order"),
+            ]
+        );
     }
 
     #[tokio::test]

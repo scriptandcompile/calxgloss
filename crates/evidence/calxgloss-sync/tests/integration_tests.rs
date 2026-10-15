@@ -445,6 +445,127 @@ async fn tls_findings_survive_the_scan_persist_and_prompt_walk() {
 }
 
 // ------------------------------------------------------------
+// Cross-function lock-order findings
+// ------------------------------------------------------------
+
+#[tokio::test]
+async fn lock_order_findings_survive_the_scan_persist_and_prompt_walk() {
+    // The deadlock shape across two functions: one takes `local_20`
+    // before `local_40`, the other the other way round. The conflict
+    // rides the tagged union to disk and back, and renders into the
+    // escalate prompt through the usual accessors.
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  EnterCriticalSection(&local_20);\n\
+             \x20 EnterCriticalSection(&local_40);\n\
+             \x20 LeaveCriticalSection(&local_40);\n\
+             \x20 LeaveCriticalSection(&local_20);\n",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_18003e750".into(),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(void)",
+            "  EnterCriticalSection(&local_40);\n\
+             \x20 EnterCriticalSection(&local_20);\n\
+             \x20 LeaveCriticalSection(&local_20);\n\
+             \x20 LeaveCriticalSection(&local_40);\n",
+        ),
+    );
+
+    let workspace = TempDir::new().expect("workspace temp dir");
+    let result = SyncEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = SyncPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let conflicts: Vec<&SyncFinding> = loaded
+        .findings
+        .iter()
+        .filter(|finding| finding.kind() == "lock_order")
+        .collect();
+    assert_eq!(conflicts.len(), 1, "one conflict per lock pair");
+
+    // The record keeps both functions and both lock objects through
+    // the round trip, at the pairing's own confidence.
+    let SyncFinding::LockOrder(record) = conflicts[0] else {
+        unreachable!("the reversed orders read as a lock-order finding");
+    };
+    assert_eq!(record.function, "FUN_18003ab00");
+    assert_eq!(record.partner, "FUN_18003e750");
+    assert_eq!(record.first_lock, "local_20");
+    assert_eq!(record.second_lock, "local_40");
+    assert_eq!(record.confidence, 70);
+    assert_eq!(
+        record.evidence,
+        "FUN_18003ab00: local_20 -> local_40; FUN_18003e750: local_40 -> local_20"
+    );
+    assert!(conflicts[0].target().contains("local_20"));
+
+    // The cross-function finding lands after the per-function
+    // findings, so the persisted document stays diffable.
+    let order: Vec<(&str, &str)> = loaded
+        .findings
+        .iter()
+        .map(|finding| (finding.function(), finding.kind()))
+        .collect();
+    assert_eq!(
+        order,
+        vec![
+            ("FUN_18003ab00", "mutex"),
+            ("FUN_18003ab00", "mutex"),
+            ("FUN_18003e750", "mutex"),
+            ("FUN_18003e750", "mutex"),
+            ("FUN_18003ab00", "lock_order"),
+        ]
+    );
+
+    // The escalate prompt describes the conflict with its kind and
+    // confidence, like every other detector's records.
+    let findings: Vec<calxgloss_prompts::ConcurrencyInfo> = loaded
+        .findings
+        .iter()
+        .map(calxgloss_prompts::ConcurrencyInfo::from)
+        .collect();
+    let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
+        "FUN_18003ab00".into(),
+        "eqmain.dll".into(),
+        "fn fun_18003ab00() { /* two nested critical sections */ }".into(),
+        "Wrong result".into(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        findings,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("the escalate prompt should render");
+
+    assert!(prompt.contains("CONCURRENCY"));
+    assert!(prompt.contains("pick one consistent lock acquisition order"));
+    assert!(prompt.contains("lock_order construct, confidence 70"));
+    assert!(prompt.contains("FUN_18003e750: local_40 -> local_20"));
+}
+
+// ------------------------------------------------------------
 // Cache behavior
 // ------------------------------------------------------------
 

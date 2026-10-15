@@ -260,7 +260,10 @@ struct OpenAcquire {
 /// shape of lock. Anything else — a field, an indexed element, a
 /// global address — names no local lock object the pairing can key
 /// on.
-fn lock_object(arg: &str) -> Option<String> {
+///
+/// The cross-function lock-order pass reuses this extraction so the
+/// two readings cannot disagree about what an acquire names.
+pub(crate) fn lock_object(arg: &str) -> Option<String> {
     let stripped = strip_casts(arg, is_type_word);
     let name = stripped.strip_prefix('&').unwrap_or(&stripped);
     plain_variable(name).map(str::to_string)

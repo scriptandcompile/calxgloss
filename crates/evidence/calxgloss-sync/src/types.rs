@@ -298,6 +298,55 @@ pub type FutexRecord = Futex;
 pub type FutexCall = Futex;
 
 // ============================================================
+// Lock ordering
+// ============================================================
+
+/// One lock-ordering observation spanning two functions, with the
+/// evidence behind it.
+///
+/// A record says two functions acquire the same two lock objects in
+/// opposite relative orders — [`function`](Self::function) takes
+/// [`first_lock`](Self::first_lock) before [`second_lock`](Self::second_lock)
+/// and [`partner`](Self::partner) the other way round — the shape a
+/// deadlock takes when both run at once, which neither body reveals
+/// on its own. It reads as [`suggestion`](Self::suggestion): pick one
+/// acquisition order and hold it everywhere. Both orders are explicit
+/// body evidence, so the conflict sits level with an in-body mutex
+/// pairing. The two functions' acquire sequences are kept as
+/// [`evidence`](Self::evidence) so a reviewer (or a translation
+/// prompt) can check the reasoning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockOrder {
+    /// The function the record is about — the earlier one in listing
+    /// order, the one whose acquire order the finding names first.
+    pub function: String,
+    /// The other function in the conflict, the later one in listing
+    /// order.
+    pub partner: String,
+    /// The lock object this function acquires first.
+    pub first_lock: String,
+    /// The lock object this function acquires second — and the
+    /// partner acquires first.
+    pub second_lock: String,
+    /// The Rust pattern the conflict suggests, e.g. one consistent
+    /// acquisition order held across the program.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+    /// The two functions' acquire sequences, kept so a reviewer (or a
+    /// translation prompt) can check the reasoning.
+    pub evidence: String,
+}
+
+// Compatibility aliases for the lock-order record's spelling.
+/// Alias of [`LockOrder`], for consumers that name the reading after the pass.
+pub type LockOrdering = LockOrder;
+/// Alias of [`LockOrder`], for consumers that name the reading after the record.
+pub type LockOrderRecord = LockOrder;
+/// Alias of [`LockOrder`], naming the cross-function origin of the claim.
+pub type CrossFunctionLockOrder = LockOrder;
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -326,6 +375,8 @@ pub enum SyncFinding {
     AsyncRuntime(AsyncRuntime),
     /// A futex-based synchronization call.
     Futex(Futex),
+    /// A lock-order conflict spanning two functions.
+    LockOrder(LockOrder),
 }
 
 impl SyncFinding {
@@ -338,6 +389,7 @@ impl SyncFinding {
             SyncFinding::Tls(record) => &record.function,
             SyncFinding::AsyncRuntime(record) => &record.function,
             SyncFinding::Futex(record) => &record.function,
+            SyncFinding::LockOrder(record) => &record.function,
         }
     }
 
@@ -350,6 +402,7 @@ impl SyncFinding {
             SyncFinding::Tls(record) => &record.suggestion,
             SyncFinding::AsyncRuntime(record) => &record.suggestion,
             SyncFinding::Futex(record) => &record.suggestion,
+            SyncFinding::LockOrder(record) => &record.suggestion,
         }
     }
 
@@ -362,6 +415,7 @@ impl SyncFinding {
             SyncFinding::Tls(record) => record.confidence,
             SyncFinding::AsyncRuntime(record) => record.confidence,
             SyncFinding::Futex(record) => record.confidence,
+            SyncFinding::LockOrder(record) => record.confidence,
         }
     }
 
@@ -374,6 +428,7 @@ impl SyncFinding {
             SyncFinding::Tls(record) => &record.evidence,
             SyncFinding::AsyncRuntime(record) => &record.evidence,
             SyncFinding::Futex(record) => &record.evidence,
+            SyncFinding::LockOrder(record) => &record.evidence,
         }
     }
 
@@ -387,6 +442,7 @@ impl SyncFinding {
             SyncFinding::Tls(_) => "tls",
             SyncFinding::AsyncRuntime(_) => "async_runtime",
             SyncFinding::Futex(_) => "futex",
+            SyncFinding::LockOrder(_) => "lock_order",
         }
     }
 
@@ -407,6 +463,9 @@ impl SyncFinding {
             },
             SyncFinding::AsyncRuntime(record) => record.operation.clone(),
             SyncFinding::Futex(record) => record.operation.clone(),
+            SyncFinding::LockOrder(record) => {
+                format!("{}→{}", record.first_lock, record.second_lock)
+            }
         }
     }
 }
@@ -440,11 +499,14 @@ impl From<&SyncFinding> for calxgloss_prompts::ConcurrencyInfo {
 /// `re/analysis/sync/{binary}.json`.
 ///
 /// The findings are the detectors' outputs in scan order: function by
-/// function, and within one function the mutex pairings, then the
-/// atomic calls, then the thread spawns, then the TLS records. The
-/// detectors read disjoint body shapes, so a function can carry
-/// findings of every kind at once and none competes with another; the
-/// stable order means two scans of the same program diff cleanly.
+/// function in listing order, and within one function the mutex
+/// pairings, then the atomic calls, then the thread spawns, then the
+/// TLS records, then the async-runtime shapes, then the futex calls —
+/// and after every function, the cross-function findings in listing
+/// order. The detectors read disjoint body shapes, so a function can
+/// carry findings of every kind at once and none competes with
+/// another; the stable order means two scans of the same program diff
+/// cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncResult {
     /// Provenance of the scan that produced these findings.
@@ -732,6 +794,50 @@ mod tests {
         assert_eq!(back, finding);
     }
 
+    fn lock_order() -> LockOrder {
+        LockOrder {
+            function: "FUN_18003ab00".into(),
+            partner: "FUN_18003e750".into(),
+            first_lock: "local_20".into(),
+            second_lock: "local_40".into(),
+            suggestion: "pick one consistent lock acquisition order".into(),
+            confidence: Confidence::new(70),
+            evidence: "FUN_18003ab00: local_20 -> local_40; \
+                       FUN_18003e750: local_40 -> local_20"
+                .into(),
+        }
+    }
+
+    #[test]
+    fn a_lock_order_record_serde_round_trips() {
+        let record = lock_order();
+        let json = serde_json::to_string(&record).expect("lock-order record should serialize");
+        assert!(json.contains("\"partner\":\"FUN_18003e750\""));
+        assert!(json.contains("\"first_lock\":\"local_20\""));
+        assert!(json.contains("\"second_lock\":\"local_40\""));
+        assert!(json.contains("\"confidence\":70"));
+        let back: LockOrder =
+            serde_json::from_str(&json).expect("lock-order record should read back");
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn a_lock_order_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = SyncFinding::LockOrder(lock_order());
+        let json = serde_json::to_string(&finding).expect("lock-order finding should serialize");
+        assert!(json.contains("\"kind\":\"lock_order\""));
+        assert!(json.contains("\"partner\":\"FUN_18003e750\""));
+        let back: SyncFinding =
+            serde_json::from_str(&json).expect("lock-order finding should read back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
+    fn a_lock_order_target_names_both_lock_objects() {
+        let finding = SyncFinding::LockOrder(lock_order());
+        assert_eq!(finding.target(), "local_20→local_40");
+    }
+
     #[test]
     fn the_union_accessors_reach_through_every_variant() {
         let findings = [
@@ -875,6 +981,20 @@ mod tests {
         assert_eq!(
             info.evidence,
             "local_4 = TlsAlloc(); pvVar1 = TlsGetValue(local_4);"
+        );
+
+        let lock_order = SyncFinding::LockOrder(lock_order());
+        let info = calxgloss_prompts::ConcurrencyInfo::from(&lock_order);
+        assert_eq!(info.function, "FUN_18003ab00");
+        assert_eq!(info.kind, "lock_order");
+        assert_eq!(
+            info.suggestion,
+            "pick one consistent lock acquisition order"
+        );
+        assert_eq!(info.confidence, 70);
+        assert_eq!(
+            info.evidence,
+            "FUN_18003ab00: local_20 -> local_40; FUN_18003e750: local_40 -> local_20"
         );
     }
 }
