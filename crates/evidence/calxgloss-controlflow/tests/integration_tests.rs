@@ -52,8 +52,9 @@ fn function(name: &str, signature: &str, body: &str) -> DecompiledFunction {
 
 /// A canned program implementing [`ScanSource`]: one function whose
 /// body carries a three-arm switch-shaped chain over `local_4` with a
-/// trailing default, a self-call inside one arm, and a `while` loop
-/// inside another, one function whose
+/// trailing default, a self-call nested inside a `while` loop in one
+/// arm (the depth-multiplier reading), and a call to the second
+/// function in another, one function whose
 /// body is a named-constant state chain over `state` with transition
 /// assignments, and one plain function that finds nothing. The first
 /// two functions also call each other, so the cross-function pass has
@@ -153,11 +154,12 @@ fn program() -> FakeProgram {
             "  if (local_4 == 1) {\n\
              \x20   puts(\"one\");\n\
              \x20   while (local_9 < 3) {\n\
+             \x20     FUN_18003ab00(param_1 - 1);\n\
              \x20     local_9 = local_9 + 1;\n\
              \x20   }\n\
              \x20 }\n\
              \x20 else if (local_4 == 2) {\n\
-             \x20   FUN_18003ab00(param_1 - 1);\n\
+             \x20   puts(\"two\");\n\
              \x20 }\n\
              \x20 else if (local_4 == 0x10) {\n\
              \x20   FUN_1800412a0();\n\
@@ -304,11 +306,19 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     };
     assert_eq!(record.self_calls, 1);
     assert!(!record.is_tail_call);
+    assert!(
+        record.in_loop,
+        "the self-call sits inside the while body — a stack-depth multiplier",
+    );
     assert_eq!(
         record.suggestion,
-        "keep recursive fn FUN_18003ab00(...) or convert to loop"
+        "keep recursive fn FUN_18003ab00(...) or carry the work on an explicit stack",
     );
-    assert!(record.evidence.contains("FUN_18003ab00() calls itself 1x"));
+    assert!(
+        record
+            .evidence
+            .contains("FUN_18003ab00() calls itself 1x (nested in a loop)")
+    );
 
     let ControlFlowFinding::Loop(record) = findings[2] else {
         unreachable!("the while inside the first chain arm reads as a loop finding");
@@ -441,8 +451,13 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
     assert!(prompt.contains("CONTROL FLOW"));
     assert!(prompt.contains("match local_4 { /* 3 arms */ } + _"));
     assert!(prompt.contains("switch construct, confidence 70"));
-    assert!(prompt.contains("keep recursive fn FUN_18003ab00(...) or convert to loop"));
+    assert!(
+        prompt.contains(
+            "keep recursive fn FUN_18003ab00(...) or carry the work on an explicit stack"
+        )
+    );
     assert!(prompt.contains("recursion construct, confidence 70"));
+    assert!(prompt.contains("FUN_18003ab00() calls itself 1x (nested in a loop)"));
     assert!(prompt.contains("if (local_4 == 1) ... else if (local_4 == 0x10) + default"));
     assert!(prompt.contains("express as Rust while at nesting depth 2"));
     assert!(prompt.contains("loop construct, confidence 70"));

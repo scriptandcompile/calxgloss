@@ -75,28 +75,50 @@ pub struct SwitchChain {
 /// behind it.
 ///
 /// A record says the function calls itself — [`self_calls`](Self::self_calls)
-/// times — and whether any of those calls sits in tail position, i.e.
-/// `return name(...)` ([`is_tail_call`](Self::is_tail_call)). A tail
-/// call reads like [`suggestion`](Self::suggestion): a plain `loop`,
-/// which Rust needs no tail-call optimization for; a non-tail recursion
-/// suggests keeping the recursive `fn` or converting to an explicit
-/// stack. The self-call count is kept as [`evidence`](Self::evidence).
+/// times — and whether any of those calls sits in tail position
+/// ([`is_tail_call`](Self::is_tail_call)): the call block's only exit is
+/// the function's return and that return hands back exactly the call's
+/// result. A tail call reads like [`suggestion`](Self::suggestion): a
+/// plain `loop`, which Rust needs no tail-call optimization for; a
+/// non-tail recursion suggests keeping the recursive `fn` or converting
+/// to an explicit stack. When the control flow graph shows a self-call
+/// nested inside a loop body, [`in_loop`](Self::in_loop) says so —
+/// recursion a loop re-enters every iteration is a stack-depth
+/// multiplier — and the suggestion names the explicit-stack conversion.
+/// The self-call count and those readings are kept as
+/// [`evidence`](Self::evidence).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelfRecursion {
     /// The function the record is about, e.g. `FUN_18003ab00`.
     pub function: String,
-    /// Whether a self-call sits in tail position (`return name(...)`).
+    /// Whether a self-call sits in tail position: the graph shows the
+    /// call block's only exit is the function's return and the return
+    /// hands back exactly the call's result (`return name(...)`, or the
+    /// spread-over-lines `v = name(...); return v;`).
     pub is_tail_call: bool,
     /// How many times the function calls itself.
     pub self_calls: usize,
+    /// Whether a self-call sits inside a loop body — the depth
+    /// multiplier reading. An optional serde field, so a document
+    /// persisted before the deepening still loads, and a self-call
+    /// outside any loop keeps the exact record it wrote then.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub in_loop: bool,
     /// The Rust pattern the recursion suggests, e.g. `loop { ... }`.
     pub suggestion: String,
     /// Confidence that the record is right, 0–100.
     pub confidence: Confidence,
-    /// The self-call count and tail-call status that support the
-    /// record, kept so a reviewer (or a translation prompt) can check
-    /// the reasoning.
+    /// The self-call count and the tail-call and loop-nesting readings
+    /// that support the record, kept so a reviewer (or a translation
+    /// prompt) can check the reasoning.
     pub evidence: String,
+}
+
+/// serde skip predicate: the depth flag leaves the JSON of a self-call
+/// outside any loop, keeping such records exactly what they were before
+/// the deepening.
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 // ============================================================
@@ -559,6 +581,7 @@ mod tests {
             function: "FUN_18003e750".into(),
             is_tail_call: true,
             self_calls: 1,
+            in_loop: false,
             suggestion: "replace with loop { ... } (tail call)".into(),
             confidence: Confidence::new(80),
             evidence: "FUN_18003e750() calls itself 1x (tail call)".into(),
@@ -638,6 +661,36 @@ mod tests {
         assert!(json.contains("\"self_calls\":1"));
         let back: SelfRecursion = serde_json::from_str(&json).unwrap();
         assert_eq!(back, record);
+    }
+
+    #[test]
+    fn a_deepened_self_recursion_round_trips_and_a_plain_one_stays_small() {
+        // The depth multiplier reading rides the record...
+        let record = SelfRecursion {
+            in_loop: true,
+            ..recursion()
+        };
+        let json = serde_json::to_string(&record).expect("deepened record should serialize");
+        assert!(json.contains("\"in_loop\":true"));
+        let back: SelfRecursion =
+            serde_json::from_str(&json).expect("deepened record should load back");
+        assert_eq!(back, record);
+
+        // ...and a self-call outside any loop keeps the pre-deepening
+        // shape on disk, mirroring the state-machine record's optional
+        // fields.
+        let json = serde_json::to_string(&recursion()).expect("plain record should serialize");
+        assert!(!json.contains("\"in_loop\""));
+    }
+
+    #[test]
+    fn a_self_recursion_document_persisted_before_the_deepening_loads() {
+        let json = r#"{"function":"FUN_18003e750","is_tail_call":true,"self_calls":1,"suggestion":"replace with loop { ... } (tail call)","confidence":80,"evidence":"FUN_18003e750() calls itself 1x (tail call)"}"#;
+        let back: SelfRecursion =
+            serde_json::from_str(json).expect("pre-deepening document should load");
+        assert!(!back.in_loop, "the depth flag reads absent as false");
+        assert_eq!(back.self_calls, 1);
+        assert!(back.is_tail_call);
     }
 
     #[test]
@@ -930,6 +983,7 @@ mod tests {
             function: "FUN_18003ab00".into(),
             is_tail_call: false,
             self_calls: 2,
+            in_loop: false,
             suggestion: "keep recursive fn FUN_18003ab00(...) or convert to loop".into(),
             confidence: Confidence::new(75),
             evidence: "FUN_18003ab00() calls itself 2x".into(),

@@ -567,6 +567,35 @@ impl Cfg {
         &self.loops
     }
 
+    /// The line span `[start, end)` each loop's body covers, in loop
+    /// order. A structured loop runs from the line after its head
+    /// through the line that closes it — the back edge's source block's
+    /// last line; a `goto` loop runs from its label block's first line
+    /// through the jumping block. A loop whose closing brace never
+    /// arrives (a truncated body) runs to the end of the body: the
+    /// brace discipline that built the graph keeps the reading honest.
+    pub(crate) fn loop_body_spans(&self) -> Vec<(usize, usize)> {
+        let body_end = self.line_block.len() - 1;
+        self.loops
+            .iter()
+            .map(|loop_| {
+                let head = &self.blocks[loop_.header];
+                let start = if loop_.kind == LoopKind::Goto {
+                    head.start
+                } else {
+                    head.end
+                };
+                let end = self
+                    .back_edges()
+                    .filter(|edge| edge.to == loop_.header)
+                    .map(|edge| self.blocks[edge.from].end)
+                    .max()
+                    .unwrap_or(body_end);
+                (start, end)
+            })
+            .collect()
+    }
+
     /// The block the body enters through, when it has one.
     pub(crate) fn entry(&self) -> Option<BlockId> {
         self.blocks.first().map(|block| block.id)
@@ -1023,6 +1052,46 @@ return;");
         assert_eq!(graph.block_at(2), Some(1));
         assert_eq!(graph.block_at(4), Some(2));
         assert_eq!(graph.block_at(99), None);
+    }
+
+    #[test]
+    fn loop_body_spans_cover_the_lines_each_loop_wraps() {
+        let graph = cfg("\
+for (i = 0; i < 10; i = i + 1) {
+    f();
+}
+while (x) {
+    g();
+    h();
+}
+do {
+    k();
+} while (x);
+goto LAB_join;
+LAB_join:
+m();
+goto LAB_join;
+return;");
+        // for body (f + close), while body (g, h + close), do body
+        // (k + tail), and the goto loop from its label block through
+        // the jumping block — each loop's body lines, in loop order.
+        assert_eq!(
+            graph.loop_body_spans(),
+            vec![(1, 3), (4, 7), (8, 10), (11, 14)],
+        );
+    }
+
+    #[test]
+    fn a_truncated_loop_body_span_runs_to_the_end_of_the_body() {
+        let graph = cfg("while (x) {\n    f();\n");
+        // No closing brace means no back edge, but the visible body
+        // lines still read as the loop's — a call inside them is
+        // nested however truncated the decompile was.
+        assert_eq!(
+            graph.loop_body_spans(),
+            vec![(1, 2)],
+            "the span runs to the end of the truncated body",
+        );
     }
 
     #[test]

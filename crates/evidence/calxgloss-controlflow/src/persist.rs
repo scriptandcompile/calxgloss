@@ -229,6 +229,7 @@ mod tests {
                 function: "FUN_18003e750".to_string(),
                 is_tail_call: true,
                 self_calls: 1,
+                in_loop: false,
                 suggestion: "replace with loop { ... } (tail call)".to_string(),
                 confidence: Confidence::new(80),
                 evidence: "FUN_18003e750() calls itself 1x (tail call)".to_string(),

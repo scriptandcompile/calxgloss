@@ -2292,6 +2292,7 @@ mod tests {
                 function: function.into(),
                 is_tail_call: true,
                 self_calls: 1,
+                in_loop: false,
                 suggestion: "replace with loop { ... } (tail call)".into(),
                 confidence: calxgloss_controlflow::types::Confidence::new(80),
                 evidence: "FUN_18003ab00() calls itself 1x (tail call)".into(),
