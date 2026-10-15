@@ -192,6 +192,16 @@ impl LoopKind {
             LoopKind::DoWhile | LoopKind::Goto => "loop",
         }
     }
+
+    /// The kinds' labels in order joined with `/` — the shape story one
+    /// body tells, spelled the same in the report row and the evidence.
+    pub fn labels(kinds: &[LoopKind]) -> String {
+        kinds
+            .iter()
+            .map(|kind| kind.label())
+            .collect::<Vec<_>>()
+            .join("/")
+    }
 }
 
 /// One loop-structure observation about one function, with the evidence
@@ -320,12 +330,7 @@ impl ControlFlowFinding {
             ControlFlowFinding::Switch(record) => record.variable.clone(),
             ControlFlowFinding::Recursion(record) => record.function.clone(),
             ControlFlowFinding::StateMachine(record) => record.state_var.clone(),
-            ControlFlowFinding::Loop(record) => record
-                .kinds_seen
-                .iter()
-                .map(|kind| kind.label())
-                .collect::<Vec<_>>()
-                .join("/"),
+            ControlFlowFinding::Loop(record) => LoopKind::labels(&record.kinds_seen),
         }
     }
 }
@@ -505,13 +510,14 @@ mod tests {
     #[test]
     fn a_loop_nesting_serde_round_trips() {
         let record = loop_nesting();
-        let json = serde_json::to_string(&record).unwrap();
+        let json = serde_json::to_string(&record).expect("loop nesting record should serialize");
         // The kinds serialize as their snake_case spellings, matching the
         // union's serde convention.
         assert!(json.contains("\"loop_count\":3"));
         assert!(json.contains("\"max_depth\":2"));
         assert!(json.contains("\"kinds_seen\":[\"for\",\"while\",\"do_while\"]"));
-        let back: LoopNesting = serde_json::from_str(&json).unwrap();
+        let back: LoopNesting =
+            serde_json::from_str(&json).expect("loop nesting record should read back");
         assert_eq!(back, record);
     }
 

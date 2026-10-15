@@ -44,11 +44,6 @@ impl LoopDetector {
         self
     }
 
-    /// The loop count a body must carry to be reported.
-    pub fn min_loops(&self) -> usize {
-        self.min_loops
-    }
-
     /// Read the loop structure of one decompiled function body off its
     /// control flow graph: one finding for the whole body, or none when
     /// the graph shows no loops (or fewer than `min_loops`).
@@ -68,16 +63,16 @@ impl LoopDetector {
             .iter()
             .map(|loop_| loop_.depth - base + 1)
             .max()
-            .unwrap_or(1)
+            .expect("the loop list is non-empty")
+            // A degenerate brace count never reports a loop below the
+            // body's own statement level.
             .max(1) as usize;
 
         // Kinds in first-seen body order, deduped: the body's own shape
         // story, diff-stable across scans.
         let mut kinds_seen: Vec<LoopKind> = Vec::new();
         for loop_ in loops {
-            if !kinds_seen.contains(&loop_.kind) {
-                kinds_seen.push(loop_.kind);
-            }
+            push_once(&mut kinds_seen, loop_.kind);
         }
 
         // A spelled-out loop header is the strong reading; a goto back
@@ -90,10 +85,7 @@ impl LoopDetector {
         // way: do-while and goto both land on `loop`.
         let mut rust: Vec<&str> = Vec::new();
         for kind in &kinds_seen {
-            let shape = kind.rust_shape();
-            if !rust.contains(&shape) {
-                rust.push(shape);
-            }
+            push_once(&mut rust, kind.rust_shape());
         }
         let suggestion = if structured {
             format!(
@@ -104,11 +96,7 @@ impl LoopDetector {
             format!("express as Rust loop at nesting depth {max_depth} (goto-driven)")
         };
 
-        let labels = kinds_seen
-            .iter()
-            .map(|kind| kind.label())
-            .collect::<Vec<_>>()
-            .join("/");
+        let labels = LoopKind::labels(&kinds_seen);
         let plural = if loops.len() == 1 { "" } else { "s" };
         let evidence = format!(
             "{} loop{plural}: {labels} (max depth {max_depth})",
@@ -124,6 +112,14 @@ impl LoopDetector {
             confidence,
             evidence,
         })
+    }
+}
+
+/// Push `item` onto `seen` unless it already sits there — the first-seen
+/// order both the kinds and the Rust shapes are deduped in.
+fn push_once<T: PartialEq>(seen: &mut Vec<T>, item: T) {
+    if !seen.contains(&item) {
+        seen.push(item);
     }
 }
 
@@ -328,7 +324,12 @@ undefined FUN_18003e750(void)
             .detect("loopy", two_loops)
             .expect("two loops clear the raised threshold");
         assert_eq!(record.loop_count, 2);
-        assert_eq!(LoopDetector::default().min_loops(), 1);
+        // The default threshold reports a single-loop body.
+        assert!(
+            LoopDetector::default()
+                .detect("loopy", "while (x) {\n    f();\n}")
+                .is_some()
+        );
     }
 
     #[test]
