@@ -31,7 +31,6 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P8.5 | stringctx Phase 5: localization detection, cross-function string correlation | `calxgloss-stringctx` | — | 🔶 in progress | `/implement` | [#180](https://github.com/scriptandcompile/calxgloss/issues/180) |
 | P9.5 | apidetect Phase 5: API category enrichment (incl. feature flags), Windows-vs-POSIX divergence, COM interface method suggestions, auto-generated FFI bindings, per-DLL dependency manifests | `calxgloss-apidetect` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P10.5 | consts Phase 5: full bitmask enum reconstruction, named constants from context, protocol constants, RGB grouping, codegen output | `calxgloss-consts` | — | ⬜ not started | `/to-spec` when picked up | — |
 | P11.5 | serialize Phase 5: full serialization format inference, cross-field validation, protocol message / network protocol identification, per-type endianness mapping | `calxgloss-serialize` | — | ⬜ not started | `/to-spec` when picked up | — |
@@ -42,8 +41,7 @@ Test counts in the archive are indicative targets, not exact requirements.
 Legend: ✅ done · 🔶 in progress · ⬜ not started. Rows P9.5–P11.5 and X1,
 X3–X4 are open future-work items — optional Phase 5 depth work and
 cross-cutting chores — verified still open in the code (2026-10-08); no
-effort estimates yet. P8.5 (stringctx Phase 5) is in progress under epic
-#180 (spec published 2026-10-15). P2.5 (typeinfer Phase 5) shipped through #150 and was
+effort estimates yet. P2.5 (typeinfer Phase 5) shipped through #150 and was
 pruned from this matrix when epic #142 closed (2026-10-14); P3.5 (algorithm
 Phase 5) shipped through #156 and was pruned when epic #151 closed
 (2026-10-14); P4.5 (memory Phase 5) shipped through #162 and was pruned when
@@ -51,12 +49,8 @@ epic #157 closed (2026-10-14); P5.5 (sync Phase 5) shipped through #168 and
 was pruned when epic #163 closed (2026-10-14); P6.5 (callback Phase 5)
 shipped through #173 and was pruned when epic #169 closed (2026-10-15);
 P7.5 (controlflow Phase 5) shipped through #179 and was pruned when epic
-#174 closed (2026-10-15).
-
-## P8.5 — stringctx Phase 5 (`calxgloss-stringctx`)
-
-Optional depth work (archive §8, Phase 5): localization detection,
-cross-function string correlation.
+#174 closed (2026-10-15); P8.5 (stringctx Phase 5) shipped through #182 and
+was pruned when epic #180 closed (2026-10-15).
 
 ## P9.5 — apidetect Phase 5 (`calxgloss-apidetect`)
 
