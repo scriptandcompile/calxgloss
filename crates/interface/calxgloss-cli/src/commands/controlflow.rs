@@ -96,7 +96,7 @@ fn print_controlflow_report(result: &ControlFlowResult, path: &Path) {
     println!();
 
     // Findings, broken down by the record kind the union carries.
-    let kind_breakdown: Vec<String> = ["switch", "recursion", "state_machine"]
+    let kind_breakdown: Vec<String> = ["switch", "recursion", "state_machine", "loop"]
         .into_iter()
         .map(|kind| {
             (

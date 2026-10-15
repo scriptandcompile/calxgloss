@@ -1,19 +1,21 @@
 //! Control-flow scan orchestration.
 //!
-//! [`ControlFlowEngine`] runs the three detectors — switch-shaped
-//! if/else-if chains, self-recursion, and state machines — over every
-//! function of one open Ghidra program and assembles their findings
+//! [`ControlFlowEngine`] runs the four detectors — switch-shaped
+//! if/else-if chains, self-recursion, state machines, and loop
+//! structure — over every function of one open Ghidra program and
+//! assembles their findings
 //! into a single [`ControlFlowResult`] with its scan provenance.
 //!
 //! The detectors are pure text analysis over one decompiled body, so
 //! the engine fetches each function's pseudo-C exactly once and reads
-//! it with all three, rather than having each detector pull its own
+//! it with all four, rather than having each detector pull its own
 //! copy. The scan is then one sequential pass over the function
 //! listing: like sync's disjoint families there is nothing to resolve
 //! between the detectors, and keeping the pass sequential keeps the
 //! persisted finding list in a stable, diffable order.
 
 use crate::error::Result;
+use crate::loop_detect::LoopDetector;
 use crate::recursion::RecursionDetector;
 use crate::state_machine::StateMachineDetector;
 use crate::switch::SwitchChainDetector;
@@ -32,14 +34,15 @@ use tracing::{info, warn};
 /// orchestrating task.
 pub use calxgloss_ghidra::ScanSource;
 
-/// Orchestrates the three detectors into one [`ControlFlowResult`].
+/// Orchestrates the four detectors into one [`ControlFlowResult`].
 ///
 /// The engine is generic over its [`ScanSource`], so tests can run the
 /// whole orchestration over canned bodies; [`new`](Self::new) builds
 /// one over a live [`GhidraClient`]. Each detector carries no state and
 /// starts configured with its standard thresholds and name set —
 /// [`with_switch`](Self::with_switch), [`with_recursion`](Self::with_recursion),
-/// and [`with_state_machine`](Self::with_state_machine) swap a detector
+/// [`with_state_machine`](Self::with_state_machine), and
+/// [`with_loop`](Self::with_loop) swap a detector
 /// whole — so one instance of each serves the whole scan.
 #[derive(Debug, Clone)]
 pub struct ControlFlowEngine<S = GhidraClient> {
@@ -47,10 +50,11 @@ pub struct ControlFlowEngine<S = GhidraClient> {
     switch: SwitchChainDetector,
     recursion: RecursionDetector,
     state_machine: StateMachineDetector,
+    loops: LoopDetector,
 }
 
 impl ControlFlowEngine<GhidraClient> {
-    /// An engine over a live GhidraMCP client, scanning with the three
+    /// An engine over a live GhidraMCP client, scanning with the four
     /// detectors' standard thresholds and name set.
     pub fn new(client: &GhidraClient) -> ControlFlowEngine<GhidraClient> {
         ControlFlowEngine {
@@ -58,19 +62,21 @@ impl ControlFlowEngine<GhidraClient> {
             switch: SwitchChainDetector::default(),
             recursion: RecursionDetector,
             state_machine: StateMachineDetector::default(),
+            loops: LoopDetector::default(),
         }
     }
 }
 
 impl<S> ControlFlowEngine<S> {
     /// An engine whose decompiles come from `source`, scanning with
-    /// the three detectors' standard thresholds and name set.
+    /// the four detectors' standard thresholds and name set.
     pub fn with_source(source: S) -> Self {
         ControlFlowEngine {
             source,
             switch: SwitchChainDetector::default(),
             recursion: RecursionDetector,
             state_machine: StateMachineDetector::default(),
+            loops: LoopDetector::default(),
         }
     }
 
@@ -95,15 +101,22 @@ impl<S> ControlFlowEngine<S> {
         self
     }
 
+    /// Read loop structure against `detector`'s threshold instead of
+    /// the standard one.
+    pub fn with_loop(mut self, detector: LoopDetector) -> Self {
+        self.loops = detector;
+        self
+    }
+
     /// Detect control-flow patterns across `binary`, decompiling each
-    /// function exactly once and reading it with all three detectors.
+    /// function exactly once and reading it with all four detectors.
     ///
     /// `binary` names the program the scan reads (e.g. `eqmain.dll`)
     /// and becomes the key a persisted result is filed under. The
     /// findings follow the function listing — function by function, and
     /// within one function the switch chains, then the recursion, then
-    /// the state machines — so two scans of the same program diff
-    /// cleanly.
+    /// the state machines, then the loop reading — so two scans of the
+    /// same program diff cleanly.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad
     /// entry point) is skipped with a warning; only a failure of the
@@ -183,6 +196,12 @@ impl<S> ControlFlowEngine<S> {
                     .into_iter()
                     .map(ControlFlowFinding::StateMachine),
             );
+            findings.extend(
+                self.loops
+                    .detect(&function.name, body)
+                    .into_iter()
+                    .map(ControlFlowFinding::Loop),
+            );
         }
 
         let mut metadata = ScanMetadata::new(binary);
@@ -206,6 +225,7 @@ impl<S> ControlFlowEngine<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::LoopKind;
     use calxgloss_ghidra::{
         DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
         Result, StringLiteral, StructLayout, Symbol, Xref,
@@ -345,14 +365,19 @@ mod tests {
     }
 
     /// A body carrying a switch-shaped chain that also assigns its own
-    /// variable (so it reads as a state machine too) and a self-call —
-    /// one finding family per detector — all in one function. The
-    /// self-call is spelled per the function that carries it.
+    /// variable (so it reads as a state machine too), a self-call, and
+    /// a loop inside the first case body — one finding family per
+    /// detector — all in one function. The self-call is spelled per the
+    /// function that carries it, and the loop sits one level under the
+    /// chain so the nesting reading has something real to report.
     fn every_shape_body(name: &str) -> String {
         format!(
             "\
   if (local_4 == STATE_IDLE) {{
     local_4 = STATE_RUN;
+    while (local_9 < 3) {{
+      local_9 = local_9 + 1;
+    }}
     {name}(0);
   }}
   else if (local_4 == STATE_RUN) {{
@@ -403,14 +428,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scan_collects_findings_from_all_three_detectors() {
+    async fn scan_collects_findings_from_all_four_detectors() {
         let result = scan(program()).await;
 
         assert_eq!(result.metadata.binary, "eqmain.dll");
         assert!(result.metadata.scanned_at > 0);
 
         let findings: Vec<&ControlFlowFinding> = result.for_function("FUN_18003ab00").collect();
-        assert_eq!(findings.len(), 3);
+        assert_eq!(findings.len(), 4);
 
         let ControlFlowFinding::Switch(record) = findings[0] else {
             unreachable!("the if/else-if chain reads as a switch finding");
@@ -432,14 +457,24 @@ mod tests {
             record.transitions,
             ["STATE_RUN", "STATE_DONE", "STATE_IDLE"]
         );
+
+        let ControlFlowFinding::Loop(record) = findings[3] else {
+            unreachable!("the loop inside the first case body reads as a loop finding");
+        };
+        assert_eq!(record.loop_count, 1);
+        // Nested under the chain, not beside it: the wrapped body's
+        // statement level re-anchors to 1, and the chain arm adds one.
+        assert_eq!(record.max_depth, 2);
+        assert_eq!(record.kinds_seen, [LoopKind::While]);
+        assert_eq!(u8::from(record.confidence), 70);
     }
 
     #[tokio::test]
     async fn scan_keeps_findings_in_scan_order() {
         // Both functions carry every shape, so the persisted list must
         // group their findings by function in listing order — and
-        // within one function run switch, recursion, then state
-        // machine — never interleaved.
+        // within one function run switch, recursion, state machine,
+        // then loop — never interleaved.
         let mut program = program();
         program.listing = vec![summary("FUN_18003e750"), summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -463,18 +498,20 @@ mod tests {
                 ("FUN_18003e750", "switch"),
                 ("FUN_18003e750", "recursion"),
                 ("FUN_18003e750", "state_machine"),
+                ("FUN_18003e750", "loop"),
                 ("FUN_18003ab00", "switch"),
                 ("FUN_18003ab00", "recursion"),
                 ("FUN_18003ab00", "state_machine"),
+                ("FUN_18003ab00", "loop"),
             ]
         );
     }
 
     #[tokio::test]
     async fn scan_decompiles_each_function_exactly_once() {
-        // The three detectors share one fetch per function; a scan
-        // that asked each detector for its own copy would triple the
-        // wall time.
+        // The four detectors share one fetch per function; a scan
+        // that asked each detector for its own copy would quadruple
+        // the wall time.
         let program = program();
         let result = scan(program.clone()).await;
         assert!(!result.is_empty());
@@ -623,6 +660,45 @@ mod tests {
         };
         assert_eq!(record.state_var, "mode");
         assert_eq!(u8::from(record.confidence), 70);
+    }
+
+    #[tokio::test]
+    async fn a_configured_loop_detector_reaches_the_scan() {
+        // Swapping the loop detector whole reaches the scan too: the
+        // default reads the single-loop body, and a raised threshold
+        // skips it.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_1800412a0")];
+        program.bodies.insert(
+            "FUN_1800412a0".into(),
+            function(
+                "FUN_1800412a0",
+                "undefined FUN_1800412a0(void)",
+                "\
+  while (local_4 < 10) {
+    local_4 = local_4 + 1;
+  }",
+            ),
+        );
+
+        let result = scan(program.clone()).await;
+        assert_eq!(kinds(&result, "FUN_1800412a0"), ["loop"]);
+        let findings: Vec<&ControlFlowFinding> = result.for_function("FUN_1800412a0").collect();
+        let ControlFlowFinding::Loop(record) = findings[0] else {
+            unreachable!("the spelled-out while header reads as a loop finding");
+        };
+        assert_eq!(record.loop_count, 1);
+        assert_eq!(record.max_depth, 1);
+
+        let result = ControlFlowEngine::with_source(program)
+            .with_loop(LoopDetector::default().with_min_loops(2))
+            .scan("eqmain.dll")
+            .await
+            .expect("scan");
+        assert!(
+            result.is_empty(),
+            "the raised threshold skips the single-loop body"
+        );
     }
 
     #[tokio::test]

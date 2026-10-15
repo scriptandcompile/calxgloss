@@ -25,6 +25,7 @@
 //! chain rather than reading as a top-level loop.
 
 use crate::chain::{net_braces, outside_strings};
+use crate::types::LoopKind;
 
 /// Identity of a basic block within one [`Cfg`].
 pub(crate) type BlockId = usize;
@@ -88,20 +89,9 @@ pub(crate) struct Block {
     pub terminator: Terminator,
 }
 
-/// The loop shapes Ghidra's pseudo-C spells out, plus the goto-driven one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LoopKind {
-    /// A counted `for (..; ..; ..) { }` header.
-    For,
-    /// A conditional `while (..) { }` header.
-    While,
-    /// A `do { } while (..);` shape, head and tail read together.
-    DoWhile,
-    /// A `goto` back to an earlier label — the flattened-loop shape.
-    Goto,
-}
-
-/// One loop in the body, identified by its header block.
+/// One loop in the body, identified by its header block. The kind
+/// vocabulary is the finding's own — the enum lives in `types` so the
+/// graph's loop kinds and the finding's `kinds_seen` cannot drift.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Loop {
     /// The block the back edge returns to.

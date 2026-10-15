@@ -10,7 +10,8 @@
 //!   translation pipeline makes (the findings recorded for one
 //!   function), and the persisted list keeps every finding in scan
 //!   order: function by function, and within one function the switch
-//!   chains, then the recursion, then the state machines.
+//!   chains, then the recursion, then the state machines, then the
+//!   loop reading.
 //! - **Cache behavior** — the `exists` check decides whether a scan
 //!   runs, and a rescan replaces the cached document.
 //!
@@ -49,7 +50,8 @@ fn function(name: &str, signature: &str, body: &str) -> DecompiledFunction {
 
 /// A canned program implementing [`ScanSource`]: one function whose
 /// body carries a three-arm switch-shaped chain over `local_4` with a
-/// trailing default and a self-call inside one arm, one function whose
+/// trailing default, a self-call inside one arm, and a `while` loop
+/// inside another, one function whose
 /// body is a named-constant state chain over `state` with transition
 /// assignments, and one plain function that finds nothing.
 #[derive(Clone, Default)]
@@ -146,6 +148,9 @@ fn program() -> FakeProgram {
             "undefined FUN_18003ab00(int param_1)",
             "  if (local_4 == 1) {\n\
              \x20   puts(\"one\");\n\
+             \x20   while (local_9 < 3) {\n\
+             \x20     local_9 = local_9 + 1;\n\
+             \x20   }\n\
              \x20 }\n\
              \x20 else if (local_4 == 2) {\n\
              \x20   FUN_18003ab00(param_1 - 1);\n\
@@ -215,10 +220,11 @@ async fn a_scan_files_its_result_in_the_workspace_and_reads_back() {
 
 #[tokio::test]
 async fn the_persisted_document_keeps_findings_in_scan_order() {
-    // The three detectors read one body in one pass, so what reaches
+    // The four detectors read one body in one pass, so what reaches
     // disk is function by function in listing order and, within one
     // function, the switch chains, then the recursion, then the state
-    // machines — the order two scans diff against.
+    // machines, then the loop reading — the order two scans diff
+    // against.
     let workspace = TempDir::new().unwrap();
     let result = ControlFlowEngine::with_source(program())
         .scan("eqmain.dll")
@@ -238,6 +244,7 @@ async fn the_persisted_document_keeps_findings_in_scan_order() {
         vec![
             ("FUN_18003ab00", "switch"),
             ("FUN_18003ab00", "recursion"),
+            ("FUN_18003ab00", "loop"),
             ("FUN_1800412a0", "switch"),
             ("FUN_1800412a0", "state_machine"),
         ]
@@ -263,7 +270,7 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     // The pipeline asks what was found for the function it is about to
     // translate; the plain function carries nothing.
     let findings: Vec<&ControlFlowFinding> = loaded.for_function("FUN_18003ab00").collect();
-    assert_eq!(findings.len(), 2);
+    assert_eq!(findings.len(), 3);
     assert!(loaded.for_function("FUN_18003e750").next().is_none());
     assert!(loaded.for_function("FUN_180099999").next().is_none());
 
@@ -293,6 +300,23 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
         "keep recursive fn FUN_18003ab00(...) or convert to loop"
     );
     assert!(record.evidence.contains("FUN_18003ab00() calls itself 1x"));
+
+    let ControlFlowFinding::Loop(record) = findings[2] else {
+        unreachable!("the while inside the first chain arm reads as a loop finding");
+    };
+    assert_eq!(record.loop_count, 1);
+    // Nested under the chain arm, not beside it.
+    assert_eq!(record.max_depth, 2);
+    assert_eq!(
+        record.kinds_seen,
+        [calxgloss_controlflow::types::LoopKind::While]
+    );
+    assert_eq!(
+        record.suggestion,
+        "express as Rust while at nesting depth 2"
+    );
+    assert_eq!(record.evidence, "1 loop: while (max depth 2)");
+    assert_eq!(record.confidence.value(), 70);
 
     // The state chain reads as both a switch and a state machine —
     // nothing is suppressed between the detectors.
@@ -337,7 +361,7 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
         .for_function("FUN_18003ab00")
         .map(calxgloss_prompts::ControlFlowInfo::from)
         .collect();
-    assert_eq!(findings.len(), 2, "the target function's two findings");
+    assert_eq!(findings.len(), 3, "the target function's three findings");
 
     let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
         "FUN_18003ab00".into(),
@@ -368,6 +392,9 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
     assert!(prompt.contains("keep recursive fn FUN_18003ab00(...) or convert to loop"));
     assert!(prompt.contains("recursion construct, confidence 70"));
     assert!(prompt.contains("if (local_4 == 1) ... else if (local_4 == 0x10) + default"));
+    assert!(prompt.contains("express as Rust while at nesting depth 2"));
+    assert!(prompt.contains("loop construct, confidence 70"));
+    assert!(prompt.contains("1 loop: while (max depth 2)"));
 }
 
 // ------------------------------------------------------------

@@ -9,7 +9,10 @@
 //!   count and tail-call status.
 //! - `StateMachine`: a state-machine-shaped chain — named-constant
 //!   cases, transition assignments, and an idle state.
-//! - `ControlFlowFinding`: the union over the three record kinds — one
+//! - `LoopNesting` (with `LoopKind`): the loop structure of one body —
+//!   loop count, maximum nesting depth, and the shapes seen, read off
+//!   the control flow graph.
+//! - `ControlFlowFinding`: the union over the record kinds — one
 //!   finding whichever detector made it — serde-tagged by `kind`.
 //! - `ControlFlowResult`, `ScanMetadata`: the persisted per-binary result
 //!   and its scan provenance.
@@ -137,6 +140,98 @@ pub struct StateMachine {
 }
 
 // ============================================================
+// Loop structure
+// ============================================================
+
+/// The loop shapes Ghidra's pseudo-C spells out, plus the goto-driven
+/// one.
+///
+/// The control flow graph reads a shape off the body and the persisted
+/// record names it in `kinds_seen`, so one enum carries the vocabulary
+/// on both sides — the graph's loop kinds and the finding's kind list
+/// cannot drift apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoopKind {
+    /// A counted `for (..; ..; ..) { }` header.
+    For,
+    /// A conditional `while (..) { }` header.
+    While,
+    /// A `do { } while (..);` shape, head and tail read together.
+    DoWhile,
+    /// A `goto` back to an earlier label — the flattened-loop shape.
+    Goto,
+}
+
+impl LoopKind {
+    /// The shape spelled for a report row: `for`, `while`, `do-while`,
+    /// or `goto`.
+    pub fn label(&self) -> &'static str {
+        match self {
+            LoopKind::For => "for",
+            LoopKind::While => "while",
+            LoopKind::DoWhile => "do-while",
+            LoopKind::Goto => "goto",
+        }
+    }
+
+    /// Whether the shape is a spelled-out loop header — the strong
+    /// evidence a structured loop leaves — rather than a `goto` back to
+    /// a label, whose loop reading is an inference over the jump.
+    pub fn is_structured(&self) -> bool {
+        !matches!(self, LoopKind::Goto)
+    }
+
+    /// The Rust loop structure this shape corresponds to, spelled for a
+    /// suggestion: `for`, `while`, or `loop` — Rust has no `do-while`,
+    /// and a goto-driven loop is a plain `loop` too.
+    pub fn rust_shape(&self) -> &'static str {
+        match self {
+            LoopKind::For => "for",
+            LoopKind::While => "while",
+            LoopKind::DoWhile | LoopKind::Goto => "loop",
+        }
+    }
+}
+
+/// One loop-structure observation about one function, with the evidence
+/// behind it.
+///
+/// A record says the body carries [`loop_count`](Self::loop_count)
+/// loops of the [`kinds_seen`](Self::kinds_seen) shapes, nested to
+/// [`max_depth`](Self::max_depth): 1 for a top-level loop, 2 for a loop
+/// inside a loop or inside a switch/state-machine case body, and so on
+/// — the depth the graph's brace discipline shows, so a chain reading
+/// and a loop reading never contradict each other. The body reads like
+/// [`suggestion`](Self::suggestion): the Rust loop structure at that
+/// nesting depth. Confidence is 70 when a spelled-out loop header
+/// stands in the body and 60 when the only loops visible are
+/// goto-driven — a goto shape is a weaker inference than a loop header.
+/// The count, kinds, and depth are kept as [`evidence`](Self::evidence)
+/// so a reviewer (or a translation prompt) can check the reasoning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoopNesting {
+    /// The function the record is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// How many loops the body carries.
+    pub loop_count: usize,
+    /// The maximum loop nesting depth: 1 for a top-level loop, +1 per
+    /// level of nesting — a loop inside a loop, or inside a chain case
+    /// body, reads 2.
+    pub max_depth: usize,
+    /// The loop shapes seen, in first-seen body order, deduped.
+    pub kinds_seen: Vec<LoopKind>,
+    /// The Rust pattern the loops suggest, e.g.
+    /// `express as Rust for/while/loop at nesting depth 2`.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+    /// The loop count, kinds, and depth that support the record, kept
+    /// so a reviewer (or a translation prompt) can check the reasoning.
+    pub evidence: String,
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -160,6 +255,8 @@ pub enum ControlFlowFinding {
     Recursion(SelfRecursion),
     /// A state-machine-shaped chain.
     StateMachine(StateMachine),
+    /// The loop structure of a body — count, nesting depth, kinds seen.
+    Loop(LoopNesting),
 }
 
 impl ControlFlowFinding {
@@ -169,6 +266,7 @@ impl ControlFlowFinding {
             ControlFlowFinding::Switch(record) => &record.function,
             ControlFlowFinding::Recursion(record) => &record.function,
             ControlFlowFinding::StateMachine(record) => &record.function,
+            ControlFlowFinding::Loop(record) => &record.function,
         }
     }
 
@@ -178,6 +276,7 @@ impl ControlFlowFinding {
             ControlFlowFinding::Switch(record) => &record.suggestion,
             ControlFlowFinding::Recursion(record) => &record.suggestion,
             ControlFlowFinding::StateMachine(record) => &record.suggestion,
+            ControlFlowFinding::Loop(record) => &record.suggestion,
         }
     }
 
@@ -187,6 +286,7 @@ impl ControlFlowFinding {
             ControlFlowFinding::Switch(record) => record.confidence,
             ControlFlowFinding::Recursion(record) => record.confidence,
             ControlFlowFinding::StateMachine(record) => record.confidence,
+            ControlFlowFinding::Loop(record) => record.confidence,
         }
     }
 
@@ -196,27 +296,36 @@ impl ControlFlowFinding {
             ControlFlowFinding::Switch(record) => &record.evidence,
             ControlFlowFinding::Recursion(record) => &record.evidence,
             ControlFlowFinding::StateMachine(record) => &record.evidence,
+            ControlFlowFinding::Loop(record) => &record.evidence,
         }
     }
 
-    /// The serde `kind` tag — `switch`, `recursion`, or
-    /// `state_machine` — naming the detector behind the finding.
+    /// The serde `kind` tag — `switch`, `recursion`, `state_machine`,
+    /// or `loop` — naming the detector behind the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             ControlFlowFinding::Switch(_) => "switch",
             ControlFlowFinding::Recursion(_) => "recursion",
             ControlFlowFinding::StateMachine(_) => "state_machine",
+            ControlFlowFinding::Loop(_) => "loop",
         }
     }
 
     /// What the finding names, spelled for a report row: the variable
-    /// the switch chain compares, the function that recurses, or the
-    /// state variable the machine dispatches on.
+    /// the switch chain compares, the function that recurses, the state
+    /// variable the machine dispatches on, or the loop shapes the body
+    /// carries.
     pub fn target(&self) -> String {
         match self {
             ControlFlowFinding::Switch(record) => record.variable.clone(),
             ControlFlowFinding::Recursion(record) => record.function.clone(),
             ControlFlowFinding::StateMachine(record) => record.state_var.clone(),
+            ControlFlowFinding::Loop(record) => record
+                .kinds_seen
+                .iter()
+                .map(|kind| kind.label())
+                .collect::<Vec<_>>()
+                .join("/"),
         }
     }
 }
@@ -245,12 +354,13 @@ impl From<&ControlFlowFinding> for calxgloss_prompts::ControlFlowInfo {
 /// The control-flow result for one binary — the document persisted to
 /// `re/analysis/controlflow/{dll}.json`.
 ///
-/// The findings are the three detectors' outputs in scan order: function
-/// by function, and within one function the switch chains, then the
-/// recursion, then the state machines. A function can carry findings of
-/// several kinds at once — the switch and state-machine detectors read
-/// the same chain shape from opposite sides — and the stable order means
-/// two scans of the same program diff cleanly.
+/// The findings are the detectors' outputs in scan order: function by
+/// function, and within one function the switch chains, then the
+/// recursion, then the state machines, then the loop structure. A
+/// function can carry findings of several kinds at once — the switch
+/// and state-machine detectors read the same chain shape from opposite
+/// sides — and the stable order means two scans of the same program
+/// diff cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControlFlowResult {
     /// Provenance of the scan that produced these findings.
@@ -330,6 +440,18 @@ mod tests {
         }
     }
 
+    fn loop_nesting() -> LoopNesting {
+        LoopNesting {
+            function: "FUN_18003e750".into(),
+            loop_count: 3,
+            max_depth: 2,
+            kinds_seen: vec![LoopKind::For, LoopKind::While, LoopKind::DoWhile],
+            suggestion: "express as Rust for/while/loop at nesting depth 2".into(),
+            confidence: Confidence::new(70),
+            evidence: "3 loops: for/while/do-while (max depth 2)".into(),
+        }
+    }
+
     #[test]
     fn a_switch_chain_serde_round_trips() {
         let record = switch_chain();
@@ -381,6 +503,19 @@ mod tests {
     }
 
     #[test]
+    fn a_loop_nesting_serde_round_trips() {
+        let record = loop_nesting();
+        let json = serde_json::to_string(&record).unwrap();
+        // The kinds serialize as their snake_case spellings, matching the
+        // union's serde convention.
+        assert!(json.contains("\"loop_count\":3"));
+        assert!(json.contains("\"max_depth\":2"));
+        assert!(json.contains("\"kinds_seen\":[\"for\",\"while\",\"do_while\"]"));
+        let back: LoopNesting = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, record);
+    }
+
+    #[test]
     fn a_switch_finding_serde_round_trips_under_its_kind_tag() {
         let finding = ControlFlowFinding::Switch(switch_chain());
         let json = serde_json::to_string(&finding).expect("switch finding should serialize");
@@ -416,11 +551,23 @@ mod tests {
     }
 
     #[test]
+    fn a_loop_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = ControlFlowFinding::Loop(loop_nesting());
+        let json = serde_json::to_string(&finding).expect("loop finding should serialize");
+        assert!(json.contains("\"kind\":\"loop\""));
+        assert!(json.contains("\"loop_count\":3"));
+        let back: ControlFlowFinding =
+            serde_json::from_str(&json).expect("loop finding should read back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
     fn the_union_accessors_reach_through_every_variant() {
         let findings = [
             ControlFlowFinding::Switch(switch_chain()),
             ControlFlowFinding::Recursion(recursion()),
             ControlFlowFinding::StateMachine(state_machine()),
+            ControlFlowFinding::Loop(loop_nesting()),
         ];
         for finding in &findings {
             assert!(!finding.function().is_empty());
@@ -428,16 +575,24 @@ mod tests {
             assert!(!finding.evidence().is_empty());
         }
         let kinds: Vec<&str> = findings.iter().map(|f| f.kind()).collect();
-        assert_eq!(kinds, vec!["switch", "recursion", "state_machine"]);
+        assert_eq!(kinds, vec!["switch", "recursion", "state_machine", "loop"]);
         let functions: Vec<&str> = findings.iter().map(|f| f.function()).collect();
         assert_eq!(
             functions,
-            vec!["FUN_18003ab00", "FUN_18003e750", "FUN_1800412a0"]
+            vec![
+                "FUN_18003ab00",
+                "FUN_18003e750",
+                "FUN_1800412a0",
+                "FUN_18003e750"
+            ]
         );
         assert_eq!(u8::from(findings[0].confidence()), 70);
         assert_eq!(u8::from(findings[1].confidence()), 80);
         let targets: Vec<String> = findings.iter().map(|f| f.target()).collect();
-        assert_eq!(targets, vec!["local_4", "FUN_18003e750", "local_4"]);
+        assert_eq!(
+            targets,
+            vec!["local_4", "FUN_18003e750", "local_4", "for/while/do-while"]
+        );
     }
 
     #[test]
@@ -461,6 +616,19 @@ mod tests {
         assert_eq!(
             info.suggestion,
             "enum State + match local_4 { /* 3 states */ }"
+        );
+
+        let loops = ControlFlowFinding::Loop(loop_nesting());
+        let info = calxgloss_prompts::ControlFlowInfo::from(&loops);
+        assert_eq!(info.kind, "loop");
+        assert_eq!(info.confidence, 70);
+        assert_eq!(
+            info.suggestion,
+            "express as Rust for/while/loop at nesting depth 2"
+        );
+        assert!(
+            info.evidence
+                .contains("3 loops: for/while/do-while (max depth 2)")
         );
     }
 

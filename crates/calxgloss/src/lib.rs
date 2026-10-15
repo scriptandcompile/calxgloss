@@ -237,7 +237,8 @@ pub use calxgloss_callback::types::{
 // named here.
 pub use calxgloss_controlflow::ControlFlowError;
 pub use calxgloss_controlflow::types::{
-    ControlFlowFinding, ControlFlowResult, SelfRecursion, StateMachine, SwitchChain,
+    ControlFlowFinding, ControlFlowResult, LoopKind, LoopNesting, SelfRecursion, StateMachine,
+    SwitchChain,
 };
 
 // ============================================================
