@@ -16,7 +16,8 @@
 //! - [`types`] - Core data types: `BitflagGroup`, `EnumCandidate`, and
 //!   `NamedConstant` for the detection records; `FlagFamily` for the
 //!   program-level merged flag-family record; `ProtocolConstant` for
-//!   the program-level known-magic record; `ConstFinding` as the
+//!   the program-level known-magic record; `ColorConstant` for the
+//!   program-level palette record; `ConstFinding` as the
 //!   union over the record kinds; `ConstResult`, `ScanMetadata` for
 //!   the persisted per-binary results.
 //! - [`bitmask`] - Bitflag group detection: `BitmaskDetector` collects
@@ -57,6 +58,11 @@
 //!   applies and reports each tallied value that matches the built-in
 //!   table of well-known protocol/format magics and sentinels as one
 //!   named `protocol_constant` record, single use included.
+//! - `color` - a crate-private color-grouping reading: `color_palette`
+//!   walks the same literal tally and groups the color-shaped values
+//!   (≤ 24-bit, not powers of two) into at most one program-level
+//!   `color_constant` palette finding per binary — two distinct
+//!   qualifying values make a palette, a lone one claims nothing.
 //! - `tokenize` - a crate-private pseudo-C tokenizer the three
 //!   detectors and the naming reading share, keeping string contents
 //!   and identifier-embedded digits out of the literal stream.
@@ -69,6 +75,7 @@ pub mod persist;
 pub mod sequential;
 pub mod types;
 
+pub(crate) mod color;
 pub(crate) mod flag_family;
 pub(crate) mod naming;
 pub(crate) mod protocol;

@@ -8,11 +8,12 @@
 //!   loading it back yields the same result the scan returned.
 //! - **Consumption** — the loaded result answers the lookups a
 //!   translation pipeline makes (the findings recorded for one
-//!   function, the program-level named constants, flag families, and
-//!   protocol constants included), and the persisted list keeps every
-//!   finding in scan order: function by function the bitmask groups
-//!   then the enum candidates, and the program-level named constants,
-//!   merged flag families, and protocol constants appended after them.
+//!   function, the program-level named constants, flag families,
+//!   protocol constants, and color palette included), and the
+//!   persisted list keeps every finding in scan order: function by
+//!   function the bitmask groups then the enum candidates, and the
+//!   program-level named constants, merged flag families, protocol
+//!   constants, and color palette appended after them.
 //! - **Prompt rendering** — the loaded findings render into `ConstInfo`
 //!   prompt data and the escalate prompt carries the CONSTANTS section,
 //!   the repeated literal's context-named `const` form included.
@@ -215,6 +216,7 @@ async fn the_persisted_document_tags_findings_by_kind_in_scan_order() {
     assert!(raw.contains("\"kind\": \"bitflag_group\""));
     assert!(raw.contains("\"kind\": \"enum_candidate\""));
     assert!(raw.contains("\"kind\": \"named_constant\""));
+    assert!(raw.contains("\"kind\": \"color_constant\""));
 
     let loaded = persistor.load("eqmain.dll").expect("load");
     let order: Vec<(&str, &str)> = loaded
@@ -228,6 +230,7 @@ async fn the_persisted_document_tags_findings_by_kind_in_scan_order() {
             ("FUN_18003ab00", "bitflag_group"),
             ("FUN_18003ab00", "enum_candidate"),
             ("", "named_constant"),
+            ("", "color_constant"),
         ]
     );
 }
@@ -249,12 +252,17 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     let loaded = persistor.load("eqmain.dll").expect("load");
 
     // The pipeline asks what was found for the function it is about to
-    // translate: the shaped function carries all three kinds, and the
-    // plain function carries the named constant it uses too.
+    // translate: the shaped function carries all four kinds, and the
+    // plain function carries the named constant it uses and one of
+    // the palette's colors too.
     let findings: Vec<&ConstFinding> = loaded.for_function("FUN_18003ab00").collect();
-    assert_eq!(findings.len(), 3);
+    assert_eq!(findings.len(), 4);
     let plain: Vec<&ConstFinding> = loaded.for_function("FUN_18003e750").collect();
-    assert_eq!(plain.len(), 1, "the named constant belongs to its users");
+    assert_eq!(
+        plain.len(),
+        2,
+        "the named constant and the palette belong to their users"
+    );
     assert!(loaded.for_function("FUN_180099999").next().is_none());
 
     // Each record keeps its detector's detail and evidence through the
@@ -289,6 +297,17 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     // the record through the persisted document.
     assert_eq!(constant.name.as_deref(), Some("SIZE_0x280"));
     assert_eq!(constant.suggestion, "const SIZE_0x280: u32 = 0x280;");
+
+    // The color-shaped literals the bodies carry group into one
+    // palette through the round trip too.
+    let ConstFinding::ColorConstant(palette) = findings[3] else {
+        unreachable!("the color-shaped literals read as a palette finding");
+    };
+    assert_eq!(palette.values, vec![3, 0x280]);
+    assert_eq!(
+        palette.functions,
+        vec!["FUN_18003ab00".to_string(), "FUN_18003e750".to_string()]
+    );
 }
 
 #[tokio::test]
@@ -311,7 +330,7 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
         .for_function("FUN_18003ab00")
         .map(calxgloss_prompts::ConstInfo::from)
         .collect();
-    assert_eq!(findings.len(), 3, "the target function's three findings");
+    assert_eq!(findings.len(), 4, "the target function's four findings");
 
     let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
         "FUN_18003ab00".into(),
@@ -344,6 +363,8 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
     assert!(prompt.contains("const SIZE_0x280: u32 = 0x280;"));
     assert!(prompt.contains("named_constant, confidence 60"));
     assert!(prompt.contains("uVar1 & 0x400"));
+    assert!(prompt.contains("const COLOR_0x280: u32 = 0x280;"));
+    assert!(prompt.contains("color_constant, confidence 60"));
 }
 
 #[tokio::test]
@@ -603,6 +624,119 @@ async fn a_protocol_constant_survives_the_round_trip_and_the_prompt() {
     assert!(
         prompt.contains("0x89504e47 used 1 times in FUN_18003ab00"),
         "the prompt carries the usage summary as evidence"
+    );
+}
+
+// ------------------------------------------------------------
+// Color palettes
+// ------------------------------------------------------------
+
+#[tokio::test]
+async fn a_color_constant_survives_the_round_trip_and_the_prompt() {
+    // Two color-shaped literals across two functions, each seen once
+    // — far below the repetition bar: the palette finding rides the
+    // persisted document under its own kind tag, answers each using
+    // function's per-function lookup, and renders into the escalate
+    // prompt's CONSTANTS section at the named-constant tier.
+    let workspace = TempDir::new().unwrap();
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  fill(dst, 0x123456);\n",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_18003e750".into(),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(void)",
+            "  fill(dst, 0xff00ff);\n",
+        ),
+    );
+    let result = ConstEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = ConstPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let raw = std::fs::read_to_string(persistor.path_for("eqmain.dll")).expect("read");
+    assert!(raw.contains("\"kind\": \"color_constant\""));
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let palettes: Vec<&ConstFinding> = loaded
+        .findings
+        .iter()
+        .filter(|finding| finding.kind() == "color_constant")
+        .collect();
+    assert_eq!(palettes.len(), 1, "one palette finding per binary");
+    let ConstFinding::ColorConstant(record) = palettes[0] else {
+        unreachable!("the color-shaped values read as a palette finding");
+    };
+    assert_eq!(record.values, vec![0x123456, 0xff00ff]);
+    assert_eq!(
+        record.functions,
+        vec!["FUN_18003ab00".to_string(), "FUN_18003e750".to_string()]
+    );
+    assert_eq!(
+        record.confidence,
+        calxgloss_consts::types::Confidence::new(60)
+    );
+
+    // The palette answers the per-function lookup of every function
+    // that uses one of its colors.
+    for function in ["FUN_18003ab00", "FUN_18003e750"] {
+        let kinds: Vec<&str> = loaded
+            .for_function(function)
+            .map(|finding| finding.kind())
+            .collect();
+        assert_eq!(
+            kinds,
+            ["color_constant"],
+            "the palette answers {function}'s lookup"
+        );
+    }
+
+    let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
+        "FUN_18003ab00".into(),
+        "eqmain.dll".into(),
+        "fn fun_18003ab00() { /* bare integer literals everywhere */ }".into(),
+        "Wrong result".into(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        loaded
+            .for_function("FUN_18003ab00")
+            .map(calxgloss_prompts::ConstInfo::from)
+            .collect(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("the escalate prompt should render");
+
+    assert!(prompt.contains("CONSTANTS"));
+    assert!(
+        prompt.contains(
+            "const COLOR_0x123456: u32 = 0x123456; const COLOR_0xff00ff: u32 = 0xff00ff;"
+        )
+    );
+    assert!(prompt.contains("color_constant, confidence 60"));
+    assert!(
+        prompt.contains("0x123456 used 1 times in FUN_18003ab00"),
+        "the prompt carries the palette summary as evidence"
     );
 }
 

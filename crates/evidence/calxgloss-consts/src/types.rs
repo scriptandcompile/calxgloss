@@ -277,6 +277,50 @@ pub struct ProtocolConstant {
 }
 
 // ============================================================
+// Color palettes
+// ============================================================
+
+/// One color-grouping observation about the whole program — the
+/// color-shaped literals the scan tallied, read as one palette — with
+/// the evidence behind it.
+///
+/// A record says the binary's tallied literals include
+/// [`values`](Self::values) — distinct, ascending, each fitting in 24
+/// bits and none a power of two, so no flag bit reads as a color —
+/// appearing in the functions listed in [`functions`](Self::functions).
+/// It reads like [`suggestion`](Self::suggestion) — a named `const`
+/// per color, `COLOR_<hex>` — and the palette summary is kept as
+/// [`evidence`](Self::evidence) so a reviewer (or a translation
+/// prompt) can check the grouping. There is no color-name matching:
+/// the claim is "these are colors", never "this one is red".
+///
+/// The floor is the honesty bar: at least two distinct qualifying
+/// values must exist in the binary — a lone `0x123456` may be an
+/// offset and claims nothing — and there is at most one record per
+/// binary, so a rescan of one program diffs cleanly.
+///
+/// Like the named constant this one is program-level: it belongs to
+/// every function that uses one of the colors, not to a single one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ColorConstant {
+    /// The palette's distinct color-shaped values, ascending.
+    pub values: Vec<u64>,
+    /// The functions the values appear in, ascending.
+    pub functions: Vec<String>,
+    /// The Rust shape the palette suggests — a named `const` per
+    /// color, e.g. `const COLOR_0x123456: u32 = 0x123456;`.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100. Fixed, at the
+    /// named-constant tier: the shape reading is as suggestive as a
+    /// repeated literal, no stronger.
+    pub confidence: Confidence,
+    /// The palette summary that supports the record — each value's
+    /// count and the functions it appears in — kept so a reviewer (or
+    /// a translation prompt) can check the reasoning.
+    pub evidence: String,
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -306,6 +350,9 @@ pub enum ConstFinding {
     /// A tallied literal matching the built-in table of well-known
     /// protocol/format magics and sentinels.
     ProtocolConstant(ProtocolConstant),
+    /// The color-shaped literals the tally holds, grouped into one
+    /// palette claim for the binary.
+    ColorConstant(ColorConstant),
 }
 
 impl ConstFinding {
@@ -320,6 +367,7 @@ impl ConstFinding {
             ConstFinding::NamedConstant(_) => "",
             ConstFinding::FlagFamily(_) => "",
             ConstFinding::ProtocolConstant(_) => "",
+            ConstFinding::ColorConstant(_) => "",
         }
     }
 
@@ -331,6 +379,7 @@ impl ConstFinding {
             ConstFinding::NamedConstant(record) => &record.suggestion,
             ConstFinding::FlagFamily(record) => &record.suggestion,
             ConstFinding::ProtocolConstant(record) => &record.suggestion,
+            ConstFinding::ColorConstant(record) => &record.suggestion,
         }
     }
 
@@ -342,6 +391,7 @@ impl ConstFinding {
             ConstFinding::NamedConstant(record) => record.confidence,
             ConstFinding::FlagFamily(record) => record.confidence,
             ConstFinding::ProtocolConstant(record) => record.confidence,
+            ConstFinding::ColorConstant(record) => record.confidence,
         }
     }
 
@@ -354,12 +404,13 @@ impl ConstFinding {
             ConstFinding::NamedConstant(record) => &record.evidence,
             ConstFinding::FlagFamily(record) => &record.evidence,
             ConstFinding::ProtocolConstant(record) => &record.evidence,
+            ConstFinding::ColorConstant(record) => &record.evidence,
         }
     }
 
     /// The serde `kind` tag — `bitflag_group`, `enum_candidate`,
-    /// `named_constant`, `flag_family`, or `protocol_constant` —
-    /// naming the reading behind the finding.
+    /// `named_constant`, `flag_family`, `protocol_constant`, or
+    /// `color_constant` — naming the reading behind the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             ConstFinding::BitflagGroup(_) => "bitflag_group",
@@ -367,12 +418,13 @@ impl ConstFinding {
             ConstFinding::NamedConstant(_) => "named_constant",
             ConstFinding::FlagFamily(_) => "flag_family",
             ConstFinding::ProtocolConstant(_) => "protocol_constant",
+            ConstFinding::ColorConstant(_) => "color_constant",
         }
     }
 
     /// What the finding names, spelled for a report row: the group's
-    /// or family's bit mask, the run's value range, or the repeated
-    /// or matched value.
+    /// or family's bit mask, the run's value range, the repeated or
+    /// matched value, or the palette's colors.
     pub fn target(&self) -> String {
         match self {
             ConstFinding::BitflagGroup(record) => format!("{:#x}", record.mask),
@@ -382,6 +434,12 @@ impl ConstFinding {
             ConstFinding::NamedConstant(record) => format!("{:#x}", record.value),
             ConstFinding::FlagFamily(record) => format!("{:#x}", record.mask),
             ConstFinding::ProtocolConstant(record) => format!("{:#x}", record.value),
+            ConstFinding::ColorConstant(record) => record
+                .values
+                .iter()
+                .map(|value| format!("{value:#x}"))
+                .collect::<Vec<String>>()
+                .join(", "),
         }
     }
 }
@@ -418,9 +476,10 @@ impl From<&ConstFinding> for calxgloss_prompts::ConstInfo {
 /// function the bitmask groups then the enum candidates, and after
 /// the per-function findings the program-level records — the named
 /// constants the frequency analyzer tallied across the whole pass,
-/// then the flag families the scan's own groups merged into — each
-/// group internally sorted. The stable order means two scans of the
-/// same program diff cleanly.
+/// then the flag families the scan's own groups merged into, then
+/// the protocol constants the known-magic reading matched, then the
+/// color palette — each group internally sorted. The stable order
+/// means two scans of the same program diff cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConstResult {
     /// Provenance of the scan that produced these findings.
@@ -445,8 +504,9 @@ impl ConstResult {
     /// — a named constant for every function that uses its value, a
     /// flag family for every function that contributed bits, a
     /// protocol constant for every function that uses the matched
-    /// value — is yielded for each of them: the per-function view a
-    /// translation prompt reads.
+    /// value, the color palette for every function that uses one of
+    /// its colors — is yielded for each of them: the per-function
+    /// view a translation prompt reads.
     pub fn for_function(&self, function: &str) -> impl Iterator<Item = &ConstFinding> {
         self.findings
             .iter()
@@ -458,6 +518,9 @@ impl ConstResult {
                 }
                 ConstFinding::FlagFamily(record) => record.functions.iter().any(|f| f == function),
                 ConstFinding::ProtocolConstant(record) => {
+                    record.functions.iter().any(|f| f == function)
+                }
+                ConstFinding::ColorConstant(record) => {
                     record.functions.iter().any(|f| f == function)
                 }
             })
@@ -535,6 +598,20 @@ mod tests {
             confidence: Confidence::new(75),
             evidence: "0xdeadbeef used 1 times in FUN_18003ab00 — table match: DEAD_BEEF_MARKER \
                        (debug sentinel value)"
+                .into(),
+        }
+    }
+
+    fn color_constant() -> ColorConstant {
+        ColorConstant {
+            values: vec![0x123456, 0xff00ff],
+            functions: vec!["FUN_18003ab00".into(), "FUN_18003e750".into()],
+            suggestion: "const COLOR_0x123456: u32 = 0x123456; const COLOR_0xff00ff: u32 = \
+                         0xff00ff;"
+                .into(),
+            confidence: Confidence::new(60),
+            evidence: "0x123456 used 2 times in FUN_18003ab00; 0xff00ff used 1 times in \
+                       FUN_18003e750"
                 .into(),
         }
     }
@@ -648,6 +725,29 @@ mod tests {
     }
 
     #[test]
+    fn a_color_constant_serde_round_trips() {
+        let record = color_constant();
+        let json = serde_json::to_string(&record).expect("color-constant record should serialize");
+        assert!(json.contains("\"values\":[1193046,16711935]"));
+        assert!(json.contains("\"confidence\":60"));
+        let back: ColorConstant =
+            serde_json::from_str(&json).expect("color-constant record should read back");
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn a_color_constant_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = ConstFinding::ColorConstant(color_constant());
+        let json =
+            serde_json::to_string(&finding).expect("color-constant finding should serialize");
+        assert!(json.contains("\"kind\":\"color_constant\""));
+        assert!(json.contains("\"values\":[1193046,16711935]"));
+        let back: ConstFinding =
+            serde_json::from_str(&json).expect("color-constant finding should read back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
     fn a_context_name_renders_the_named_const_form() {
         // When the bodies named the value, the suggestion reads like
         // the code that uses it.
@@ -722,6 +822,7 @@ mod tests {
             ConstFinding::NamedConstant(named_constant()),
             ConstFinding::FlagFamily(flag_family()),
             ConstFinding::ProtocolConstant(protocol_constant()),
+            ConstFinding::ColorConstant(color_constant()),
         ];
         let kinds: Vec<&str> = findings.iter().map(|f| f.kind()).collect();
         assert_eq!(
@@ -732,12 +833,20 @@ mod tests {
                 "named_constant",
                 "flag_family",
                 "protocol_constant",
+                "color_constant",
             ]
         );
         let targets: Vec<String> = findings.iter().map(|f| f.target()).collect();
         assert_eq!(
             targets,
-            vec!["0x500", "0..=3", "0x400", "0xd00", "0xdeadbeef"]
+            vec![
+                "0x500",
+                "0..=3",
+                "0x400",
+                "0xd00",
+                "0xdeadbeef",
+                "0x123456, 0xff00ff",
+            ]
         );
         for finding in &findings {
             assert!(!finding.suggestion().is_empty());
@@ -748,9 +857,11 @@ mod tests {
         assert_eq!(findings[2].function(), "");
         assert_eq!(findings[3].function(), "");
         assert_eq!(findings[4].function(), "");
+        assert_eq!(findings[5].function(), "");
         assert_eq!(findings[2].confidence(), Confidence::new(60));
         assert_eq!(findings[3].confidence(), Confidence::new(80));
         assert_eq!(findings[4].confidence(), Confidence::new(75));
+        assert_eq!(findings[5].confidence(), Confidence::new(60));
     }
 
     #[test]
@@ -802,6 +913,10 @@ mod tests {
             functions: vec!["FUN_18003e750".into(), "FUN_180099998".into()],
             ..protocol_constant()
         });
+        let palette = ConstFinding::ColorConstant(ColorConstant {
+            functions: vec!["FUN_18003e750".into(), "FUN_180099998".into()],
+            ..color_constant()
+        });
         let unrelated = ConstFinding::EnumCandidate(EnumCandidate {
             function: "FUN_180099999".into(),
             ..enum_candidate()
@@ -813,15 +928,17 @@ mod tests {
                 named.clone(),
                 family.clone(),
                 protocol.clone(),
+                palette.clone(),
                 unrelated,
             ],
         };
         let found: Vec<&ConstFinding> = result.for_function("FUN_18003e750").collect();
-        assert_eq!(found, vec![&other, &named, &family, &protocol]);
+        assert_eq!(found, vec![&other, &named, &family, &protocol, &palette]);
         assert_eq!(
             result.for_function("FUN_180099998").collect::<Vec<_>>(),
-            vec![&family, &protocol],
-            "the family and the protocol constant answer the lookup of every contributor"
+            vec![&family, &protocol, &palette],
+            "the family, the protocol constant, and the palette answer \
+             the lookup of every contributor"
         );
         assert!(result.for_function("FUN_180099997").next().is_none());
         assert!(!result.is_empty());
@@ -863,5 +980,16 @@ mod tests {
         assert_eq!(info.confidence, 75);
         assert_eq!(info.suggestion, "const DEAD_BEEF_MARKER: u32 = 0xdeadbeef;");
         assert!(info.evidence.contains("DEAD_BEEF_MARKER"));
+
+        let palette = ConstFinding::ColorConstant(color_constant());
+        let info = calxgloss_prompts::ConstInfo::from(&palette);
+        assert_eq!(info.function, "");
+        assert_eq!(info.kind, "color_constant");
+        assert_eq!(info.confidence, 60);
+        assert_eq!(
+            info.suggestion,
+            "const COLOR_0x123456: u32 = 0x123456; const COLOR_0xff00ff: u32 = 0xff00ff;"
+        );
+        assert!(info.evidence.contains("0x123456 used 2 times"));
     }
 }

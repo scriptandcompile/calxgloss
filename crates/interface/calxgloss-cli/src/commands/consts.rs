@@ -102,6 +102,7 @@ fn print_constant_report(result: &ConstResult, path: &Path) {
         "named_constant",
         "flag_family",
         "protocol_constant",
+        "color_constant",
     ]
     .into_iter()
     .map(|kind| {

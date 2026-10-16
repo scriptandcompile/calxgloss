@@ -22,11 +22,14 @@
 //! of well-known protocol/format magics and sentinels, appending one
 //! named `protocol_constant` finding per matched value after the
 //! families; the frequency pass skips matched values so each lands
-//! exactly once. No bodies kept, no new reads. The scan is one
-//! sequential pass over the function listing — like sync, there is
-//! nothing to resolve between the detectors, they read disjoint
-//! shapes — and keeping the pass sequential keeps the persisted
-//! finding list in a stable, diffable order.
+//! exactly once. The color-grouping reading (`color`) then groups
+//! the color-shaped values the tally still holds — ≤ 24-bit, not
+//! powers of two — into at most one program-level `color_constant`
+//! palette finding, appended last. No bodies kept, no new reads. The
+//! scan is one sequential pass over the function listing — like
+//! sync, there is nothing to resolve between the detectors, they
+//! read disjoint shapes — and keeping the pass sequential keeps the
+//! persisted finding list in a stable, diffable order.
 
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -35,6 +38,7 @@ use calxgloss_ghidra::GhidraClient;
 use tracing::{info, warn};
 
 use crate::bitmask::BitmaskDetector;
+use crate::color::color_palette;
 use crate::error::Result;
 use crate::flag_family::merge_families;
 use crate::frequency::{FrequencyAnalyzer, ProgramTally};
@@ -130,11 +134,13 @@ impl<S> ConstEngine<S> {
     /// the flag families the scan's own bitflag groups merged into —
     /// groups sharing at least one bit, transitively — then the
     /// protocol constants the known-magic reading matched against the
-    /// full tally before the frequency threshold applied, each
-    /// internally sorted, so two scans of the same program diff
-    /// cleanly and name their constants identically. A value the
-    /// protocol table matches lands only as its protocol finding: the
-    /// frequency pass skips matched values.
+    /// full tally before the frequency threshold applied, then the
+    /// one color palette the color-grouping reading grouped from the
+    /// remaining color-shaped values, each internally sorted, so two
+    /// scans of the same program diff cleanly and name their
+    /// constants identically. A value the protocol table matches
+    /// lands only as its protocol finding: the frequency pass skips
+    /// matched values, and so does the color reading.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad
     /// entry point) is skipped with a warning; only a failure of the
@@ -251,6 +257,11 @@ impl<S> ConstEngine<S> {
                 .map(ConstFinding::FlagFamily),
         );
         findings.extend(protocol.into_iter().map(ConstFinding::ProtocolConstant));
+        // The color reading groups the color-shaped values the tally
+        // still holds: a protocol-matched value already carries its
+        // strictly stronger claim, so it never joins a palette, and
+        // the palette lands last among the program-level findings.
+        findings.extend(color_palette(&frequency_tally).map(ConstFinding::ColorConstant));
         let mut metadata = ScanMetadata::new(binary);
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
@@ -492,6 +503,20 @@ mod tests {
             .iter()
             .filter_map(|finding| match finding {
                 ConstFinding::ProtocolConstant(record) => Some(record),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The scan's palette findings — at most one per binary. Named
+    /// apart from the crate's `color_palette` matcher so the test
+    /// module's glob import cannot shadow it.
+    fn color_findings(result: &ConstResult) -> Vec<&crate::types::ColorConstant> {
+        result
+            .findings
+            .iter()
+            .filter_map(|finding| match finding {
+                ConstFinding::ColorConstant(record) => Some(record),
                 _ => None,
             })
             .collect()
@@ -839,6 +864,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn two_palette_literals_across_two_functions_yield_one_color_finding() {
+        // FUN_a carries 0x123456 and FUN_b carries 0xff00ff, each in
+        // a call argument, each seen once — far below the repetition
+        // bar: the color reading groups the two color-shaped values
+        // off the tally into exactly one program-level palette
+        // naming both values and both functions, and the finding
+        // answers each using function's per-function lookup.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  fill(dst, 0x123456);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  fill(dst, 0xff00ff);\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let records = color_findings(&result);
+        assert_eq!(records.len(), 1, "one palette finding per binary");
+        let record = records[0];
+        assert_eq!(record.values, vec![0x123456, 0xff00ff]);
+        assert_eq!(
+            record.functions,
+            vec!["FUN_18003ab00".to_string(), "FUN_18003e750".to_string()]
+        );
+        assert_eq!(
+            record.suggestion,
+            "const COLOR_0x123456: u32 = 0x123456; const COLOR_0xff00ff: u32 = 0xff00ff;"
+        );
+        assert_eq!(record.confidence, Confidence::new(60));
+        assert!(
+            record
+                .evidence
+                .contains("0x123456 used 1 times in FUN_18003ab00")
+        );
+        assert!(
+            record
+                .evidence
+                .contains("0xff00ff used 1 times in FUN_18003e750")
+        );
+
+        // The palette answers the per-function lookup of every
+        // function that uses one of its colors.
+        assert_eq!(kinds(&result, "FUN_18003ab00"), ["color_constant"]);
+        assert_eq!(kinds(&result, "FUN_18003e750"), ["color_constant"]);
+    }
+
+    #[tokio::test]
+    async fn a_table_magic_that_is_color_shape_claims_no_palette() {
+        // 0xc0ffee is both a table sentinel and 24-bit-shaped: the
+        // protocol claim is strictly stronger, so the matched value
+        // never joins a palette — and one remaining color-shaped
+        // value alone is below the floor, so no palette forms.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  if (marker == 0xc0ffee) {\n    log();\n  }\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  fill(dst, 0x123456);\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        assert_eq!(protocol_findings(&result).len(), 1, "the magic reports");
+        assert!(
+            color_findings(&result).is_empty(),
+            "the matched magic never reads as a color, and the lone \
+             remaining value claims nothing"
+        );
+    }
+
+    #[tokio::test]
     async fn scan_collects_findings_from_all_three_detectors() {
         let result = scan(program()).await;
 
@@ -846,7 +963,7 @@ mod tests {
         assert!(result.metadata.scanned_at > 0);
 
         let findings: Vec<&ConstFinding> = result.for_function("FUN_18003ab00").collect();
-        assert_eq!(findings.len(), 3);
+        assert_eq!(findings.len(), 4);
 
         let ConstFinding::BitflagGroup(group) = findings[0] else {
             unreachable!("the flag bits read as a bitflag finding");
@@ -871,8 +988,17 @@ mod tests {
         assert_eq!(constant.count, 3);
         assert_eq!(constant.confidence, Confidence::new(60));
 
-        // The named constant belongs to both functions that use it.
-        assert_eq!(kinds(&result, "FUN_18003e750"), ["named_constant"]);
+        let ConstFinding::ColorConstant(palette) = findings[3] else {
+            unreachable!("the color-shaped literals read as a palette finding");
+        };
+        assert_eq!(palette.values, vec![3, 0x280]);
+
+        // The named constant and the palette belong to both functions
+        // that use their values.
+        assert_eq!(
+            kinds(&result, "FUN_18003e750"),
+            ["named_constant", "color_constant"]
+        );
     }
 
     #[tokio::test]
@@ -883,7 +1009,8 @@ mod tests {
         // and append the program-level findings after them: the named
         // constants, then the flag family the two identical groups
         // merge into, then the protocol constant the magic matched,
-        // never interleaved.
+        // then the color palette the color reading grouped, never
+        // interleaved.
         let mut program = program();
         program.listing = vec![summary("FUN_18003e750"), summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -913,6 +1040,7 @@ mod tests {
                 ("", "named_constant"),
                 ("", "flag_family"),
                 ("", "protocol_constant"),
+                ("", "color_constant"),
             ]
         );
     }

@@ -386,6 +386,46 @@ mod tests {
     }
 
     #[test]
+    fn color_constant_findings_survive_the_round_trip() {
+        let dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let persistor = ConstPersistor::new(dir.path());
+
+        let mut result = ConstResult::new(ScanMetadata::new("eqmain.dll"));
+        result
+            .findings
+            .push(crate::types::ConstFinding::ColorConstant(
+                crate::types::ColorConstant {
+                    values: vec![0x123456, 0xff00ff],
+                    functions: vec!["StartWorker".to_string(), "DrawSprite".to_string()],
+                    suggestion:
+                        "const COLOR_0x123456: u32 = 0x123456; const COLOR_0xff00ff: u32 = \
+                                 0xff00ff;"
+                            .to_string(),
+                    confidence: Confidence::new(60),
+                    evidence: "0x123456 used 2 times in DrawSprite; 0xff00ff used 1 times in \
+                               StartWorker"
+                        .to_string(),
+                },
+            ));
+        persistor
+            .save(&result)
+            .expect("result should save to the workspace");
+
+        let loaded = persistor
+            .load("eqmain.dll")
+            .expect("result should load from the workspace");
+        assert_eq!(loaded, result, "the palette finding round-trips exactly");
+        match &loaded.findings[0] {
+            crate::types::ConstFinding::ColorConstant(c) => {
+                assert_eq!(c.values, vec![0x123456, 0xff00ff]);
+                assert_eq!(c.functions, vec!["StartWorker", "DrawSprite"]);
+                assert_eq!(c.confidence, Confidence::new(60));
+            }
+            other => panic!("expected a color-constant finding, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn a_named_constant_with_a_context_name_survives_the_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let persistor = ConstPersistor::new(dir.path());
