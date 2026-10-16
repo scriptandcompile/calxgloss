@@ -1,16 +1,18 @@
-//! FFI bindings rendered from the persisted API detection result.
+//! Rendered artifacts derived from the persisted API detection result.
 //!
-//! [`render_ffi_bindings`] turns an [`ApiDetectionResult`] into one Rust
-//! source string: every import the mapping database could **not** replace
-//! with a crate gets an `extern "system"` declaration a reviewer can read
-//! side by side with the JSON. The renderer is pure — data in, string
-//! out — and deterministic: it walks the findings in scan order, groups
-//! them by library when the entry knows one, and stamps no timestamp, so
-//! two renders of the same document are byte-identical and a rescan
-//! produces a reviewable diff, not churn.
+//! Two pure render functions turn an [`ApiDetectionResult`] into reviewable
+//! files a reviewer reads side by side with the JSON:
+//! [`render_ffi_bindings`] emits one Rust source string — every import the
+//! mapping database could **not** replace with a crate gets an
+//! `extern "system"` declaration — and [`render_dependency_manifest`]
+//! emits one Cargo.toml-style manifest aggregating every crate the
+//! identified findings suggest. Both renderers are pure — data in, string
+//! out — and deterministic: they stamp no timestamp, so two renders of the
+//! same document are byte-identical and a rescan produces a reviewable
+//! diff, not churn.
 //!
-//! The rendering rules (ADR-0013's derived-rendered-artifact pattern,
-//! applied to API findings):
+//! The bindings rendering rules (ADR-0013's derived-rendered-artifact
+//! pattern, applied to API findings):
 //!
 //! - **Only imports with no crate replacement are declared.** An
 //!   identified import already names the crate standing in for it — the
@@ -33,11 +35,25 @@
 //!   crate-less imports — an empty result included — renders an empty
 //!   string: no header, no empty block, no noise in the diff.
 //!
-//! The output is a *derived artifact*: regenerated from the loaded
+//! The manifest rendering rules, same pattern:
+//!
+//! - **Crates aggregated once, sorted.** Every identified finding names
+//!   the crate standing in for it — import entries and the usage entries
+//!   that repeat them — and the manifest lists each crate exactly once,
+//!   the entries sorted by crate name so rescans diff cleanly.
+//! - **Feature flags inlined, no versions.** A crate whose findings
+//!   carried feature flags renders as `name = { features = [...] }`, the
+//!   flags merged across the findings and sorted; a crate none flagged
+//!   renders as an empty table. The scan never verifies a crate version,
+//!   so the manifest never dresses an unverified version up as fact.
+//! - **Unidentified imports contribute nothing**, and a result with no
+//!   identified crate — an empty result included — renders nothing.
+//!
+//! The outputs are *derived artifacts*: regenerated from the loaded
 //! document beside the JSON it came from, and never read back — the JSON
 //! stays the single source of truth.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::types::{ApiDetectionResult, ApiFinding, ApiSignature};
 
@@ -166,6 +182,74 @@ fn unique_name(base: &str, taken: &mut HashSet<String>) -> String {
     }
 }
 
+/// Render the crates the identified findings suggest as one
+/// Cargo.toml-style dependency manifest.
+///
+/// Every crate appears exactly once however many findings name it — the
+/// import entry and the usage entries that repeat it all stand for the
+/// same dependency — and the entries are sorted by crate name, with the
+/// feature flags the findings carried merged onto the crate and sorted.
+/// No version is claimed anywhere: the scan never verifies a crate
+/// version, so the manifest never dresses one up as fact. Nothing
+/// volatile (timestamps, counts) is written, so the same document always
+/// renders to the same bytes. A result with no identified crate renders
+/// nothing: an empty string, not a header-only file.
+pub fn render_dependency_manifest(result: &ApiDetectionResult) -> String {
+    // Aggregate over every finding that names a crate — the union
+    // accessors keep unidentified imports, divergence claims, and COM
+    // claims out — keyed in a sorted map so the block renders in crate
+    // order, each crate's feature flags unioned and sorted the same way.
+    let mut crates: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for finding in &result.findings {
+        if let Some(krate) = finding.rust_crate() {
+            let features = crates.entry(krate).or_default();
+            features.extend(finding.features().iter().map(String::as_str));
+        }
+    }
+    if crates.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "# Dependency manifest for {}, rendered by `calxgloss apidetect`.\n\
+         # Derived artifact: regenerated from the API detection result on\n\
+         # every scan — edit the result, never this file.\n\
+         # No versions are claimed: the scan never verifies crate versions.\n\n\
+         [dependencies]\n",
+        result.metadata.binary
+    ));
+    for (krate, features) in &crates {
+        let key = toml_key(krate);
+        if features.is_empty() {
+            out.push_str(&format!("{key} = {{}}\n"));
+        } else {
+            let flags: Vec<String> = features.iter().map(|flag| format!("\"{flag}\"")).collect();
+            out.push_str(&format!(
+                "{key} = {{ features = [{}] }}\n",
+                flags.join(", ")
+            ));
+        }
+    }
+    out
+}
+
+/// Spell a crate suggestion as a TOML key: bare when the spelling is
+/// already a bare key, quoted when it carries spaces or colons — the
+/// builtin table's multi-crate suggestions (`windows / std::fs`,
+/// `image / png`) need quotes, plain crate names (`flate2`) do not.
+fn toml_key(krate: &str) -> String {
+    let bare = !krate.is_empty()
+        && krate
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if bare {
+        krate.to_string()
+    } else {
+        format!("\"{krate}\"")
+    }
+}
+
 // ============================================================
 // Tests
 // ============================================================
@@ -173,7 +257,7 @@ fn unique_name(base: &str, taken: &mut HashSet<String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{PlatformDivergence, ScanMetadata};
+    use crate::types::{ApiUsage, ComInterface, PlatformDivergence, ScanMetadata};
     use calxgloss_types::Confidence;
 
     fn result_with(findings: Vec<ApiFinding>) -> ApiDetectionResult {
@@ -212,6 +296,42 @@ mod tests {
             category: None,
             features: Vec::new(),
             confidence: Confidence::new(0),
+        })
+    }
+
+    fn mapped_import_with_features(
+        api: &str,
+        library: &str,
+        rust_crate: &str,
+        features: &[&str],
+    ) -> ApiFinding {
+        ApiFinding::Import(ApiSignature {
+            api: api.into(),
+            library: Some(library.into()),
+            rust_crate: Some(rust_crate.into()),
+            category: None,
+            features: features
+                .iter()
+                .map(|feature| (*feature).to_string())
+                .collect(),
+            confidence: Confidence::new(90),
+        })
+    }
+
+    fn usage(api: &str, rust_crate: &str, features: &[&str]) -> ApiFinding {
+        ApiFinding::ApiUsage(ApiUsage {
+            function: "FUN_18003ab00".into(),
+            api: api.into(),
+            library: "zlib".into(),
+            rust_crate: rust_crate.into(),
+            category: None,
+            features: features
+                .iter()
+                .map(|feature| (*feature).to_string())
+                .collect(),
+            direct: true,
+            confidence: Confidence::new(90),
+            evidence: format!("FUN_18003ab00 → {api}"),
         })
     }
 
@@ -434,5 +554,154 @@ extern \"system\" {
 ";
 
         assert_eq!(render_ffi_bindings(&result), expected);
+    }
+
+    // --------------------------------------------------------
+    // render_dependency_manifest
+    // --------------------------------------------------------
+
+    #[test]
+    fn identified_findings_aggregate_into_one_sorted_version_free_block() {
+        // The golden render: header, the sorted `[dependencies]` block
+        // with features inlined where the finding carried them, and a
+        // quoted key for the spaced suggestion — pinned byte for byte so
+        // any formatting change shows up as a diff.
+        let result = result_with(vec![
+            mapped_import_with_features("inflate", "zlib", "flate2", &["zlib"]),
+            mapped_import("CreateFileA", "Win32", "windows / std::fs"),
+            import("VendorSpecialFunction"),
+            usage("inflate", "flate2", &["zlib"]),
+        ]);
+
+        let expected = "\
+# Dependency manifest for eqmain.dll, rendered by `calxgloss apidetect`.
+# Derived artifact: regenerated from the API detection result on
+# every scan — edit the result, never this file.
+# No versions are claimed: the scan never verifies crate versions.
+
+[dependencies]
+flate2 = { features = [\"zlib\"] }
+\"windows / std::fs\" = {}
+";
+
+        assert_eq!(render_dependency_manifest(&result), expected);
+    }
+
+    #[test]
+    fn crates_are_aggregated_once_across_findings() {
+        // The import entry and every usage entry that repeats it all name
+        // the same crate — the manifest lists it once.
+        let result = result_with(vec![
+            mapped_import("inflate", "zlib", "flate2"),
+            mapped_import("deflate", "zlib", "flate2"),
+            usage("inflate", "flate2", &[]),
+            usage("deflate", "flate2", &[]),
+        ]);
+
+        let rendered = render_dependency_manifest(&result);
+
+        assert_eq!(rendered.matches("flate2").count(), 1, "{rendered}");
+    }
+
+    #[test]
+    fn feature_flags_are_inlined_merged_and_deduped_across_findings() {
+        // Two findings of the same crate carry overlapping feature lists
+        // — the manifest merges them, deduped and sorted, onto the one
+        // entry; a crate no finding flagged renders as an empty table.
+        let result = result_with(vec![
+            mapped_import_with_features("png_read_info", "PNG", "image / png", &["png"]),
+            mapped_import_with_features(
+                "png_write_image",
+                "PNG",
+                "image / png",
+                &["color_quant", "png"],
+            ),
+        ]);
+
+        let rendered = render_dependency_manifest(&result);
+
+        assert!(
+            rendered.contains("\"image / png\" = { features = [\"color_quant\", \"png\"] }"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn no_versions_are_claimed_anywhere() {
+        // The honesty rule: the scan never verifies a crate version, so
+        // the manifest never dresses one up as fact — no version key, no
+        // version string, nothing.
+        let result = result_with(vec![
+            mapped_import_with_features("inflate", "zlib", "flate2", &["zlib"]),
+            mapped_import("CreateFileA", "Win32", "windows / std::fs"),
+        ]);
+
+        let rendered = render_dependency_manifest(&result);
+
+        let body = rendered.split("[dependencies]").nth(1).unwrap_or_default();
+        assert!(!body.contains("version"), "{rendered}");
+        assert!(!body.contains("= \""), "no version string: {rendered}");
+        assert!(!body.contains("= '"), "no version string: {rendered}");
+    }
+
+    #[test]
+    fn unidentified_imports_and_structural_claims_contribute_nothing() {
+        // Only identified findings name crates — an unidentified import
+        // has no crate to contribute, and the divergence and COM claims
+        // suggest shapes, not crates.
+        let mut result = result_with(vec![import("VendorSpecialFunction")]);
+        result
+            .findings
+            .push(ApiFinding::PlatformDivergence(PlatformDivergence {
+                families: vec!["Win32Core".into(), "POSIX".into()],
+                evidence: "CreateFileA (Win32Core), fopen (POSIX)".into(),
+                confidence: Confidence::new(70),
+            }));
+        result.findings.push(ApiFinding::ComInterface(ComInterface {
+            interface: Some("IDataSource".into()),
+            methods: vec!["QueryInterface".into()],
+            evidence: "?QueryInterface@IDataSource@@UEAAJPEAXPEAPEAX@Z".into(),
+            confidence: Confidence::new(70),
+        }));
+
+        assert_eq!(render_dependency_manifest(&result), "");
+    }
+
+    #[test]
+    fn an_empty_result_renders_no_manifest() {
+        assert_eq!(render_dependency_manifest(&result_with(Vec::new())), "");
+    }
+
+    #[test]
+    fn two_manifest_renders_of_the_same_result_are_byte_identical() {
+        let result = result_with(vec![
+            mapped_import_with_features("png_read_info", "PNG", "image / png", &["png"]),
+            mapped_import("CreateFileA", "Win32", "windows / std::fs"),
+            import("VendorSpecialFunction"),
+            usage("png_read_info", "image / png", &["png"]),
+        ]);
+
+        assert_eq!(
+            render_dependency_manifest(&result),
+            render_dependency_manifest(&result)
+        );
+    }
+
+    #[test]
+    fn the_manifest_header_names_only_the_binary_never_the_scan_time() {
+        let result = result_with(vec![mapped_import("inflate", "zlib", "flate2")]);
+        let rendered = render_dependency_manifest(&result);
+
+        assert!(
+            rendered.starts_with(
+                "# Dependency manifest for eqmain.dll, rendered by `calxgloss apidetect`.\n"
+            ),
+            "{rendered}"
+        );
+        let header = rendered.split("[dependencies]").next().unwrap_or_default();
+        assert!(
+            !header.chars().any(|c| c.is_ascii_digit()),
+            "the header names no timestamp: {header}"
+        );
     }
 }

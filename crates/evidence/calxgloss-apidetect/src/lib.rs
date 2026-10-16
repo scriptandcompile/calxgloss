@@ -56,12 +56,16 @@
 //!   that keeps the findings in scan order.
 //! - [`persist`] - JSON persistence: `ApiPersistor` saves and loads the
 //!   per-binary detection results under `re/analysis/apidetect/`, and
-//!   files the rendered FFI bindings beside each JSON document.
-//! - [`ffi_bindings`] - FFI bindings artifact: `render_ffi_bindings`
-//!   turns a loaded detection result into a Rust source string declaring
-//!   every crate-less import as an `extern "system"` function, grouped
-//!   by library when known — a deterministic, timestamp-free derived
-//!   artifact that is never read back.
+//!   files the rendered FFI bindings and dependency manifest beside each
+//!   JSON document.
+//! - [`ffi_bindings`] - Rendered artifacts: `render_ffi_bindings` turns
+//!   a loaded detection result into a Rust source string declaring every
+//!   crate-less import as an `extern "system"` function, grouped by
+//!   library when known, and `render_dependency_manifest` turns it into
+//!   a Cargo.toml-style manifest aggregating the identified findings'
+//!   crates — sorted, feature flags inlined, no versions claimed — both
+//!   deterministic, timestamp-free derived artifacts that are never
+//!   read back.
 //! - [`error`] - [`ApiError`] and the crate-wide [`Result`] alias.
 
 pub mod api_summary;

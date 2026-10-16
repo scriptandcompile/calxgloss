@@ -6,7 +6,8 @@
 //! ```text
 //! re/analysis/apidetect/
 //!     └── {binary}.json
-//!     └── {binary}.rs   (derived: rendered FFI bindings, never read back)
+//!     └── {binary}.rs    (derived: rendered FFI bindings, never read back)
+//!     └── {binary}.toml  (derived: rendered dependency manifest, never read back)
 //! ```
 //!
 //! A persisted result doubles as a cache: [`exists`](Self::exists) is
@@ -155,6 +156,37 @@ impl ApiPersistor {
             std::fs::create_dir_all(parent)?;
         }
         info!(path = %path.display(), "Writing FFI bindings");
+        std::fs::write(&path, content)?;
+        Ok(())
+    }
+
+    /// Returns the path the rendered dependency manifest for `binary` is
+    /// filed under — the JSON document's path with a `.toml` extension,
+    /// so the two artifacts always sit side by side.
+    pub fn manifest_path_for(&self, binary: &str) -> PathBuf {
+        self.path_for(binary).with_extension("toml")
+    }
+
+    /// Whether a rendered dependency manifest is persisted for `binary`.
+    pub fn manifest_exists(&self, binary: &str) -> bool {
+        self.manifest_path_for(binary).is_file()
+    }
+
+    /// Writes the rendered dependency manifest beside the JSON document.
+    ///
+    /// The file is a derived artifact like the bindings: it is rewritten
+    /// whole from the loaded result on every scan and never read back,
+    /// so a rescan that changes nothing leaves a byte-identical file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if directory creation or file I/O fails.
+    pub fn save_manifest(&self, binary: &str, content: &str) -> Result<()> {
+        let path = self.manifest_path_for(binary);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        info!(path = %path.display(), "Writing dependency manifest");
         std::fs::write(&path, content)?;
         Ok(())
     }
@@ -348,6 +380,42 @@ mod tests {
         assert!(
             !persistor.bindings_exists("renderer.dll"),
             "other binaries keep their own bindings"
+        );
+    }
+
+    #[test]
+    fn save_manifest_files_the_manifest_beside_the_json() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let persistor = ApiPersistor::new(dir.path());
+
+        persistor
+            .save_manifest("eqmain.dll", "[dependencies]\n")
+            .expect("manifest save should succeed");
+
+        let expected = dir
+            .path()
+            .join("re")
+            .join("analysis")
+            .join("apidetect")
+            .join("eqmain.dll.toml");
+        assert_eq!(persistor.manifest_path_for("eqmain.dll"), expected);
+        let text = std::fs::read_to_string(&expected).expect("manifest should be readable");
+        assert_eq!(text, "[dependencies]\n");
+    }
+
+    #[test]
+    fn manifest_exists_tracks_whether_the_manifest_is_persisted() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let persistor = ApiPersistor::new(dir.path());
+
+        assert!(!persistor.manifest_exists("eqmain.dll"));
+        persistor
+            .save_manifest("eqmain.dll", "[dependencies]\n")
+            .expect("manifest save should succeed");
+        assert!(persistor.manifest_exists("eqmain.dll"));
+        assert!(
+            !persistor.manifest_exists("renderer.dll"),
+            "other binaries keep their own manifest"
         );
     }
 

@@ -20,12 +20,16 @@
 //! - **FFI bindings artifact** — the loaded document re-renders into a
 //!   byte-identical bindings file declaring the crate-less imports, and
 //!   two separate scans render the same bytes.
+//! - **Dependency manifest artifact** — the loaded document re-renders
+//!   into a byte-identical Cargo.toml-style manifest aggregating the
+//!   identified findings' crates once, sorted, with the persisted
+//!   feature flags inlined and no versions claimed.
 //!
 //! The fake program implements [`ScanSource`] and [`CallGraphSource`], so
 //! the whole flow runs without a Ghidra server.
 
 use calxgloss_apidetect::engine::{ApiEngine, CallGraphSource, ScanSource};
-use calxgloss_apidetect::ffi_bindings::render_ffi_bindings;
+use calxgloss_apidetect::ffi_bindings::{render_dependency_manifest, render_ffi_bindings};
 use calxgloss_apidetect::persist::ApiPersistor;
 use calxgloss_apidetect::types::ApiFinding;
 use calxgloss_callgraph::{CallGraphEdge, CallType, FunctionCallGraph};
@@ -653,6 +657,91 @@ async fn two_separate_scans_render_byte_identical_bindings() {
     assert_eq!(first, second);
     assert!(
         first.starts_with("// FFI bindings for eqmain.dll, rendered by `calxgloss apidetect`.\n"),
+        "{first}"
+    );
+}
+
+// ------------------------------------------------------------
+// Dependency manifest artifact
+// ------------------------------------------------------------
+
+#[tokio::test]
+async fn the_dependency_manifest_artifact_regenerates_deterministically_from_a_loaded_document_carrying_feature_flags()
+ {
+    // The JSON stays the single source of truth: the manifest is
+    // re-rendered from the loaded document — feature flags and all —
+    // byte-identically, and nothing reads it back.
+    let workspace = TempDir::new().unwrap();
+    let persistor = ApiPersistor::new(workspace.path());
+    let result = ApiEngine::with_source(program())
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let first = render_dependency_manifest(&loaded);
+    let second = render_dependency_manifest(&loaded);
+    assert_eq!(
+        first, second,
+        "two renders of the same document are byte-identical"
+    );
+
+    // The whole file pinned verbatim: the zlib feature flag survived
+    // persistence and rides its crate, the entries are sorted, and the
+    // multi-crate suggestions render as quoted TOML keys.
+    let expected = "\
+# Dependency manifest for eqmain.dll, rendered by `calxgloss apidetect`.
+# Derived artifact: regenerated from the API detection result on
+# every scan — edit the result, never this file.
+# No versions are claimed: the scan never verifies crate versions.
+
+[dependencies]
+flate2 = { features = [\"zlib\"] }
+\"std::fs / std::io\" = {}
+\"windows / std::fs\" = {}
+";
+    assert_eq!(first, expected);
+
+    // The import entry and the usage entries all name flate2 — the
+    // manifest aggregates it once.
+    assert_eq!(first.matches("flate2").count(), 1, "{first}");
+
+    // The unidentified imports — the vendor function and the decorated
+    // COM names — suggest no crates and contribute nothing.
+    assert!(!first.contains("VendorSpecialFunction"), "{first}");
+    assert!(!first.contains("QueryInterface"), "{first}");
+
+    // No version is claimed anywhere in the dependency block.
+    let body = first.split("[dependencies]").nth(1).unwrap_or_default();
+    assert!(!body.contains("version"), "{first}");
+    assert!(!body.contains("= \""), "no version string: {first}");
+}
+
+#[tokio::test]
+async fn two_separate_scans_render_byte_identical_manifests() {
+    // The promise a reviewer leans on: rescanning the program and
+    // re-rendering changes only what the scan actually learned, never
+    // the renderer's own ordering or formatting — and the header names
+    // only the binary, never either scan time.
+    let first = render_dependency_manifest(
+        &ApiEngine::with_source(program())
+            .scan("eqmain.dll")
+            .await
+            .expect("first scan"),
+    );
+    let second = render_dependency_manifest(
+        &ApiEngine::with_source(program())
+            .scan("eqmain.dll")
+            .await
+            .expect("second scan"),
+    );
+
+    assert_eq!(first, second);
+    assert!(
+        first.starts_with(
+            "# Dependency manifest for eqmain.dll, rendered by `calxgloss apidetect`.\n"
+        ),
         "{first}"
     );
 }
