@@ -17,6 +17,10 @@
 //! - **Prompt rendering** — the loaded findings render into `ConstInfo`
 //!   prompt data and the escalate prompt carries the CONSTANTS section,
 //!   the repeated literal's context-named `const` form included.
+//! - **Codegen artifact** — the loaded result re-renders to a
+//!   byte-identical Rust source string, every finding kind included,
+//!   and nothing reads the generated file back: the JSON stays the
+//!   single source of truth.
 //! - **Cache behavior** — the `exists` check decides whether a scan
 //!   runs, and a rescan replaces the cached document.
 //!
@@ -25,6 +29,7 @@
 
 use std::collections::HashMap;
 
+use calxgloss_consts::codegen::render_codegen;
 use calxgloss_consts::engine::{ConstEngine, ScanSource};
 use calxgloss_consts::persist::ConstPersistor;
 use calxgloss_consts::types::ConstFinding;
@@ -737,6 +742,170 @@ async fn a_color_constant_survives_the_round_trip_and_the_prompt() {
     assert!(
         prompt.contains("0x123456 used 1 times in FUN_18003ab00"),
         "the prompt carries the palette summary as evidence"
+    );
+}
+
+// ------------------------------------------------------------
+// Codegen artifact
+// ------------------------------------------------------------
+
+#[tokio::test]
+async fn the_codegen_render_regenerates_byte_identically_from_a_loaded_document() {
+    // The JSON stays the single source of truth: the artifact is
+    // re-rendered from the loaded document, byte-identically, and
+    // nothing reads it back.
+    let workspace = TempDir::new().expect("workspace");
+    let persistor = ConstPersistor::new(workspace.path());
+    let result = ConstEngine::with_source(program())
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let first = render_codegen(&loaded);
+    let second = render_codegen(&loaded);
+    assert_eq!(
+        first, second,
+        "two renders of the same document are byte-identical"
+    );
+
+    // The enum run and the context-named constant spell out as code;
+    // the lone per-function bitflag group merged into no family, so it
+    // contributes no block — the file names only what the findings
+    // support.
+    assert!(
+        first.contains("#[repr(i64)]\npub enum FUN_18003ab00_State {\n"),
+        "{first}"
+    );
+    assert!(first.contains("    VALUE_0 = 0,\n"), "{first}");
+    assert!(first.contains("    VALUE_3 = 3,\n"), "{first}");
+    assert!(
+        first.contains("const SIZE_0x280: u32 = 0x280;\n"),
+        "{first}"
+    );
+    assert!(!first.contains("bitflags!"), "no family, no block: {first}");
+}
+
+#[tokio::test]
+async fn two_separate_scans_render_byte_identical_codegen() {
+    // The promise a reviewer leans on: rescanning the program and
+    // re-rendering changes only what the scan actually learned, never
+    // the renderer's own ordering or formatting — and the header names
+    // only the binary, never either scan time.
+    let first = render_codegen(
+        &ConstEngine::with_source(program())
+            .scan("eqmain.dll")
+            .await
+            .expect("first scan"),
+    );
+    let second = render_codegen(
+        &ConstEngine::with_source(program())
+            .scan("eqmain.dll")
+            .await
+            .expect("second scan"),
+    );
+
+    assert_eq!(first, second);
+    assert!(
+        first.starts_with(
+            "// Constant reconstruction for eqmain.dll, rendered by `calxgloss consts`.\n"
+        ),
+        "{first}"
+    );
+}
+
+#[tokio::test]
+async fn a_loaded_document_carrying_every_kind_renders_every_section() {
+    // A program yielding a merged flag family, an enum run, a
+    // context-named constant, a protocol magic, and a color palette:
+    // the loaded document renders the whole reconstruction — the
+    // family's position-named bits, the run's value-named variants,
+    // and a const per named, protocol, and color record.
+    let workspace = TempDir::new().expect("workspace");
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  if ((uVar1 & 0x400) != 0) {\n\
+             \x20   uVar1 |= 0x100;\n\
+             \x20 }\n\
+             \x20 switch(local_10) {\n\
+             \x20 case 0:\n\
+             \x20 case 1:\n\
+             \x20 case 2:\n\
+             \x20 case 3:\n\
+             \x20   dispatch();\n\
+             \x20 }\n\
+             \x20 size = 0x280;\n\
+             \x20 copy(dst, 0x280);\n\
+             \x20 if (magic == 0x89504e47) {\n\
+             \x20   read_header();\n\
+             \x20 }\n\
+             \x20 fill(dst, 0x123456);\n",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_18003e750".into(),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(void)",
+            "  uVar2 &= 0x400;\n\
+             \x20 uVar2 |= 0x800;\n\
+             \x20 reserve(0x280);\n\
+             \x20 fill(dst, 0xff00ff);\n",
+        ),
+    );
+    let result = ConstEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = ConstPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let rendered = render_codegen(&persistor.load("eqmain.dll").expect("load"));
+
+    // The merged family: one bitflags block over the union of bits,
+    // each named by position, preceded by its contributing functions.
+    assert!(
+        rendered.contains(
+            "// FUN_18003ab00, FUN_18003e750\nbitflags! {\n    struct Flags_0xd00: u16 {\n"
+        ),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("        const BIT_8 = 1 << 8;\n"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("        const BIT_11 = 1 << 11;\n"),
+        "{rendered}"
+    );
+
+    // The enum run, the context-named constant, the protocol magic,
+    // and the palette each spell their declaration.
+    assert!(
+        rendered.contains("#[repr(i64)]\npub enum FUN_18003ab00_State {\n"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("const SIZE_0x280: u32 = 0x280;\n"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("const PNG_MAGIC: u32 = 0x89504e47;\n"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("const COLOR_0x123456: u32 = 0x123456;\n"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("const COLOR_0xff00ff: u32 = 0xff00ff;\n"),
+        "{rendered}"
     );
 }
 

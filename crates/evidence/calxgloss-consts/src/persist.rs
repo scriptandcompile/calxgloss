@@ -127,6 +127,37 @@ impl ConstPersistor {
 
         Ok(self.store.load(binary)?)
     }
+
+    /// Returns the path the rendered Rust codegen for `binary` is filed
+    /// under — the JSON document's path with a `.rs` extension, so the
+    /// two artifacts always sit side by side.
+    pub fn codegen_path_for(&self, binary: &str) -> PathBuf {
+        self.path_for(binary).with_extension("rs")
+    }
+
+    /// Whether rendered Rust codegen is persisted for `binary`.
+    pub fn codegen_exists(&self, binary: &str) -> bool {
+        self.codegen_path_for(binary).is_file()
+    }
+
+    /// Writes the rendered Rust codegen beside the JSON document.
+    ///
+    /// The file is a derived artifact: it is rewritten whole from the
+    /// loaded result on every scan and never read back, so a rescan
+    /// that changes nothing leaves a byte-identical file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if directory creation or file I/O fails.
+    pub fn save_codegen(&self, binary: &str, content: &str) -> Result<()> {
+        let path = self.codegen_path_for(binary);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        info!(path = %path.display(), "Writing constant codegen");
+        std::fs::write(&path, content)?;
+        Ok(())
+    }
 }
 
 // ============================================================
@@ -237,6 +268,43 @@ mod tests {
 
         let loaded = persistor.load("eqmain.dll").unwrap();
         assert_eq!(loaded.findings.len(), 2);
+    }
+
+    #[test]
+    fn save_codegen_files_the_render_beside_the_json() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let persistor = ConstPersistor::new(dir.path());
+
+        persistor
+            .save_codegen("eqmain.dll", "// reconstruction\n")
+            .expect("saving the render");
+
+        let expected = dir
+            .path()
+            .join("re")
+            .join("analysis")
+            .join("consts")
+            .join("eqmain.dll.rs");
+        assert_eq!(persistor.codegen_path_for("eqmain.dll"), expected);
+        let text = std::fs::read_to_string(&expected).expect("reading the render");
+        assert_eq!(text, "// reconstruction\n");
+    }
+
+    #[test]
+    fn codegen_exists_tracks_whether_the_render_is_persisted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let persistor = ConstPersistor::new(dir.path());
+
+        assert!(!persistor.codegen_exists("eqmain.dll"));
+        persistor
+            .save(&sample_result("eqmain.dll"))
+            .expect("saving the document alone files no render");
+        assert!(!persistor.codegen_exists("eqmain.dll"));
+
+        persistor
+            .save_codegen("eqmain.dll", "// reconstruction\n")
+            .expect("saving the render");
+        assert!(persistor.codegen_exists("eqmain.dll"));
     }
 
     #[test]

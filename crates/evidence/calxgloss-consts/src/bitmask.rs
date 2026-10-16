@@ -42,7 +42,9 @@ fn set_bits(value: u64) -> impl Iterator<Item = u32> {
 }
 
 /// The integer width a flags field spanning `bit_width` bits fits.
-fn flags_type(bit_width: u32) -> &'static str {
+/// Shared with the codegen renderer so a family's block and its
+/// suggestion always spell the same width.
+pub(crate) fn flags_type(bit_width: u32) -> &'static str {
     match bit_width {
         0..=8 => "u8",
         9..=16 => "u16",

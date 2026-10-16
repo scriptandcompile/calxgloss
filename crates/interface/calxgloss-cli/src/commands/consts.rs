@@ -4,7 +4,9 @@
 //! enumerated-dispatch detection, and repeated-magic-number frequency
 //! analysis — against the program currently open in Ghidra and saves the
 //! result to `re/analysis/consts/{binary}.json` in the workspace, the same
-//! file batch translation will read as prompt context. Batch translation
+//! file batch translation will read as prompt context, together with a
+//! rendered Rust codegen file spelling the reconstructed flag families,
+//! enums, and constants out beside the JSON. Batch translation
 //! runs the same scan before its first batch when no result is cached;
 //! this command is the manual entry point: it rebuilds the result on
 //! demand and can print what a cached one holds.
@@ -12,6 +14,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use calxgloss_consts::codegen::render_codegen;
 use calxgloss_consts::engine::ConstEngine;
 use calxgloss_consts::persist::ConstPersistor;
 use calxgloss_consts::types::ConstResult;
@@ -42,7 +45,14 @@ pub async fn handle_consts(
                  run `calxgloss consts --binary {binary}` to produce one"
             )
         })?;
-        print_constant_report(&result, &persistor.path_for(binary));
+        print_constant_report(
+            &result,
+            &persistor.path_for(binary),
+            persistor
+                .codegen_exists(binary)
+                .then(|| persistor.codegen_path_for(binary))
+                .as_deref(),
+        );
         return Ok(());
     }
 
@@ -65,14 +75,22 @@ pub async fn handle_consts(
     persistor
         .save(&result)
         .with_context(|| format!("Failed to save the constant result for {binary}"))?;
+    persistor
+        .save_codegen(binary, &render_codegen(&result))
+        .with_context(|| format!("Failed to write the constant codegen for {binary}"))?;
 
-    print_constant_report(&result, &persistor.path_for(binary));
+    print_constant_report(
+        &result,
+        &persistor.path_for(binary),
+        Some(&persistor.codegen_path_for(binary)),
+    );
     Ok(())
 }
 
-/// Print a summary of a constant result: where it is filed, when it was
-/// built, and what the findings say.
-fn print_constant_report(result: &ConstResult, path: &Path) {
+/// Print a summary of a constant result: where it is filed, where its
+/// rendered Rust codegen is (when it exists), when it was built, and
+/// what the findings say.
+fn print_constant_report(result: &ConstResult, path: &Path, codegen_path: Option<&Path>) {
     println!();
     hsep_bold();
     println_content(format!("  Constants — {}", result.metadata.binary));
@@ -84,6 +102,13 @@ fn print_constant_report(result: &ConstResult, path: &Path) {
         white_bold("File:      "),
         dim(&path.display().to_string())
     ));
+    if let Some(codegen_path) = codegen_path {
+        println_content(format!(
+            "  {}{}",
+            white_bold("Codegen:   "),
+            dim(&codegen_path.display().to_string())
+        ));
+    }
     let scanned = DateTime::from_timestamp(result.metadata.scanned_at as i64, 0)
         .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
         .unwrap_or_else(|| format!("unix {}", result.metadata.scanned_at));

@@ -11,7 +11,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into eleven modules:
+//! The crate is organized into thirteen modules:
 //!
 //! - [`types`] - Core data types: `BitflagGroup`, `EnumCandidate`, and
 //!   `NamedConstant` for the detection records; `FlagFamily` for the
@@ -35,6 +35,12 @@
 //!   values used often enough across enough functions as named
 //!   constants suggesting a `const`, carrying the context names the
 //!   naming reading derived from the same bodies.
+//! - [`codegen`] - Rust codegen: [`codegen::render_codegen`] turns a
+//!   loaded result into one reviewable Rust source string — a
+//!   `bitflags!`-style block per flag family, an `enum` block per enum
+//!   candidate, and `const` items for the named, protocol, and color
+//!   constants — deterministic, naming only what the findings support,
+//!   and never read back (ADR-0013).
 //! - [`engine`] - Scan orchestration: `ConstEngine` runs the three
 //!   detectors over one open Ghidra program through a `ScanSource`
 //!   (function listing + decompile-by-name), one sequential pass that
@@ -68,6 +74,7 @@
 //!   and identifier-embedded digits out of the literal stream.
 
 pub mod bitmask;
+pub mod codegen;
 pub mod engine;
 pub mod error;
 pub mod frequency;

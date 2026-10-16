@@ -151,17 +151,24 @@ pub struct NamedConstant {
     pub evidence: String,
 }
 
+/// The integer type a `const` spelling for one value uses — the
+/// narrowest that holds it. Shared by the named-constant suggestion
+/// and the codegen renderer so both spell the same width.
+pub(crate) fn int_const_type(value: u64) -> &'static str {
+    if value > u64::from(u32::MAX) {
+        "u64"
+    } else {
+        "u32"
+    }
+}
+
 impl NamedConstant {
     /// The `const` shape one value suggests: the context-derived name
     /// uppercased into the declaration when the bodies gave the value
     /// one, the mechanical `VALUE_0x…` spelling when they did not. The
     /// integer type is the narrowest that holds the value.
     pub fn render_suggestion(name: Option<&str>, value: u64) -> String {
-        let ty = if value > u64::from(u32::MAX) {
-            "u64"
-        } else {
-            "u32"
-        };
+        let ty = int_const_type(value);
         match name {
             Some(name) => format!("const {name}: {ty} = {value:#x};"),
             None => format!("const VALUE_{value:#x}: {ty} = {value:#x};"),
