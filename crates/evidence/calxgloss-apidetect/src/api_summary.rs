@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use calxgloss_callgraph::FunctionCallGraph;
 use tracing::warn;
 
-use crate::lib_mapping::MappingDatabase;
+use crate::lib_mapping::{MappedApi, MappingDatabase};
 use crate::types::{ApiFinding, ApiUsage, Confidence};
 
 /// Confidence that a directly-called API usage record is right.
@@ -86,14 +86,16 @@ impl ApiSummaryDetector {
 
         // Direct calls: an edge leaving the function itself.
         for edge in &node.callees {
-            if let Some((library, rust_crate)) = self.identified_api(edge.target, &edge.callee_name)
+            if let Some(entry) = self.identified_api(edge.target, &edge.callee_name)
                 && seen.insert(edge.callee_name.as_str())
             {
                 findings.push(ApiFinding::ApiUsage(ApiUsage {
                     function: node.name.clone(),
                     api: edge.callee_name.clone(),
-                    library,
-                    rust_crate,
+                    library: entry.library,
+                    rust_crate: entry.rust_crate,
+                    category: entry.category,
+                    features: entry.features,
                     direct: true,
                     confidence: Confidence::new(DIRECT_CONFIDENCE),
                     evidence: format!("{} → {}", node.name, edge.callee_name),
@@ -118,15 +120,16 @@ impl ApiSummaryDetector {
         while let Some((next, path)) = queue.pop_front() {
             let reached = &graph[next];
             for edge in &reached.callees {
-                if let Some((library, rust_crate)) =
-                    self.identified_api(edge.target, &edge.callee_name)
+                if let Some(entry) = self.identified_api(edge.target, &edge.callee_name)
                     && seen.insert(edge.callee_name.as_str())
                 {
                     findings.push(ApiFinding::ApiUsage(ApiUsage {
                         function: node.name.clone(),
                         api: edge.callee_name.clone(),
-                        library,
-                        rust_crate,
+                        library: entry.library,
+                        rust_crate: entry.rust_crate,
+                        category: entry.category,
+                        features: entry.features,
                         direct: false,
                         confidence: Confidence::new(TRANSITIVE_CONFIDENCE),
                         evidence: format!("{} → {}", path, edge.callee_name),
@@ -145,10 +148,11 @@ impl ApiSummaryDetector {
         findings
     }
 
-    /// The `(library, rust_crate)` for an edge that calls an identified
-    /// import: an unresolved target (outside the program) whose callee
-    /// name the mapping database knows.
-    fn identified_api(&self, target: u64, callee_name: &str) -> Option<(String, String)> {
+    /// The [`MappedApi`](crate::lib_mapping::MappedApi) record for an
+    /// edge that calls an identified import: an unresolved target
+    /// (outside the program) whose callee name the mapping database
+    /// knows.
+    fn identified_api(&self, target: u64, callee_name: &str) -> Option<MappedApi> {
         if target != 0 || callee_name.is_empty() {
             return None;
         }
@@ -210,6 +214,8 @@ mod tests {
                 assert_eq!(record.confidence, Confidence::new(80));
                 assert_eq!(record.library, "zlib");
                 assert_eq!(record.rust_crate, "flate2");
+                assert_eq!(record.category.as_deref(), Some("zlib"));
+                assert_eq!(record.features, ["zlib".to_string()]);
             }
             ApiFinding::Import(_) => panic!("expected a usage finding"),
         }

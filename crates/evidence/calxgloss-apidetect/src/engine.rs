@@ -380,11 +380,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scan_carries_category_and_features_onto_identified_findings() {
+        // The enrichment rides the fake-program scan whole: an identified
+        // import entry and its usage both carry the builtin entry's
+        // category and feature flags, and the suggestion renders the
+        // crate[feature] form; the unidentified import stays category-less.
+        let result = scan(FakeProgram::new(
+            vec!["inflate", "VendorSpecialFunction"],
+            vec![node("FUN_a", 0x1000, vec![("inflate", 0)])],
+        ))
+        .await;
+        assert_eq!(result.findings.len(), 3);
+
+        assert_eq!(result.findings[0].category(), Some("zlib"));
+        assert_eq!(result.findings[0].features(), ["zlib".to_string()]);
+        assert_eq!(result.findings[0].suggestion(), "flate2[zlib]");
+
+        assert_eq!(result.findings[1].category(), None);
+        assert!(result.findings[1].features().is_empty());
+        assert_eq!(result.findings[1].suggestion(), "");
+
+        assert_eq!(result.findings[2].category(), Some("zlib"));
+        assert_eq!(result.findings[2].features(), ["zlib".to_string()]);
+        assert_eq!(result.findings[2].suggestion(), "flate2[zlib]");
+    }
+
+    #[tokio::test]
     async fn custom_mappings_reach_both_detectors() {
         let mappings = MappingDatabase::builtin().with_library(LibraryMapping {
             library: "CustomEngine".into(),
             imports: vec!["Engine_LoadAsset".into()],
             rust_crate: "custom_engine".into(),
+            category: Some("SDL2".into()),
+            features: vec!["bundled".into()],
         });
         let engine = ApiEngine::with_source(FakeProgram::new(
             vec!["Engine_LoadAsset"],
@@ -394,8 +422,12 @@ mod tests {
         .with_summary_detector(ApiSummaryDetector::with_mappings(mappings));
         let result = engine.scan("game.exe").await.unwrap();
         assert_eq!(result.findings.len(), 2);
-        assert_eq!(result.findings[0].library(), Some("CustomEngine"));
-        assert_eq!(result.findings[1].library(), Some("CustomEngine"));
+        for finding in &result.findings {
+            assert_eq!(finding.library(), Some("CustomEngine"));
+            assert_eq!(finding.category(), Some("SDL2"));
+            assert_eq!(finding.features(), ["bundled".to_string()]);
+            assert_eq!(finding.suggestion(), "custom_engine[bundled]");
+        }
     }
 
     #[tokio::test]

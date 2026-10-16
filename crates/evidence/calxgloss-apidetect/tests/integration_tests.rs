@@ -258,13 +258,16 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     assert!(loaded.for_function("FUN_180099999").next().is_none());
 
     // Each record keeps its detector's detail and evidence through the
-    // round trip, so a prompt sees the call path that produced it.
+    // round trip, so a prompt sees the call path that produced it — and
+    // the category and feature enrichment survives scan → persist → load.
     let ApiFinding::ApiUsage(direct) = findings[0] else {
         unreachable!("the direct call reads as a usage finding");
     };
     assert_eq!(direct.api, "inflate");
     assert_eq!(direct.library, "zlib");
     assert_eq!(direct.rust_crate, "flate2");
+    assert_eq!(direct.category.as_deref(), Some("zlib"));
+    assert_eq!(direct.features, ["zlib".to_string()]);
     assert!(direct.direct);
     assert_eq!(direct.evidence, "FUN_18003ab00 → inflate");
 
@@ -274,6 +277,8 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     assert_eq!(transitive.api, "CreateFileA");
     assert_eq!(transitive.library, "Win32");
     assert_eq!(transitive.rust_crate, "windows / std::fs");
+    assert_eq!(transitive.category.as_deref(), Some("Win32Core"));
+    assert!(transitive.features.is_empty());
     assert!(!transitive.direct);
     assert_eq!(
         transitive.evidence,
@@ -329,7 +334,7 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
     .expect("the escalate prompt should render");
 
     assert!(prompt.contains("LIBRARIES AND APIS"));
-    assert!(prompt.contains("flate2"));
+    assert!(prompt.contains("flate2[zlib]"));
     assert!(prompt.contains("`inflate`"));
     assert!(prompt.contains("zlib direct, confidence 80"));
     assert!(prompt.contains("windows / std::fs"));

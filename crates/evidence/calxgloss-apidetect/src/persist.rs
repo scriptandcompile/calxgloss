@@ -144,6 +144,8 @@ mod tests {
             api: "inflate".to_string(),
             library: Some("zlib".to_string()),
             rust_crate: Some("flate2".to_string()),
+            category: Some("zlib".to_string()),
+            features: vec!["zlib".to_string()],
             confidence: Confidence::new(90),
         }));
         result.findings.push(ApiFinding::ApiUsage(ApiUsage {
@@ -151,6 +153,8 @@ mod tests {
             api: "CreateFileA".to_string(),
             library: "Win32".to_string(),
             rust_crate: "windows / std::fs".to_string(),
+            category: Some("Win32Core".to_string()),
+            features: Vec::new(),
             direct: false,
             confidence: Confidence::new(60),
             evidence: "FUN_18003ab00 → FUN_18003c000 → CreateFileA".to_string(),
@@ -167,6 +171,83 @@ mod tests {
         persistor.save(&result).unwrap();
         let loaded = persistor.load("eqmain.dll").unwrap();
         assert_eq!(loaded, result);
+    }
+
+    #[test]
+    fn a_document_saved_before_the_deepening_loads_unchanged() {
+        // A document written before category and features existed: the
+        // enrichment fields are optional on disk, so it loads with no
+        // category and no features, exactly as the old shape read.
+        let dir = tempfile::tempdir().unwrap();
+        let persistor = ApiPersistor::with_cache_dir(dir.path());
+        std::fs::write(
+            persistor.path_for("eqmain.dll"),
+            r#"{
+                "metadata": { "binary": "eqmain.dll", "scanned_at": 1, "duration_secs": 0 },
+                "findings": [
+                    {
+                        "kind": "import",
+                        "api": "inflate",
+                        "library": "zlib",
+                        "rust_crate": "flate2",
+                        "confidence": 90
+                    },
+                    {
+                        "kind": "api_usage",
+                        "function": "FUN_18003ab00",
+                        "api": "CreateFileA",
+                        "library": "Win32",
+                        "rust_crate": "windows / std::fs",
+                        "direct": false,
+                        "confidence": 60,
+                        "evidence": "FUN_18003ab00 → FUN_18003c000 → CreateFileA"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let loaded = persistor.load("eqmain.dll").unwrap();
+        assert_eq!(loaded.findings.len(), 2);
+        assert_eq!(loaded.findings[0].category(), None);
+        assert!(loaded.findings[0].features().is_empty());
+        assert_eq!(loaded.findings[0].suggestion(), "flate2");
+        assert_eq!(loaded.findings[1].category(), None);
+        assert!(loaded.findings[1].features().is_empty());
+        assert_eq!(loaded.findings[1].suggestion(), "windows / std::fs");
+    }
+
+    #[test]
+    fn empty_enrichment_is_skipped_on_disk() {
+        // A finding with no category and no features serializes without
+        // either key, so plain records stay byte-identical on disk.
+        let dir = tempfile::tempdir().unwrap();
+        let persistor = ApiPersistor::with_cache_dir(dir.path());
+        let mut result = ApiDetectionResult::new(ScanMetadata::new("eqmain.dll"));
+        result.findings.push(ApiFinding::Import(ApiSignature {
+            api: "VendorSpecialFunction".to_string(),
+            library: None,
+            rust_crate: None,
+            category: None,
+            features: Vec::new(),
+            confidence: Confidence::new(0),
+        }));
+        persistor.save(&result).unwrap();
+
+        let raw = std::fs::read_to_string(persistor.path_for("eqmain.dll")).unwrap();
+        assert!(!raw.contains("\"category\""));
+        assert!(!raw.contains("\"features\""));
+    }
+
+    #[test]
+    fn the_enrichment_fields_ride_the_saved_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let persistor = ApiPersistor::with_cache_dir(dir.path());
+        persistor.save(&sample_result("eqmain.dll")).unwrap();
+
+        let raw = std::fs::read_to_string(persistor.path_for("eqmain.dll")).unwrap();
+        assert!(raw.contains("\"category\": \"zlib\""));
+        assert!(raw.contains("\"features\""));
     }
 
     #[test]

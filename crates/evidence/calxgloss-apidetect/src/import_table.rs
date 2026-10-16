@@ -2,9 +2,10 @@
 //!
 //! Reads the binary's import table via [`ScanSource::imports`], classifies
 //! each entry against the [`MappingDatabase`], and produces [`ApiFinding`]s:
-//! identified imports carry their library and Rust crate suggestion, while
-//! unidentified and ordinal-only imports are kept as entries with no
-//! library — the issue's "import table entries" output.
+//! identified imports carry their library, crate suggestion, and the
+//! entry's category and feature flags, while unidentified and ordinal-only
+//! imports are kept as entries with no library and no category — the
+//! issue's "import table entries" output.
 
 use tracing::debug;
 
@@ -63,19 +64,26 @@ impl ImportTableScanner {
         Ok(findings)
     }
 
-    /// Classify one import name against the mapping database.
+    /// Classify one import name against the mapping database. Identified
+    /// entries carry the entry's category and feature flags; unidentified
+    /// and ordinal-only entries stay category-less — enrichment never
+    /// claims a category the evidence does not support.
     fn classify(&self, name: &str) -> ApiSignature {
         match self.mappings.lookup(name) {
-            Some((library, rust_crate)) => ApiSignature {
+            Some(entry) => ApiSignature {
                 api: name.to_string(),
-                library: Some(library),
-                rust_crate: Some(rust_crate),
+                library: Some(entry.library),
+                rust_crate: Some(entry.rust_crate),
+                category: entry.category,
+                features: entry.features,
                 confidence: Confidence::new(IDENTIFIED_CONFIDENCE),
             },
             None => ApiSignature {
                 api: name.to_string(),
                 library: None,
                 rust_crate: None,
+                category: None,
+                features: Vec::new(),
                 confidence: Confidence::new(UNIDENTIFIED_CONFIDENCE),
             },
         }
@@ -187,11 +195,16 @@ mod tests {
         assert_eq!(findings[0].target(), "inflate");
         assert_eq!(findings[0].library(), Some("zlib"));
         assert_eq!(findings[0].rust_crate(), Some("flate2"));
+        assert_eq!(findings[0].category(), Some("zlib"));
+        assert_eq!(findings[0].features(), ["zlib".to_string()]);
+        assert_eq!(findings[0].suggestion(), "flate2[zlib]");
         assert_eq!(findings[0].confidence(), 90);
 
         assert_eq!(findings[1].target(), "CreateFileA");
         assert_eq!(findings[1].library(), Some("Win32"));
         assert_eq!(findings[1].rust_crate(), Some("windows / std::fs"));
+        assert_eq!(findings[1].category(), Some("Win32Core"));
+        assert!(findings[1].features().is_empty());
     }
 
     #[tokio::test]
@@ -207,6 +220,8 @@ mod tests {
         assert_eq!(findings[0].target(), "VendorSpecialFunction");
         assert_eq!(findings[0].library(), None);
         assert_eq!(findings[0].rust_crate(), None);
+        assert_eq!(findings[0].category(), None);
+        assert!(findings[0].features().is_empty());
         assert_eq!(findings[0].confidence(), 0);
     }
 
@@ -223,6 +238,7 @@ mod tests {
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].target(), "EXTERNAL:123");
         assert_eq!(findings[0].library(), None);
+        assert_eq!(findings[0].category(), None);
     }
 
     #[tokio::test]
@@ -232,12 +248,17 @@ mod tests {
                 library: "zlib".into(),
                 imports: vec!["my_inflate".into()],
                 rust_crate: "my_zlib".into(),
+                category: Some("zlib".into()),
+                features: vec!["deflate".into()],
             },
         ));
         let source = FakeSource {
-            imports: vec![import("inflate")],
+            imports: vec![import("inflate"), import("my_inflate")],
         };
         let findings = scanner.scan(&source, "game.exe").await.unwrap();
         assert_eq!(findings[0].library(), None);
+        assert_eq!(findings[0].category(), None);
+        assert_eq!(findings[1].category(), Some("zlib"));
+        assert_eq!(findings[1].suggestion(), "my_zlib[deflate]");
     }
 }

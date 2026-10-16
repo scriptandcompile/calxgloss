@@ -6,6 +6,15 @@
 //! stdio, C++ STL); [`MappingDatabase::with_library`] adds or replaces a
 //! whole library entry for custom binaries.
 //!
+//! Each entry also carries the enrichment the findings ride: a
+//! [`category`](LibraryMapping::category) — a plain string aligned with the
+//! PAL `ApiCategory` display names (Win32Core, DirectX, SDL2, POSIX, PNG,
+//! zlib, stdio, C++ STL) so prompt consumers see one vocabulary without the
+//! evidence crate depending on PAL — and the crate suggestion's optional
+//! [`features`](LibraryMapping::features), rendered into the `crate[feat]`
+//! form by the finding's suggestion accessor. A custom entry carries both
+//! like the builtin table; an entry that names no category claims none.
+//!
 //! Matching is by exact name — both the raw (possibly mangled) spelling and
 //! the demangled spelling are listed where they differ, because the import
 //! table and call-graph edges may carry either.
@@ -13,7 +22,8 @@
 use std::collections::HashMap;
 
 /// One library's entry in the mapping database: the import names it owns
-/// and the Rust crate that replaces them.
+/// and the Rust crate that replaces them, with the category and feature
+/// flags the identified findings carry.
 #[derive(Debug, Clone)]
 pub struct LibraryMapping {
     /// Library name (e.g. `"zlib"`, `"DirectX 9"`).
@@ -22,12 +32,35 @@ pub struct LibraryMapping {
     pub imports: Vec<String>,
     /// Rust crate suggestion (e.g. `"flate2"`, `"windows / std::fs"`).
     pub rust_crate: String,
+    /// The API category the library's surface belongs to, spelled with the
+    /// PAL `ApiCategory` display names (e.g. `"Win32Core"`, `"zlib"`);
+    /// `None` when the entry claims no category.
+    pub category: Option<String>,
+    /// Feature flags the crate suggestion carries (e.g. `"png"` for
+    /// `image`), rendered into the `crate[feat]` suggestion form; empty
+    /// when the suggestion needs no features.
+    pub features: Vec<String>,
+}
+
+/// What the database knows about one import name: the record an identified
+/// finding is built from, with the library, crate suggestion, category, and
+/// feature flags the entry carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MappedApi {
+    /// The library the import belongs to (e.g. `"zlib"`).
+    pub library: String,
+    /// The Rust crate standing in for the import (e.g. `"flate2"`).
+    pub rust_crate: String,
+    /// The API category the entry names, when it names one.
+    pub category: Option<String>,
+    /// Feature flags the crate suggestion carries, empty when none.
+    pub features: Vec<String>,
 }
 
 /// Lookup table from import name to library and Rust crate suggestion.
 #[derive(Debug, Clone, Default)]
 pub struct MappingDatabase {
-    by_name: HashMap<String, (String, String)>,
+    by_name: HashMap<String, MappedApi>,
 }
 
 impl MappingDatabase {
@@ -57,15 +90,23 @@ impl MappingDatabase {
     pub fn add_library(&mut self, mapping: LibraryMapping) {
         // Drop the names of the previous entry for this library, if any.
         self.by_name
-            .retain(|_, (library, _)| *library != mapping.library);
+            .retain(|_, entry| entry.library != mapping.library);
         for name in mapping.imports {
-            self.by_name
-                .insert(name, (mapping.library.clone(), mapping.rust_crate.clone()));
+            self.by_name.insert(
+                name,
+                MappedApi {
+                    library: mapping.library.clone(),
+                    rust_crate: mapping.rust_crate.clone(),
+                    category: mapping.category.clone(),
+                    features: mapping.features.clone(),
+                },
+            );
         }
     }
 
-    /// Look up an import name: `(library, rust_crate)` when known.
-    pub fn lookup(&self, name: &str) -> Option<(String, String)> {
+    /// Look up an import name: the [`MappedApi`] record — library, crate
+    /// suggestion, category, and feature flags — when known.
+    pub fn lookup(&self, name: &str) -> Option<MappedApi> {
         self.by_name.get(name).cloned()
     }
 
@@ -74,7 +115,7 @@ impl MappingDatabase {
         let mut names: Vec<String> = self
             .by_name
             .values()
-            .map(|(library, _)| library.clone())
+            .map(|entry| entry.library.clone())
             .collect();
         names.sort();
         names.dedup();
@@ -93,6 +134,12 @@ impl MappingDatabase {
 }
 
 /// The builtin library mappings of [`MappingDatabase::builtin`].
+///
+/// Each entry names its category with the PAL `ApiCategory` display
+/// spelling so prompt consumers see one vocabulary, and carries feature
+/// flags where the suggested crate has one that fits the library's
+/// surface (`image[png]`, `flate2[zlib]`); entries whose suggestion is
+/// plain std carry none.
 fn builtin_mappings() -> Vec<LibraryMapping> {
     vec![
         LibraryMapping {
@@ -110,6 +157,8 @@ fn builtin_mappings() -> Vec<LibraryMapping> {
             .map(|s| (*s).to_string())
             .collect(),
             rust_crate: "wgpu / directx".into(),
+            category: Some("DirectX".into()),
+            features: Vec::new(),
         },
         LibraryMapping {
             library: "SDL2".into(),
@@ -125,6 +174,8 @@ fn builtin_mappings() -> Vec<LibraryMapping> {
             .map(|s| (*s).to_string())
             .collect(),
             rust_crate: "sdl2".into(),
+            category: Some("SDL2".into()),
+            features: Vec::new(),
         },
         LibraryMapping {
             library: "Win32".into(),
@@ -149,6 +200,8 @@ fn builtin_mappings() -> Vec<LibraryMapping> {
             .map(|s| (*s).to_string())
             .collect(),
             rust_crate: "windows / std::fs".into(),
+            category: Some("Win32Core".into()),
+            features: Vec::new(),
         },
         LibraryMapping {
             library: "POSIX".into(),
@@ -161,6 +214,8 @@ fn builtin_mappings() -> Vec<LibraryMapping> {
             .map(|s| (*s).to_string())
             .collect(),
             rust_crate: "std::fs / std::io".into(),
+            category: Some("POSIX".into()),
+            features: Vec::new(),
         },
         LibraryMapping {
             library: "PNG".into(),
@@ -181,6 +236,8 @@ fn builtin_mappings() -> Vec<LibraryMapping> {
             .map(|s| (*s).to_string())
             .collect(),
             rust_crate: "image / png".into(),
+            category: Some("PNG".into()),
+            features: vec!["png".into()],
         },
         LibraryMapping {
             library: "zlib".into(),
@@ -203,6 +260,8 @@ fn builtin_mappings() -> Vec<LibraryMapping> {
             .map(|s| (*s).to_string())
             .collect(),
             rust_crate: "flate2".into(),
+            category: Some("zlib".into()),
+            features: vec!["zlib".into()],
         },
         LibraryMapping {
             library: "stdio".into(),
@@ -214,6 +273,8 @@ fn builtin_mappings() -> Vec<LibraryMapping> {
             .map(|s| (*s).to_string())
             .collect(),
             rust_crate: "std::io".into(),
+            category: Some("stdio".into()),
+            features: Vec::new(),
         },
         LibraryMapping {
             library: "C++ STL".into(),
@@ -240,6 +301,8 @@ fn builtin_mappings() -> Vec<LibraryMapping> {
             .map(|s| (*s).to_string())
             .collect(),
             rust_crate: "std / Vec".into(),
+            category: Some("C++ STL".into()),
+            features: Vec::new(),
         },
     ]
 }
@@ -248,10 +311,10 @@ fn builtin_mappings() -> Vec<LibraryMapping> {
 mod tests {
     use super::*;
 
-    fn lookup(library: &str, name: &str) -> Option<(String, String)> {
+    fn lookup(library: &str, name: &str) -> Option<MappedApi> {
         MappingDatabase::builtin()
             .lookup(name)
-            .filter(|(l, _)| l == library)
+            .filter(|entry| entry.library == library)
     }
 
     #[test]
@@ -272,69 +335,98 @@ mod tests {
     }
 
     #[test]
+    fn builtin_libraries_report_their_categories() {
+        let db = MappingDatabase::builtin();
+        let categories: [(&str, Option<&str>); 8] = [
+            ("Direct3DCreate9", Some("DirectX")),
+            ("SDL_Init", Some("SDL2")),
+            ("CreateFileA", Some("Win32Core")),
+            ("open", Some("POSIX")),
+            ("png_read_info", Some("PNG")),
+            ("inflate", Some("zlib")),
+            ("puts", Some("stdio")),
+            ("_Znwm", Some("C++ STL")),
+        ];
+        for (name, expected) in categories {
+            let entry = db.lookup(name).expect("the builtin table knows the name");
+            assert_eq!(entry.category.as_deref(), expected, "category of {name}");
+        }
+    }
+
+    #[test]
     fn builtin_maps_directx9_imports() {
-        let (library, crate_name) = lookup("DirectX 9", "Direct3DCreate9").unwrap();
-        assert_eq!(library, "DirectX 9");
-        assert_eq!(crate_name, "wgpu / directx");
+        let entry = lookup("DirectX 9", "Direct3DCreate9").unwrap();
+        assert_eq!(entry.library, "DirectX 9");
+        assert_eq!(entry.rust_crate, "wgpu / directx");
+        assert_eq!(entry.category.as_deref(), Some("DirectX"));
         assert!(lookup("DirectX 9", "D3DCompile").is_some());
     }
 
     #[test]
     fn builtin_maps_sdl2_imports() {
-        let (library, crate_name) = lookup("SDL2", "SDL_Init").unwrap();
-        assert_eq!(library, "SDL2");
-        assert_eq!(crate_name, "sdl2");
+        let entry = lookup("SDL2", "SDL_Init").unwrap();
+        assert_eq!(entry.library, "SDL2");
+        assert_eq!(entry.rust_crate, "sdl2");
+        assert_eq!(entry.category.as_deref(), Some("SDL2"));
         assert!(lookup("SDL2", "SDL_CreateWindow").is_some());
     }
 
     #[test]
     fn builtin_maps_win32_imports() {
-        let (library, crate_name) = lookup("Win32", "CreateFileA").unwrap();
-        assert_eq!(library, "Win32");
-        assert_eq!(crate_name, "windows / std::fs");
+        let entry = lookup("Win32", "CreateFileA").unwrap();
+        assert_eq!(entry.library, "Win32");
+        assert_eq!(entry.rust_crate, "windows / std::fs");
+        assert_eq!(entry.category.as_deref(), Some("Win32Core"));
         assert!(lookup("Win32", "VirtualAlloc").is_some());
         assert!(lookup("Win32", "GetProcAddress").is_some());
     }
 
     #[test]
     fn builtin_maps_posix_imports() {
-        let (library, crate_name) = lookup("POSIX", "open").unwrap();
-        assert_eq!(library, "POSIX");
-        assert_eq!(crate_name, "std::fs / std::io");
+        let entry = lookup("POSIX", "open").unwrap();
+        assert_eq!(entry.library, "POSIX");
+        assert_eq!(entry.rust_crate, "std::fs / std::io");
+        assert_eq!(entry.category.as_deref(), Some("POSIX"));
         assert!(lookup("POSIX", "malloc").is_some());
         assert!(lookup("POSIX", "memcpy").is_some());
     }
 
     #[test]
-    fn builtin_maps_png_imports() {
-        let (library, crate_name) = lookup("PNG", "png_read_info").unwrap();
-        assert_eq!(library, "PNG");
-        assert_eq!(crate_name, "image / png");
+    fn builtin_maps_png_imports_with_the_png_feature() {
+        let entry = lookup("PNG", "png_read_info").unwrap();
+        assert_eq!(entry.library, "PNG");
+        assert_eq!(entry.rust_crate, "image / png");
+        assert_eq!(entry.category.as_deref(), Some("PNG"));
+        assert_eq!(entry.features, vec!["png".to_string()]);
         assert!(lookup("PNG", "png_create_read_struct").is_some());
     }
 
     #[test]
-    fn builtin_maps_zlib_imports() {
-        let (library, crate_name) = lookup("zlib", "inflate").unwrap();
-        assert_eq!(library, "zlib");
-        assert_eq!(crate_name, "flate2");
+    fn builtin_maps_zlib_imports_with_the_zlib_feature() {
+        let entry = lookup("zlib", "inflate").unwrap();
+        assert_eq!(entry.library, "zlib");
+        assert_eq!(entry.rust_crate, "flate2");
+        assert_eq!(entry.category.as_deref(), Some("zlib"));
+        assert_eq!(entry.features, vec!["zlib".to_string()]);
         assert!(lookup("zlib", "deflateInit_").is_some());
         assert!(lookup("zlib", "crc32").is_some());
     }
 
     #[test]
     fn builtin_maps_stdio_imports() {
-        let (library, crate_name) = lookup("stdio", "puts").unwrap();
-        assert_eq!(library, "stdio");
-        assert_eq!(crate_name, "std::io");
+        let entry = lookup("stdio", "puts").unwrap();
+        assert_eq!(entry.library, "stdio");
+        assert_eq!(entry.rust_crate, "std::io");
+        assert_eq!(entry.category.as_deref(), Some("stdio"));
         assert!(lookup("stdio", "fgets").is_some());
     }
 
     #[test]
     fn builtin_maps_cpp_stl_imports() {
-        let (library, crate_name) = lookup("C++ STL", "_Znwm").unwrap();
-        assert_eq!(library, "C++ STL");
-        assert_eq!(crate_name, "std / Vec");
+        let entry = lookup("C++ STL", "_Znwm").unwrap();
+        assert_eq!(entry.library, "C++ STL");
+        assert_eq!(entry.rust_crate, "std / Vec");
+        assert_eq!(entry.category.as_deref(), Some("C++ STL"));
         // Both mangled and demangled spellings resolve.
         assert!(lookup("C++ STL", "operator new").is_some());
         assert!(lookup("C++ STL", "??2@YAPEAX_K@Z").is_some());
@@ -355,10 +447,14 @@ mod tests {
             library: "CustomEngine".into(),
             imports: vec!["Engine_LoadAsset".into()],
             rust_crate: "custom_engine".into(),
+            category: Some("SDL2".into()),
+            features: vec!["bundled".into()],
         });
-        let (library, crate_name) = db.lookup("Engine_LoadAsset").unwrap();
-        assert_eq!(library, "CustomEngine");
-        assert_eq!(crate_name, "custom_engine");
+        let entry = db.lookup("Engine_LoadAsset").unwrap();
+        assert_eq!(entry.library, "CustomEngine");
+        assert_eq!(entry.rust_crate, "custom_engine");
+        assert_eq!(entry.category.as_deref(), Some("SDL2"));
+        assert_eq!(entry.features, vec!["bundled".to_string()]);
     }
 
     #[test]
@@ -367,10 +463,14 @@ mod tests {
             library: "zlib".into(),
             imports: vec!["my_inflate".into()],
             rust_crate: "my_zlib".into(),
+            category: Some("zlib".into()),
+            features: vec!["deflate".into()],
         });
         assert!(db.lookup("inflate").is_none());
-        let (library, crate_name) = db.lookup("my_inflate").unwrap();
-        assert_eq!(library, "zlib");
-        assert_eq!(crate_name, "my_zlib");
+        let entry = db.lookup("my_inflate").unwrap();
+        assert_eq!(entry.library, "zlib");
+        assert_eq!(entry.rust_crate, "my_zlib");
+        assert_eq!(entry.category.as_deref(), Some("zlib"));
+        assert_eq!(entry.features, vec!["deflate".to_string()]);
     }
 }

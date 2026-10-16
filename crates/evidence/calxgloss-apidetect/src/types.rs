@@ -4,7 +4,8 @@
 //! produce:
 //!
 //! - `ApiSignature`: a binary-level import-table record — one entry with
-//!   its library and Rust crate suggestion when identified.
+//!   its library, Rust crate suggestion, and API category with feature
+//!   flags when identified.
 //! - `ApiUsage`: a function-level record — an API the function reaches
 //!   directly or through its call graph, with the call path as evidence.
 //! - `ApiFinding`: the union over the two record kinds — one finding
@@ -27,10 +28,13 @@ use serde::{Deserialize, Serialize};
 /// A signature says the binary imports the API spelled [`api`](Self::api);
 /// when the name is in the [`MappingDatabase`](crate::lib_mapping::MappingDatabase),
 /// [`library`](Self::library) names the library it belongs to and
-/// [`rust_crate`](Self::rust_crate) the crate standing in for it.
-/// Unidentified and ordinal-only imports are kept as entries with both
-/// fields `None` — the import table is reported whole, not filtered to
-/// what was recognized.
+/// [`rust_crate`](Self::rust_crate) the crate standing in for it, with the
+/// entry's [`category`](Self::category) and crate [`features`](Self::features)
+/// riding along when the mapping carries them. Unidentified and
+/// ordinal-only imports are kept as entries with both identity fields
+/// `None` and no category — the import table is reported whole, not
+/// filtered to what was recognized, and enrichment never claims a category
+/// the evidence does not support.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiSignature {
     /// The API name as the import table spells it, e.g. `inflate`.
@@ -42,6 +46,18 @@ pub struct ApiSignature {
     /// identified.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rust_crate: Option<String>,
+    /// The API category the library entry names, spelled with the PAL
+    /// `ApiCategory` display names (e.g. `Win32Core`, `zlib`), when the
+    /// mapping carries one — unidentified and ordinal-only imports stay
+    /// category-less. Optional on disk so documents persisted before the
+    /// enrichment load unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    /// Feature flags the crate suggestion carries, e.g. `png` for
+    /// `image`, empty when the suggestion needs none. Skipped when empty
+    /// so plain records stay byte-identical on disk.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
     /// Confidence that the identification is right, 0–100.
     pub confidence: Confidence,
 }
@@ -70,6 +86,17 @@ pub struct ApiUsage {
     pub library: String,
     /// The Rust crate standing in for the API, e.g. `flate2`.
     pub rust_crate: String,
+    /// The API category the library entry names, spelled with the PAL
+    /// `ApiCategory` display names (e.g. `Win32Core`, `zlib`), when the
+    /// mapping carries one. Optional on disk so documents persisted
+    /// before the enrichment load unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    /// Feature flags the crate suggestion carries, e.g. `png` for
+    /// `image`, empty when the suggestion needs none. Skipped when empty
+    /// so plain records stay byte-identical on disk.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
     /// Whether the function calls the API directly rather than through
     /// intermediate functions.
     pub direct: bool,
@@ -137,10 +164,33 @@ impl ApiFinding {
         }
     }
 
+    /// The API category the finding's library entry names, spelled with
+    /// the PAL `ApiCategory` display names, when the mapping carries one.
+    pub fn category(&self) -> Option<&str> {
+        match self {
+            ApiFinding::Import(record) => record.category.as_deref(),
+            ApiFinding::ApiUsage(record) => record.category.as_deref(),
+        }
+    }
+
+    /// The feature flags the crate suggestion carries, empty when the
+    /// suggestion needs none.
+    pub fn features(&self) -> &[String] {
+        match self {
+            ApiFinding::Import(record) => &record.features,
+            ApiFinding::ApiUsage(record) => &record.features,
+        }
+    }
+
     /// The crate suggestion, spelled for prompt rows — empty when the
-    /// API was never identified.
+    /// API was never identified. With feature flags the crate renders in
+    /// the `crate[feat1, feat2]` form; without them, the bare name.
     pub fn suggestion(&self) -> String {
-        self.rust_crate().unwrap_or_default().to_string()
+        match self.rust_crate() {
+            None => String::new(),
+            Some(krate) if self.features().is_empty() => krate.to_string(),
+            Some(krate) => format!("{krate}[{}]", self.features().join(", ")),
+        }
     }
 
     /// Confidence that the finding is right.
@@ -241,7 +291,7 @@ impl From<&ApiFinding> for calxgloss_prompts::ApiInfo {
             function: finding.function().to_string(),
             api: finding.target().to_string(),
             library: finding.library().unwrap_or("").to_string(),
-            suggestion: finding.rust_crate().unwrap_or("").to_string(),
+            suggestion: finding.suggestion(),
             kind: kind.to_string(),
             confidence: finding.confidence().value(),
             evidence: finding.evidence(),
@@ -259,6 +309,8 @@ mod tests {
             api: "inflate".into(),
             library: "zlib".into(),
             rust_crate: "flate2".into(),
+            category: Some("zlib".into()),
+            features: vec!["zlib".into()],
             direct: false,
             confidence: Confidence::new(60),
             evidence: "FUN_18003ab00 → FUN_18003c000 → inflate".into(),
@@ -271,12 +323,16 @@ mod tests {
             api: "CreateFileA".into(),
             library: Some("Win32".into()),
             rust_crate: Some("windows / std::fs".into()),
+            category: Some("Win32Core".into()),
+            features: Vec::new(),
             confidence: Confidence::new(90),
         });
         assert_eq!(finding.function(), "");
         assert_eq!(finding.target(), "CreateFileA");
         assert_eq!(finding.library(), Some("Win32"));
         assert_eq!(finding.rust_crate(), Some("windows / std::fs"));
+        assert_eq!(finding.category(), Some("Win32Core"));
+        assert!(finding.features().is_empty());
         assert_eq!(finding.confidence(), Confidence::new(90));
         assert_eq!(finding.evidence(), "CreateFileA");
         assert_eq!(finding.kind(), "import");
@@ -288,10 +344,14 @@ mod tests {
             api: "VendorSpecialFunction".into(),
             library: None,
             rust_crate: None,
+            category: None,
+            features: Vec::new(),
             confidence: Confidence::new(0),
         });
         assert_eq!(finding.library(), None);
         assert_eq!(finding.rust_crate(), None);
+        assert_eq!(finding.category(), None);
+        assert!(finding.features().is_empty());
     }
 
     #[test]
@@ -301,6 +361,8 @@ mod tests {
         assert_eq!(finding.target(), "inflate");
         assert_eq!(finding.library(), Some("zlib"));
         assert_eq!(finding.rust_crate(), Some("flate2"));
+        assert_eq!(finding.category(), Some("zlib"));
+        assert_eq!(finding.features(), ["zlib".to_string()]);
         assert_eq!(finding.confidence(), Confidence::new(60));
         assert_eq!(
             finding.evidence(),
@@ -310,12 +372,56 @@ mod tests {
     }
 
     #[test]
+    fn the_suggestion_accessor_renders_the_bare_crate_without_features() {
+        let finding = ApiFinding::Import(ApiSignature {
+            api: "CreateFileA".into(),
+            library: Some("Win32".into()),
+            rust_crate: Some("windows / std::fs".into()),
+            category: Some("Win32Core".into()),
+            features: Vec::new(),
+            confidence: Confidence::new(90),
+        });
+        assert_eq!(finding.suggestion(), "windows / std::fs");
+
+        let unidentified = ApiFinding::Import(ApiSignature {
+            api: "VendorSpecialFunction".into(),
+            library: None,
+            rust_crate: None,
+            category: None,
+            features: Vec::new(),
+            confidence: Confidence::new(0),
+        });
+        assert_eq!(unidentified.suggestion(), "");
+    }
+
+    #[test]
+    fn the_suggestion_accessor_renders_the_crate_feature_form_with_features() {
+        let finding = ApiFinding::Import(ApiSignature {
+            api: "inflate".into(),
+            library: Some("zlib".into()),
+            rust_crate: Some("flate2".into()),
+            category: Some("zlib".into()),
+            features: vec!["zlib".into()],
+            confidence: Confidence::new(90),
+        });
+        assert_eq!(finding.suggestion(), "flate2[zlib]");
+
+        let usage = ApiFinding::ApiUsage(ApiUsage {
+            features: vec!["png".into(), "color_quant".into()],
+            ..usage()
+        });
+        assert_eq!(usage.suggestion(), "flate2[png, color_quant]");
+    }
+
+    #[test]
     fn findings_round_trip_through_serde_with_the_kind_tag() {
         let findings = vec![
             ApiFinding::Import(ApiSignature {
                 api: "inflate".into(),
                 library: Some("zlib".into()),
                 rust_crate: Some("flate2".into()),
+                category: Some("zlib".into()),
+                features: vec!["zlib".into()],
                 confidence: Confidence::new(90),
             }),
             ApiFinding::ApiUsage(usage()),
@@ -333,13 +439,15 @@ mod tests {
             api: "inflate".into(),
             library: Some("zlib".into()),
             rust_crate: Some("flate2".into()),
+            category: Some("zlib".into()),
+            features: vec!["zlib".into()],
             confidence: Confidence::new(90),
         });
         let info = calxgloss_prompts::ApiInfo::from(&finding);
         assert_eq!(info.function, "");
         assert_eq!(info.api, "inflate");
         assert_eq!(info.library, "zlib");
-        assert_eq!(info.suggestion, "flate2");
+        assert_eq!(info.suggestion, "flate2[zlib]");
         assert_eq!(info.kind, "import");
         assert_eq!(info.confidence, 90);
     }

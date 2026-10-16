@@ -139,11 +139,16 @@ fn print_api_report(result: &ApiDetectionResult, path: &Path) {
             } else {
                 finding.function()
             };
+            let suggestion = finding.suggestion();
             println_content(format!(
                 "  ●  {:<14} {:<24} {:<22} {}",
                 function,
                 finding.target(),
-                finding.rust_crate().unwrap_or("(unidentified)"),
+                if suggestion.is_empty() {
+                    "(unidentified)"
+                } else {
+                    &suggestion
+                },
                 confidence_color(finding.confidence().value())(&format!(
                     "{} {}",
                     finding.confidence().value(),

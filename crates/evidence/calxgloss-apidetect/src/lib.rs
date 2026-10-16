@@ -2,11 +2,12 @@
 //!
 //! Identifies the libraries a binary imports and the APIs each function
 //! reaches, mapping each identified API to the Rust crate that stands in
-//! for it — `flate2` for zlib's `inflate`, `windows / std::fs` for
-//! Win32's `CreateFileA`, `sdl2` for `SDL_Init`. Results are injected as
-//! structured LIBRARIES AND APIS sections so the LLM calls the API
-//! through the suggested crate instead of transliterating the raw import
-//! or declaring it as an `extern "C"` stub.
+//! for it — `flate2[zlib]` for zlib's `inflate`, `windows / std::fs` for
+//! Win32's `CreateFileA`, `sdl2` for `SDL_Init` — with each finding naming
+//! its API category. Results are injected as structured LIBRARIES AND
+//! APIS sections so the LLM calls the API through the suggested crate
+//! instead of transliterating the raw import or declaring it as an
+//! `extern "C"` stub.
 //!
 //! # Architecture
 //!
@@ -18,10 +19,11 @@
 //!   `ApiDetectionResult`, `ScanMetadata` for the persisted per-binary
 //!   results.
 //! - [`lib_mapping`] - The mapping database: `MappingDatabase` maps
-//!   import names to their library and Rust crate suggestion, with the
-//!   builtin table covering DirectX 9, SDL2, Win32, POSIX, PNG, zlib,
-//!   stdio, and the C++ STL, and `with_library` adding a whole entry
-//!   for custom binaries.
+//!   import names to their library and Rust crate suggestion, each entry
+//!   also naming its API category (aligned with the PAL `ApiCategory`
+//!   display names) and the crate's feature flags, with the builtin table
+//!   covering DirectX 9, SDL2, Win32, POSIX, PNG, zlib, stdio, and the
+//!   C++ STL, and `with_library` adding a whole entry for custom binaries.
 //! - [`import_table`] - Binary-level identification: `ImportTableScanner`
 //!   reads the program's import table and classifies every entry,
 //!   keeping unidentified and ordinal-only imports as plain records.
