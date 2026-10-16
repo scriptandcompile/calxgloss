@@ -12,7 +12,13 @@
 //! # Architecture
 //!
 //! - `error.rs` — `KunaError` and the crate-wide `Result` alias.
+//! - `engine.rs` — `load` and the loaded-program handle `KunaProgram`.
+//! - `specs.rs` — the embedded compiled SLEIGH tree and its cache unpacker
+//!   (provisioned by `build.rs`).
 
+pub mod engine;
 pub mod error;
+mod specs;
 
+pub use engine::{KUNA_RELEASE, KunaProgram, load};
 pub use error::{KunaError, Result};

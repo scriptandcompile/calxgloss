@@ -8,4 +8,12 @@ repository.workspace = true
 
 [dependencies]
 kuna-base = { workspace = true }
+kuna-console = { workspace = true }
 thiserror = { workspace = true }
+
+[build-dependencies]
+kuna-slacomp = { workspace = true }
+
+[dev-dependencies]
+calxgloss-testfixtures = { path = "../calxgloss-testfixtures" }
+tempfile = "3"
