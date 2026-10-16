@@ -46,3 +46,12 @@ parking_lot = "0.12.5"
 askama = "0.16.1"
 sysinfo = "0.39.6"
 libc = "0.2"
+# The Kuna decompiler engine (Apache-2.0, https://github.com/Noelo-Lab/kuna),
+# pinned to a release tag so a build is reproducible and the upstream contract
+# is a published one (ADR-0039). Only the crates the in-process loader needs
+# are pinned; `crates/integrations/calxgloss-kuna` consumes them.
+kuna-base = { git = "https://github.com/Noelo-Lab/kuna", tag = "v1.878" }
+kuna-console = { git = "https://github.com/Noelo-Lab/kuna", tag = "v1.878" }
+# The SLEIGH compiler, used by calxgloss-kuna's build script to compile the
+# embedded x86 specs; a build-dependency only.
+kuna-slacomp = { git = "https://github.com/Noelo-Lab/kuna", tag = "v1.878" }

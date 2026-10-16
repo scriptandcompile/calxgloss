@@ -556,6 +556,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "calxgloss-kuna"
+version = "0.3.0"
+dependencies = [
+ "kuna-base",
+ "thiserror",
+]
+
+[[package]]
 name = "calxgloss-llm"
 version = "0.3.0"
 dependencies = [
@@ -1769,6 +1777,15 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "kuna-base"
+version = "0.1.0"
+source = "git+https://github.com/Noelo-Lab/kuna?tag=v1.878#cb68db18fc8bbe5c117059bde45031c470c725dd"
+dependencies = [
+ "flate2",
+ "thiserror",
 ]
 
 [[package]]

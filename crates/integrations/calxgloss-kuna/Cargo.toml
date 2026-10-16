@@ -1,0 +1,11 @@
+[package]
+name = "calxgloss-kuna"
+version.workspace = true
+edition.workspace = true
+description = "Kuna in-process decompiler engine integration: SLEIGH spec provisioning and program loading"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kuna-base = { workspace = true }
+thiserror = { workspace = true }
