@@ -86,8 +86,9 @@ whether `kuna` ever becomes the default.
   later-ticket work; the skeleton itself does not yet install it.
 - Only x86/x86-64 specs are embedded; other architectures fail with the named
   load error and the `--engine ghidra` pointer.
-- `web`/`serve` are not yet engine-gated — the web scan path picks up engine
-  selection with #212's e2e work.
+- The web scan path does not yet honour `kuna`: `serve` and `live` are
+  gated to the ghidra engine like every other engine-dependent command, and
+  engine selection reaches the web scan path itself with #212's e2e work.
 - First `kuna` use unpacks the specs into the user cache (~a few MB);
   subsequent runs reuse them. Deleting the cache directory is always safe.
 - The pinned Kuna release is young and moves fast; the pin plus the reported

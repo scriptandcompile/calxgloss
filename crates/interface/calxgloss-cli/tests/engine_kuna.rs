@@ -47,6 +47,9 @@ fn test_doctor_under_kuna_loads_the_fixture_and_reports_identity() {
     );
     assert!(ok, "doctor --engine kuna failed:\n{stdout}\n{stderr}");
     assert!(stdout.contains("Kuna Engine Report"), "{stdout}");
+    // The engine reports the release it is pinned to — derived by the build
+    // from the lockfile pin, so the report can never name a different one.
+    assert!(stdout.contains("kuna v"), "{stdout}");
     // The fixture is an x86-64 PE: the engine resolved that language and
     // collected its symbols.
     assert!(stdout.contains("x86:LE:64:default"), "{stdout}");

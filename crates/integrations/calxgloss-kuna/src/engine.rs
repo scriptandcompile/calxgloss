@@ -15,9 +15,10 @@ use kuna_console::engine::{self, ConsoleProgram};
 use crate::error::{KunaError, Result};
 use crate::specs;
 
-/// The Kuna release this build is pinned to, matching the tag pin in the
-/// root manifest's `[workspace.dependencies]`.
-pub const KUNA_RELEASE: &str = "v1.878";
+/// The Kuna release this build is pinned to. `build.rs` derives it from the
+/// `kuna-base` pin in the workspace lock file, so the reported release and
+/// the embedded specs always name the same checkout.
+pub const KUNA_RELEASE: &str = env!("CALXGLOSS_KUNA_RELEASE");
 
 /// A program loaded by the Kuna engine.
 ///

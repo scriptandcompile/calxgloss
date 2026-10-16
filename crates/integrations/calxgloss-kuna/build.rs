@@ -21,10 +21,51 @@ use std::path::{Path, PathBuf};
 /// Sources and lock files carry no loadable spec content (Kuna's own list).
 const SKIPPED_EXTENSIONS: &[&str] = &["slaspec", "sinc", "lock"];
 
-/// The short commit hash of the pinned tag's checkout, matched against the
-/// cargo git-checkout directory name so a stale checkout of an older pin is
-/// never embedded by accident. Bump it with the tag pin in the root manifest.
-const KUNA_CHECKOUT_REV: &str = "cb68db1";
+/// The Kuna pin, read from `Cargo.lock` — the one place the pin is
+/// authoritative. The tag is what `src/engine.rs` reports as
+/// `KUNA_RELEASE`, and the short rev names the git-checkout directory whose
+/// specs get embedded, so neither can drift from the manifest pin.
+struct Pin {
+    tag: String,
+    rev: String,
+}
+
+/// Pull the `kuna-base` source line out of the workspace lock file:
+/// `git+<url>?tag=<tag>#<full commit>`.
+fn read_pin() -> Pin {
+    let lock = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../Cargo.lock")
+        .canonicalize()
+        .expect("the workspace lock file");
+    println!("cargo:rerun-if-changed={}", lock.display());
+    let text = fs::read_to_string(&lock).unwrap_or_else(|e| panic!("read {}: {e}", lock.display()));
+    let mut source: Option<String> = None;
+    let mut next_is_source = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line == "name = \"kuna-base\"" {
+            next_is_source = true;
+        } else if next_is_source && let Some(rest) = line.strip_prefix("source = ") {
+            source = Some(rest.trim_matches('"').to_string());
+            break;
+        }
+    }
+    let source = source.expect("no kuna-base entry in Cargo.lock — the pin is gone");
+    let tag = source
+        .split("?tag=")
+        .nth(1)
+        .and_then(|rest| rest.split('#').next())
+        .expect("kuna-base pin carries no ?tag=")
+        .to_string();
+    let commit = source
+        .split('#')
+        .next_back()
+        .expect("kuna-base pin carries no commit hash");
+    Pin {
+        tag,
+        rev: commit[..7].to_string(),
+    }
+}
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -47,7 +88,10 @@ fn has_x86_specs(specs: &Path) -> bool {
 /// Locate the Kuna `specs` directory: the `CALXGLOSS_KUNA_SPECS` override
 /// first (for vendored or offline builds), then the cargo git checkout of
 /// the pinned tag under `$CARGO_HOME/git/checkouts/kuna-*/<rev>/specs`.
-fn locate_specs() -> PathBuf {
+/// Only the rev-matched checkout is ever embedded: a checkout of some other
+/// Kuna revision fails the build by name rather than quietly shipping specs
+/// the reported release did not produce.
+fn locate_specs(pin: &Pin) -> PathBuf {
     if let Some(dir) = env::var_os("CALXGLOSS_KUNA_SPECS") {
         let dir = PathBuf::from(dir);
         assert!(
@@ -62,7 +106,7 @@ fn locate_specs() -> PathBuf {
         .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))
         .expect("no $CARGO_HOME or $HOME to find the Kuna git checkout in");
     let mut pinned = None;
-    let mut other = Vec::new();
+    let mut found = Vec::new();
     let checkouts = cargo_home.join("git/checkouts");
     if let Ok(entries) = fs::read_dir(&checkouts) {
         for entry in entries.flatten() {
@@ -73,45 +117,34 @@ fn locate_specs() -> PathBuf {
                 continue;
             };
             for rev in revs.flatten() {
+                let name = rev.file_name().to_string_lossy().to_string();
                 let specs = rev.path().join("specs");
                 if !has_x86_specs(&specs) {
                     continue;
                 }
-                if rev
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(KUNA_CHECKOUT_REV)
-                {
+                if name.starts_with(&pin.rev) {
                     pinned = Some(specs);
                 } else {
-                    other.push(specs);
+                    found.push(name);
                 }
             }
         }
     }
-    if let Some(specs) = pinned {
-        return specs;
-    }
-    other.sort();
-    match other.as_slice() {
-        [] => panic!(
-            "could not find the Kuna v1.878 SLEIGH specs: no pinned git checkout under {} \
-             — run `cargo fetch` first, or set CALXGLOSS_KUNA_SPECS to a Kuna `specs` directory",
-            checkouts.display()
-        ),
-        [specs] => {
-            println!(
-                "cargo:warning=embedding Kuna specs from a checkout other than the pinned \
-                 {KUNA_CHECKOUT_REV}: {}",
-                specs.display()
-            );
-            specs.clone()
-        }
-        specs => panic!(
-            "multiple Kuna spec checkouts and none matches the pinned {KUNA_CHECKOUT_REV}: \
-             {specs:?} — set CALXGLOSS_KUNA_SPECS to pick one"
-        ),
-    }
+    pinned.unwrap_or_else(|| {
+        panic!(
+            "could not find the Kuna {} SLEIGH specs: no git checkout of the pinned rev {} \
+             under {} (checkouts seen: {}) — run `cargo fetch` first, or set \
+             CALXGLOSS_KUNA_SPECS to a Kuna `specs` directory",
+            pin.tag,
+            pin.rev,
+            checkouts.display(),
+            if found.is_empty() {
+                "none".to_string()
+            } else {
+                found.join(", ")
+            },
+        )
+    })
 }
 
 /// Copy `src` and everything under it to `dst`.
@@ -168,7 +201,13 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
 
-    let specs = locate_specs();
+    // The pin comes out of the lock file, and the tag rides into the crate's
+    // environment so the reported release and the embedded specs can never
+    // drift apart from the pin.
+    let pin = read_pin();
+    println!("cargo:rustc-env=CALXGLOSS_KUNA_RELEASE={}", pin.tag);
+
+    let specs = locate_specs(&pin);
     println!("cargo:rerun-if-changed={}", specs.display());
 
     // Copy the x86 tree, then compile in place: `slacomp -a` writes each
