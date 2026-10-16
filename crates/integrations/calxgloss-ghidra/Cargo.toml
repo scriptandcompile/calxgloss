@@ -22,3 +22,6 @@ libc = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }
 tempfile = "3"
+# The fixture target binary the Kuna engine tests drive the `drive_all`
+# seam harness over; the reachability test below keeps that wiring honest.
+calxgloss-testfixtures = { path = "../calxgloss-testfixtures" }
