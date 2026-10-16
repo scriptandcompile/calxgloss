@@ -9,7 +9,7 @@ repository.workspace = true
 [dependencies]
 calxgloss-types = { path = "../../shared/calxgloss-types" }
 calxgloss-ghidra = { path = "../../integrations/calxgloss-ghidra" }
-goblin = { version = "0.10.7", default-features = false, features = ["pe32", "pe64"] }
+goblin = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 regex = "1.11"

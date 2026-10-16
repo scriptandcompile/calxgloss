@@ -38,6 +38,9 @@ sha2 = "0.10.9"
 # default feature set) is dead weight.
 zip = { version = "2", default-features = false, features = ["deflate"] }
 once_cell = "1.21.4"
+# PE parsing for the baseline runner's address math and the test-fixture
+# shape validation: only the PE readers are needed, nothing else.
+goblin = { version = "0.10.7", default-features = false, features = ["pe32", "pe64"] }
 chrono = { version = "0.4.45", features = ["serde"] }
 parking_lot = "0.12.5"
 askama = "0.16.1"
