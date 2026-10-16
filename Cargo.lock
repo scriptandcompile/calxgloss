@@ -536,6 +536,7 @@ dependencies = [
 name = "calxgloss-ghidra"
 version = "0.3.0"
 dependencies = [
+ "calxgloss-kuna",
  "calxgloss-testfixtures",
  "calxgloss-types",
  "libc",
@@ -571,8 +572,10 @@ dependencies = [
  "kuna-base",
  "kuna-console",
  "kuna-slacomp",
+ "object",
  "tempfile",
  "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]

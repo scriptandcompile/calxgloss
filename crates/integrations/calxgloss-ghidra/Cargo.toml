@@ -8,6 +8,10 @@ repository.workspace = true
 
 [dependencies]
 calxgloss-types = { path = "../../shared/calxgloss-types" }
+# The Kuna engine sits behind the ScanSource seam (issue #206). The dependency
+# direction is ghidra → kuna, never the reverse: the seam trait lives here, so
+# a kuna → ghidra edge would be a cycle.
+calxgloss-kuna = { path = "../calxgloss-kuna" }
 reqwest = { workspace = true, features = ["json"] }
 sha2 = { workspace = true }
 zip = { workspace = true }

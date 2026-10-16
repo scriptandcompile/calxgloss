@@ -55,3 +55,7 @@ kuna-console = { git = "https://github.com/Noelo-Lab/kuna", tag = "v1.878" }
 # The SLEIGH compiler, used by calxgloss-kuna's build script to compile the
 # embedded x86 specs; a build-dependency only.
 kuna-slacomp = { git = "https://github.com/Noelo-Lab/kuna", tag = "v1.878" }
+# Binary container reader (import/export tables, image base) for the Kuna
+# source's seam reads; pinned to the same version Kuna itself depends on, so
+# both read the same file through the same lens.
+object = { version = "0.39", default-features = false, features = ["read_core", "elf", "pe", "macho", "coff", "std"] }

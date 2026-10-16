@@ -10,6 +10,8 @@ repository.workspace = true
 kuna-base = { workspace = true }
 kuna-console = { workspace = true }
 thiserror = { workspace = true }
+object = { workspace = true }
+tokio = { workspace = true }
 
 [build-dependencies]
 kuna-slacomp = { workspace = true }

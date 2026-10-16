@@ -22,10 +22,15 @@ pub const KUNA_RELEASE: &str = env!("CALXGLOSS_KUNA_RELEASE");
 
 /// A program loaded by the Kuna engine.
 ///
-/// The loaded program stays inside: later tickets (#206 onward) read its
-/// listings and p-code through this handle; this release reports identity.
+/// The loaded program stays inside: the scan reads
+/// ([`source::KunaSource`](crate::source::KunaSource)) answer through this
+/// handle, and the handle never leaves the engine thread it was built on —
+/// Kuna's program type is full of `Rc`/`RefCell` and is neither `Send` nor
+/// `Sync`.
 pub struct KunaProgram {
-    program: ConsoleProgram,
+    /// The upstream program, crate-private: `source.rs` drives it on the
+    /// engine thread, and nothing else may touch it.
+    pub(crate) program: ConsoleProgram,
 }
 
 impl std::fmt::Debug for KunaProgram {
@@ -66,7 +71,18 @@ impl KunaProgram {
 /// backtrace.
 pub fn load(path: &Path) -> Result<KunaProgram> {
     let spec_root = specs::spec_root()?;
-    let program = engine::bootstrap_from_object(&path.to_string_lossy(), "", &[spec_root])
+    let mut program = engine::bootstrap_from_object(&path.to_string_lossy(), "", &[spec_root])
+        .map_err(|error| KunaError::LoadFailed {
+            path: path.display().to_string(),
+            reason: error.explain().to_string(),
+        })?;
+    // Mirror the Kuna CLI's load sequence (bootstrap → options → commit):
+    // bootstrap only stashes the object file's entries as pending synthetic
+    // ones, and the commit installs them as the function entries the
+    // listings answer with. A scan reading the program straight after
+    // bootstrap would otherwise see the pre-commit view.
+    program
+        .commit_pending_analysis()
         .map_err(|error| KunaError::LoadFailed {
             path: path.display().to_string(),
             reason: error.explain().to_string(),

@@ -29,18 +29,21 @@
 //!   `CallGraphSource` trait for it.
 
 use crate::cache::CachedGhidraSource;
-use crate::client::{GhidraClient, Result};
+use crate::client::{GhidraClient, GhidraError, Result};
 use crate::model::{
     DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, StringLiteral,
     StructLayout, Symbol, Xref,
 };
+use calxgloss_kuna::KunaSource;
+use calxgloss_kuna::error::KunaError;
 
 /// The read-only program facts every evidence engine pulls from Ghidra.
 ///
-/// [`GhidraClient`] implements it over the live HTTP API and
+/// [`GhidraClient`] implements it over the live HTTP API,
 /// [`CachedGhidraSource`](crate::CachedGhidraSource) implements it as the
-/// read cache; tests implement it over canned data. The futures are `Send`
-/// so a scan can be driven from an orchestrating task.
+/// read cache, [`KunaSource`] implements the core reads over the in-process
+/// Kuna engine (issue #206), and tests implement it over canned data. The
+/// futures are `Send` so a scan can be driven from an orchestrating task.
 pub trait ScanSource {
     /// Every function in the program, in listing order.
     fn functions(&self) -> impl std::future::Future<Output = Result<Vec<FunctionSummary>>> + Send;
@@ -161,6 +164,146 @@ impl ScanSource for GhidraClient {
     }
 }
 
+/// The core scan reads answered by the in-process Kuna engine (issue #206).
+///
+/// The five core reads — functions, decompile, imports, exports, image base —
+/// map straight onto [`KunaSource`]'s inherent API, with Kuna's named
+/// failures mapped onto the seam's error vocabulary: a missing function
+/// becomes [`GhidraError::NotFound`] like Ghidra's answer, and every other
+/// Kuna failure arrives as [`GhidraError::Reported`] whose message already
+/// names the `--engine ghidra` fallback.
+///
+/// The eight reads Kuna does not answer yet — the string listing, callers,
+/// xrefs, the Type Manager reads, data items, and raw memory — fail by name,
+/// naming issue #207 as the ticket that wires them up. They are errors, not
+/// empty listings: an empty answer would claim the program has no strings
+/// when the truth is that this engine cannot list them yet.
+impl ScanSource for KunaSource {
+    async fn functions(&self) -> Result<Vec<FunctionSummary>> {
+        KunaSource::list_functions(self)
+            .await
+            .map(|functions| {
+                functions
+                    .into_iter()
+                    .map(|function| FunctionSummary {
+                        name: function.name,
+                        address: function.address,
+                    })
+                    .collect()
+            })
+            .map_err(map_kuna_error)
+    }
+
+    async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
+        KunaSource::decompile_function(self, name)
+            .await
+            .map(|function| DecompiledFunction {
+                name: function.name,
+                signature: function.signature,
+                body: function.body,
+            })
+            .map_err(map_kuna_error)
+    }
+
+    async fn strings(&self) -> Result<Vec<StringLiteral>> {
+        Err(kuna_read_unsupported("strings"))
+    }
+
+    async fn callers(&self, _address: u64) -> Result<Vec<String>> {
+        Err(kuna_read_unsupported("callers"))
+    }
+
+    async fn xrefs_to(&self, _address: u64) -> Result<Vec<Xref>> {
+        Err(kuna_read_unsupported("xrefs_to"))
+    }
+
+    async fn data_types(&self, _category: Option<&str>) -> Result<Vec<DataTypeEntry>> {
+        Err(kuna_read_unsupported("data_types"))
+    }
+
+    async fn struct_layout(&self, _name: &str) -> Result<StructLayout> {
+        Err(kuna_read_unsupported("struct_layout"))
+    }
+
+    async fn enum_values(&self, _name: &str) -> Result<EnumDefinition> {
+        Err(kuna_read_unsupported("enum_values"))
+    }
+
+    async fn data_items(&self) -> Result<Vec<DataItem>> {
+        Err(kuna_read_unsupported("data_items"))
+    }
+
+    async fn imports(&self) -> Result<Vec<Symbol>> {
+        KunaSource::list_imports(self)
+            .await
+            .map(|imports| {
+                imports
+                    .into_iter()
+                    .map(|import| Symbol {
+                        name: import.name,
+                        address: import.address,
+                        imported: import.imported,
+                    })
+                    .collect()
+            })
+            .map_err(map_kuna_error)
+    }
+
+    async fn exports(&self) -> Result<Vec<Symbol>> {
+        KunaSource::list_exports(self)
+            .await
+            .map(|exports| {
+                exports
+                    .into_iter()
+                    .map(|export| Symbol {
+                        name: export.name,
+                        address: export.address,
+                        imported: export.imported,
+                    })
+                    .collect()
+            })
+            .map_err(map_kuna_error)
+    }
+
+    async fn image_base(&self) -> Result<u64> {
+        KunaSource::image_base(self).await.map_err(map_kuna_error)
+    }
+
+    async fn read_memory(&self, _address: u64, _length: usize) -> Result<Vec<u8>> {
+        Err(kuna_read_unsupported("read_memory"))
+    }
+}
+
+/// Map a Kuna engine failure onto the seam's error vocabulary.
+fn map_kuna_error(error: KunaError) -> GhidraError {
+    match error {
+        // A missing function is the same fact Ghidra reports, in the same
+        // shape — consumers already branch on NotFound for a bad name.
+        KunaError::FunctionNotFound { name } => GhidraError::NotFound {
+            kind: "function",
+            query: name,
+        },
+        // Every other Kuna failure is already a named, self-explaining
+        // message (each names the `--engine ghidra` fallback where it
+        // matters); it rides the seam as a reported explanation.
+        other => GhidraError::Reported {
+            status: None,
+            message: other.to_string(),
+        },
+    }
+}
+
+/// The named refusal of a read the Kuna engine does not answer yet.
+fn kuna_read_unsupported(read: &str) -> GhidraError {
+    GhidraError::Reported {
+        status: None,
+        message: format!(
+            "the Kuna engine does not answer `{read}` reads yet (issue #207 wires up the \
+             remaining scan reads); re-run with --engine ghidra for the full pipeline"
+        ),
+    }
+}
+
 /// The one concrete read source a translation batch hands to every consumer.
 ///
 /// The pipeline builds a [`CachedGhidraSource`] for the target binary at the
@@ -170,17 +313,30 @@ impl ScanSource for GhidraClient {
 /// keeps the pipeline's plumbing generic-free: the same `PipelineSource` value
 /// answers every consumer, and a warm second batch over the same workspace and
 /// unchanged binary costs no live reads at all.
+///
+/// `Kuna` is the third path (issue #206): the in-process Kuna engine, answering
+/// the core scan reads with no server at all. The reads it does not answer yet
+/// fail by name rather than going live — a Kuna batch never silently falls
+/// back to the Ghidra server mid-scan.
 #[derive(Debug, Clone)]
 pub enum PipelineSource {
     /// No cache active — every read goes straight to the server.
     Live(GhidraClient),
     /// The batch's shared two-tier cache, scoped to one target binary.
     Cached(CachedGhidraSource),
+    /// The in-process Kuna engine, loaded with exactly one target binary.
+    Kuna(KunaSource),
 }
 
 impl From<GhidraClient> for PipelineSource {
     fn from(client: GhidraClient) -> Self {
         Self::Live(client)
+    }
+}
+
+impl From<KunaSource> for PipelineSource {
+    fn from(source: KunaSource) -> Self {
+        Self::Kuna(source)
     }
 }
 
@@ -193,6 +349,7 @@ impl ScanSource for PipelineSource {
         match self {
             Self::Live(client) => ScanSource::functions(client).await,
             Self::Cached(cache) => ScanSource::functions(cache).await,
+            Self::Kuna(source) => ScanSource::functions(source).await,
         }
     }
 
@@ -200,6 +357,7 @@ impl ScanSource for PipelineSource {
         match self {
             Self::Live(client) => ScanSource::decompile(client, name).await,
             Self::Cached(cache) => ScanSource::decompile(cache, name).await,
+            Self::Kuna(source) => ScanSource::decompile(source, name).await,
         }
     }
 
@@ -207,6 +365,7 @@ impl ScanSource for PipelineSource {
         match self {
             Self::Live(client) => ScanSource::strings(client).await,
             Self::Cached(cache) => ScanSource::strings(cache).await,
+            Self::Kuna(source) => ScanSource::strings(source).await,
         }
     }
 
@@ -214,6 +373,7 @@ impl ScanSource for PipelineSource {
         match self {
             Self::Live(client) => ScanSource::callers(client, address).await,
             Self::Cached(cache) => ScanSource::callers(cache, address).await,
+            Self::Kuna(source) => ScanSource::callers(source, address).await,
         }
     }
 
@@ -221,6 +381,7 @@ impl ScanSource for PipelineSource {
         match self {
             Self::Live(client) => ScanSource::xrefs_to(client, address).await,
             Self::Cached(cache) => ScanSource::xrefs_to(cache, address).await,
+            Self::Kuna(source) => ScanSource::xrefs_to(source, address).await,
         }
     }
 
@@ -228,6 +389,7 @@ impl ScanSource for PipelineSource {
         match self {
             Self::Live(client) => ScanSource::data_types(client, category).await,
             Self::Cached(cache) => ScanSource::data_types(cache, category).await,
+            Self::Kuna(source) => ScanSource::data_types(source, category).await,
         }
     }
 
@@ -235,6 +397,7 @@ impl ScanSource for PipelineSource {
         match self {
             Self::Live(client) => ScanSource::struct_layout(client, name).await,
             Self::Cached(cache) => ScanSource::struct_layout(cache, name).await,
+            Self::Kuna(source) => ScanSource::struct_layout(source, name).await,
         }
     }
 
@@ -242,6 +405,7 @@ impl ScanSource for PipelineSource {
         match self {
             Self::Live(client) => ScanSource::enum_values(client, name).await,
             Self::Cached(cache) => ScanSource::enum_values(cache, name).await,
+            Self::Kuna(source) => ScanSource::enum_values(source, name).await,
         }
     }
 
@@ -249,6 +413,7 @@ impl ScanSource for PipelineSource {
         match self {
             Self::Live(client) => ScanSource::data_items(client).await,
             Self::Cached(cache) => ScanSource::data_items(cache).await,
+            Self::Kuna(source) => ScanSource::data_items(source).await,
         }
     }
 
@@ -256,6 +421,7 @@ impl ScanSource for PipelineSource {
         match self {
             Self::Live(client) => ScanSource::imports(client).await,
             Self::Cached(cache) => ScanSource::imports(cache).await,
+            Self::Kuna(source) => ScanSource::imports(source).await,
         }
     }
 
@@ -263,6 +429,7 @@ impl ScanSource for PipelineSource {
         match self {
             Self::Live(client) => ScanSource::exports(client).await,
             Self::Cached(cache) => ScanSource::exports(cache).await,
+            Self::Kuna(source) => ScanSource::exports(source).await,
         }
     }
 
@@ -270,6 +437,7 @@ impl ScanSource for PipelineSource {
         match self {
             Self::Live(client) => ScanSource::image_base(client).await,
             Self::Cached(cache) => ScanSource::image_base(cache).await,
+            Self::Kuna(source) => ScanSource::image_base(source).await,
         }
     }
 
@@ -277,6 +445,7 @@ impl ScanSource for PipelineSource {
         match self {
             Self::Live(client) => ScanSource::read_memory(client, address, length).await,
             Self::Cached(cache) => ScanSource::read_memory(cache, address, length).await,
+            Self::Kuna(source) => ScanSource::read_memory(source, address, length).await,
         }
     }
 }

@@ -45,6 +45,15 @@ impl TagSink for calxgloss_ghidra::PipelineSource {
             // Writes are never cached — the cache passes them straight to
             // the client it wraps.
             Self::Cached(cache) => Ok(cache.add_function_tag(&address, tag).await?),
+            // The Kuna engine has no write-back seam yet (issue #209 wires
+            // it up); the refusal is named, never silent.
+            Self::Kuna(_) => Err(GhidraError::Reported {
+                status: None,
+                message: "the Kuna engine has no function-tag write-back yet (issue #209 wires \
+                          up engine write-back); re-run with --engine ghidra for the full pipeline"
+                    .to_string(),
+            }
+            .into()),
         }
     }
 }
