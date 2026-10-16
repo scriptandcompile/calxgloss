@@ -3,7 +3,8 @@
 //!
 //! Runs the serialization detectors — byte-swap call matching, manual
 //! bit-packing recognition, magic-byte format sniffing, cross-field
-//! validation reading, and the composed serialization layout — against the
+//! validation reading, the composed serialization layout, and the
+//! corroborated protocol message identification — against the
 //! program currently open in Ghidra and saves the result to
 //! `re/analysis/serialize/{binary}.json` in the workspace, the same file
 //! batch translation will read as prompt context. Batch translation runs
@@ -104,6 +105,7 @@ fn print_serialization_report(result: &SerializeResult, path: &Path) {
         "magic",
         "cross_field_validation",
         "serialization_format",
+        "protocol_message",
     ]
     .into_iter()
     .map(|kind| {
@@ -165,7 +167,7 @@ fn print_serialization_report(result: &SerializeResult, path: &Path) {
     hsep_bold();
     if result.is_empty() {
         println!(
-            "  {} The scan found nothing — no byte-swap calls, bit-packing chains, magic-byte comparisons, cross-field validation checks, or composed serialization layouts were found in the decompiled bodies.",
+            "  {} The scan found nothing — no byte-swap calls, bit-packing chains, magic-byte comparisons, cross-field validation checks, composed serialization layouts, or protocol message handlers were found in the decompiled bodies.",
             yellow_bold("◉")
         );
     } else {

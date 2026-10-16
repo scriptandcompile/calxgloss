@@ -2,14 +2,16 @@
 //!
 //! [`SerializeEngine`] runs the serialization detectors — byte-swap
 //! call matching, bit-pack shape reading, magic-byte comparison
-//! matching, cross-field validation reading, and the format combiner's
-//! composition of the swap and pack readings — over every function of
-//! one open Ghidra program and assembles their findings into a single
-//! [`SerializeResult`] with its scan provenance.
+//! matching, cross-field validation reading, the format combiner's
+//! composition of the swap and pack readings, and the protocol
+//! combiner's promotion of a corroborated protocol sniff — over every
+//! function of one open Ghidra program and assembles their findings
+//! into a single [`SerializeResult`] with its scan provenance.
 //!
-//! The format composition rides at the end of each function's
-//! findings: it reads the swap and pack records the pass already made,
-//! so it costs no extra body pass and no extra Ghidra round trips.
+//! The format and protocol-message compositions ride at the end of
+//! each function's findings: they read the records the pass already
+//! made, so they cost no extra body pass and no extra Ghidra round
+//! trips.
 //!
 //! The detectors are pure text analysis over one decompiled body, so
 //! the engine fetches each function's pseudo-C exactly once and reads
@@ -28,6 +30,7 @@ use crate::byteswap::ByteSwapDetector;
 use crate::error::Result;
 use crate::format::FormatCombiner;
 use crate::magic_bytes::MagicByteDetector;
+use crate::protocol::ProtocolMessageCombiner;
 use crate::types::{ScanMetadata, SerializeFinding, SerializeResult};
 use crate::validation::ValidationDetector;
 use calxgloss_ghidra::GhidraClient;
@@ -60,6 +63,7 @@ pub struct SerializeEngine<S = GhidraClient> {
     magic: MagicByteDetector,
     validation: ValidationDetector,
     format: FormatCombiner,
+    protocol: ProtocolMessageCombiner,
 }
 
 impl SerializeEngine<GhidraClient> {
@@ -81,6 +85,7 @@ impl<S> SerializeEngine<S> {
             magic: MagicByteDetector::with_default_signatures(),
             validation: ValidationDetector::new(),
             format: FormatCombiner::new(),
+            protocol: ProtocolMessageCombiner::new(),
         }
     }
 
@@ -120,7 +125,8 @@ impl<S> SerializeEngine<S> {
     /// findings follow the function listing — function by function,
     /// and within one function the byte swaps, then the bit packs,
     /// then the magic-byte comparisons, then the cross-field
-    /// validation checks, then the composed format layout — so two
+    /// validation checks, then the composed format layout, then the
+    /// protocol-message identification — so two
     /// scans of the same program diff cleanly.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad
@@ -186,6 +192,12 @@ impl<S> SerializeEngine<S> {
 
             let swap_records = self.byteswap.detect(&decompiled);
             let pack_records = self.bitpack.detect(&decompiled);
+            let magic_records = self.magic.detect(&decompiled);
+            // The validation reading sees exactly the comparisons the
+            // magic reading reported for this body, so a signature
+            // check lands once — as magic — and claims no validation
+            // finding on top.
+            let validation_records = self.validation.detect(&decompiled, &magic_records);
             // The format stage composes the swap and pack readings just
             // made into one end-to-end layout when the function carries
             // two or more of them (P11.5-2); it reads only those
@@ -193,14 +205,20 @@ impl<S> SerializeEngine<S> {
             let format_record = self
                 .format
                 .combine(&decompiled, &swap_records, &pack_records);
+            // The protocol stage promotes the function to one message
+            // handler when a protocol-table magic hit is corroborated
+            // by a network-order swap or a cross-field validation
+            // (P11.5-3); it reads only the records the pass already
+            // made and the configured table's protocol flags, so it
+            // costs no extra body pass either.
+            let protocol_record = self.protocol.identify(
+                self.magic.signatures(),
+                &magic_records,
+                &swap_records,
+                &validation_records,
+            );
             findings.extend(swap_records.into_iter().map(SerializeFinding::ByteSwap));
             findings.extend(pack_records.into_iter().map(SerializeFinding::BitPack));
-            let magic_records = self.magic.detect(&decompiled);
-            // The validation reading sees exactly the comparisons the
-            // magic reading reported for this body, so a signature
-            // check lands once — as magic — and claims no validation
-            // finding on top.
-            let validation_records = self.validation.detect(&decompiled, &magic_records);
             findings.extend(magic_records.into_iter().map(SerializeFinding::Magic));
             findings.extend(
                 validation_records
@@ -208,6 +226,7 @@ impl<S> SerializeEngine<S> {
                     .map(SerializeFinding::CrossFieldValidation),
             );
             findings.extend(format_record.map(SerializeFinding::SerializationFormat));
+            findings.extend(protocol_record.map(SerializeFinding::ProtocolMessage));
         }
 
         let mut metadata = ScanMetadata::new(binary);
@@ -730,6 +749,151 @@ mod tests {
                 .findings
                 .iter()
                 .all(|finding| finding.kind() != "serialization_format")
+        );
+        assert!(
+            result
+                .findings
+                .iter()
+                .all(|finding| finding.kind() != "protocol_message"),
+            "a file-format magic plus a swap never promotes"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_protocol_magic_and_an_ntohl_lands_a_protocol_message_finding() {
+        // The promotion end to end: a protocol-table magic comparison
+        // and an `ntohl` in one body land the magic and byte-swap
+        // findings as always, plus exactly one protocol message
+        // finding naming the protocol and its corroborating reading.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "\
+  if (uVar2 == 0x86dd) {
+  uVar1 = ntohl(local_18);
+",
+            ),
+        );
+        let result = scan(program).await;
+
+        let kinds: Vec<&str> = result
+            .findings
+            .iter()
+            .map(|finding| finding.kind())
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["byteswap", "magic", "protocol_message"],
+            "the handler claim rides alongside its magic and byte-swap findings"
+        );
+
+        let SerializeFinding::Magic(record) = &result.findings[1] else {
+            unreachable!("the protocol comparison still lands as a magic finding");
+        };
+        assert_eq!(record.format, "IPv6");
+        assert_eq!(
+            record.suggestion,
+            "ipv6 header decode via byteorder BE reads"
+        );
+
+        let SerializeFinding::ProtocolMessage(record) = &result.findings[2] else {
+            unreachable!("the corroborated sniff promotes to a protocol message finding");
+        };
+        assert_eq!(record.protocol, "IPv6");
+        assert_eq!(record.magic, 0x86DD);
+        assert_eq!(record.corroborations, vec!["ntohl swap"]);
+        assert_eq!(record.confidence.value(), 85);
+        assert_eq!(
+            record.suggestion,
+            "protocol-aware IPv6 message decode (byteorder BE reads)"
+        );
+        assert_eq!(
+            record.evidence,
+            "if (uVar2 == 0x86dd) { uVar1 = ntohl(local_18);"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_protocol_magic_alone_stays_a_plain_magic_finding() {
+        // The honesty gate at scan level: a protocol sniff with
+        // nothing corroborating it claims no handler — the magic
+        // finding says all there is.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  if (uVar2 == 0x86dd) {\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let kinds: Vec<&str> = result
+            .findings
+            .iter()
+            .map(|finding| finding.kind())
+            .collect();
+        assert_eq!(kinds, vec!["magic"]);
+    }
+
+    #[tokio::test]
+    async fn scan_order_places_the_protocol_message_after_the_format_record() {
+        // A body carrying every shape: the per-function finding order
+        // is byte swaps, bit packs, magic comparisons, validation,
+        // the composed format, then the protocol message — the
+        // existing prefix unchanged, the new kind slotted last — with
+        // still one decompile for the function.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "\
+  if (uVar6 == 0x86dd) {
+  uVar1 = ntohl(local_18);
+  uVar2 = (uVar3 << 0x18) | ((uint)uVar4 << 0x10) | (uVar5 << 8) | (uint)uVar6;
+  if (uVar7 == uVar5 + uVar6) {
+",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  return;\n",
+            ),
+        );
+        let result = scan(program.clone()).await;
+
+        let order: Vec<(&str, &str)> = result
+            .findings
+            .iter()
+            .map(|finding| (finding.function(), finding.kind()))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                ("FUN_18003ab00", "byteswap"),
+                ("FUN_18003ab00", "bitpack"),
+                ("FUN_18003ab00", "magic"),
+                ("FUN_18003ab00", "cross_field_validation"),
+                ("FUN_18003ab00", "serialization_format"),
+                ("FUN_18003ab00", "protocol_message"),
+            ]
+        );
+        assert_eq!(
+            program.decompiled(),
+            vec!["FUN_18003ab00", "FUN_18003e750"],
+            "one decompile per function, in listing order"
         );
     }
 

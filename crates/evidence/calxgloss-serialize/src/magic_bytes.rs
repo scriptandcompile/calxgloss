@@ -1,11 +1,12 @@
 //! Magic-byte (format signature) detection.
 //!
 //! This module provides [`MagicByteDetector`], which carries the
-//! file-format signatures a scan reads decompiled bodies against — the
-//! PNG, gzip, and ZIP magics — and reads each comparison of loaded
-//! buffer content against one as format sniffing a Rust translation
-//! should express through the matching format crate: `png::Decoder`,
-//! `flate2::read::GzDecoder`, `zip::ZipArchive`.
+//! signatures a scan reads decompiled bodies against — the
+//! PNG, gzip, and ZIP file-format magics and the well-known
+//! network-protocol magics (IPv4, ARP, IPv6, VLAN) — and reads each
+//! comparison of loaded buffer content against one as format sniffing
+//! a Rust translation should express through the matching format
+//! crate: `png::Decoder`, `flate2::read::GzDecoder`, `zip::ZipArchive`.
 //!
 //! Each entry is a [`MagicSignature`]: the [`magic`](MagicSignature::magic)
 //! bytes as the decompiler writes them in a comparison, the
@@ -15,6 +16,14 @@
 //! [`MagicByteDetector::with_default_signatures`] builds a detector
 //! that scans against it — the whole table is swappable for a scan that
 //! knows a proprietary header.
+//!
+//! The standard table carries a protocol section: network-protocol
+//! magics [`flagged`](MagicSignature::protocol) as protocol entries so
+//! the protocol combiner can tell them apart from file-format entries
+//! when it decides whether a function is a protocol message handler.
+//! The reading itself does not care about the flag: a protocol magic
+//! comparison lands exactly like a file-format one, as a plain
+//! [`MagicFormat`] finding.
 //!
 //! [`MagicByteDetector::detect`] runs the reading: it walks a
 //! decompiled body line by line and emits one [`MagicFormat`] per line
@@ -30,8 +39,8 @@ use serde::{Deserialize, Serialize};
 // Format signatures
 // ============================================================
 
-/// One file-format signature the detector recognizes: the magic bytes,
-/// the format they name, and the Rust type that reads it.
+/// One signature the detector recognizes: the magic bytes, the format
+/// or protocol they name, and the Rust type or pattern that reads it.
 ///
 /// A signature is a constant, not a shape: it says that the value
 /// [`magic`](Self::magic), compared against loaded buffer content,
@@ -41,32 +50,69 @@ use serde::{Deserialize, Serialize};
 /// decompiler writes them in a comparison: the signature read as the
 /// program loads it, little-endian on x86, so the gzip magic `1F 8B`
 /// is written `0x8B1F` and the ZIP magic `PK\x03\x04` `0x04034B50`.
+///
+/// A [`protocol`](Self::protocol) entry names a network protocol
+/// instead of a file format. Protocol fields are numbered big-endian
+/// on the wire, so a protocol magic is stored in wire order — the
+/// value a handler spells after swapping the field into host order,
+/// the IPv6 ethertype `86 DD` written `0x86DD`. The flag changes
+/// nothing about the reading — a protocol magic comparison lands as a
+/// plain [`MagicFormat`] like any other entry — it only marks the
+/// entry as one the protocol combiner may promote to a protocol
+/// message finding when the function corroborates the sniff.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MagicSignature {
-    /// The format the bytes name, e.g. `PNG`.
+    /// The format or protocol the bytes name, e.g. `PNG` or `IPv6`.
     pub format: String,
     /// The signature as a value, spelled the way the comparison
     /// spells it, e.g. `0x8950_4E47` for PNG.
     pub magic: u64,
-    /// The Rust type the comparison suggests, e.g. `png::Decoder`.
+    /// The Rust type or pattern the comparison suggests, e.g.
+    /// `png::Decoder`.
     pub suggestion: String,
+    /// Whether the entry names a network protocol rather than a file
+    /// format — the flag the protocol combiner reads to tell the two
+    /// sections of the table apart.
+    #[serde(default)]
+    pub protocol: bool,
 }
 
 impl MagicSignature {
-    /// A signature recognizing the constant `magic` as the start of
-    /// `format`, read in Rust through `suggestion`.
+    /// A file-format signature recognizing the constant `magic` as
+    /// the start of `format`, read in Rust through `suggestion`.
     pub fn new(format: impl Into<String>, magic: u64, suggestion: impl Into<String>) -> Self {
         Self {
             format: format.into(),
             magic,
             suggestion: suggestion.into(),
+            protocol: false,
+        }
+    }
+
+    /// A network-protocol signature recognizing the wire-order
+    /// constant `magic` as naming `protocol`, decoded in Rust through
+    /// `suggestion`. The entry is flagged [`protocol`](Self::protocol)
+    /// so the protocol combiner can tell it from a file-format entry.
+    pub fn protocol(
+        protocol: impl Into<String>,
+        magic: u64,
+        suggestion: impl Into<String>,
+    ) -> Self {
+        Self {
+            format: protocol.into(),
+            magic,
+            suggestion: suggestion.into(),
+            protocol: true,
         }
     }
 }
 
 /// The standard signature table: the three formats whose magics show up
 /// most in a binary that handles files — PNG, gzip, and ZIP — each
-/// paired with the crate type that decodes it.
+/// paired with the crate type that decodes it, followed by the
+/// protocol section: the well-known network-protocol magics — the
+/// Ethernet types IPv4, ARP, IPv6, and VLAN — each flagged as a
+/// protocol entry and paired with the decoding pattern that reads it.
 pub fn default_signatures() -> Vec<MagicSignature> {
     vec![
         // The PNG magic is the first four bytes of the file, `89 50 4E 47`,
@@ -76,6 +122,13 @@ pub fn default_signatures() -> Vec<MagicSignature> {
         MagicSignature::new("gzip", 0x8B1F, "flate2::read::GzDecoder"),
         // ZIP local file headers start `PK\x03\x04`; loaded little-endian, 0x04034B50.
         MagicSignature::new("ZIP", 0x0403_4B50, "zip::ZipArchive"),
+        // The protocol section: Ethernet type values, spelled in wire
+        // order — the value a packet handler compares against after
+        // swapping the 16-bit field into host order.
+        MagicSignature::protocol("IPv4", 0x0800, "ipv4 header decode via byteorder BE reads"),
+        MagicSignature::protocol("ARP", 0x0806, "arp packet decode via byteorder BE reads"),
+        MagicSignature::protocol("IPv6", 0x86DD, "ipv6 header decode via byteorder BE reads"),
+        MagicSignature::protocol("VLAN", 0x8100, "vlan tag decode via byteorder BE reads"),
     ]
 }
 
@@ -293,7 +346,7 @@ mod tests {
         let records = detect_with(&detector, "  if (uVar1 == 0x43414c58) {");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].format, "CALX");
-        assert_eq!(detector.signatures().len(), 4);
+        assert_eq!(detector.signatures().len(), 8);
     }
 
     fn detect_with(detector: &MagicByteDetector, body: &str) -> Vec<MagicFormat> {
@@ -321,13 +374,60 @@ mod tests {
     }
 
     #[test]
-    fn the_default_table_carries_png_gzip_and_zip() {
+    fn the_default_table_carries_file_formats_then_protocol_entries() {
         let detector = MagicByteDetector::with_default_signatures();
         let formats: Vec<&str> = detector
             .signatures()
             .iter()
             .map(|s| s.format.as_str())
             .collect();
-        assert_eq!(formats, vec!["PNG", "gzip", "ZIP"]);
+        assert_eq!(
+            formats,
+            vec!["PNG", "gzip", "ZIP", "IPv4", "ARP", "IPv6", "VLAN"]
+        );
+    }
+
+    #[test]
+    fn the_protocol_entries_are_flagged_and_the_file_formats_are_not() {
+        let table = default_signatures();
+        let flagged: Vec<&str> = table
+            .iter()
+            .filter(|s| s.protocol)
+            .map(|s| s.format.as_str())
+            .collect();
+        assert_eq!(flagged, vec!["IPv4", "ARP", "IPv6", "VLAN"]);
+        assert!(
+            table
+                .iter()
+                .filter(|s| !s.protocol)
+                .all(|s| matches!(s.format.as_str(), "PNG" | "gzip" | "ZIP")),
+            "the file-format section stays unflagged"
+        );
+    }
+
+    #[test]
+    fn a_protocol_magic_comparison_lands_a_plain_magic_finding() {
+        // A protocol magic on its own reads exactly like a file-format
+        // one: a plain magic finding naming the protocol and its
+        // decoding pattern, nothing more.
+        let records = detect("  if (uVar1 == 0x86dd) {");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].format, "IPv6");
+        assert_eq!(records[0].magic, 0x86DD);
+        assert_eq!(
+            records[0].suggestion,
+            "ipv6 header decode via byteorder BE reads"
+        );
+        assert_eq!(records[0].confidence, MAGIC_CONFIDENCE);
+        assert_eq!(records[0].evidence, "if (uVar1 == 0x86dd) {");
+    }
+
+    #[test]
+    fn a_custom_signature_is_not_a_protocol_entry() {
+        // The one-at-a-time and wholesale table paths build file-format
+        // entries exactly as they always did; only the protocol
+        // constructor flags.
+        assert!(!MagicSignature::new("CALX", 0x4341_4C58, "calx::Header").protocol);
+        assert!(MagicSignature::protocol("MYPROTO", 0x1234, "proto decode").protocol);
     }
 }

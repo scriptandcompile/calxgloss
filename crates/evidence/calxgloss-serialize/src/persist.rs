@@ -267,10 +267,11 @@ mod tests {
 
     #[test]
     fn a_mixed_kind_document_survives_the_round_trip() {
-        // Byteswap, bitpack, magic, cross-field-validation, and
-        // serialization-format findings interleaved in scan order: the
-        // union carries every kind through save and load without
-        // losing the record shape behind each tag.
+        // Byteswap, bitpack, magic, cross-field-validation,
+        // serialization-format, and protocol-message findings
+        // interleaved in scan order: the union carries every kind
+        // through save and load without losing the record shape
+        // behind each tag.
         let dir = tempfile::tempdir().unwrap();
         let persistor = SerializePersistor::new(dir.path());
 
@@ -336,11 +337,22 @@ mod tests {
                     .to_string(),
             },
         ));
+        result.findings.push(SerializeFinding::ProtocolMessage(
+            crate::types::ProtocolMessage {
+                function: "ReadHeader".to_string(),
+                magic: 0x86DD,
+                protocol: "IPv6".to_string(),
+                corroborations: vec!["ntohl swap".to_string(), "checksum validation".to_string()],
+                suggestion: "protocol-aware IPv6 message decode (byteorder BE reads)".to_string(),
+                confidence: Confidence::new(85),
+                evidence: "if (uVar1 == 0x86dd) { uVar1 = ntohl(local_18);".to_string(),
+            },
+        ));
         persistor.save(&result).unwrap();
 
         let loaded = persistor.load("eqmain.dll").unwrap();
         assert_eq!(loaded, result);
-        assert_eq!(loaded.findings.len(), 5);
+        assert_eq!(loaded.findings.len(), 6);
         assert_eq!(loaded.findings[0].kind(), "byteswap");
         assert_eq!(loaded.findings[1].kind(), "bitpack");
         assert_eq!(loaded.findings[2].kind(), "magic");
@@ -353,6 +365,14 @@ mod tests {
         assert_eq!(loaded.findings[4].kind(), "serialization_format");
         assert_eq!(loaded.findings[4].confidence(), Confidence::new(75));
         assert_eq!(loaded.findings[4].target(), "reader u32:be > 8 bits");
+        assert_eq!(loaded.findings[5].kind(), "protocol_message");
+        assert_eq!(loaded.findings[5].confidence(), Confidence::new(85));
+        assert_eq!(loaded.findings[5].target(), "IPv6 0x86dd");
+        let SerializeFinding::ProtocolMessage(record) = &loaded.findings[5] else {
+            unreachable!("the protocol message finding reads back under its tag");
+        };
+        assert_eq!(record.protocol, "IPv6");
+        assert_eq!(record.corroborations, ["ntohl swap", "checksum validation"]);
     }
 
     #[test]

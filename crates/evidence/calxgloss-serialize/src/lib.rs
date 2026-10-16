@@ -1,13 +1,15 @@
 //! Endianness and serialization detection for calxgloss.
 //!
 //! Analyzes byte-swap calls, manual bit-packing, format sniffing,
-//! cross-field validation, and the composed serialization layout within
+//! cross-field validation, the composed serialization layout, and
+//! corroborated protocol message handlers within
 //! each function of an open Ghidra
 //! program. Results are injected as structured SERIALIZATION sections
 //! that name the Rust
 //! serialization pattern — `byteorder::BE::read_u32`, `bitvec` or
 //! named-field masking, `png::Decoder`, `flate2::read::GzDecoder`,
-//! `zip::ZipArchive`, a checked parse or validate step — the
+//! `zip::ZipArchive`, a checked parse or validate step, a named
+//! protocol's decoding — the
 //! translation should aim at, so a binary's hand-rolled wire formats
 //! become typed reads instead of transliterated shift-and-or chains.
 //!
@@ -43,6 +45,12 @@
 //!   sequence with wire byte orders and bitfield widths, and a
 //!   reader-or-writer direction only when the swap name families
 //!   agree — riding end to end instead of as scattered per-call hints.
+//! - [`protocol`] - Protocol message identification:
+//!   `ProtocolMessageCombiner` promotes a protocol-table magic
+//!   comparison corroborated by a network-order swap or a cross-field
+//!   validation into a single `ProtocolMessage` finding naming the
+//!   protocol and listing its corroborating readings — a bare sniff
+//!   and a file-format magic never promote.
 //! - [`engine`] - Scan orchestration: `SerializeEngine` runs the
 //!   detectors over one open Ghidra program through a `ScanSource`
 //!   (function listing + decompile-by-name), one sequential pass that
@@ -59,6 +67,7 @@ pub mod error;
 pub mod format;
 pub mod magic_bytes;
 pub mod persist;
+pub mod protocol;
 mod scan;
 pub mod types;
 pub mod validation;

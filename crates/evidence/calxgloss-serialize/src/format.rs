@@ -173,13 +173,15 @@ enum Reading<'a> {
 /// outright.
 const FORMAT_CONFIDENCE: u8 = 75;
 
-/// Whether a swap name moves bytes network-to-host — a read.
-fn is_network_read(name: &str) -> bool {
+/// Whether a swap name moves bytes network-to-host — a read. Shared
+/// with the protocol combiner, whose promotion gate accepts only the
+/// network-order family as a corroborating byte swap.
+pub(crate) fn is_network_read(name: &str) -> bool {
     matches!(name, "ntohs" | "ntohl")
 }
 
 /// Whether a swap name moves bytes host-to-network — a write.
-fn is_network_write(name: &str) -> bool {
+pub(crate) fn is_network_write(name: &str) -> bool {
     matches!(name, "htons" | "htonl")
 }
 

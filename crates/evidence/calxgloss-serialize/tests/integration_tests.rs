@@ -10,8 +10,8 @@
 //!   translation pipeline makes (the findings recorded for one
 //!   function), and the persisted list keeps every finding in scan
 //!   order: function by function, and within one function the byte
-//!   swaps in call order, with the composed format layout riding at
-//!   the end.
+//!   swaps in call order, with the composed format layout and the
+//!   protocol message identification riding at the end.
 //! - **Cache behavior** — the `exists` check decides whether a scan
 //!   runs, and a rescan replaces the cached document.
 //!
@@ -362,6 +362,99 @@ async fn a_validation_document_survives_the_round_trip_and_reaches_the_prompt() 
     assert!(prompt.contains("cross_field_validation pattern, confidence 65"));
     assert!(prompt.contains("checked parse or validate step on the Rust type"));
     assert!(prompt.contains("if (uVar7 == uVar5 + uVar6) {"));
+}
+
+#[tokio::test]
+async fn a_protocol_message_survives_the_round_trip_and_reaches_the_prompt() {
+    // The protocol identification end to end: a protocol magic
+    // comparison, an `ntohl`, and a checksum comparison in one body
+    // land the handler claim after its components, ride the persisted
+    // document through the round trip with its record shape intact,
+    // and render into the escalate prompt's SERIALIZATION section so
+    // the translation can aim at protocol-aware decoding.
+    let workspace = TempDir::new().expect("tempdir");
+    let mut handler = FakeProgram::empty();
+    handler.listing = vec![summary("FUN_18003ab00")];
+    handler.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  if (uVar2 == 0x86dd) {\n\
+             \x20 uVar1 = ntohl(local_18);\n\
+             \x20 if (uVar7 == uVar5 + uVar6) {\n",
+        ),
+    );
+    let result = SerializeEngine::with_source(handler)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = SerializePersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    assert_eq!(loaded, result);
+    let kinds: Vec<&str> = loaded.findings.iter().map(|f| f.kind()).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            "byteswap",
+            "magic",
+            "cross_field_validation",
+            "protocol_message"
+        ],
+        "the handler claim lands last among its function's findings"
+    );
+
+    let SerializeFinding::ProtocolMessage(record) = &loaded.findings[3] else {
+        unreachable!("the corroborated sniff reads back as a protocol message finding");
+    };
+    assert_eq!(record.protocol, "IPv6");
+    assert_eq!(record.magic, 0x86DD);
+    assert_eq!(
+        record.corroborations,
+        ["ntohl swap", "checksum validation"],
+        "the corroborating readings stay listed through the round trip"
+    );
+    assert_eq!(record.confidence, Confidence::new(85));
+    assert_eq!(
+        record.suggestion,
+        "protocol-aware IPv6 message decode (byteorder BE reads)"
+    );
+
+    let findings: Vec<calxgloss_prompts::SerializationInfo> = loaded
+        .for_function("FUN_18003ab00")
+        .map(calxgloss_prompts::SerializationInfo::from)
+        .collect();
+    assert_eq!(findings.len(), 4, "the target function's four findings");
+
+    let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
+        "FUN_18003ab00".into(),
+        "eqmain.dll".into(),
+        "fn fun_18003ab00() { /* hand-rolled packet parse */ }".into(),
+        "Wrong result".into(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        findings,
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("the escalate prompt should render");
+
+    assert!(prompt.contains("SERIALIZATION"));
+    assert!(prompt.contains("protocol_message pattern, confidence 85"));
+    assert!(prompt.contains("protocol-aware IPv6 message decode (byteorder BE reads)"));
+    assert!(prompt.contains("if (uVar2 == 0x86dd) {"));
 }
 
 #[tokio::test]

@@ -25,6 +25,11 @@
 //!   byte order for swapped fields, the bitfield widths for packed
 //!   chains, and a reader-or-writer direction only when the swap name
 //!   families agree.
+//! - `ProtocolMessage`: the identified message handler — made by the
+//!   protocol combiner, not a body detector — the protocol-table magic
+//!   the function compares against, the protocol it names, and the
+//!   corroborating readings (network-order swaps, cross-field
+//!   validations) that promote the sniff to a handler.
 //! - `SerializeFinding`: the union over the record kinds — one finding
 //!   whichever detector made it — serde-tagged by `kind`.
 //! - `SerializeResult`, `ScanMetadata`: the persisted per-binary result
@@ -344,6 +349,50 @@ pub struct SerializationFormat {
 }
 
 // ============================================================
+// Protocol message records
+// ============================================================
+
+/// One protocol-message-handler identification about one function —
+/// made by the protocol combiner, not by a body detector.
+///
+/// A record says the function compares loaded buffer content against
+/// the [`magic`](Self::magic) of a protocol-table entry — naming the
+/// [`protocol`](Self::protocol), e.g. `IPv6` — and corroborates the
+/// sniff with at least one independent reading, a network-order swap
+/// or a cross-field validation, each listed in
+/// [`corroborations`](Self::corroborations) so the identification is
+/// auditable. The handler reads like [`suggestion`](Self::suggestion):
+/// protocol-aware decoding of the named protocol's messages, so the
+/// translation parses the message with the protocol's own structure
+/// instead of transliterating a bare sniff. The magic comparison and
+/// the corroborating readings' own lines are kept as
+/// [`evidence`](Self::evidence) so a reviewer (or a translation
+/// prompt) can check the promotion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProtocolMessage {
+    /// The function the record is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The protocol signature bytes matched, spelled as the
+    /// comparison spells them, e.g. `0x86dd` for IPv6.
+    pub magic: u64,
+    /// The protocol the signature names, e.g. `IPv6`.
+    pub protocol: String,
+    /// The corroborating readings, each naming the reading and what
+    /// it was — `ntohl swap`, `checksum validation` — in the order
+    /// the scan collected them.
+    pub corroborations: Vec<String>,
+    /// The Rust pattern the handler suggests, e.g. `protocol-aware
+    /// IPv6 message decode (byteorder BE reads)`.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+    /// The decompiled lines behind the identification — the magic
+    /// comparison and the corroborating readings' own lines — kept so
+    /// a reviewer (or a translation prompt) can audit the promotion.
+    pub evidence: String,
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -357,9 +406,10 @@ pub struct SerializationFormat {
 /// chain, a signature comparison, an integrity comparison — so nothing
 /// is resolved between variants (the validation detector's gate against
 /// magic hits runs where the engine hands it the magic findings, not in
-/// the union, and the format record is composed by the engine's
-/// post-read over the swap and pack findings, not by a detector). The
-/// serde `kind` tag names the record shape in the persisted JSON.
+/// the union, and the format and protocol-message records are composed
+/// by the engine's post-read over the findings the pass already made,
+/// not by a detector). The serde `kind` tag names the record shape in
+/// the persisted JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SerializeFinding {
@@ -381,6 +431,11 @@ pub enum SerializeFinding {
     /// field layout.
     #[serde(rename = "serialization_format")]
     SerializationFormat(SerializationFormat),
+    /// A protocol-table magic comparison corroborated by a
+    /// network-order swap or a cross-field validation — an identified
+    /// protocol message handler.
+    #[serde(rename = "protocol_message")]
+    ProtocolMessage(ProtocolMessage),
 }
 
 impl SerializeFinding {
@@ -392,6 +447,7 @@ impl SerializeFinding {
             SerializeFinding::Magic(record) => &record.function,
             SerializeFinding::CrossFieldValidation(record) => &record.function,
             SerializeFinding::SerializationFormat(record) => &record.function,
+            SerializeFinding::ProtocolMessage(record) => &record.function,
         }
     }
 
@@ -403,6 +459,7 @@ impl SerializeFinding {
             SerializeFinding::Magic(record) => &record.suggestion,
             SerializeFinding::CrossFieldValidation(record) => &record.suggestion,
             SerializeFinding::SerializationFormat(record) => &record.suggestion,
+            SerializeFinding::ProtocolMessage(record) => &record.suggestion,
         }
     }
 
@@ -414,6 +471,7 @@ impl SerializeFinding {
             SerializeFinding::Magic(record) => record.confidence,
             SerializeFinding::CrossFieldValidation(record) => record.confidence,
             SerializeFinding::SerializationFormat(record) => record.confidence,
+            SerializeFinding::ProtocolMessage(record) => record.confidence,
         }
     }
 
@@ -425,12 +483,13 @@ impl SerializeFinding {
             SerializeFinding::Magic(record) => &record.evidence,
             SerializeFinding::CrossFieldValidation(record) => &record.evidence,
             SerializeFinding::SerializationFormat(record) => &record.evidence,
+            SerializeFinding::ProtocolMessage(record) => &record.evidence,
         }
     }
 
     /// The serde `kind` tag — `byteswap`, `bitpack`, `magic`,
-    /// `cross_field_validation`, or `serialization_format` — naming
-    /// the reading behind the finding.
+    /// `cross_field_validation`, `serialization_format`, or
+    /// `protocol_message` — naming the reading behind the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             SerializeFinding::ByteSwap(_) => "byteswap",
@@ -438,15 +497,17 @@ impl SerializeFinding {
             SerializeFinding::Magic(_) => "magic",
             SerializeFinding::CrossFieldValidation(_) => "cross_field_validation",
             SerializeFinding::SerializationFormat(_) => "serialization_format",
+            SerializeFinding::ProtocolMessage(_) => "protocol_message",
         }
     }
 
     /// What the finding names, spelled for a report row: the swap call
     /// spelling, the packing shape and the field widths it carves, the
     /// format and the signature bytes that name it, the validation
-    /// shape and the field it validates, or the composed layout —
+    /// shape and the field it validates, the composed layout —
     /// direction when it is named, then the ordered fields with their
-    /// widths and wire byte orders.
+    /// widths and wire byte orders — or the identified protocol and
+    /// the magic bytes that name it.
     pub fn target(&self) -> String {
         match self {
             SerializeFinding::ByteSwap(record) => record.operation.clone(),
@@ -466,6 +527,9 @@ impl SerializeFinding {
                     Some(direction) => format!("{direction} {layout}"),
                     None => layout,
                 }
+            }
+            SerializeFinding::ProtocolMessage(record) => {
+                format!("{} {:#x}", record.protocol, record.magic)
             }
         }
     }
@@ -532,7 +596,8 @@ impl From<&SerializeFinding> for calxgloss_prompts::SerializationInfo {
 /// The findings are the detectors' outputs in scan order: function by
 /// function, and within one function the byte swaps, then the bit
 /// packs, then the magic-byte comparisons, then the cross-field
-/// validation checks, then the composed format layout. The detectors
+/// validation checks, then the composed format layout, then the
+/// protocol-message identification. The detectors
 /// read disjoint body shapes, so a function can carry findings of
 /// every kind at once and none competes with another; the stable
 /// order means two scans of the same program diff cleanly.
@@ -930,6 +995,58 @@ mod tests {
         assert_eq!(back, finding);
     }
 
+    fn protocol_message() -> ProtocolMessage {
+        ProtocolMessage {
+            function: "FUN_18003ab00".into(),
+            magic: 0x86DD,
+            protocol: "IPv6".into(),
+            corroborations: vec!["ntohl swap".into(), "checksum validation".into()],
+            suggestion: "protocol-aware IPv6 message decode (byteorder BE reads)".into(),
+            confidence: Confidence::new(85),
+            evidence: "if (uVar1 == 0x86dd) { uVar2 = ntohl(local_18);".into(),
+        }
+    }
+
+    #[test]
+    fn a_protocol_message_record_serde_round_trips() {
+        let record = protocol_message();
+        let json = serde_json::to_string(&record).expect("protocol message should serialize");
+        let back: ProtocolMessage =
+            serde_json::from_str(&json).expect("protocol message should read back");
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn a_protocol_message_record_reads_back_from_json() {
+        let json = r#"{
+            "function": "FUN_18003ab00",
+            "magic": 34525,
+            "protocol": "IPv6",
+            "corroborations": ["ntohl swap", "checksum validation"],
+            "suggestion": "protocol-aware IPv6 message decode (byteorder BE reads)",
+            "confidence": 85,
+            "evidence": "if (uVar1 == 0x86dd) { uVar2 = ntohl(local_18);"
+        }"#;
+        let record: ProtocolMessage =
+            serde_json::from_str(json).expect("protocol message should read back");
+        assert_eq!(record.protocol, "IPv6");
+        assert_eq!(record.magic, 0x86DD);
+        assert_eq!(
+            record.corroborations,
+            vec!["ntohl swap", "checksum validation"]
+        );
+        assert_eq!(record.confidence, Confidence::new(85));
+    }
+
+    #[test]
+    fn a_protocol_message_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = SerializeFinding::ProtocolMessage(protocol_message());
+        let json = serde_json::to_string(&finding).expect("finding should serialize");
+        assert!(json.contains("\"kind\":\"protocol_message\""));
+        let back: SerializeFinding = serde_json::from_str(&json).expect("finding should read back");
+        assert_eq!(back, finding);
+    }
+
     #[test]
     fn the_union_accessors_reach_through_every_variant() {
         let findings = [
@@ -938,6 +1055,7 @@ mod tests {
             SerializeFinding::Magic(magic_format()),
             SerializeFinding::CrossFieldValidation(cross_field_validation()),
             SerializeFinding::SerializationFormat(serialization_format()),
+            SerializeFinding::ProtocolMessage(protocol_message()),
         ];
         for finding in &findings {
             assert_eq!(finding.function(), "FUN_18003ab00");
@@ -949,6 +1067,7 @@ mod tests {
         assert_eq!(findings[2].confidence(), Confidence::new(80));
         assert_eq!(findings[3].confidence(), Confidence::new(65));
         assert_eq!(findings[4].confidence(), Confidence::new(75));
+        assert_eq!(findings[5].confidence(), Confidence::new(85));
         let kinds: Vec<&str> = findings.iter().map(|f| f.kind()).collect();
         assert_eq!(
             kinds,
@@ -957,7 +1076,8 @@ mod tests {
                 "bitpack",
                 "magic",
                 "cross_field_validation",
-                "serialization_format"
+                "serialization_format",
+                "protocol_message"
             ]
         );
         let targets: Vec<String> = findings.iter().map(|f| f.target()).collect();
@@ -968,7 +1088,8 @@ mod tests {
                 "shift_or_pack 8+8+8+8",
                 "PNG 0x89504e47",
                 "checksum uVar7",
-                "reader u32:be > 8+8 bits"
+                "reader u32:be > 8+8 bits",
+                "IPv6 0x86dd"
             ]
         );
     }
@@ -1065,5 +1186,14 @@ mod tests {
             "byteorder reader: read_u32 then 8+8 bitfields"
         );
         assert_eq!(info.confidence, 75);
+
+        let protocol = SerializeFinding::ProtocolMessage(protocol_message());
+        let info = calxgloss_prompts::SerializationInfo::from(&protocol);
+        assert_eq!(info.kind, "protocol_message");
+        assert_eq!(
+            info.suggestion,
+            "protocol-aware IPv6 message decode (byteorder BE reads)"
+        );
+        assert_eq!(info.confidence, 85);
     }
 }

@@ -185,7 +185,8 @@ pub struct ConcurrencyInfo {
 ///
 /// One finding whichever detector made it — the kind names the detector
 /// behind the claim (`byteswap`, `bitpack`, `magic`,
-/// `cross_field_validation`, `serialization_format`) so the prompt can
+/// `cross_field_validation`, `serialization_format`,
+/// `protocol_message`) so the prompt can
 /// weigh the hypothesis beside the evidence without knowing the record
 /// shape that produced it.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -193,7 +194,8 @@ pub struct SerializationInfo {
     /// The function the finding is about, e.g. `FUN_18003ab00`.
     pub function: String,
     /// The kind of finding, e.g. `byteswap`, `bitpack`, `magic`,
-    /// `cross_field_validation`, `serialization_format`.
+    /// `cross_field_validation`, `serialization_format`,
+    /// `protocol_message`.
     pub kind: String,
     /// The Rust pattern the finding suggests, e.g. `byteorder::BE::read_u32`.
     pub suggestion: String,
