@@ -123,7 +123,17 @@ pub struct NamedConstant {
     pub count: usize,
     /// The functions that use the value, ascending.
     pub functions: Vec<String>,
-    /// The Rust shape the value suggests, e.g. a named `const`.
+    /// The name the bodies gave the value — `SIZE_0x280` for a `size =
+    /// 0x280` standing in one of them — when a qualifying sighting
+    /// carried one (see `naming::context_names`). Optional on disk, skipped
+    /// when absent: documents persisted before context naming load
+    /// unchanged, and an un-named record serializes exactly as it did
+    /// before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The Rust shape the value suggests, e.g. a named `const` — the
+    /// named form when [`name`](Self::name) carries one, the mechanical
+    /// `VALUE_0x…` form when not (see [`render_suggestion`](Self::render_suggestion)).
     pub suggestion: String,
     /// Confidence that the record is right, 0–100.
     pub confidence: Confidence,
@@ -131,6 +141,24 @@ pub struct NamedConstant {
     /// and the functions it appears in — kept so a reviewer (or a
     /// translation prompt) can check the reasoning.
     pub evidence: String,
+}
+
+impl NamedConstant {
+    /// The `const` shape one value suggests: the context-derived name
+    /// uppercased into the declaration when the bodies gave the value
+    /// one, the mechanical `VALUE_0x…` spelling when they did not. The
+    /// integer type is the narrowest that holds the value.
+    pub fn render_suggestion(name: Option<&str>, value: u64) -> String {
+        let ty = if value > u64::from(u32::MAX) {
+            "u64"
+        } else {
+            "u32"
+        };
+        match name {
+            Some(name) => format!("const {name}: {ty} = {value:#x};"),
+            None => format!("const VALUE_{value:#x}: {ty} = {value:#x};"),
+        }
+    }
 }
 
 // ============================================================
@@ -330,6 +358,7 @@ mod tests {
             value: 0x400,
             count: 5,
             functions: vec!["FUN_18003ab00".into(), "FUN_18003e750".into()],
+            name: None,
             suggestion: "const VALUE_0x400: u32 = 0x400;".into(),
             confidence: Confidence::new(60),
             evidence: "0x400 used 5 times in FUN_18003ab00, FUN_18003e750".into(),
@@ -395,6 +424,73 @@ mod tests {
         let back: ConstFinding =
             serde_json::from_str(&json).expect("named-constant finding should read back");
         assert_eq!(back, finding);
+    }
+
+    #[test]
+    fn a_context_name_renders_the_named_const_form() {
+        // When the bodies named the value, the suggestion reads like
+        // the code that uses it.
+        assert_eq!(
+            NamedConstant::render_suggestion(Some("SIZE_0x280"), 0x280),
+            "const SIZE_0x280: u32 = 0x280;"
+        );
+    }
+
+    #[test]
+    fn no_context_name_renders_the_mechanical_const_form() {
+        // A value the bodies never named keeps the spelling the deepening
+        // replaced — the deepening never loses a constant the scan used
+        // to report.
+        assert_eq!(
+            NamedConstant::render_suggestion(None, 0x400),
+            "const VALUE_0x400: u32 = 0x400;"
+        );
+        assert_eq!(
+            NamedConstant::render_suggestion(None, 1 << 40),
+            "const VALUE_0x10000000000: u64 = 0x10000000000;"
+        );
+    }
+
+    #[test]
+    fn a_named_constant_with_a_context_name_serde_round_trips() {
+        let record = NamedConstant {
+            name: Some("SIZE_0x280".into()),
+            ..named_constant()
+        };
+        let json = serde_json::to_string(&record).expect("named-constant record should serialize");
+        assert!(json.contains("\"name\":\"SIZE_0x280\""));
+        let back: NamedConstant =
+            serde_json::from_str(&json).expect("named-constant record should read back");
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn a_named_constant_without_a_context_name_omits_it_on_disk() {
+        // The empty-skip rule: an un-named record serializes exactly as
+        // it did before the deepening.
+        let record = named_constant();
+        let json = serde_json::to_string(&record).expect("named-constant record should serialize");
+        assert!(!json.contains("\"name\""));
+        let back: NamedConstant =
+            serde_json::from_str(&json).expect("named-constant record should read back");
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn a_document_written_before_the_name_field_loads_unchanged() {
+        // The exact shape a pre-deepening document carried on disk — no
+        // name key anywhere — still loads, with no name.
+        let json = r#"{
+            "value": 1024,
+            "count": 5,
+            "functions": ["FUN_18003ab00", "FUN_18003e750"],
+            "suggestion": "const VALUE_0x400: u32 = 0x400;",
+            "confidence": 60,
+            "evidence": "0x400 used 5 times in FUN_18003ab00, FUN_18003e750"
+        }"#;
+        let back: NamedConstant =
+            serde_json::from_str(json).expect("a pre-deepening document should load");
+        assert_eq!(back, named_constant());
     }
 
     #[test]

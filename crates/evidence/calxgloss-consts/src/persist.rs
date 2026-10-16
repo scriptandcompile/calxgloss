@@ -228,6 +228,7 @@ mod tests {
                 value: 0x280,
                 count: 3,
                 functions: vec!["FuncA".to_string(), "FuncB".to_string()],
+                name: None,
                 suggestion: "const VALUE_0x280: u32 = 0x280;".to_string(),
                 confidence: Confidence::new(60),
                 evidence: "0x280 used 3 times in FuncA, FuncB".to_string(),
@@ -288,6 +289,7 @@ mod tests {
                 value: 0x400,
                 count: 5,
                 functions: vec!["StartWorker".to_string(), "ReadFlags".to_string()],
+                name: None,
                 suggestion: "const VALUE_0x400: u32 = 0x400;".to_string(),
                 confidence: Confidence::new(60),
                 evidence: "0x400 used 5 times in ReadFlags, StartWorker".to_string(),
@@ -302,6 +304,29 @@ mod tests {
             }
             other => panic!("expected a named-constant finding, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_named_constant_with_a_context_name_survives_the_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let persistor = ConstPersistor::new(dir.path());
+
+        let mut result = ConstResult::new(ScanMetadata::new("eqmain.dll"));
+        result
+            .findings
+            .push(crate::types::ConstFinding::NamedConstant(NamedConstant {
+                value: 0x280,
+                count: 3,
+                functions: vec!["StartWorker".to_string(), "ReadFlags".to_string()],
+                name: Some("SIZE_0x280".to_string()),
+                suggestion: "const SIZE_0x280: u32 = 0x280;".to_string(),
+                confidence: Confidence::new(60),
+                evidence: "0x280 used 3 times in ReadFlags, StartWorker".to_string(),
+            }));
+        persistor.save(&result).unwrap();
+
+        let loaded = persistor.load("eqmain.dll").unwrap();
+        assert_eq!(loaded, result, "the context name round-trips exactly");
     }
 
     #[test]

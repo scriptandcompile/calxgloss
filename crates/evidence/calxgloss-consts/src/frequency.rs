@@ -7,6 +7,12 @@
 //! literals. A value repeated across the program is a constant the
 //! translation should name once instead of transliterating at every
 //! use site.
+//!
+//! The report also carries the name the bodies gave the value when
+//! they gave it one: [`constants`](FrequencyAnalyzer::constants) takes
+//! the context names the naming reading (`naming`) derived
+//! from those same bodies and rides them onto the records, rendering
+//! the named `const` form into the suggestion.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -88,7 +94,18 @@ impl FrequencyAnalyzer {
     /// uses across [`min_functions`](Self::min_functions) functions:
     /// one function repeating a literal is a local habit, a value
     /// carried across the program is a constant.
-    pub fn constants(&self, tally: &ProgramTally) -> Vec<NamedConstant> {
+    ///
+    /// `names` carries the context names the naming reading derived from
+    /// the same bodies (`naming::context_names`): a qualified value the bodies
+    /// named rides the record with that name and a suggestion rendering
+    /// the named `const` form; a value they never named keeps the
+    /// mechanical `VALUE_0x…` spelling. A name for a value that never
+    /// qualified rides nothing.
+    pub fn constants(
+        &self,
+        tally: &ProgramTally,
+        names: &BTreeMap<u64, String>,
+    ) -> Vec<NamedConstant> {
         let mut qualified: Vec<(&u64, &ConstantOccurrences)> = tally
             .iter()
             .filter(|(_, occurrences)| {
@@ -104,16 +121,13 @@ impl FrequencyAnalyzer {
             .into_iter()
             .map(|(value, occurrences)| {
                 let functions: Vec<String> = occurrences.functions.iter().cloned().collect();
-                let ty = if *value > u64::from(u32::MAX) {
-                    "u64"
-                } else {
-                    "u32"
-                };
+                let name = names.get(value).cloned();
                 NamedConstant {
+                    suggestion: NamedConstant::render_suggestion(name.as_deref(), *value),
+                    name,
                     value: *value,
                     count: occurrences.count,
                     functions,
-                    suggestion: format!("const VALUE_{:#x}: {} = {:#x};", value, ty, value),
                     confidence: Confidence::new(60),
                     evidence: format!(
                         "{:#x} used {} times in {}",
@@ -163,13 +177,23 @@ mod tests {
         tally
     }
 
+    /// Canned context names the way the engine hands them over: the
+    /// value-to-name map the naming reading built from the bodies,
+    /// empty when the bodies named nothing.
+    fn names(entries: &[(u64, &str)]) -> BTreeMap<u64, String> {
+        entries
+            .iter()
+            .map(|(value, name)| (*value, (*name).to_string()))
+            .collect()
+    }
+
     #[test]
     fn a_value_used_three_times_in_two_functions_becomes_a_constant() {
         let tally = tally(&[
             ("FUN_18003ab00", &[0x400, 0x400]),
             ("FUN_18003e750", &[0x400]),
         ]);
-        let constants = FrequencyAnalyzer::with_default_thresholds().constants(&tally);
+        let constants = FrequencyAnalyzer::with_default_thresholds().constants(&tally, &names(&[]));
         assert_eq!(constants.len(), 1);
         let constant = &constants[0];
         assert_eq!(constant.value, 0x400);
@@ -188,7 +212,7 @@ mod tests {
         let tally = tally(&[("FUN_18003ab00", &[0x400]), ("FUN_18003e750", &[0x400])]);
         assert!(
             FrequencyAnalyzer::with_default_thresholds()
-                .constants(&tally)
+                .constants(&tally, &names(&[]))
                 .is_empty()
         );
     }
@@ -198,7 +222,7 @@ mod tests {
         let tally = tally(&[("FUN_18003ab00", &[0x400, 0x400, 0x400])]);
         assert!(
             FrequencyAnalyzer::with_default_thresholds()
-                .constants(&tally)
+                .constants(&tally, &names(&[]))
                 .is_empty()
         );
     }
@@ -212,7 +236,7 @@ mod tests {
         ]);
         assert!(
             FrequencyAnalyzer::with_default_thresholds()
-                .constants(&tally)
+                .constants(&tally, &names(&[]))
                 .is_empty()
         );
     }
@@ -232,7 +256,7 @@ mod tests {
             ("FUN_a", &[0x10, 0x20, 0x20, 0x20]),
             ("FUN_b", &[0x10, 0x10, 0x20]),
         ]);
-        let constants = FrequencyAnalyzer::with_default_thresholds().constants(&tally);
+        let constants = FrequencyAnalyzer::with_default_thresholds().constants(&tally, &names(&[]));
         let values: Vec<u64> = constants.iter().map(|c| c.value).collect();
         assert_eq!(values, vec![0x20, 0x10]);
     }
@@ -244,7 +268,7 @@ mod tests {
             ("FUN_18003e750", &[0x400]),
         ]);
         let analyzer = FrequencyAnalyzer::with_thresholds(2, 1, [4, 8]);
-        let constants = analyzer.constants(&tally);
+        let constants = analyzer.constants(&tally, &names(&[]));
         assert_eq!(constants.len(), 1);
         assert_eq!(constants[0].count, 3);
     }
@@ -258,10 +282,42 @@ mod tests {
             entry.count += 2;
             entry.functions.insert(name.to_string());
         }
-        let constants = FrequencyAnalyzer::with_default_thresholds().constants(&tally);
+        let constants = FrequencyAnalyzer::with_default_thresholds().constants(&tally, &names(&[]));
         assert_eq!(
             constants[0].suggestion,
             "const VALUE_0x10000000000: u64 = 0x10000000000;"
         );
+    }
+
+    #[test]
+    fn a_context_name_from_the_bodies_names_the_constant() {
+        // The naming reading over the same bodies rides the record: the
+        // name lands on the record and the suggestion renders the named
+        // `const` form instead of the mechanical one.
+        let tally = tally(&[
+            ("FUN_18003ab00", &[0x280, 0x280]),
+            ("FUN_18003e750", &[0x280]),
+        ]);
+        let constants = FrequencyAnalyzer::with_default_thresholds()
+            .constants(&tally, &names(&[(0x280, "SIZE_0x280")]));
+        assert_eq!(constants[0].name.as_deref(), Some("SIZE_0x280"));
+        assert_eq!(constants[0].suggestion, "const SIZE_0x280: u32 = 0x280;");
+    }
+
+    #[test]
+    fn a_value_the_bodies_never_named_keeps_the_mechanical_form() {
+        // The deepening never loses a constant the scan used to report:
+        // a qualified value with no qualifying sighting still lands,
+        // un-named and mechanically suggested.
+        let tally = tally(&[
+            ("FUN_18003ab00", &[0x400, 0x400]),
+            ("FUN_18003e750", &[0x400]),
+        ]);
+        let constants = FrequencyAnalyzer::with_default_thresholds()
+            .constants(&tally, &names(&[(0x280, "SIZE_0x280")]));
+        assert_eq!(constants.len(), 1);
+        assert_eq!(constants[0].value, 0x400);
+        assert_eq!(constants[0].name, None);
+        assert_eq!(constants[0].suggestion, "const VALUE_0x400: u32 = 0x400;");
     }
 }

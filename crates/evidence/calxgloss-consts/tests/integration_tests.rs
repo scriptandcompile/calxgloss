@@ -13,7 +13,8 @@
 //!   groups then the enum candidates, and the program-level named
 //!   constants appended after them.
 //! - **Prompt rendering** — the loaded findings render into `ConstInfo`
-//!   prompt data and the escalate prompt carries the CONSTANTS section.
+//!   prompt data and the escalate prompt carries the CONSTANTS section,
+//!   the repeated literal's context-named `const` form included.
 //! - **Cache behavior** — the `exists` check decides whether a scan
 //!   runs, and a rescan replaces the cached document.
 //!
@@ -283,7 +284,10 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
         constant.functions,
         vec!["FUN_18003ab00".to_string(), "FUN_18003e750".to_string()]
     );
-    assert_eq!(constant.suggestion, "const VALUE_0x280: u32 = 0x280;");
+    // The context name the body's `size = 0x280;` gave the value rides
+    // the record through the persisted document.
+    assert_eq!(constant.name.as_deref(), Some("SIZE_0x280"));
+    assert_eq!(constant.suggestion, "const SIZE_0x280: u32 = 0x280;");
 }
 
 #[tokio::test]
@@ -336,7 +340,7 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
     assert!(prompt.contains("bitflag_group, confidence 70"));
     assert!(prompt.contains("enum State { /* variants for 0..=3 */ }"));
     assert!(prompt.contains("enum_candidate, confidence 70"));
-    assert!(prompt.contains("const VALUE_0x280: u32 = 0x280;"));
+    assert!(prompt.contains("const SIZE_0x280: u32 = 0x280;"));
     assert!(prompt.contains("named_constant, confidence 60"));
     assert!(prompt.contains("uVar1 & 0x400"));
 }

@@ -2021,6 +2021,7 @@ mod tests {
             value: 0x400,
             count: 5,
             functions: functions.iter().map(|f| f.to_string()).collect(),
+            name: None,
             suggestion: "const VALUE_0x400: u32 = 0x400;".into(),
             confidence: calxgloss_consts::types::Confidence::new(60),
             evidence: "0x400 used 5 times in FUN_18003ab00, FUN_zzz".into(),

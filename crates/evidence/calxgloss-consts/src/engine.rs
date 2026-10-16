@@ -11,12 +11,15 @@
 //! it with all three, rather than having each detector pull its own
 //! copy. The frequency analyzer counts literals during that same
 //! pass, and its program-level findings are appended after the
-//! per-function ones. The scan is one sequential pass over the
-//! function listing — like sync, there is nothing to resolve between
-//! the detectors, they read disjoint shapes — and keeping the pass
-//! sequential keeps the persisted finding list in a stable, diffable
-//! order.
+//! per-function ones. The context-naming reading (`naming`)
+//! walks the same bodies in that same pass, and the first qualifying
+//! name it saw across the scan rides each repeated value's record. The
+//! scan is one sequential pass over the function listing — like sync,
+//! there is nothing to resolve between the detectors, they read
+//! disjoint shapes — and keeping the pass sequential keeps the
+//! persisted finding list in a stable, diffable order.
 
+use std::collections::BTreeMap;
 use std::time::Instant;
 
 use calxgloss_ghidra::GhidraClient;
@@ -25,6 +28,7 @@ use tracing::{info, warn};
 use crate::bitmask::BitmaskDetector;
 use crate::error::Result;
 use crate::frequency::{FrequencyAnalyzer, ProgramTally};
+use crate::naming::context_names;
 use crate::sequential::SequentialDetector;
 use crate::types::{ConstFinding, ConstResult, ScanMetadata};
 
@@ -109,8 +113,10 @@ impl<S> ConstEngine<S> {
     /// per-function findings follow the function listing — function by
     /// function, bitmask group then enum candidates — and the
     /// program-level named constants the frequency analyzer tallied
-    /// across the pass are appended after them, so two scans of the
-    /// same program diff cleanly.
+    /// across the pass are appended after them, each carrying the
+    /// context name of the first qualifying assignment or comparison
+    /// the bodies made of its value, so two scans of the same program
+    /// diff cleanly and name their constants identically.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad
     /// entry point) is skipped with a warning; only a failure of the
@@ -132,6 +138,10 @@ impl<S> ConstEngine<S> {
 
         let mut findings = Vec::new();
         let mut tally = ProgramTally::new();
+        // The context names the bodies gave the literals as the tally
+        // filled: first qualifying sighting per value wins, so naming
+        // follows listing order and two scans name identically.
+        let mut names: BTreeMap<u64, String> = BTreeMap::new();
         let mut skipped = 0usize;
         let mut decompile_failures = 0usize;
         for function in &functions {
@@ -186,11 +196,14 @@ impl<S> ConstEngine<S> {
                 entry.count += 1;
                 entry.functions.insert(function.name.clone());
             }
+            for (value, name) in context_names(&decompiled.body) {
+                names.entry(value).or_insert(name);
+            }
         }
 
         findings.extend(
             self.frequency
-                .constants(&tally)
+                .constants(&tally, &names)
                 .into_iter()
                 .map(ConstFinding::NamedConstant),
         );
@@ -399,6 +412,104 @@ mod tests {
             .for_function(function)
             .map(|finding| finding.kind())
             .collect()
+    }
+
+    /// The scan's one program-level named constant, whichever value it
+    /// carries.
+    fn named_constant(result: &ConstResult) -> &crate::types::NamedConstant {
+        result
+            .findings
+            .iter()
+            .find_map(|finding| match finding {
+                ConstFinding::NamedConstant(record) => Some(record),
+                _ => None,
+            })
+            .expect("the scan should have reported the repeated literal")
+    }
+
+    #[tokio::test]
+    async fn a_named_assignment_in_the_bodies_names_the_repeated_constant() {
+        // The canned program spells `size = 0x280;` in one function and
+        // repeats the value in another: the named constant carries the
+        // context name, and its suggestion — the string the report and
+        // the escalate prompt render — carries it too.
+        let result = scan(program()).await;
+
+        let constant = named_constant(&result);
+        assert_eq!(constant.value, 0x280);
+        assert_eq!(constant.name.as_deref(), Some("SIZE_0x280"));
+        assert_eq!(constant.suggestion, "const SIZE_0x280: u32 = 0x280;");
+    }
+
+    #[tokio::test]
+    async fn placeholder_assignments_leave_the_constant_mechanically_named() {
+        // Every sighting of the repeated value sits beside a
+        // decompiler-minted name — a stack slot, an undefined variable,
+        // a bare letter plus digits — so nothing names it and the
+        // mechanical suggestion stands.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  local_10 = 0x280;\n  uVar1 = 0x280;\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  x1 = 0x280;\n  return;\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let constant = named_constant(&result);
+        assert_eq!(constant.count, 3, "the value still qualifies");
+        assert_eq!(constant.name, None);
+        assert_eq!(constant.suggestion, "const VALUE_0x280: u32 = 0x280;");
+    }
+
+    #[tokio::test]
+    async fn the_first_named_sighting_across_the_scan_names_the_constant() {
+        // Two functions name the same value differently; the sighting
+        // earlier in the listing wins, and swapping the listing order
+        // swaps the name — deterministic either way.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  count = 0x280;\n  copy(dst, 0x280);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  size = 0x280;\n  return;\n",
+            ),
+        );
+        let result = scan(program.clone()).await;
+        assert_eq!(
+            named_constant(&result).name.as_deref(),
+            Some("COUNT_0x280"),
+            "the first function in listing order wins"
+        );
+
+        program.listing.reverse();
+        let result = scan(program).await;
+        assert_eq!(
+            named_constant(&result).name.as_deref(),
+            Some("SIZE_0x280"),
+            "the scan names from whichever function comes first"
+        );
     }
 
     #[tokio::test]

@@ -11,7 +11,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into eight modules:
+//! The crate is organized into nine modules:
 //!
 //! - [`types`] - Core data types: `BitflagGroup`, `EnumCandidate`, and
 //!   `NamedConstant` for the detection records; `ConstFinding` as the
@@ -28,7 +28,8 @@
 //! - [`frequency`] - Repeated-value analysis: `FrequencyAnalyzer`
 //!   counts integer literals across the whole program and reports
 //!   values used often enough across enough functions as named
-//!   constants suggesting a `const`.
+//!   constants suggesting a `const`, carrying the context names the
+//!   naming reading derived from the same bodies.
 //! - [`engine`] - Scan orchestration: `ConstEngine` runs the three
 //!   detectors over one open Ghidra program through a `ScanSource`
 //!   (function listing + decompile-by-name), one sequential pass that
@@ -37,9 +38,13 @@
 //! - [`persist`] - JSON persistence: `ConstPersistor` saves and loads
 //!   the per-binary detection results under `re/analysis/consts/`.
 //! - [`error`] - [`ConstError`] and the crate-wide [`Result`] alias.
+//! - `naming` - a crate-private context-naming reading: `context_names`
+//!   walks one body's token stream for assignments and comparisons that
+//!   name their literals, with the placeholder-identifier gate that
+//!   keeps decompiler-minted names from naming anything.
 //! - `tokenize` - a crate-private pseudo-C tokenizer the three
-//!   detectors share, keeping string contents and identifier-embedded
-//!   digits out of the literal stream.
+//!   detectors and the naming reading share, keeping string contents
+//!   and identifier-embedded digits out of the literal stream.
 
 pub mod bitmask;
 pub mod engine;
@@ -49,6 +54,7 @@ pub mod persist;
 pub mod sequential;
 pub mod types;
 
+pub(crate) mod naming;
 pub(crate) mod tokenize;
 
 pub use error::{ConstError, Result};
