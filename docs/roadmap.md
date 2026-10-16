@@ -31,15 +31,13 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| P11.5 | serialize Phase 5: full serialization format inference, cross-field validation, protocol message / network protocol identification, per-type endianness mapping | `calxgloss-serialize` | — | 🔶 in progress | `/implement` (#198–#202) | [#197](https://github.com/scriptandcompile/calxgloss/issues/197) |
 | X1 | Integration-test backend: prefer bethington's headless server over a hand-built mock | test infra | — | ⬜ not started | `/to-spec` when picked up | — |
 | X3 | `data_flow.md` updated to include all methodologies | docs | — | ⬜ not started | `/to-spec` when picked up | — |
 | X4 | Architecture diagrams in source docs match implementation | docs | — | ⬜ not started | `/to-spec` when picked up | — |
 
-Legend: ✅ done · 🔶 in progress · ⬜ not started. Rows P11.5 and
-X1, X3–X4 are open future-work items — optional Phase 5 depth work and
-cross-cutting chores — verified still open in the code (2026-10-08); no
-effort estimates yet. P2.5 (typeinfer Phase 5) shipped through #150 and was
+Legend: ✅ done · 🔶 in progress · ⬜ not started. Rows X1, X3–X4 are open
+future-work items — cross-cutting chores — verified still open in the code
+(2026-10-08); no effort estimates yet. P2.5 (typeinfer Phase 5) shipped through #150 and was
 pruned from this matrix when epic #142 closed (2026-10-14); P3.5 (algorithm
 Phase 5) shipped through #156 and was pruned when epic #151 closed
 (2026-10-14); P4.5 (memory Phase 5) shipped through #162 and was pruned when
@@ -51,13 +49,8 @@ P7.5 (controlflow Phase 5) shipped through #179 and was pruned when epic
 was pruned when epic #180 closed (2026-10-15); P9.5 (apidetect Phase 5)
 shipped through #188 and was pruned when epic #183 closed (2026-10-15);
 P10.5 (consts Phase 5) shipped through #195 and was pruned when epic #189
-closed (2026-10-16).
-
-## P11.5 — serialize Phase 5 (`calxgloss-serialize`)
-
-Optional depth work (archive §11, Phase 5): full serialization format
-inference, cross-field validation detection, protocol message / network
-protocol identification, per-type endianness mapping.
+closed (2026-10-16); P11.5 (serialize Phase 5) shipped through #202 and was
+pruned when epic #197 closed (2026-10-16).
 
 ## X1 — Integration-test backend (test infra)
 
