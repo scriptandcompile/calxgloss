@@ -6,21 +6,26 @@
 //! Win32's `CreateFileA`, `sdl2` for `SDL_Init` — with each finding naming
 //! its API category. A binary that imports both Win32 and POSIX/stdio
 //! APIs is flagged as platform-divergent, suggesting cfg-gated
-//! translation. Results are injected as structured LIBRARIES AND
-//! APIS sections so the LLM calls the API through the suggested crate
-//! instead of transliterating the raw import or declaring it as an
-//! `extern "C"` stub.
+//! translation; a binary whose names carry COM signals — runtime
+//! imports, the IUnknown-shape trio, interface-decorated names — is
+//! flagged with `com_interface` claims suggesting the interface be
+//! modeled as a Rust trait carrying its methods. Results are injected
+//! as structured LIBRARIES AND APIS sections so the LLM calls the API
+//! through the suggested crate instead of transliterating the raw
+//! import or declaring it as an `extern "C"` stub.
 //!
 //! # Architecture
 //!
-//! The crate is organized into eight modules:
+//! The crate is organized into nine modules:
 //!
 //! - [`types`] - Core data types: `ApiSignature` for a binary-level
 //!   import-table record; `ApiUsage` for a function-level API usage with
 //!   its call path; `PlatformDivergence` for the binary-level claim that
-//!   the imports mix Win32 and POSIX/stdio families; `ApiFinding` as the
-//!   union over the record kinds; `ApiDetectionResult`, `ScanMetadata`
-//!   for the persisted per-binary results.
+//!   the imports mix Win32 and POSIX/stdio families; `ComInterface` for
+//!   the binary-level claim that the binary drives a COM interface or
+//!   the COM runtime; `ApiFinding` as the union over the record kinds;
+//!   `ApiDetectionResult`, `ScanMetadata` for the persisted per-binary
+//!   results.
 //! - [`lib_mapping`] - The mapping database: `MappingDatabase` maps
 //!   import names to their library and Rust crate suggestion, each entry
 //!   also naming its API category (aligned with the PAL `ApiCategory`
@@ -38,9 +43,15 @@
 //!   and lands one binary-level claim when both a Win32-category and a
 //!   POSIX/stdio-category import appear, suggesting cfg-gated
 //!   translation.
+//! - [`com`] - COM interface suggestion: `detect_com` reads the COM
+//!   signals in the classified import listing and the call-graph names
+//!   the scan already holds — COM runtime imports, the IUnknown-shape
+//!   trio, interface-decorated names — and lands one `com_interface`
+//!   claim per recoverable interface (or one runtime-level claim when
+//!   no name is recoverable), suggesting the trait-plus-methods shape.
 //! - [`engine`] - Scan orchestration: `ApiEngine` runs the detectors and
-//!   the divergence pass over one open Ghidra program through the shared
-//!   `ScanSource` trait (for the import listing) plus a
+//!   the divergence and COM passes over one open Ghidra program through
+//!   the shared `ScanSource` trait (for the import listing) plus a
 //!   `CallGraphSource` (for the built call graph), one sequential pass
 //!   that keeps the findings in scan order.
 //! - [`persist`] - JSON persistence: `ApiPersistor` saves and loads the
@@ -48,6 +59,7 @@
 //! - [`error`] - [`ApiError`] and the crate-wide [`Result`] alias.
 
 pub mod api_summary;
+pub mod com;
 pub mod divergence;
 pub mod engine;
 pub mod error;
@@ -58,5 +70,6 @@ pub mod types;
 
 pub use error::{ApiError, Result};
 pub use types::{
-    ApiDetectionResult, ApiFinding, ApiSignature, ApiUsage, PlatformDivergence, ScanMetadata,
+    ApiDetectionResult, ApiFinding, ApiSignature, ApiUsage, ComInterface, PlatformDivergence,
+    ScanMetadata,
 };

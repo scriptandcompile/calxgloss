@@ -12,6 +12,10 @@
 //!   both a Win32-family and a POSIX/stdio-family API, so the Rust
 //!   shape is cfg-gated calls, not both families transliterated
 //!   unconditionally.
+//! - `ComInterface`: a binary-level record — the binary drives a COM
+//!   interface, named when a decorated import name recovers it, with
+//!   the method listing it saw and the Rust shape a trait carrying
+//!   those methods.
 //! - `ApiFinding`: the union over the record kinds — one finding
 //!   whichever detector made it — serde-tagged by `kind`.
 //!
@@ -23,6 +27,7 @@
 pub use calxgloss_types::{Confidence, ScanMetadata};
 use serde::{Deserialize, Serialize};
 
+use crate::com::{COM_INTERFACE_SUGGESTION, COM_RUNTIME_SUGGESTION};
 use crate::divergence::DIVERGENCE_SUGGESTION;
 
 // ============================================================
@@ -146,6 +151,49 @@ pub struct PlatformDivergence {
 }
 
 // ============================================================
+// COM interface records
+// ============================================================
+
+/// The binary-level claim that the binary drives the COM component
+/// model — either a named interface recovered from decorated import
+/// names, or the COM runtime itself when no interface name is
+/// recoverable.
+///
+/// The [com](crate::com) detector reads the signals off the classified
+/// import listing and the call-graph names the scan already holds:
+/// known COM runtime imports, the IUnknown-shape method names, and
+/// interface-decorated import names. When a decorated name recovers an
+/// interface name, [`interface`](Self::interface) carries it,
+/// [`methods`](Self::methods) lists the method names seen for it, and
+/// [`evidence`](Self::evidence) keeps the decorated names so a reviewer
+/// can check the recovery against the import table. When no name is
+/// recoverable, one runtime-level claim names the COM signals seen with
+/// `interface` `None`, at a visibly lower confidence than a named
+/// claim. A binary with no COM signals claims nothing, so the record
+/// never exists.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComInterface {
+    /// The interface name recovered from a decorated import name, e.g.
+    /// `IDataSource` from `?QueryInterface@IDataSource@@…` — `None` for
+    /// a runtime-level claim, which has no name to recover. Optional on
+    /// disk so a runtime-level claim serializes without the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interface: Option<String>,
+    /// The method names seen for the interface, in first-seen order,
+    /// e.g. `["QueryInterface", "AddRef", "Release"]` — empty for a
+    /// runtime-level claim.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub methods: Vec<String>,
+    /// The evidence behind the claim: the decorated names the interface
+    /// was recovered from, joined `", "`, in listing order — or the COM
+    /// signals seen, for a runtime-level claim.
+    pub evidence: String,
+    /// Confidence that the record is right, 0–100 — a named-interface
+    /// claim sits visibly above a runtime-level one.
+    pub confidence: Confidence,
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -154,7 +202,9 @@ pub struct PlatformDivergence {
 /// The import-table scanner emits binary-level [`ApiSignature`] records;
 /// the [divergence](crate::divergence) detector emits one binary-level
 /// [`PlatformDivergence`] record when the imports mix platform
-/// families; the summary detector emits function-level [`ApiUsage`]
+/// families; the [com](crate::com) detector emits binary-level
+/// [`ComInterface`] records when the imports and call-graph names carry
+/// COM signals; the summary detector emits function-level [`ApiUsage`]
 /// records. The union is what the persisted result carries, so one list
 /// holds every finding for a binary and a consumer reads the shared
 /// shape — API, library, crate suggestion, confidence, evidence —
@@ -168,47 +218,61 @@ pub enum ApiFinding {
     /// A binary-level claim that the imports mix Win32 and POSIX/stdio
     /// families.
     PlatformDivergence(PlatformDivergence),
+    /// A binary-level claim that the binary drives a COM interface or
+    /// the COM runtime.
+    ComInterface(ComInterface),
     /// A function-level API usage through the call graph.
     ApiUsage(ApiUsage),
 }
 
 impl ApiFinding {
     /// The function the finding is about — empty for a binary-level
-    /// import entry or divergence claim.
+    /// import entry, divergence claim, or COM claim.
     pub fn function(&self) -> &str {
         match self {
             ApiFinding::Import(_) => "",
             ApiFinding::PlatformDivergence(_) => "",
+            ApiFinding::ComInterface(_) => "",
             ApiFinding::ApiUsage(record) => &record.function,
         }
     }
 
     /// The API the finding names, spelled for a report row — the two
-    /// platform families joined for a divergence claim.
+    /// platform families joined for a divergence claim, the recovered
+    /// interface name (or `COM runtime` for a nameless claim) for a COM
+    /// claim.
     pub fn target(&self) -> String {
         match self {
             ApiFinding::Import(record) => record.api.clone(),
             ApiFinding::PlatformDivergence(record) => record.families.join(" + "),
+            ApiFinding::ComInterface(record) => record
+                .interface
+                .clone()
+                .unwrap_or_else(|| "COM runtime".into()),
             ApiFinding::ApiUsage(record) => record.api.clone(),
         }
     }
 
     /// The library the API belongs to, when identified — a divergence
-    /// claim names families, not one library, so it carries none.
+    /// claim names families, not one library, and a COM claim names an
+    /// interface, not a library, so both carry none.
     pub fn library(&self) -> Option<&str> {
         match self {
             ApiFinding::Import(record) => record.library.as_deref(),
             ApiFinding::PlatformDivergence(_) => None,
+            ApiFinding::ComInterface(_) => None,
             ApiFinding::ApiUsage(record) => Some(&record.library),
         }
     }
 
     /// The Rust crate standing in for the API, when identified — a
-    /// divergence claim suggests a shape, not a crate.
+    /// divergence claim suggests a shape, not a crate, and a COM claim
+    /// suggests a trait, not a crate.
     pub fn rust_crate(&self) -> Option<&str> {
         match self {
             ApiFinding::Import(record) => record.rust_crate.as_deref(),
             ApiFinding::PlatformDivergence(_) => None,
+            ApiFinding::ComInterface(_) => None,
             ApiFinding::ApiUsage(record) => Some(&record.rust_crate),
         }
     }
@@ -216,11 +280,13 @@ impl ApiFinding {
     /// The API category the finding's library entry names, spelled with
     /// the PAL `ApiCategory` display names, when the mapping carries
     /// one — a divergence claim names its families through
-    /// [`target`](Self::target), not through one category.
+    /// [`target`](Self::target), not through one category, and a COM
+    /// claim names an interface.
     pub fn category(&self) -> Option<&str> {
         match self {
             ApiFinding::Import(record) => record.category.as_deref(),
             ApiFinding::PlatformDivergence(_) => None,
+            ApiFinding::ComInterface(_) => None,
             ApiFinding::ApiUsage(record) => record.category.as_deref(),
         }
     }
@@ -231,6 +297,7 @@ impl ApiFinding {
         match self {
             ApiFinding::Import(record) => &record.features,
             ApiFinding::PlatformDivergence(_) => &[],
+            ApiFinding::ComInterface(_) => &[],
             ApiFinding::ApiUsage(record) => &record.features,
         }
     }
@@ -238,10 +305,21 @@ impl ApiFinding {
     /// The crate suggestion, spelled for prompt rows — empty when the
     /// API was never identified. With feature flags the crate renders in
     /// the `crate[feat1, feat2]` form; without them, the bare name. A
-    /// divergence claim carries the cfg-gated translation shape instead.
+    /// divergence claim carries the cfg-gated translation shape instead;
+    /// a named COM claim carries the trait shape with the interface's
+    /// method listing, and a runtime-level COM claim the trait shape
+    /// without names.
     pub fn suggestion(&self) -> String {
         match self {
             ApiFinding::PlatformDivergence(_) => DIVERGENCE_SUGGESTION.to_string(),
+            ApiFinding::ComInterface(record) => match &record.interface {
+                Some(interface) if !record.methods.is_empty() => format!(
+                    "{COM_INTERFACE_SUGGESTION}: trait {interface} with {}",
+                    record.methods.join(", ")
+                ),
+                Some(interface) => format!("{COM_INTERFACE_SUGGESTION}: trait {interface}"),
+                None => COM_RUNTIME_SUGGESTION.to_string(),
+            },
             _ => match self.rust_crate() {
                 None => String::new(),
                 Some(krate) if self.features().is_empty() => krate.to_string(),
@@ -255,27 +333,32 @@ impl ApiFinding {
         match self {
             ApiFinding::Import(record) => record.confidence,
             ApiFinding::PlatformDivergence(record) => record.confidence,
+            ApiFinding::ComInterface(record) => record.confidence,
             ApiFinding::ApiUsage(record) => record.confidence,
         }
     }
 
     /// The evidence behind the finding: the call path for a usage, the
     /// API name itself for a binary-level import entry, the triggering
-    /// imports from both sides for a divergence claim.
+    /// imports from both sides for a divergence claim, the decorated
+    /// names (or the COM signals seen) for a COM claim.
     pub fn evidence(&self) -> String {
         match self {
             ApiFinding::Import(record) => record.api.clone(),
             ApiFinding::PlatformDivergence(record) => record.evidence.clone(),
+            ApiFinding::ComInterface(record) => record.evidence.clone(),
             ApiFinding::ApiUsage(record) => record.evidence.clone(),
         }
     }
 
-    /// The serde `kind` tag — `import`, `platform_divergence`, or
-    /// `api_usage` — naming the detector behind the finding.
+    /// The serde `kind` tag — `import`, `platform_divergence`,
+    /// `com_interface`, or `api_usage` — naming the detector behind the
+    /// finding.
     pub fn kind(&self) -> &'static str {
         match self {
             ApiFinding::Import(_) => "import",
             ApiFinding::PlatformDivergence(_) => "platform_divergence",
+            ApiFinding::ComInterface(_) => "com_interface",
             ApiFinding::ApiUsage(_) => "api_usage",
         }
     }
@@ -291,8 +374,8 @@ impl ApiFinding {
 /// under `re/analysis/apidetect/`, and the cache a caller loads instead
 /// of re-scanning: the binary-level import entries first, in listing
 /// order, then the platform-divergence claim when the imports mix
-/// families, then the function-level usages, function by function in
-/// call graph order.
+/// families, then the COM claims when the names carry COM signals, then
+/// the function-level usages, function by function in call graph order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiDetectionResult {
     /// Provenance of the scan that produced these findings.
@@ -312,8 +395,9 @@ impl ApiDetectionResult {
     }
 
     /// The findings recorded for one function, e.g. `FUN_18003ab00` —
-    /// its usages, and only its usages: a binary-level import entry or
-    /// divergence claim belongs to the binary, not to any function.
+    /// its usages, and only its usages: a binary-level import entry,
+    /// divergence claim, or COM claim belongs to the binary, not to any
+    /// function.
     pub fn for_function(&self, function: &str) -> impl Iterator<Item = &ApiFinding> {
         self.findings
             .iter()
@@ -337,13 +421,16 @@ impl ApiDetectionResult {
 /// carry the mapping. An import entry becomes a row with an empty
 /// function and `kind = "import"`; a divergence claim carries an empty
 /// function, the joined families as its API, and `kind =
-/// "platform_divergence"`; a usage carries its call path and
+/// "platform_divergence"`; a COM claim carries an empty function, the
+/// interface name (or `COM runtime`) as its API, and `kind =
+/// "com_interface"`; a usage carries its call path and
 /// `kind = "direct"` or `"transitive"`.
 impl From<&ApiFinding> for calxgloss_prompts::ApiInfo {
     fn from(finding: &ApiFinding) -> Self {
         let kind = match finding {
             ApiFinding::Import(_) => "import",
             ApiFinding::PlatformDivergence(_) => "platform_divergence",
+            ApiFinding::ComInterface(_) => "com_interface",
             ApiFinding::ApiUsage(record) => {
                 if record.direct {
                     "direct"
@@ -544,6 +631,101 @@ mod tests {
         assert_eq!(info.kind, "platform_divergence");
         assert_eq!(info.confidence, 70);
         assert_eq!(info.evidence, "CreateFileA (Win32Core), fopen (POSIX)");
+    }
+
+    fn com() -> ComInterface {
+        ComInterface {
+            interface: Some("IDataSource".into()),
+            methods: vec!["QueryInterface".into(), "AddRef".into(), "Release".into()],
+            evidence:
+                "?QueryInterface@IDataSource@@UEAAJPEAXPEAPEAX@Z, ?Release@IDataSource@@UEAAKXZ"
+                    .into(),
+            confidence: Confidence::new(70),
+        }
+    }
+
+    #[test]
+    fn com_finding_reads_through_the_union_accessors() {
+        let finding = ApiFinding::ComInterface(com());
+        assert_eq!(finding.function(), "", "the claim is binary-level");
+        assert_eq!(finding.target(), "IDataSource", "the interface is named");
+        assert_eq!(finding.library(), None);
+        assert_eq!(finding.rust_crate(), None);
+        assert_eq!(finding.category(), None);
+        assert!(finding.features().is_empty());
+        assert_eq!(finding.confidence(), Confidence::new(70));
+        assert_eq!(
+            finding.evidence(),
+            "?QueryInterface@IDataSource@@UEAAJPEAXPEAPEAX@Z, ?Release@IDataSource@@UEAAKXZ"
+        );
+        assert_eq!(finding.kind(), "com_interface");
+        let suggestion = finding.suggestion();
+        assert!(suggestion.contains("trait"), "got: {suggestion}");
+        assert!(
+            suggestion.contains("QueryInterface, AddRef, Release"),
+            "the method listing rides the suggestion: {suggestion}"
+        );
+    }
+
+    #[test]
+    fn a_runtime_level_com_finding_reads_through_the_union_accessors() {
+        // No interface name recovered: the claim names the COM runtime,
+        // carries no methods, and sits visibly below a named claim.
+        let finding = ApiFinding::ComInterface(ComInterface {
+            interface: None,
+            methods: Vec::new(),
+            evidence: "CoCreateInstance, CoTaskMemAlloc".into(),
+            confidence: Confidence::new(50),
+        });
+        assert_eq!(finding.function(), "");
+        assert_eq!(finding.target(), "COM runtime");
+        assert_eq!(finding.kind(), "com_interface");
+        assert_eq!(finding.confidence(), Confidence::new(50));
+        assert!(
+            finding.confidence() < Confidence::new(70),
+            "a nameless claim sits below a named-interface claim"
+        );
+        assert!(
+            finding.suggestion().contains("trait"),
+            "the runtime claim still suggests the trait shape: {}",
+            finding.suggestion()
+        );
+    }
+
+    #[test]
+    fn com_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = ApiFinding::ComInterface(com());
+        let json = serde_json::to_string(&finding).unwrap();
+        let back: ApiFinding = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, finding);
+        assert!(json.contains(r#""kind":"com_interface""#));
+    }
+
+    #[test]
+    fn a_runtime_level_com_finding_serde_round_trips_without_the_nameless_fields() {
+        let finding = ApiFinding::ComInterface(ComInterface {
+            interface: None,
+            methods: Vec::new(),
+            evidence: "CoCreateInstance".into(),
+            confidence: Confidence::new(50),
+        });
+        let json = serde_json::to_string(&finding).unwrap();
+        let back: ApiFinding = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, finding);
+        assert!(!json.contains("\"interface\""), "got: {json}");
+        assert!(!json.contains("\"methods\""), "got: {json}");
+    }
+
+    #[test]
+    fn com_finding_converts_to_a_prompt_row() {
+        let info = calxgloss_prompts::ApiInfo::from(&ApiFinding::ComInterface(com()));
+        assert_eq!(info.function, "");
+        assert_eq!(info.api, "IDataSource");
+        assert_eq!(info.library, "");
+        assert!(info.suggestion.contains("trait"));
+        assert_eq!(info.kind, "com_interface");
+        assert_eq!(info.confidence, 70);
+        assert!(info.evidence.contains("?QueryInterface@IDataSource@@"));
     }
 
     #[test]

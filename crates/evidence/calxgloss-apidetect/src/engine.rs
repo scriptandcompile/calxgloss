@@ -3,11 +3,12 @@
 //! [`ApiEngine`] runs the two detectors over one binary — the
 //! [`ImportTableScanner`] identifies the binary's imports, the
 //! [`ApiSummaryDetector`] reads the built call graph for the APIs each
-//! function reaches — and the [divergence](crate::divergence) pass reads
-//! the classified import listing for the platform-divergence claim,
-//! collecting everything into one [`ApiDetectionResult`]. The engine is
-//! generic over the shared [`ScanSource`] plus a [`CallGraphSource`] for
-//! the built graph, so tests can run the whole orchestration over canned
+//! function reaches — and the [divergence](crate::divergence) and
+//! [com](crate::com) passes read the classified import listing and the
+//! graph names for the platform-divergence and COM claims, collecting
+//! everything into one [`ApiDetectionResult`]. The engine is generic
+//! over the shared [`ScanSource`] plus a [`CallGraphSource`] for the
+//! built graph, so tests can run the whole orchestration over canned
 //! data; [`new`](Self::new) builds one over a live [`GhidraClient`].
 
 use std::time::Instant;
@@ -17,6 +18,7 @@ use calxgloss_ghidra::GhidraClient;
 use tracing::{info, warn};
 
 use crate::api_summary::ApiSummaryDetector;
+use crate::com::detect_com;
 use crate::divergence::detect_divergence;
 use crate::error::{ApiError, Result};
 use crate::import_table::ImportTableScanner;
@@ -130,15 +132,17 @@ impl<S> ApiEngine<S> {
     /// and becomes the key a persisted result is filed under. The
     /// findings follow the import listing — every import entry, in
     /// listing order, then the platform-divergence claim when the
-    /// imports mix Win32 and POSIX/stdio families — and then the call
-    /// graph, function by function, direct calls before transitive
-    /// paths, so two scans of the same program diff cleanly.
+    /// imports mix Win32 and POSIX/stdio families, then the COM claims
+    /// when the import and call-graph names carry COM signals — and
+    /// then the call graph, function by function, direct calls before
+    /// transitive paths, so two scans of the same program diff cleanly.
     ///
     /// A failure of the import listing — the server being down —
     /// aborts the run, since then nothing was scanned. A call graph
     /// that cannot be built degrades the run to the import table
     /// alone, with a warning: the binary-level identifications stand
-    /// on their own.
+    /// on their own, and the COM reading runs off the import listing
+    /// without the graph names.
     pub async fn scan(&self, binary: impl Into<String>) -> Result<ApiDetectionResult>
     where
         S: ScanSource + CallGraphSource,
@@ -155,17 +159,35 @@ impl<S> ApiEngine<S> {
             findings.push(divergence);
         }
 
-        match self.source.call_graph(&binary).await {
-            Ok(graph) => {
-                findings.extend(self.detector.detect(&graph));
-            }
+        let graph = match self.source.call_graph(&binary).await {
+            Ok(graph) => Some(graph),
             Err(error) => {
                 warn!(
                     binary = %binary,
                     error = %error,
                     "Call graph unavailable: reporting the import table alone"
                 );
+                None
             }
+        };
+
+        // The COM reading comes off the classified import listing and
+        // the node and callee names the built graph already carries —
+        // no new ScanSource reads — and slots after the import entries
+        // (and any divergence claim) and before the usages so the
+        // scan-order contract stays diffable.
+        let graph_names: Vec<String> = graph
+            .iter()
+            .flatten()
+            .flat_map(|node| {
+                std::iter::once(node.name.clone())
+                    .chain(node.callees.iter().map(|edge| edge.callee_name.clone()))
+            })
+            .collect();
+        findings.extend(detect_com(&findings, &graph_names));
+
+        if let Some(graph) = &graph {
+            findings.extend(self.detector.detect(graph));
         }
 
         let mut metadata = ScanMetadata::new(binary);
@@ -416,6 +438,137 @@ mod tests {
                 .iter()
                 .all(|finding| matches!(finding.kind(), "import" | "api_usage")),
             "no platform_divergence finding for a purely Win32 binary"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_binary_with_decorated_com_imports_claims_a_named_interface() {
+        // The fake-program scan surfaces the named claim whole:
+        // binary-level, naming the recovered interface, carrying the
+        // decorated names as evidence, at the named confidence,
+        // suggesting the trait shape.
+        let result = scan(FakeProgram::new(
+            vec![
+                "CoCreateInstance",
+                "?QueryInterface@IDataSource@@UEAAJPEAXPEAPEAX@Z",
+                "?Release@IDataSource@@UEAAKXZ",
+            ],
+            vec![node("FUN_a", 0x1000, vec![("CoCreateInstance", 0)])],
+        ))
+        .await;
+        let coms: Vec<&crate::types::ApiFinding> = result
+            .findings
+            .iter()
+            .filter(|finding| finding.kind() == "com_interface")
+            .collect();
+        assert_eq!(coms.len(), 1, "one claim per interface");
+        let finding = coms[0];
+        assert_eq!(finding.function(), "");
+        assert_eq!(finding.target(), "IDataSource");
+        assert_eq!(
+            finding.evidence(),
+            "?QueryInterface@IDataSource@@UEAAJPEAXPEAPEAX@Z, ?Release@IDataSource@@UEAAKXZ"
+        );
+        assert_eq!(finding.confidence(), Confidence::new(70));
+        assert!(finding.suggestion().contains("trait"));
+        assert!(
+            result
+                .findings
+                .iter()
+                .any(|finding| finding.kind() == "import"
+                    && finding.target() == "CoCreateInstance"),
+            "the individual import entries stay beside the structural claim"
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_only_com_imports_claim_one_lower_confidence_finding() {
+        // No name to recover: one binary-level claim naming the COM
+        // runtime imports seen, at the visibly lower runtime tier.
+        let result = scan(FakeProgram::new(
+            vec!["CoCreateInstance", "CoTaskMemAlloc", "inflate"],
+            vec![node("FUN_a", 0x1000, vec![("inflate", 0)])],
+        ))
+        .await;
+        let coms: Vec<&crate::types::ApiFinding> = result
+            .findings
+            .iter()
+            .filter(|finding| finding.kind() == "com_interface")
+            .collect();
+        assert_eq!(coms.len(), 1, "one claim per binary");
+        assert_eq!(coms[0].target(), "COM runtime");
+        assert_eq!(
+            coms[0].evidence(),
+            "CoCreateInstance, CoTaskMemAlloc",
+            "the graph adds no COM names here, and the cap holds"
+        );
+        assert_eq!(coms[0].confidence(), Confidence::new(50));
+    }
+
+    #[tokio::test]
+    async fn the_com_finding_lands_after_import_entries_and_before_usages() {
+        // With both structural readings open, the COM claim slots after
+        // the import entries and the divergence claim, before usages.
+        let result = scan(FakeProgram::new(
+            vec!["CreateFileA", "malloc", "CoCreateInstance"],
+            vec![node("FUN_a", 0x1000, vec![("malloc", 0)])],
+        ))
+        .await;
+        let kinds: Vec<&str> = result
+            .findings
+            .iter()
+            .map(|finding| finding.kind())
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "import",
+                "import",
+                "import",
+                "platform_divergence",
+                "com_interface",
+                "api_usage",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn call_graph_names_carry_the_com_reading_through_the_scan() {
+        // A decorated thunk name only in the call graph — no COM
+        // import — still lands the named claim, off the names the
+        // scan already holds.
+        let result = scan(FakeProgram::new(
+            vec!["inflate"],
+            vec![node(
+                "FUN_a",
+                0x1000,
+                vec![("?QueryInterface@IDataSource@@UEAAJPEAXPEAPEAX@Z", 0)],
+            )],
+        ))
+        .await;
+        let coms: Vec<&crate::types::ApiFinding> = result
+            .findings
+            .iter()
+            .filter(|finding| finding.kind() == "com_interface")
+            .collect();
+        assert_eq!(coms.len(), 1);
+        assert_eq!(coms[0].target(), "IDataSource");
+    }
+
+    #[tokio::test]
+    async fn a_no_com_signal_binary_claims_no_com_interface() {
+        // Ordinary imports through the scan: the COM gate stays shut.
+        let result = scan(FakeProgram::new(
+            vec!["inflate", "CreateFileA"],
+            vec![node("FUN_a", 0x1000, vec![("inflate", 0)])],
+        ))
+        .await;
+        assert!(
+            result
+                .findings
+                .iter()
+                .all(|finding| finding.kind() != "com_interface"),
+            "an ordinary binary is not over-read as COM"
         );
     }
 

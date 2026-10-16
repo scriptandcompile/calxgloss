@@ -194,7 +194,9 @@ mod tests {
                     matches!(finding, ApiFinding::ApiUsage(record) if record.direct),
                     match finding {
                         ApiFinding::ApiUsage(record) => record.evidence.as_str(),
-                        ApiFinding::Import(_) | ApiFinding::PlatformDivergence(_) => "",
+                        ApiFinding::Import(_)
+                        | ApiFinding::PlatformDivergence(_)
+                        | ApiFinding::ComInterface(_) => "",
                     },
                 )
             })
@@ -217,7 +219,9 @@ mod tests {
                 assert_eq!(record.category.as_deref(), Some("zlib"));
                 assert_eq!(record.features, ["zlib".to_string()]);
             }
-            ApiFinding::Import(_) | ApiFinding::PlatformDivergence(_) => {
+            ApiFinding::Import(_)
+            | ApiFinding::PlatformDivergence(_)
+            | ApiFinding::ComInterface(_) => {
                 panic!("expected a usage finding")
             }
         }
@@ -244,7 +248,9 @@ mod tests {
         );
         match &findings[0] {
             ApiFinding::ApiUsage(record) => assert_eq!(record.confidence, Confidence::new(60)),
-            ApiFinding::Import(_) | ApiFinding::PlatformDivergence(_) => {
+            ApiFinding::Import(_)
+            | ApiFinding::PlatformDivergence(_)
+            | ApiFinding::ComInterface(_) => {
                 panic!("expected a usage finding")
             }
         }

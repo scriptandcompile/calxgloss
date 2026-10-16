@@ -9,8 +9,9 @@
 //! - **Consumption** — the loaded result answers the lookups a
 //!   translation pipeline makes (the usages recorded for one function),
 //!   and the persisted list keeps every finding in scan order: import
-//!   entries in listing order, then the platform-divergence claim, then
-//!   usages function by function in call graph order.
+//!   entries in listing order, then the platform-divergence claim,
+//!   then the COM claims, then usages function by function in call
+//!   graph order.
 //! - **Prompt rendering** — the loaded findings render into `ApiInfo`
 //!   prompt data and the escalate prompt carries the LIBRARIES AND APIS
 //!   section.
@@ -65,10 +66,12 @@ fn node(name: &str, address: u64, callees: Vec<(&str, u64)>) -> FunctionCallGrap
 /// imports covering an
 /// identified zlib call, an identified Win32 call, an unidentified
 /// vendor function, and an identified POSIX call — the Win32 and POSIX
-/// imports together open the platform-divergence gate — and a call
-/// graph where `FUN_18003ab00` calls `inflate` directly and reaches
-/// `CreateFileA` through `FUN_18003c000` — one direct and one
-/// transitive usage — while `FUN_18003e750` calls nothing.
+/// imports together open the platform-divergence gate — plus a pair of
+/// interface-decorated names opening the COM reading on a named
+/// interface, and a call graph where `FUN_18003ab00` calls `inflate`
+/// directly and reaches `CreateFileA` through `FUN_18003c000` — one
+/// direct and one transitive usage — while `FUN_18003e750` calls
+/// nothing.
 #[derive(Clone, Default)]
 struct FakeProgram {
     imports: Vec<Symbol>,
@@ -161,6 +164,8 @@ fn program() -> FakeProgram {
             import("CreateFileA"),
             import("VendorSpecialFunction"),
             import("fopen"),
+            import("?QueryInterface@IDataSource@@UEAAJPEAXPEAPEAX@Z"),
+            import("?Release@IDataSource@@UEAAKXZ"),
         ],
         graph: vec![
             node(
@@ -205,10 +210,11 @@ async fn a_scan_files_its_result_in_the_workspace_and_reads_back() {
 #[tokio::test]
 async fn the_persisted_document_keeps_findings_in_scan_order() {
     // Imports first, in listing order — identified and unidentified
-    // alike — then the platform-divergence claim the mixed Win32 and
-    // POSIX imports open, then usages function by function in call
-    // graph order, direct before transitive: the order two scans diff
-    // against.
+    // alike, decorated names included — then the platform-divergence
+    // claim the mixed Win32 and POSIX imports open, then the COM claim
+    // the decorated names recover, then usages function by function in
+    // call graph order, direct before transitive: the order two scans
+    // diff against.
     let workspace = TempDir::new().unwrap();
     let result = ApiEngine::with_source(program())
         .scan("eqmain.dll")
@@ -230,7 +236,14 @@ async fn the_persisted_document_keeps_findings_in_scan_order() {
             ("import", "", "CreateFileA".to_string()),
             ("import", "", "VendorSpecialFunction".to_string()),
             ("import", "", "fopen".to_string()),
+            (
+                "import",
+                "",
+                "?QueryInterface@IDataSource@@UEAAJPEAXPEAPEAX@Z".to_string()
+            ),
+            ("import", "", "?Release@IDataSource@@UEAAKXZ".to_string()),
             ("platform_divergence", "", "Win32Core + POSIX".to_string()),
+            ("com_interface", "", "IDataSource".to_string()),
             ("api_usage", "FUN_18003ab00", "inflate".to_string()),
             ("api_usage", "FUN_18003ab00", "CreateFileA".to_string()),
             ("api_usage", "FUN_18003c000", "CreateFileA".to_string()),
@@ -423,6 +436,89 @@ async fn the_platform_divergence_finding_survives_scan_persist_load_and_prompt()
     assert!(
         prompt.contains("cfg gates"),
         "the prompt suggests the cfg-gated shape"
+    );
+}
+
+#[tokio::test]
+async fn the_com_interface_finding_survives_scan_persist_load_and_prompt() {
+    // The decorated-name fixture recovers a named interface: the claim
+    // rides the persisted document whole — name, method listing,
+    // evidence, confidence — and renders into the escalate prompt
+    // naming the interface and the trait-plus-methods shape.
+    let workspace = TempDir::new().unwrap();
+    let result = ApiEngine::with_source(program())
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = ApiPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let coms: Vec<&ApiFinding> = loaded
+        .findings
+        .iter()
+        .filter(|finding| finding.kind() == "com_interface")
+        .collect();
+    assert_eq!(
+        coms.len(),
+        1,
+        "one claim per interface survives the round trip"
+    );
+    let ApiFinding::ComInterface(record) = coms[0] else {
+        unreachable!("the COM claim reads as its own record");
+    };
+    assert_eq!(record.interface.as_deref(), Some("IDataSource"));
+    assert_eq!(
+        record.methods,
+        ["QueryInterface".to_string(), "Release".to_string()],
+        "the method listing rides the document"
+    );
+    assert_eq!(
+        record.evidence,
+        "?QueryInterface@IDataSource@@UEAAJPEAXPEAPEAX@Z, ?Release@IDataSource@@UEAAKXZ"
+    );
+    assert_eq!(record.confidence.value(), 70);
+
+    let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
+        "FUN_18003ab00".into(),
+        "eqmain.dll".into(),
+        "fn fun_18003ab00() { /* raw imports */ }".into(),
+        "Wrong result".into(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        loaded
+            .findings
+            .iter()
+            .map(calxgloss_prompts::ApiInfo::from)
+            .collect(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("the escalate prompt should render");
+
+    assert!(prompt.contains("LIBRARIES AND APIS"));
+    assert!(
+        prompt.contains("`IDataSource`"),
+        "the prompt names the recovered interface"
+    );
+    assert!(prompt.contains("com_interface, confidence 70"));
+    assert!(
+        prompt.contains("?QueryInterface@IDataSource@@UEAAJPEAXPEAPEAX@Z"),
+        "the prompt carries the decorated names as evidence"
+    );
+    assert!(
+        prompt.contains("trait IDataSource with QueryInterface, Release"),
+        "the prompt suggests the trait shape with the method listing"
     );
 }
 
