@@ -67,18 +67,7 @@ pub(crate) fn color_palette(tally: &ProgramTally) -> Option<ColorConstant> {
         functions: functions.into_iter().collect(),
         evidence: qualified
             .iter()
-            .map(|(value, occurrences)| {
-                format!(
-                    "{value:#x} used {} times in {}",
-                    occurrences.count,
-                    occurrences
-                        .functions
-                        .iter()
-                        .cloned()
-                        .collect::<Vec<String>>()
-                        .join(", ")
-                )
-            })
+            .map(|(value, occurrences)| occurrences.usage_evidence(**value))
             .collect::<Vec<String>>()
             .join("; "),
     })

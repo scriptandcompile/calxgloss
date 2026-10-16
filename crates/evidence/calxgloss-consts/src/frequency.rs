@@ -29,6 +29,25 @@ pub struct ConstantOccurrences {
     pub functions: BTreeSet<String>,
 }
 
+impl ConstantOccurrences {
+    /// The shared usage-evidence phrase for one value: `0x… used N
+    /// times in FUN_a, FUN_b`. The three program-level readings —
+    /// named constants, protocol constants, and color palettes — all
+    /// render their evidence through it, each appending only its own
+    /// distinct part on top.
+    pub(crate) fn usage_evidence(&self, value: u64) -> String {
+        format!(
+            "{value:#x} used {} times in {}",
+            self.count,
+            self.functions
+                .iter()
+                .cloned()
+                .collect::<Vec<String>>()
+                .join(", ")
+        )
+    }
+}
+
 /// The program-wide literal tally the analyzer reads: each value to
 /// its occurrences. The engine builds it during the single scan pass,
 /// one [`literals`](FrequencyAnalyzer::literals) call per body.
@@ -129,17 +148,7 @@ impl FrequencyAnalyzer {
                     count: occurrences.count,
                     functions,
                     confidence: Confidence::new(60),
-                    evidence: format!(
-                        "{:#x} used {} times in {}",
-                        value,
-                        occurrences.count,
-                        occurrences
-                            .functions
-                            .iter()
-                            .cloned()
-                            .collect::<Vec<String>>()
-                            .join(", ")
-                    ),
+                    evidence: occurrences.usage_evidence(*value),
                 }
             })
             .collect()
@@ -185,6 +194,19 @@ mod tests {
             .iter()
             .map(|(value, name)| (*value, (*name).to_string()))
             .collect()
+    }
+
+    #[test]
+    fn the_usage_evidence_phrase_renders_the_value_count_and_functions() {
+        let tally = tally(&[
+            ("FUN_18003ab00", &[0x400, 0x400]),
+            ("FUN_18003e750", &[0x400]),
+        ]);
+        let occurrences = tally.get(&0x400).expect("0x400 is in the tally");
+        assert_eq!(
+            occurrences.usage_evidence(0x400),
+            "0x400 used 3 times in FUN_18003ab00, FUN_18003e750"
+        );
     }
 
     #[test]

@@ -161,7 +161,6 @@ pub(crate) fn protocol_constants(tally: &ProgramTally) -> Vec<ProtocolConstant> 
 /// suggestion naming the `const` after the table entry.
 fn render_constant(entry: &TableEntry, occurrences: &ConstantOccurrences) -> ProtocolConstant {
     let functions: Vec<String> = occurrences.functions.iter().cloned().collect();
-    let where_used = functions.join(", ");
     ProtocolConstant {
         suggestion: NamedConstant::render_suggestion(Some(entry.name), entry.value),
         value: entry.value,
@@ -171,8 +170,10 @@ fn render_constant(entry: &TableEntry, occurrences: &ConstantOccurrences) -> Pro
         functions,
         confidence: Confidence::new(PROTOCOL_CONFIDENCE),
         evidence: format!(
-            "{:#x} used {} times in {} — table match: {} ({})",
-            entry.value, occurrences.count, where_used, entry.name, entry.protocol,
+            "{} — table match: {} ({})",
+            occurrences.usage_evidence(entry.value),
+            entry.name,
+            entry.protocol,
         ),
     }
 }
