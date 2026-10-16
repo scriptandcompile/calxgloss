@@ -345,6 +345,47 @@ mod tests {
     }
 
     #[test]
+    fn protocol_constant_findings_survive_the_round_trip() {
+        let dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let persistor = ConstPersistor::new(dir.path());
+
+        let mut result = ConstResult::new(ScanMetadata::new("eqmain.dll"));
+        result
+            .findings
+            .push(crate::types::ConstFinding::ProtocolConstant(
+                crate::types::ProtocolConstant {
+                    value: 0x89504e47,
+                    name: "PNG_MAGIC".to_string(),
+                    protocol: "PNG image format".to_string(),
+                    count: 1,
+                    functions: vec!["StartWorker".to_string()],
+                    suggestion: "const PNG_MAGIC: u32 = 0x89504e47;".to_string(),
+                    confidence: Confidence::new(75),
+                    evidence: "0x89504e47 used 1 times in StartWorker — table match: PNG_MAGIC \
+                               (PNG image format)"
+                        .to_string(),
+                },
+            ));
+        persistor
+            .save(&result)
+            .expect("result should save to the workspace");
+
+        let loaded = persistor
+            .load("eqmain.dll")
+            .expect("result should load from the workspace");
+        assert_eq!(loaded, result, "the protocol finding round-trips exactly");
+        match &loaded.findings[0] {
+            crate::types::ConstFinding::ProtocolConstant(p) => {
+                assert_eq!(p.value, 0x89504e47);
+                assert_eq!(p.name, "PNG_MAGIC");
+                assert_eq!(p.protocol, "PNG image format");
+                assert_eq!(p.confidence, Confidence::new(75));
+            }
+            other => panic!("expected a protocol-constant finding, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn a_named_constant_with_a_context_name_survives_the_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let persistor = ConstPersistor::new(dir.path());

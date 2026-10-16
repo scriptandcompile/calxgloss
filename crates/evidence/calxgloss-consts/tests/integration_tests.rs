@@ -8,11 +8,11 @@
 //!   loading it back yields the same result the scan returned.
 //! - **Consumption** — the loaded result answers the lookups a
 //!   translation pipeline makes (the findings recorded for one
-//!   function, the program-level named constants and flag families
-//!   included), and the persisted list keeps every finding in scan
-//!   order: function by function the bitmask groups then the enum
-//!   candidates, and the program-level named constants then merged
-//!   flag families appended after them.
+//!   function, the program-level named constants, flag families, and
+//!   protocol constants included), and the persisted list keeps every
+//!   finding in scan order: function by function the bitmask groups
+//!   then the enum candidates, and the program-level named constants,
+//!   merged flag families, and protocol constants appended after them.
 //! - **Prompt rendering** — the loaded findings render into `ConstInfo`
 //!   prompt data and the escalate prompt carries the CONSTANTS section,
 //!   the repeated literal's context-named `const` form included.
@@ -519,9 +519,96 @@ async fn a_merged_flag_family_survives_the_round_trip_and_the_prompt() {
 }
 
 // ------------------------------------------------------------
-// Cache behavior
+// Protocol constants
 // ------------------------------------------------------------
 
+#[tokio::test]
+async fn a_protocol_constant_survives_the_round_trip_and_the_prompt() {
+    // A single-use magic in one body — far below the repetition
+    // threshold: the protocol finding rides the persisted document
+    // under its own kind tag with the table name and protocol label,
+    // answers the using function's per-function lookup, and renders
+    // into the escalate prompt's CONSTANTS section at its
+    // above-the-tier confidence.
+    let workspace = TempDir::new().unwrap();
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("FUN_18003ab00")];
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  if (signature == 0x89504e47) {\n    parse();\n  }\n",
+        ),
+    );
+    let result = ConstEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = ConstPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let raw = std::fs::read_to_string(persistor.path_for("eqmain.dll")).expect("read");
+    assert!(raw.contains("\"kind\": \"protocol_constant\""));
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let findings: Vec<&ConstFinding> = loaded.for_function("FUN_18003ab00").collect();
+    assert_eq!(
+        findings.len(),
+        1,
+        "the protocol finding answers the using function's lookup"
+    );
+    let ConstFinding::ProtocolConstant(record) = findings[0] else {
+        unreachable!("the matched magic reads as a protocol-constant finding");
+    };
+    assert_eq!(record.value, 0x89504e47);
+    assert_eq!(record.name, "PNG_MAGIC");
+    assert_eq!(record.protocol, "PNG image format");
+    assert_eq!(record.count, 1, "a single use still reports");
+    assert_eq!(record.functions, vec!["FUN_18003ab00".to_string()]);
+    assert_eq!(
+        record.confidence,
+        calxgloss_consts::types::Confidence::new(75)
+    );
+
+    let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
+        "FUN_18003ab00".into(),
+        "eqmain.dll".into(),
+        "fn fun_18003ab00() { /* bare integer literals everywhere */ }".into(),
+        "Wrong result".into(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        loaded
+            .for_function("FUN_18003ab00")
+            .map(calxgloss_prompts::ConstInfo::from)
+            .collect(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("the escalate prompt should render");
+
+    assert!(prompt.contains("CONSTANTS"));
+    assert!(prompt.contains("const PNG_MAGIC: u32 = 0x89504e47;"));
+    assert!(prompt.contains("protocol_constant, confidence 75"));
+    assert!(
+        prompt.contains("0x89504e47 used 1 times in FUN_18003ab00"),
+        "the prompt carries the usage summary as evidence"
+    );
+}
+
+// ------------------------------------------------------------
+// Cache behavior
+// ------------------------------------------------------------
 #[tokio::test]
 async fn a_rescan_replaces_the_cached_document() {
     let workspace = TempDir::new().unwrap();

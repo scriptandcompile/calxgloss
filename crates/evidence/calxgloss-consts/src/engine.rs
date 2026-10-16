@@ -16,12 +16,17 @@
 //! name it saw across the scan rides each repeated value's record.
 //! After the walk, the flag-family merge (`flag_family`) ties the
 //! scan's own bitflag groups through shared bits and appends the
-//! merged program-level families after the named constants — no
-//! bodies kept, no new reads. The scan is one sequential pass over
-//! the function listing — like sync, there is nothing to resolve
-//! between the detectors, they read disjoint shapes — and keeping the
-//! pass sequential keeps the persisted finding list in a stable,
-//! diffable order.
+//! merged program-level families after the named constants, and the
+//! known-magic reading (`protocol`) matches the full literal tally —
+//! before the frequency threshold applies — against a built-in table
+//! of well-known protocol/format magics and sentinels, appending one
+//! named `protocol_constant` finding per matched value after the
+//! families; the frequency pass skips matched values so each lands
+//! exactly once. No bodies kept, no new reads. The scan is one
+//! sequential pass over the function listing — like sync, there is
+//! nothing to resolve between the detectors, they read disjoint
+//! shapes — and keeping the pass sequential keeps the persisted
+//! finding list in a stable, diffable order.
 
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -34,6 +39,7 @@ use crate::error::Result;
 use crate::flag_family::merge_families;
 use crate::frequency::{FrequencyAnalyzer, ProgramTally};
 use crate::naming::context_names;
+use crate::protocol::protocol_constants;
 use crate::sequential::SequentialDetector;
 use crate::types::{BitflagGroup, ConstFinding, ConstResult, ScanMetadata};
 
@@ -122,9 +128,13 @@ impl<S> ConstEngine<S> {
     /// each carrying the context name of the first qualifying
     /// assignment or comparison the bodies made of its value, then
     /// the flag families the scan's own bitflag groups merged into —
-    /// groups sharing at least one bit, transitively — each internally
-    /// sorted, so two scans of the same program diff cleanly and name
-    /// their constants identically.
+    /// groups sharing at least one bit, transitively — then the
+    /// protocol constants the known-magic reading matched against the
+    /// full tally before the frequency threshold applied, each
+    /// internally sorted, so two scans of the same program diff
+    /// cleanly and name their constants identically. A value the
+    /// protocol table matches lands only as its protocol finding: the
+    /// frequency pass skips matched values.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad
     /// entry point) is skipped with a warning; only a failure of the
@@ -214,9 +224,24 @@ impl<S> ConstEngine<S> {
             }
         }
 
+        // The protocol reading runs over the full tally before the
+        // frequency threshold applies, so a recognised magic seen once
+        // still reports. A matched value lands exactly once: the
+        // protocol claim is strictly stronger than the frequency-only
+        // named-constant reading and carries the same usage data, so
+        // the frequency pass is handed the tally with matched values
+        // removed and never also reports them.
+        let protocol = protocol_constants(&tally);
+        let matched: std::collections::BTreeSet<u64> =
+            protocol.iter().map(|record| record.value).collect();
+        let frequency_tally: ProgramTally = tally
+            .into_iter()
+            .filter(|(value, _)| !matched.contains(value))
+            .collect();
+
         findings.extend(
             self.frequency
-                .constants(&tally, &names)
+                .constants(&frequency_tally, &names)
                 .into_iter()
                 .map(ConstFinding::NamedConstant),
         );
@@ -225,7 +250,7 @@ impl<S> ConstEngine<S> {
                 .into_iter()
                 .map(ConstFinding::FlagFamily),
         );
-
+        findings.extend(protocol.into_iter().map(ConstFinding::ProtocolConstant));
         let mut metadata = ScanMetadata::new(binary);
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
@@ -458,6 +483,20 @@ mod tests {
             .expect("the scan should have merged the shared-bit groups")
     }
 
+    /// The scan's program-level protocol constants, whichever values
+    /// they carry. Named apart from the crate's `protocol_constants`
+    /// matcher so the test module's glob import cannot shadow it.
+    fn protocol_findings(result: &ConstResult) -> Vec<&crate::types::ProtocolConstant> {
+        result
+            .findings
+            .iter()
+            .filter_map(|finding| match finding {
+                ConstFinding::ProtocolConstant(record) => Some(record),
+                _ => None,
+            })
+            .collect()
+    }
+
     #[tokio::test]
     async fn a_named_assignment_in_the_bodies_names_the_repeated_constant() {
         // The canned program spells `size = 0x280;` in one function and
@@ -683,6 +722,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_single_use_table_magic_yields_a_protocol_constant_finding() {
+        // A fake-program body carrying a PNG magic in a comparison,
+        // seen exactly once in one function — far below the repetition
+        // threshold: the protocol reading matches it off the full
+        // tally anyway, naming the const after the table entry and
+        // naming the protocol, and the finding answers the using
+        // function's per-function lookup.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  if (signature == 0x89504e47) {\n    parse();\n  }\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let records = protocol_findings(&result);
+        assert_eq!(records.len(), 1, "the single-use magic still reports");
+        let record = records[0];
+        assert_eq!(record.value, 0x89504e47);
+        assert_eq!(record.name, "PNG_MAGIC");
+        assert_eq!(record.protocol, "PNG image format");
+        assert_eq!(record.count, 1);
+        assert_eq!(record.functions, vec!["FUN_18003ab00".to_string()]);
+        assert_eq!(record.suggestion, "const PNG_MAGIC: u32 = 0x89504e47;");
+        assert_eq!(record.confidence, Confidence::new(75));
+        assert!(
+            record
+                .evidence
+                .contains("0x89504e47 used 1 times in FUN_18003ab00")
+        );
+        assert!(record.evidence.contains("PNG_MAGIC (PNG image format)"));
+
+        // The protocol claim replaces the frequency reading: the value
+        // never clears the repetition bar, so it is not also a named
+        // constant, and the protocol finding answers the lookup.
+        assert!(
+            result
+                .findings
+                .iter()
+                .filter(|finding| finding.kind() == "named_constant")
+                .count()
+                == 0
+        );
+        assert_eq!(kinds(&result, "FUN_18003ab00"), ["protocol_constant"]);
+    }
+
+    #[tokio::test]
+    async fn a_table_value_that_clears_the_frequency_threshold_lands_once() {
+        // A table value repeated enough to clear the frequency bar too
+        // — 0xdeadbeef three times across two functions: it appears
+        // once, as the protocol finding, never also as a named
+        // constant, and the protocol record carries the full usage
+        // data the frequency pass would have.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  marker = 0xdeadbeef;\n  fill(dst, 0xdeadbeef);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  check(0xdeadbeef);\n  return;\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let records = protocol_findings(&result);
+        assert_eq!(records.len(), 1, "one finding per matched value");
+        let record = records[0];
+        assert_eq!(record.value, 0xdeadbeef);
+        assert_eq!(record.name, "DEAD_BEEF_MARKER");
+        assert_eq!(record.count, 3);
+        assert_eq!(
+            record.functions,
+            vec!["FUN_18003ab00".to_string(), "FUN_18003e750".to_string()]
+        );
+
+        let named = result
+            .findings
+            .iter()
+            .filter(|finding| finding.kind() == "named_constant")
+            .count();
+        assert_eq!(
+            named, 0,
+            "the protocol claim is the only record for the value"
+        );
+        assert_eq!(kinds(&result, "FUN_18003e750"), ["protocol_constant"]);
+    }
+
+    #[tokio::test]
+    async fn values_outside_the_table_stay_ordinary_named_constants() {
+        // A repeated literal the table does not name keeps the
+        // frequency reading's mechanical suggestion: the protocol
+        // claim never dresses an unknown value up as known.
+        let result = scan(program()).await;
+
+        assert!(
+            protocol_findings(&result).is_empty(),
+            "the canned program carries no table magic"
+        );
+        let constant = named_constant(&result);
+        assert_eq!(constant.value, 0x280);
+        assert_eq!(constant.suggestion, "const SIZE_0x280: u32 = 0x280;");
+    }
+
+    #[tokio::test]
     async fn scan_collects_findings_from_all_three_detectors() {
         let result = scan(program()).await;
 
@@ -721,11 +877,13 @@ mod tests {
 
     #[tokio::test]
     async fn scan_keeps_findings_in_scan_order() {
-        // Both functions carry every shape, so the persisted list must
-        // group their per-function findings by function in listing
-        // order — bitmask then enum — and append the program-level
-        // findings after them: the named constants, then the flag
-        // family the two identical groups merge into, never interleaved.
+        // Both functions carry every shape and one carries a table
+        // magic, so the persisted list must group their per-function
+        // findings by function in listing order — bitmask then enum —
+        // and append the program-level findings after them: the named
+        // constants, then the flag family the two identical groups
+        // merge into, then the protocol constant the magic matched,
+        // never interleaved.
         let mut program = program();
         program.listing = vec![summary("FUN_18003e750"), summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -733,7 +891,9 @@ mod tests {
             function(
                 "FUN_18003e750",
                 "undefined FUN_18003e750(void)",
-                EVERY_SHAPE_BODY,
+                &format!(
+                    "{EVERY_SHAPE_BODY}  if (magic == 0xcafebabe) {{\n    dispatch();\n  }}\n"
+                ),
             ),
         );
         let result = scan(program).await;
@@ -752,6 +912,7 @@ mod tests {
                 ("FUN_18003ab00", "enum_candidate"),
                 ("", "named_constant"),
                 ("", "flag_family"),
+                ("", "protocol_constant"),
             ]
         );
     }

@@ -16,6 +16,10 @@
 //!   flag surface the per-function bitflag groups add up to once
 //!   groups sharing bits merge across the program, and the one
 //!   `bitflags!`-style struct it suggests.
+//! - `ProtocolConstant`: the program-level known-magic record — a
+//!   literal the scan tallied that matches the built-in table of
+//!   well-known protocol/format magics and sentinels, named after the
+//!   table entry, single use included.
 //! - `ConstFinding`: the union over the record kinds — one finding
 //!   whichever detector or post-pass made it — serde-tagged by `kind`.
 //! - `ConstResult`, `ScanMetadata`: the persisted per-binary result and
@@ -215,6 +219,64 @@ pub struct FlagFamily {
 }
 
 // ============================================================
+// Protocol constants
+// ============================================================
+
+/// One known-magic observation about the whole program — a literal the
+/// scan tallied that matches the built-in table of well-known
+/// protocol/format magics and sentinels — with the evidence behind it.
+///
+/// A record says one tallied literal — [`value`](Self::value) — is a
+/// recognised value: it equals a table entry, so it carries that
+/// entry's [`name`](Self::name) (`PNG_MAGIC`) and
+/// [`protocol`](Self::protocol) label ("PNG image format") — a claim
+/// checkable against the table — beside the usage data the tally
+/// holds: [`count`](Self::count) uses across the functions listed in
+/// [`functions`](Self::functions). It reads like
+/// [`suggestion`](Self::suggestion) — a `const` named after the table
+/// entry — and unlike the frequency reading it reports on a single
+/// use: a magic-number check may appear exactly once in one parser.
+/// The usage summary is kept as [`evidence`](Self::evidence) so a
+/// reviewer (or a translation prompt) can check the reasoning.
+///
+/// A table-matched value lands exactly once: the protocol claim is
+/// strictly stronger than the frequency-only named-constant reading
+/// and carries the same usage data, so the frequency pass skips
+/// matched values. Values outside the table are untouched and stay
+/// ordinary named constants.
+///
+/// Like the named constant this one is program-level: it belongs to
+/// every function that uses the value, not to a single one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProtocolConstant {
+    /// The matched literal's value, e.g. `0x89504e47`.
+    pub value: u64,
+    /// The table entry's display name, e.g. `PNG_MAGIC` — the name the
+    /// suggestion spells the `const` with.
+    pub name: String,
+    /// The protocol or format the value belongs to, e.g. `PNG image
+    /// format` — the table claim a reviewer can check.
+    pub protocol: String,
+    /// How many times the value is used across the program.
+    pub count: usize,
+    /// The functions that use the value, ascending.
+    pub functions: Vec<String>,
+    /// The Rust shape the value suggests — a `const` named after the
+    /// table entry, e.g. `const PNG_MAGIC: u32 = 0x89504e47;`.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100. Fixed, and above
+    /// the frequency-only named-constant tier: the value is not just
+    /// repeated, it is recognised, and the claim is checkable against
+    /// the table.
+    pub confidence: Confidence,
+    /// The usage summary that supports the record — the value's count,
+    /// the functions it appears in, and the table entry it matched —
+    /// kept so a reviewer (or a translation prompt) can check the
+    /// reasoning.
+    pub evidence: String,
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -241,6 +303,9 @@ pub enum ConstFinding {
     /// The whole flag surface several per-function groups sharing
     /// bits add up to.
     FlagFamily(FlagFamily),
+    /// A tallied literal matching the built-in table of well-known
+    /// protocol/format magics and sentinels.
+    ProtocolConstant(ProtocolConstant),
 }
 
 impl ConstFinding {
@@ -254,6 +319,7 @@ impl ConstFinding {
             ConstFinding::EnumCandidate(record) => &record.function,
             ConstFinding::NamedConstant(_) => "",
             ConstFinding::FlagFamily(_) => "",
+            ConstFinding::ProtocolConstant(_) => "",
         }
     }
 
@@ -264,6 +330,7 @@ impl ConstFinding {
             ConstFinding::EnumCandidate(record) => &record.suggestion,
             ConstFinding::NamedConstant(record) => &record.suggestion,
             ConstFinding::FlagFamily(record) => &record.suggestion,
+            ConstFinding::ProtocolConstant(record) => &record.suggestion,
         }
     }
 
@@ -274,6 +341,7 @@ impl ConstFinding {
             ConstFinding::EnumCandidate(record) => record.confidence,
             ConstFinding::NamedConstant(record) => record.confidence,
             ConstFinding::FlagFamily(record) => record.confidence,
+            ConstFinding::ProtocolConstant(record) => record.confidence,
         }
     }
 
@@ -285,24 +353,26 @@ impl ConstFinding {
             ConstFinding::EnumCandidate(record) => &record.evidence,
             ConstFinding::NamedConstant(record) => &record.evidence,
             ConstFinding::FlagFamily(record) => &record.evidence,
+            ConstFinding::ProtocolConstant(record) => &record.evidence,
         }
     }
 
     /// The serde `kind` tag — `bitflag_group`, `enum_candidate`,
-    /// `named_constant`, or `flag_family` — naming the reading behind
-    /// the finding.
+    /// `named_constant`, `flag_family`, or `protocol_constant` —
+    /// naming the reading behind the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             ConstFinding::BitflagGroup(_) => "bitflag_group",
             ConstFinding::EnumCandidate(_) => "enum_candidate",
             ConstFinding::NamedConstant(_) => "named_constant",
             ConstFinding::FlagFamily(_) => "flag_family",
+            ConstFinding::ProtocolConstant(_) => "protocol_constant",
         }
     }
 
     /// What the finding names, spelled for a report row: the group's
     /// or family's bit mask, the run's value range, or the repeated
-    /// value.
+    /// or matched value.
     pub fn target(&self) -> String {
         match self {
             ConstFinding::BitflagGroup(record) => format!("{:#x}", record.mask),
@@ -311,6 +381,7 @@ impl ConstFinding {
             }
             ConstFinding::NamedConstant(record) => format!("{:#x}", record.value),
             ConstFinding::FlagFamily(record) => format!("{:#x}", record.mask),
+            ConstFinding::ProtocolConstant(record) => format!("{:#x}", record.value),
         }
     }
 }
@@ -372,9 +443,10 @@ impl ConstResult {
     ///
     /// A program-level finding that names its contributing functions
     /// — a named constant for every function that uses its value, a
-    /// flag family for every function that contributed bits — is
-    /// yielded for each of them: the per-function view a translation
-    /// prompt reads.
+    /// flag family for every function that contributed bits, a
+    /// protocol constant for every function that uses the matched
+    /// value — is yielded for each of them: the per-function view a
+    /// translation prompt reads.
     pub fn for_function(&self, function: &str) -> impl Iterator<Item = &ConstFinding> {
         self.findings
             .iter()
@@ -385,6 +457,9 @@ impl ConstResult {
                     record.functions.iter().any(|f| f == function)
                 }
                 ConstFinding::FlagFamily(record) => record.functions.iter().any(|f| f == function),
+                ConstFinding::ProtocolConstant(record) => {
+                    record.functions.iter().any(|f| f == function)
+                }
             })
     }
 
@@ -446,6 +521,21 @@ mod tests {
             suggestion: "bitflags! struct Flags: u16 { /* bits: 0x100, 0x400, 0x800 */ }".into(),
             confidence: Confidence::new(80),
             evidence: "FUN_18003ab00: bits 0x100, 0x400; FUN_18003e750: bits 0x400, 0x800".into(),
+        }
+    }
+
+    fn protocol_constant() -> ProtocolConstant {
+        ProtocolConstant {
+            value: 0xdeadbeef,
+            name: "DEAD_BEEF_MARKER".into(),
+            protocol: "debug sentinel value".into(),
+            count: 1,
+            functions: vec!["FUN_18003ab00".into()],
+            suggestion: "const DEAD_BEEF_MARKER: u32 = 0xdeadbeef;".into(),
+            confidence: Confidence::new(75),
+            evidence: "0xdeadbeef used 1 times in FUN_18003ab00 — table match: DEAD_BEEF_MARKER \
+                       (debug sentinel value)"
+                .into(),
         }
     }
 
@@ -533,6 +623,31 @@ mod tests {
     }
 
     #[test]
+    fn a_protocol_constant_serde_round_trips() {
+        let record = protocol_constant();
+        let json =
+            serde_json::to_string(&record).expect("protocol-constant record should serialize");
+        assert!(json.contains("\"name\":\"DEAD_BEEF_MARKER\""));
+        assert!(json.contains("\"protocol\":\"debug sentinel value\""));
+        assert!(json.contains("\"confidence\":75"));
+        let back: ProtocolConstant =
+            serde_json::from_str(&json).expect("protocol-constant record should read back");
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn a_protocol_constant_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = ConstFinding::ProtocolConstant(protocol_constant());
+        let json =
+            serde_json::to_string(&finding).expect("protocol-constant finding should serialize");
+        assert!(json.contains("\"kind\":\"protocol_constant\""));
+        assert!(json.contains("\"value\":3735928559"));
+        let back: ConstFinding =
+            serde_json::from_str(&json).expect("protocol-constant finding should read back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
     fn a_context_name_renders_the_named_const_form() {
         // When the bodies named the value, the suggestion reads like
         // the code that uses it.
@@ -606,6 +721,7 @@ mod tests {
             ConstFinding::EnumCandidate(enum_candidate()),
             ConstFinding::NamedConstant(named_constant()),
             ConstFinding::FlagFamily(flag_family()),
+            ConstFinding::ProtocolConstant(protocol_constant()),
         ];
         let kinds: Vec<&str> = findings.iter().map(|f| f.kind()).collect();
         assert_eq!(
@@ -614,11 +730,15 @@ mod tests {
                 "bitflag_group",
                 "enum_candidate",
                 "named_constant",
-                "flag_family"
+                "flag_family",
+                "protocol_constant",
             ]
         );
         let targets: Vec<String> = findings.iter().map(|f| f.target()).collect();
-        assert_eq!(targets, vec!["0x500", "0..=3", "0x400", "0xd00"]);
+        assert_eq!(
+            targets,
+            vec!["0x500", "0..=3", "0x400", "0xd00", "0xdeadbeef"]
+        );
         for finding in &findings {
             assert!(!finding.suggestion().is_empty());
             assert!(!finding.evidence().is_empty());
@@ -627,8 +747,10 @@ mod tests {
         assert_eq!(findings[1].function(), "FUN_18003ab00");
         assert_eq!(findings[2].function(), "");
         assert_eq!(findings[3].function(), "");
+        assert_eq!(findings[4].function(), "");
         assert_eq!(findings[2].confidence(), Confidence::new(60));
         assert_eq!(findings[3].confidence(), Confidence::new(80));
+        assert_eq!(findings[4].confidence(), Confidence::new(75));
     }
 
     #[test]
@@ -676,20 +798,30 @@ mod tests {
             functions: vec!["FUN_18003e750".into(), "FUN_180099998".into()],
             ..flag_family()
         });
+        let protocol = ConstFinding::ProtocolConstant(ProtocolConstant {
+            functions: vec!["FUN_18003e750".into(), "FUN_180099998".into()],
+            ..protocol_constant()
+        });
         let unrelated = ConstFinding::EnumCandidate(EnumCandidate {
             function: "FUN_180099999".into(),
             ..enum_candidate()
         });
         let result = ConstResult {
             metadata: ScanMetadata::new("eqmain.dll"),
-            findings: vec![other.clone(), named.clone(), family.clone(), unrelated],
+            findings: vec![
+                other.clone(),
+                named.clone(),
+                family.clone(),
+                protocol.clone(),
+                unrelated,
+            ],
         };
         let found: Vec<&ConstFinding> = result.for_function("FUN_18003e750").collect();
-        assert_eq!(found, vec![&other, &named, &family]);
+        assert_eq!(found, vec![&other, &named, &family, &protocol]);
         assert_eq!(
             result.for_function("FUN_180099998").collect::<Vec<_>>(),
-            vec![&family],
-            "the family answers the lookup of every contributor"
+            vec![&family, &protocol],
+            "the family and the protocol constant answer the lookup of every contributor"
         );
         assert!(result.for_function("FUN_180099997").next().is_none());
         assert!(!result.is_empty());
@@ -723,5 +855,13 @@ mod tests {
             info.suggestion,
             "bitflags! struct Flags: u16 { /* bits: 0x100, 0x400, 0x800 */ }"
         );
+
+        let protocol = ConstFinding::ProtocolConstant(protocol_constant());
+        let info = calxgloss_prompts::ConstInfo::from(&protocol);
+        assert_eq!(info.function, "");
+        assert_eq!(info.kind, "protocol_constant");
+        assert_eq!(info.confidence, 75);
+        assert_eq!(info.suggestion, "const DEAD_BEEF_MARKER: u32 = 0xdeadbeef;");
+        assert!(info.evidence.contains("DEAD_BEEF_MARKER"));
     }
 }

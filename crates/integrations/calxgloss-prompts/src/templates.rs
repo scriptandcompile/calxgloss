@@ -301,13 +301,14 @@ pub struct ApiInfo {
 /// so the LLM expresses flag bits, enumerated dispatch, and repeated
 /// magic numbers with a bitflags struct, an `enum`, or a named `const`
 /// instead of scattering bare integer literals. The kind names the
-/// finding family — `bitflag_group`, `enum_candidate`, `named_constant`.
+/// finding family — `bitflag_group`, `enum_candidate`, `named_constant`,
+/// `flag_family`, `protocol_constant`.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ConstInfo {
     /// The function the finding is about, e.g. `FUN_18003ab00`.
     pub function: String,
     /// The kind of finding, e.g. `bitflag_group`, `enum_candidate`,
-    /// `named_constant`.
+    /// `named_constant`, `flag_family`, `protocol_constant`.
     pub kind: String,
     /// The Rust shape the finding suggests, e.g. a `bitflags!` struct.
     pub suggestion: String,

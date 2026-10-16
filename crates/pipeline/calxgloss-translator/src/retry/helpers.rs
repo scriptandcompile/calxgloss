@@ -409,8 +409,9 @@ pub fn extract_api_hints(
 /// engine from `re/analysis/consts/{binary}.json` and keeps the findings
 /// about the target function — the bitflag groups and enum candidates
 /// made in `function`'s decompiled body, plus the program-level findings
-/// that name `function`: the named constants whose value it repeats and
-/// the flag families it contributes bits to.
+/// that name `function`: the named constants whose value it repeats,
+/// the flag families it contributes bits to, and the protocol constants
+/// whose matched magic it uses.
 ///
 /// Returns an empty vector when no workspace is configured, no result
 /// is persisted for `binary` (the scan has not run), or the document is
