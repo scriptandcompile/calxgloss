@@ -202,6 +202,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Web router table consolidation** — the review UI's plain-`serve` and live (`calxgloss live`) surfaces are now assembled from one shared route table plus a live-only table, so the two can't drift apart and live pipeline endpoints answer only in live mode.
 - **Frontend split into ES modules** — the review UI's monolithic ~2,250-line `app.js` is now one module per view plus shared fetch/format helpers, loaded natively by the browser with no build step.
 
+### Documentation
+
+- **`docs/data_flow.md` now covers every analysis methodology** — the data-flow doc predates the evidence crates, so it described a pipeline that no longer exists. A new "Analysis Methodologies — The Evidence Crates" section names all eleven scan methodologies plus the call graph — what each detects, the Rust shape it suggests, and the prompt section its findings render into — and the batch-flow, progress-event, filesystem-layout (`re/analysis/{methodology}/{binary}.json` documents, codegen artifacts, the Ghidra read cache), web-endpoint, and retry/escalation sections were rewritten to match what the pipeline actually does: the batch's per-binary evidence warmup, the cached read seam, the context tiers' prompt templates, and the escalate retry's eleven-way evidence join.
+
 ## [0.2.0] — 2026-10-06
 
 ### Added

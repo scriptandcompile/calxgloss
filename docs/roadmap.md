@@ -31,13 +31,13 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| X1 | Integration-test backend: prefer bethington's headless server over a hand-built mock | test infra | — | ⬜ not started | `/to-spec` when picked up | — |
-| X3 | `data_flow.md` updated to include all methodologies | docs | — | ⬜ not started | `/to-spec` when picked up | — |
 | X4 | Architecture diagrams in source docs match implementation | docs | — | ⬜ not started | `/to-spec` when picked up | — |
+| X5 | Kuna decompiler engine behind the `ScanSource` seam (`analysis.engine = ghidra \| kuna`) | integrations (new `calxgloss-kuna`) | — | ⬜ not started | `/to-tickets` — spec published | [#203](https://github.com/scriptandcompile/calxgloss/issues/203) |
 
-Legend: ✅ done · 🔶 in progress · ⬜ not started. Rows X1, X3–X4 are open
+Legend: ✅ done · 🔶 in progress · ⬜ not started. Rows X4–X5 are open
 future-work items — cross-cutting chores — verified still open in the code
-(2026-10-08); no effort estimates yet. P2.5 (typeinfer Phase 5) shipped through #150 and was
+(2026-10-08); no effort estimates yet. X5's spec shipped early (2026-10-16,
+#203); the others still await `/to-spec`. P2.5 (typeinfer Phase 5) shipped through #150 and was
 pruned from this matrix when epic #142 closed (2026-10-14); P3.5 (algorithm
 Phase 5) shipped through #156 and was pruned when epic #151 closed
 (2026-10-14); P4.5 (memory Phase 5) shipped through #162 and was pruned when
@@ -50,18 +50,23 @@ was pruned when epic #180 closed (2026-10-15); P9.5 (apidetect Phase 5)
 shipped through #188 and was pruned when epic #183 closed (2026-10-15);
 P10.5 (consts Phase 5) shipped through #195 and was pruned when epic #189
 closed (2026-10-16); P11.5 (serialize Phase 5) shipped through #202 and was
-pruned when epic #197 closed (2026-10-16).
-
-## X1 — Integration-test backend (test infra)
-
-Prefer bethington's headless server over a hand-built mock for integration
-tests; current state is inline fixtures + `#[ignore]`d live tests.
-
-## X3 — `data_flow.md` update (docs)
-
-`docs/data_flow.md` updated to include all methodologies — the analysis
-crates shipped after the doc was written.
+pruned when epic #197 closed (2026-10-16); X3 (data_flow.md methodology
+update) shipped untracked — docs-only chore — and was pruned (2026-10-16).
 
 ## X4 — Architecture diagrams (docs)
 
 Architecture diagrams in source docs match implementation.
+
+## X5 — Kuna decompiler engine (integrations)
+
+Add an in-process **Kuna** engine (Noelo-Lab/kuna — the Rust port of
+Ghidra's decompiler; crates `kuna-decomp`/`kuna-analysis`, git-pinned)
+behind the existing seams: a new `calxgloss-kuna` crate implements
+`ScanSource` (read) and `TypeWriteSource` (write-back via Kuna's
+`--assert` directive plane, persisted as a replayable directive file in
+`re/kuna/`), with `PipelineSource` gaining a `Kuna` variant and config/CLI
+choosing `analysis.engine = ghidra | kuna` (default `ghidra`). Under
+`kuna` the whole ADR-0007 lifecycle — Ghidra install, extension pairing,
+headless JVM supervision — disappears. Ghidra stays untouched; the known
+gaps (TypeManager-style type-library listing, output parity) are decided
+in the spec. Spec: #203 (ready-for-agent).

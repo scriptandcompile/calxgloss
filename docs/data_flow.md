@@ -5,30 +5,38 @@
 `calxgloss live` spawns **two concurrent tasks** in a single process:
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        calxgloss live                       │
-│                                                             │
-│  ┌──────────────────────┐    ┌──────────────────────────┐   │
-│  │  Auto Pipeline       │    │  Web Review UI           │   │
-│  │ (foreground / blocks)│    │  (background task)       │   │
-│  │                      │    │                          │   │
-│  │  handle_auto()       │    │  handle_serve()          │   │
-│  │    │                 │    │    │                     │   │
-│  │    ├─ handle_classify│    │    ├─ axum HTTP server   │   │
-│  │    └─ run_translation│    │    ├─ REST API           │   │
-│  │      _for_dll()×N    │    │    └─ WebSocket events   │   │
-│  └──────────────────────┘    └──────────────────────────┘   │
-│         │                              │                    │
-│         └──────────┬───────────────────┘                    │
-│                    │                                        │
-│              TranslationEvents                              │
-│              (broadcast channel, cap 256)                   │
-│                    │                                        │
-│         ProgressState (in-memory live tracker)              │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                          calxgloss live                         │
+│                                                                 │
+│  ┌───────────────────────────┐    ┌──────────────────────────┐  │
+│  │  Auto Pipeline            │    │  Web Review UI           │  │
+│  │ (foreground / blocks)     │    │  (background task)       │  │
+│  │                           │    │                          │  │
+│  │  handle_auto()            │    │  handle_serve()          │  │
+│  │    │                      │    │    ├─ axum HTTP server   │  │
+│  │    ├─ handle_classify     │    │    ├─ REST API           │  │
+│  │    └─ run_translation     │    │    └─ WebSocket events   │  │
+│  │        _for_dll()×N       │    │                          │  │
+│  │      │                    │    │  pause / resume / stop / │  │
+│  │      ├─ Ghidra session    │    │  start endpoints drive   │  │
+│  │      │  (attach or spawn) │    │  the shared pipeline     │  │
+│  │      ├─ analysis warmup   │    │  state machine           │  │
+│  │      │  (11 evidence      │    │                          │  │
+│  │      │   scans per binary)│    │                          │  │
+│  │      └─ per-function      │    │                          │  │
+│  │          translation      │    │                          │  │
+│  └───────────────────────────┘    └──────────────────────────┘  │
+│         │                                │                      │
+│         └──────────┬─────────────────────┘                      │
+│                    │                                            │
+│              TranslationEvents                                  │
+│              (broadcast channel, cap 256)                       │
+│                    │                                            │
+│         ProgressState (in-memory live tracker)                  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-**Lifecycle:** The server starts first and waits for connections. The auto pipeline then runs to completion (classification + batch translation). On `Ctrl+C` both tasks abort together.
+**Lifecycle:** The server starts first and waits for connections. The auto pipeline then runs to completion (classification + batch translation). The pipeline runs inside a loop: when a run reaches a terminal state the process keeps serving, and the review UI's Start/Restart endpoints queue a `PipelineRunRequest` that re-runs the pipeline in-process. A shared `PipelineControl` state machine (Idle → Running → Paused → Stopping → Complete/Failed) is observed by the pipeline at unit boundaries and driven by the web server's pause/resume/stop endpoints. On `Ctrl+C` both tasks abort together.
 
 ---
 
@@ -51,7 +59,7 @@ The repo directory for `live` is always **CWD** (config/env overrides are ignore
 
 ## 3. Step-by-Step Data Flow
 
-### 3.1 Phase 1 — DLL Scanning & Classification
+### 3.1 Phase 1 — Binary Scanning & Classification
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -71,7 +79,7 @@ The repo directory for `live` is always **CWD** (config/env overrides are ignore
 **Classification (`handle_classify`):**
 
 ```
-DLLs (from scan) ──► Analyzer.classify_dlls()
+Binaries (from scan) ──► Analyzer.classify_dlls()
                                 │
                     ┌───────────┴───────────┐
                     │                       │
@@ -98,30 +106,42 @@ DLLs (from scan) ──► Analyzer.classify_dlls()
               re/classify/          to main
               {dll}.json            (metadata only)
                     │
-              ┌─────┴─────┐
-              │ Emit to   │
-              │ Progress  │
-              │ Channel   │
-              │           │
-              │ ClassificationComplete {
-              │   dll, category, strategy,
-              │   crate_replacement,
-              │   exported_symbols,
-              │   imported_symbols
-              │ }
-              └───────────┘
+              ┌─────┴─────────────────────────────┐
+              │ Emit to Progress Channel          │
+              │                                   │
+              │ ClassificationComplete {          │
+              │   binary, category, strategy,     │
+              │   crate_replacement,              │
+              │   exported_symbols,               │
+              │   imported_symbols                │
+              │ }                                 │
+              └───────────────────────────────────┘
 ```
 
-Classification records are written to **`re/classify/{dll_name}.json`** on disk and committed to `main`. They determine which DLLs are ready for translation and inform dependency checking (shim layers must exist before translating functions from shim-layer DLLs).
+Classification records are written to **`re/classify/{dll_name}.json`** on disk and committed to `main`. They determine which binaries are ready for translation and inform dependency checking (shim layers must exist before translating functions from shim-layer DLLs). Reviewers can override a classification without re-running the scan through the override layer (`re/analysis/classification_overrides.json`), which the web UI and the analyzer both honor.
 
 ---
 
-### 3.2 Phase 2 — Batch Translation Per DLL
+### 3.2 Phase 2 — Batch Translation Per Binary
 
-For each classified DLL, `run_translation_for_dll()` runs the full pipeline:
+For each classified binary, `run_translation_for_dll()` runs the full pipeline.
+
+**Ghidra session preflight (once per run, ADR-0007):** before any listing,
+`open_ghidra_session()` attaches to a GhidraMCP server already answering on the
+configured port or spawns and owns a headless one (JDK-21 gate, Ghidra install
+discovery, strict extension pairing). The session creates/opens the Ghidra
+project and runs auto-analysis for each target, emitting `GhidraServerStarted`,
+`GhidraProjectCreated`, and `GhidraProgramAnalyzed` events. At the start of
+every per-binary pass the session's **wrong-program guard**
+(`ensure_current_program`) re-verifies the server is actually serving the
+target binary before anything is listed or translated.
 
 ```
-run_translation_for_dll(dll, workspace, settings, events)
+run_translation_for_dll(binary, binary_path, workspace, settings, session, …)
+│
+├──► emit BatchStarted { binary }
+│
+├──► session.ensure_current_program(binary)   ← wrong-program guard
 │
 ├──► GhidraClient.list_functions()
 │    └─ Returns FunctionSummary[] (name only — Ghidra serves
@@ -136,15 +156,62 @@ run_translation_for_dll(dll, workspace, settings, events)
 ├──► Verifier::new(workspace)
 │    └─ Creates scratch/ directory for sandboxed builds
 │
-└──► pipeline.batch_translate(dll, functions, retry_config, verifier)
+└──► pipeline.batch_translate(binary, functions, retry_config, verifier)
 ```
 
-#### 3.2.1 Translation Pipeline — One Function
+#### 3.2.1 Batch Warmup — Ghidra Read Cache + Analysis Methodologies
 
-Each function in the DLL goes through the full pipeline **sequentially**:
+`batch_translate` opens with two steps before any function is translated
+(`crates/pipeline/calxgloss-translator/src/pipeline.rs`):
 
 ```
-pipeline.translate(dll, function)
+pipeline.batch_translate(binary, functions, …)
+│
+├──► begin_cached_source(binary)
+│    └─ Opens CachedGhidraSource over the GhidraClient:
+│       a two-tier read-through cache for every Ghidra read
+│       (memo → disk documents under re/ghidra-cache/
+│       {binary identity}/{sha256}/ → live client, write-through).
+│       Validity is the binary's SHA-256: changed bytes mean a
+│       different directory. --refresh-ghidra-cache wipes and
+│       rewrites the directory. A failed cache open degrades to
+│       live reads, never fails the batch.
+│
+└──► ensure_* warmup — the eleven analysis scans, in order:
+     ensure_type_database          → re/analysis/typesdb/{binary}.json
+     ensure_type_inference         → re/analysis/typeinfer/{binary}.json
+     ensure_algorithm_recognition  → re/analysis/algorithm/{binary}.json
+     ensure_memory_detection       → re/analysis/memory/{binary}.json
+     ensure_sync_detection         → re/analysis/sync/{binary}.json
+     ensure_callback_detection     → re/analysis/callback/{binary}.json
+     ensure_controlflow_detection  → re/analysis/controlflow/{binary}.json
+     ensure_string_context         → re/analysis/stringctx/{binary}.json
+     ensure_api_detection          → re/analysis/apidetect/{binary}.json
+     ensure_const_detection        → re/analysis/consts/{binary}.json
+     ensure_serialize_detection    → re/analysis/serialize/{binary}.json
+```
+
+Each `ensure_*` follows the same rule: **the persisted JSON is the cache** —
+if a result is already saved for the binary, the scan is skipped entirely;
+otherwise the engine runs over the batch's `ScanSource` (live or cached), and
+its result is saved. A failed scan or failed save only logs a warning: missing
+analysis context degrades the prompts, it never fails the batch. While a pass
+walks the program, the Ghidra client's heartbeat is armed (`begin_pass` /
+`end_pass`) and beats a `BatchProgress { binary, pass, function, index, total }`
+event, throttled to 500 ms, so the dashboard shows which function a minutes-long
+scan is on.
+
+Every methodology also has a manual CLI entry point (§4) that runs the same
+scan and can print a cached result with `--show`.
+
+#### 3.2.2 Translation Pipeline — One Function
+
+Each function in the binary goes through the full pipeline **sequentially**
+(operator scope filters the queue first: skipped functions never enter it,
+prioritized functions sort to the front):
+
+```
+pipeline.translate(binary, function)
 │
 │  Step 1: Fetch Function Metadata from GhidraMCP
 │  ─────────────────────────────────────────────
@@ -172,36 +239,62 @@ pipeline.translate(dll, function)
 │    └─ Edge cases from disassembly patterns (cmp, ja, jl, etc.)
 │    └─ Returns TestCase[] { inputs, expected_return (null), ... }
 │
-│  Step 4: Detect Complexity
-│  ────────────────────────
+│  Step 4: Detect Complexity → Select Context Tier
+│  ───────────────────────────────────────────
 │  Analyzer.detect_complexity(disassembly, windows_apis)
 │    └─ Simple / Moderate / Complex
+│    └─ Picks a ContextTier: Signature → Disassembly → WithTests
+│       → ModuleContext → FullModule
+│    └─ Emits ContextTierSelected; a reviewer override can force a tier
+│
+│  Step 4b: Enrich Call-Graph Context
+│  ──────────────────────────────────
+│  Unless --no-callgraph: build_enriched_call_graph over the batch's
+│  ScanSource — CallGraphBuilder fetches each function's metadata,
+│  RootDetector/LeafDetector classify every node (Root/Leaf/Middle),
+│  and the graph is persisted to re/analysis/{binary}_call_graph.json.
+│  ContextEnricher turns it into per-function caller/callee context
+│  with API categorization and crate suggestions.
+│
+│  Step 4c: Pull Analysis Findings for This Function
+│  ─────────────────────────────────────────────────
+│  ModuleContext / FullModule prompts read the persisted
+│  methodology documents and keep the records tied to this function:
+│    └─ extract_data_structures  ← re/analysis/typesdb/{binary}.json
+│    └─ extract_control_flow_hints ← re/analysis/controlflow/{binary}.json
+│    └─ (FullModule adds shim-layer code from re/shims/ and PAL
+│        trait definitions for the function's API categories)
 │
 │  Step 5: Build Prompt & Send to LLM
 │  ─────────────────────────────────
-│  ComplexityPromptData::from_request(request)
-│  build_complexity_prompt(complexity, data)
-│    └─ Minimal / Rich / Detailed template selected
+│  One askama template per tier:
+│    Signature    → signature_translate.j2
+│    Disassembly  → translate.j2
+│    WithTests    → with_tests_translate.j2
+│    ModuleContext→ module_context_translate.j2
+│    FullModule   → full_module_translate.j2
 │    └─ Includes: disassembly, decompiler output,
-│                Windows API mappings, baseline test inputs
+│                Windows API mappings, baseline test inputs,
+│                call-graph context, data structures,
+│                control-flow findings
 │
 │  LlmClient.complete([user_message: prompt])
 │    └─ OpenAI-compatible HTTP POST
 │    └─ Keepalive events every 30s while in flight
 │    └─ Returns LlmResponse { content, tokens_used }
 │
-│  ──► Translation { dll, function, rust_code, prompt_used,
+│  ──► Translation { binary, function, rust_code, prompt_used,
 │                    model, tokens_used, baseline_tests, call_graph }
 ```
 
-#### 3.2.2 Verification Loop
+#### 3.2.3 Verification Loop
 
 After the initial translation, the `retry` loop runs:
 
 ```
 retry::try_translate_with_retry(initial_translation, context)
 │
-├──► Verifier.verify(dll, function, rust_code, baseline_tests)
+├──► Verifier.verify(binary, function, rust_code, baseline_tests)
 │    │
 │    ├──► Scaffold Cargo project in scratch/
 │    │     ├── Cargo.toml (depends on pal = ../pal)
@@ -238,8 +331,12 @@ retry::try_translate_with_retry(initial_translation, context)
 │       │
 │       └─► If still failing: escalate
 │       │
-│  escalate ──► add more context (call graph,
-│       │         related functions, caller info)
+│  escalate ──► add more context: the FULL evidence base —
+│       │         every methodology's findings for this function
+│       │         (types, inferred types, algorithms, memory,
+│       │         concurrency, callbacks, control flow, strings,
+│       │         APIs, constants, serialization) plus call graph,
+│       │         neighboring bodies, and failure history
 │       │
 │       └─► LLM re-translates with more context
 │       │
@@ -267,6 +364,15 @@ Each `TranslationAttempt` contains:
 - `tests_passed`, `tests_total`, `failed_tests[]`
 - `tokens_used`
 
+Detectors watch the loop: a **hallucination detector** scans each response
+for references to non-existent APIs (`HallucinationDetected`), an
+**infinite-loop detector** fires when the same bad output repeats (`InfiniteLoopDetected`),
+and fault events (`BehaviorDivergenceDetected`, `ResourceExhaustionDetected`)
+are logged to `re/analysis/fault_log.json`. Every attempt's tokens are
+recorded to `re/analysis/token_usage.json` and every prompt strategy to
+`re/analysis/prompt_strategy_log.json` — the analytics endpoints compute from
+these logs on demand.
+
 ---
 
 ### 3.3 Phase 3 — Git Operations Per Function
@@ -279,8 +385,8 @@ for each successful function:
 ├──► Write translated.rs to disk
 │     └─ workspace/src/modules/{function}/translated.rs
 │
-├──► GitManager.create_branch(dll, function, attempt, policy)
-│     └─ Branch name: re/{dll}/{function}v{N}
+├──► GitManager.create_branch(binary, function, attempt, policy)
+│     └─ Branch name: re/{binary}/{function}v{N}
 │     └─ Branches from latest main commit
 │     └─ Checks shim-layer dependencies (Warn policy)
 │
@@ -300,64 +406,185 @@ If git is skipped (`--skip-git`), these steps are bypassed but the code is still
 
 ---
 
-## 4. Progress Events — The Live Data Stream
+## 4. Analysis Methodologies — The Evidence Crates
+
+Eleven methodology crates under `crates/evidence/` (beside the call-graph and
+orchestration crates) each implement a **methodology**: a per-binary scan that reads Ghidra facts through
+the shared `ScanSource` seam, detects structured findings, persists them as one
+JSON document per binary under `re/analysis/{methodology}/{binary}.json`, and
+feeds the findings tied to a function into its translation prompts.
+
+**Shared plumbing:**
+
+- **`ScanSource` seam** (`crates/integrations/calxgloss-ghidra/src/scan_source.rs`) —
+  one trait for every read: `functions`, `decompile`, `strings`, `callers`,
+  `xrefs_to`, `data_types`, `struct_layout`, `enum_values`, `data_items`,
+  `imports`, `exports`, `image_base`, `read_memory`. Engines never talk HTTP;
+  they run over a live `GhidraClient`, a `CachedGhidraSource` (the batch read
+  cache), or a fake in tests.
+- **One decompile per function per scan.** Each engine's orchestration walks
+  the function listing once, decompiles each body exactly once (served from the
+  batch cache after the first scan), and keeps the bodies. Cross-function
+  passes — memory hand-offs, lock orders, callback chains, mutual recursion,
+  cross-field correlation, string hand-offs — read those kept bodies, adding
+  **no extra Ghidra round trips**.
+- **The persisted JSON is the cache.** The batch warmup (§3.2.1) skips any
+  scan whose document already exists; `--show` prints a cached document
+  without connecting to Ghidra.
+- **Graceful degradation.** A failed scan logs a warning and the batch
+  proceeds; a missing or corrupt document yields empty prompt context —
+  missing evidence degrades a prompt, it never fails a translation.
+- **Confidence scores.** Every finding carries a 0–100 confidence; the
+  detectors' false-positive gates are what floor it.
+
+**The methodologies** (crate → what it detects → Rust shape it suggests):
+
+| Methodology | Crate | Detectors | Prompt section |
+|-------------|-------|-----------|----------------|
+| Type database | `calxgloss-typesdb` | Named types from Ghidra's Type Manager; vtable detection (method pointers, base-class inheritance, COM interfaces); string-guided struct inference; STL/MFC shape flagging | `DATA STRUCTURES` (escalate) / `SHARED DATA STRUCTURES` (module tiers) |
+| Type inference | `calxgloss-typeinfer` | C++ this-pointer detection; parameter-size detection; known-type propagation through a signature database; cross-function propagation (callee→caller and caller→callee), local-variable chains, return types from caller usage, C-mangling contracts | `TYPE INFORMATION` |
+| Algorithm recognition | `calxgloss-algorithm` | Control-flow signature matching (sort, search, hash lookup, state machine…); string-guided hints (CRC, md5, sha, gzip…); callback-shape patterns; multi-function correlation (divide-and-conquer, sort+comparator); a JSON pattern database can replace the built-in sets (`--patterns`) | `RECOGNIZED ALGORITHMS` |
+| Memory lifecycle | `calxgloss-memory` | `malloc`/`free` pairs → `Box`; handle pairs (`CreateFileW`/`CloseHandle`, `fopen`/`fclose`) → RAII guard with `Drop`; ref-count patterns (`AddRef`/`Release`) → `Rc`/`Arc`; cross-function allocation tracking, leaks, ownership moves, per-type Drop suggestions | `MEMORY LIFECYCLE` |
+| Concurrency | `calxgloss-sync` | Mutex/lock pairs → `std::sync::Mutex`/`RwLock`; atomics → `AtomicU32`/`U64`; thread spawns + joins → `std::thread`/`tokio`; thread-local storage families; async-runtime shapes; futex syscall shapes; cross-function lock orders; data-race claims on shared globals | `CONCURRENCY` |
+| Callbacks | `calxgloss-callback` | Function-pointer array calls → `Vec<Box<dyn Fn>>`; registration sites → stored closures; jump tables → `match`; plugin architectures (`LoadLibrary`/`GetProcAddress` + entry point) → `Box<dyn Plugin>`; cross-function register-then-call chains; event-system reconstruction; closure contracts filled from the typeinfer cache | `CALLBACKS` |
+| Control flow | `calxgloss-controlflow` | Switch-shaped if/else-if chains → `match`/dispatch table; self-recursion (+ tail calls, loop-nested depth); state machines (`STATE_*` chains); per-body CFG with loop nesting depth; branch density (dispatch-table vs sequential); mutual-recursion cycles | `CONTROL FLOW` (escalate) / `CONTROL FLOW PATTERNS` (module tiers) |
+| String context | `calxgloss-stringctx` | Nine string categories (error, path, resource, log, format…); format-specifier → Rust argument types; string→function mapping via body parsing with xref fallback; localization signals; cross-function string hand-offs | `STRINGS` |
+| API detection | `calxgloss-apidetect` | Import-table classification (DirectX 9, SDL2, Win32, POSIX, PNG, zlib, stdio, STL) → crate suggestions with feature flags; per-function API reachability through the call graph; category enrichment; platform divergence (Win32+POSIX mix) → cfg-gated translation; COM interface claims | `LIBRARIES AND APIS` |
+| Constants | `calxgloss-consts` | Bitflag groups (power-of-two literals in bitwise contexts, composite-mask decomposition) → `bitflags!`; switch-run enum candidates → `enum`; program-wide repeated values → named `const`s with context-derived names; program-level flag-family merges; known protocol magics; RGB-shaped color groups | `CONSTANTS` |
+| Serialization | `calxgloss-serialize` | Byte-swap calls (`ntohs`, `__builtin_bswap*`) → `byteorder`; shift-and-or pack/unpack chains → `bitvec`/named-field masking; magic-byte comparisons (PNG/gzip/ZIP) → decoder crates; cross-field validation (checksum + length framing); composed field layouts; protocol message identification; program-wide per-type endianness map | `SERIALIZATION` |
+| Call graph | `calxgloss-callgraph` (+ `calxgloss-analysis` orchestration) | Full-program call graph with Root/Leaf/Middle classification (VB6/.NET/MinGW/MSVC runtime roots, third-party-API leaves); `ContextEnricher` prompt context; `TranslationOrderer` priority plans | call-graph context in every tiered prompt |
+
+**Where the findings enter the prompts:**
+
+- **Initial translation:** the `ModuleContext` and `FullModule` context tiers
+  read the **typesdb** and **controlflow** documents (plus call-graph context,
+  neighboring bodies, and — at FullModule — shim-layer code and PAL traits).
+- **Escalate retry:** the escalate prompt pulls **all eleven** methodologies'
+  findings for the target function, joined from the persisted documents by
+  `retry/helpers::extract_*` (each keeps only the records whose evidence lives
+  in this function's body, vtable, xrefs, or call path).
+
+**Manual entry points** — every methodology is also a CLI command running the
+same engine against the binary currently open in Ghidra:
+
+```text
+calxgloss typesdb     --binary eqmain.dll [--show] [--no-tag]
+calxgloss typeinfer   --binary eqmain.dll [--show] [--write-back] [--confidence-floor 70]
+calxgloss algorithm   --binary eqmain.dll [--show] [--patterns my-patterns.json]
+calxgloss memory      --binary eqmain.dll [--show]
+calxgloss sync        --binary eqmain.dll [--show]
+calxgloss consts      --binary eqmain.dll [--show]
+calxgloss callback    --binary eqmain.dll [--show]
+calxgloss controlflow --binary eqmain.dll [--show]
+calxgloss stringctx   --binary eqmain.dll [--show]
+calxgloss apidetect   --binary eqmain.dll [--show]
+calxgloss serialize   --binary eqmain.dll [--show]
+```
+
+**Write-back into Ghidra** — the read cache never implements the write side;
+type writes go through the separate `TypeWriteSource` trait
+(`set_function_prototype`, `set_local_variable_type`, `create_struct`,
+`create_enum`, `create_typedef`, `add_struct_field`):
+
+- `typeinfer --write-back` applies surviving inferences in program order,
+  creating missing named types and **narrowing only undefined-typed slots** —
+  a concrete type already in the program is never overwritten. Records below
+  the confidence floor (default 70) are skipped with the reason reported.
+- `typesdb` tags detected vtable methods (`vtable-method`) back into the
+  program unless `--no-tag`.
+
+**Derived codegen artifacts** (rendered beside the JSON, never read back):
+
+- `re/analysis/typesdb/{binary}.rs` — `#[repr(C)]` declarations recovered
+  from the type database.
+- `re/analysis/consts/{binary}.rs` — a `bitflags!`-style block per flag
+  family, an `enum` block per enum candidate, named `const`s.
+- `re/analysis/apidetect/{binary}.rs` — `extern "C"` declarations for the
+  identified APIs; `re/analysis/apidetect/{binary}.toml` — a Cargo-style
+  dependency manifest of the suggested crates.
+
+---
+
+## 5. Progress Events — The Live Data Stream
 
 A `TranslationEvents` broadcast channel (capacity 256) carries progress events from the pipeline to the web UI. Every major milestone emits one:
 
 | Event | When Emitted |
 |-------|-------------|
-| `TranslationStarted { dll, function }` | Before Ghidra fetch |
-| `GhidraFetchComplete { dll, function, address, disassembly_lines }` | After function metadata loaded |
-| `ApiTaggingComplete { dll, function, tagged_apis }` | After Windows API tagging |
-| `TestsGenerated { dll, function, test_count }` | After baseline test generation |
-| `LlmCallStart { dll, function, attempt, strategy }` | Before LLM request |
-| `LlmRequest { dll, function, attempt, strategy, prompt }` | Full prompt sent |
-| `LlmCallInProgress { dll, function, attempt, strategy, elapsed_secs }` | Keepalive every 30s |
-| `LlmCallComplete { dll, function, attempt, code_length, tokens_used }` | LLM response received |
-| `LlmResponse { dll, function, attempt, strategy, content, tokens_used }` | Full response body |
-| `LlmCallFailed { dll, function, attempt, strategy, error }` | HTTP/network failure |
-| `TranslationAttemptCompleted { dll, function, attempt, success, compiled, tests_passed, tests_total, compilation_errors[], failed_tests[], strategy }` | After verify step |
-| `TranslationCompleted { dll, function, total_attempts, success_strategy }` | Success after retry loop |
-| `TranslationFailed { dll, function, total_attempts }` | All retries exhausted |
-| `ClassificationComplete { dll, category, strategy, crate_replacement, exported_symbols, imported_symbols }` | After DLL classification |
-| `BatchSummary { dll, total_functions, success_count, failure_count, total_attempts, total_tokens }` | After all functions in DLL |
+| `GhidraServerStarted { url, pid }` | A calxgloss-owned headless GhidraMCP booted |
+| `GhidraProjectCreated { path }` | The run's Ghidra project was created/opened |
+| `GhidraProgramAnalyzed { dll, secs }` | Startup auto-analysis finished for a binary |
+| `PipelineStateChanged { previous, state }` | Any pipeline-control transition (start/pause/resume/stop/complete/fail) |
+| `QueuePlanned { binaries }` | The live loop's ordered run plan, once before the first pass |
+| `ClassificationComplete { binary, category, strategy, crate_replacement, exported_symbols, imported_symbols }` | After binary classification |
+| `BatchStarted { binary }` | The per-binary pass begins (before any unit exists) |
+| `BatchProgress { binary, pass, function, index, total }` | Heartbeat of a pre-translation pass (call graph, the evidence scans), throttled to 500 ms |
+| `TranslationStarted { binary, function }` | Before Ghidra fetch |
+| `GhidraFetchComplete { binary, function, address, disassembly_lines }` | After function metadata loaded |
+| `ApiTaggingComplete { binary, function, tagged_apis }` | After Windows API tagging |
+| `TestsGenerated { binary, function, test_count }` | After baseline test generation |
+| `ContextTierSelected { binary, function, tier, tier_label, complexity, api_call_count }` | After complexity analysis, before the first LLM call (re-emitted when the tier escalates) |
+| `LlmCallStart { binary, function, attempt, strategy }` | Before LLM request |
+| `LlmRequest { binary, function, attempt, strategy, prompt }` | Full prompt sent |
+| `LlmCallInProgress { binary, function, attempt, strategy, elapsed_secs }` | Keepalive every 30s |
+| `LlmCallComplete { binary, function, attempt, code_length, tokens_used }` | LLM response received |
+| `LlmResponse { binary, function, attempt, strategy, content, tokens_used }` | Full response body |
+| `LlmCallFailed { binary, function, attempt, strategy, error }` | HTTP/network failure |
+| `HallucinationDetected { binary, function, attempt, strategy, hallucinated_apis }` | Response references non-existent APIs |
+| `InfiniteLoopDetected { binary, function, streak, streak_start_attempt, streak_end_attempt, strategy }` | Same bad output repeated ≥3 times |
+| `BehaviorDivergenceDetected { binary, function, attempt, strategy, baseline_passed, baseline_total, edge_tests_passed, edge_tests_total, failing_edge_cases, fault_confidence }` | Baseline passes but edge-case tests fail |
+| `ResourceExhaustionDetected { binary, function, attempt, strategy, reason, elapsed_secs, recommended_backoff_secs }` | Local LLM overloaded / timed out |
+| `TranslationAttemptCompleted { binary, function, attempt, success, compiled, tests_passed, tests_total, compilation_errors[], failed_tests[], strategy, tokens_used }` | After verify step |
+| `TranslationCompleted { binary, function, total_attempts, success_strategy }` | Success after retry loop |
+| `TranslationFailed { binary, function, total_attempts }` | All retries exhausted |
+| `UnitCancelled { binary, function }` | Operator cancelled the in-flight unit |
+| `FunctionCompleted { binary, function, success, attempts, branch }` | Immediately after each function completes |
+| `BatchSummary { binary, total_functions, success_count, failure_count, total_attempts, total_tokens }` | After all functions in binary |
 
 ### Event Flow
 
 ```
 TranslationPipeline
-       │
-       │ emit(ProgressEvent::TranslationStarted{...})
-       │ emit(ProgressEvent::GhidraFetchComplete{...})
-       │ emit(ProgressEvent::ApiTaggingComplete{...})
-       │ emit(ProgressEvent::TestsGenerated{...})
-       │ emit(ProgressEvent::LlmCallStart{...})
-       │ emit(ProgressEvent::LlmRequest{...})
-       │ (keepalive every 30s via LlmCallInProgress)
-       │ emit(ProgressEvent::LlmCallComplete{...})
-       │ emit(ProgressEvent::TranslationAttemptCompleted{...})
-       │
-       └──────────► broadcast::Sender
+        │
+        │ emit(ProgressEvent::BatchStarted{...})
+        │ emit(ProgressEvent::BatchProgress{...})   ← scan heartbeats
+        │ emit(ProgressEvent::TranslationStarted{...})
+        │ emit(ProgressEvent::GhidraFetchComplete{...})
+        │ emit(ProgressEvent::ApiTaggingComplete{...})
+        │ emit(ProgressEvent::TestsGenerated{...})
+        │ emit(ProgressEvent::ContextTierSelected{...})
+        │ emit(ProgressEvent::LlmCallStart{...})
+        │ emit(ProgressEvent::LlmRequest{...})
+        │ (keepalive every 30s via LlmCallInProgress)
+        │ emit(ProgressEvent::LlmCallComplete{...})
+        │ emit(ProgressEvent::TranslationAttemptCompleted{...})
+        │ emit(ProgressEvent::FunctionCompleted{...})
+        │
+        └──────────► broadcast::Sender
+                       │
+                 ┌─────┴─────┐
+                 │           │
+           handle_live     WebSocket
+           keeps original  server subscribes
+           for retry loop  via SessionManager
+                             │
+                      ┌──────┴──────────────┐
+                      │                     │
+               ProgressState             WS Clients
+               (in-memory)               (browser)
+               updates live              receives JSON
+               dashboard state           events
                       │
-                ┌─────┴─────┐
-                │           │
-          handle_live     WebSocket
-          keeps original  server subscribes
-          for retry loop  via SessionManager
-                            │
-                     ┌──────┴──────┐
-                     │             │
-              ProgressState      WS Clients
-              (in-memory)        (browser)
-              updates live        receives JSON
-              dashboard state     events every 30s
+               LlmIoLog (live mode also appends
+               prompts/responses to
+               re/analysis/llm_io/log.jsonl)
 ```
 
-The `ProgressState` in the web server maps `"dll/function"` keys to `ProgressEntry` objects with status (`Translating`, `LlmCall`, `Compiling`, `Testing`, `Complete`) for real-time dashboard overlay.
+The `ProgressState` in the web server maps `"binary/function"` keys to `ProgressEntry` objects with status (`Translating`, `LlmCall`, `Compiling`, `Testing`, `Complete`) for real-time dashboard overlay.
 
 ---
 
-## 5. File System Layout
+## 6. File System Layout
 
 ```
 <workspace>/                          ← CWD (or --workspace)
@@ -379,6 +606,43 @@ The `ProgressState` in the web server maps `"dll/function"` keys to `ProgressEnt
 │   │   ├── game_logic.dll.json      ← classification record
 │   │   ├── d3d9.dll.json
 │   │   └── ...
+│   ├── analysis/                    ← the methodology documents + run logs
+│   │   ├── typesdb/
+│   │   │   ├── {binary}.json        ← recovered type database
+│   │   │   └── {binary}.rs          ← rendered #[repr(C)] declarations
+│   │   ├── typeinfer/{binary}.json  ← inferred param/local/return types
+│   │   ├── algorithm/{binary}.json  ← recognized algorithms
+│   │   ├── memory/{binary}.json     ← allocation/handle/refcount findings
+│   │   ├── sync/{binary}.json       ← lock/atomic/thread/tls/async findings
+│   │   ├── consts/
+│   │   │   ├── {binary}.json        ← flag groups, enums, named constants
+│   │   │   └── {binary}.rs          ← rendered bitflags/enum/const blocks
+│   │   ├── callback/{binary}.json   ← fp arrays, registrations, plugins
+│   │   ├── controlflow/{binary}.json← switch chains, recursion, loops, CFG
+│   │   ├── stringctx/{binary}.json  ← string roles + format-string types
+│   │   ├── apidetect/
+│   │   │   ├── {binary}.json        ← library/API identifications
+│   │   │   ├── {binary}.rs          ← rendered extern "C" bindings
+│   │   │   └── {binary}.toml        ← rendered dependency manifest
+│   │   ├── serialize/{binary}.json  ← endianness, packing, formats
+│   │   ├── {binary}_call_graph.json ← enriched call graph
+│   │   ├── unit_overrides.json      ← reviewer per-unit overrides
+│   │   ├── token_usage.json         ← per-attempt token log
+│   │   ├── prompt_strategy_log.json ← per-prompt strategy outcomes
+│   │   ├── fault_log.json           ← fault events with recovery guidance
+│   │   └── llm_io/log.jsonl         ← live-mode prompt/response log
+│   ├── ghidra-cache/                ← two-tier Ghidra read cache
+│   │   └── {binary identity}/
+│   │       └── {sha256 of binary}/  ← manifest.json + per-endpoint
+│   │           ├── functions.json   ←   documents: functions,
+│   │           ├── decompile/…      ←   decompile/{fn}.json,
+│   │           ├── callers/…        ←   callers/{addr}.json,
+│   │           └── ...              ←   memory/{addr}-{len}.json, …
+│   ├── review/
+│   │   ├── skips.json               ← reviewer-skipped units
+│   │   └── queue_overlay.json       ← manual queue order + priority
+│   ├── shims/
+│   │   └── {dll}/                   ← generated shim-layer crates
 │   ├── baseline/
 │   │   └── {dll}/
 │   │       └── {function}/
@@ -411,35 +675,60 @@ The `ProgressState` in the web server maps `"dll/function"` keys to `ProgressEnt
 
 ---
 
-## 6. Web Review UI
+## 7. Web Review UI
 
-### 6.1 Endpoints
+### 7.1 Endpoints
 
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/` | Dashboard frontend (HTML/JS/CSS) |
 | GET | `/api/dashboard` | Full review dashboard JSON (git branches, statuses) |
-| GET | `/api/units/{id}` | Single unit detail (justification, diff, tests, history) |
+| GET | `/api/pipeline` | Pipeline state-machine snapshot + run plan |
+| POST | `/api/pipeline/pause` / `resume` / `stop` / `start` | Drive the shared pipeline control |
+| POST | `/api/pipeline/cancel-current` | Abort the unit in flight at the next safe point |
+| POST | `/api/pipeline/restart` | Re-run a stopped pipeline in the same process |
+| GET/POST/DELETE | `/api/units/{id}/override` | Reviewer override for one unit's next attempt (forced tier/strategy, hints, skip) |
+| GET/POST | `/api/binaries/{name}/classification` | View/override a binary's classification (analyzer honors it before strategy dispatch) |
+| GET | `/api/units/{id}` | Single unit detail (justification, diff, tests, history, persisted analysis context: API mappings + call graph) |
 | GET | `/api/units/{id}/diff` | Git diff between branch and main |
+| GET | `/api/units/{id}/attempts` / `attempts/diff` | Persisted attempt list + side-by-side diff |
+| GET | `/api/units/{id}/ghidra` | Unit's Ghidra-side view (analysis context for the unit) |
 | POST | `/api/units/{id}/accept` | Merge branch into main + write acceptance record |
 | POST | `/api/units/{id}/send-back` | Record rejection reason |
 | POST | `/api/units/{id}/patch` | Request retry translation |
+| POST | `/api/units/{id}/skip` / `unskip` | Skip state (`re/review/skips.json`) |
+| GET/POST | `/api/batch/accept` / `send-back` / `skip` | Batch review actions over a unit set |
 | GET | `/api/queue` | Review queue, dependency-ordered |
 | GET | `/api/queue/next` | Next unit to review |
+| GET/PUT | `/api/queue/overlay` | Manual queue order + priority |
 | GET | `/api/graph` | Dependency graph data |
 | GET | `/api/progress` | Live translation progress (in-memory state) |
+| GET | `/api/progress/enhanced` | Live view's per-unit progress records |
 | GET | `/api/events/upgrade` | WebSocket upgrade for real-time events |
+| GET | `/api/binaries/list` | Per-binary summary (classification + overrides + counts + tokens) |
+| GET | `/api/binaries/{name}` | Binary detail: classification (with override state), export/import counts, per-function review status |
+| GET | `/api/llm-io` (+ `/clear`) | LLM prompt/response log (`re/analysis/llm_io/log.jsonl`) |
+| GET | `/api/faults` (+ `/summary`, `/by-binary`, `/trend`) | Fault-log analytics (`re/analysis/fault_log.json`) |
+| GET | `/api/token-usage/…` | Token analytics by summary / binary / tier / strategy |
+| GET | `/api/strategy-analytics/…` | Prompt-strategy analytics |
+| GET | `/api/llm-metrics/…` | LLM performance by summary / tier |
+| GET | `/api/scope` (+ subroutes) | Run scope: which binaries/functions re-enter the queue |
+| GET/POST | `/api/gc/candidates` / `archive` | Stale-branch GC preview/archive |
+| GET/POST | `/api/server/status` / `shutdown` / `restart` | Server lifecycle |
 | GET | `/health` | Health check |
 
-### 6.2 Review Actions
+### 7.2 Review Actions
 
 The web UI can act on translation units:
 
-- **Accept** — merges the `re/{dll}/{function}v{N}` branch into `main`, writes `re/accepts/{dll}/{function}/v{N}.json` with timestamp
+- **Accept** — merges the `re/{binary}/{function}v{N}` branch into `main`, writes `re/accepts/{dll}/{function}/v{N}.json` with timestamp
 - **Reject/Send-Back** — writes `re/rejections/{dll}/{function}/v{N}.json` with reason (branch is NOT deleted)
 - **Request Patch** — queues a retry (increments version, creates new branch)
+- **Skip / Unskip** — keeps a unit out of (or back in) the translation queue
+- **Cancel current unit** — aborts the in-flight unit at the earliest safe point
+- **Override** — per-unit forced context tier, retry strategy, or reviewer hints that ride into the next prompt (`re/analysis/unit_overrides.json`)
 
-### 6.3 Dashboard States
+### 7.3 Dashboard States
 
 Each unit in the review dashboard has one of these statuses:
 
@@ -454,7 +743,7 @@ Each unit in the review dashboard has one of these statuses:
 
 ---
 
-## 7. Retry Strategies in Detail
+## 8. Retry Strategies in Detail
 
 When a translation attempt fails verification, the strategy determines how the LLM is asked to fix it:
 
@@ -469,9 +758,13 @@ When a translation attempt fails verification, the strategy determines how the L
 3. Verified again with test runner
 
 ### `escalate`
-1. LLM gets the original prompt + call graph context
-2. Additional context from callers/callees is added
-3. Full re-translation with richer context
+1. LLM gets the original prompt + the **full evidence base**: all eleven
+   methodology documents filtered to this function — data structures,
+   inferred types, recognized algorithms, memory lifecycles, concurrency,
+   callbacks, control-flow patterns, string context, API identifications,
+   constants, serialization findings — plus call-graph neighbors,
+   neighboring function bodies, and the unit's failure history
+2. Full re-translation with richer context
 
 ### `edge_case_fix`
 1. LLM gets the original prompt + identified edge case patterns
@@ -484,7 +777,7 @@ Starts at `compile_fix` and cycles through all strategies on each failure:
 
 ---
 
-## 8. Summary: Complete `live` Sequence
+## 9. Summary: Complete `live` Sequence
 
 ```
 calxgloss live --port 3000
@@ -492,6 +785,10 @@ calxgloss live --port 3000
 ├──► [Background] WebSocket server starts on 0.0.0.0:3000
 │     └─ Listens for browser connections
 │     └─ Broadcasts ProgressEvents to all WS clients
+│
+├──► Ghidra session preflight
+│     └─ Attach to a running GhidraMCP, or spawn a headless one
+│     └─ Create/open the Ghidra project; auto-analyze targets
 │
 ├──► handle_auto() in continue_mode = true
 │     │
@@ -502,27 +799,40 @@ calxgloss live --port 3000
 │     │     └─ eqgame.dll: done
 │     │     └─ d3d9.dll: pending
 │     │
-│     ├──► handle_classify() [unclassified DLLs only]
+│     ├──► handle_classify() [unclassified binaries only]
 │     │     └─ Ghidra → PE parse → classification
 │     │     └─ Write re/classify/{dll}.json
 │     │     └─ Commit to main
 │     │     └─ Emit ClassificationComplete event
 │     │
-│     ├──► For each classified DLL:
+│     ├──► For each classified binary:
 │     │   │
-│     │   └──► run_translation_for_dll(dll)
+│     │   └──► run_translation_for_dll(binary)
 │     │         │
+│     │         ├──► emit BatchStarted; wrong-program guard
 │     │         ├──► GhidraClient.list_functions()
 │     │         │     └─ ["DrawPrimitive", "DrawSprite", ...]
+│     │         │
+│     │         ├──► batch_translate warmup
+│     │         │     ├──► Open Ghidra read cache (re/ghidra-cache/)
+│     │         │     └──► ensure_* the 11 analysis scans
+│     │         │           (typesdb, typeinfer, algorithm, memory,
+│     │         │            sync, callback, controlflow, stringctx,
+│     │         │            apidetect, consts, serialize)
+│     │         │           each: cached JSON → skip; else scan
+│     │         │           (heartbeat → BatchProgress) → save
 │     │         │
 │     │         └──► For each function:
 │     │               │
 │     │               ├──► TranslationPipeline::translate()
-│     │               │     └─ Steps: fetch → tag → testgen → prompt → LLM
+│     │               │     └─ Steps: fetch → tag → testgen → tier
+│     │               │        → call-graph enrichment → findings
+│     │               │        → prompt → LLM
 │     │               │     └─ Returns Translation { rust_code, ... }
 │     │               │
 │     │               ├──► retry::try_translate_with_retry()
 │     │               │     └─ Verifier → compile → test → retry loop
+│     │               │     └─ escalate pulls all 11 findings
 │     │               │     └─ Emits progress events at each milestone
 │     │               │     └─ Returns RetryResult { success, attempts[] }
 │     │               │
@@ -534,16 +844,16 @@ calxgloss live --port 3000
 │     │
 │     └──► Emit BatchSummary event
 │
-└──► Auto pipeline done
-     └──► abort serve task
-     └──► Exit
+└──► Auto pipeline done → pipeline state → Complete
+     └──► serve keeps running; UI Start/Restart can re-run the pipeline
 ```
 
 **Total data flow per function:**
 1. **GhidraMCP** → disassembly, decompiler pseudo-C, call graph, imports
 2. **PAL mappings** → Windows API tags attached to disassembly tokens
 3. **Baseline tests** → 10-20+ test cases with input patterns (no expected output yet)
-4. **LLM** → prompt with all context → Rust code (with token usage tracking)
-5. **Verifier** → sandboxed `cargo check` + `cargo run` against baseline
-6. **Git** → branch → commit → merge to main (on success)
-7. **Events** → broadcast → WebSocket → live dashboard UI
+4. **Evidence base** → the eleven methodology documents (recovered once per binary, cached under `re/analysis/`) supply per-function context: types, inferred types, algorithms, memory, concurrency, callbacks, control flow, strings, APIs, constants, serialization
+5. **LLM** → prompt sized by context tier, findings injected where they apply → Rust code (with token usage tracking)
+6. **Verifier** → sandboxed `cargo check` + `cargo run` against baseline
+7. **Git** → branch → commit → merge to main (on success)
+8. **Events** → broadcast → WebSocket → live dashboard UI
