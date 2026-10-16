@@ -141,11 +141,6 @@ impl LocalizationDetector {
         }
     }
 
-    /// The language names the detector claims, in no particular order.
-    pub(crate) fn language_names(&self) -> impl Iterator<Item = &str> {
-        self.language_names.iter().map(String::as_str)
-    }
-
     /// Whether the *whole* value is one of the claimed language names —
     /// case-insensitively. A language word inside a longer sentence is
     /// not the whole value and claims nothing.
@@ -425,7 +420,12 @@ mod tests {
         for name in ["English", "english", "FRENCH", "Japanese"] {
             assert!(detector.is_language_name(name), "{name} is a language");
         }
-        assert!(detector.language_names().count() >= DEFAULT_LANGUAGE_NAMES.len());
+        assert!(
+            DEFAULT_LANGUAGE_NAMES
+                .iter()
+                .all(|name| detector.is_language_name(name)),
+            "the detector claims the whole standard set"
+        );
     }
 
     #[test]
