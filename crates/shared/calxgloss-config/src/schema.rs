@@ -22,6 +22,19 @@ pub struct FileConfig {
 
     /// How to reach the OpenAI-compatible LLM server.
     pub llm: LlmSection,
+
+    /// Which decompiler engine a run uses.
+    pub analysis: AnalysisSection,
+}
+
+/// The `[analysis]` table.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AnalysisSection {
+    /// The decompiler engine: `ghidra` (the default) or `kuna`. A run uses
+    /// exactly one engine; `kuna` is a skeleton in this release, so commands
+    /// it does not serve yet fail by name rather than falling back.
+    pub engine: Option<String>,
 }
 
 /// The `[ghidra]` table.
@@ -131,6 +144,9 @@ url = "http://127.0.0.1:8080"
 # auto_install = false         # doctor --fix may download without --install-ghidra
 # pin_version = "12.1.2"       # pin the Ghidra build the bootstrap fetches
 # java_home = "/usr/lib/jvm/java-21"  # JDK for the bootstrap's Java gate
+
+[analysis]
+# engine = "ghidra"          # ghidra | kuna — a run uses exactly one engine
 
 [llm]
 url  = "http://127.0.0.1:1919/v1"

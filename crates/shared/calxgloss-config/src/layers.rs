@@ -2,7 +2,7 @@
 
 use tracing::debug;
 
-use crate::schema::{FileConfig, GhidraSection, LlmSection};
+use crate::schema::{AnalysisSection, FileConfig, GhidraSection, LlmSection};
 
 /// Which layer a resolved value came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +87,9 @@ impl Layers {
                     temperature: f32_var("CALXGLOSS_LLM_TEMPERATURE"),
                     max_retries: u32_var("CALXGLOSS_LLM_MAX_RETRIES"),
                     strategy: var("CALXGLOSS_LLM_STRATEGY"),
+                },
+                analysis: AnalysisSection {
+                    engine: var("CALXGLOSS_ANALYSIS_ENGINE"),
                 },
             },
             file: FileConfig::default(),
@@ -412,6 +415,47 @@ java_home = "/usr/lib/jvm/java-21"
     }
 
     #[test]
+    fn test_the_analysis_engine_key_comes_from_the_file_layer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(dir.path(), "c.toml", "[analysis]\nengine = \"kuna\"\n");
+        let c = load(Some(&path)).unwrap().file;
+        assert_eq!(c.analysis.engine.as_deref(), Some("kuna"));
+    }
+
+    #[test]
+    fn test_an_unknown_analysis_key_is_rejected() {
+        // The new section must not loosen the deny list: `engien` is a
+        // misconfiguration, not something to ignore.
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(dir.path(), "c.toml", "[analysis]\nengien = \"kuna\"\n");
+        assert!(matches!(
+            load(Some(&path)),
+            Err(ConfigError::Invalid { .. })
+        ));
+    }
+
+    #[test]
+    fn test_a_wrongly_typed_analysis_engine_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(dir.path(), "c.toml", "[analysis]\nengine = 1\n");
+        assert!(matches!(
+            load(Some(&path)),
+            Err(ConfigError::Invalid { .. })
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_the_analysis_engine_env_var_reaches_the_env_layer() {
+        let mut guard = EnvGuard::new();
+        guard.set("CALXGLOSS_ANALYSIS_ENGINE", Some("kuna".into()));
+        let layers = Layers::from_env();
+        // Guard drops and restores the env here.
+        drop(guard);
+        assert_eq!(layers.env.analysis.engine.as_deref(), Some("kuna"));
+    }
+
+    #[test]
     fn test_a_wrongly_typed_value_is_rejected() {
         // A quoted context_window is a string, not a number, and silently coercing
         // it would hide the mistake.
@@ -574,5 +618,8 @@ java_home = "/usr/lib/jvm/java-21"
         let parsed: FileConfig = toml::from_str(EXAMPLE).expect("EXAMPLE must parse");
         assert_eq!(parsed.llm.model.as_deref(), Some("Qwen3.6-35B-A3B-FP8"));
         assert_eq!(parsed.ghidra.url.as_deref(), Some("http://127.0.0.1:8080"));
+        // The example names the engine key commented-out: the built-in default
+        // stays `ghidra`, so the file must not pre-commit a reader to kuna.
+        assert_eq!(parsed.analysis.engine, None);
     }
 }

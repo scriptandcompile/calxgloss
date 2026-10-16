@@ -77,6 +77,11 @@ pub mod defaults {
     /// the explicit `--install-ghidra` flag (G1-T8): a ~570 MB download never
     /// happens without consent, and this default keeps consent explicit.
     pub const GHIDRA_AUTO_INSTALL: bool = false;
+
+    /// The decompiler engine a run uses (issue #205): `ghidra` is the full
+    /// pipeline, `kuna` is the in-process skeleton, and the default keeps
+    /// every existing run on the engine it has always used.
+    pub const ANALYSIS_ENGINE: &str = "ghidra";
 }
 
 mod error;
@@ -87,4 +92,4 @@ mod schema;
 pub use error::ConfigError;
 pub use layers::{Layers, Resolved, Source};
 pub use loader::{LoadedConfig, PROJECT_FILE, load};
-pub use schema::{EXAMPLE, FileConfig, GhidraSection, LlmSection};
+pub use schema::{EXAMPLE, AnalysisSection, FileConfig, GhidraSection, LlmSection};
