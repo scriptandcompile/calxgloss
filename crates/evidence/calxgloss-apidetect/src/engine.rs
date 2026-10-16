@@ -3,11 +3,12 @@
 //! [`ApiEngine`] runs the two detectors over one binary — the
 //! [`ImportTableScanner`] identifies the binary's imports, the
 //! [`ApiSummaryDetector`] reads the built call graph for the APIs each
-//! function reaches — and collects everything into one
-//! [`ApiDetectionResult`]. The engine is generic over the shared
-//! [`ScanSource`] plus a [`CallGraphSource`] for the built graph, so
-//! tests can run the whole orchestration over canned data;
-//! [`new`](Self::new) builds one over a live [`GhidraClient`].
+//! function reaches — and the [divergence](crate::divergence) pass reads
+//! the classified import listing for the platform-divergence claim,
+//! collecting everything into one [`ApiDetectionResult`]. The engine is
+//! generic over the shared [`ScanSource`] plus a [`CallGraphSource`] for
+//! the built graph, so tests can run the whole orchestration over canned
+//! data; [`new`](Self::new) builds one over a live [`GhidraClient`].
 
 use std::time::Instant;
 
@@ -16,6 +17,7 @@ use calxgloss_ghidra::GhidraClient;
 use tracing::{info, warn};
 
 use crate::api_summary::ApiSummaryDetector;
+use crate::divergence::detect_divergence;
 use crate::error::{ApiError, Result};
 use crate::import_table::ImportTableScanner;
 use crate::types::{ApiDetectionResult, ScanMetadata};
@@ -127,9 +129,10 @@ impl<S> ApiEngine<S> {
     /// `binary` names the program the scan reads (e.g. `eqmain.dll`)
     /// and becomes the key a persisted result is filed under. The
     /// findings follow the import listing — every import entry, in
-    /// listing order — and then the call graph, function by function,
-    /// direct calls before transitive paths, so two scans of the same
-    /// program diff cleanly.
+    /// listing order, then the platform-divergence claim when the
+    /// imports mix Win32 and POSIX/stdio families — and then the call
+    /// graph, function by function, direct calls before transitive
+    /// paths, so two scans of the same program diff cleanly.
     ///
     /// A failure of the import listing — the server being down —
     /// aborts the run, since then nothing was scanned. A call graph
@@ -144,6 +147,13 @@ impl<S> ApiEngine<S> {
         let binary = binary.into();
         let mut findings = self.scanner.scan(&self.source, &binary).await?;
         let imports = findings.len();
+        // The divergence reading comes off the classified import
+        // listing the scan already holds — no new ScanSource reads —
+        // and slots between the import entries and the usages so the
+        // scan-order contract stays diffable.
+        if let Some(divergence) = detect_divergence(&findings) {
+            findings.push(divergence);
+        }
 
         match self.source.call_graph(&binary).await {
             Ok(graph) => {
@@ -175,6 +185,7 @@ impl<S> ApiEngine<S> {
 mod tests {
     use super::*;
     use crate::lib_mapping::{LibraryMapping, MappingDatabase};
+    use crate::types::Confidence;
     use calxgloss_callgraph::CallGraphEdge;
     use calxgloss_ghidra::{
         DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
@@ -347,6 +358,65 @@ mod tests {
         .await;
         assert_eq!(result.findings[0].kind(), "import");
         assert_eq!(result.findings[1].kind(), "api_usage");
+    }
+
+    #[tokio::test]
+    async fn a_binary_mixing_win32_and_posix_imports_claims_platform_divergence() {
+        // The fake-program scan surfaces the claim whole: binary-level,
+        // naming both families, listing the triggering imports from both
+        // sides, at the fixed confidence, suggesting cfg gates.
+        let result = scan(FakeProgram::new(
+            vec!["CreateFileA", "inflate", "fopen"],
+            vec![node("FUN_a", 0x1000, vec![("inflate", 0)])],
+        ))
+        .await;
+        let divergences: Vec<&crate::types::ApiFinding> = result
+            .findings
+            .iter()
+            .filter(|finding| finding.kind() == "platform_divergence")
+            .collect();
+        assert_eq!(divergences.len(), 1, "one claim per binary");
+        let finding = divergences[0];
+        assert_eq!(finding.function(), "");
+        assert_eq!(finding.target(), "Win32Core + POSIX");
+        assert_eq!(finding.evidence(), "CreateFileA (Win32Core), fopen (POSIX)");
+        assert_eq!(finding.confidence(), Confidence::new(70));
+        assert!(finding.suggestion().contains("cfg"));
+    }
+
+    #[tokio::test]
+    async fn the_divergence_finding_lands_after_import_entries_and_before_usages() {
+        let result = scan(FakeProgram::new(
+            vec!["CreateFileA", "malloc"],
+            vec![node("FUN_a", 0x1000, vec![("malloc", 0)])],
+        ))
+        .await;
+        let kinds: Vec<&str> = result
+            .findings
+            .iter()
+            .map(|finding| finding.kind())
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["import", "import", "platform_divergence", "api_usage"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_single_family_binary_claims_no_divergence() {
+        // Purely Win32 imports through the scan: the gate stays shut.
+        let result = scan(FakeProgram::new(
+            vec!["CreateFileA", "GetLastError"],
+            vec![node("FUN_a", 0x1000, vec![("CreateFileA", 0)])],
+        ))
+        .await;
+        assert!(
+            result
+                .findings
+                .iter()
+                .all(|finding| matches!(finding.kind(), "import" | "api_usage")),
+            "no platform_divergence finding for a purely Win32 binary"
+        );
     }
 
     #[tokio::test]

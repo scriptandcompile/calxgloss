@@ -1,7 +1,8 @@
 //! The `apidetect` command — identify the libraries and APIs of the open binary.
 //!
 //! Runs the two API detectors — the import-table scanner and the
-//! per-function call-graph summary — against the program currently open
+//! per-function call-graph summary — plus the platform-divergence
+//! reading, against the program currently open
 //! in Ghidra and saves the result to `re/analysis/apidetect/{binary}.json`
 //! in the workspace, the same file batch translation will read as prompt
 //! context. Batch translation runs the same scan before its first batch
@@ -95,7 +96,7 @@ fn print_api_report(result: &ApiDetectionResult, path: &Path) {
     println!();
 
     // Findings, broken down by the record kind the union carries.
-    let kind_breakdown: Vec<String> = ["import", "api_usage"]
+    let kind_breakdown: Vec<String> = ["import", "platform_divergence", "api_usage"]
         .into_iter()
         .map(|kind| {
             (

@@ -8,7 +8,11 @@
 //!   flags when identified.
 //! - `ApiUsage`: a function-level record — an API the function reaches
 //!   directly or through its call graph, with the call path as evidence.
-//! - `ApiFinding`: the union over the two record kinds — one finding
+//! - `PlatformDivergence`: a binary-level record — the binary imports
+//!   both a Win32-family and a POSIX/stdio-family API, so the Rust
+//!   shape is cfg-gated calls, not both families transliterated
+//!   unconditionally.
+//! - `ApiFinding`: the union over the record kinds — one finding
 //!   whichever detector made it — serde-tagged by `kind`.
 //!
 //! All types derive `Serialize`/`Deserialize`. `Confidence` is the shared
@@ -18,6 +22,8 @@
 
 pub use calxgloss_types::{Confidence, ScanMetadata};
 use serde::{Deserialize, Serialize};
+
+use crate::divergence::DIVERGENCE_SUGGESTION;
 
 // ============================================================
 // Import-table records
@@ -109,66 +115,112 @@ pub struct ApiUsage {
 }
 
 // ============================================================
+// Platform-divergence records
+// ============================================================
+
+/// The binary-level claim that the binary straddles two platform API
+/// families.
+///
+/// A divergence says the import table carries at least one import whose
+/// mapping category names the Win32 family *and* at least one naming the
+/// POSIX family (the `POSIX` and `stdio` categories) — the gate the
+/// [`divergence`](crate::divergence) detector reads off the classified
+/// import listing. [`families`](Self::families) names both families as
+/// the categories spelled them, [`evidence`](Self::evidence) lists the
+/// triggering imports from both sides so a reviewer can check the claim
+/// against the import table, and the Rust shape the finding points at is
+/// cfg-gated calls — the suggestion accessor carries it. A purely Win32
+/// or purely POSIX binary claims nothing, so the record never exists.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformDivergence {
+    /// The platform families seen, spelled with the mapping categories
+    /// that triggered the claim — the Win32 side first, e.g.
+    /// `["Win32Core", "POSIX"]`.
+    pub families: Vec<String>,
+    /// The imports that triggered the claim, from both sides, each
+    /// spelled `api (category)`, the Win32 side first and each side in
+    /// import-listing order.
+    pub evidence: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
 /// One API finding, whichever detector made it.
 ///
 /// The import-table scanner emits binary-level [`ApiSignature`] records;
-/// the summary detector emits function-level [`ApiUsage`] records. The
-/// union is what the persisted result carries, so one list holds every
-/// finding for a binary and a consumer reads the shared shape — API,
-/// library, crate suggestion, confidence, evidence — without naming
-/// which detector produced it. The serde `kind` tag names the record
-/// shape in the persisted JSON.
+/// the [divergence](crate::divergence) detector emits one binary-level
+/// [`PlatformDivergence`] record when the imports mix platform
+/// families; the summary detector emits function-level [`ApiUsage`]
+/// records. The union is what the persisted result carries, so one list
+/// holds every finding for a binary and a consumer reads the shared
+/// shape — API, library, crate suggestion, confidence, evidence —
+/// without naming which detector produced it. The serde `kind` tag
+/// names the record shape in the persisted JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ApiFinding {
     /// A binary-level import-table entry.
     Import(ApiSignature),
+    /// A binary-level claim that the imports mix Win32 and POSIX/stdio
+    /// families.
+    PlatformDivergence(PlatformDivergence),
     /// A function-level API usage through the call graph.
     ApiUsage(ApiUsage),
 }
 
 impl ApiFinding {
     /// The function the finding is about — empty for a binary-level
-    /// import entry.
+    /// import entry or divergence claim.
     pub fn function(&self) -> &str {
         match self {
             ApiFinding::Import(_) => "",
+            ApiFinding::PlatformDivergence(_) => "",
             ApiFinding::ApiUsage(record) => &record.function,
         }
     }
 
-    /// The API the finding names, spelled for a report row.
-    pub fn target(&self) -> &str {
+    /// The API the finding names, spelled for a report row — the two
+    /// platform families joined for a divergence claim.
+    pub fn target(&self) -> String {
         match self {
-            ApiFinding::Import(record) => &record.api,
-            ApiFinding::ApiUsage(record) => &record.api,
+            ApiFinding::Import(record) => record.api.clone(),
+            ApiFinding::PlatformDivergence(record) => record.families.join(" + "),
+            ApiFinding::ApiUsage(record) => record.api.clone(),
         }
     }
 
-    /// The library the API belongs to, when identified.
+    /// The library the API belongs to, when identified — a divergence
+    /// claim names families, not one library, so it carries none.
     pub fn library(&self) -> Option<&str> {
         match self {
             ApiFinding::Import(record) => record.library.as_deref(),
+            ApiFinding::PlatformDivergence(_) => None,
             ApiFinding::ApiUsage(record) => Some(&record.library),
         }
     }
 
-    /// The Rust crate standing in for the API, when identified.
+    /// The Rust crate standing in for the API, when identified — a
+    /// divergence claim suggests a shape, not a crate.
     pub fn rust_crate(&self) -> Option<&str> {
         match self {
             ApiFinding::Import(record) => record.rust_crate.as_deref(),
+            ApiFinding::PlatformDivergence(_) => None,
             ApiFinding::ApiUsage(record) => Some(&record.rust_crate),
         }
     }
 
     /// The API category the finding's library entry names, spelled with
-    /// the PAL `ApiCategory` display names, when the mapping carries one.
+    /// the PAL `ApiCategory` display names, when the mapping carries
+    /// one — a divergence claim names its families through
+    /// [`target`](Self::target), not through one category.
     pub fn category(&self) -> Option<&str> {
         match self {
             ApiFinding::Import(record) => record.category.as_deref(),
+            ApiFinding::PlatformDivergence(_) => None,
             ApiFinding::ApiUsage(record) => record.category.as_deref(),
         }
     }
@@ -178,18 +230,23 @@ impl ApiFinding {
     pub fn features(&self) -> &[String] {
         match self {
             ApiFinding::Import(record) => &record.features,
+            ApiFinding::PlatformDivergence(_) => &[],
             ApiFinding::ApiUsage(record) => &record.features,
         }
     }
 
     /// The crate suggestion, spelled for prompt rows — empty when the
     /// API was never identified. With feature flags the crate renders in
-    /// the `crate[feat1, feat2]` form; without them, the bare name.
+    /// the `crate[feat1, feat2]` form; without them, the bare name. A
+    /// divergence claim carries the cfg-gated translation shape instead.
     pub fn suggestion(&self) -> String {
-        match self.rust_crate() {
-            None => String::new(),
-            Some(krate) if self.features().is_empty() => krate.to_string(),
-            Some(krate) => format!("{krate}[{}]", self.features().join(", ")),
+        match self {
+            ApiFinding::PlatformDivergence(_) => DIVERGENCE_SUGGESTION.to_string(),
+            _ => match self.rust_crate() {
+                None => String::new(),
+                Some(krate) if self.features().is_empty() => krate.to_string(),
+                Some(krate) => format!("{krate}[{}]", self.features().join(", ")),
+            },
         }
     }
 
@@ -197,24 +254,28 @@ impl ApiFinding {
     pub fn confidence(&self) -> Confidence {
         match self {
             ApiFinding::Import(record) => record.confidence,
+            ApiFinding::PlatformDivergence(record) => record.confidence,
             ApiFinding::ApiUsage(record) => record.confidence,
         }
     }
 
     /// The evidence behind the finding: the call path for a usage, the
-    /// API name itself for a binary-level import entry.
+    /// API name itself for a binary-level import entry, the triggering
+    /// imports from both sides for a divergence claim.
     pub fn evidence(&self) -> String {
         match self {
             ApiFinding::Import(record) => record.api.clone(),
+            ApiFinding::PlatformDivergence(record) => record.evidence.clone(),
             ApiFinding::ApiUsage(record) => record.evidence.clone(),
         }
     }
 
-    /// The serde `kind` tag — `import` or `api_usage` — naming the
-    /// detector behind the finding.
+    /// The serde `kind` tag — `import`, `platform_divergence`, or
+    /// `api_usage` — naming the detector behind the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             ApiFinding::Import(_) => "import",
+            ApiFinding::PlatformDivergence(_) => "platform_divergence",
             ApiFinding::ApiUsage(_) => "api_usage",
         }
     }
@@ -229,8 +290,9 @@ impl ApiFinding {
 /// The document the [`ApiPersistor`](crate::persist::ApiPersistor) files
 /// under `re/analysis/apidetect/`, and the cache a caller loads instead
 /// of re-scanning: the binary-level import entries first, in listing
-/// order, then the function-level usages, function by function in call
-/// graph order.
+/// order, then the platform-divergence claim when the imports mix
+/// families, then the function-level usages, function by function in
+/// call graph order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiDetectionResult {
     /// Provenance of the scan that produced these findings.
@@ -250,8 +312,8 @@ impl ApiDetectionResult {
     }
 
     /// The findings recorded for one function, e.g. `FUN_18003ab00` —
-    /// its usages, and only its usages: a binary-level import entry
-    /// belongs to the binary, not to any function.
+    /// its usages, and only its usages: a binary-level import entry or
+    /// divergence claim belongs to the binary, not to any function.
     pub fn for_function(&self, function: &str) -> impl Iterator<Item = &ApiFinding> {
         self.findings
             .iter()
@@ -273,12 +335,15 @@ impl ApiDetectionResult {
 /// The prompts crate owns the struct (like `ConcurrencyInfo` for sync
 /// findings); the conversion lives here so the finding's own accessors
 /// carry the mapping. An import entry becomes a row with an empty
-/// function and `kind = "import"`; a usage carries its call path and
+/// function and `kind = "import"`; a divergence claim carries an empty
+/// function, the joined families as its API, and `kind =
+/// "platform_divergence"`; a usage carries its call path and
 /// `kind = "direct"` or `"transitive"`.
 impl From<&ApiFinding> for calxgloss_prompts::ApiInfo {
     fn from(finding: &ApiFinding) -> Self {
         let kind = match finding {
             ApiFinding::Import(_) => "import",
+            ApiFinding::PlatformDivergence(_) => "platform_divergence",
             ApiFinding::ApiUsage(record) => {
                 if record.direct {
                     "direct"
@@ -289,7 +354,7 @@ impl From<&ApiFinding> for calxgloss_prompts::ApiInfo {
         };
         calxgloss_prompts::ApiInfo {
             function: finding.function().to_string(),
-            api: finding.target().to_string(),
+            api: finding.target(),
             library: finding.library().unwrap_or("").to_string(),
             suggestion: finding.suggestion(),
             kind: kind.to_string(),
@@ -431,6 +496,54 @@ mod tests {
         assert_eq!(back, findings);
         assert!(json.contains(r#""kind":"import""#));
         assert!(json.contains(r#""kind":"api_usage""#));
+    }
+
+    fn divergence() -> PlatformDivergence {
+        PlatformDivergence {
+            families: vec!["Win32Core".into(), "POSIX".into()],
+            evidence: "CreateFileA (Win32Core), fopen (POSIX)".into(),
+            confidence: Confidence::new(70),
+        }
+    }
+
+    #[test]
+    fn divergence_finding_reads_through_the_union_accessors() {
+        let finding = ApiFinding::PlatformDivergence(divergence());
+        assert_eq!(finding.function(), "", "the claim is binary-level");
+        assert_eq!(finding.target(), "Win32Core + POSIX", "both families named");
+        assert_eq!(finding.library(), None);
+        assert_eq!(finding.rust_crate(), None);
+        assert_eq!(finding.category(), None);
+        assert!(finding.features().is_empty());
+        assert_eq!(finding.confidence(), Confidence::new(70));
+        assert_eq!(finding.evidence(), "CreateFileA (Win32Core), fopen (POSIX)");
+        assert_eq!(finding.kind(), "platform_divergence");
+        assert!(
+            finding.suggestion().contains("cfg"),
+            "the suggestion names the cfg-gated shape, not a crate: {}",
+            finding.suggestion()
+        );
+    }
+
+    #[test]
+    fn divergence_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = ApiFinding::PlatformDivergence(divergence());
+        let json = serde_json::to_string(&finding).unwrap();
+        let back: ApiFinding = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, finding);
+        assert!(json.contains(r#""kind":"platform_divergence""#));
+    }
+
+    #[test]
+    fn divergence_finding_converts_to_a_prompt_row() {
+        let info = calxgloss_prompts::ApiInfo::from(&ApiFinding::PlatformDivergence(divergence()));
+        assert_eq!(info.function, "");
+        assert_eq!(info.api, "Win32Core + POSIX");
+        assert_eq!(info.library, "");
+        assert!(info.suggestion.contains("cfg"));
+        assert_eq!(info.kind, "platform_divergence");
+        assert_eq!(info.confidence, 70);
+        assert_eq!(info.evidence, "CreateFileA (Win32Core), fopen (POSIX)");
     }
 
     #[test]

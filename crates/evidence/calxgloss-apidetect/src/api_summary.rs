@@ -184,7 +184,7 @@ mod tests {
         }
     }
 
-    fn usages(findings: &[ApiFinding]) -> Vec<(&str, &str, bool, &str)> {
+    fn usages(findings: &[ApiFinding]) -> Vec<(&str, String, bool, &str)> {
         findings
             .iter()
             .map(|finding| {
@@ -194,7 +194,7 @@ mod tests {
                     matches!(finding, ApiFinding::ApiUsage(record) if record.direct),
                     match finding {
                         ApiFinding::ApiUsage(record) => record.evidence.as_str(),
-                        ApiFinding::Import(_) => "",
+                        ApiFinding::Import(_) | ApiFinding::PlatformDivergence(_) => "",
                     },
                 )
             })
@@ -207,7 +207,7 @@ mod tests {
         let findings = ApiSummaryDetector::new().detect(&graph);
         assert_eq!(
             usages(&findings),
-            vec![("FUN_a", "inflate", true, "FUN_a → inflate")]
+            vec![("FUN_a", "inflate".to_string(), true, "FUN_a → inflate")]
         );
         match &findings[0] {
             ApiFinding::ApiUsage(record) => {
@@ -217,7 +217,9 @@ mod tests {
                 assert_eq!(record.category.as_deref(), Some("zlib"));
                 assert_eq!(record.features, ["zlib".to_string()]);
             }
-            ApiFinding::Import(_) => panic!("expected a usage finding"),
+            ApiFinding::Import(_) | ApiFinding::PlatformDivergence(_) => {
+                panic!("expected a usage finding")
+            }
         }
     }
 
@@ -231,13 +233,20 @@ mod tests {
         assert_eq!(
             usages(&findings),
             vec![
-                ("FUN_a", "inflate", false, "FUN_a → FUN_b → inflate"),
-                ("FUN_b", "inflate", true, "FUN_b → inflate"),
+                (
+                    "FUN_a",
+                    "inflate".to_string(),
+                    false,
+                    "FUN_a → FUN_b → inflate"
+                ),
+                ("FUN_b", "inflate".to_string(), true, "FUN_b → inflate"),
             ]
         );
         match &findings[0] {
             ApiFinding::ApiUsage(record) => assert_eq!(record.confidence, Confidence::new(60)),
-            ApiFinding::Import(_) => panic!("expected a usage finding"),
+            ApiFinding::Import(_) | ApiFinding::PlatformDivergence(_) => {
+                panic!("expected a usage finding")
+            }
         }
     }
 
@@ -266,8 +275,8 @@ mod tests {
         assert_eq!(
             usages(&findings),
             vec![
-                ("FUN_a", "inflate", true, "FUN_a → inflate"),
-                ("FUN_b", "inflate", true, "FUN_b → inflate"),
+                ("FUN_a", "inflate".to_string(), true, "FUN_a → inflate"),
+                ("FUN_b", "inflate".to_string(), true, "FUN_b → inflate"),
             ]
         );
     }

@@ -9,8 +9,8 @@
 //! - **Consumption** — the loaded result answers the lookups a
 //!   translation pipeline makes (the usages recorded for one function),
 //!   and the persisted list keeps every finding in scan order: import
-//!   entries in listing order, then usages function by function in call
-//!   graph order.
+//!   entries in listing order, then the platform-divergence claim, then
+//!   usages function by function in call graph order.
 //! - **Prompt rendering** — the loaded findings render into `ApiInfo`
 //!   prompt data and the escalate prompt carries the LIBRARIES AND APIS
 //!   section.
@@ -63,11 +63,12 @@ fn node(name: &str, address: u64, callees: Vec<(&str, u64)>) -> FunctionCallGrap
 
 /// A canned program implementing [`ScanSource`] and [`CallGraphSource`]:
 /// imports covering an
-/// identified zlib call, an identified Win32 call, and an unidentified
-/// vendor function, and a call graph where `FUN_18003ab00` calls
-/// `inflate` directly and reaches `CreateFileA` through
-/// `FUN_18003c000` — one direct and one transitive usage — while
-/// `FUN_18003e750` calls nothing.
+/// identified zlib call, an identified Win32 call, an unidentified
+/// vendor function, and an identified POSIX call — the Win32 and POSIX
+/// imports together open the platform-divergence gate — and a call
+/// graph where `FUN_18003ab00` calls `inflate` directly and reaches
+/// `CreateFileA` through `FUN_18003c000` — one direct and one
+/// transitive usage — while `FUN_18003e750` calls nothing.
 #[derive(Clone, Default)]
 struct FakeProgram {
     imports: Vec<Symbol>,
@@ -159,6 +160,7 @@ fn program() -> FakeProgram {
             import("inflate"),
             import("CreateFileA"),
             import("VendorSpecialFunction"),
+            import("fopen"),
         ],
         graph: vec![
             node(
@@ -203,8 +205,10 @@ async fn a_scan_files_its_result_in_the_workspace_and_reads_back() {
 #[tokio::test]
 async fn the_persisted_document_keeps_findings_in_scan_order() {
     // Imports first, in listing order — identified and unidentified
-    // alike — then usages function by function in call graph order,
-    // direct before transitive: the order two scans diff against.
+    // alike — then the platform-divergence claim the mixed Win32 and
+    // POSIX imports open, then usages function by function in call
+    // graph order, direct before transitive: the order two scans diff
+    // against.
     let workspace = TempDir::new().unwrap();
     let result = ApiEngine::with_source(program())
         .scan("eqmain.dll")
@@ -214,7 +218,7 @@ async fn the_persisted_document_keeps_findings_in_scan_order() {
     persistor.save(&result).expect("save");
 
     let loaded = persistor.load("eqmain.dll").expect("load");
-    let order: Vec<(&str, &str, &str)> = loaded
+    let order: Vec<(&str, &str, String)> = loaded
         .findings
         .iter()
         .map(|finding| (finding.kind(), finding.function(), finding.target()))
@@ -222,12 +226,14 @@ async fn the_persisted_document_keeps_findings_in_scan_order() {
     assert_eq!(
         order,
         vec![
-            ("import", "", "inflate"),
-            ("import", "", "CreateFileA"),
-            ("import", "", "VendorSpecialFunction"),
-            ("api_usage", "FUN_18003ab00", "inflate"),
-            ("api_usage", "FUN_18003ab00", "CreateFileA"),
-            ("api_usage", "FUN_18003c000", "CreateFileA"),
+            ("import", "", "inflate".to_string()),
+            ("import", "", "CreateFileA".to_string()),
+            ("import", "", "VendorSpecialFunction".to_string()),
+            ("import", "", "fopen".to_string()),
+            ("platform_divergence", "", "Win32Core + POSIX".to_string()),
+            ("api_usage", "FUN_18003ab00", "inflate".to_string()),
+            ("api_usage", "FUN_18003ab00", "CreateFileA".to_string()),
+            ("api_usage", "FUN_18003c000", "CreateFileA".to_string()),
         ]
     );
 }
@@ -340,6 +346,84 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
     assert!(prompt.contains("windows / std::fs"));
     assert!(prompt.contains("Win32 transitive, confidence 60"));
     assert!(prompt.contains("FUN_18003ab00 → FUN_18003c000 → CreateFileA"));
+}
+
+#[tokio::test]
+async fn the_platform_divergence_finding_survives_scan_persist_load_and_prompt() {
+    // The mixed-import fixture opens the gate: the claim rides the
+    // persisted document whole — families, evidence, confidence — and
+    // renders into the escalate prompt naming both families and the
+    // cfg-gated shape.
+    let workspace = TempDir::new().unwrap();
+    let result = ApiEngine::with_source(program())
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = ApiPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let divergences: Vec<&ApiFinding> = loaded
+        .findings
+        .iter()
+        .filter(|finding| finding.kind() == "platform_divergence")
+        .collect();
+    assert_eq!(
+        divergences.len(),
+        1,
+        "one claim per binary survives the round trip"
+    );
+    let ApiFinding::PlatformDivergence(record) = divergences[0] else {
+        unreachable!("the divergence claim reads as its own record");
+    };
+    assert_eq!(
+        record.families,
+        ["Win32Core".to_string(), "POSIX".to_string()]
+    );
+    assert_eq!(record.evidence, "CreateFileA (Win32Core), fopen (POSIX)");
+    assert_eq!(record.confidence.value(), 70);
+
+    let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
+        "FUN_18003ab00".into(),
+        "eqmain.dll".into(),
+        "fn fun_18003ab00() { /* raw imports */ }".into(),
+        "Wrong result".into(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        loaded
+            .findings
+            .iter()
+            .map(calxgloss_prompts::ApiInfo::from)
+            .collect(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("the escalate prompt should render");
+
+    assert!(prompt.contains("LIBRARIES AND APIS"));
+    assert!(
+        prompt.contains("`Win32Core + POSIX`"),
+        "the prompt names both platform families"
+    );
+    assert!(prompt.contains("platform_divergence, confidence 70"));
+    assert!(
+        prompt.contains("CreateFileA (Win32Core), fopen (POSIX)"),
+        "the prompt carries the triggering imports as evidence"
+    );
+    assert!(
+        prompt.contains("cfg gates"),
+        "the prompt suggests the cfg-gated shape"
+    );
 }
 
 // ------------------------------------------------------------
