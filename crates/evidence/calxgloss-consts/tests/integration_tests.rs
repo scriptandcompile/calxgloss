@@ -345,6 +345,72 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
     assert!(prompt.contains("uVar1 & 0x400"));
 }
 
+#[tokio::test]
+async fn a_decomposed_composite_group_survives_the_round_trip_and_the_prompt() {
+    // The widened group — bits completed by a decomposed composite
+    // mask — rides the persisted document with the existing record
+    // shape (no schema change) and renders into the escalate prompt's
+    // CONSTANTS section carrying the widened suggestion and the
+    // composite's evidence line.
+    let workspace = TempDir::new().unwrap();
+    let mut composite = FakeProgram::empty();
+    composite.listing = vec![summary("FUN_18003ab00")];
+    composite.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  if ((uVar1 & 0x400) != 0) {\n    uVar1 |= 0x100;\n  }\n  local_10 = 0x200;\n  uVar1 &= 0x700;\n",
+        ),
+    );
+    let result = ConstEngine::with_source(composite)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = ConstPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let findings: Vec<&ConstFinding> = loaded.for_function("FUN_18003ab00").collect();
+    assert_eq!(findings.len(), 1, "the completed group is the finding");
+    let ConstFinding::BitflagGroup(group) = findings[0] else {
+        unreachable!("the flag bits read as a bitflag finding");
+    };
+    assert_eq!(group.bits, vec![8, 9, 10]);
+    assert_eq!(group.mask, 0x700);
+    assert_eq!(group.bit_width, 11);
+    assert!(group.evidence.contains("uVar1 &= 0x700"));
+
+    let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
+        "FUN_18003ab00".into(),
+        "eqmain.dll".into(),
+        "fn fun_18003ab00() { /* bare integer literals everywhere */ }".into(),
+        "Wrong result".into(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        findings
+            .iter()
+            .map(|finding| calxgloss_prompts::ConstInfo::from(*finding))
+            .collect(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("the escalate prompt should render");
+
+    assert!(prompt.contains("bitflags! struct Flags: u16 { /* bits: 0x100, 0x200, 0x400 */ }"));
+    assert!(prompt.contains("uVar1 &= 0x700"));
+}
+
 // ------------------------------------------------------------
 // Cache behavior
 // ------------------------------------------------------------

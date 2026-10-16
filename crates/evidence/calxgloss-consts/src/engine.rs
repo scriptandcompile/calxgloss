@@ -513,6 +513,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_composite_mask_beside_its_independently_seen_bits_completes_the_group() {
+        // A fake-program body combining 0x700 in a bitwise context
+        // beside bits 8, 9, and 10 each seen singly: the scan's group
+        // comes back complete — widened mask, widened width, the
+        // composite line in the evidence.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  if ((uVar1 & 0x400) != 0) {\n    uVar1 |= 0x100;\n  }\n  local_10 = 0x200;\n  uVar1 &= 0x700;\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let group = result
+            .findings
+            .iter()
+            .find_map(|finding| match finding {
+                ConstFinding::BitflagGroup(record) => Some(record),
+                _ => None,
+            })
+            .expect("the scan should have reported the completed flag group");
+        assert_eq!(group.bits, vec![8, 9, 10]);
+        assert_eq!(group.mask, 0x700);
+        assert_eq!(group.bit_width, 11);
+        assert!(group.evidence.contains("uVar1 &= 0x700"));
+    }
+
+    #[tokio::test]
     async fn scan_collects_findings_from_all_three_detectors() {
         let result = scan(program()).await;
 

@@ -19,8 +19,10 @@
 //!   for the persisted per-binary results.
 //! - [`bitmask`] - Bitflag group detection: `BitmaskDetector` collects
 //!   power-of-two literals used in bitwise contexts (`&`, `|`, `^`,
-//!   `&= ~`, `1 << n`) per function into one flag-group finding and
-//!   suggests a `bitflags!`-style struct.
+//!   `&= ~`, `1 << n`) per function into one flag-group finding,
+//!   decomposing a composite mask into its set bits when every bit
+//!   was independently seen singly in the same body, and suggests a
+//!   `bitflags!`-style struct.
 //! - [`sequential`] - Enum candidate detection: `SequentialDetector`
 //!   parses switch case values and turns runs of three or more
 //!   contiguous ascending values into enum-candidate findings
