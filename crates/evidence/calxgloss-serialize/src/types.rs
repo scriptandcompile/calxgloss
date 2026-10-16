@@ -30,6 +30,13 @@
 //!   the function compares against, the protocol it names, and the
 //!   corroborating readings (network-order swaps, cross-field
 //!   validations) that promote the sniff to a handler.
+//! - `EndiannessMap`, `EndiannessEntry`: the binary-level endianness
+//!   profile — made by the endianness profiler, not a body detector —
+//!   the scan's byte-swap findings coalesced by operation width: each
+//!   entry names the width, the wire byte order the swap names
+//!   support (BE for the network-order family, reversal-only for
+//!   direction-neutral builtins), and the contributing functions in
+//!   listing order; widths with no observed swaps are absent.
 //! - `SerializeFinding`: the union over the record kinds — one finding
 //!   whichever detector made it — serde-tagged by `kind`.
 //! - `SerializeResult`, `ScanMetadata`: the persisted per-binary result
@@ -393,6 +400,67 @@ pub struct ProtocolMessage {
 }
 
 // ============================================================
+// Endianness map records
+// ============================================================
+
+/// One width's entry in the binary-level endianness profile: the
+/// width the swap calls carry, the wire byte order their names
+/// support, and the functions that made the observations.
+///
+/// The endianness comes from the swap name family alone, exactly as
+/// the composed layout's per-field order does: a network-order
+/// spelling (`ntohl`, `htons`, and their kin) says the width travels
+/// big-endian, while a width seen only through direction-neutral
+/// builtins carries [`WireEndianness::ReversalOnly`] — the bytes
+/// reverse and no wire order is claimed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndiannessEntry {
+    /// The width the swaps carry, in bits: 16, 32, or 64.
+    pub width: u32,
+    /// The wire byte order the swap names support for this width.
+    pub endianness: WireEndianness,
+    /// The functions that made the observations, in listing order,
+    /// each named once however many swaps it made at this width.
+    pub functions: Vec<String>,
+}
+
+/// The binary-level endianness profile one scan coalesces from its
+/// byte-swap findings — made by the endianness profiler, not by a
+/// body detector.
+///
+/// A record says the binary moves [`entries`](Self::entries) — one
+/// per width its swap calls were seen at, ascending — each naming
+/// the wire byte order the names support and the contributing
+/// functions; widths with no observed swaps are absent, so the record
+/// claims only what was seen. Like the apidetect divergence claim the
+/// profile belongs to the binary rather than any one function, so
+/// [`function`](Self::function) reads as the empty string. The
+/// profile reads like [`suggestion`](Self::suggestion): the
+/// `byteorder` types the widths' wire orders imply, so a
+/// function-level translation prompt still gets the program-level
+/// profile. The first swap line seen at each width is kept as
+/// [`evidence`](Self::evidence) so a reviewer (or a translation
+/// prompt) can check the profile against the decompilations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndiannessMap {
+    /// Empty: the claim belongs to the binary, not to one function —
+    /// the apidetect divergence precedent.
+    pub function: String,
+    /// One entry per observed width, ascending; widths with no
+    /// observed swaps are absent.
+    pub entries: Vec<EndiannessEntry>,
+    /// The Rust pattern the profile suggests, e.g. `program-wide BE
+    /// wire order at u32 (byteorder BE types)`.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+    /// The first swap line seen at each entry's width, in entry
+    /// order — kept so a reviewer (or a translation prompt) can
+    /// check the profile.
+    pub evidence: String,
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -436,6 +504,10 @@ pub enum SerializeFinding {
     /// protocol message handler.
     #[serde(rename = "protocol_message")]
     ProtocolMessage(ProtocolMessage),
+    /// The scan's byte-swap findings coalesced by operation width
+    /// into one binary-level wire-order profile.
+    #[serde(rename = "endianness_map")]
+    EndiannessMap(EndiannessMap),
 }
 
 impl SerializeFinding {
@@ -448,6 +520,7 @@ impl SerializeFinding {
             SerializeFinding::CrossFieldValidation(record) => &record.function,
             SerializeFinding::SerializationFormat(record) => &record.function,
             SerializeFinding::ProtocolMessage(record) => &record.function,
+            SerializeFinding::EndiannessMap(record) => &record.function,
         }
     }
 
@@ -460,6 +533,7 @@ impl SerializeFinding {
             SerializeFinding::CrossFieldValidation(record) => &record.suggestion,
             SerializeFinding::SerializationFormat(record) => &record.suggestion,
             SerializeFinding::ProtocolMessage(record) => &record.suggestion,
+            SerializeFinding::EndiannessMap(record) => &record.suggestion,
         }
     }
 
@@ -472,6 +546,7 @@ impl SerializeFinding {
             SerializeFinding::CrossFieldValidation(record) => record.confidence,
             SerializeFinding::SerializationFormat(record) => record.confidence,
             SerializeFinding::ProtocolMessage(record) => record.confidence,
+            SerializeFinding::EndiannessMap(record) => record.confidence,
         }
     }
 
@@ -484,12 +559,14 @@ impl SerializeFinding {
             SerializeFinding::CrossFieldValidation(record) => &record.evidence,
             SerializeFinding::SerializationFormat(record) => &record.evidence,
             SerializeFinding::ProtocolMessage(record) => &record.evidence,
+            SerializeFinding::EndiannessMap(record) => &record.evidence,
         }
     }
 
     /// The serde `kind` tag — `byteswap`, `bitpack`, `magic`,
-    /// `cross_field_validation`, `serialization_format`, or
-    /// `protocol_message` — naming the reading behind the finding.
+    /// `cross_field_validation`, `serialization_format`,
+    /// `protocol_message`, or `endianness_map` — naming the reading
+    /// behind the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             SerializeFinding::ByteSwap(_) => "byteswap",
@@ -498,6 +575,7 @@ impl SerializeFinding {
             SerializeFinding::CrossFieldValidation(_) => "cross_field_validation",
             SerializeFinding::SerializationFormat(_) => "serialization_format",
             SerializeFinding::ProtocolMessage(_) => "protocol_message",
+            SerializeFinding::EndiannessMap(_) => "endianness_map",
         }
     }
 
@@ -506,8 +584,9 @@ impl SerializeFinding {
     /// format and the signature bytes that name it, the validation
     /// shape and the field it validates, the composed layout —
     /// direction when it is named, then the ordered fields with their
-    /// widths and wire byte orders — or the identified protocol and
-    /// the magic bytes that name it.
+    /// widths and wire byte orders — the identified protocol and the
+    /// magic bytes that name it, or the endianness profile — each
+    /// observed width with the wire byte order its names support.
     pub fn target(&self) -> String {
         match self {
             SerializeFinding::ByteSwap(record) => record.operation.clone(),
@@ -530,6 +609,14 @@ impl SerializeFinding {
             }
             SerializeFinding::ProtocolMessage(record) => {
                 format!("{} {:#x}", record.protocol, record.magic)
+            }
+            SerializeFinding::EndiannessMap(record) => {
+                let entries: Vec<String> = record
+                    .entries
+                    .iter()
+                    .map(|entry| format!("u{}:{}", entry.width, entry.endianness))
+                    .collect();
+                entries.join(", ")
             }
         }
     }
@@ -597,7 +684,8 @@ impl From<&SerializeFinding> for calxgloss_prompts::SerializationInfo {
 /// function, and within one function the byte swaps, then the bit
 /// packs, then the magic-byte comparisons, then the cross-field
 /// validation checks, then the composed format layout, then the
-/// protocol-message identification. The detectors
+/// protocol-message identification; the binary-level endianness map
+/// appends after every per-function finding. The detectors
 /// read disjoint body shapes, so a function can carry findings of
 /// every kind at once and none competes with another; the stable
 /// order means two scans of the same program diff cleanly.
@@ -620,10 +708,21 @@ impl SerializeResult {
     }
 
     /// The findings recorded for one function, e.g. `FUN_18003ab00`.
+    ///
+    /// The binary-level endianness map is yielded for each of its
+    /// contributing functions — the program-level profile is part of
+    /// what a function-level prompt reads — and stays absent for the
+    /// functions it never names.
     pub fn for_function(&self, function: &str) -> impl Iterator<Item = &SerializeFinding> {
         self.findings
             .iter()
-            .filter(move |finding| finding.function() == function)
+            .filter(move |finding| match &**finding {
+                SerializeFinding::EndiannessMap(record) => record
+                    .entries
+                    .iter()
+                    .any(|entry| entry.functions.iter().any(|f| f == function)),
+                other => other.function() == function,
+            })
     }
 
     /// Whether the scan found nothing at all.
@@ -1047,6 +1146,66 @@ mod tests {
         assert_eq!(back, finding);
     }
 
+    fn endianness_map() -> EndiannessMap {
+        EndiannessMap {
+            function: String::new(),
+            entries: vec![
+                EndiannessEntry {
+                    width: 16,
+                    endianness: WireEndianness::BigEndian,
+                    functions: vec!["FUN_18003ab00".into()],
+                },
+                EndiannessEntry {
+                    width: 32,
+                    endianness: WireEndianness::ReversalOnly,
+                    functions: vec!["FUN_18003ab00".into(), "FUN_18003e750".into()],
+                },
+            ],
+            suggestion:
+                "program-wide BE wire order at u16 (byteorder BE types); reversal-only at u32"
+                    .into(),
+            confidence: Confidence::new(75),
+            evidence: "uVar1 = htons(local_18); uVar3 = __builtin_bswap32(uVar3);".into(),
+        }
+    }
+
+    #[test]
+    fn an_endianness_map_record_serde_round_trips() {
+        let record = endianness_map();
+        let json = serde_json::to_string(&record).expect("endianness map should serialize");
+        let back: EndiannessMap =
+            serde_json::from_str(&json).expect("endianness map should read back");
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn an_endianness_map_record_reads_back_from_json() {
+        // The wire spelling of the profile: widths with their `be` and
+        // `reversal_only` tags, and the contributing functions per width.
+        let json = r#"{
+            "function": "",
+            "entries": [
+                {"width": 16, "endianness": "be", "functions": ["FUN_18003ab00"]},
+                {"width": 32, "endianness": "reversal_only", "functions": ["FUN_18003ab00", "FUN_18003e750"]}
+            ],
+            "suggestion": "program-wide BE wire order at u16 (byteorder BE types); reversal-only at u32",
+            "confidence": 75,
+            "evidence": "uVar1 = htons(local_18); uVar3 = __builtin_bswap32(uVar3);"
+        }"#;
+        let record: EndiannessMap =
+            serde_json::from_str(json).expect("endianness map should read back");
+        assert_eq!(record, endianness_map());
+    }
+
+    #[test]
+    fn an_endianness_map_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = SerializeFinding::EndiannessMap(endianness_map());
+        let json = serde_json::to_string(&finding).expect("finding should serialize");
+        assert!(json.contains("\"kind\":\"endianness_map\""));
+        let back: SerializeFinding = serde_json::from_str(&json).expect("finding should read back");
+        assert_eq!(back, finding);
+    }
+
     #[test]
     fn the_union_accessors_reach_through_every_variant() {
         let findings = [
@@ -1068,7 +1227,20 @@ mod tests {
         assert_eq!(findings[3].confidence(), Confidence::new(65));
         assert_eq!(findings[4].confidence(), Confidence::new(75));
         assert_eq!(findings[5].confidence(), Confidence::new(85));
-        let kinds: Vec<&str> = findings.iter().map(|f| f.kind()).collect();
+
+        // The endianness map belongs to the binary, not a function, so it
+        // reads through the same accessors with its own function spelling.
+        let map = SerializeFinding::EndiannessMap(endianness_map());
+        assert_eq!(map.function(), "");
+        assert!(!map.suggestion().is_empty());
+        assert!(!map.evidence().is_empty());
+        assert_eq!(map.confidence(), Confidence::new(75));
+
+        let kinds: Vec<&str> = findings
+            .iter()
+            .chain(std::iter::once(&map))
+            .map(|f| f.kind())
+            .collect();
         assert_eq!(
             kinds,
             vec![
@@ -1077,10 +1249,15 @@ mod tests {
                 "magic",
                 "cross_field_validation",
                 "serialization_format",
-                "protocol_message"
+                "protocol_message",
+                "endianness_map"
             ]
         );
-        let targets: Vec<String> = findings.iter().map(|f| f.target()).collect();
+        let targets: Vec<String> = findings
+            .iter()
+            .chain(std::iter::once(&map))
+            .map(|f| f.target())
+            .collect();
         assert_eq!(
             targets,
             vec![
@@ -1089,9 +1266,27 @@ mod tests {
                 "PNG 0x89504e47",
                 "checksum uVar7",
                 "reader u32:be > 8+8 bits",
-                "IPv6 0x86dd"
+                "IPv6 0x86dd",
+                "u16:be, u32:reversal_only"
             ]
         );
+    }
+
+    #[test]
+    fn the_endianness_map_answers_each_of_its_contributing_functions() {
+        // The program-level profile is part of what a function-level
+        // lookup reads: every function the map names gets it, and the
+        // functions it never names do not.
+        let result = SerializeResult {
+            metadata: ScanMetadata::new("eqmain.dll"),
+            findings: vec![SerializeFinding::EndiannessMap(endianness_map())],
+        };
+        for contributor in ["FUN_18003ab00", "FUN_18003e750"] {
+            let found: Vec<&SerializeFinding> = result.for_function(contributor).collect();
+            assert_eq!(found.len(), 1, "{contributor} is named by the map");
+            assert_eq!(found[0].kind(), "endianness_map");
+        }
+        assert!(result.for_function("FUN_180099999").next().is_none());
     }
 
     #[test]
@@ -1195,5 +1390,15 @@ mod tests {
             "protocol-aware IPv6 message decode (byteorder BE reads)"
         );
         assert_eq!(info.confidence, 85);
+
+        let map = SerializeFinding::EndiannessMap(endianness_map());
+        let info = calxgloss_prompts::SerializationInfo::from(&map);
+        assert_eq!(info.function, "");
+        assert_eq!(info.kind, "endianness_map");
+        assert_eq!(
+            info.suggestion,
+            "program-wide BE wire order at u16 (byteorder BE types); reversal-only at u32"
+        );
+        assert_eq!(info.confidence, 75);
     }
 }

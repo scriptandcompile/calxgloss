@@ -268,10 +268,10 @@ mod tests {
     #[test]
     fn a_mixed_kind_document_survives_the_round_trip() {
         // Byteswap, bitpack, magic, cross-field-validation,
-        // serialization-format, and protocol-message findings
-        // interleaved in scan order: the union carries every kind
-        // through save and load without losing the record shape
-        // behind each tag.
+        // serialization-format, protocol-message, and endianness-map
+        // findings in scan order: the union carries every kind through
+        // save and load without losing the record shape behind each
+        // tag.
         let dir = tempfile::tempdir().unwrap();
         let persistor = SerializePersistor::new(dir.path());
 
@@ -348,11 +348,33 @@ mod tests {
                 evidence: "if (uVar1 == 0x86dd) { uVar1 = ntohl(local_18);".to_string(),
             },
         ));
+        result.findings.push(SerializeFinding::EndiannessMap(
+            crate::types::EndiannessMap {
+                function: String::new(),
+                entries: vec![
+                    crate::types::EndiannessEntry {
+                        width: 16,
+                        endianness: crate::types::WireEndianness::ReversalOnly,
+                        functions: vec!["ReadHeader".to_string()],
+                    },
+                    crate::types::EndiannessEntry {
+                        width: 32,
+                        endianness: crate::types::WireEndianness::BigEndian,
+                        functions: vec!["ReadHeader".to_string()],
+                    },
+                ],
+                suggestion:
+                    "program-wide BE wire order at u32 (byteorder BE types); reversal-only at u16"
+                        .to_string(),
+                confidence: Confidence::new(75),
+                evidence: "uVar1 = ntohl(local_18); uVar2 = __builtin_bswap16(uVar3);".to_string(),
+            },
+        ));
         persistor.save(&result).unwrap();
 
         let loaded = persistor.load("eqmain.dll").unwrap();
         assert_eq!(loaded, result);
-        assert_eq!(loaded.findings.len(), 6);
+        assert_eq!(loaded.findings.len(), 7);
         assert_eq!(loaded.findings[0].kind(), "byteswap");
         assert_eq!(loaded.findings[1].kind(), "bitpack");
         assert_eq!(loaded.findings[2].kind(), "magic");
@@ -373,6 +395,17 @@ mod tests {
         };
         assert_eq!(record.protocol, "IPv6");
         assert_eq!(record.corroborations, ["ntohl swap", "checksum validation"]);
+        assert_eq!(loaded.findings[6].kind(), "endianness_map");
+        assert_eq!(loaded.findings[6].confidence(), Confidence::new(75));
+        assert_eq!(loaded.findings[6].target(), "u16:reversal_only, u32:be");
+        let SerializeFinding::EndiannessMap(record) = &loaded.findings[6] else {
+            unreachable!("the endianness map reads back under its tag");
+        };
+        assert_eq!(record.entries[0].functions, ["ReadHeader"]);
+        assert_eq!(
+            record.entries[1].endianness,
+            crate::types::WireEndianness::BigEndian
+        );
     }
 
     #[test]

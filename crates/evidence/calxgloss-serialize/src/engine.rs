@@ -11,7 +11,9 @@
 //! The format and protocol-message compositions ride at the end of
 //! each function's findings: they read the records the pass already
 //! made, so they cost no extra body pass and no extra Ghidra round
-//! trips.
+//! trips. The endianness profile is the one binary-level finding: the
+//! profiler aggregates the whole scan's byte-swap findings by width
+//! after the loop, so the map appends after every per-function finding.
 //!
 //! The detectors are pure text analysis over one decompiled body, so
 //! the engine fetches each function's pseudo-C exactly once and reads
@@ -27,6 +29,7 @@
 
 use crate::bitpack::BitPackDetector;
 use crate::byteswap::ByteSwapDetector;
+use crate::endianness::EndiannessProfiler;
 use crate::error::Result;
 use crate::format::FormatCombiner;
 use crate::magic_bytes::MagicByteDetector;
@@ -64,6 +67,7 @@ pub struct SerializeEngine<S = GhidraClient> {
     validation: ValidationDetector,
     format: FormatCombiner,
     protocol: ProtocolMessageCombiner,
+    endianness: EndiannessProfiler,
 }
 
 impl SerializeEngine<GhidraClient> {
@@ -86,6 +90,7 @@ impl<S> SerializeEngine<S> {
             validation: ValidationDetector::new(),
             format: FormatCombiner::new(),
             protocol: ProtocolMessageCombiner::new(),
+            endianness: EndiannessProfiler::new(),
         }
     }
 
@@ -126,7 +131,8 @@ impl<S> SerializeEngine<S> {
     /// and within one function the byte swaps, then the bit packs,
     /// then the magic-byte comparisons, then the cross-field
     /// validation checks, then the composed format layout, then the
-    /// protocol-message identification — so two
+    /// protocol-message identification; the binary-level endianness
+    /// map appends after every per-function finding — so two
     /// scans of the same program diff cleanly.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad
@@ -227,6 +233,14 @@ impl<S> SerializeEngine<S> {
             );
             findings.extend(format_record.map(SerializeFinding::SerializationFormat));
             findings.extend(protocol_record.map(SerializeFinding::ProtocolMessage));
+        }
+
+        // The endianness profile is the one binary-level finding: it
+        // aggregates the whole scan's byte-swap findings by width, so
+        // it can only be made after the loop, and it appends after
+        // every per-function finding (P11.5-4).
+        if let Some(record) = self.endianness.profile(&findings) {
+            findings.push(SerializeFinding::EndiannessMap(record));
         }
 
         let mut metadata = ScanMetadata::new(binary);
@@ -436,7 +450,7 @@ mod tests {
         assert!(result.metadata.scanned_at > 0);
 
         let findings: Vec<&SerializeFinding> = result.for_function("FUN_18003ab00").collect();
-        assert_eq!(findings.len(), 3);
+        assert_eq!(findings.len(), 4);
 
         let SerializeFinding::ByteSwap(record) = findings[0] else {
             unreachable!("the swap call reads as a byteswap finding");
@@ -460,6 +474,12 @@ mod tests {
             Some(crate::types::FormatDirection::Reader)
         );
         assert_eq!(record.confidence.value(), 75);
+
+        let SerializeFinding::EndiannessMap(record) = findings[3] else {
+            unreachable!("the swap findings profile an endianness map");
+        };
+        assert_eq!(record.entries.len(), 1);
+        assert_eq!(record.entries[0].width, 32);
 
         assert!(result.for_function("FUN_18003e750").next().is_none());
     }
@@ -506,6 +526,7 @@ mod tests {
                 ("FUN_18003ab00", "bitpack"),
                 ("FUN_18003ab00", "magic"),
                 ("FUN_18003ab00", "serialization_format"),
+                ("", "endianness_map"),
             ]
         );
 
@@ -616,6 +637,7 @@ mod tests {
                 ("FUN_18003ab00", "magic"),
                 ("FUN_18003ab00", "cross_field_validation"),
                 ("FUN_18003ab00", "serialization_format"),
+                ("", "endianness_map"),
             ]
         );
         assert_eq!(
@@ -656,6 +678,7 @@ mod tests {
                 ("FUN_18003ab00", "byteswap"),
                 ("FUN_18003ab00", "byteswap"),
                 ("FUN_18003ab00", "serialization_format"),
+                ("", "endianness_map"),
             ]
         );
     }
@@ -689,7 +712,13 @@ mod tests {
             .collect();
         assert_eq!(
             kinds,
-            vec!["byteswap", "byteswap", "bitpack", "serialization_format",],
+            vec![
+                "byteswap",
+                "byteswap",
+                "bitpack",
+                "serialization_format",
+                "endianness_map"
+            ],
             "the composed layout rides alongside its component findings"
         );
 
@@ -743,7 +772,7 @@ mod tests {
         );
         let result = scan(program).await;
 
-        assert_eq!(result.findings.len(), 2);
+        assert_eq!(result.findings.len(), 3);
         assert!(
             result
                 .findings
@@ -787,7 +816,7 @@ mod tests {
             .collect();
         assert_eq!(
             kinds,
-            vec!["byteswap", "magic", "protocol_message"],
+            vec!["byteswap", "magic", "protocol_message", "endianness_map"],
             "the handler claim rides alongside its magic and byte-swap findings"
         );
 
@@ -888,12 +917,108 @@ mod tests {
                 ("FUN_18003ab00", "cross_field_validation"),
                 ("FUN_18003ab00", "serialization_format"),
                 ("FUN_18003ab00", "protocol_message"),
+                ("", "endianness_map"),
             ]
         );
         assert_eq!(
             program.decompiled(),
             vec!["FUN_18003ab00", "FUN_18003e750"],
             "one decompile per function, in listing order"
+        );
+    }
+
+    #[tokio::test]
+    async fn swaps_across_functions_land_exactly_one_map_finding_last() {
+        // The program-wide claim: 32-bit and 16-bit swaps in two
+        // functions land one endianness map — appended after every
+        // per-function finding, owned by no function — and the
+        // per-function lookups answer the map to each contributor.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  uVar1 = ntohl(local_18);\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  uVar2 = htons(local_14);\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let maps: Vec<&crate::types::EndiannessMap> = result
+            .findings
+            .iter()
+            .filter_map(|finding| match finding {
+                SerializeFinding::EndiannessMap(record) => Some(record),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(maps.len(), 1, "one map per scan, not one per function");
+        let last = result.findings.last().expect("findings");
+        assert_eq!(last.kind(), "endianness_map");
+        assert_eq!(
+            last.function(),
+            "",
+            "the profile belongs to the binary, not a function"
+        );
+
+        let map = maps[0];
+        assert_eq!(map.entries.len(), 2);
+        assert_eq!(map.entries[0].width, 16);
+        assert_eq!(
+            map.entries[0].endianness,
+            crate::types::WireEndianness::BigEndian
+        );
+        assert_eq!(map.entries[0].functions, vec!["FUN_18003e750"]);
+        assert_eq!(map.entries[1].width, 32);
+        assert_eq!(map.entries[1].functions, vec!["FUN_18003ab00"]);
+        assert_eq!(map.confidence.value(), 75);
+
+        for contributor in ["FUN_18003ab00", "FUN_18003e750"] {
+            let answered: Vec<&SerializeFinding> = result
+                .for_function(contributor)
+                .filter(|finding| finding.kind() == "endianness_map")
+                .collect();
+            assert_eq!(answered.len(), 1, "{contributor} reads the map");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_builtin_only_scan_claims_a_reversal_only_entry() {
+        // Honesty at the program level: a scan whose only swaps are
+        // direction-neutral builtins claims byte reversal and no wire
+        // order.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  uVar1 = __builtin_bswap32(uVar2);\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let SerializeFinding::EndiannessMap(record) = result.findings.last().expect("map") else {
+            unreachable!("the swap findings profile an endianness map");
+        };
+        assert_eq!(record.entries.len(), 1);
+        assert_eq!(
+            record.entries[0].endianness,
+            crate::types::WireEndianness::ReversalOnly
+        );
+        assert_eq!(
+            record.suggestion,
+            "program-wide byte reversal at u32 — no wire order claimed"
         );
     }
 
@@ -1036,7 +1161,11 @@ mod tests {
         let result = engine.scan("eqmain.dll").await.expect("scan");
 
         let findings: Vec<&SerializeFinding> = result.for_function("FUN_1800412a0").collect();
-        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            findings.len(),
+            2,
+            "the swap finding plus the map it profiles"
+        );
         let SerializeFinding::ByteSwap(record) = findings[0] else {
             unreachable!("the swap call reads as a byteswap finding");
         };

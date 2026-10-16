@@ -11,7 +11,8 @@
 //!   function), and the persisted list keeps every finding in scan
 //!   order: function by function, and within one function the byte
 //!   swaps in call order, with the composed format layout and the
-//!   protocol message identification riding at the end.
+//!   protocol message identification riding at the end and the
+//!   binary-level endianness map appended after them all.
 //! - **Cache behavior** — the `exists` check decides whether a scan
 //!   runs, and a rescan replaces the cached document.
 //!
@@ -210,6 +211,7 @@ async fn the_persisted_document_keeps_findings_in_scan_order() {
             ("FUN_18003ab00", "byteswap"),
             ("FUN_18003ab00", "byteswap"),
             ("FUN_18003ab00", "serialization_format"),
+            ("", "endianness_map"),
         ]
     );
 }
@@ -219,11 +221,11 @@ async fn the_persisted_document_keeps_findings_in_scan_order() {
 // ------------------------------------------------------------
 
 #[tokio::test]
-async fn a_four_kind_document_survives_the_round_trip() {
-    // One canned scan, four kinds: the swap call, the pack chain, the
-    // signature comparison, and the format the swap and pack compose
-    // in one body reach disk interleaved in scan order and read back
-    // with their record shapes intact.
+async fn a_five_kind_document_survives_the_round_trip() {
+    // One canned scan, five kinds: the swap call, the pack chain, the
+    // signature comparison, the format the swap and pack compose, and
+    // the endianness map the swap profiles reach disk in scan order
+    // and read back with their record shapes intact.
     let workspace = TempDir::new().unwrap();
     let mut mixed = FakeProgram::empty();
     mixed.listing = vec![summary("FUN_18003ab00")];
@@ -249,7 +251,13 @@ async fn a_four_kind_document_survives_the_round_trip() {
     let kinds: Vec<&str> = loaded.findings.iter().map(|f| f.kind()).collect();
     assert_eq!(
         kinds,
-        vec!["byteswap", "bitpack", "magic", "serialization_format"]
+        vec![
+            "byteswap",
+            "bitpack",
+            "magic",
+            "serialization_format",
+            "endianness_map"
+        ]
     );
 
     let SerializeFinding::BitPack(record) = &loaded.findings[1] else {
@@ -270,6 +278,15 @@ async fn a_four_kind_document_survives_the_round_trip() {
     };
     assert_eq!(record.fields.len(), 5);
     assert_eq!(record.direction, Some(FormatDirection::Reader));
+    assert_eq!(record.confidence, Confidence::new(75));
+
+    let SerializeFinding::EndiannessMap(record) = &loaded.findings[4] else {
+        unreachable!("the swap call profiles an endianness map");
+    };
+    assert_eq!(record.entries.len(), 1);
+    assert_eq!(record.entries[0].width, 32);
+    assert_eq!(record.entries[0].endianness, WireEndianness::BigEndian);
+    assert_eq!(record.entries[0].functions, ["FUN_18003ab00"]);
     assert_eq!(record.confidence, Confidence::new(75));
 }
 
@@ -308,7 +325,8 @@ async fn a_validation_document_survives_the_round_trip_and_reaches_the_prompt() 
         vec![
             "byteswap",
             "cross_field_validation",
-            "cross_field_validation"
+            "cross_field_validation",
+            "endianness_map"
         ],
         "the validation findings land after the swap call, in body order"
     );
@@ -333,7 +351,7 @@ async fn a_validation_document_survives_the_round_trip_and_reaches_the_prompt() 
         .for_function("FUN_18003ab00")
         .map(calxgloss_prompts::SerializationInfo::from)
         .collect();
-    assert_eq!(findings.len(), 3, "the target function's three findings");
+    assert_eq!(findings.len(), 4, "the target function's four findings");
 
     let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
         "FUN_18003ab00".into(),
@@ -362,6 +380,8 @@ async fn a_validation_document_survives_the_round_trip_and_reaches_the_prompt() 
     assert!(prompt.contains("cross_field_validation pattern, confidence 65"));
     assert!(prompt.contains("checked parse or validate step on the Rust type"));
     assert!(prompt.contains("if (uVar7 == uVar5 + uVar6) {"));
+    assert!(prompt.contains("endianness_map pattern, confidence 75"));
+    assert!(prompt.contains("program-wide BE wire order at u32 (byteorder BE types)"));
 }
 
 #[tokio::test]
@@ -401,7 +421,8 @@ async fn a_protocol_message_survives_the_round_trip_and_reaches_the_prompt() {
             "byteswap",
             "magic",
             "cross_field_validation",
-            "protocol_message"
+            "protocol_message",
+            "endianness_map"
         ],
         "the handler claim lands last among its function's findings"
     );
@@ -426,7 +447,7 @@ async fn a_protocol_message_survives_the_round_trip_and_reaches_the_prompt() {
         .for_function("FUN_18003ab00")
         .map(calxgloss_prompts::SerializationInfo::from)
         .collect();
-    assert_eq!(findings.len(), 4, "the target function's four findings");
+    assert_eq!(findings.len(), 5, "the target function's five findings");
 
     let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
         "FUN_18003ab00".into(),
@@ -455,6 +476,8 @@ async fn a_protocol_message_survives_the_round_trip_and_reaches_the_prompt() {
     assert!(prompt.contains("protocol_message pattern, confidence 85"));
     assert!(prompt.contains("protocol-aware IPv6 message decode (byteorder BE reads)"));
     assert!(prompt.contains("if (uVar2 == 0x86dd) {"));
+    assert!(prompt.contains("endianness_map pattern, confidence 75"));
+    assert!(prompt.contains("program-wide BE wire order at u32 (byteorder BE types)"));
 }
 
 #[tokio::test]
@@ -489,7 +512,7 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
         .for_function("FUN_18003ab00")
         .map(calxgloss_prompts::SerializationInfo::from)
         .collect();
-    assert_eq!(findings.len(), 4, "the target function's four findings");
+    assert_eq!(findings.len(), 5, "the target function's five findings");
 
     let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
         "FUN_18003ab00".into(),
@@ -524,6 +547,8 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
     assert!(prompt.contains("uVar1 = ntohl(local_18);"));
     assert!(prompt.contains("serialization_format pattern, confidence 75"));
     assert!(prompt.contains("byteorder reader: read_u32 then 8+8+8+8 bitfields"));
+    assert!(prompt.contains("endianness_map pattern, confidence 75"));
+    assert!(prompt.contains("program-wide BE wire order at u32 (byteorder BE types)"));
 }
 
 #[tokio::test]
@@ -569,9 +594,10 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     let loaded = persistor.load("eqmain.dll").expect("load");
 
     // The pipeline asks what was found for the function it is about to
-    // translate; the plain function carries nothing.
+    // translate; the plain function carries nothing — and the map never
+    // names it, so the map stays absent from its lookup too.
     let findings: Vec<&SerializeFinding> = loaded.for_function("FUN_18003ab00").collect();
-    assert_eq!(findings.len(), 3);
+    assert_eq!(findings.len(), 4);
     assert!(loaded.for_function("FUN_18003e750").next().is_none());
     assert!(loaded.for_function("FUN_180099999").next().is_none());
 
@@ -602,6 +628,84 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     assert_eq!(record.fields[0].endianness, Some(WireEndianness::BigEndian));
     assert_eq!(record.fields[1].width, 16);
     assert_eq!(record.direction, None);
+
+    // The program-wide profile rides along with the function's own
+    // findings: both swapped widths, each naming this function.
+    let SerializeFinding::EndiannessMap(record) = findings[3] else {
+        unreachable!("the swap calls profile an endianness map");
+    };
+    assert_eq!(record.entries.len(), 2);
+    assert_eq!(record.entries[0].width, 16);
+    assert_eq!(record.entries[0].endianness, WireEndianness::BigEndian);
+    assert_eq!(record.entries[0].functions, ["FUN_18003ab00"]);
+    assert_eq!(record.entries[1].width, 32);
+    assert_eq!(record.entries[1].functions, ["FUN_18003ab00"]);
+    assert_eq!(record.confidence, Confidence::new(75));
+    assert_eq!(
+        record.suggestion,
+        "program-wide BE wire order at u16, u32 (byteorder BE types)"
+    );
+}
+
+#[tokio::test]
+async fn the_endianness_map_survives_the_round_trip_and_answers_its_contributors() {
+    // The integration story for the profile: swaps in two functions
+    // land one map on disk, and loading it back answers the map to
+    // every contributing function — the program-level context a
+    // function-level prompt reads.
+    let workspace = TempDir::new().expect("tempdir");
+    let mut pair = FakeProgram::empty();
+    pair.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    pair.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  uVar1 = ntohl(local_18);\n",
+        ),
+    );
+    pair.bodies.insert(
+        "FUN_18003e750".into(),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(void)",
+            "  uVar2 = htons(local_14);\n",
+        ),
+    );
+    let result = SerializeEngine::with_source(pair)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = SerializePersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    assert_eq!(loaded, result);
+
+    let maps: Vec<&calxgloss_serialize::types::EndiannessMap> = loaded
+        .findings
+        .iter()
+        .filter_map(|finding| match finding {
+            SerializeFinding::EndiannessMap(record) => Some(record),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(maps.len(), 1, "one map per scan, through the round trip");
+    let map = maps[0];
+    assert_eq!(map.entries.len(), 2);
+    assert_eq!(map.entries[0].width, 16);
+    assert_eq!(map.entries[0].functions, ["FUN_18003e750"]);
+    assert_eq!(map.entries[1].width, 32);
+    assert_eq!(map.entries[1].functions, ["FUN_18003ab00"]);
+
+    for contributor in ["FUN_18003ab00", "FUN_18003e750"] {
+        let answered: Vec<&SerializeFinding> = loaded
+            .for_function(contributor)
+            .filter(|finding| finding.kind() == "endianness_map")
+            .collect();
+        assert_eq!(answered.len(), 1, "{contributor} reads the map");
+        assert_eq!(answered[0].confidence(), Confidence::new(75));
+    }
 }
 
 // ------------------------------------------------------------

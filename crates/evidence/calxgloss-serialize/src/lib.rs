@@ -4,7 +4,8 @@
 //! cross-field validation, the composed serialization layout, and
 //! corroborated protocol message handlers within
 //! each function of an open Ghidra
-//! program. Results are injected as structured SERIALIZATION sections
+//! program, and maps the program-wide endianness the byte-swap calls
+//! add up to. Results are injected as structured SERIALIZATION sections
 //! that name the Rust
 //! serialization pattern — `byteorder::BE::read_u32`, `bitvec` or
 //! named-field masking, `png::Decoder`, `flate2::read::GzDecoder`,
@@ -51,6 +52,11 @@
 //!   validation into a single `ProtocolMessage` finding naming the
 //!   protocol and listing its corroborating readings — a bare sniff
 //!   and a file-format magic never promote.
+//! - [`endianness`] - Program-wide endianness mapping:
+//!   `EndiannessProfiler` aggregates the scan's byte-swap findings by
+//!   entry width into one `EndiannessMap` finding — which widths carry
+//!   network-order traffic and which functions contribute each —
+//!   appended after the per-function findings.
 //! - [`engine`] - Scan orchestration: `SerializeEngine` runs the
 //!   detectors over one open Ghidra program through a `ScanSource`
 //!   (function listing + decompile-by-name), one sequential pass that
@@ -62,6 +68,7 @@
 
 pub mod bitpack;
 pub mod byteswap;
+pub mod endianness;
 pub mod engine;
 pub mod error;
 pub mod format;

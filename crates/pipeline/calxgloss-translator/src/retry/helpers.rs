@@ -2183,6 +2183,22 @@ mod tests {
         )
     }
 
+    fn map_record(functions: &[&str]) -> calxgloss_serialize::types::SerializeFinding {
+        calxgloss_serialize::types::SerializeFinding::EndiannessMap(
+            calxgloss_serialize::types::EndiannessMap {
+                function: String::new(),
+                entries: vec![calxgloss_serialize::types::EndiannessEntry {
+                    width: 32,
+                    endianness: calxgloss_serialize::types::WireEndianness::BigEndian,
+                    functions: functions.iter().map(|f| (*f).into()).collect(),
+                }],
+                suggestion: "program-wide BE wire order at u32 (byteorder BE types)".into(),
+                confidence: calxgloss_serialize::types::Confidence::new(75),
+                evidence: "uVar1 = ntohl(local_18);".into(),
+            },
+        )
+    }
+
     fn persist_serialize_findings(
         dir: &TempDir,
         findings: Vec<calxgloss_serialize::types::SerializeFinding>,
@@ -2261,13 +2277,17 @@ mod tests {
                 pack_record("FUN_18003ab00"),
                 magic_record("FUN_18003ab00"),
                 swap_record("FUN_zzz"),
+                map_record(&["FUN_18003ab00", "FUN_zzz"]),
             ],
         );
 
         let found = extract_serialization_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
 
         let kinds: Vec<&str> = found.iter().map(|f| f.kind.as_str()).collect();
-        assert_eq!(kinds, vec!["byteswap", "bitpack", "magic"]);
+        assert_eq!(
+            kinds,
+            vec!["byteswap", "bitpack", "magic", "endianness_map"]
+        );
         assert_eq!(found[0].suggestion, "byteorder::BE::read_u32");
         assert_eq!(
             found[1].suggestion,
@@ -2275,6 +2295,14 @@ mod tests {
         );
         assert_eq!(found[2].suggestion, "png::Decoder");
         assert_eq!(found[2].confidence, 80);
+        // The binary-level profile answers to each of its contributing
+        // functions, so the program-wide claim reaches the prompt too.
+        assert_eq!(found[3].function, "");
+        assert_eq!(
+            found[3].suggestion,
+            "program-wide BE wire order at u32 (byteorder BE types)"
+        );
+        assert_eq!(found[3].confidence, 75);
     }
 
     // ---- control-flow hint extraction ---------------------------------
