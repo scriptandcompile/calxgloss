@@ -11,12 +11,13 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into nine modules:
+//! The crate is organized into ten modules:
 //!
 //! - [`types`] - Core data types: `BitflagGroup`, `EnumCandidate`, and
-//!   `NamedConstant` for the detection records; `ConstFinding` as the
-//!   union over the three record kinds; `ConstResult`, `ScanMetadata`
-//!   for the persisted per-binary results.
+//!   `NamedConstant` for the detection records; `FlagFamily` for the
+//!   program-level merged flag-family record; `ConstFinding` as the
+//!   union over the record kinds; `ConstResult`, `ScanMetadata` for
+//!   the persisted per-binary results.
 //! - [`bitmask`] - Bitflag group detection: `BitmaskDetector` collects
 //!   power-of-two literals used in bitwise contexts (`&`, `|`, `^`,
 //!   `&= ~`, `1 << n`) per function into one flag-group finding,
@@ -36,10 +37,16 @@
 //!   detectors over one open Ghidra program through a `ScanSource`
 //!   (function listing + decompile-by-name), one sequential pass that
 //!   decompiles each function exactly once and keeps the findings in
-//!   scan order.
+//!   scan order, then merges the scan's own bitflag groups into
+//!   program-level flag families and appends them after the named
+//!   constants.
 //! - [`persist`] - JSON persistence: `ConstPersistor` saves and loads
 //!   the per-binary detection results under `re/analysis/consts/`.
 //! - [`error`] - [`ConstError`] and the crate-wide [`Result`] alias.
+//! - `flag_family` - a crate-private merge post-pass: `merge_families`
+//!   ties the per-function bitflag groups the scan just built through
+//!   shared bits, transitively, and renders each merged set as one
+//!   program-level flag-family record — no bodies kept, no new reads.
 //! - `naming` - a crate-private context-naming reading: `context_names`
 //!   walks one body's token stream for assignments and comparisons that
 //!   name their literals, with the placeholder-identifier gate that
@@ -56,6 +63,7 @@ pub mod persist;
 pub mod sequential;
 pub mod types;
 
+pub(crate) mod flag_family;
 pub(crate) mod naming;
 pub(crate) mod tokenize;
 

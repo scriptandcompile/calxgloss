@@ -8,10 +8,11 @@
 //!   loading it back yields the same result the scan returned.
 //! - **Consumption** — the loaded result answers the lookups a
 //!   translation pipeline makes (the findings recorded for one
-//!   function, named constants included), and the persisted list keeps
-//!   every finding in scan order: function by function the bitmask
-//!   groups then the enum candidates, and the program-level named
-//!   constants appended after them.
+//!   function, the program-level named constants and flag families
+//!   included), and the persisted list keeps every finding in scan
+//!   order: function by function the bitmask groups then the enum
+//!   candidates, and the program-level named constants then merged
+//!   flag families appended after them.
 //! - **Prompt rendering** — the loaded findings render into `ConstInfo`
 //!   prompt data and the escalate prompt carries the CONSTANTS section,
 //!   the repeated literal's context-named `const` form included.
@@ -409,6 +410,112 @@ async fn a_decomposed_composite_group_survives_the_round_trip_and_the_prompt() {
 
     assert!(prompt.contains("bitflags! struct Flags: u16 { /* bits: 0x100, 0x200, 0x400 */ }"));
     assert!(prompt.contains("uVar1 &= 0x700"));
+}
+
+#[tokio::test]
+async fn a_merged_flag_family_survives_the_round_trip_and_the_prompt() {
+    // Two functions reading one flag surface through a shared bit:
+    // the per-function groups ride the persisted document beside the
+    // merged family record, the family answers the per-function
+    // lookup of each contributor, and it renders into the escalate
+    // prompt's CONSTANTS section at its above-the-tier confidence.
+    let workspace = TempDir::new().unwrap();
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+    program.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  if ((uVar1 & 0x400) != 0) {\n\
+             \x20   uVar1 |= 0x100;\n\
+             \x20 }\n",
+        ),
+    );
+    program.bodies.insert(
+        "FUN_18003e750".into(),
+        function(
+            "FUN_18003e750",
+            "undefined FUN_18003e750(void)",
+            "  uVar2 &= 0x400;\n\
+             \x20 uVar2 |= 0x800;\n",
+        ),
+    );
+    let result = ConstEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = ConstPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let raw = std::fs::read_to_string(persistor.path_for("eqmain.dll")).expect("read");
+    assert!(raw.contains("\"kind\": \"flag_family\""));
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let families: Vec<&ConstFinding> = loaded
+        .findings
+        .iter()
+        .filter(|finding| finding.kind() == "flag_family")
+        .collect();
+    assert_eq!(families.len(), 1, "one family record per merged family");
+    let ConstFinding::FlagFamily(family) = families[0] else {
+        unreachable!("the merged bits read as a flag-family finding");
+    };
+    assert_eq!(family.bits, vec![8, 10, 11]);
+    assert_eq!(family.mask, 0xd00);
+    assert_eq!(
+        family.functions,
+        vec!["FUN_18003ab00".to_string(), "FUN_18003e750".to_string()]
+    );
+    assert_eq!(
+        family.confidence,
+        calxgloss_consts::types::Confidence::new(80)
+    );
+
+    // Each contributor's per-function lookup carries its own group
+    // plus the family it contributed to.
+    let findings: Vec<&ConstFinding> = loaded.for_function("FUN_18003e750").collect();
+    assert_eq!(
+        findings
+            .iter()
+            .map(|finding| finding.kind())
+            .collect::<Vec<_>>(),
+        vec!["bitflag_group", "flag_family"]
+    );
+
+    let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
+        "FUN_18003ab00".into(),
+        "eqmain.dll".into(),
+        "fn fun_18003ab00() { /* bare integer literals everywhere */ }".into(),
+        "Wrong result".into(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        loaded
+            .for_function("FUN_18003ab00")
+            .map(calxgloss_prompts::ConstInfo::from)
+            .collect(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("the escalate prompt should render");
+
+    assert!(prompt.contains("CONSTANTS"));
+    assert!(prompt.contains("bitflags! struct Flags: u16 { /* bits: 0x100, 0x400, 0x800 */ }"));
+    assert!(prompt.contains("flag_family, confidence 80"));
+    assert!(
+        prompt.contains("FUN_18003e750: bits 0x400, 0x800"),
+        "the prompt carries the contributing groups as evidence"
+    );
 }
 
 // ------------------------------------------------------------

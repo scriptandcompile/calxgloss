@@ -96,21 +96,26 @@ fn print_constant_report(result: &ConstResult, path: &Path) {
     println!();
 
     // Findings, broken down by the record kind the union carries.
-    let kind_breakdown: Vec<String> = ["bitflag_group", "enum_candidate", "named_constant"]
-        .into_iter()
-        .map(|kind| {
-            (
-                kind,
-                result
-                    .findings
-                    .iter()
-                    .filter(|finding| finding.kind() == kind)
-                    .count(),
-            )
-        })
-        .filter(|(_, count)| *count > 0)
-        .map(|(kind, count)| format!("{kind} {count}"))
-        .collect();
+    let kind_breakdown: Vec<String> = [
+        "bitflag_group",
+        "enum_candidate",
+        "named_constant",
+        "flag_family",
+    ]
+    .into_iter()
+    .map(|kind| {
+        (
+            kind,
+            result
+                .findings
+                .iter()
+                .filter(|finding| finding.kind() == kind)
+                .count(),
+        )
+    })
+    .filter(|(_, count)| *count > 0)
+    .map(|(kind, count)| format!("{kind} {count}"))
+    .collect();
     println_content(format!(
         "  {}{:<5}{}",
         white_bold("Findings:  "),

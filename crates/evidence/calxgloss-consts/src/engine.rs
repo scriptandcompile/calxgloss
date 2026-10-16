@@ -13,11 +13,15 @@
 //! pass, and its program-level findings are appended after the
 //! per-function ones. The context-naming reading (`naming`)
 //! walks the same bodies in that same pass, and the first qualifying
-//! name it saw across the scan rides each repeated value's record. The
-//! scan is one sequential pass over the function listing — like sync,
-//! there is nothing to resolve between the detectors, they read
-//! disjoint shapes — and keeping the pass sequential keeps the
-//! persisted finding list in a stable, diffable order.
+//! name it saw across the scan rides each repeated value's record.
+//! After the walk, the flag-family merge (`flag_family`) ties the
+//! scan's own bitflag groups through shared bits and appends the
+//! merged program-level families after the named constants — no
+//! bodies kept, no new reads. The scan is one sequential pass over
+//! the function listing — like sync, there is nothing to resolve
+//! between the detectors, they read disjoint shapes — and keeping the
+//! pass sequential keeps the persisted finding list in a stable,
+//! diffable order.
 
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -27,10 +31,11 @@ use tracing::{info, warn};
 
 use crate::bitmask::BitmaskDetector;
 use crate::error::Result;
+use crate::flag_family::merge_families;
 use crate::frequency::{FrequencyAnalyzer, ProgramTally};
 use crate::naming::context_names;
 use crate::sequential::SequentialDetector;
-use crate::types::{ConstFinding, ConstResult, ScanMetadata};
+use crate::types::{BitflagGroup, ConstFinding, ConstResult, ScanMetadata};
 
 /// The decompiler a constant scan reads.
 ///
@@ -112,11 +117,14 @@ impl<S> ConstEngine<S> {
     /// and becomes the key a persisted result is filed under. The
     /// per-function findings follow the function listing — function by
     /// function, bitmask group then enum candidates — and the
-    /// program-level named constants the frequency analyzer tallied
-    /// across the pass are appended after them, each carrying the
-    /// context name of the first qualifying assignment or comparison
-    /// the bodies made of its value, so two scans of the same program
-    /// diff cleanly and name their constants identically.
+    /// program-level findings are appended after them: first the
+    /// named constants the frequency analyzer tallied across the pass,
+    /// each carrying the context name of the first qualifying
+    /// assignment or comparison the bodies made of its value, then
+    /// the flag families the scan's own bitflag groups merged into —
+    /// groups sharing at least one bit, transitively — each internally
+    /// sorted, so two scans of the same program diff cleanly and name
+    /// their constants identically.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad
     /// entry point) is skipped with a warning; only a failure of the
@@ -138,6 +146,10 @@ impl<S> ConstEngine<S> {
 
         let mut findings = Vec::new();
         let mut tally = ProgramTally::new();
+        // The groups the walk built, kept only long enough for the
+        // flag-family merge to tie them through shared bits — the
+        // merge needs the detector's final contents, not the bodies.
+        let mut groups: Vec<BitflagGroup> = Vec::new();
         // The context names the bodies gave the literals as the tally
         // filled: first qualifying sighting per value wins, so naming
         // follows listing order and two scans name identically.
@@ -183,6 +195,7 @@ impl<S> ConstEngine<S> {
             };
 
             if let Some(group) = self.bitmask.detect(&function.name, &decompiled.body) {
+                groups.push(group.clone());
                 findings.push(ConstFinding::BitflagGroup(group));
             }
             findings.extend(
@@ -206,6 +219,11 @@ impl<S> ConstEngine<S> {
                 .constants(&tally, &names)
                 .into_iter()
                 .map(ConstFinding::NamedConstant),
+        );
+        findings.extend(
+            merge_families(&groups)
+                .into_iter()
+                .map(ConstFinding::FlagFamily),
         );
 
         let mut metadata = ScanMetadata::new(binary);
@@ -427,6 +445,19 @@ mod tests {
             .expect("the scan should have reported the repeated literal")
     }
 
+    /// The scan's one program-level flag family, whichever bits it
+    /// carries.
+    fn flag_family(result: &ConstResult) -> &crate::types::FlagFamily {
+        result
+            .findings
+            .iter()
+            .find_map(|finding| match finding {
+                ConstFinding::FlagFamily(record) => Some(record),
+                _ => None,
+            })
+            .expect("the scan should have merged the shared-bit groups")
+    }
+
     #[tokio::test]
     async fn a_named_assignment_in_the_bodies_names_the_repeated_constant() {
         // The canned program spells `size = 0x280;` in one function and
@@ -545,6 +576,113 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn two_functions_sharing_a_flag_bit_yield_one_program_level_family() {
+        // The same flag surface read through two bodies — FUN_a
+        // carries bits 8 and 10, FUN_b bits 10 and 11: the scan keeps
+        // both per-function groups beside exactly one family record
+        // carrying the union of bits, the contributors ascending, and
+        // a confidence above the per-function tier.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  if ((uVar1 & 0x400) != 0) {\n    uVar1 |= 0x100;\n  }\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  uVar2 &= 0x400;\n  uVar2 |= 0x800;\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let groups: Vec<&crate::types::BitflagGroup> = result
+            .findings
+            .iter()
+            .filter_map(|finding| match finding {
+                ConstFinding::BitflagGroup(record) => Some(record),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(groups.len(), 2, "the per-function groups stay beside");
+
+        let family = flag_family(&result);
+        assert_eq!(family.bits, vec![8, 10, 11]);
+        assert_eq!(family.mask, 0xd00);
+        assert_eq!(family.bit_width, 12);
+        assert_eq!(
+            family.functions,
+            vec!["FUN_18003ab00".to_string(), "FUN_18003e750".to_string()]
+        );
+        assert_eq!(
+            family.suggestion,
+            "bitflags! struct Flags: u16 { /* bits: 0x100, 0x400, 0x800 */ }"
+        );
+        assert_eq!(
+            family.evidence,
+            "FUN_18003ab00: bits 0x100, 0x400; FUN_18003e750: bits 0x400, 0x800"
+        );
+        assert_eq!(family.confidence, Confidence::new(80));
+        assert!(
+            family.confidence.value() > groups[0].confidence.value(),
+            "corroboration across functions reads stronger than one body"
+        );
+
+        // The family answers the per-function lookup of each
+        // contributor, beside that function's own group.
+        assert_eq!(
+            kinds(&result, "FUN_18003ab00"),
+            ["bitflag_group", "flag_family"]
+        );
+        assert_eq!(
+            kinds(&result, "FUN_18003e750"),
+            ["bitflag_group", "flag_family"]
+        );
+    }
+
+    #[tokio::test]
+    async fn groups_sharing_no_bit_merge_into_no_family() {
+        // Two functions reading unrelated flag types — bits 8 and 10
+        // against bits 20 and 21 — keep their per-function records
+        // alone: nothing merged, so nothing joins at the program
+        // level, and the lone groups claim no family of their own.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "  if ((uVar1 & 0x400) != 0) {\n    uVar1 |= 0x100;\n  }\n",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  if ((uVar2 & 0x100000) != 0) {\n    uVar2 |= 0x200000;\n  }\n",
+            ),
+        );
+        let result = scan(program).await;
+
+        let families = result
+            .findings
+            .iter()
+            .filter(|finding| finding.kind() == "flag_family")
+            .count();
+        assert_eq!(families, 0, "disjoint groups stay separate records");
+        assert_eq!(kinds(&result, "FUN_18003ab00"), ["bitflag_group"]);
+        assert_eq!(kinds(&result, "FUN_18003e750"), ["bitflag_group"]);
+    }
+
+    #[tokio::test]
     async fn scan_collects_findings_from_all_three_detectors() {
         let result = scan(program()).await;
 
@@ -586,7 +724,8 @@ mod tests {
         // Both functions carry every shape, so the persisted list must
         // group their per-function findings by function in listing
         // order — bitmask then enum — and append the program-level
-        // named constants after them, never interleaved.
+        // findings after them: the named constants, then the flag
+        // family the two identical groups merge into, never interleaved.
         let mut program = program();
         program.listing = vec![summary("FUN_18003e750"), summary("FUN_18003ab00")];
         program.bodies.insert(
@@ -612,6 +751,7 @@ mod tests {
                 ("FUN_18003ab00", "bitflag_group"),
                 ("FUN_18003ab00", "enum_candidate"),
                 ("", "named_constant"),
+                ("", "flag_family"),
             ]
         );
     }

@@ -51,6 +51,22 @@ fn flags_type(bit_width: u32) -> &'static str {
     }
 }
 
+/// The `bitflags!`-style struct shape a set of flag bits suggests at
+/// the width spanning `bit_width` bits, each bit named by its own
+/// mask. Shared by the per-function group and the program-level
+/// family so both name the same shape.
+pub(crate) fn flags_suggestion(bit_width: u32, bits: &[u32]) -> String {
+    let names: Vec<String> = bits
+        .iter()
+        .map(|bit| format!("{:#x}", 1u64 << bit))
+        .collect();
+    format!(
+        "bitflags! struct Flags: {} {{ /* bits: {} */ }}",
+        flags_type(bit_width),
+        names.join(", ")
+    )
+}
+
 /// Collects the distinct flag bits one function combines through
 /// bitwise operations.
 ///
@@ -168,21 +184,14 @@ impl BitmaskDetector {
         let bits: Vec<u32> = bits.into_iter().collect();
         let mask: u64 = bits.iter().fold(0u64, |acc, bit| acc | (1u64 << bit));
         let bit_width = bits[bits.len() - 1] + 1;
-        let names: Vec<String> = bits
-            .iter()
-            .map(|bit| format!("{:#x}", 1u64 << bit))
-            .collect();
+        let suggestion = flags_suggestion(bit_width, &bits);
 
         Some(BitflagGroup {
             function: function.to_string(),
             mask,
             bit_width,
             bits,
-            suggestion: format!(
-                "bitflags! struct Flags: {} {{ /* bits: {} */ }}",
-                flags_type(bit_width),
-                names.join(", ")
-            ),
+            suggestion,
             confidence: Confidence::new(70),
             evidence: evidence(body, &evidence_lines),
         })

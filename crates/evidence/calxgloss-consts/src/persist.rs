@@ -307,6 +307,44 @@ mod tests {
     }
 
     #[test]
+    fn flag_family_findings_survive_the_round_trip() {
+        let dir = tempfile::tempdir().expect("temp dir should be creatable");
+        let persistor = ConstPersistor::new(dir.path());
+
+        let mut result = ConstResult::new(ScanMetadata::new("eqmain.dll"));
+        result.findings.push(crate::types::ConstFinding::FlagFamily(
+            crate::types::FlagFamily {
+                bits: vec![8, 10, 11],
+                mask: 0xd00,
+                bit_width: 12,
+                functions: vec!["StartWorker".to_string(), "ReadFlags".to_string()],
+                suggestion: "bitflags! struct Flags: u16 { /* bits: 0x100, 0x400, 0x800 */ }"
+                    .to_string(),
+                confidence: Confidence::new(80),
+                evidence: "StartWorker: bits 0x100, 0x400; ReadFlags: bits 0x400, 0x800"
+                    .to_string(),
+            },
+        ));
+        persistor
+            .save(&result)
+            .expect("result should save to the workspace");
+
+        let loaded = persistor
+            .load("eqmain.dll")
+            .expect("result should load from the workspace");
+        assert_eq!(loaded, result, "the family round-trips exactly");
+        match &loaded.findings[0] {
+            crate::types::ConstFinding::FlagFamily(f) => {
+                assert_eq!(f.bits, vec![8, 10, 11]);
+                assert_eq!(f.mask, 0xd00);
+                assert_eq!(f.functions, vec!["StartWorker", "ReadFlags"]);
+                assert_eq!(f.confidence, Confidence::new(80));
+            }
+            other => panic!("expected a flag-family finding, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn a_named_constant_with_a_context_name_survives_the_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let persistor = ConstPersistor::new(dir.path());

@@ -12,8 +12,12 @@
 //! - `NamedConstant`: the program-level repeated-value record — an
 //!   integer literal used across several functions often enough to
 //!   deserve a name, and the `const` it suggests.
-//! - `ConstFinding`: the union over the three record kinds — one
-//!   finding whichever detector made it — serde-tagged by `kind`.
+//! - `FlagFamily`: the program-level flag-family record — the whole
+//!   flag surface the per-function bitflag groups add up to once
+//!   groups sharing bits merge across the program, and the one
+//!   `bitflags!`-style struct it suggests.
+//! - `ConstFinding`: the union over the record kinds — one finding
+//!   whichever detector or post-pass made it — serde-tagged by `kind`.
 //! - `ConstResult`, `ScanMetadata`: the persisted per-binary result and
 //!   its scan provenance.
 //!
@@ -162,17 +166,67 @@ impl NamedConstant {
 }
 
 // ============================================================
+// Flag families
+// ============================================================
+
+/// One program-level flag-family observation — the whole flag surface
+/// the per-function bitflag groups add up to — with the evidence
+/// behind it.
+///
+/// A family says the scan's per-function [`BitflagGroup`]s that share
+/// at least one bit — directly or through a chain of shared bits —
+/// describe one flags type: [`bits`](Self::bits) is their union,
+/// [`mask`](Self::mask) the union as a mask, and
+/// [`bit_width`](Self::bit_width) the position count the highest bit
+/// spans; [`functions`](Self::functions) names the contributing
+/// functions, ascending. It reads like
+/// [`suggestion`](Self::suggestion) — one `bitflags!`-style struct
+/// naming the whole family at the width its highest bit fits — and
+/// the per-function groups stay beside it: the family is the
+/// program-level claim, never a replacement for them. A group sharing
+/// no bit with any other forms no family of its own — its
+/// per-function record already says everything that body shows.
+///
+/// Like the named constant this one is program-level: it belongs to
+/// every function that contributed bits, not to a single one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlagFamily {
+    /// The union of the family's distinct bit positions, ascending.
+    pub bits: Vec<u32>,
+    /// The union of the bits, e.g. `0xd00` for bits 8, 10, and 11.
+    pub mask: u64,
+    /// The bit count the highest family bit spans, e.g. 12.
+    pub bit_width: u32,
+    /// The functions whose groups contributed bits, ascending.
+    pub functions: Vec<String>,
+    /// The Rust shape the family suggests — one `bitflags!` struct
+    /// carrying every bit the family spans.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100. Fixed, and above
+    /// the per-function group's tier: the same flag surface
+    /// corroborated across several functions is stronger evidence
+    /// than one body's word alone.
+    pub confidence: Confidence,
+    /// Each contributing group's function and its own bits, e.g.
+    /// `FUN_a: bits 0x100, 0x400; FUN_b: bits 0x400, 0x800` — kept
+    /// so a reviewer (or a translation prompt) can check the merge
+    /// against the per-function records it consumed.
+    pub evidence: String,
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
-/// One constant finding, whichever detector made it.
+/// One constant finding, whichever detector or post-pass made it.
 ///
-/// The detectors emit the concrete records; the union is what the
-/// persisted result carries, so one list can hold every finding for a
-/// binary and a consumer reads the shared shape — function,
-/// suggestion, confidence, evidence — without naming which detector
-/// produced it. Like sync's disjoint families, the three detectors
-/// read different shapes and make no competing claims, so nothing is
+/// The detectors emit the concrete records and the engine's
+/// flag-family merge post-pass emits the family; the union is what
+/// the persisted result carries, so one list can hold every finding
+/// for a binary and a consumer reads the shared shape — function,
+/// suggestion, confidence, evidence — without naming which reading
+/// produced it. Like sync's disjoint families, the detectors read
+/// different shapes and make no competing claims, so nothing is
 /// resolved between variants. The serde `kind` tag names the record
 /// shape in the persisted JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,17 +238,22 @@ pub enum ConstFinding {
     EnumCandidate(EnumCandidate),
     /// A literal repeated across the program.
     NamedConstant(NamedConstant),
+    /// The whole flag surface several per-function groups sharing
+    /// bits add up to.
+    FlagFamily(FlagFamily),
 }
 
 impl ConstFinding {
-    /// The function the finding is about — empty for a program-level
-    /// named constant, which belongs to every function that uses the
-    /// value (see [`ConstResult::for_function`]).
+    /// The function the finding is about — empty for the program-level
+    /// kinds: a named constant belongs to every function that uses
+    /// the value, a flag family to every function that contributed
+    /// bits (see [`ConstResult::for_function`]).
     pub fn function(&self) -> &str {
         match self {
             ConstFinding::BitflagGroup(record) => &record.function,
             ConstFinding::EnumCandidate(record) => &record.function,
             ConstFinding::NamedConstant(_) => "",
+            ConstFinding::FlagFamily(_) => "",
         }
     }
 
@@ -204,6 +263,7 @@ impl ConstFinding {
             ConstFinding::BitflagGroup(record) => &record.suggestion,
             ConstFinding::EnumCandidate(record) => &record.suggestion,
             ConstFinding::NamedConstant(record) => &record.suggestion,
+            ConstFinding::FlagFamily(record) => &record.suggestion,
         }
     }
 
@@ -213,30 +273,36 @@ impl ConstFinding {
             ConstFinding::BitflagGroup(record) => record.confidence,
             ConstFinding::EnumCandidate(record) => record.confidence,
             ConstFinding::NamedConstant(record) => record.confidence,
+            ConstFinding::FlagFamily(record) => record.confidence,
         }
     }
 
-    /// The decompiled lines (or usage summary) that support the finding.
+    /// The decompiled lines (or usage summary, or contributing-group
+    /// summary) that support the finding.
     pub fn evidence(&self) -> &str {
         match self {
             ConstFinding::BitflagGroup(record) => &record.evidence,
             ConstFinding::EnumCandidate(record) => &record.evidence,
             ConstFinding::NamedConstant(record) => &record.evidence,
+            ConstFinding::FlagFamily(record) => &record.evidence,
         }
     }
 
-    /// The serde `kind` tag — `bitflag_group`, `enum_candidate`, or
-    /// `named_constant` — naming the detector behind the finding.
+    /// The serde `kind` tag — `bitflag_group`, `enum_candidate`,
+    /// `named_constant`, or `flag_family` — naming the reading behind
+    /// the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             ConstFinding::BitflagGroup(_) => "bitflag_group",
             ConstFinding::EnumCandidate(_) => "enum_candidate",
             ConstFinding::NamedConstant(_) => "named_constant",
+            ConstFinding::FlagFamily(_) => "flag_family",
         }
     }
 
     /// What the finding names, spelled for a report row: the group's
-    /// bit mask, the run's value range, or the repeated value.
+    /// or family's bit mask, the run's value range, or the repeated
+    /// value.
     pub fn target(&self) -> String {
         match self {
             ConstFinding::BitflagGroup(record) => format!("{:#x}", record.mask),
@@ -244,6 +310,7 @@ impl ConstFinding {
                 format!("{}..={}", record.values[0], record.values[record.count - 1])
             }
             ConstFinding::NamedConstant(record) => format!("{:#x}", record.value),
+            ConstFinding::FlagFamily(record) => format!("{:#x}", record.mask),
         }
     }
 }
@@ -276,11 +343,13 @@ impl From<&ConstFinding> for calxgloss_prompts::ConstInfo {
 /// The constant result for one binary — the document persisted to
 /// `re/analysis/consts/{dll}.json`.
 ///
-/// The findings are the three detectors' outputs in scan order:
-/// function by function the bitmask groups then the enum candidates,
-/// and after the per-function findings the program-level named
-/// constants the frequency analyzer tallied across the whole pass. The
-/// stable order means two scans of the same program diff cleanly.
+/// The findings are the readings' outputs in scan order: function by
+/// function the bitmask groups then the enum candidates, and after
+/// the per-function findings the program-level records — the named
+/// constants the frequency analyzer tallied across the whole pass,
+/// then the flag families the scan's own groups merged into — each
+/// group internally sorted. The stable order means two scans of the
+/// same program diff cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConstResult {
     /// Provenance of the scan that produced these findings.
@@ -301,9 +370,11 @@ impl ConstResult {
 
     /// The findings recorded for one function, e.g. `FUN_18003ab00`.
     ///
-    /// A program-level named constant belongs to every function that
-    /// uses its value, so it is yielded for each of them — the
-    /// per-function view a translation prompt reads.
+    /// A program-level finding that names its contributing functions
+    /// — a named constant for every function that uses its value, a
+    /// flag family for every function that contributed bits — is
+    /// yielded for each of them: the per-function view a translation
+    /// prompt reads.
     pub fn for_function(&self, function: &str) -> impl Iterator<Item = &ConstFinding> {
         self.findings
             .iter()
@@ -313,6 +384,7 @@ impl ConstResult {
                 ConstFinding::NamedConstant(record) => {
                     record.functions.iter().any(|f| f == function)
                 }
+                ConstFinding::FlagFamily(record) => record.functions.iter().any(|f| f == function),
             })
     }
 
@@ -362,6 +434,18 @@ mod tests {
             suggestion: "const VALUE_0x400: u32 = 0x400;".into(),
             confidence: Confidence::new(60),
             evidence: "0x400 used 5 times in FUN_18003ab00, FUN_18003e750".into(),
+        }
+    }
+
+    fn flag_family() -> FlagFamily {
+        FlagFamily {
+            bits: vec![8, 10, 11],
+            mask: 0xd00,
+            bit_width: 12,
+            functions: vec!["FUN_18003ab00".into(), "FUN_18003e750".into()],
+            suggestion: "bitflags! struct Flags: u16 { /* bits: 0x100, 0x400, 0x800 */ }".into(),
+            confidence: Confidence::new(80),
+            evidence: "FUN_18003ab00: bits 0x100, 0x400; FUN_18003e750: bits 0x400, 0x800".into(),
         }
     }
 
@@ -423,6 +507,28 @@ mod tests {
         assert!(json.contains("\"kind\":\"named_constant\""));
         let back: ConstFinding =
             serde_json::from_str(&json).expect("named-constant finding should read back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
+    fn a_flag_family_serde_round_trips() {
+        let record = flag_family();
+        let json = serde_json::to_string(&record).expect("flag-family record should serialize");
+        assert!(json.contains("\"bits\":[8,10,11]"));
+        assert!(json.contains("\"confidence\":80"));
+        let back: FlagFamily =
+            serde_json::from_str(&json).expect("the record should deserialize back");
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn a_flag_family_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = ConstFinding::FlagFamily(flag_family());
+        let json = serde_json::to_string(&finding).expect("flag-family finding should serialize");
+        assert!(json.contains("\"kind\":\"flag_family\""));
+        assert!(json.contains("\"mask\":3328"));
+        let back: ConstFinding =
+            serde_json::from_str(&json).expect("flag-family finding should read back");
         assert_eq!(back, finding);
     }
 
@@ -499,14 +605,20 @@ mod tests {
             ConstFinding::BitflagGroup(bitflag_group()),
             ConstFinding::EnumCandidate(enum_candidate()),
             ConstFinding::NamedConstant(named_constant()),
+            ConstFinding::FlagFamily(flag_family()),
         ];
         let kinds: Vec<&str> = findings.iter().map(|f| f.kind()).collect();
         assert_eq!(
             kinds,
-            vec!["bitflag_group", "enum_candidate", "named_constant"]
+            vec![
+                "bitflag_group",
+                "enum_candidate",
+                "named_constant",
+                "flag_family"
+            ]
         );
         let targets: Vec<String> = findings.iter().map(|f| f.target()).collect();
-        assert_eq!(targets, vec!["0x500", "0..=3", "0x400"]);
+        assert_eq!(targets, vec!["0x500", "0..=3", "0x400", "0xd00"]);
         for finding in &findings {
             assert!(!finding.suggestion().is_empty());
             assert!(!finding.evidence().is_empty());
@@ -514,7 +626,9 @@ mod tests {
         assert_eq!(findings[0].function(), "FUN_18003ab00");
         assert_eq!(findings[1].function(), "FUN_18003ab00");
         assert_eq!(findings[2].function(), "");
+        assert_eq!(findings[3].function(), "");
         assert_eq!(findings[2].confidence(), Confidence::new(60));
+        assert_eq!(findings[3].confidence(), Confidence::new(80));
     }
 
     #[test]
@@ -529,6 +643,7 @@ mod tests {
                 ConstFinding::BitflagGroup(bitflag_group()),
                 ConstFinding::EnumCandidate(enum_candidate()),
                 ConstFinding::NamedConstant(named_constant()),
+                ConstFinding::FlagFamily(flag_family()),
             ],
         };
         let json = serde_json::to_string(&result).expect("const result should serialize");
@@ -548,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn for_function_yields_per_function_findings_and_named_constants_that_use_it() {
+    fn for_function_yields_per_function_findings_and_program_level_findings_that_name_it() {
         let other = ConstFinding::BitflagGroup(BitflagGroup {
             function: "FUN_18003e750".into(),
             ..bitflag_group()
@@ -557,17 +672,26 @@ mod tests {
             functions: vec!["FUN_18003e750".into()],
             ..named_constant()
         });
+        let family = ConstFinding::FlagFamily(FlagFamily {
+            functions: vec!["FUN_18003e750".into(), "FUN_180099998".into()],
+            ..flag_family()
+        });
         let unrelated = ConstFinding::EnumCandidate(EnumCandidate {
             function: "FUN_180099999".into(),
             ..enum_candidate()
         });
         let result = ConstResult {
             metadata: ScanMetadata::new("eqmain.dll"),
-            findings: vec![other.clone(), named.clone(), unrelated],
+            findings: vec![other.clone(), named.clone(), family.clone(), unrelated],
         };
         let found: Vec<&ConstFinding> = result.for_function("FUN_18003e750").collect();
-        assert_eq!(found, vec![&other, &named]);
-        assert!(result.for_function("FUN_180099998").next().is_none());
+        assert_eq!(found, vec![&other, &named, &family]);
+        assert_eq!(
+            result.for_function("FUN_180099998").collect::<Vec<_>>(),
+            vec![&family],
+            "the family answers the lookup of every contributor"
+        );
+        assert!(result.for_function("FUN_180099997").next().is_none());
         assert!(!result.is_empty());
     }
 
@@ -589,5 +713,15 @@ mod tests {
         assert_eq!(info.kind, "named_constant");
         assert_eq!(info.confidence, 60);
         assert_eq!(info.suggestion, "const VALUE_0x400: u32 = 0x400;");
+
+        let family = ConstFinding::FlagFamily(flag_family());
+        let info = calxgloss_prompts::ConstInfo::from(&family);
+        assert_eq!(info.function, "");
+        assert_eq!(info.kind, "flag_family");
+        assert_eq!(info.confidence, 80);
+        assert_eq!(
+            info.suggestion,
+            "bitflags! struct Flags: u16 { /* bits: 0x100, 0x400, 0x800 */ }"
+        );
     }
 }
