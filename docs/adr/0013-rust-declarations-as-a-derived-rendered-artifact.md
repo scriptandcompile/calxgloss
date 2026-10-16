@@ -89,3 +89,11 @@ from the loaded database**, written beside the JSON and never read back.
   - A field linked to a layout-less inner type references a name that has
     no declaration in the file; the reference stays (it names real
     evidence) and the reviewer sees the gap.
+
+## Addendum (2026-10-15, P9.5-4/-5)
+
+The `apidetect` crate's FFI bindings and dependency manifest artifacts
+(issues #187–#188) are siblings under this pattern — pure renderers
+from the loaded document, written beside the JSON, never read back —
+recorded here as a one-line sibling rather than a fresh decision, per
+epic #183.
