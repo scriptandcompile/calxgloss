@@ -528,6 +528,7 @@ dependencies = [
 name = "calxgloss-ghidra"
 version = "0.3.0"
 dependencies = [
+ "calxgloss-testfixtures",
  "calxgloss-types",
  "libc",
  "reqwest",
@@ -673,6 +674,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "calxgloss-testfixtures"
+version = "0.3.0"
+dependencies = [
+ "goblin",
+ "thiserror",
+]
+
+[[package]]
 name = "calxgloss-testgen"
 version = "0.3.0"
 dependencies = [
@@ -788,6 +797,7 @@ dependencies = [
  "calxgloss-llm",
  "calxgloss-pal",
  "calxgloss-reports",
+ "calxgloss-testfixtures",
  "calxgloss-translator",
  "calxgloss-types",
  "calxgloss-verify",

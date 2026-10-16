@@ -1,0 +1,13 @@
+[package]
+name = "calxgloss-testfixtures"
+version.workspace = true
+edition.workspace = true
+description = "Checked-in test fixtures: a small PE DLL target binary built from source for engine tests"
+license.workspace = true
+repository.workspace = true
+
+# `goblin` backs the fixture shape validation the smoke test and the engine
+# test harnesses run on the built DLL.
+[dependencies]
+goblin = { workspace = true }
+thiserror = { workspace = true }
