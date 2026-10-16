@@ -1,10 +1,10 @@
 //! Serialization scan orchestration.
 //!
 //! [`SerializeEngine`] runs the serialization detectors — byte-swap
-//! call matching, bit-pack shape reading, and magic-byte comparison
-//! matching — over every function of one open Ghidra program and
-//! assembles their findings into a single [`SerializeResult`] with its
-//! scan provenance.
+//! call matching, bit-pack shape reading, magic-byte comparison
+//! matching, and cross-field validation reading — over every function
+//! of one open Ghidra program and assembles their findings into a
+//! single [`SerializeResult`] with its scan provenance.
 //!
 //! The detectors are pure text analysis over one decompiled body, so
 //! the engine fetches each function's pseudo-C exactly once and reads
@@ -12,13 +12,18 @@
 //! copy. The scan is then one sequential pass over the function
 //! listing: there is nothing to resolve between the detectors — they
 //! read disjoint body shapes — and keeping the pass sequential keeps
-//! the persisted finding list in a stable, diffable order.
+//! the persisted finding list in a stable, diffable order. The one
+//! cross-detector gate is honesty, not ranking: the validation
+//! reading is handed the magic findings already made for the same
+//! body, so a signature comparison never double-lands as a
+//! validation check.
 
 use crate::bitpack::BitPackDetector;
 use crate::byteswap::ByteSwapDetector;
 use crate::error::Result;
 use crate::magic_bytes::MagicByteDetector;
 use crate::types::{ScanMetadata, SerializeFinding, SerializeResult};
+use crate::validation::ValidationDetector;
 use calxgloss_ghidra::GhidraClient;
 use std::time::Instant;
 use tracing::{info, warn};
@@ -47,6 +52,7 @@ pub struct SerializeEngine<S = GhidraClient> {
     byteswap: ByteSwapDetector,
     bitpack: BitPackDetector,
     magic: MagicByteDetector,
+    validation: ValidationDetector,
 }
 
 impl SerializeEngine<GhidraClient> {
@@ -66,6 +72,7 @@ impl<S> SerializeEngine<S> {
             byteswap: ByteSwapDetector::with_default_names(),
             bitpack: BitPackDetector::new(),
             magic: MagicByteDetector::with_default_signatures(),
+            validation: ValidationDetector::new(),
         }
     }
 
@@ -90,6 +97,13 @@ impl<S> SerializeEngine<S> {
         self
     }
 
+    /// Read message-integrity comparisons against `detector` instead
+    /// of the standard shape reading.
+    pub fn with_validation(mut self, detector: ValidationDetector) -> Self {
+        self.validation = detector;
+        self
+    }
+
     /// Detect serialization patterns across `binary`, decompiling each
     /// function exactly once and reading it with every detector.
     ///
@@ -97,8 +111,9 @@ impl<S> SerializeEngine<S> {
     /// and becomes the key a persisted result is filed under. The
     /// findings follow the function listing — function by function,
     /// and within one function the byte swaps, then the bit packs,
-    /// then the magic-byte comparisons — so two scans of the same
-    /// program diff cleanly.
+    /// then the magic-byte comparisons, then the cross-field
+    /// validation checks — so two scans of the same program diff
+    /// cleanly.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad
     /// entry point) is skipped with a warning; only a failure of the
@@ -110,7 +125,9 @@ impl<S> SerializeEngine<S> {
     /// would persist a phantom-clean record (issue #71).
     /// The detectors read disjoint body
     /// shapes, so a function can carry findings of every kind at once
-    /// and nothing is resolved between them.
+    /// and nothing is resolved between them — except that the
+    /// validation reading stays silent on the comparisons the magic
+    /// reading already reported for the same body.
     pub async fn scan(&self, binary: impl Into<String>) -> Result<SerializeResult>
     where
         S: ScanSource,
@@ -171,11 +188,17 @@ impl<S> SerializeEngine<S> {
                     .into_iter()
                     .map(SerializeFinding::BitPack),
             );
+            let magic_records = self.magic.detect(&decompiled);
+            // The validation reading sees exactly the comparisons the
+            // magic reading reported for this body, so a signature
+            // check lands once — as magic — and claims no validation
+            // finding on top.
+            let validation_records = self.validation.detect(&decompiled, &magic_records);
+            findings.extend(magic_records.into_iter().map(SerializeFinding::Magic));
             findings.extend(
-                self.magic
-                    .detect(&decompiled)
+                validation_records
                     .into_iter()
-                    .map(SerializeFinding::Magic),
+                    .map(SerializeFinding::CrossFieldValidation),
             );
         }
 
@@ -463,6 +486,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_checksum_comparison_lands_a_cross_field_validation_finding() {
+        // A stored field compared against a value computed from other
+        // fields — the checksum shape — reads through the scan as its
+        // own finding naming both sides and the check.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "\
+  if (uVar7 == uVar5 + uVar6) {
+    dispatch();
+  }
+",
+            ),
+        );
+        let result = scan(program).await;
+
+        let findings: Vec<&SerializeFinding> = result.for_function("FUN_18003ab00").collect();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].kind(), "cross_field_validation");
+        let SerializeFinding::CrossFieldValidation(record) = findings[0] else {
+            unreachable!("the checksum comparison reads as a validation finding");
+        };
+        assert_eq!(record.field, "uVar7");
+        assert_eq!(record.computed, "uVar5 + uVar6");
+        assert_eq!(record.shape, crate::types::ValidationShape::Checksum);
+        assert_eq!(record.confidence.value(), 65);
+        assert_eq!(record.evidence, "if (uVar7 == uVar5 + uVar6) {");
+    }
+
+    #[tokio::test]
+    async fn scan_order_places_validation_after_the_magic_comparisons() {
+        // A body carrying every shape: the per-function finding order
+        // is byte swaps, bit packs, magic comparisons, then
+        // validation — the existing prefix unchanged, the new kind
+        // slotted after it — with the magic line claimed exactly once
+        // and still one decompile for the function.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "\
+  if (uVar6 == 0x89504e47) {
+  uVar1 = ntohl(local_18);
+  uVar2 = (uVar3 << 0x18) | ((uint)uVar4 << 0x10) | (uVar5 << 8) | (uint)uVar6;
+  if (uVar7 == uVar5 + uVar6) {
+",
+            ),
+        );
+        program.bodies.insert(
+            "FUN_18003e750".into(),
+            function(
+                "FUN_18003e750",
+                "undefined FUN_18003e750(void)",
+                "  return;\n",
+            ),
+        );
+        let result = scan(program.clone()).await;
+
+        let order: Vec<(&str, &str)> = result
+            .findings
+            .iter()
+            .map(|finding| (finding.function(), finding.kind()))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                ("FUN_18003ab00", "byteswap"),
+                ("FUN_18003ab00", "bitpack"),
+                ("FUN_18003ab00", "magic"),
+                ("FUN_18003ab00", "cross_field_validation"),
+            ]
+        );
+        assert_eq!(
+            program.decompiled(),
+            vec!["FUN_18003ab00", "FUN_18003e750"],
+            "one decompile per function, in listing order"
+        );
+    }
+
+    #[tokio::test]
     async fn scan_keeps_findings_in_scan_order() {
         // Both functions carry the swap shape, so the persisted list
         // must group their findings by function in listing order —
@@ -673,6 +783,38 @@ mod tests {
         };
         assert_eq!(record.format, "CALX");
         assert_eq!(record.suggestion, "calx::Header");
+    }
+
+    #[tokio::test]
+    async fn a_custom_magic_hit_claims_no_validation_finding() {
+        // The magic-hit gate runs on the findings the scan just made,
+        // not the built-in table: a comparison carrying the configured
+        // custom signature in a computed shape lands once — as magic —
+        // and claims no validation finding on top.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_1800412a0")];
+        program.bodies.insert(
+            "FUN_1800412a0".into(),
+            function(
+                "FUN_1800412a0",
+                "undefined FUN_1800412a0(void)",
+                "  if (uVar1 == 0x43414c58 + uVar2) {",
+            ),
+        );
+
+        let engine =
+            SerializeEngine::with_source(program).with_magic(MagicByteDetector::with_signatures([
+                crate::magic_bytes::MagicSignature::new("CALX", 0x4341_4C58, "calx::Header"),
+            ]));
+        let result = engine.scan("eqmain.dll").await.expect("scan");
+
+        let findings: Vec<&SerializeFinding> = result.for_function("FUN_1800412a0").collect();
+        assert_eq!(
+            findings.len(),
+            1,
+            "the signature comparison lands once, as magic"
+        );
+        assert_eq!(findings[0].kind(), "magic");
     }
 
     #[tokio::test]

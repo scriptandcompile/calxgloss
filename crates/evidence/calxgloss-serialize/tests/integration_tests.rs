@@ -25,7 +25,7 @@ use calxgloss_ghidra::{
 };
 use calxgloss_serialize::engine::{ScanSource, SerializeEngine};
 use calxgloss_serialize::persist::SerializePersistor;
-use calxgloss_serialize::types::SerializeFinding;
+use calxgloss_serialize::types::{Confidence, SerializeFinding, ValidationShape};
 use tempfile::TempDir;
 
 // ------------------------------------------------------------
@@ -253,6 +253,97 @@ async fn a_three_kind_document_survives_the_round_trip() {
     assert_eq!(record.format, "PNG");
     assert_eq!(record.magic, 0x8950_4E47);
     assert_eq!(record.suggestion, "png::Decoder");
+}
+
+#[tokio::test]
+async fn a_validation_document_survives_the_round_trip_and_reaches_the_prompt() {
+    // The cross-field validation reading end to end: a checksum and a
+    // framing comparison in one body land as validation findings after
+    // the swap call, ride the persisted document through the round
+    // trip with their record shapes intact, and render into the
+    // escalate prompt's SERIALIZATION section.
+    let workspace = TempDir::new().expect("tempdir");
+    let mut parser = FakeProgram::empty();
+    parser.listing = vec![summary("FUN_18003ab00")];
+    parser.bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "undefined FUN_18003ab00(void)",
+            "  uVar1 = ntohl(local_18);\n\
+             \x20 if (uVar7 == uVar5 + uVar6) {\n\
+             \x20 if (local_18 + -4 == uVar4) {\n",
+        ),
+    );
+    let result = SerializeEngine::with_source(parser)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = SerializePersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    assert_eq!(loaded, result);
+    let kinds: Vec<&str> = loaded.findings.iter().map(|f| f.kind()).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            "byteswap",
+            "cross_field_validation",
+            "cross_field_validation"
+        ],
+        "the validation findings land after the swap call, in body order"
+    );
+
+    let SerializeFinding::CrossFieldValidation(record) = &loaded.findings[1] else {
+        unreachable!("the checksum comparison reads as a validation finding");
+    };
+    assert_eq!(record.shape, ValidationShape::Checksum);
+    assert_eq!(record.field, "uVar7");
+    assert_eq!(record.computed, "uVar5 + uVar6");
+    assert_eq!(record.confidence, Confidence::new(65));
+    assert_eq!(record.evidence, "if (uVar7 == uVar5 + uVar6) {");
+
+    let SerializeFinding::CrossFieldValidation(record) = &loaded.findings[2] else {
+        unreachable!("the remaining-count comparison reads as a validation finding");
+    };
+    assert_eq!(record.shape, ValidationShape::Length);
+    assert_eq!(record.field, "uVar4");
+    assert_eq!(record.computed, "local_18 + -4");
+
+    let findings: Vec<calxgloss_prompts::SerializationInfo> = loaded
+        .for_function("FUN_18003ab00")
+        .map(calxgloss_prompts::SerializationInfo::from)
+        .collect();
+    assert_eq!(findings.len(), 3, "the target function's three findings");
+
+    let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
+        "FUN_18003ab00".into(),
+        "eqmain.dll".into(),
+        "fn fun_18003ab00() { /* hand-rolled parse */ }".into(),
+        "Wrong result".into(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        findings,
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("the escalate prompt should render");
+
+    assert!(prompt.contains("SERIALIZATION"));
+    assert!(prompt.contains("cross_field_validation pattern, confidence 65"));
+    assert!(prompt.contains("checked parse or validate step on the Rust type"));
+    assert!(prompt.contains("if (uVar7 == uVar5 + uVar6) {"));
 }
 
 #[tokio::test]

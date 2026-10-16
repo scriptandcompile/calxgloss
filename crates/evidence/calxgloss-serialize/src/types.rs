@@ -13,6 +13,11 @@
 //! - `MagicFormat`: the format-sniffing record — the file-format
 //!   signature the function compares buffer content against, the
 //!   format it names, and the decoder crate suggested for it.
+//! - `CrossFieldValidation`, `ValidationShape`: the message-integrity
+//!   record — the stored field the function compares against a value
+//!   computed from other fields (a checksum check) or the read length
+//!   it compares against a buffer size or remaining count (framing),
+//!   and which of the two shapes the check was read from.
 //! - `SerializeFinding`: the union over the record kinds — one finding
 //!   whichever detector made it — serde-tagged by `kind`.
 //! - `SerializeResult`, `ScanMetadata`: the persisted per-binary result
@@ -158,6 +163,74 @@ pub struct MagicFormat {
 }
 
 // ============================================================
+// Cross-field validation records
+// ============================================================
+
+/// The validation shape a cross-field finding was read from.
+///
+/// The shape says which integrity check the comparison performs: a
+/// `checksum` compares a stored field against a value computed from
+/// other fields — `if (checksum == computed_sum)` — and a `length`
+/// compares a read length against a buffer size or remaining count,
+/// the framing check that keeps a parser inside its buffer. Both read
+/// like the same Rust suggestion: the check modelled on the type — a
+/// checked parse or validate step — instead of a bare comparison that
+/// translation can silently drop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationShape {
+    /// A stored field compared against a value computed from other
+    /// fields.
+    Checksum,
+    /// A read length compared against a buffer size or remaining
+    /// count.
+    Length,
+}
+
+calxgloss_types::display_serde_label!(ValidationShape {
+    Checksum => "checksum",
+    Length => "length",
+});
+
+/// One message-integrity observation about one function, with the
+/// evidence behind it.
+///
+/// A record says the function validates its input through the
+/// [`shape`](Self::shape) check — comparing the stored
+/// [`field`](Self::field) against the [`computed`](Self::computed)
+/// expression the check verifies it against — the checksum or framing
+/// logic that defines a wire format's integrity story. The check reads
+/// like [`suggestion`](Self::suggestion): modelled on the Rust type as
+/// a checked parse or validate step, so translated code keeps the
+/// integrity logic instead of dropping the comparison. The comparison
+/// line is kept as [`evidence`](Self::evidence) so a reviewer (or a
+/// translation prompt) can check the reasoning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrossFieldValidation {
+    /// The function the record is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The stored field the check validates, spelled as the
+    /// comparison spells it, e.g. `uVar7`.
+    pub field: String,
+    /// The computed side the field is verified against — the
+    /// expression over the other fields (or the size or remaining
+    /// count) the comparison puts on the far side, e.g.
+    /// `uVar5 + uVar6`.
+    pub computed: String,
+    /// The validation shape the record was read from.
+    pub shape: ValidationShape,
+    /// The Rust pattern the check suggests, e.g. `checked parse or
+    /// validate step on the Rust type`.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+    /// The decompiled line that supports the record — the comparison
+    /// — kept so a reviewer (or a translation prompt) can check the
+    /// reasoning.
+    pub evidence: String,
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -168,8 +241,10 @@ pub struct MagicFormat {
 /// binary and a consumer reads the shared shape — function, suggestion,
 /// confidence, evidence — without naming which detector produced it.
 /// The detectors read disjoint body shapes — a swap call, a shift-and-or
-/// chain, a signature comparison — so nothing is resolved between
-/// variants. The serde `kind` tag names the record shape in the
+/// chain, a signature comparison, an integrity comparison — so nothing
+/// is resolved between variants (the validation detector's gate against
+/// magic hits runs where the engine hands it the magic findings, not in
+/// the union). The serde `kind` tag names the record shape in the
 /// persisted JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -183,6 +258,11 @@ pub enum SerializeFinding {
     /// A comparison against a known file-format signature.
     #[serde(rename = "magic")]
     Magic(MagicFormat),
+    /// A stored field checked against a value computed from other
+    /// fields, or a read length checked against a size or remaining
+    /// count.
+    #[serde(rename = "cross_field_validation")]
+    CrossFieldValidation(CrossFieldValidation),
 }
 
 impl SerializeFinding {
@@ -192,6 +272,7 @@ impl SerializeFinding {
             SerializeFinding::ByteSwap(record) => &record.function,
             SerializeFinding::BitPack(record) => &record.function,
             SerializeFinding::Magic(record) => &record.function,
+            SerializeFinding::CrossFieldValidation(record) => &record.function,
         }
     }
 
@@ -201,6 +282,7 @@ impl SerializeFinding {
             SerializeFinding::ByteSwap(record) => &record.suggestion,
             SerializeFinding::BitPack(record) => &record.suggestion,
             SerializeFinding::Magic(record) => &record.suggestion,
+            SerializeFinding::CrossFieldValidation(record) => &record.suggestion,
         }
     }
 
@@ -210,6 +292,7 @@ impl SerializeFinding {
             SerializeFinding::ByteSwap(record) => record.confidence,
             SerializeFinding::BitPack(record) => record.confidence,
             SerializeFinding::Magic(record) => record.confidence,
+            SerializeFinding::CrossFieldValidation(record) => record.confidence,
         }
     }
 
@@ -219,22 +302,26 @@ impl SerializeFinding {
             SerializeFinding::ByteSwap(record) => &record.evidence,
             SerializeFinding::BitPack(record) => &record.evidence,
             SerializeFinding::Magic(record) => &record.evidence,
+            SerializeFinding::CrossFieldValidation(record) => &record.evidence,
         }
     }
 
-    /// The serde `kind` tag — `byteswap`, `bitpack`, or `magic` —
-    /// naming the detector behind the finding.
+    /// The serde `kind` tag — `byteswap`, `bitpack`, `magic`, or
+    /// `cross_field_validation` — naming the detector behind the
+    /// finding.
     pub fn kind(&self) -> &'static str {
         match self {
             SerializeFinding::ByteSwap(_) => "byteswap",
             SerializeFinding::BitPack(_) => "bitpack",
             SerializeFinding::Magic(_) => "magic",
+            SerializeFinding::CrossFieldValidation(_) => "cross_field_validation",
         }
     }
 
     /// What the finding names, spelled for a report row: the swap call
-    /// spelling, the packing shape and the field widths it carves, or
-    /// the format and the signature bytes that name it.
+    /// spelling, the packing shape and the field widths it carves, the
+    /// format and the signature bytes that name it, or the validation
+    /// shape and the field it validates.
     pub fn target(&self) -> String {
         match self {
             SerializeFinding::ByteSwap(record) => record.operation.clone(),
@@ -244,6 +331,9 @@ impl SerializeFinding {
             }
             SerializeFinding::Magic(record) => {
                 format!("{} {:#x}", record.format, record.magic)
+            }
+            SerializeFinding::CrossFieldValidation(record) => {
+                format!("{} {}", record.shape, record.field)
             }
         }
     }
@@ -279,10 +369,11 @@ impl From<&SerializeFinding> for calxgloss_prompts::SerializationInfo {
 ///
 /// The findings are the detectors' outputs in scan order: function by
 /// function, and within one function the byte swaps, then the bit
-/// packs, then the magic-byte comparisons. The detectors read disjoint
-/// body shapes, so a function can carry findings of every kind at once
-/// and none competes with another; the stable order means two scans of
-/// the same program diff cleanly.
+/// packs, then the magic-byte comparisons, then the cross-field
+/// validation checks. The detectors read disjoint body shapes, so a
+/// function can carry findings of every kind at once and none competes
+/// with another; the stable order means two scans of the same program
+/// diff cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SerializeResult {
     /// Provenance of the scan that produced these findings.
@@ -508,12 +599,70 @@ mod tests {
         assert_eq!(back, finding);
     }
 
+    fn cross_field_validation() -> CrossFieldValidation {
+        CrossFieldValidation {
+            function: "FUN_18003ab00".into(),
+            field: "uVar7".into(),
+            computed: "uVar5 + uVar6".into(),
+            shape: ValidationShape::Checksum,
+            suggestion: "checked parse or validate step on the Rust type".into(),
+            confidence: Confidence::new(65),
+            evidence: "if (uVar7 == uVar5 + uVar6) {".into(),
+        }
+    }
+
+    #[test]
+    fn a_cross_field_validation_record_serde_round_trips() {
+        let record = cross_field_validation();
+        let json = serde_json::to_string(&record).expect("record should serialize");
+        // The shape serializes snake_case, matching the workspace's
+        // serde convention, and reads back whole.
+        assert!(json.contains("\"shape\":\"checksum\""));
+        assert!(json.contains("\"field\":\"uVar7\""));
+        assert!(json.contains("\"computed\":\"uVar5 + uVar6\""));
+        assert!(json.contains("\"confidence\":65"));
+        let back: CrossFieldValidation =
+            serde_json::from_str(&json).expect("record should read back");
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn a_length_validation_record_reads_back_from_json() {
+        let json = r#"{
+            "function": "FUN_18003e750",
+            "field": "uVar4",
+            "computed": "local_18 + -4",
+            "shape": "length",
+            "suggestion": "checked parse or validate step on the Rust type",
+            "confidence": 65,
+            "evidence": "if (uVar4 == local_18 + -4) {"
+        }"#;
+        let back: CrossFieldValidation =
+            serde_json::from_str(json).expect("length record should read back");
+        assert_eq!(back.shape, ValidationShape::Length);
+        assert_eq!(back.field, "uVar4");
+        assert_eq!(back.computed, "local_18 + -4");
+    }
+
+    #[test]
+    fn a_cross_field_validation_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = SerializeFinding::CrossFieldValidation(cross_field_validation());
+        let json = serde_json::to_string(&finding)
+            .expect("cross-field validation finding should serialize");
+        assert!(json.contains("\"kind\":\"cross_field_validation\""));
+        assert!(json.contains("\"shape\":\"checksum\""));
+        let back: SerializeFinding =
+            serde_json::from_str(&json).expect("cross-field validation finding should read back");
+        assert_eq!(back, finding);
+    }
+
     #[test]
     fn the_union_accessors_reach_through_every_variant() {
         let findings = [
             SerializeFinding::ByteSwap(byte_swap()),
             SerializeFinding::BitPack(bit_pack()),
             SerializeFinding::Magic(magic_format()),
+            SerializeFinding::CrossFieldValidation(cross_field_validation()),
         ];
         for finding in &findings {
             assert_eq!(finding.function(), "FUN_18003ab00");
@@ -523,12 +672,21 @@ mod tests {
         assert_eq!(findings[0].confidence(), Confidence::new(70));
         assert_eq!(findings[1].confidence(), Confidence::new(60));
         assert_eq!(findings[2].confidence(), Confidence::new(80));
+        assert_eq!(findings[3].confidence(), Confidence::new(65));
         let kinds: Vec<&str> = findings.iter().map(|f| f.kind()).collect();
-        assert_eq!(kinds, vec!["byteswap", "bitpack", "magic"]);
+        assert_eq!(
+            kinds,
+            vec!["byteswap", "bitpack", "magic", "cross_field_validation"]
+        );
         let targets: Vec<String> = findings.iter().map(|f| f.target()).collect();
         assert_eq!(
             targets,
-            vec!["ntohl", "shift_or_pack 8+8+8+8", "PNG 0x89504e47"]
+            vec![
+                "ntohl",
+                "shift_or_pack 8+8+8+8",
+                "PNG 0x89504e47",
+                "checksum uVar7"
+            ]
         );
     }
 
@@ -605,5 +763,15 @@ mod tests {
         assert_eq!(info.kind, "magic");
         assert_eq!(info.suggestion, "png::Decoder");
         assert_eq!(info.confidence, 80);
+
+        let validation = SerializeFinding::CrossFieldValidation(cross_field_validation());
+        let info = calxgloss_prompts::SerializationInfo::from(&validation);
+        assert_eq!(info.kind, "cross_field_validation");
+        assert_eq!(
+            info.suggestion,
+            "checked parse or validate step on the Rust type"
+        );
+        assert_eq!(info.confidence, 65);
+        assert_eq!(info.evidence, "if (uVar7 == uVar5 + uVar6) {");
     }
 }

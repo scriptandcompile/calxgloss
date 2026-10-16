@@ -267,9 +267,10 @@ mod tests {
 
     #[test]
     fn a_mixed_kind_document_survives_the_round_trip() {
-        // Byteswap, bitpack, and magic findings interleaved in scan
-        // order: the union carries every kind through save and load
-        // without losing the record shape behind each tag.
+        // Byteswap, bitpack, magic, and cross-field-validation findings
+        // interleaved in scan order: the union carries every kind
+        // through save and load without losing the record shape behind
+        // each tag.
         let dir = tempfile::tempdir().unwrap();
         let persistor = SerializePersistor::new(dir.path());
 
@@ -304,14 +305,31 @@ mod tests {
                 confidence: Confidence::new(80),
                 evidence: "if (uVar1 == 0x89504e47) {".to_string(),
             }));
+        result.findings.push(SerializeFinding::CrossFieldValidation(
+            crate::types::CrossFieldValidation {
+                function: "ReadHeader".to_string(),
+                field: "uVar7".to_string(),
+                computed: "uVar5 + uVar6".to_string(),
+                shape: crate::types::ValidationShape::Checksum,
+                suggestion: "checked parse or validate step on the Rust type".to_string(),
+                confidence: Confidence::new(65),
+                evidence: "if (uVar7 == uVar5 + uVar6) {".to_string(),
+            },
+        ));
         persistor.save(&result).unwrap();
 
         let loaded = persistor.load("eqmain.dll").unwrap();
         assert_eq!(loaded, result);
-        assert_eq!(loaded.findings.len(), 3);
+        assert_eq!(loaded.findings.len(), 4);
         assert_eq!(loaded.findings[0].kind(), "byteswap");
         assert_eq!(loaded.findings[1].kind(), "bitpack");
         assert_eq!(loaded.findings[2].kind(), "magic");
+        assert_eq!(loaded.findings[3].kind(), "cross_field_validation");
+        assert_eq!(loaded.findings[3].confidence(), Confidence::new(65));
+        assert_eq!(
+            loaded.findings[3].evidence(),
+            "if (uVar7 == uVar5 + uVar6) {"
+        );
     }
 
     #[test]

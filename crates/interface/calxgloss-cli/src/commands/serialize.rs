@@ -2,7 +2,8 @@
 //! patterns for the open binary.
 //!
 //! Runs the serialization detectors — byte-swap call matching, manual
-//! bit-packing recognition, and magic-byte format sniffing — against the
+//! bit-packing recognition, magic-byte format sniffing, and cross-field
+//! validation reading — against the
 //! program currently open in Ghidra and saves the result to
 //! `re/analysis/serialize/{binary}.json` in the workspace, the same file
 //! batch translation will read as prompt context. Batch translation runs
@@ -97,7 +98,7 @@ fn print_serialization_report(result: &SerializeResult, path: &Path) {
     println!();
 
     // Findings, broken down by the record kind the union carries.
-    let kind_breakdown: Vec<String> = ["byteswap", "bitpack", "magic"]
+    let kind_breakdown: Vec<String> = ["byteswap", "bitpack", "magic", "cross_field_validation"]
         .into_iter()
         .map(|kind| {
             (
@@ -158,7 +159,7 @@ fn print_serialization_report(result: &SerializeResult, path: &Path) {
     hsep_bold();
     if result.is_empty() {
         println!(
-            "  {} The scan found nothing — no byte-swap calls, bit-packing chains, or magic-byte comparisons were found in the decompiled bodies.",
+            "  {} The scan found nothing — no byte-swap calls, bit-packing chains, magic-byte comparisons, or cross-field validation checks were found in the decompiled bodies.",
             yellow_bold("◉")
         );
     } else {
