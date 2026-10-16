@@ -280,7 +280,11 @@ pub(crate) fn count_ident_calls(line: &str, needle: &str) -> usize {
             _ => {}
         }
         if !in_string
-            && line[idx..].starts_with(needle)
+            // Byte-level so `idx` landing on a UTF-8 continuation byte of a
+            // multi-byte char (outside a string literal) cannot panic; the
+            // needle starts with an ASCII identifier byte, so a match can
+            // never begin mid-char anyway.
+            && bytes[idx..].starts_with(needle.as_bytes())
             && (idx == 0 || !(bytes[idx - 1].is_ascii_alphanumeric() || bytes[idx - 1] == b'_'))
         {
             hits += 1;
@@ -589,5 +593,13 @@ mod tests {
             !f.is_tail_call,
             "the call's result lands behind the pointer, not in the returned local",
         );
+    }
+
+    #[test]
+    fn multibyte_chars_outside_strings_do_not_panic_the_byte_scan() {
+        // 'ﾟ' is 3 bytes; the scan walks every byte index, and slicing the
+        // line at one of its continuation bytes used to panic.
+        let line = "    // ﾟﾟﾟ comment ﾟ\n    return n * factorial(n - 1);";
+        assert_eq!(count_ident_calls(line, "factorial("), 1);
     }
 }

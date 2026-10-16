@@ -152,8 +152,15 @@ pub(crate) fn tokenize(source: &str) -> Vec<Token<'_>> {
             continue;
         }
         if i + 1 < bytes.len() {
-            let pair = &source[i..i + 2];
-            if TWO_CHAR_PUNCT.contains(&pair) {
+            // Byte-level lookahead: non-ASCII text reaches this point and
+            // is consumed one byte at a time below, so `i` can sit on or
+            // inside a multi-byte char and slicing `source` there panics.
+            // A match means both bytes are ASCII, so the spelling comes
+            // straight from the static table.
+            if let Some(pair) = TWO_CHAR_PUNCT
+                .iter()
+                .find(|p| p.as_bytes() == &bytes[i..i + 2])
+            {
                 tokens.push(Token {
                     kind: TokenKind::Punct(pair),
                     line,
@@ -360,5 +367,23 @@ mod tests {
         let tokens = tokenize("a = 1;\nb = 2;\n\nc = 3;");
         let lines: Vec<usize> = tokens.iter().map(|t| t.line).collect();
         assert_eq!(lines, vec![1, 1, 1, 1, 2, 2, 2, 2, 4, 4, 4, 4]);
+    }
+
+    #[test]
+    fn multibyte_chars_never_panic_the_two_char_lookahead() {
+        // 'ﾟ' is 3 bytes: the lookahead's end index used to land on its
+        // second continuation byte. '°' is 2 bytes: once the byte-at-a-
+        // time fallback consumed its lead byte, the lookahead started
+        // mid-char. Both shapes used to panic; both are dropped as the
+        // module promises for non-ASCII text.
+        assert_eq!(
+            kinds("x ° ﾟ &= 2;"),
+            vec![
+                TokenKind::Ident("x"),
+                TokenKind::Punct("&="),
+                TokenKind::Int(2),
+                TokenKind::Punct(";"),
+            ]
+        );
     }
 }
