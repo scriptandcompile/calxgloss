@@ -8,6 +8,10 @@
 //! verification, install under the calxgloss prefix — behind the consent
 //! rules the ticket demands, and the full read-only check runs again
 //! afterwards as verification.
+//!
+//! Under `--engine kuna` (issue #205) the report changes shape: there is no
+//! install, plugin, or port to check — the `--binary` target is loaded
+//! in-process by the Kuna engine and its program identity is reported.
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -17,11 +21,11 @@ use calxgloss_ghidra::GhidraClient;
 use calxgloss_ghidra::GhidraConfig;
 use calxgloss_ghidra::GhidraError;
 use calxgloss_ghidra::lifecycle::{self, BootstrapRequest, ReleasesApi, StackRequest, bootstrap};
-use calxgloss_reports::doctor::{print_managed, print_stack_report};
+use calxgloss_reports::doctor::{print_kuna_report, print_managed, print_stack_report};
 use tracing::info;
 
 use crate::cli_types::DoctorArgs;
-use crate::settings::Settings;
+use crate::settings::{Engine, Settings};
 use crate::utils::{managed_install_prefix, state_dir};
 
 /// The GitHub API the bootstrap fetches releases from.
@@ -30,6 +34,12 @@ const GITHUB_API: &str = "https://api.github.com";
 /// Check the whole stack and print the report; a failure is an error exit.
 /// With `--fix`, install what is missing first, then verify.
 pub async fn handle_doctor(settings: &Settings, args: &DoctorArgs) -> Result<()> {
+    // Under the kuna engine there is no stack to check: the doctor loads
+    // the target in-process and reports its identity (issue #205).
+    if settings.engine_choice()? == Engine::Kuna {
+        return handle_doctor_kuna(settings, args);
+    }
+
     info!("Running the read-only Ghidra stack check");
 
     let mut config = GhidraConfig::new(&settings.ghidra_url.value).with_context(|| {
@@ -90,6 +100,37 @@ pub async fn handle_doctor(settings: &Settings, args: &DoctorArgs) -> Result<()>
     if !report.all_ok() {
         bail!("the Ghidra stack check failed — see the report above");
     }
+    Ok(())
+}
+
+/// The `kuna` engine's doctor (issue #205): load the target in-process and
+/// report its program identity. There is no server whose open program could
+/// be reported, so the binary must be named; an unloadable target arrives as
+/// the named `KunaError` spelling out the `--engine ghidra` fallback.
+fn handle_doctor_kuna(settings: &Settings, args: &DoctorArgs) -> Result<()> {
+    info!("Running the kuna engine check: loading the target in-process");
+    let Some(binary) = args.binary.as_ref() else {
+        bail!(
+            "engine = kuna (from {}) but no target binary was named: \
+             re-run with --binary <FILE> — the kuna engine has no server \
+             whose open program could be reported",
+            settings.engine.source
+        );
+    };
+    if args.fix {
+        println!(
+            "note: --fix has nothing to install for the kuna engine — it is \
+             compiled into calxgloss; running the check as-is"
+        );
+    }
+    let program = calxgloss_kuna::load(binary)?;
+    print_kuna_report(
+        binary,
+        calxgloss_kuna::KUNA_RELEASE,
+        program.identity(),
+        program.entry(),
+        program.num_symbols(),
+    );
     Ok(())
 }
 

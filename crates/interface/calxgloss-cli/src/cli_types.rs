@@ -45,10 +45,17 @@ pub(super) struct Cli {
     #[arg(long, global = true, value_name = "DIR")]
     pub(super) workspace: Option<PathBuf>,
 
+    /// Decompiler engine: ghidra or kuna (default: ghidra)
+    ///
+    /// A run uses exactly one engine. The kuna engine is a skeleton in this
+    /// release (issue #205): `doctor` runs under it, every other command
+    /// fails naming `--engine ghidra`.
+    #[arg(long, global = true, value_parser = ["ghidra", "kuna"])]
+    pub(super) engine: Option<String>,
+
     /// GhidraMCP server URL (default: http://127.0.0.1:8080)
     #[arg(long, global = true)]
     pub(super) ghidra_url: Option<String>,
-
     /// API key for the GhidraMCP server (optional)
     #[arg(long, global = true)]
     pub(super) ghidra_api_key: Option<String>,
@@ -217,6 +224,14 @@ pub(super) struct DoctorArgs {
     /// Install Ghidra from this local zip instead of downloading it
     #[arg(long, value_name = "ZIP")]
     pub(super) ghidra_zip: Option<PathBuf>,
+
+    /// Target binary to load when the engine is kuna
+    ///
+    /// Under `--engine kuna`, doctor loads this file in-process and reports
+    /// its program identity — there is no server to ask which program it has
+    /// open, so the binary must be named. Ignored under the ghidra engine.
+    #[arg(long, value_name = "FILE")]
+    pub(super) binary: Option<PathBuf>,
 }
 
 /// Subcommands for the CLI.
@@ -247,11 +262,16 @@ pub(super) enum Command {
     /// replacing an existing install asks for confirmation first. The full
     /// read-only check runs again afterwards as verification.
     ///
+    /// Under `--engine kuna` the report changes shape: no install, plugin,
+    /// or port checks run — the `--binary` target is loaded in-process by
+    /// the Kuna engine and its program identity is reported (issue #205).
+    ///
     /// # Examples
     ///
     /// ```text
     /// calxgloss doctor
     /// calxgloss doctor --fix --install-ghidra
+    /// calxgloss doctor --engine kuna --binary target.dll
     /// ```
     Doctor(DoctorArgs),
 

@@ -5,6 +5,8 @@
 //! require reading the design doc. The data is the `calxgloss-ghidra`
 //! lifecycle report; this module only decides how it reads.
 
+use std::path::Path;
+
 use calxgloss_ghidra::MIN_PLUGIN_VERSION;
 use calxgloss_ghidra::lifecycle::{
     ExtensionVerdict, InstallDiscovery, InstallManifest, InstallSource, ServerDiscovery,
@@ -209,6 +211,38 @@ fn print_server(discovery: &ServerDiscovery) {
             ));
         }
     }
+}
+
+/// Print the kuna engine's doctor report (issue #205): the target loaded
+/// in-process and the program identity the engine reports. There is no
+/// install, extension, or server to check — the engine is compiled into
+/// calxgloss — so the report names that instead of dressing up as the
+/// Ghidra stack report.
+pub fn print_kuna_report(
+    path: &Path,
+    release: &str,
+    identity: &str,
+    entry: Option<u64>,
+    symbols: usize,
+) {
+    let sep = cyan_bold(&"═".repeat(58));
+    println!("{} Kuna Engine Report", sep);
+    println!();
+    pass(
+        "Engine",
+        &format!("kuna {release} — in-process; no install, extension, or port to check"),
+    );
+    println!();
+    pass("Target", &path.display().to_string());
+    note(&format!("language: {identity}"));
+    match entry {
+        Some(entry) => note(&format!("entry point: {entry:#x}")),
+        None => note("entry point: none named by the file format"),
+    }
+    note(&format!("function symbols: {symbols}"));
+    println!();
+    println!("{}", dim(&"─".repeat(58)));
+    println!("  {}", green_bold("the kuna engine loaded the target"));
 }
 
 /// Print the install manifest: what calxgloss itself installed, read from

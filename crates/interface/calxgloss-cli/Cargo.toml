@@ -30,6 +30,7 @@ calxgloss-reports = { path = "../calxgloss-reports" }
 calxgloss-llm = { path = "../../integrations/calxgloss-llm" }
 calxgloss-pal = { path = "../../integrations/calxgloss-pal" }
 calxgloss-config = { path = "../../shared/calxgloss-config" }
+calxgloss-kuna = { path = "../../integrations/calxgloss-kuna" }
 clap = { workspace = true }
 tokio = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["json"] }
@@ -44,3 +45,4 @@ calxgloss-web = { path = "../calxgloss-web", features = ["server"] }
 
 [dev-dependencies]
 tempfile = "3"
+calxgloss-testfixtures = { path = "../../integrations/calxgloss-testfixtures" }

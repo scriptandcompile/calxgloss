@@ -46,7 +46,7 @@ mod utils;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use calxgloss_config::{FileConfig, GhidraSection, Layers, LlmSection, load};
+use calxgloss_config::{AnalysisSection, FileConfig, GhidraSection, Layers, LlmSection, load};
 use calxgloss_web::LogLevelControl;
 use clap::Parser;
 use tracing::{debug, error, info};
@@ -147,6 +147,9 @@ fn main() -> Result<()> {
             max_retries: cli.max_retries,
             strategy: cli.strategy.clone(),
         },
+        analysis: AnalysisSection {
+            engine: cli.engine.clone(),
+        },
     };
     let settings = Settings::resolve(&layers, flags, &loaded);
 
@@ -195,6 +198,21 @@ fn main() -> Result<()> {
         callgraph_verbose: false,
         refresh_ghidra_cache: false,
     });
+    // A run uses exactly one engine (issue #205): until the Kuna scan path
+    // lands (#206–#213), every command that reads a decompiler engine is
+    // Ghidra-dependent, and under `kuna` it fails by name pointing at
+    // `--engine ghidra` instead of quietly driving the other engine.
+    // Engine-independent commands — `config`, `init`, `gc`, and `dashboard`
+    // with its review subcommands — run under either engine; `doctor`
+    // answers for itself, its kuna branch loading the target in-process.
+    match &command {
+        Command::Config
+        | Command::Init
+        | Command::Gc { .. }
+        | Command::Dashboard { .. }
+        | Command::Doctor { .. } => {}
+        _ => settings.require_ghidra_engine()?,
+    }
     let result = match command {
         Command::Config => {
             print!("{}", settings::render(&settings));

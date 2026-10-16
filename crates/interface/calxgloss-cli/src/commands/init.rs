@@ -16,6 +16,9 @@ const EXAMPLE: &str = r#"# Calxgloss configuration
 url = "http://127.0.0.1:8080"
 # api_key = "..."
 
+[analysis]
+# engine = "ghidra"          # ghidra | kuna — a run uses exactly one engine
+
 [llm]
 url = ""
 model = ""

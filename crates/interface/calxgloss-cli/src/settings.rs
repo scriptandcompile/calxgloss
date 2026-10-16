@@ -9,8 +9,18 @@ use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use calxgloss_config::{
-    EXAMPLE, FileConfig, GhidraSection, Layers, LlmSection, LoadedConfig, Resolved, defaults,
+    EXAMPLE, AnalysisSection, FileConfig, GhidraSection, Layers, LlmSection, LoadedConfig,
+    Resolved, defaults,
 };
+
+/// The decompiler engine a run uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Engine {
+    /// The GhidraMCP engine: the full pipeline, and the default.
+    Ghidra,
+    /// The in-process Kuna engine: a skeleton in this release (issue #205).
+    Kuna,
+}
 
 /// Every setting the commands need, after layering.
 ///
@@ -65,6 +75,8 @@ pub struct Settings {
     pub target_dir: Option<Resolved<String>>,
     /// The workspace: where the translated Rust, `re/`, scratch, and the git repo live.
     pub workspace: Option<Resolved<String>>,
+    /// The decompiler engine: `ghidra` (the default) or `kuna`.
+    pub engine: Resolved<String>,
     /// Where the configuration file was read from, for diagnostics.
     pub config_path: Option<PathBuf>,
     /// Every location that was checked for a configuration file.
@@ -96,6 +108,9 @@ impl Settings {
             pin_version: flag_ghidra_pin_version,
             java_home: flag_ghidra_java_home,
         } = flags.ghidra;
+        let AnalysisSection {
+            engine: flag_engine,
+        } = flags.analysis;
 
         Self {
             ghidra_url: layers
@@ -234,6 +249,14 @@ impl Settings {
                 layers.file.workspace.clone(),
                 None,
             ),
+            engine: layers
+                .resolve(
+                    flag_engine,
+                    layers.env.analysis.engine.clone(),
+                    layers.file.analysis.engine.clone(),
+                    Some(defaults::ANALYSIS_ENGINE.to_string()),
+                )
+                .expect("engine has a default"),
             config_path: loaded.path.clone(),
             config_searched: loaded.searched.clone(),
         }
@@ -269,6 +292,39 @@ impl Settings {
             &self.config_searched,
         )?;
         Ok(found)
+    }
+
+    /// The engine this run selected.
+    ///
+    /// A value outside `ghidra`/`kuna` — reachable through the config file
+    /// or env, since the flag's parser rejects it — is named with the layer
+    /// that supplied it, the same attribution `ghidra.headless` gets.
+    pub fn engine_choice(&self) -> Result<Engine> {
+        match self.engine.value.as_str() {
+            "ghidra" => Ok(Engine::Ghidra),
+            "kuna" => Ok(Engine::Kuna),
+            other => bail!(
+                "analysis.engine = {other:?} (from {}) is not a valid engine; \
+                 expected ghidra or kuna",
+                self.engine.source
+            ),
+        }
+    }
+
+    /// Demand the Ghidra engine, or fail by name under `kuna`.
+    ///
+    /// A run uses exactly one engine (issue #205): until the Kuna scan path
+    /// lands (#206–#213), a Kuna run's Ghidra-dependent commands say so
+    /// instead of quietly driving the other engine.
+    pub fn require_ghidra_engine(&self) -> Result<()> {
+        if self.engine_choice()? == Engine::Kuna {
+            bail!(
+                "engine = kuna (from {}) but this command needs the ghidra engine: \
+                 the kuna engine is a skeleton in this release — re-run with --engine ghidra",
+                self.engine.source
+            );
+        }
+        Ok(())
     }
 }
 
@@ -417,6 +473,9 @@ pub fn render(s: &Settings) -> String {
         false,
     );
     row(&mut out, "java_home", s.ghidra_java_home.as_ref(), false);
+
+    out.push_str("\nanalysis\n");
+    row(&mut out, "engine", Some(&s.engine), false);
 
     out.push_str("\nllm\n");
     row(&mut out, "url", s.llm_url.as_ref(), false);
@@ -709,5 +768,89 @@ mod tests {
         let s = Settings::resolve(&layers, FileConfig::default(), &loaded);
         assert_eq!(s.config_path.as_deref(), Some(path.as_path()));
         assert_eq!(s.require_llm_model().unwrap(), "m");
+    }
+
+    #[test]
+    fn test_the_engine_defaults_to_ghidra() {
+        // Issue #205: no existing run changes engine by surprise.
+        let s = settings_from(FileConfig::default(), FileConfig::default());
+        assert_eq!(s.engine.value, "ghidra");
+        assert_eq!(s.engine.source, Source::Default);
+        assert_eq!(s.engine_choice().unwrap(), Engine::Ghidra);
+        assert!(s.require_ghidra_engine().is_ok());
+    }
+
+    #[test]
+    fn test_the_engine_comes_from_the_file_layer() {
+        let file = FileConfig {
+            analysis: AnalysisSection {
+                engine: Some("kuna".into()),
+            },
+            ..Default::default()
+        };
+        let s = settings_from(FileConfig::default(), file);
+        assert_eq!(s.engine.value, "kuna");
+        assert_eq!(s.engine.source, Source::File);
+        assert_eq!(s.engine_choice().unwrap(), Engine::Kuna);
+    }
+
+    #[test]
+    fn test_an_engine_flag_beats_the_file() {
+        let file = FileConfig {
+            analysis: AnalysisSection {
+                engine: Some("kuna".into()),
+            },
+            ..Default::default()
+        };
+        let flags = FileConfig {
+            analysis: AnalysisSection {
+                engine: Some("ghidra".into()),
+            },
+            ..Default::default()
+        };
+        let s = settings_from(flags, file);
+        assert_eq!(s.engine.value, "ghidra");
+        assert_eq!(s.engine.source, Source::Flag);
+    }
+
+    #[test]
+    fn test_an_invalid_configured_engine_is_named_with_its_layer() {
+        // The flag's parser rejects invalid values, so only the file and env
+        // layers can carry one — and then the run says which layer supplied it.
+        let file = FileConfig {
+            analysis: AnalysisSection {
+                engine: Some("ida".into()),
+            },
+            ..Default::default()
+        };
+        let s = settings_from(FileConfig::default(), file);
+        let err = s.engine_choice().unwrap_err().to_string();
+        assert!(err.contains("ida"), "{err}");
+        assert!(err.contains("config file"), "{err}");
+        assert!(s.require_ghidra_engine().is_err());
+    }
+
+    #[test]
+    fn test_require_ghidra_engine_names_the_fallback_under_kuna() {
+        // The one-engine rule: a Kuna run's Ghidra-dependent command fails
+        // by name, pointing at the fallback, not at a stack trace.
+        let file = FileConfig {
+            analysis: AnalysisSection {
+                engine: Some("kuna".into()),
+            },
+            ..Default::default()
+        };
+        let s = settings_from(FileConfig::default(), file);
+        let err = s.require_ghidra_engine().unwrap_err().to_string();
+        assert!(err.contains("kuna"), "{err}");
+        assert!(err.contains("--engine ghidra"), "{err}");
+    }
+
+    #[test]
+    fn test_the_render_shows_the_engine_and_its_source() {
+        let s = settings_from(FileConfig::default(), FileConfig::default());
+        let out = render(&s);
+        assert!(out.contains("analysis"), "{out}");
+        assert!(out.contains("engine") && out.contains("ghidra"), "{out}");
     }
 }
