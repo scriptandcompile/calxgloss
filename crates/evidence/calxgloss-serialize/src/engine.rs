@@ -2,9 +2,14 @@
 //!
 //! [`SerializeEngine`] runs the serialization detectors — byte-swap
 //! call matching, bit-pack shape reading, magic-byte comparison
-//! matching, and cross-field validation reading — over every function
-//! of one open Ghidra program and assembles their findings into a
-//! single [`SerializeResult`] with its scan provenance.
+//! matching, cross-field validation reading, and the format combiner's
+//! composition of the swap and pack readings — over every function of
+//! one open Ghidra program and assembles their findings into a single
+//! [`SerializeResult`] with its scan provenance.
+//!
+//! The format composition rides at the end of each function's
+//! findings: it reads the swap and pack records the pass already made,
+//! so it costs no extra body pass and no extra Ghidra round trips.
 //!
 //! The detectors are pure text analysis over one decompiled body, so
 //! the engine fetches each function's pseudo-C exactly once and reads
@@ -21,6 +26,7 @@
 use crate::bitpack::BitPackDetector;
 use crate::byteswap::ByteSwapDetector;
 use crate::error::Result;
+use crate::format::FormatCombiner;
 use crate::magic_bytes::MagicByteDetector;
 use crate::types::{ScanMetadata, SerializeFinding, SerializeResult};
 use crate::validation::ValidationDetector;
@@ -53,6 +59,7 @@ pub struct SerializeEngine<S = GhidraClient> {
     bitpack: BitPackDetector,
     magic: MagicByteDetector,
     validation: ValidationDetector,
+    format: FormatCombiner,
 }
 
 impl SerializeEngine<GhidraClient> {
@@ -73,6 +80,7 @@ impl<S> SerializeEngine<S> {
             bitpack: BitPackDetector::new(),
             magic: MagicByteDetector::with_default_signatures(),
             validation: ValidationDetector::new(),
+            format: FormatCombiner::new(),
         }
     }
 
@@ -112,8 +120,8 @@ impl<S> SerializeEngine<S> {
     /// findings follow the function listing — function by function,
     /// and within one function the byte swaps, then the bit packs,
     /// then the magic-byte comparisons, then the cross-field
-    /// validation checks — so two scans of the same program diff
-    /// cleanly.
+    /// validation checks, then the composed format layout — so two
+    /// scans of the same program diff cleanly.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad
     /// entry point) is skipped with a warning; only a failure of the
@@ -176,18 +184,17 @@ impl<S> SerializeEngine<S> {
                 }
             };
 
-            findings.extend(
-                self.byteswap
-                    .detect(&decompiled)
-                    .into_iter()
-                    .map(SerializeFinding::ByteSwap),
-            );
-            findings.extend(
-                self.bitpack
-                    .detect(&decompiled)
-                    .into_iter()
-                    .map(SerializeFinding::BitPack),
-            );
+            let swap_records = self.byteswap.detect(&decompiled);
+            let pack_records = self.bitpack.detect(&decompiled);
+            // The format stage composes the swap and pack readings just
+            // made into one end-to-end layout when the function carries
+            // two or more of them (P11.5-2); it reads only those
+            // records, so it costs no extra body pass.
+            let format_record = self
+                .format
+                .combine(&decompiled, &swap_records, &pack_records);
+            findings.extend(swap_records.into_iter().map(SerializeFinding::ByteSwap));
+            findings.extend(pack_records.into_iter().map(SerializeFinding::BitPack));
             let magic_records = self.magic.detect(&decompiled);
             // The validation reading sees exactly the comparisons the
             // magic reading reported for this body, so a signature
@@ -200,6 +207,7 @@ impl<S> SerializeEngine<S> {
                     .into_iter()
                     .map(SerializeFinding::CrossFieldValidation),
             );
+            findings.extend(format_record.map(SerializeFinding::SerializationFormat));
         }
 
         let mut metadata = ScanMetadata::new(binary);
@@ -409,7 +417,7 @@ mod tests {
         assert!(result.metadata.scanned_at > 0);
 
         let findings: Vec<&SerializeFinding> = result.for_function("FUN_18003ab00").collect();
-        assert_eq!(findings.len(), 2);
+        assert_eq!(findings.len(), 3);
 
         let SerializeFinding::ByteSwap(record) = findings[0] else {
             unreachable!("the swap call reads as a byteswap finding");
@@ -424,15 +432,25 @@ mod tests {
         };
         assert_eq!(record.evidence, "uVar3 = ntohl(local_20);");
 
+        let SerializeFinding::SerializationFormat(record) = findings[2] else {
+            unreachable!("the two swap readings compose a format finding");
+        };
+        assert_eq!(record.fields.len(), 2);
+        assert_eq!(
+            record.direction,
+            Some(crate::types::FormatDirection::Reader)
+        );
+        assert_eq!(record.confidence.value(), 75);
+
         assert!(result.for_function("FUN_18003e750").next().is_none());
     }
 
     #[tokio::test]
-    async fn one_scan_interleaves_all_three_kinds_in_scan_order() {
+    async fn one_scan_interleaves_all_kinds_in_scan_order() {
         // A function whose body carries a swap call, a pack chain, and
         // a signature comparison: the findings come back in detector
-        // order — swap, pack, magic — and the plain function stays
-        // empty.
+        // order — swap, pack, magic, then the composed format — and
+        // the plain function stays empty.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
         program.bodies.insert(
@@ -468,6 +486,7 @@ mod tests {
                 ("FUN_18003ab00", "byteswap"),
                 ("FUN_18003ab00", "bitpack"),
                 ("FUN_18003ab00", "magic"),
+                ("FUN_18003ab00", "serialization_format"),
             ]
         );
 
@@ -483,6 +502,19 @@ mod tests {
         };
         assert_eq!(record.format, "PNG");
         assert_eq!(record.suggestion, "png::Decoder");
+
+        let SerializeFinding::SerializationFormat(record) = findings[3] else {
+            unreachable!("the swap and pack readings compose a format finding");
+        };
+        assert_eq!(record.fields.len(), 5);
+        assert_eq!(
+            record.direction,
+            Some(crate::types::FormatDirection::Reader)
+        );
+        assert_eq!(
+            record.suggestion,
+            "byteorder reader: read_u32 then 8+8+8+8 bitfields"
+        );
     }
 
     #[tokio::test]
@@ -523,9 +555,10 @@ mod tests {
     async fn scan_order_places_validation_after_the_magic_comparisons() {
         // A body carrying every shape: the per-function finding order
         // is byte swaps, bit packs, magic comparisons, then
-        // validation — the existing prefix unchanged, the new kind
-        // slotted after it — with the magic line claimed exactly once
-        // and still one decompile for the function.
+        // validation, then the composed format — the existing prefix
+        // unchanged, the new kinds slotted after it — with the magic
+        // line claimed exactly once and still one decompile for the
+        // function.
         let mut program = FakeProgram::empty();
         program.listing = vec![summary("FUN_18003ab00"), summary("FUN_18003e750")];
         program.bodies.insert(
@@ -563,6 +596,7 @@ mod tests {
                 ("FUN_18003ab00", "bitpack"),
                 ("FUN_18003ab00", "magic"),
                 ("FUN_18003ab00", "cross_field_validation"),
+                ("FUN_18003ab00", "serialization_format"),
             ]
         );
         assert_eq!(
@@ -599,9 +633,103 @@ mod tests {
             vec![
                 ("FUN_18003e750", "byteswap"),
                 ("FUN_18003e750", "byteswap"),
+                ("FUN_18003e750", "serialization_format"),
                 ("FUN_18003ab00", "byteswap"),
                 ("FUN_18003ab00", "byteswap"),
+                ("FUN_18003ab00", "serialization_format"),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn two_network_reads_and_a_pack_chain_compose_one_format_finding() {
+        // The end-to-end claim: a body with two network-order reads and
+        // a pack chain lands exactly one format finding carrying all
+        // six fields in body order, a reader direction, and the
+        // sequence's own body lines as evidence.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "\
+  uVar1 = ntohl(local_18);
+  uVar3 = ntohl(local_20);
+  uVar2 = (uVar3 << 0x18) | ((uint)uVar4 << 0x10) | (uVar5 << 8) | (uint)uVar6;
+",
+            ),
+        );
+        let result = scan(program).await;
+
+        let kinds: Vec<&str> = result
+            .findings
+            .iter()
+            .map(|finding| finding.kind())
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["byteswap", "byteswap", "bitpack", "serialization_format",],
+            "the composed layout rides alongside its component findings"
+        );
+
+        let formats: Vec<&crate::types::SerializationFormat> = result
+            .findings
+            .iter()
+            .filter_map(|finding| match finding {
+                SerializeFinding::SerializationFormat(record) => Some(record),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(formats.len(), 1, "one composed layout, not three hints");
+        let format = formats[0];
+        assert_eq!(format.fields.len(), 6);
+        assert_eq!(format.fields[0].width, 32);
+        assert_eq!(
+            format.fields[0].endianness,
+            Some(crate::types::WireEndianness::BigEndian)
+        );
+        for field in &format.fields[2..] {
+            assert_eq!(field.width, 8);
+            assert_eq!(field.endianness, None);
+        }
+        assert_eq!(
+            format.direction,
+            Some(crate::types::FormatDirection::Reader)
+        );
+        assert_eq!(format.confidence.value(), 75);
+        assert_eq!(
+            format.evidence,
+            "uVar1 = ntohl(local_18); uVar3 = ntohl(local_20); uVar2 = (uVar3 << 0x18) | ((uint)uVar4 << 0x10) | (uVar5 << 8) | (uint)uVar6;"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_single_reading_composes_no_format_finding() {
+        // One swap call next to a magic comparison is one serialization
+        // reading: no layout is claimed, honesty over volume.
+        let mut program = FakeProgram::empty();
+        program.listing = vec![summary("FUN_18003ab00")];
+        program.bodies.insert(
+            "FUN_18003ab00".into(),
+            function(
+                "FUN_18003ab00",
+                "undefined FUN_18003ab00(void)",
+                "\
+  if (uVar6 == 0x89504e47) {
+  uVar1 = ntohl(local_18);
+",
+            ),
+        );
+        let result = scan(program).await;
+
+        assert_eq!(result.findings.len(), 2);
+        assert!(
+            result
+                .findings
+                .iter()
+                .all(|finding| finding.kind() != "serialization_format")
         );
     }
 

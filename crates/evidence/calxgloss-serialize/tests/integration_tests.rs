@@ -10,7 +10,8 @@
 //!   translation pipeline makes (the findings recorded for one
 //!   function), and the persisted list keeps every finding in scan
 //!   order: function by function, and within one function the byte
-//!   swaps in call order.
+//!   swaps in call order, with the composed format layout riding at
+//!   the end.
 //! - **Cache behavior** — the `exists` check decides whether a scan
 //!   runs, and a rescan replaces the cached document.
 //!
@@ -25,7 +26,9 @@ use calxgloss_ghidra::{
 };
 use calxgloss_serialize::engine::{ScanSource, SerializeEngine};
 use calxgloss_serialize::persist::SerializePersistor;
-use calxgloss_serialize::types::{Confidence, SerializeFinding, ValidationShape};
+use calxgloss_serialize::types::{
+    Confidence, FormatDirection, SerializeFinding, ValidationShape, WireEndianness,
+};
 use tempfile::TempDir;
 
 // ------------------------------------------------------------
@@ -203,7 +206,11 @@ async fn the_persisted_document_keeps_findings_in_scan_order() {
         .collect();
     assert_eq!(
         order,
-        vec![("FUN_18003ab00", "byteswap"), ("FUN_18003ab00", "byteswap"),]
+        vec![
+            ("FUN_18003ab00", "byteswap"),
+            ("FUN_18003ab00", "byteswap"),
+            ("FUN_18003ab00", "serialization_format"),
+        ]
     );
 }
 
@@ -212,10 +219,11 @@ async fn the_persisted_document_keeps_findings_in_scan_order() {
 // ------------------------------------------------------------
 
 #[tokio::test]
-async fn a_three_kind_document_survives_the_round_trip() {
-    // One canned scan, three kinds: the swap call, the pack chain, and
-    // the signature comparison in one body reach disk interleaved in
-    // scan order and read back with their record shapes intact.
+async fn a_four_kind_document_survives_the_round_trip() {
+    // One canned scan, four kinds: the swap call, the pack chain, the
+    // signature comparison, and the format the swap and pack compose
+    // in one body reach disk interleaved in scan order and read back
+    // with their record shapes intact.
     let workspace = TempDir::new().unwrap();
     let mut mixed = FakeProgram::empty();
     mixed.listing = vec![summary("FUN_18003ab00")];
@@ -239,7 +247,10 @@ async fn a_three_kind_document_survives_the_round_trip() {
     let loaded = persistor.load("eqmain.dll").expect("load");
     assert_eq!(loaded, result);
     let kinds: Vec<&str> = loaded.findings.iter().map(|f| f.kind()).collect();
-    assert_eq!(kinds, vec!["byteswap", "bitpack", "magic"]);
+    assert_eq!(
+        kinds,
+        vec!["byteswap", "bitpack", "magic", "serialization_format"]
+    );
 
     let SerializeFinding::BitPack(record) = &loaded.findings[1] else {
         unreachable!("the pack chain reads as a bitpack finding");
@@ -253,6 +264,13 @@ async fn a_three_kind_document_survives_the_round_trip() {
     assert_eq!(record.format, "PNG");
     assert_eq!(record.magic, 0x8950_4E47);
     assert_eq!(record.suggestion, "png::Decoder");
+
+    let SerializeFinding::SerializationFormat(record) = &loaded.findings[3] else {
+        unreachable!("the swap and pack readings compose a format finding");
+    };
+    assert_eq!(record.fields.len(), 5);
+    assert_eq!(record.direction, Some(FormatDirection::Reader));
+    assert_eq!(record.confidence, Confidence::new(75));
 }
 
 #[tokio::test]
@@ -378,7 +396,7 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
         .for_function("FUN_18003ab00")
         .map(calxgloss_prompts::SerializationInfo::from)
         .collect();
-    assert_eq!(findings.len(), 3, "the target function's three findings");
+    assert_eq!(findings.len(), 4, "the target function's four findings");
 
     let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
         "FUN_18003ab00".into(),
@@ -411,6 +429,8 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
     assert!(prompt.contains("png::Decoder"));
     assert!(prompt.contains("magic pattern, confidence 80"));
     assert!(prompt.contains("uVar1 = ntohl(local_18);"));
+    assert!(prompt.contains("serialization_format pattern, confidence 75"));
+    assert!(prompt.contains("byteorder reader: read_u32 then 8+8+8+8 bitfields"));
 }
 
 #[tokio::test]
@@ -458,7 +478,7 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     // The pipeline asks what was found for the function it is about to
     // translate; the plain function carries nothing.
     let findings: Vec<&SerializeFinding> = loaded.for_function("FUN_18003ab00").collect();
-    assert_eq!(findings.len(), 2);
+    assert_eq!(findings.len(), 3);
     assert!(loaded.for_function("FUN_18003e750").next().is_none());
     assert!(loaded.for_function("FUN_180099999").next().is_none());
 
@@ -478,6 +498,17 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
     assert_eq!(record.operation, "htons");
     assert_eq!(record.width, 16);
     assert_eq!(record.suggestion, "byteorder::BE::read_u16");
+
+    // The two swap readings compose a layout, and the disagreeing name
+    // families (a read and a write) leave its direction unnamed.
+    let SerializeFinding::SerializationFormat(record) = findings[2] else {
+        unreachable!("the two swap readings compose a format finding");
+    };
+    assert_eq!(record.fields.len(), 2);
+    assert_eq!(record.fields[0].width, 32);
+    assert_eq!(record.fields[0].endianness, Some(WireEndianness::BigEndian));
+    assert_eq!(record.fields[1].width, 16);
+    assert_eq!(record.direction, None);
 }
 
 // ------------------------------------------------------------

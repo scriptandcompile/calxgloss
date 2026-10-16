@@ -267,10 +267,10 @@ mod tests {
 
     #[test]
     fn a_mixed_kind_document_survives_the_round_trip() {
-        // Byteswap, bitpack, magic, and cross-field-validation findings
-        // interleaved in scan order: the union carries every kind
-        // through save and load without losing the record shape behind
-        // each tag.
+        // Byteswap, bitpack, magic, cross-field-validation, and
+        // serialization-format findings interleaved in scan order: the
+        // union carries every kind through save and load without
+        // losing the record shape behind each tag.
         let dir = tempfile::tempdir().unwrap();
         let persistor = SerializePersistor::new(dir.path());
 
@@ -316,11 +316,31 @@ mod tests {
                 evidence: "if (uVar7 == uVar5 + uVar6) {".to_string(),
             },
         ));
+        result.findings.push(SerializeFinding::SerializationFormat(
+            crate::types::SerializationFormat {
+                function: "ReadHeader".to_string(),
+                fields: vec![
+                    crate::types::FormatField {
+                        width: 32,
+                        endianness: Some(crate::types::WireEndianness::BigEndian),
+                    },
+                    crate::types::FormatField {
+                        width: 8,
+                        endianness: None,
+                    },
+                ],
+                direction: Some(crate::types::FormatDirection::Reader),
+                suggestion: "byteorder reader: read_u32 then 8 bitfields".to_string(),
+                confidence: Confidence::new(75),
+                evidence: "uVar1 = ntohl(local_18); uVar1 = (uVar2 << 0x18) | (uVar3 << 0x10);"
+                    .to_string(),
+            },
+        ));
         persistor.save(&result).unwrap();
 
         let loaded = persistor.load("eqmain.dll").unwrap();
         assert_eq!(loaded, result);
-        assert_eq!(loaded.findings.len(), 4);
+        assert_eq!(loaded.findings.len(), 5);
         assert_eq!(loaded.findings[0].kind(), "byteswap");
         assert_eq!(loaded.findings[1].kind(), "bitpack");
         assert_eq!(loaded.findings[2].kind(), "magic");
@@ -330,6 +350,9 @@ mod tests {
             loaded.findings[3].evidence(),
             "if (uVar7 == uVar5 + uVar6) {"
         );
+        assert_eq!(loaded.findings[4].kind(), "serialization_format");
+        assert_eq!(loaded.findings[4].confidence(), Confidence::new(75));
+        assert_eq!(loaded.findings[4].target(), "reader u32:be > 8 bits");
     }
 
     #[test]

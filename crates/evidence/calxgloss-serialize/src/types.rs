@@ -18,6 +18,13 @@
 //!   computed from other fields (a checksum check) or the read length
 //!   it compares against a buffer size or remaining count (framing),
 //!   and which of the two shapes the check was read from.
+//! - `SerializationFormat`, `FormatField`, `WireEndianness`,
+//!   `FormatDirection`: the composed-layout record — the byte-swap and
+//!   bit-pack readings one function carries, combined in body order
+//!   into an ordered field layout naming each field's width, the wire
+//!   byte order for swapped fields, the bitfield widths for packed
+//!   chains, and a reader-or-writer direction only when the swap name
+//!   families agree.
 //! - `SerializeFinding`: the union over the record kinds — one finding
 //!   whichever detector made it — serde-tagged by `kind`.
 //! - `SerializeResult`, `ScanMetadata`: the persisted per-binary result
@@ -231,6 +238,112 @@ pub struct CrossFieldValidation {
 }
 
 // ============================================================
+// Serialization format records
+// ============================================================
+
+/// The wire byte order a swapped layout field carries.
+///
+/// The claim comes from the swap name family alone: a network-order
+/// spelling (`ntohl`, `htons`, and their kin) says the field arrives
+/// big-endian, while a direction-neutral builtin (`__builtin_bswap32`
+/// and friends) only says the bytes are reversed — which wire order
+/// that reversal corresponds to depends on the host, so the record
+/// claims no endianness for such a field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum WireEndianness {
+    /// A network-order swap name: the field's wire order is big-endian.
+    #[serde(rename = "be")]
+    BigEndian,
+    /// A direction-neutral swap name: the bytes are reversed and no
+    /// wire order is claimed.
+    #[serde(rename = "reversal_only")]
+    ReversalOnly,
+}
+
+calxgloss_types::display_serde_label!(WireEndianness {
+    BigEndian => "be",
+    ReversalOnly => "reversal_only",
+});
+
+/// Which way the composed layout moves bytes, named only when the
+/// directional swap names all point the same way.
+///
+/// A `reader` layout comes from network-to-host names only — the
+/// function pulls messages in; a `writer` layout from host-to-network
+/// names only — it puts messages out. Direction-neutral names
+/// (builtins, a program's own swap spelling) neither corroborate nor
+/// contradict a direction; when the directional families disagree, or
+/// when no directional name was seen at all, the layout names no
+/// direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FormatDirection {
+    /// Every directional swap name moves bytes network-to-host.
+    Reader,
+    /// Every directional swap name moves bytes host-to-network.
+    Writer,
+}
+
+calxgloss_types::display_serde_label!(FormatDirection {
+    Reader => "reader",
+    Writer => "writer",
+});
+
+/// One field of a composed layout: its width and, for a field the
+/// function moves through a byte-swap call, the wire byte order that
+/// call's name family implies. A packed bitfield carved out of a
+/// shift-and-mask chain carries no endianness — the chain moves bits
+/// inside one word, not bytes over a wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormatField {
+    /// The field's width, in bits.
+    pub width: u32,
+    /// The wire byte order the field arrives with — present for a
+    /// field read or written through a byte-swap call, absent for a
+    /// packed bitfield.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endianness: Option<WireEndianness>,
+}
+
+/// The composed serialization layout one function's readings add up
+/// to — made by the format combiner, not by a body detector.
+///
+/// A record says the function carries at least two serialization
+/// readings — byte-swap calls and/or bit-pack chains — and combines
+/// them, in body order, into an ordered [`fields`](Self::fields)
+/// sequence: each swapped field names its width and its
+/// [`endianness`](Self::endianness), each packed chain contributes
+/// its bitfield widths, and [`direction`](Self::direction) names a
+/// reader or a writer only when the swap name families agree. The
+/// sequence reads like [`suggestion`](Self::suggestion): a typed
+/// field-sequence reader sketch in `byteorder` style, so a translation
+/// prompt sees one real reader instead of scattered per-call hints.
+/// The body lines behind the sequence are kept as
+/// [`evidence`](Self::evidence) so a reviewer (or a translation
+/// prompt) can check the composition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SerializationFormat {
+    /// The function the record is about, e.g. `FUN_18003ab00`.
+    pub function: String,
+    /// The layout's fields, in the body order the readings appear in.
+    pub fields: Vec<FormatField>,
+    /// The direction the layout moves bytes — named only when the
+    /// swap name families agree, absent when they disagree or only
+    /// direction-neutral names were seen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction: Option<FormatDirection>,
+    /// The Rust pattern the sequence suggests, e.g. `byteorder
+    /// reader: read_u32 then 8+8 bitfields`.
+    pub suggestion: String,
+    /// Confidence that the record is right, 0–100.
+    pub confidence: Confidence,
+    /// The decompiled lines behind the sequence — the contributing
+    /// readings' own evidence lines, in body order — kept so a
+    /// reviewer (or a translation prompt) can check the composition.
+    pub evidence: String,
+}
+
+// ============================================================
 // Finding union
 // ============================================================
 
@@ -244,8 +357,9 @@ pub struct CrossFieldValidation {
 /// chain, a signature comparison, an integrity comparison — so nothing
 /// is resolved between variants (the validation detector's gate against
 /// magic hits runs where the engine hands it the magic findings, not in
-/// the union). The serde `kind` tag names the record shape in the
-/// persisted JSON.
+/// the union, and the format record is composed by the engine's
+/// post-read over the swap and pack findings, not by a detector). The
+/// serde `kind` tag names the record shape in the persisted JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SerializeFinding {
@@ -263,6 +377,10 @@ pub enum SerializeFinding {
     /// count.
     #[serde(rename = "cross_field_validation")]
     CrossFieldValidation(CrossFieldValidation),
+    /// Two or more serialization readings composed into one ordered
+    /// field layout.
+    #[serde(rename = "serialization_format")]
+    SerializationFormat(SerializationFormat),
 }
 
 impl SerializeFinding {
@@ -273,6 +391,7 @@ impl SerializeFinding {
             SerializeFinding::BitPack(record) => &record.function,
             SerializeFinding::Magic(record) => &record.function,
             SerializeFinding::CrossFieldValidation(record) => &record.function,
+            SerializeFinding::SerializationFormat(record) => &record.function,
         }
     }
 
@@ -283,6 +402,7 @@ impl SerializeFinding {
             SerializeFinding::BitPack(record) => &record.suggestion,
             SerializeFinding::Magic(record) => &record.suggestion,
             SerializeFinding::CrossFieldValidation(record) => &record.suggestion,
+            SerializeFinding::SerializationFormat(record) => &record.suggestion,
         }
     }
 
@@ -293,6 +413,7 @@ impl SerializeFinding {
             SerializeFinding::BitPack(record) => record.confidence,
             SerializeFinding::Magic(record) => record.confidence,
             SerializeFinding::CrossFieldValidation(record) => record.confidence,
+            SerializeFinding::SerializationFormat(record) => record.confidence,
         }
     }
 
@@ -303,25 +424,29 @@ impl SerializeFinding {
             SerializeFinding::BitPack(record) => &record.evidence,
             SerializeFinding::Magic(record) => &record.evidence,
             SerializeFinding::CrossFieldValidation(record) => &record.evidence,
+            SerializeFinding::SerializationFormat(record) => &record.evidence,
         }
     }
 
-    /// The serde `kind` tag — `byteswap`, `bitpack`, `magic`, or
-    /// `cross_field_validation` — naming the detector behind the
-    /// finding.
+    /// The serde `kind` tag — `byteswap`, `bitpack`, `magic`,
+    /// `cross_field_validation`, or `serialization_format` — naming
+    /// the reading behind the finding.
     pub fn kind(&self) -> &'static str {
         match self {
             SerializeFinding::ByteSwap(_) => "byteswap",
             SerializeFinding::BitPack(_) => "bitpack",
             SerializeFinding::Magic(_) => "magic",
             SerializeFinding::CrossFieldValidation(_) => "cross_field_validation",
+            SerializeFinding::SerializationFormat(_) => "serialization_format",
         }
     }
 
     /// What the finding names, spelled for a report row: the swap call
     /// spelling, the packing shape and the field widths it carves, the
-    /// format and the signature bytes that name it, or the validation
-    /// shape and the field it validates.
+    /// format and the signature bytes that name it, the validation
+    /// shape and the field it validates, or the composed layout —
+    /// direction when it is named, then the ordered fields with their
+    /// widths and wire byte orders.
     pub fn target(&self) -> String {
         match self {
             SerializeFinding::ByteSwap(record) => record.operation.clone(),
@@ -335,7 +460,44 @@ impl SerializeFinding {
             SerializeFinding::CrossFieldValidation(record) => {
                 format!("{} {}", record.shape, record.field)
             }
+            SerializeFinding::SerializationFormat(record) => {
+                let layout = layout_target(&record.fields);
+                match record.direction {
+                    Some(direction) => format!("{direction} {layout}"),
+                    None => layout,
+                }
+            }
         }
+    }
+}
+
+/// The composed layout spelled for a report row: each swapped field as
+/// its width and wire byte order (`u32:be`, `u16:reversal_only`),
+/// consecutive packed bitfields grouped into one `8+8 bits` run, the
+/// fields joined in body order.
+fn layout_target(fields: &[FormatField]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut packed_run: Vec<u32> = Vec::new();
+    for field in fields {
+        match field.endianness {
+            Some(endianness) => {
+                flush_packed_run(&mut parts, &mut packed_run);
+                parts.push(format!("u{}:{}", field.width, endianness));
+            }
+            None => packed_run.push(field.width),
+        }
+    }
+    flush_packed_run(&mut parts, &mut packed_run);
+    parts.join(" > ")
+}
+
+/// Flush one run of consecutive packed bitfield widths into the
+/// layout parts as a single `8+8 bits` entry.
+fn flush_packed_run(parts: &mut Vec<String>, run: &mut Vec<u32>) {
+    if !run.is_empty() {
+        let widths: Vec<String> = run.iter().map(|w| w.to_string()).collect();
+        parts.push(format!("{} bits", widths.join("+")));
+        run.clear();
     }
 }
 
@@ -370,10 +532,10 @@ impl From<&SerializeFinding> for calxgloss_prompts::SerializationInfo {
 /// The findings are the detectors' outputs in scan order: function by
 /// function, and within one function the byte swaps, then the bit
 /// packs, then the magic-byte comparisons, then the cross-field
-/// validation checks. The detectors read disjoint body shapes, so a
-/// function can carry findings of every kind at once and none competes
-/// with another; the stable order means two scans of the same program
-/// diff cleanly.
+/// validation checks, then the composed format layout. The detectors
+/// read disjoint body shapes, so a function can carry findings of
+/// every kind at once and none competes with another; the stable
+/// order means two scans of the same program diff cleanly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SerializeResult {
     /// Provenance of the scan that produced these findings.
@@ -656,6 +818,118 @@ mod tests {
         assert_eq!(back, finding);
     }
 
+    fn serialization_format() -> SerializationFormat {
+        SerializationFormat {
+            function: "FUN_18003ab00".into(),
+            fields: vec![
+                FormatField {
+                    width: 32,
+                    endianness: Some(WireEndianness::BigEndian),
+                },
+                FormatField {
+                    width: 8,
+                    endianness: None,
+                },
+                FormatField {
+                    width: 8,
+                    endianness: None,
+                },
+            ],
+            direction: Some(FormatDirection::Reader),
+            suggestion: "byteorder reader: read_u32 then 8+8 bitfields".into(),
+            confidence: Confidence::new(75),
+            evidence: "uVar1 = ntohl(local_18); uVar2 = (uVar3 << 0x8) | (uint)uVar4;".into(),
+        }
+    }
+
+    #[test]
+    fn a_serialization_format_record_serde_round_trips() {
+        let record = serialization_format();
+        let json = serde_json::to_string(&record).expect("record should serialize");
+        // The endianness and direction serialize as their serde labels,
+        // a packed field omits its absent endianness, and the direction
+        // rides as a plain string — matching the workspace convention.
+        assert!(json.contains("\"endianness\":\"be\""));
+        assert!(!json.contains("\"endianness\":null"));
+        assert!(json.contains("\"direction\":\"reader\""));
+        assert!(json.contains("\"confidence\":75"));
+        let back: SerializationFormat =
+            serde_json::from_str(&json).expect("record should read back");
+        assert_eq!(back, record);
+    }
+
+    #[test]
+    fn a_directionless_format_record_reads_back_from_json() {
+        // A layout whose swap families disagree carries no direction at
+        // all: the field is absent on disk and reads back as `None`.
+        let json = r#"{
+            "function": "FUN_18003e750",
+            "fields": [
+                { "width": 16, "endianness": "reversal_only" },
+                { "width": 32, "endianness": "be" }
+            ],
+            "suggestion": "byteorder field sequence: read_u16 then read_u32",
+            "confidence": 75,
+            "evidence": "uVar1 = __builtin_bswap16(local_18); uVar2 = ntohl(local_20);"
+        }"#;
+        let back: SerializationFormat =
+            serde_json::from_str(json).expect("directionless record should read back");
+        assert_eq!(back.direction, None);
+        assert_eq!(
+            back.fields[0].endianness,
+            Some(WireEndianness::ReversalOnly)
+        );
+        assert_eq!(back.fields[1].endianness, Some(WireEndianness::BigEndian));
+    }
+
+    #[test]
+    fn the_layout_target_spells_direction_endianness_and_packed_runs() {
+        // Reversal-only fields say `reversal_only`, packed runs group
+        // into one `bits` entry, and a layout with no named direction
+        // leads with the layout itself.
+        let record = SerializationFormat {
+            function: "FUN_18003e750".into(),
+            fields: vec![
+                FormatField {
+                    width: 16,
+                    endianness: Some(WireEndianness::ReversalOnly),
+                },
+                FormatField {
+                    width: 4,
+                    endianness: None,
+                },
+                FormatField {
+                    width: 12,
+                    endianness: None,
+                },
+                FormatField {
+                    width: 32,
+                    endianness: Some(WireEndianness::BigEndian),
+                },
+            ],
+            direction: None,
+            suggestion:
+                "byteorder field sequence: u16.swap_bytes() then 4+12 bitfields then read_u32"
+                    .into(),
+            confidence: Confidence::new(75),
+            evidence: "uVar1 = __builtin_bswap16(local_18);".into(),
+        };
+        let finding = SerializeFinding::SerializationFormat(record);
+        assert_eq!(finding.target(), "u16:reversal_only > 4+12 bits > u32:be");
+    }
+
+    #[test]
+    fn a_serialization_format_finding_serde_round_trips_under_its_kind_tag() {
+        let finding = SerializeFinding::SerializationFormat(serialization_format());
+        let json =
+            serde_json::to_string(&finding).expect("serialization format finding should serialize");
+        assert!(json.contains("\"kind\":\"serialization_format\""));
+        assert!(json.contains("\"direction\":\"reader\""));
+        let back: SerializeFinding =
+            serde_json::from_str(&json).expect("serialization format finding should read back");
+        assert_eq!(back, finding);
+    }
+
     #[test]
     fn the_union_accessors_reach_through_every_variant() {
         let findings = [
@@ -663,6 +937,7 @@ mod tests {
             SerializeFinding::BitPack(bit_pack()),
             SerializeFinding::Magic(magic_format()),
             SerializeFinding::CrossFieldValidation(cross_field_validation()),
+            SerializeFinding::SerializationFormat(serialization_format()),
         ];
         for finding in &findings {
             assert_eq!(finding.function(), "FUN_18003ab00");
@@ -673,10 +948,17 @@ mod tests {
         assert_eq!(findings[1].confidence(), Confidence::new(60));
         assert_eq!(findings[2].confidence(), Confidence::new(80));
         assert_eq!(findings[3].confidence(), Confidence::new(65));
+        assert_eq!(findings[4].confidence(), Confidence::new(75));
         let kinds: Vec<&str> = findings.iter().map(|f| f.kind()).collect();
         assert_eq!(
             kinds,
-            vec!["byteswap", "bitpack", "magic", "cross_field_validation"]
+            vec![
+                "byteswap",
+                "bitpack",
+                "magic",
+                "cross_field_validation",
+                "serialization_format"
+            ]
         );
         let targets: Vec<String> = findings.iter().map(|f| f.target()).collect();
         assert_eq!(
@@ -685,7 +967,8 @@ mod tests {
                 "ntohl",
                 "shift_or_pack 8+8+8+8",
                 "PNG 0x89504e47",
-                "checksum uVar7"
+                "checksum uVar7",
+                "reader u32:be > 8+8 bits"
             ]
         );
     }
@@ -773,5 +1056,14 @@ mod tests {
         );
         assert_eq!(info.confidence, 65);
         assert_eq!(info.evidence, "if (uVar7 == uVar5 + uVar6) {");
+
+        let format = SerializeFinding::SerializationFormat(serialization_format());
+        let info = calxgloss_prompts::SerializationInfo::from(&format);
+        assert_eq!(info.kind, "serialization_format");
+        assert_eq!(
+            info.suggestion,
+            "byteorder reader: read_u32 then 8+8 bitfields"
+        );
+        assert_eq!(info.confidence, 75);
     }
 }

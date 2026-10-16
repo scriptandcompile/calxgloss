@@ -1,7 +1,8 @@
 //! Endianness and serialization detection for calxgloss.
 //!
-//! Analyzes byte-swap calls, manual bit-packing, format sniffing, and
-//! cross-field validation within each function of an open Ghidra
+//! Analyzes byte-swap calls, manual bit-packing, format sniffing,
+//! cross-field validation, and the composed serialization layout within
+//! each function of an open Ghidra
 //! program. Results are injected as structured SERIALIZATION sections
 //! that name the Rust
 //! serialization pattern — `byteorder::BE::read_u32`, `bitvec` or
@@ -36,6 +37,12 @@
 //!   other fields (a checksum) and a read length checked against a
 //!   buffer size or remaining count (framing) — and suggests the check
 //!   be modelled on the Rust type as a checked parse or validate step.
+//! - [`format`] - Serialization format inference: `FormatCombiner`
+//!   composes the byte-swap and bit-pack readings one function carries
+//!   into a single `SerializationFormat` layout — an ordered field
+//!   sequence with wire byte orders and bitfield widths, and a
+//!   reader-or-writer direction only when the swap name families
+//!   agree — riding end to end instead of as scattered per-call hints.
 //! - [`engine`] - Scan orchestration: `SerializeEngine` runs the
 //!   detectors over one open Ghidra program through a `ScanSource`
 //!   (function listing + decompile-by-name), one sequential pass that
@@ -49,6 +56,7 @@ pub mod bitpack;
 pub mod byteswap;
 pub mod engine;
 pub mod error;
+pub mod format;
 pub mod magic_bytes;
 pub mod persist;
 mod scan;
