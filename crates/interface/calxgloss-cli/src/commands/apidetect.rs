@@ -5,7 +5,9 @@
 //! COM readings, against the program currently open
 //! in Ghidra and saves the result to `re/analysis/apidetect/{binary}.json`
 //! in the workspace, the same file batch translation will read as prompt
-//! context. Batch translation runs the same scan before its first batch
+//! context, together with a rendered FFI bindings file beside it declaring
+//! the imports no crate replaces. Batch translation runs the same scan before
+//! its first batch
 //! when no result is cached; this command is the manual entry point: it
 //! rebuilds the result on demand and can print what a cached one holds.
 
@@ -13,6 +15,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use calxgloss_apidetect::engine::ApiEngine;
+use calxgloss_apidetect::ffi_bindings::render_ffi_bindings;
 use calxgloss_apidetect::persist::ApiPersistor;
 use calxgloss_apidetect::types::ApiDetectionResult;
 use calxgloss_ghidra::{GhidraClient, GhidraConfig};
@@ -42,7 +45,14 @@ pub async fn handle_apidetect(
                  run `calxgloss apidetect --binary {binary}` to produce one"
             )
         })?;
-        print_api_report(&result, &persistor.path_for(binary));
+        print_api_report(
+            &result,
+            &persistor.path_for(binary),
+            persistor
+                .bindings_exists(binary)
+                .then(|| persistor.bindings_path_for(binary))
+                .as_deref(),
+        );
         return Ok(());
     }
 
@@ -65,14 +75,22 @@ pub async fn handle_apidetect(
     persistor
         .save(&result)
         .with_context(|| format!("Failed to save the API result for {binary}"))?;
+    persistor
+        .save_bindings(binary, &render_ffi_bindings(&result))
+        .with_context(|| format!("Failed to write the FFI bindings for {binary}"))?;
 
-    print_api_report(&result, &persistor.path_for(binary));
+    print_api_report(
+        &result,
+        &persistor.path_for(binary),
+        Some(&persistor.bindings_path_for(binary)),
+    );
     Ok(())
 }
 
-/// Print a summary of an API result: where it is filed, when it was
-/// built, and what the findings say.
-fn print_api_report(result: &ApiDetectionResult, path: &Path) {
+/// Print a summary of an API result: where it is filed, where its
+/// rendered FFI bindings are (when they exist), when it was built, and
+/// what the findings say.
+fn print_api_report(result: &ApiDetectionResult, path: &Path, bindings_path: Option<&Path>) {
     println!();
     hsep_bold();
     println_content(format!("  Libraries & APIs — {}", result.metadata.binary));
@@ -84,6 +102,13 @@ fn print_api_report(result: &ApiDetectionResult, path: &Path) {
         white_bold("File:      "),
         dim(&path.display().to_string())
     ));
+    if let Some(bindings_path) = bindings_path {
+        println_content(format!(
+            "  {}{}",
+            white_bold("Bindings:  "),
+            dim(&bindings_path.display().to_string())
+        ));
+    }
     let scanned = DateTime::from_timestamp(result.metadata.scanned_at as i64, 0)
         .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
         .unwrap_or_else(|| format!("unix {}", result.metadata.scanned_at));

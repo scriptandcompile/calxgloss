@@ -16,7 +16,7 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into nine modules:
+//! The crate is organized into ten modules:
 //!
 //! - [`types`] - Core data types: `ApiSignature` for a binary-level
 //!   import-table record; `ApiUsage` for a function-level API usage with
@@ -55,7 +55,13 @@
 //!   `CallGraphSource` (for the built call graph), one sequential pass
 //!   that keeps the findings in scan order.
 //! - [`persist`] - JSON persistence: `ApiPersistor` saves and loads the
-//!   per-binary detection results under `re/analysis/apidetect/`.
+//!   per-binary detection results under `re/analysis/apidetect/`, and
+//!   files the rendered FFI bindings beside each JSON document.
+//! - [`ffi_bindings`] - FFI bindings artifact: `render_ffi_bindings`
+//!   turns a loaded detection result into a Rust source string declaring
+//!   every crate-less import as an `extern "system"` function, grouped
+//!   by library when known — a deterministic, timestamp-free derived
+//!   artifact that is never read back.
 //! - [`error`] - [`ApiError`] and the crate-wide [`Result`] alias.
 
 pub mod api_summary;
@@ -63,6 +69,7 @@ pub mod com;
 pub mod divergence;
 pub mod engine;
 pub mod error;
+pub mod ffi_bindings;
 pub mod import_table;
 pub mod lib_mapping;
 pub mod persist;

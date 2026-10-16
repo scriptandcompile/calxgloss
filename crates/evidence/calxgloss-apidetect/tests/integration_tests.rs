@@ -17,11 +17,15 @@
 //!   section.
 //! - **Cache behavior** — the `exists` check decides whether a scan
 //!   runs, and a rescan replaces the cached document.
+//! - **FFI bindings artifact** — the loaded document re-renders into a
+//!   byte-identical bindings file declaring the crate-less imports, and
+//!   two separate scans render the same bytes.
 //!
 //! The fake program implements [`ScanSource`] and [`CallGraphSource`], so
 //! the whole flow runs without a Ghidra server.
 
 use calxgloss_apidetect::engine::{ApiEngine, CallGraphSource, ScanSource};
+use calxgloss_apidetect::ffi_bindings::render_ffi_bindings;
 use calxgloss_apidetect::persist::ApiPersistor;
 use calxgloss_apidetect::types::ApiFinding;
 use calxgloss_callgraph::{CallGraphEdge, CallType, FunctionCallGraph};
@@ -575,4 +579,80 @@ async fn results_for_two_binaries_stay_independent() {
     assert_eq!(persistor.load("eqmain.dll").unwrap(), eqmain);
     assert_eq!(persistor.load("eqgame.dll").unwrap(), eqgame);
     assert!(!persistor.exists("other.dll"));
+}
+
+// ------------------------------------------------------------
+// FFI bindings artifact
+// ------------------------------------------------------------
+
+#[tokio::test]
+async fn the_ffi_bindings_artifact_regenerates_deterministically_from_a_loaded_document() {
+    // The JSON stays the single source of truth: the artifact is re-rendered
+    // from the loaded document, byte-identically, and nothing reads it back.
+    let workspace = TempDir::new().unwrap();
+    let persistor = ApiPersistor::new(workspace.path());
+    let result = ApiEngine::with_source(program())
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let first = render_ffi_bindings(&loaded);
+    let second = render_ffi_bindings(&loaded);
+    assert_eq!(
+        first, second,
+        "two renders of the same document are byte-identical"
+    );
+
+    // The unidentified imports — the vendor function and the decorated
+    // COM names — get extern declarations with sanitized identifiers;
+    // the identified imports are replaced by crates and excluded.
+    assert!(first.contains("fn VendorSpecialFunction();"), "{first}");
+    assert!(
+        first.contains("fn _QueryInterface_IDataSource_UEAAJPEAXPEAPEAX_Z();"),
+        "{first}"
+    );
+    assert!(
+        first.contains("fn _Release_IDataSource_UEAAKXZ();"),
+        "{first}"
+    );
+    assert!(
+        !first.contains("inflate"),
+        "the crate-replaced imports get no declaration: {first}"
+    );
+    assert!(
+        !first.contains("CreateFileA"),
+        "the crate-replaced imports get no declaration: {first}"
+    );
+    assert!(
+        !first.contains("fopen"),
+        "the crate-replaced imports get no declaration: {first}"
+    );
+}
+
+#[tokio::test]
+async fn two_separate_scans_render_byte_identical_bindings() {
+    // The promise a reviewer leans on: rescanning the program and
+    // re-rendering changes only what the scan actually learned, never
+    // the renderer's own ordering or formatting — and the header names
+    // only the binary, never either scan time.
+    let first = render_ffi_bindings(
+        &ApiEngine::with_source(program())
+            .scan("eqmain.dll")
+            .await
+            .expect("first scan"),
+    );
+    let second = render_ffi_bindings(
+        &ApiEngine::with_source(program())
+            .scan("eqmain.dll")
+            .await
+            .expect("second scan"),
+    );
+
+    assert_eq!(first, second);
+    assert!(
+        first.starts_with("// FFI bindings for eqmain.dll, rendered by `calxgloss apidetect`.\n"),
+        "{first}"
+    );
 }

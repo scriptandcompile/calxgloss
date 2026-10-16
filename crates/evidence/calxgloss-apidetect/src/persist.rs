@@ -6,6 +6,7 @@
 //! ```text
 //! re/analysis/apidetect/
 //!     └── {binary}.json
+//!     └── {binary}.rs   (derived: rendered FFI bindings, never read back)
 //! ```
 //!
 //! A persisted result doubles as a cache: [`exists`](Self::exists) is
@@ -125,6 +126,37 @@ impl ApiPersistor {
         info!(path = %path.display(), "Loading API detection result");
 
         Ok(self.store.load(binary)?)
+    }
+
+    /// Returns the path the rendered FFI bindings for `binary` are filed
+    /// under — the JSON document's path with a `.rs` extension, so the
+    /// two artifacts always sit side by side.
+    pub fn bindings_path_for(&self, binary: &str) -> PathBuf {
+        self.path_for(binary).with_extension("rs")
+    }
+
+    /// Whether rendered FFI bindings are persisted for `binary`.
+    pub fn bindings_exists(&self, binary: &str) -> bool {
+        self.bindings_path_for(binary).is_file()
+    }
+
+    /// Writes the rendered FFI bindings beside the JSON document.
+    ///
+    /// The file is a derived artifact: it is rewritten whole from the
+    /// loaded result on every scan and never read back, so a rescan
+    /// that changes nothing leaves a byte-identical file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if directory creation or file I/O fails.
+    pub fn save_bindings(&self, binary: &str, content: &str) -> Result<()> {
+        let path = self.bindings_path_for(binary);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        info!(path = %path.display(), "Writing FFI bindings");
+        std::fs::write(&path, content)?;
+        Ok(())
     }
 }
 
@@ -281,6 +313,42 @@ mod tests {
         persistor.save(&sample_result("eqmain.dll")).unwrap();
         assert!(persistor.exists("eqmain.dll"));
         assert!(!persistor.exists("other.dll"));
+    }
+
+    #[test]
+    fn save_bindings_files_the_bindings_beside_the_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let persistor = ApiPersistor::new(dir.path());
+
+        persistor
+            .save_bindings("eqmain.dll", "// bindings\n")
+            .unwrap();
+
+        let expected = dir
+            .path()
+            .join("re")
+            .join("analysis")
+            .join("apidetect")
+            .join("eqmain.dll.rs");
+        assert_eq!(persistor.bindings_path_for("eqmain.dll"), expected);
+        let text = std::fs::read_to_string(&expected).unwrap();
+        assert_eq!(text, "// bindings\n");
+    }
+
+    #[test]
+    fn bindings_exists_tracks_whether_bindings_are_persisted() {
+        let dir = tempfile::tempdir().unwrap();
+        let persistor = ApiPersistor::new(dir.path());
+
+        assert!(!persistor.bindings_exists("eqmain.dll"));
+        persistor
+            .save_bindings("eqmain.dll", "// bindings\n")
+            .unwrap();
+        assert!(persistor.bindings_exists("eqmain.dll"));
+        assert!(
+            !persistor.bindings_exists("renderer.dll"),
+            "other binaries keep their own bindings"
+        );
     }
 
     #[test]
