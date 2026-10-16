@@ -18,7 +18,7 @@
 
 pub mod engine;
 pub mod error;
-mod specs;
+pub(crate) mod specs;
 
 pub use engine::{KUNA_RELEASE, KunaProgram, load};
 pub use error::{KunaError, Result};

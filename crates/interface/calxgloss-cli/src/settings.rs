@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use calxgloss_config::{
-    EXAMPLE, AnalysisSection, FileConfig, GhidraSection, Layers, LlmSection, LoadedConfig,
+    AnalysisSection, EXAMPLE, FileConfig, GhidraSection, Layers, LlmSection, LoadedConfig,
     Resolved, defaults,
 };
 

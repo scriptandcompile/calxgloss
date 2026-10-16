@@ -92,4 +92,4 @@ mod schema;
 pub use error::ConfigError;
 pub use layers::{Layers, Resolved, Source};
 pub use loader::{LoadedConfig, PROJECT_FILE, load};
-pub use schema::{EXAMPLE, AnalysisSection, FileConfig, GhidraSection, LlmSection};
+pub use schema::{AnalysisSection, EXAMPLE, FileConfig, GhidraSection, LlmSection};

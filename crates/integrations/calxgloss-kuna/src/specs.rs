@@ -136,9 +136,15 @@ fn acquire(lock: &fs::File) -> std::result::Result<(), String> {
 }
 
 /// Write every file plus the completion marker into the staging tree.
-fn write_tree(staging: &Path, id: &str, files: &[(&str, &[u8])]) -> std::result::Result<(), String> {
+fn write_tree(
+    staging: &Path,
+    id: &str,
+    files: &[(&str, &[u8])],
+) -> std::result::Result<(), String> {
     for (rel, bytes) in files {
-        let path = rel.split('/').fold(staging.to_path_buf(), |p, part| p.join(part));
+        let path = rel
+            .split('/')
+            .fold(staging.to_path_buf(), |p, part| p.join(part));
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
@@ -153,7 +159,7 @@ mod tests {
 
     #[test]
     fn the_unpacked_tree_carries_the_compiled_x86_specs() {
-        let base = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().expect("temp dir");
         let dir = unpack(base.path(), generated::ID, generated::FILES).expect("unpack");
         assert!(dir.join(COMPLETE).is_file());
         let languages = dir.join("Ghidra/Processors/x86/data/languages");

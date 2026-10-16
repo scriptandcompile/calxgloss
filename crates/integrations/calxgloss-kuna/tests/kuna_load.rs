@@ -30,9 +30,9 @@ fn the_fixture_target_loads_and_reports_its_identity() {
 
 #[test]
 fn an_unloadable_target_fails_by_name_naming_the_ghidra_fallback() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("not-a-binary.dll");
-    std::fs::write(&path, b"just text, not a PE").unwrap();
+    std::fs::write(&path, b"just text, not a PE").expect("write the junk file");
 
     let error = calxgloss_kuna::load(&path).expect_err("text is not loadable");
     assert!(

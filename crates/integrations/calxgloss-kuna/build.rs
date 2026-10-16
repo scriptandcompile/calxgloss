@@ -136,7 +136,10 @@ fn collect(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
     for entry in fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
         let entry = entry.expect("directory entry");
         let path = entry.path();
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
         if name.starts_with('.') {
             continue;
         }
@@ -144,7 +147,10 @@ fn collect(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
             collect(root, &path, out);
             continue;
         }
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default();
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default();
         if !path.is_file() || SKIPPED_EXTENSIONS.contains(&ext) {
             continue;
         }
