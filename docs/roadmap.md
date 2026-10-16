@@ -31,13 +31,12 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| X4 | Architecture diagrams in source docs match implementation | docs | — | ⬜ not started | `/to-spec` when picked up | — |
 | X5 | Kuna decompiler engine behind the `ScanSource` seam (`analysis.engine = ghidra \| kuna`) | integrations (new `calxgloss-kuna`) | — | ⬜ not started | `/to-tickets` — spec published | [#203](https://github.com/scriptandcompile/calxgloss/issues/203) |
 
-Legend: ✅ done · 🔶 in progress · ⬜ not started. Rows X4–X5 are open
-future-work items — cross-cutting chores — verified still open in the code
-(2026-10-08); no effort estimates yet. X5's spec shipped early (2026-10-16,
-#203); the others still await `/to-spec`. P2.5 (typeinfer Phase 5) shipped through #150 and was
+Legend: ✅ done · 🔶 in progress · ⬜ not started. Row X5 is an open
+future-work item — a cross-cutting chore — verified still open in the code
+(2026-10-08); no effort estimate yet. X5's spec shipped early (2026-10-16,
+#203). P2.5 (typeinfer Phase 5) shipped through #150 and was
 pruned from this matrix when epic #142 closed (2026-10-14); P3.5 (algorithm
 Phase 5) shipped through #156 and was pruned when epic #151 closed
 (2026-10-14); P4.5 (memory Phase 5) shipped through #162 and was pruned when
@@ -51,11 +50,9 @@ shipped through #188 and was pruned when epic #183 closed (2026-10-15);
 P10.5 (consts Phase 5) shipped through #195 and was pruned when epic #189
 closed (2026-10-16); P11.5 (serialize Phase 5) shipped through #202 and was
 pruned when epic #197 closed (2026-10-16); X3 (data_flow.md methodology
-update) shipped untracked — docs-only chore — and was pruned (2026-10-16).
-
-## X4 — Architecture diagrams (docs)
-
-Architecture diagrams in source docs match implementation.
+update) shipped untracked — docs-only chore — and was pruned (2026-10-16);
+X4 (architecture diagrams audit) shipped untracked — docs-only chore — and
+was pruned (2026-10-16).
 
 ## X5 — Kuna decompiler engine (integrations)
 

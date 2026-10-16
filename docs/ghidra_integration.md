@@ -98,25 +98,39 @@ Notes:
   `get_current_function`) are GUI-only. `probe()` must branch on server kind —
   headless uses `check_connection` + `get_current_program_info` instead.
 
-### 3.2 New module `calxgloss-ghidra::lifecycle` (or crate `calxgloss-ghidra-launcher`)
+### 3.2 New module `calxgloss-ghidra::lifecycle` (shipped as a module; the launcher-crate alternative was not taken)
 
 ```text
 lifecycle/
   install.rs     GhidraInstall::discover()      — $GHIDRA_INSTALL_DIR → config
-                 ghidra.install_dir → glob ~/*ghidra_*_PUBLIC (highest semver).
-                 Version parsed from dir name; validate Ghidra/Framework exists.
+                 ghidra.install_dir → calxgloss install prefix → glob
+                 ~/*ghidra_*_PUBLIC (highest semver). Version parsed from dir
+                 name; validate Ghidra/Framework exists.
   extension.rs   Extension::discover(ghidra_ver) — ~/.config/ghidra/
                  ghidra_<ver>_PUBLIC/Extensions/GhidraMCP/extension.properties.
                  Checks: present, built for this Ghidra version, plugin ≥ MIN_PLUGIN (6.0).
   discovery.rs   scan $XDG_RUNTIME_DIR/ghidra-mcp/ghidra-<pid>.sock → live PIDs
                  (kill -0 / /proc) + query each UDS for its TCP port/project.
                  Used to auto-correct a stale configured port.
+  manifest.rs    ghidra-install.json (~/.local/share/calxgloss/) — records what
+                 calxgloss installed, where; lets doctor tell a managed install
+                 from a user-managed one, and upgrades replace the right dir.
+  releases.rs    GitHub releases API — source of truth for the download URL and
+                 sha256 digest of both bootstrap artifacts.
+  bootstrap.rs   `calxgloss doctor --fix` runs this: plugin-first bootstrap from
+                 nothing installed to a working, paired Ghidra + GhidraMCP pair.
   server.rs      HeadlessServer::start(cfg) — build the java command exactly as
                  docker/entrypoint.sh does (ext jar + Ghidra jar globs on -cp,
                  -Dghidra.home), tokio::process::Command, stdout/stderr →
                  <repo>/re/ghidra/headless.log, pid file re/ghidra/headless.pid,
                  kill_on_drop; then poll /check_connection with backoff (≤ ~90 s
                  JVM+Ghidra boot).
+  session.rs     GhidraSession::ensure() — the preflight every Ghidra-dependent
+                 command starts from: attach to a running server or spawn a
+                 headless one, with ownership tracked explicitly.
+  program.rs     wrong-program guard — pin the current program before any scan
+                 (the 2026-10-08 incident fix: the bridge answering one scan's
+                 listing from one program and its name searches from another).
   project.rs     ensure_project(client, path, binaries) —
                  get_project_info; if not this project → open_project; if the
                  .gpr doesn't exist on disk → create_project.

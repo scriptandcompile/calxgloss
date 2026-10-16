@@ -21,47 +21,51 @@ Build an agent harness that leverages GhidraMCP to reverse engineer project exec
 ## Architecture
 
 ```
-┌───────────────────────────────────────────────────────────────────────────────┐
-│                        Agent Harness                                          │
-│                                                                               │
-│  ┌───────────┐   ┌───────────┐   ┌──────────────────────┐                    │
-│  │  GhidraMCP │──▶│ Decompiler│──▶│  Disassembly/IR      │                    │
-│  │   Bridge   │   │ Pipeline  │   │  Extraction           │                    │
-│  └───────────┘   └───────────┘   └──────────┬───────────┘                    │
-│                                              │                                 │
-│  ┌───────────┐    ┌───────────┐              ▼                                │
-│  │ Git Branch │◀───│  LLM      │    ┌──────────────────────┐                   │
-│  │  Manager   │    │  Pipeline │    │  Behavior Testing     │                   │
-│  │            │    │           │    │  Layer                │                   │
-│  └───────────┘    └───────────┘    └──────────┬───────────┘                   │
-│       │              │                         │                                │
-│       │              ▼                         ▼                                │
-│       │    ┌─────────────────┐       ┌─────────────────┐                       │
-│       │    │  Fault          │       │  Rust Code      │                       │
-│       │    │  Detection &    │       │  Generation      │                       │
-│       │    │  Recovery       │       │                  │                       │
-│       │    └─────────────────┘       └────────┬────────┘                       │
-│       │                                        │                                │
-│       │              ┌─────────────────────────▼───────────────────┐            │
-│       │              │         LLM Orchestration Engine             │            │
-│       │              │  - Prompt scheduling, context management     │            │
-│       │              │  - Token tracking, retry/fallback logic      │            │
-│       │              │  - Branch per function, commit per unit      │            │
-│       │              └─────────────────────────────────────────────┘            │
-│       │                                        │                                │
-│       │                                        ▼                                │
-│  ┌──────────────────────────────────────────────────────────┐                  │
-│  │  Restitch Engine ──▶ Compilation ──▶ Verification Loop   │                  │
-│  └──────────────────────────────────────────────────────────┘                  │
-│                                                                               │
-│  ┌─────────────────────────────────────────────────────┐                       │
-│  │              Web Review UI                           │                       │
-│  │  - Unit diff view with justifications                │                       │
-│  │  - Dependency graph visualization                     │                       │
-│  │  - Accept/reject/work-on-it actions                   │                       │
-│  └─────────────────────────────────────────────────────┘                       │
-└───────────────────────────────────────────────────────────────────────────────┘
+  ┌────────────────────────────────────────────────────┐     ┌────────────────────────────────┐
+  │                   calxgloss-cli                    │     │         calxgloss-web          │
+  │ init · doctor · classify · translate · auto · live │     │ review: accept · send back ·   │
+  │ batch-translate · serve · dashboard · verify · gc  │     │ patch · skip · override        │
+  │ typesdb · typeinfer · algorithm · memory · sync    │     │ pipeline: pause · resume ·     │
+  │ consts · callback · controlflow · stringctx        │     │ stop · start · cancel-current  │
+  │ apidetect · serialize · config · auto-shim         │     │ Axum + React SPA               │
+  └────────────────────────────────────────────────────┘     └────────────────────────────────┘
+                             ▲                                               ▲
+                             │                                               │
+                             ▼                                               ▼
+  ┌───────────────────────────────────────────────────────────────────────────────────────────┐
+  │                      calxgloss-translator — the translation pipeline                      │
+  │ read cache ▸ evidence warmup ▸ fetch ▸ prompt ▸ translate ▸ verify ▸ retry ▸ commit       │
+  │ batch warmup: the 11 evidence scans · failure-informed retries · tier escalation          │
+  │ Windows API calls mapped through calxgloss-pal                                            │
+  └───────────────────────────────────────────────────────────────────────────────────────────┘
+           ▲                          ▲                          ▲                    ▲
+           │                          │                          │                    │
+           │                          │                          │                    │
+  ┌────────────────┐   ┌────────────────────────────┐  ┌──────────────────┐  ┌────────────────┐
+  │calxgloss-ghidra│   │      evidence engines      │  │calxgloss-prompts │  │calxgloss-llm   │
+  │ HTTP client +  │   │ analysis · callgraph       │  │ 5 context tiers  │  │ fault monitors:│
+  │ lifecycle owner│   │ typesdb · typeinfer        │  │ askama templates │  │ hallucination, │
+  │ (ADR-0007)     │   │ algorithm · memory         │  │                  │  │ infinite loop, │
+  │                │   │ sync · consts · callback   │  │                  │  │ divergence,    │
+  │                │   │ controlflow · stringctx    │  │                  │  │ exhaustion     │
+  │                │   │ apidetect · serialize      │  │                  │  │                │
+  └────────────────┘   └────────────────────────────┘  └──────────────────┘  └────────────────┘
+           │          attach or spawn headless (ADR-0007)
+                                                                                      │
+  ┌────────────────┐                                                         ┌────────────────┐
+  │ Ghidra +       │                                                         │Local LLM server│
+  │GhidraMCP bridge│                                                         │ Ollama · vLLM  │
+  └────────────────┘                                                         └────────────────┘
+
+  Foundation: calxgloss-types (shared types) · calxgloss-config (layered settings) ·
+  calxgloss-testgen (FFI bindings & baseline tests) · calxgloss-verify (compile & test) ·
+  calxgloss-git (branch per function attempt) · calxgloss-reports (terminal output)
 ```
+
+The original design's **Restitch Engine** (Phase 6 — swapping translated
+functions back into a working binary) is not yet implemented: the dashboard
+reports it as a phase with no backing data source until the engine exists.
+Everything else in the diagram above is shipped.
 
 ## LLM Orchestration & Fault Tolerance
 

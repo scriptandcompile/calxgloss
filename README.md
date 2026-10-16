@@ -21,32 +21,41 @@ Calxgloss reverse engineers project executables and DLLs, transforming disassemb
 ## Architecture
 
 ```
-  ┌────────────────────────────────────────────────────┐      ┌──────────────────────────────────┐
-  │                   calxgloss-cli                    │      │          calxgloss-web           │
-  │ translate · batch · classify · auto · serve · live │      │accept · send back · request patch│
-  └────────────────────────────────────────────────────┘      └──────────────────────────────────┘
-                             │                                               ▲
+  ┌────────────────────────────────────────────────────┐     ┌────────────────────────────────┐
+  │                   calxgloss-cli                    │     │         calxgloss-web          │
+  │ init · doctor · classify · translate · auto · live │     │ review: accept · send back ·   │
+  │ batch-translate · serve · dashboard · verify · gc  │     │ patch · skip · override        │
+  │ typesdb · typeinfer · algorithm · memory · sync    │     │ pipeline: pause · resume ·     │
+  │ consts · callback · controlflow · stringctx        │     │ stop · start · cancel-current  │
+  │ apidetect · serialize · config · auto-shim         │     │ Axum + React SPA               │
+  └────────────────────────────────────────────────────┘     └────────────────────────────────┘
+                             ▲                                               ▲
                              │                                               │
-                             ▼                                               │
-  ┌────────────────────────────────────────────────────────────────────────────────────────┐
-  │                    calxgloss-translator — the translation pipeline                     │
-  │                  fetch ▸ prompt ▸ translate ▸ verify ▸ retry ▸ commit                  │
-  │                    compile-fix retries · failure-informed prompting                    │
-  └────────────────────────────────────────────────────────────────────────────────────────┘
-           ▲                        ▲                        ▲                    ▲
-           │                        │                        │                    │
-           │                        │                        │                    │
-  ┌────────────────┐   ┌────────────────────────┐  ┌──────────────────┐  ┌────────────────┐
-  │                │   │    evidence engines    │  │                  │  │                │
-  │calxgloss-ghidra│   │  analysis · callgraph  │  │calxgloss-prompts │  │ calxgloss-llm  │
-  │  HTTP client   │   │  typeinfer · typesdb   │  │  calxgloss-pal   │  │ fault monitors │
-  │                │   │   algorithm · memory   │  │                  │  │                │
-  └────────────────┘   └────────────────────────┘  └──────────────────┘  └────────────────┘
-           │                                                                      │
-  ┌────────────────┐                                                     ┌────────────────┐
-  │     Ghidra     │                                                     │Local LLM server│
-  │GhidraMCP bridge│                                                     │ Ollama · vLLM  │
-  └────────────────┘                                                     └────────────────┘
+                             ▼                                               ▼
+  ┌───────────────────────────────────────────────────────────────────────────────────────────┐
+  │                      calxgloss-translator — the translation pipeline                      │
+  │ read cache ▸ evidence warmup ▸ fetch ▸ prompt ▸ translate ▸ verify ▸ retry ▸ commit       │
+  │ batch warmup: the 11 evidence scans · failure-informed retries · tier escalation          │
+  │ Windows API calls mapped through calxgloss-pal                                            │
+  └───────────────────────────────────────────────────────────────────────────────────────────┘
+           ▲                          ▲                          ▲                    ▲
+           │                          │                          │                    │
+           │                          │                          │                    │
+  ┌────────────────┐   ┌────────────────────────────┐  ┌──────────────────┐  ┌────────────────┐
+  │calxgloss-ghidra│   │      evidence engines      │  │calxgloss-prompts │  │calxgloss-llm   │
+  │ HTTP client +  │   │ analysis · callgraph       │  │ 5 context tiers  │  │ fault monitors:│
+  │ lifecycle owner│   │ typesdb · typeinfer        │  │ askama templates │  │ hallucination, │
+  │ (ADR-0007)     │   │ algorithm · memory         │  │                  │  │ infinite loop, │
+  │                │   │ sync · consts · callback   │  │                  │  │ divergence,    │
+  │                │   │ controlflow · stringctx    │  │                  │  │ exhaustion     │
+  │                │   │ apidetect · serialize      │  │                  │  │                │
+  └────────────────┘   └────────────────────────────┘  └──────────────────┘  └────────────────┘
+           │          attach or spawn headless (ADR-0007)
+                                                                                      │
+  ┌────────────────┐                                                         ┌────────────────┐
+  │ Ghidra +       │                                                         │Local LLM server│
+  │GhidraMCP bridge│                                                         │ Ollama · vLLM  │
+  └────────────────┘                                                         └────────────────┘
 
   Foundation: calxgloss-types (shared types) · calxgloss-config (layered settings) ·
   calxgloss-testgen (FFI bindings & baseline tests) · calxgloss-verify (compile & test) ·
@@ -156,7 +165,7 @@ re-analysis, applied types, renames — while the binary's bytes stayed the same
 |-------|---------|
 | `calxgloss-types` | Shared data structures |
 | `calxgloss-config` | Layered configuration (flags, environment, TOML) |
-| `calxgloss-ghidra` | GhidraMCP HTTP client |
+| `calxgloss-ghidra` | GhidraMCP HTTP client + Ghidra server lifecycle owner (ADR-0007) |
 | `calxgloss-llm` | Local LLM client (Ollama/vLLM) |
 | `calxgloss-prompts` | Prompt templates |
 | `calxgloss-pal` | Windows API → Rust mappings |

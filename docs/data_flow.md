@@ -36,7 +36,7 @@
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Lifecycle:** The server starts first and waits for connections. The auto pipeline then runs to completion (classification + batch translation). The pipeline runs inside a loop: when a run reaches a terminal state the process keeps serving, and the review UI's Start/Restart endpoints queue a `PipelineRunRequest` that re-runs the pipeline in-process. A shared `PipelineControl` state machine (Idle → Running → Paused → Stopping → Complete/Failed) is observed by the pipeline at unit boundaries and driven by the web server's pause/resume/stop endpoints. On `Ctrl+C` both tasks abort together.
+**Lifecycle:** The server starts first and waits for connections. The auto pipeline then runs to completion (classification + batch translation). The pipeline runs inside a loop: when a run reaches a terminal state the process keeps serving, and the review UI's Start/Restart endpoints queue a `PipelineRunRequest` that re-runs the pipeline in-process. A shared `PipelineControl` state machine (Idle → Running → Paused → Stopping → Complete/Error) is observed by the pipeline at unit boundaries and driven by the web server's pause/resume/stop endpoints. On `Ctrl+C` both tasks abort together.
 
 ---
 

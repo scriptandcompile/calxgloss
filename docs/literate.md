@@ -806,10 +806,11 @@ Flags > environment (`CALXGLOSS_GHIDRA_URL`, …) > config file
 (`./calxgloss.toml`) > built-in defaults. Secrets load but never print —
 `calxgloss config` shows `<set>`.
 
-The `Command` enum (`cli_types.rs:L224-L893`) is the full surface: `init`,
+The `Command` enum (`cli_types.rs:L224-L924`) is the full surface: `init`,
 `doctor` (read-only Ghidra-stack report, `--fix` bootstraps it), `classify`,
 `translate`, `batch-translate`, `auto`, `serve`, `live`, `verify`,
-`dashboard`, `view`, `accept`/`reject`/`accept-all`, `auto-shim`, `gc`,
+`dashboard` — whose `view`/`accept`/`reject`/`accept-all` subcommands live in
+`DashboardSubcommand` (`cli_types.rs:L928-L1018`) — `auto-shim`, `gc`,
 `config`, and one command per evidence engine (`typesdb`, `typeinfer`,
 `algorithm`, `memory`, `sync`, `consts`, `callback`, `controlflow`,
 `stringctx`, `apidetect`, `serialize`). The doc comments on the enum variants
@@ -934,6 +935,6 @@ honest statistics (tests at `fault.rs:L996-L1058`,
    git merge with conflict detection. The machine proposes; `main` decides.
 
 *Further reading:* `docs/Calxgloss.md` (design), `docs/data_flow.md`
-(the `live` workflow end to end), `docs/adr/` (the seventeen decisions),
+(the `live` workflow end to end), `docs/adr/` (the thirty-eight decisions),
 `GLOSSARY-MAP.md` (the domain vocabulary per context), and `graft/` (the
 generated per-file wiring cards this tour was built from).
