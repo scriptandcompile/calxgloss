@@ -35,7 +35,6 @@ use crate::model::{
     StructLayout, Symbol, Xref,
 };
 use calxgloss_kuna::KunaSource;
-use calxgloss_kuna::error::KunaError;
 
 /// The read-only program facts every evidence engine pulls from Ghidra.
 ///
@@ -191,7 +190,7 @@ impl ScanSource for KunaSource {
                     })
                     .collect()
             })
-            .map_err(map_kuna_error)
+            .map_err(GhidraError::from)
     }
 
     async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
@@ -202,7 +201,7 @@ impl ScanSource for KunaSource {
                 signature: function.signature,
                 body: function.body,
             })
-            .map_err(map_kuna_error)
+            .map_err(GhidraError::from)
     }
 
     async fn strings(&self) -> Result<Vec<StringLiteral>> {
@@ -246,7 +245,7 @@ impl ScanSource for KunaSource {
                     })
                     .collect()
             })
-            .map_err(map_kuna_error)
+            .map_err(GhidraError::from)
     }
 
     async fn exports(&self) -> Result<Vec<Symbol>> {
@@ -262,34 +261,17 @@ impl ScanSource for KunaSource {
                     })
                     .collect()
             })
-            .map_err(map_kuna_error)
+            .map_err(GhidraError::from)
     }
 
     async fn image_base(&self) -> Result<u64> {
-        KunaSource::image_base(self).await.map_err(map_kuna_error)
+        KunaSource::image_base(self)
+            .await
+            .map_err(GhidraError::from)
     }
 
     async fn read_memory(&self, _address: u64, _length: usize) -> Result<Vec<u8>> {
         Err(kuna_read_unsupported("read_memory"))
-    }
-}
-
-/// Map a Kuna engine failure onto the seam's error vocabulary.
-fn map_kuna_error(error: KunaError) -> GhidraError {
-    match error {
-        // A missing function is the same fact Ghidra reports, in the same
-        // shape — consumers already branch on NotFound for a bad name.
-        KunaError::FunctionNotFound { name } => GhidraError::NotFound {
-            kind: "function",
-            query: name,
-        },
-        // Every other Kuna failure is already a named, self-explaining
-        // message (each names the `--engine ghidra` fallback where it
-        // matters); it rides the seam as a reported explanation.
-        other => GhidraError::Reported {
-            status: None,
-            message: other.to_string(),
-        },
     }
 }
 

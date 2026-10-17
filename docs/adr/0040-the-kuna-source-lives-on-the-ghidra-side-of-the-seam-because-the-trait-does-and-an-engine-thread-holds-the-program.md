@@ -43,11 +43,12 @@ uses `std::sync::mpsc` — tokio's `blocking_recv` panics when called from
 inside a runtime, and the constructor may be called from one.
 
 **Container metadata comes from the `object` crate, not the engine.** Imports,
-exports, and the image base are read from the same file bytes by the engine
-thread, keeping the "wrong program is structurally impossible" guarantee
-(ADR-0039): one source, one file, one program. Import entries carry no
-address — the generic `object::read::Object::imports` yields none — and no
-consumer reads one.
+exports, and the image base are read from the file bytes captured on the
+engine thread beside the load itself — one snapshot, so no read can answer
+from bytes that drifted after the program loaded — keeping the "wrong program
+is structurally impossible" guarantee (ADR-0039): one source, one file, one
+program. Import entries carry no address — the generic
+`object::read::Object::imports` yields none — and no consumer reads one.
 
 ## Consequences
 

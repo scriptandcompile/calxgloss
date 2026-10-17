@@ -279,6 +279,29 @@ pub enum GhidraError {
     BootstrapBlocked { reason: String },
 }
 
+/// Fold a Kuna engine failure into the seam's error vocabulary (ADR-0039).
+///
+/// A missing function is the same fact Ghidra reports, in the same shape —
+/// consumers already branch on [`NotFound`](Self::NotFound) for a bad name.
+/// Every other Kuna failure is already a named, self-explaining message
+/// (each names the `--engine ghidra` fallback where it matters), so it rides
+/// the seam as a [`Reported`](Self::Reported) explanation with no HTTP
+/// status behind it.
+impl From<calxgloss_kuna::error::KunaError> for GhidraError {
+    fn from(error: calxgloss_kuna::error::KunaError) -> Self {
+        match error {
+            calxgloss_kuna::error::KunaError::FunctionNotFound { name } => GhidraError::NotFound {
+                kind: "function",
+                query: name,
+            },
+            other => GhidraError::Reported {
+                status: None,
+                message: other.to_string(),
+            },
+        }
+    }
+}
+
 // ============================================================
 // Configuration
 // ============================================================

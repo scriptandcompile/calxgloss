@@ -11,10 +11,11 @@
 //!
 //! Every engine call runs inside `catch_unwind` on the engine thread: an
 //! upstream panic costs one named [`KunaError::EngineFault`], never a process
-//! abort. The import, export, and image-base reads answer from the same file
-//! the engine loaded, through the `object` crate — the container tables the
-//! in-process program does not expose — and they run on the engine thread
-//! too, so every read of one source serializes against one program.
+//! abort. The import, export, and image-base reads answer through the
+//! `object` crate from the file bytes captured beside the load itself — the
+//! container tables the in-process program does not expose — so no read can
+//! answer from bytes that drifted after the program loaded, and every read
+//! of one source serializes against one program.
 //!
 //! The seam itself (`impl ScanSource for KunaSource`, and the
 //! `PipelineSource::Kuna` arm) lives in `calxgloss-ghidra`, beside every
@@ -240,6 +241,16 @@ fn engine_thread(
         entry: program.entry(),
         num_symbols: program.num_symbols(),
     };
+    // The container-table reads answer from the bytes captured here, beside
+    // the load itself: one file, one snapshot, so no read can ever answer
+    // from bytes that drifted after the program was loaded.
+    let container_bytes = match guard("container", || read_file(&path)).flatten() {
+        Ok(bytes) => bytes,
+        Err(fault) => {
+            let _ = handshake.send(Err(fault));
+            return;
+        }
+    };
     if handshake.send(Ok(info)).is_err() {
         return;
     }
@@ -252,13 +263,28 @@ fn engine_thread(
                 let _ = reply.send(guard("decompile", || decompile(&mut program, &name)).flatten());
             }
             Command::Imports(reply) => {
-                let _ = reply.send(guard("imports", || container_symbols(&path, true)).flatten());
+                let _ = reply.send(
+                    guard("imports", || {
+                        container_symbols(&path, &container_bytes, true)
+                    })
+                    .flatten(),
+                );
             }
             Command::Exports(reply) => {
-                let _ = reply.send(guard("exports", || container_symbols(&path, false)).flatten());
+                let _ = reply.send(
+                    guard("exports", || {
+                        container_symbols(&path, &container_bytes, false)
+                    })
+                    .flatten(),
+                );
             }
             Command::ImageBase(reply) => {
-                let _ = reply.send(guard("image_base", || container_image_base(&path)).flatten());
+                let _ = reply.send(
+                    guard("image_base", || {
+                        container_image_base(&path, &container_bytes)
+                    })
+                    .flatten(),
+                );
             }
         }
     }
@@ -330,9 +356,12 @@ fn decompile(program: &mut KunaProgram, name: &str) -> Result<KunaDecompiled> {
         want_pointer_arguments: false,
     };
     let mut results = kuna_console::project::decompile_targets_with(program, vec![entry], &options);
-    let result = results
-        .pop()
-        .expect("a one-target batch answers with exactly one result");
+    let Some(result) = results.pop() else {
+        return Err(KunaError::DecompileFailed {
+            name: name.to_string(),
+            reason: "the engine answered the one-target batch with no result".to_string(),
+        });
+    };
     let Some(body) = result.code else {
         return Err(KunaError::DecompileFailed {
             name: name.to_string(),
@@ -360,10 +389,10 @@ fn parse_container<'data>(data: &'data [u8], path: &Path) -> Result<object::read
     })
 }
 
-/// The import or export listing, from the container's tables.
-fn container_symbols(path: &Path, imported: bool) -> Result<Vec<KunaSymbol>> {
-    let bytes = read_file(path)?;
-    let file = parse_container(&bytes, path)?;
+/// The import or export listing, from the container's tables in the
+/// bytes captured at load time.
+fn container_symbols(path: &Path, data: &[u8], imported: bool) -> Result<Vec<KunaSymbol>> {
+    let file = parse_container(data, path)?;
     let symbols = if imported {
         file.imports()
             .map_err(table_error(path))?
@@ -388,16 +417,16 @@ fn container_symbols(path: &Path, imported: bool) -> Result<Vec<KunaSymbol>> {
     Ok(symbols)
 }
 
-/// The image base, from the PE optional header.
+/// The image base, from the PE optional header in the bytes captured at
+/// load time.
 ///
 /// PE is the only container reported today: it is the container the pinned
 /// engine's x86 specs actually scan, and the other formats' bases (ELF's
 /// first `PT_LOAD`, Mach-O's first non-zero segment) arrive with their
 /// languages. A non-PE target fails by name rather than answering a guess.
-fn container_image_base(path: &Path) -> Result<u64> {
+fn container_image_base(path: &Path, data: &[u8]) -> Result<u64> {
     use object::read::pe::{ImageNtHeaders, ImageOptionalHeader};
-    let bytes = read_file(path)?;
-    let file = parse_container(&bytes, path)?;
+    let file = parse_container(data, path)?;
     match &file {
         object::read::File::Pe32(pe) => Ok(pe.nt_headers().optional_header().image_base()),
         object::read::File::Pe64(pe) => Ok(pe.nt_headers().optional_header().image_base()),

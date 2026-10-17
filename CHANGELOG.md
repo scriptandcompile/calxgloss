@@ -9,24 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **KunaSource core scan path: the fixture scans end-to-end under `engine=kuna` (issue #206, epic X5/#203).**
-  `KunaSource` (`crates/integrations/calxgloss-kuna/src/source.rs`) holds an in-process Kuna
-  `ConsoleProgram` on a dedicated **engine thread** — the program is `!Send`, so commands travel
-  over a channel and every call runs inside ``catch_unwind``: an engine panic surfaces as
-  `KunaError::EngineFault { call, panic }` at the seam instead of aborting the process, and the
-  load itself runs on the engine thread so a panicking binary fails the constructor. It answers
-  the read seam (ADR-0039) for **functions** (Kuna's canonical function entries, synthetic
-  external slots excluded), **decompilation** (Kuna's C, mapped onto `DecompileResult`), with
-  `FunctionNotFound` → `GhidraError::NotFound` at the seam; **imports, exports, and the image
-  base** come from the `object` crate reading the same file bytes on the engine thread, keeping
-  ADR-0039's wrong-program guarantee. The `ScanSource` impl and the `PipelineSource::Kuna` arm
-  live in `calxgloss-ghidra` beside the trait — the dependency direction is ghidra → kuna, since
-  a kuna→ghidra impl would close a cycle (ADR-0040). Strings, xrefs, callers, data items, memory
-  reads, and type-library listings return **named errors** pointing at #207 with the
-  `--engine ghidra` fallback; write-back points at #209. `engine::load` now commits Kuna's
-  pending bootstrap analysis, mirroring the Kuna CLI's load sequence. The e2e test scans the
-  fixture through `PipelineSource::Kuna` and reads back the persisted `FunctionInfo` and
-  `DllInfo` records.
+- **Kuna engine scan path: the core scan reads answer under `--engine kuna` (issue #206, epic X5/#203).**
+  The Kuna engine now answers a scan's core reads from the in-process program: the function
+  listing, decompiled pseudo-C for a named function, the import and export tables, and the image
+  base. The program lives on a dedicated engine thread and every call is panic-guarded, so an
+  engine fault arrives as a named error naming the `--engine ghidra` fallback instead of taking
+  the process down; the container tables are read from the same file bytes the load used, so one
+  source answers from exactly one target. The remaining scan reads — strings, cross-references,
+  callers, data items, memory reads, and type-library listings — refuse by name and point at
+  #207, and type write-back points at #209; a scan of the fixture under `engine=kuna` now
+  persists its function and DLL-info records end-to-end.
 - **Kuna engine skeleton + engine selection (issue #205, epic X5/#203).** A new
   `calxgloss-kuna` crate loads a target binary **in-process** through the Kuna console
   engine — pinned to Kuna `v1.878` (Apache-2.0) as a git dependency — with the x86 SLEIGH
