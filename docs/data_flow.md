@@ -166,7 +166,7 @@ pipeline.batch_translate(binary, functions, …)
 ├──► begin_cached_source(binary)
 │    └─ Opens CachedScanSource over the KunaSource:
 │       a two-tier read-through cache for every engine read
-│       (memo → disk documents under re/decomp-cache/
+│       (memo → disk documents under re/cache/
 │       {binary identity}/{sha256}/ → engine read, write-through).
 │       Validity is the binary's SHA-256: changed bytes mean a
 │       different directory. --refresh-cache wipes and rewrites
@@ -624,8 +624,8 @@ The `ProgressState` in the web server maps `"binary/function"` keys to `Progress
 │   │   ├── prompt_strategy_log.json ← per-prompt strategy outcomes
 │   │   ├── fault_log.json           ← fault events with recovery guidance
 │   │   └── llm_io/log.jsonl         ← live-mode prompt/response log
-│   ├── decomp-cache/                ← two-tier scan read cache
-│   │   └── {binary identity}/       ← (historical name, ADR-0041)
+│   ├── cache/                       ← two-tier scan read cache
+│   │   └── {binary identity}/       ← one directory per target binary
 │   │       └── {sha256 of binary}/  ← manifest.json + per-read
 │   │           ├── functions.json   ←   documents: functions,
 │   │           ├── decompile/…      ←   decompile/{fn}.json,
@@ -806,7 +806,7 @@ calxgloss live --port 3000
 │     │         │     └─ ["DrawPrimitive", "DrawSprite", ...]
 │     │         │
 │     │         ├──► batch_translate warmup
-│     │         │     ├──► Open scan read cache (re/decomp-cache/)
+│     │         │     ├──► Open scan read cache (re/cache/)
 │     │         │     └──► ensure_* the 11 analysis scans
 │     │         │           (typesdb, typeinfer, algorithm, memory,
 │     │         │            sync, callback, controlflow, stringctx,

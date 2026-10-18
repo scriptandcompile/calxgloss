@@ -139,20 +139,21 @@ environment unless you pass `--workspace`.
 ### Scan Read Cache
 
 Batch runs (`batch-translate`, `auto`, `live`) cache every engine read under
-`re/decomp-cache/<binary>/<sha256>/` (renamed from `re/ghidra-cache/` in
-ADR-0042), keyed on the target binary's file bytes,
-the loaded program name, and the cache format version. A second batch over
-unchanged bytes replays from the cache with zero engine reads; changed bytes
-hash to a different directory, so stale entries never need invalidating.
+`re/cache/<binary>/<sha256>/` (the directory was `re/ghidra-cache/`, then
+`re/decomp-cache/`, until ADR-0043), keyed on the target binary's file
+bytes, the loaded program name, and the cache format version. A second batch
+over unchanged bytes replays from the cache with zero engine reads; changed
+bytes hash to a different directory, so stale entries never need
+invalidating.
 
 One case the cache cannot detect: the *analysis state* changed — re-analysis,
 applied types, renames — while the binary's bytes stayed the same. Two ways
 out:
 
 - run with `--refresh-cache` — the run wipes the cache directory for that
-  binary's current bytes (`re/decomp-cache/<binary>/<sha256>/`), reads
+  binary's current bytes (`re/cache/<binary>/<sha256>/`), reads
   everything from the engine once, and rewrites the cache for the next run;
-- delete `re/decomp-cache/<binary>/` by hand — every byte version of the
+- delete `re/cache/<binary>/` by hand — every byte version of the
   binary at once.
 
 ## Workspace Structure

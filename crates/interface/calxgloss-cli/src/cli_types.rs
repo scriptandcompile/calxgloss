@@ -161,7 +161,7 @@ pub(super) struct BatchTranslateArgs {
     pub(super) callgraph_verbose: bool,
 
     /// Force fresh engine reads, ignoring and rewriting the batch's scan
-    /// read cache (`re/decomp-cache/`)
+    /// read cache (`re/cache/`)
     ///
     /// The cache's manifest keys on the binary's bytes, so a hand-edited
     /// cache is not detected — use this after tampering with one.
@@ -714,7 +714,7 @@ pub(super) enum Command {
         callgraph_verbose: bool,
 
         /// Force fresh engine reads, ignoring and rewriting the batch's
-        /// scan read cache (`re/decomp-cache/`)
+        /// scan read cache (`re/cache/`)
         ///
         /// The cache's manifest keys on the binary's bytes, so a hand-edited
         /// cache is not detected — use this after tampering with one.
@@ -820,7 +820,7 @@ pub(super) enum Command {
         callgraph_verbose: bool,
 
         /// Force fresh engine reads, ignoring and rewriting the batch's
-        /// scan read cache (`re/decomp-cache/`)
+        /// scan read cache (`re/cache/`)
         ///
         /// The cache's manifest keys on the binary's bytes, so a hand-edited
         /// cache is not detected — use this after tampering with one.

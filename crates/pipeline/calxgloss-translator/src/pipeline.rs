@@ -4915,9 +4915,9 @@ mod tests {
     }
 
     /// The one scan-cache document directory the batch built under
-    /// `re/decomp-cache/{identity}/{sha256}/`.
+    /// `re/cache/{identity}/{sha256}/`.
     fn scan_cache_dir(workspace: &std::path::Path) -> std::path::PathBuf {
-        let root = workspace.join("re").join("decomp-cache");
+        let root = workspace.join("re").join("cache");
         let mut found = Vec::new();
         for identity in std::fs::read_dir(&root).expect("cache root").flatten() {
             for hash in std::fs::read_dir(identity.path())

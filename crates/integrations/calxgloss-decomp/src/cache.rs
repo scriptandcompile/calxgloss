@@ -9,7 +9,7 @@
 //! cache and a second run over the same bytes replays with zero engine calls.
 //!
 //! **Validity is the key.** The disk tier lives at
-//! `re/decomp-cache/{binary identity}/{sha256}/`, where the hash is SHA-256
+//! `re/cache/{binary identity}/{sha256}/`, where the hash is SHA-256
 //! over the target binary's file bytes. Changed bytes mean a different
 //! directory, so staleness needs no invalidation logic; old hash directories
 //! are kept (for switching back to a previous build) until pruned by hand.
@@ -18,12 +18,18 @@
 //! on any field (or a corrupt manifest) treats the directory as cold: it is
 //! wiped and rewritten, so a stale entry is never served. The format version
 //! went to 2 when Kuna became the only engine (issue #214): documents
-//! written by the retired Ghidra bridge are never replayed under Kuna. (The
-//! directory keeps its historical name; the rename is recorded as a deferral
-//! in ADR-0041.) It went to 3 when the function listing dropped the engine's
-//! import pointer slots: a v2 `functions` document still names every IAT
-//! slot, and a consumer that decompiles each listed name then spends one
-//! read per import on an entry the engine refuses.
+//! written by the retired Ghidra bridge are never replayed under Kuna. It
+//! went to 3 when the function listing dropped the engine's import pointer
+//! slots: a v2 `functions` document still names every IAT slot, and a
+//! consumer that decompiles each listed name then spends one read per
+//! import on an entry the engine refuses.
+//!
+//! **The directory has had three names** — `re/ghidra-cache` (ADR-0041's
+//! deferral), `re/decomp-cache` (ADR-0042's uptake), and `re/cache` from
+//! ADR-0043, which drops the engine-era qualifier entirely: the directory
+//! holds the scan read cache and nothing else lives under it. Each rename
+//! is a silent reset — a directory under an old name is never opened again,
+//! so it stays in the workspace as dead weight for its owner to delete.
 //!
 //! **Forcing a cold cache:** the `--refresh-cache` CLI flag (on
 //! `batch-translate`, `auto`, and `live`) routes the run through
@@ -126,7 +132,7 @@ pub struct CachedScanSource {
 #[derive(Debug)]
 struct Inner {
     source: KunaSource,
-    /// `re/decomp-cache/{identity}/{sha256}` — `None` when the binary file
+    /// `re/cache/{identity}/{sha256}` — `None` when the binary file
     /// was missing or unreadable, which drops the disk tier and leaves
     /// pass-through engine reads.
     cache_dir: Option<PathBuf>,
@@ -494,12 +500,15 @@ impl ScanSource for CachedScanSource {
 // Disk layout
 // ============================================================
 
-/// The cache convention: `{workspace}/re/decomp-cache`.
+/// The cache convention: `{workspace}/re/cache`.
 ///
-/// The directory was `re/ghidra-cache` until ADR-0042 renamed it; the cache
-///-format version marker inside it invalidates anything the old name held.
+/// The directory was `re/ghidra-cache`, then `re/decomp-cache` (ADR-0041's
+/// deferral, ADR-0042's uptake), and is `re/cache` from ADR-0043. The
+/// cache-format version marker inside a directory invalidates anything an
+/// old name held, and a directory under an old name is never opened again —
+/// it stays in the workspace for its owner to delete.
 fn cache_root(workspace: impl AsRef<Path>) -> PathBuf {
-    workspace.as_ref().join("re").join("decomp-cache")
+    workspace.as_ref().join("re").join("cache")
 }
 
 /// Where one key's document is filed inside a hash directory: whole-program
