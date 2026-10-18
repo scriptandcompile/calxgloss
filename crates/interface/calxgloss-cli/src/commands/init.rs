@@ -18,6 +18,10 @@ url = "http://127.0.0.1:8080"
 
 [analysis]
 # engine = "ghidra"          # ghidra | kuna — a run uses exactly one engine
+# Per-function budgets for the kuna engine (0 = no limit, unset = engine default)
+# max_fn_instructions = 100000
+# max_fn_seconds = 0
+# max_fn_memory_mib = 0
 
 [llm]
 url = ""

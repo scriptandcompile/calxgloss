@@ -11,26 +11,35 @@
 //! engine works unchanged under `engine = kuna`. Since #209 the type
 //! write-back seam answers too: Kuna never writes back into the image, so
 //! a write lands in a directive plane calxgloss owns and every load
-//! replays it (ADR-0039's state model). Only live-analysis commands —
+//! replays it (ADR-0039's state model). Since #211 a Kuna pass beats the
+//! same progress heartbeats a Ghidra pass does, and per-function
+//! decompile budgets from config bound one obfuscated function instead of
+//! the box. Only live-analysis commands —
 //! things that need a mutated saved program — still need the Ghidra engine.
 //!
 //! # Architecture
 //!
 //! - `error.rs` — `KunaError` and the crate-wide `Result` alias.
+//! - `budget.rs` — `KunaBudget`, the per-function decompile budgets armed
+//!   at load (issue #211).
 //! - `engine.rs` — `load` and the loaded-program handle `KunaProgram`.
 //! - `directives.rs` — the write-seam-to-directive compilers and the
 //!   `DirectivePlane` that mirrors them on a file in the record of effort.
 //! - `source.rs` — `KunaSource`, the actor thread that owns one program and
-//!   answers every scan read with panic isolation at the seam.
+//!   answers every scan read with panic isolation at the seam; it also
+//!   carries the analysis-pass heartbeat the Ghidra client carries (issue
+//!   #211).
 //! - `specs.rs` — the embedded compiled SLEIGH tree and its cache unpacker
 //!   (provisioned by `build.rs`).
 
+pub mod budget;
 pub mod directives;
 pub mod engine;
 pub mod error;
 pub mod source;
 pub(crate) mod specs;
 
+pub use budget::KunaBudget;
 pub use directives::{DirectiveOutcome, DirectivePlane, KunaNewField, directive_file_path};
 pub use engine::{KUNA_PIN_REV, KUNA_RELEASE, KunaProgram, load};
 pub use error::{KunaError, Result};

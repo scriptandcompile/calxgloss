@@ -90,6 +90,11 @@ impl Layers {
                 },
                 analysis: AnalysisSection {
                     engine: var("CALXGLOSS_ANALYSIS_ENGINE"),
+                    // Budgets are file-only: they belong with the engine choice
+                    // in the config file, not the environment.
+                    max_fn_instructions: None,
+                    max_fn_seconds: None,
+                    max_fn_memory_mib: None,
                 },
             },
             file: FileConfig::default(),
@@ -420,6 +425,28 @@ java_home = "/usr/lib/jvm/java-21"
         let path = write(dir.path(), "c.toml", "[analysis]\nengine = \"kuna\"\n");
         let c = load(Some(&path)).unwrap().file;
         assert_eq!(c.analysis.engine.as_deref(), Some("kuna"));
+    }
+
+    #[test]
+    fn test_the_decompile_budget_keys_come_from_the_file_layer() {
+        // Issue #211: the per-function budgets ride with the engine choice.
+        let dir = tempfile::tempdir().unwrap();
+        let toml = "[analysis]\nmax_fn_instructions = 5000\nmax_fn_seconds = 30\nmax_fn_memory_mib = 512\n";
+        let path = write(dir.path(), "c.toml", toml);
+        let c = load(Some(&path)).unwrap().file;
+        assert_eq!(c.analysis.max_fn_instructions, Some(5000));
+        assert_eq!(c.analysis.max_fn_seconds, Some(30));
+        assert_eq!(c.analysis.max_fn_memory_mib, Some(512));
+    }
+
+    #[test]
+    fn test_a_wrongly_typed_decompile_budget_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(dir.path(), "c.toml", "[analysis]\nmax_fn_seconds = \"30\"\n");
+        assert!(matches!(
+            load(Some(&path)),
+            Err(ConfigError::Invalid { .. })
+        ));
     }
 
     #[test]

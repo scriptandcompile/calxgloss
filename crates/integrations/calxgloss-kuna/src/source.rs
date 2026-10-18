@@ -38,16 +38,30 @@
 //! loop to apply; a struct-field addition regenerates the owning record,
 //! which takes effect on the next load — Kuna refuses to re-body a
 //! completed record.
+//!
+//! The pass heartbeat and the decompile budgets (issue #211): a scan pass
+//! arms the source with [`begin_pass`](KunaSource::begin_pass), and while
+//! armed every completed decompile beats a throttled
+//! [`ProgressEvent::BatchProgress`] in the same shape the Ghidra client
+//! emits, so the web UI and logs see identical progress semantics whichever
+//! engine answers. Per-function instruction/time/memory budgets
+//! ([`KunaBudget`]) are armed at load; a function that trips one fails with
+//! the named [`KunaError::DecompileBudgetExceeded`] instead of hanging or
+//! exhausting the box.
 
 use object::read::Object;
 use std::collections::BTreeMap;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
+use calxgloss_types::{BinaryIdentity, ProgressEvent, TranslationEvents};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::budget::KunaBudget;
 use crate::directives::{self, DirectiveOutcome, DirectivePlane, KunaNewField};
 use crate::engine::{self, KunaProgram};
 use crate::error::{KunaError, Result};
@@ -277,6 +291,32 @@ struct SourceInner {
     identity: String,
     entry: Option<u64>,
     num_symbols: usize,
+    /// Armed by `begin_pass` while an analysis pass walks the program;
+    /// clones share it so every handle to one source beats as one — the
+    /// same shape the Ghidra client's heartbeat carries (issue #211).
+    heartbeat: Mutex<Option<Arc<Heartbeat>>>,
+}
+
+/// Minimum gap between heartbeat beats for one pass — a 20k-function scan
+/// must not flood the event channel.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Shared state for one analysis pass's progress heartbeat.
+///
+/// A pass (`begin_pass`) arms the source: while armed, every completed
+/// decompile counts as one work item and beats a `BatchProgress` event,
+/// throttled to [`HEARTBEAT_INTERVAL`]. `list_functions` during the pass
+/// records the work list — its size is the total. Kuna decompiles by name,
+/// so the beat names the function the caller asked for directly; no
+/// address-to-name resolution is needed as the Ghidra client's needs.
+#[derive(Debug)]
+struct Heartbeat {
+    binary: BinaryIdentity,
+    pass: String,
+    events: TranslationEvents,
+    total: AtomicUsize,
+    index: AtomicUsize,
+    last_beat: Mutex<Option<Instant>>,
 }
 
 impl Clone for KunaSource {
@@ -326,6 +366,24 @@ impl KunaSource {
     /// half-understood plane must never replay as a quiet partial.
     /// `None` gives an in-memory plane that persists nowhere.
     pub fn load_with_directives(path: &Path, directive_file: Option<&Path>) -> Result<Self> {
+        Self::load_with_budget(path, directive_file, KunaBudget::default())
+    }
+
+    /// Load `path` with its directive plane and its per-function decompile
+    /// budgets armed (issue #211).
+    ///
+    /// The budgets are armed on the engine thread before the handshake, so
+    /// the first decompile the caller sees is already bounded; an unset
+    /// knob leaves Kuna's own default in force. A memory limit on a
+    /// platform that cannot read the process's resident set is refused by
+    /// name before anything spawns — [`KunaError::BudgetUnsupported`] —
+    /// because a watchdog that can never fire is a silent no-op.
+    pub fn load_with_budget(
+        path: &Path,
+        directive_file: Option<&Path>,
+        budget: KunaBudget,
+    ) -> Result<Self> {
+        budget.validate()?;
         let (tx, rx) = mpsc::unbounded_channel();
         // The handshake rides a plain std channel: its wait blocks the
         // calling thread wherever it is called, tokio runtime or not.
@@ -333,7 +391,9 @@ impl KunaSource {
         let engine_path = path.to_path_buf();
         let plane_file = directive_file.map(Path::to_path_buf);
         let plane_for_inner = plane_file.clone();
-        std::thread::spawn(move || engine_thread(engine_path, plane_file, rx, handshake_tx));
+        std::thread::spawn(move || {
+            engine_thread(engine_path, plane_file, budget, rx, handshake_tx)
+        });
         let handshake = handshake_rx
             .recv()
             .map_err(|_| KunaError::EngineUnavailable)??;
@@ -345,6 +405,7 @@ impl KunaSource {
                 identity: handshake.identity,
                 entry: handshake.entry,
                 num_symbols: handshake.num_symbols,
+                heartbeat: Mutex::new(None),
             }),
         })
     }
@@ -364,11 +425,84 @@ impl KunaSource {
         &self.inner.path
     }
 
+    // =========================================================
+    // Analysis-pass heartbeat (issue #211)
+    // =========================================================
+
+    /// Arm the heartbeat for one analysis pass over the loaded program.
+    ///
+    /// While armed, every completed decompile beats a
+    /// [`ProgressEvent::BatchProgress`] naming the pass and the function it
+    /// just pulled, in the same shape the Ghidra client emits — the web UI
+    /// and logs see identical progress semantics whichever engine answers.
+    /// One pass at a time: a new `begin_pass` replaces any pass left armed
+    /// by an error path that skipped [`end_pass`](Self::end_pass).
+    pub fn begin_pass(&self, binary: &str, pass: &str, events: &TranslationEvents) {
+        *self.inner.heartbeat.lock().expect("heartbeat lock") = Some(Arc::new(Heartbeat {
+            binary: binary.into(),
+            pass: pass.to_string(),
+            events: events.clone(),
+            total: AtomicUsize::new(0),
+            index: AtomicUsize::new(0),
+            last_beat: Mutex::new(None),
+        }));
+    }
+
+    /// Disarm the heartbeat — the pass is done, later reads are ordinary.
+    pub fn end_pass(&self) {
+        *self.inner.heartbeat.lock().expect("heartbeat lock") = None;
+    }
+
+    /// Record the pass's work list: its size is the total the beats count
+    /// against. `list_functions` notes it automatically during an armed
+    /// pass; the pipeline may also note the list it is walking itself.
+    pub(crate) fn note_worklist(&self, functions: &[KunaFunction]) {
+        if let Some(hb) = self.active_heartbeat() {
+            hb.total.store(functions.len(), Ordering::Relaxed);
+        }
+    }
+
+    /// Count one completed decompile and beat if due: always for the first
+    /// and last item, otherwise at most once per [`HEARTBEAT_INTERVAL`].
+    fn tick(&self, name: &str) {
+        let Some(hb) = self.active_heartbeat() else {
+            return;
+        };
+        let index = hb.index.fetch_add(1, Ordering::Relaxed) + 1;
+        let total = hb.total.load(Ordering::Relaxed);
+        let now = Instant::now();
+        let due = index == 1
+            || (total > 0 && index == total)
+            || hb
+                .last_beat
+                .lock()
+                .expect("last_beat lock")
+                .map(|t| now.duration_since(t) >= HEARTBEAT_INTERVAL)
+                .unwrap_or(true);
+        if !due {
+            return;
+        }
+        *hb.last_beat.lock().expect("last_beat lock") = Some(now);
+        hb.events.emit(ProgressEvent::BatchProgress {
+            binary: hb.binary.clone(),
+            pass: hb.pass.clone(),
+            function: name.to_string(),
+            index,
+            total,
+        });
+    }
+
+    fn active_heartbeat(&self) -> Option<Arc<Heartbeat>> {
+        self.inner.heartbeat.lock().expect("heartbeat lock").clone()
+    }
+
     /// Every defined function in the program, in listing order.
     pub async fn list_functions(&self) -> Result<Vec<KunaFunction>> {
         let (reply, answer) = oneshot::channel();
         self.send(Command::Functions(reply))?;
-        answer.await.map_err(|_| KunaError::EngineUnavailable)?
+        let list = answer.await.map_err(|_| KunaError::EngineUnavailable)??;
+        self.note_worklist(&list);
+        Ok(list)
     }
 
     /// The pseudo-C for one function, by name.
@@ -378,7 +512,13 @@ impl KunaSource {
             name: name.to_string(),
             reply,
         })?;
-        answer.await.map_err(|_| KunaError::EngineUnavailable)?
+        let outcome = answer.await.map_err(|_| KunaError::EngineUnavailable)?;
+        // The round trip completed — one work item of any armed pass done,
+        // whether or not the engine answered with a body: a function that
+        // tripped a budget or refused still consumed its slot, so the
+        // pass's progress must move (issue #211).
+        self.tick(name);
+        outcome
     }
 
     /// Every import in the container's import table.
@@ -610,6 +750,7 @@ impl KunaSource {
 fn engine_thread(
     path: PathBuf,
     directive_file: Option<PathBuf>,
+    budget: KunaBudget,
     mut rx: mpsc::UnboundedReceiver<Command>,
     handshake: std::sync::mpsc::Sender<Result<Handshake>>,
 ) {
@@ -624,6 +765,9 @@ fn engine_thread(
             return;
         }
     };
+    // The budgets arm before the handshake, so the first decompile the
+    // caller sees is already bounded (issue #211).
+    budget.apply(&mut program);
     // The write-back plane opens with the program: an existing file
     // replays through the engine's assertion plane before the handshake,
     // so the session the caller sees already carries its recorded writes.
@@ -894,11 +1038,23 @@ fn decompile(program: &mut KunaProgram, name: &str) -> Result<KunaDecompiled> {
         });
     };
     let Some(body) = result.code else {
-        return Err(KunaError::DecompileFailed {
-            name: name.to_string(),
-            reason: result
-                .error
-                .unwrap_or_else(|| "the engine produced no output".to_string()),
+        let reason = result
+            .error
+            .unwrap_or_else(|| "the engine produced no output".to_string());
+        // A budget trip is Kuna's watchdog stopping one function, not the
+        // engine failing on it: name the budget so the run degrades per
+        // function instead of treating it as an ordinary refusal
+        // (issue #211).
+        return Err(match budget_trip(&reason) {
+            Some(budget) => KunaError::DecompileBudgetExceeded {
+                name: name.to_string(),
+                budget,
+                reason,
+            },
+            None => KunaError::DecompileFailed {
+                name: name.to_string(),
+                reason,
+            },
         });
     };
     let signature = result
@@ -910,6 +1066,26 @@ fn decompile(program: &mut KunaProgram, name: &str) -> Result<KunaDecompiled> {
         signature,
         body,
     })
+}
+
+/// Which per-function budget a Kuna refusal names, if it is a watchdog
+/// trip (issue #211).
+///
+/// Kuna's budget failures carry fixed explain strings from the engine's
+/// watchdogs — the flow's instruction bound, the `kuna_fn_budget` deadline,
+/// and the `kuna_fnmemory` resident-set limit. Matching them turns a
+/// capped function into a named budget failure the run can degrade past,
+/// rather than an ordinary decompile failure.
+fn budget_trip(error: &str) -> Option<&'static str> {
+    if error.contains("Flow exceeded maximum allowable instructions") {
+        Some("instruction")
+    } else if error.contains("per-function decompile budget exceeded") {
+        Some("time")
+    } else if error.contains("per-function memory limit exceeded") {
+        Some("memory")
+    } else {
+        None
+    }
 }
 
 /// Parse the same file the engine loaded, for the container-table reads.
@@ -1814,5 +1990,161 @@ mod tests {
             );
             assert!(item.address >= base, "a global sits in the image: {item:?}");
         }
+    }
+
+    // The pass heartbeat and the decompile budgets (issue #211).
+
+    #[tokio::test]
+    async fn heartbeat_beats_per_decompile_only_while_a_kuna_pass_is_active() {
+        // The same shape the Ghidra client's heartbeat test asserts: one
+        // beat per completed decompile inside the pass, resolved names,
+        // and nothing outside it.
+        let (path, _) = fixture_bytes();
+        let source = KunaSource::load(&path).expect("the fixture must load");
+        let events = TranslationEvents::new(64);
+        let mut rx = events.subscribe();
+        let names = calxgloss_testfixtures::EXPORT_NAMES;
+
+        source.begin_pass("fixture_target.dll", "type inference", &events);
+        source.note_worklist(&[
+            KunaFunction {
+                name: names[0].into(),
+                address: 0,
+            },
+            KunaFunction {
+                name: names[1].into(),
+                address: 0,
+            },
+        ]);
+        source
+            .decompile_function(names[0])
+            .await
+            .expect("the first fixture export decompiles");
+        source
+            .decompile_function(names[1])
+            .await
+            .expect("the second fixture export decompiles");
+        source.end_pass();
+        source
+            .decompile_function(names[2])
+            .await
+            .expect("the third fixture export decompiles");
+
+        let beats: Vec<ProgressEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert_eq!(beats.len(), 2, "one beat per decompile inside the pass");
+        match &beats[0] {
+            ProgressEvent::BatchProgress {
+                binary,
+                pass,
+                function,
+                index,
+                total,
+            } => {
+                assert_eq!(binary.as_str(), "fixture_target.dll");
+                assert_eq!(pass, "type inference");
+                assert_eq!(function, names[0]);
+                assert_eq!(*index, 1);
+                assert_eq!(*total, 2);
+            }
+            other => panic!("expected BatchProgress, got {other:?}"),
+        }
+        match &beats[1] {
+            ProgressEvent::BatchProgress {
+                function,
+                index,
+                total,
+                ..
+            } => {
+                assert_eq!(function, names[1]);
+                assert_eq!(*index, 2);
+                assert_eq!(*total, 2);
+            }
+            other => panic!("expected BatchProgress, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_budget_capped_function_fails_with_a_named_budget_error() {
+        // One instruction of flow budget cannot cover any real fixture
+        // body: the function fails by name, the run survives, and the
+        // error names the knob to raise and the engine to fall back to.
+        let (path, _) = fixture_bytes();
+        let source = KunaSource::load_with_budget(
+            &path,
+            None,
+            KunaBudget {
+                max_instructions: Some(1),
+                ..KunaBudget::default()
+            },
+        )
+        .expect("the fixture loads with a budget armed");
+        let error = source
+            .decompile_function("fixture_describe")
+            .await
+            .expect_err("a one-instruction budget must cap the function");
+        match &error {
+            KunaError::DecompileBudgetExceeded { name, budget, .. } => {
+                assert_eq!(name, "fixture_describe");
+                assert_eq!(budget, &"instruction", "the flow bound tripped: {error}");
+            }
+            other => panic!("expected a DecompileBudgetExceeded, got {other:?}"),
+        }
+        let message = error.to_string();
+        assert!(
+            message.contains("[analysis]") && message.contains("--engine ghidra"),
+            "the message names the knob to raise and the fallback: {message}"
+        );
+        // The rest of the run degrades past it, not into a hang: an
+        // unbudgeted read still answers over the same source.
+        source
+            .image_base()
+            .await
+            .expect("the source still answers after one function tripped");
+    }
+
+    #[test]
+    fn a_time_budget_trip_is_named_as_a_time_budget() {
+        // The wall-clock watchdog is armed on the architecture and checked
+        // cooperatively at the drive's loop boundaries; a spent deadline
+        // fails the function with Kuna's own budget message, which the
+        // seam names as the time budget.
+        let mut program = fixture_program();
+        program.program.arch_mut().kuna_fn_budget = Some(Duration::ZERO);
+        let error = decompile(&mut program, "fixture_tick")
+            .expect_err("a spent deadline must cap the function");
+        match &error {
+            KunaError::DecompileBudgetExceeded { name, budget, reason } => {
+                assert_eq!(name, "fixture_tick");
+                assert_eq!(budget, &"time", "the deadline tripped: {reason}");
+                assert!(
+                    reason.contains("per-function decompile budget exceeded"),
+                    "Kuna's own explanation is carried: {reason}"
+                );
+            }
+            other => panic!("expected a DecompileBudgetExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn budget_trips_are_named_and_ordinary_refusals_are_not() {
+        // The three watchdogs Kuna's engine reports, and one refusal that
+        // is not a trip at all.
+        assert_eq!(
+            budget_trip("Flow exceeded maximum allowable instructions"),
+            Some("instruction")
+        );
+        assert_eq!(
+            budget_trip("per-function decompile budget exceeded (120 s)"),
+            Some("time")
+        );
+        assert_eq!(
+            budget_trip("per-function memory limit exceeded (512 MiB)"),
+            Some("memory")
+        );
+        assert_eq!(
+            budget_trip("Could not follow flow into unimplemented instruction"),
+            None,
+            "an ordinary engine refusal stays an ordinary failure"
+        );
     }
 }

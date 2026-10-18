@@ -35,6 +35,19 @@ pub struct AnalysisSection {
     /// exactly one engine; `kuna` is a skeleton in this release, so commands
     /// it does not serve yet fail by name rather than falling back.
     pub engine: Option<String>,
+
+    /// Per-function instruction budget for the Kuna engine — the control-flow
+    /// walk stops after this many instructions and the function fails by name.
+    /// Kuna's own default applies when unset; `0` means "no limit".
+    pub max_fn_instructions: Option<u64>,
+
+    /// Per-function wall-clock budget, in seconds, for the Kuna engine.
+    /// Kuna's own default (no limit) applies when unset; `0` means "no limit".
+    pub max_fn_seconds: Option<u64>,
+
+    /// Per-function resident-memory budget, in MiB, for the Kuna engine.
+    /// Kuna's own default (no limit) applies when unset; `0` means "no limit".
+    pub max_fn_memory_mib: Option<u64>,
 }
 
 /// The `[ghidra]` table.
@@ -147,6 +160,10 @@ url = "http://127.0.0.1:8080"
 
 [analysis]
 # engine = "ghidra"          # ghidra | kuna — a run uses exactly one engine
+# Per-function budgets for the kuna engine (0 = no limit, unset = engine default)
+# max_fn_instructions = 100000
+# max_fn_seconds = 0
+# max_fn_memory_mib = 0
 
 [llm]
 url  = "http://127.0.0.1:1919/v1"

@@ -571,6 +571,7 @@ name = "calxgloss-kuna"
 version = "0.3.0"
 dependencies = [
  "calxgloss-testfixtures",
+ "calxgloss-types",
  "kuna-analysis",
  "kuna-base",
  "kuna-console",

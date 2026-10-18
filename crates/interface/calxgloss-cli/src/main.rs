@@ -149,6 +149,11 @@ fn main() -> Result<()> {
         },
         analysis: AnalysisSection {
             engine: cli.engine.clone(),
+            // No flags for the budgets: they belong with the engine choice in
+            // the config file (issue #211), not on every command line.
+            max_fn_instructions: None,
+            max_fn_seconds: None,
+            max_fn_memory_mib: None,
         },
     };
     let settings = Settings::resolve(&layers, flags, &loaded);

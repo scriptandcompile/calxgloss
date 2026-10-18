@@ -96,6 +96,45 @@ pub enum KunaError {
         reason: String,
     },
 
+    /// The engine stopped decompiling one function because a per-function
+    /// budget tripped (issue #211).
+    ///
+    /// Kuna's watchdogs fail one function, not the run: the seam names
+    /// which budget stopped it so the scan records the function as a
+    /// per-function failure and keeps walking, and the operator can raise
+    /// the budget in the `[analysis]` config block instead of losing the
+    /// run to one obfuscated body.
+    #[error(
+        "the Kuna engine stopped decompiling '{name}': the {budget} budget tripped ({reason})\n\
+         raise the budget in the [analysis] config block, or re-run with --engine ghidra \
+         for the full pipeline"
+    )]
+    DecompileBudgetExceeded {
+        /// The function the decompile named.
+        name: String,
+        /// Which watchdog stopped it: `instruction`, `time`, or `memory`.
+        budget: &'static str,
+        /// Kuna's own explanation for the trip.
+        reason: String,
+    },
+
+    /// A budget knob the platform cannot enforce, refused at load.
+    ///
+    /// The memory watchdog decides by watching the process's resident set;
+    /// where that cannot be read the limit could never fire, so the knob
+    /// is refused by name rather than armed as a silent no-op — the same
+    /// refusal Kuna's CLI makes for `--max-fn-memory`.
+    #[error(
+        "the Kuna engine cannot enforce the {knob} budget on this platform: {reason}\n\
+         drop the setting, or re-run with --engine ghidra for the full pipeline"
+    )]
+    BudgetUnsupported {
+        /// The config knob that could not be armed.
+        knob: &'static str,
+        /// Why the platform cannot enforce it.
+        reason: String,
+    },
+
     /// No type in the engine's type manager carries the requested name.
     ///
     /// The seam maps this to the same `NotFound` a Ghidra miss becomes, so

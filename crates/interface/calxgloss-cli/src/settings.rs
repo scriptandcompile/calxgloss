@@ -77,6 +77,12 @@ pub struct Settings {
     pub workspace: Option<Resolved<String>>,
     /// The decompiler engine: `ghidra` (the default) or `kuna`.
     pub engine: Resolved<String>,
+    /// Per-function instruction budget for the Kuna engine, when configured.
+    pub max_fn_instructions: Option<Resolved<u64>>,
+    /// Per-function time budget, in seconds, for the Kuna engine, when configured.
+    pub max_fn_seconds: Option<Resolved<u64>>,
+    /// Per-function memory budget, in MiB, for the Kuna engine, when configured.
+    pub max_fn_memory_mib: Option<Resolved<u64>>,
     /// Where the configuration file was read from, for diagnostics.
     pub config_path: Option<PathBuf>,
     /// Every location that was checked for a configuration file.
@@ -110,6 +116,9 @@ impl Settings {
         } = flags.ghidra;
         let AnalysisSection {
             engine: flag_engine,
+            max_fn_instructions: flag_max_fn_instructions,
+            max_fn_seconds: flag_max_fn_seconds,
+            max_fn_memory_mib: flag_max_fn_memory_mib,
         } = flags.analysis;
 
         Self {
@@ -257,6 +266,26 @@ impl Settings {
                     Some(defaults::ANALYSIS_ENGINE.to_string()),
                 )
                 .expect("engine has a default"),
+            // Budgets have no calxgloss default: absence means "use Kuna's own",
+            // so they resolve with no default and stay unset until configured.
+            max_fn_instructions: layers.resolve(
+                flag_max_fn_instructions,
+                layers.env.analysis.max_fn_instructions,
+                layers.file.analysis.max_fn_instructions,
+                None,
+            ),
+            max_fn_seconds: layers.resolve(
+                flag_max_fn_seconds,
+                layers.env.analysis.max_fn_seconds,
+                layers.file.analysis.max_fn_seconds,
+                None,
+            ),
+            max_fn_memory_mib: layers.resolve(
+                flag_max_fn_memory_mib,
+                layers.env.analysis.max_fn_memory_mib,
+                layers.file.analysis.max_fn_memory_mib,
+                None,
+            ),
             config_path: loaded.path.clone(),
             config_searched: loaded.searched.clone(),
         }
@@ -308,6 +337,20 @@ impl Settings {
                  expected ghidra or kuna",
                 self.engine.source
             ),
+        }
+    }
+
+    /// Fold the configured budget knobs into the shape the Kuna engine takes.
+    ///
+    /// Unset knobs stay `None`, which leaves Kuna's own defaults in force;
+    /// the values pass through verbatim, including `0`'s "no limit" meaning.
+    /// The Kuna scan path that consumes this lands in #212.
+    #[allow(dead_code)] // consumed by the kuna scan wiring in #212
+    pub fn kuna_budget(&self) -> calxgloss_kuna::KunaBudget {
+        calxgloss_kuna::KunaBudget {
+            max_instructions: self.max_fn_instructions.as_ref().map(|r| r.value),
+            max_fn_seconds: self.max_fn_seconds.as_ref().map(|r| r.value),
+            max_fn_memory_mib: self.max_fn_memory_mib.as_ref().map(|r| r.value),
         }
     }
 
@@ -440,6 +483,15 @@ pub fn render(s: &Settings) -> String {
         out.push_str(&format!("  {name:<12} {:<34} ({})\n", r.value, r.source));
     }
 
+    /// Append a line for an optional non-string setting: an absent value is
+    /// "<not set>" with no source, like the string rows.
+    fn opt_num<T: std::fmt::Display>(out: &mut String, name: &str, r: Option<&Resolved<T>>) {
+        match r {
+            Some(r) => out.push_str(&format!("  {name:<12} {:<34} ({})\n", r.value, r.source)),
+            None => out.push_str(&format!("  {name:<12} <not set>\n")),
+        }
+    }
+
     out.push_str("target_dir\n");
     row(&mut out, "path", s.target_dir.as_ref(), false);
 
@@ -476,6 +528,9 @@ pub fn render(s: &Settings) -> String {
 
     out.push_str("\nanalysis\n");
     row(&mut out, "engine", Some(&s.engine), false);
+    opt_num(&mut out, "max_fn_instructions", s.max_fn_instructions.as_ref());
+    opt_num(&mut out, "max_fn_seconds", s.max_fn_seconds.as_ref());
+    opt_num(&mut out, "max_fn_memory_mib", s.max_fn_memory_mib.as_ref());
 
     out.push_str("\nllm\n");
     row(&mut out, "url", s.llm_url.as_ref(), false);
@@ -785,6 +840,7 @@ mod tests {
         let file = FileConfig {
             analysis: AnalysisSection {
                 engine: Some("kuna".into()),
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -799,12 +855,14 @@ mod tests {
         let file = FileConfig {
             analysis: AnalysisSection {
                 engine: Some("kuna".into()),
+                ..Default::default()
             },
             ..Default::default()
         };
         let flags = FileConfig {
             analysis: AnalysisSection {
                 engine: Some("ghidra".into()),
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -820,6 +878,7 @@ mod tests {
         let file = FileConfig {
             analysis: AnalysisSection {
                 engine: Some("ida".into()),
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -837,6 +896,7 @@ mod tests {
         let file = FileConfig {
             analysis: AnalysisSection {
                 engine: Some("kuna".into()),
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -852,5 +912,39 @@ mod tests {
         let out = render(&s);
         assert!(out.contains("analysis"), "{out}");
         assert!(out.contains("engine") && out.contains("ghidra"), "{out}");
+    }
+
+    #[test]
+    fn test_unset_budgets_fold_into_an_empty_kuna_budget() {
+        // Issue #211: absence means "leave Kuna's own defaults", so the
+        // folded budget carries no knobs and render reports none as set.
+        let s = settings_from(FileConfig::default(), FileConfig::default());
+        let budget = s.kuna_budget();
+        assert_eq!(budget, calxgloss_kuna::KunaBudget::default());
+        let out = render(&s);
+        assert!(out.contains("max_fn_instructions <not set>"), "{out}");
+        assert!(out.contains("max_fn_seconds <not set>"), "{out}");
+        assert!(out.contains("max_fn_memory_mib <not set>"), "{out}");
+    }
+
+    #[test]
+    fn test_the_budget_keys_come_from_the_file_layer_and_fold_into_the_kuna_budget() {
+        let file = FileConfig {
+            analysis: AnalysisSection {
+                max_fn_instructions: Some(5000),
+                max_fn_seconds: Some(30),
+                max_fn_memory_mib: Some(512),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let s = settings_from(FileConfig::default(), file);
+        assert_eq!(s.max_fn_instructions.as_ref().expect("set").source, Source::File);
+        let budget = s.kuna_budget();
+        assert_eq!(budget.max_instructions, Some(5000));
+        assert_eq!(budget.max_fn_seconds, Some(30));
+        assert_eq!(budget.max_fn_memory_mib, Some(512));
+        let out = render(&s);
+        assert!(out.contains("max_fn_seconds") && out.contains("30"), "{out}");
     }
 }
