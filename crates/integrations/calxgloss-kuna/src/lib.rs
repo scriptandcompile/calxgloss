@@ -4,18 +4,19 @@
 //! Kuna (Apache-2.0, `Noelo-Lab/kuna`, pinned to a release tag by ADR-0039)
 //! is a clean-room Ghidra decompiler in Rust, so unlike the GhidraMCP path
 //! there is no JVM, server, or bridge to reach: loading a target is a
-//! function call in this process. This crate is the seam that later tickets
-//! (#206–#213) build the full scan path on; since #206 it answers the core
-//! scan reads — functions, decompile, imports, exports, image base — from
-//! one loaded program, and every other command keeps running on the Ghidra
-//! engine.
+//! function call in this process. Since #206 it answers the core scan
+//! reads, and since #207 every read the `ScanSource` seam carries — the
+//! string listing, xrefs and callers, the type-library reads, data items,
+//! and raw memory — comes from that one loaded program, so each evidence
+//! engine works unchanged under `engine = kuna`. Only the Ghidra-specific
+//! write-back and live-analysis commands still need the Ghidra engine.
 //!
 //! # Architecture
 //!
 //! - `error.rs` — `KunaError` and the crate-wide `Result` alias.
 //! - `engine.rs` — `load` and the loaded-program handle `KunaProgram`.
 //! - `source.rs` — `KunaSource`, the actor thread that owns one program and
-//!   answers the core scan reads with panic isolation at the seam.
+//!   answers every scan read with panic isolation at the seam.
 //! - `specs.rs` — the embedded compiled SLEIGH tree and its cache unpacker
 //!   (provisioned by `build.rs`).
 
@@ -26,4 +27,7 @@ pub(crate) mod specs;
 
 pub use engine::{KUNA_RELEASE, KunaProgram, load};
 pub use error::{KunaError, Result};
-pub use source::{KunaDecompiled, KunaFunction, KunaSource, KunaSymbol};
+pub use source::{
+    KunaDataItem, KunaDataType, KunaDecompiled, KunaEnumDefinition, KunaEnumMember, KunaFunction,
+    KunaSource, KunaString, KunaStructField, KunaStructLayout, KunaSymbol, KunaXref,
+};

@@ -19,3 +19,7 @@ regex = { workspace = true }
 
 [dev-dependencies]
 calxgloss-analysis = { path = "../calxgloss-analysis" }
+# The Kuna engine and the fixture target, for the test proving the builder
+# reads the seam's Kuna path with no engine special case (issue #207).
+calxgloss-kuna = { path = "../../integrations/calxgloss-kuna" }
+calxgloss-testfixtures = { path = "../../integrations/calxgloss-testfixtures" }

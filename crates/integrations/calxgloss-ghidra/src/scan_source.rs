@@ -31,8 +31,8 @@
 use crate::cache::CachedGhidraSource;
 use crate::client::{GhidraClient, GhidraError, Result};
 use crate::model::{
-    DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, StringLiteral,
-    StructLayout, Symbol, Xref,
+    DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, EnumMember, FunctionSummary,
+    StringLiteral, StructFieldLayout, StructLayout, Symbol, Xref,
 };
 use calxgloss_kuna::KunaSource;
 
@@ -165,18 +165,14 @@ impl ScanSource for GhidraClient {
 
 /// The core scan reads answered by the in-process Kuna engine (issue #206).
 ///
-/// The five core reads — functions, decompile, imports, exports, image base —
-/// map straight onto [`KunaSource`]'s inherent API, with Kuna's named
-/// failures mapped onto the seam's error vocabulary: a missing function
-/// becomes [`GhidraError::NotFound`] like Ghidra's answer, and every other
-/// Kuna failure arrives as [`GhidraError::Reported`] whose message already
-/// names the `--engine ghidra` fallback.
-///
-/// The eight reads Kuna does not answer yet — the string listing, callers,
-/// xrefs, the Type Manager reads, data items, and raw memory — fail by name,
-/// naming issue #207 as the ticket that wires them up. They are errors, not
-/// empty listings: an empty answer would claim the program has no strings
-/// when the truth is that this engine cannot list them yet.
+/// Every read the trait carries maps onto [`KunaSource`]'s inherent API,
+/// with Kuna's named failures mapped onto the seam's error vocabulary: a
+/// missing function, type, or byte range becomes [`GhidraError::NotFound`]
+/// and a kind mismatch [`GhidraError::Malformed`] — the same facts the
+/// Ghidra bridge reports, so layout probes branch on one vocabulary
+/// whichever engine answers. Every other Kuna failure arrives as
+/// [`GhidraError::Reported`] whose message already names the
+/// `--engine ghidra` fallback.
 impl ScanSource for KunaSource {
     async fn functions(&self) -> Result<Vec<FunctionSummary>> {
         KunaSource::list_functions(self)
@@ -205,31 +201,128 @@ impl ScanSource for KunaSource {
     }
 
     async fn strings(&self) -> Result<Vec<StringLiteral>> {
-        Err(kuna_read_unsupported("strings"))
+        KunaSource::strings(self)
+            .await
+            .map(|strings| {
+                strings
+                    .into_iter()
+                    .map(|string| StringLiteral {
+                        address: string.address,
+                        value: string.value,
+                    })
+                    .collect()
+            })
+            .map_err(GhidraError::from)
     }
 
-    async fn callers(&self, _address: u64) -> Result<Vec<String>> {
-        Err(kuna_read_unsupported("callers"))
+    /// The names of the functions holding a reference to `address`, deduped
+    /// in first-reference order — the same shape the Ghidra client's
+    /// `callers` answers with, so the call-graph builder needs no engine
+    /// special case.
+    async fn callers(&self, address: u64) -> Result<Vec<String>> {
+        KunaSource::xrefs_to(self, address)
+            .await
+            .map(|xrefs| {
+                let mut names: Vec<String> = Vec::new();
+                for xref in xrefs {
+                    if let Some(name) = xref.function
+                        && !names.contains(&name)
+                    {
+                        names.push(name);
+                    }
+                }
+                names
+            })
+            .map_err(GhidraError::from)
     }
 
-    async fn xrefs_to(&self, _address: u64) -> Result<Vec<Xref>> {
-        Err(kuna_read_unsupported("xrefs_to"))
+    async fn xrefs_to(&self, address: u64) -> Result<Vec<Xref>> {
+        KunaSource::xrefs_to(self, address)
+            .await
+            .map(|xrefs| {
+                xrefs
+                    .into_iter()
+                    .map(|xref| Xref {
+                        address: xref.address,
+                        function: xref.function,
+                        kind: xref.kind,
+                    })
+                    .collect()
+            })
+            .map_err(GhidraError::from)
     }
 
-    async fn data_types(&self, _category: Option<&str>) -> Result<Vec<DataTypeEntry>> {
-        Err(kuna_read_unsupported("data_types"))
+    async fn data_types(&self, category: Option<&str>) -> Result<Vec<DataTypeEntry>> {
+        KunaSource::data_types(self, category)
+            .await
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .map(|entry| DataTypeEntry {
+                        name: entry.name,
+                        category: entry.category,
+                        size: entry.size,
+                        path: entry.path,
+                    })
+                    .collect()
+            })
+            .map_err(GhidraError::from)
     }
 
-    async fn struct_layout(&self, _name: &str) -> Result<StructLayout> {
-        Err(kuna_read_unsupported("struct_layout"))
+    async fn struct_layout(&self, name: &str) -> Result<StructLayout> {
+        KunaSource::struct_layout(self, name)
+            .await
+            .map(|layout| StructLayout {
+                name: layout.name,
+                size: layout.size,
+                alignment: layout.alignment,
+                fields: layout
+                    .fields
+                    .into_iter()
+                    .map(|field| StructFieldLayout {
+                        offset: field.offset,
+                        size: field.size,
+                        type_name: field.type_name,
+                        field_name: field.field_name,
+                    })
+                    .collect(),
+            })
+            .map_err(GhidraError::from)
     }
 
-    async fn enum_values(&self, _name: &str) -> Result<EnumDefinition> {
-        Err(kuna_read_unsupported("enum_values"))
+    async fn enum_values(&self, name: &str) -> Result<EnumDefinition> {
+        KunaSource::enum_values(self, name)
+            .await
+            .map(|definition| EnumDefinition {
+                name: definition.name,
+                size: definition.size,
+                members: definition
+                    .members
+                    .into_iter()
+                    .map(|member| EnumMember {
+                        name: member.name,
+                        value: member.value,
+                    })
+                    .collect(),
+            })
+            .map_err(GhidraError::from)
     }
 
     async fn data_items(&self) -> Result<Vec<DataItem>> {
-        Err(kuna_read_unsupported("data_items"))
+        KunaSource::data_items(self)
+            .await
+            .map(|items| {
+                items
+                    .into_iter()
+                    .map(|item| DataItem {
+                        label: item.label,
+                        address: item.address,
+                        type_name: item.type_name,
+                        length: item.length,
+                    })
+                    .collect()
+            })
+            .map_err(GhidraError::from)
     }
 
     async fn imports(&self) -> Result<Vec<Symbol>> {
@@ -270,19 +363,10 @@ impl ScanSource for KunaSource {
             .map_err(GhidraError::from)
     }
 
-    async fn read_memory(&self, _address: u64, _length: usize) -> Result<Vec<u8>> {
-        Err(kuna_read_unsupported("read_memory"))
-    }
-}
-
-/// The named refusal of a read the Kuna engine does not answer yet.
-fn kuna_read_unsupported(read: &str) -> GhidraError {
-    GhidraError::Reported {
-        status: None,
-        message: format!(
-            "the Kuna engine does not answer `{read}` reads yet (issue #207 wires up the \
-             remaining scan reads); re-run with --engine ghidra for the full pipeline"
-        ),
+    async fn read_memory(&self, address: u64, length: usize) -> Result<Vec<u8>> {
+        KunaSource::read_memory(self, address, length)
+            .await
+            .map_err(GhidraError::from)
     }
 }
 
@@ -296,10 +380,10 @@ fn kuna_read_unsupported(read: &str) -> GhidraError {
 /// answers every consumer, and a warm second batch over the same workspace and
 /// unchanged binary costs no live reads at all.
 ///
-/// `Kuna` is the third path (issue #206): the in-process Kuna engine, answering
-/// the core scan reads with no server at all. The reads it does not answer yet
-/// fail by name rather than going live — a Kuna batch never silently falls
-/// back to the Ghidra server mid-scan.
+/// `Kuna` is the third path (issues #206 and #207): the in-process Kuna
+/// engine, answering every scan read with no server at all. A Kuna batch
+/// never silently falls back to the Ghidra server mid-scan — it answers
+/// from one engine or fails by name.
 #[derive(Debug, Clone)]
 pub enum PipelineSource {
     /// No cache active — every read goes straight to the server.

@@ -95,6 +95,39 @@ pub enum KunaError {
         /// Kuna's own per-function explanation.
         reason: String,
     },
+
+    /// No type in the engine's type manager carries the requested name.
+    ///
+    /// The seam maps this to the same `NotFound` a Ghidra miss becomes, so
+    /// layout probes branch on one fact whichever engine answers.
+    #[error("the Kuna engine's type manager has no type named '{name}'")]
+    TypeNotFound {
+        /// The type name that was asked for.
+        name: String,
+    },
+
+    /// A named type exists but is not a structure, so no layout answers.
+    #[error("the Kuna engine's type manager has no structure named '{name}'")]
+    NotAStruct {
+        /// The name that resolved to some other kind of type.
+        name: String,
+    },
+
+    /// A named type exists but is not an enumeration, so no members answer.
+    #[error("the Kuna engine's type manager has no enumeration named '{name}'")]
+    NotAnEnum {
+        /// The name that resolved to some other kind of type.
+        name: String,
+    },
+
+    /// The requested byte range is not mapped in the loaded program.
+    #[error("the Kuna engine has no mapped bytes at {address:#x} for {length} bytes")]
+    MemoryUnmapped {
+        /// The address the read started at.
+        address: u64,
+        /// The length the read asked for.
+        length: usize,
+    },
 }
 
 /// The crate-wide result alias every Kuna entry point returns.

@@ -440,6 +440,8 @@ dependencies = [
  "anyhow",
  "calxgloss-analysis",
  "calxgloss-ghidra",
+ "calxgloss-kuna",
+ "calxgloss-testfixtures",
  "calxgloss-types",
  "regex",
  "serde",
@@ -569,8 +571,10 @@ name = "calxgloss-kuna"
 version = "0.3.0"
 dependencies = [
  "calxgloss-testfixtures",
+ "kuna-analysis",
  "kuna-base",
  "kuna-console",
+ "kuna-decomp",
  "kuna-slacomp",
  "object",
  "tempfile",
@@ -786,7 +790,9 @@ name = "calxgloss-typesdb"
 version = "0.3.0"
 dependencies = [
  "calxgloss-ghidra",
+ "calxgloss-kuna",
  "calxgloss-prompts",
+ "calxgloss-testfixtures",
  "calxgloss-types",
  "regex",
  "serde",

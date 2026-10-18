@@ -52,6 +52,11 @@ libc = "0.2"
 # are pinned; `crates/integrations/calxgloss-kuna` consumes them.
 kuna-base = { git = "https://github.com/Noelo-Lab/kuna", tag = "v1.878" }
 kuna-console = { git = "https://github.com/Noelo-Lab/kuna", tag = "v1.878" }
+# The analysis tier (string inventory, xref walk) and the decompiler substrate
+# (the interned type factory), which the seam's remaining scan reads answer
+# from (issue #207).
+kuna-analysis = { git = "https://github.com/Noelo-Lab/kuna", tag = "v1.878" }
+kuna-decomp = { git = "https://github.com/Noelo-Lab/kuna", tag = "v1.878" }
 # The SLEIGH compiler, used by calxgloss-kuna's build script to compile the
 # embedded x86 specs; a build-dependency only.
 kuna-slacomp = { git = "https://github.com/Noelo-Lab/kuna", tag = "v1.878" }

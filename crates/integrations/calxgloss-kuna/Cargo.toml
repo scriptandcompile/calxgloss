@@ -9,6 +9,8 @@ repository.workspace = true
 [dependencies]
 kuna-base = { workspace = true }
 kuna-console = { workspace = true }
+kuna-analysis = { workspace = true }
+kuna-decomp = { workspace = true }
 thiserror = { workspace = true }
 object = { workspace = true }
 tokio = { workspace = true }

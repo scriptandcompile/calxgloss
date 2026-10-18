@@ -281,12 +281,14 @@ pub enum GhidraError {
 
 /// Fold a Kuna engine failure into the seam's error vocabulary (ADR-0039).
 ///
-/// A missing function is the same fact Ghidra reports, in the same shape —
-/// consumers already branch on [`NotFound`](Self::NotFound) for a bad name.
-/// Every other Kuna failure is already a named, self-explaining message
-/// (each names the `--engine ghidra` fallback where it matters), so it rides
-/// the seam as a [`Reported`](Self::Reported) explanation with no HTTP
-/// status behind it.
+/// A missing function or type is the same fact Ghidra reports, in the same
+/// shape — consumers already branch on [`NotFound`](Self::NotFound) for a
+/// bad name, and the typesdb scanner's layout probes read a kind mismatch
+/// as [`Malformed`](Self::Malformed), exactly as the Ghidra bridge answers
+/// it. Every other Kuna failure is already a named, self-explaining
+/// message (each names the `--engine ghidra` fallback where it matters), so
+/// it rides the seam as a [`Reported`](Self::Reported) explanation with no
+/// HTTP status behind it.
 impl From<calxgloss_kuna::error::KunaError> for GhidraError {
     fn from(error: calxgloss_kuna::error::KunaError) -> Self {
         match error {
@@ -294,6 +296,24 @@ impl From<calxgloss_kuna::error::KunaError> for GhidraError {
                 kind: "function",
                 query: name,
             },
+            calxgloss_kuna::error::KunaError::TypeNotFound { name } => GhidraError::NotFound {
+                kind: "type",
+                query: name,
+            },
+            calxgloss_kuna::error::KunaError::NotAStruct { name } => GhidraError::Malformed {
+                kind: "structure layout",
+                detail: format!("the Kuna engine's type manager has no structure named '{name}'"),
+            },
+            calxgloss_kuna::error::KunaError::NotAnEnum { name } => GhidraError::Malformed {
+                kind: "enumeration",
+                detail: format!("the Kuna engine's type manager has no enumeration named '{name}'"),
+            },
+            calxgloss_kuna::error::KunaError::MemoryUnmapped { address, length } => {
+                GhidraError::NotFound {
+                    kind: "memory",
+                    query: format!("{address:#x} ({length} bytes)"),
+                }
+            }
             other => GhidraError::Reported {
                 status: None,
                 message: other.to_string(),
