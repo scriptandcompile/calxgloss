@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Kuna engine text dialects: consumers read Kuna's warning, name, and disassembly spellings (issue #210, epic X5/#203).**
+  Jump-table triage now fires on the Kuna dialect too: the scanner reads Kuna's inline
+  `// jt: jump-as-call` comment (bare slug and `warn:` fallback form included) as an unrecovered
+  jump table beside Ghidra's `Could not recover jumptable at 0x…` banner. Kuna's slug names no
+  address, so a triage entry's address is now optional and the pipeline logs that jump as an
+  unknown site, while Ghidra warnings still log their full address. The shared callee scraper
+  recognizes Kuna's lowercase `sub_<addr>` default function names beside Ghidra's `FUN_…`, so the
+  call graph's callee half populates over Kuna bodies. The STL/MFC shape detector pins that neither
+  engine's default names (`FUN_…`, `sub_…`, `dat_…`, `label_…`) carry a type shape. And test-input
+  extraction reads Kuna's uppercase SLEIGH disassembly with `0x` hex immediates — `CMP EAX,0x64`
+  yields the boundary value 100 — while the lowercase GhidraMCP spelling yields exactly what it
+  yielded before.
 - **Kuna engine write-back: type writes compile to directives and replay from the record of effort (issue #209, epic X5/#203).**
   Under `--engine kuna`, the type write-back seam now answers: setting a function's prototype,
   setting the type of one of a function's variables, and creating structures, enumerations,
