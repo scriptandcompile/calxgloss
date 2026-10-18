@@ -31,7 +31,7 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| X5 | Kuna decompiler engine behind the `ScanSource` seam — Kuna-only, Ghidra retired (#214) | integrations (`calxgloss-kuna`, seam `calxgloss-ghidra`) | — | ✅ done | #205–#214 shipped — close #203 | [#203](https://github.com/scriptandcompile/calxgloss/issues/203) |
+| X5 | Kuna decompiler engine behind the `ScanSource` seam — Kuna-only, Ghidra retired (#214) | integrations (`calxgloss-kuna`, seam `calxgloss-decomp`) | — | ✅ done | #205–#214 shipped — close #203 | [#203](https://github.com/scriptandcompile/calxgloss/issues/203) |
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started. Row X5 is done
 (engine skeleton + selection, #205, and the core scan reads, #206, shipped

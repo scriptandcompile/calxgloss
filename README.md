@@ -42,7 +42,7 @@ Calxgloss reverse engineers project executables and DLLs, transforming disassemb
            │                          │                          │                    │
            │                          │                          │                    │
   ┌────────────────┐   ┌────────────────────────────┐  ┌──────────────────┐  ┌────────────────┐
-  │calxgloss-ghidra│   │      evidence engines      │  │calxgloss-prompts │  │calxgloss-llm   │
+  │calxgloss-decomp│   │      evidence engines      │  │calxgloss-prompts │  │calxgloss-llm   │
   │ engine seam:   │   │ analysis · callgraph       │  │ 5 context tiers  │  │ fault monitors:│
   │ ScanSource ·   │   │ typesdb · typeinfer        │  │ askama templates │  │ hallucination, │
   │ TypeWriteSource│   │ algorithm · memory         │  │                  │  │ infinite loop, │
@@ -139,8 +139,8 @@ environment unless you pass `--workspace`.
 ### Scan Read Cache
 
 Batch runs (`batch-translate`, `auto`, `live`) cache every engine read under
-`re/ghidra-cache/<binary>/<sha256>/` (the directory keeps its historical name;
-its rename is deferred in ADR-0041), keyed on the target binary's file bytes,
+`re/decomp-cache/<binary>/<sha256>/` (renamed from `re/ghidra-cache/` in
+ADR-0042), keyed on the target binary's file bytes,
 the loaded program name, and the cache format version. A second batch over
 unchanged bytes replays from the cache with zero engine reads; changed bytes
 hash to a different directory, so stale entries never need invalidating.
@@ -150,9 +150,9 @@ applied types, renames — while the binary's bytes stayed the same. Two ways
 out:
 
 - run with `--refresh-cache` — the run wipes the cache directory for that
-  binary's current bytes (`re/ghidra-cache/<binary>/<sha256>/`), reads
+  binary's current bytes (`re/decomp-cache/<binary>/<sha256>/`), reads
   everything from the engine once, and rewrites the cache for the next run;
-- delete `re/ghidra-cache/<binary>/` by hand — every byte version of the
+- delete `re/decomp-cache/<binary>/` by hand — every byte version of the
   binary at once.
 
 ## Workspace Structure
@@ -161,7 +161,7 @@ out:
 |-------|---------|
 | `calxgloss-types` | Shared data structures |
 | `calxgloss-config` | Layered configuration (flags, environment, TOML) |
-| `calxgloss-ghidra` | Engine seam: `ScanSource`/`TypeWriteSource` + scan read cache (ADR-0041) |
+| `calxgloss-decomp` | Engine seam: `ScanSource`/`TypeWriteSource` + scan read cache (ADR-0041) |
 | `calxgloss-kuna` | Kuna analysis engine — PE loading, decompilation, the only engine (ADR-0041) |
 | `calxgloss-llm` | Local LLM client (Ollama/vLLM) |
 | `calxgloss-prompts` | Prompt templates |

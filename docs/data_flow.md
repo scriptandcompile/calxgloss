@@ -166,7 +166,7 @@ pipeline.batch_translate(binary, functions, …)
 ├──► begin_cached_source(binary)
 │    └─ Opens CachedScanSource over the KunaSource:
 │       a two-tier read-through cache for every engine read
-│       (memo → disk documents under re/ghidra-cache/
+│       (memo → disk documents under re/decomp-cache/
 │       {binary identity}/{sha256}/ → engine read, write-through).
 │       Validity is the binary's SHA-256: changed bytes mean a
 │       different directory. --refresh-cache wipes and rewrites
@@ -412,7 +412,7 @@ feeds the findings tied to a function into its translation prompts.
 
 **Shared plumbing:**
 
-- **`ScanSource` seam** (`crates/integrations/calxgloss-ghidra/src/scan_source.rs`) —
+- **`ScanSource` seam** (`crates/integrations/calxgloss-decomp/src/scan_source.rs`) —
   one trait for every read: `functions`, `decompile`, `strings`, `callers`,
   `xrefs_to`, `data_types`, `struct_layout`, `enum_values`, `data_items`,
   `imports`, `exports`, `image_base`, `read_memory`. Engines never talk HTTP;
@@ -624,7 +624,7 @@ The `ProgressState` in the web server maps `"binary/function"` keys to `Progress
 │   │   ├── prompt_strategy_log.json ← per-prompt strategy outcomes
 │   │   ├── fault_log.json           ← fault events with recovery guidance
 │   │   └── llm_io/log.jsonl         ← live-mode prompt/response log
-│   ├── ghidra-cache/                ← two-tier scan read cache
+│   ├── decomp-cache/                ← two-tier scan read cache
 │   │   └── {binary identity}/       ← (historical name, ADR-0041)
 │   │       └── {sha256 of binary}/  ← manifest.json + per-read
 │   │           ├── functions.json   ←   documents: functions,
@@ -685,7 +685,7 @@ The `ProgressState` in the web server maps `"binary/function"` keys to `Progress
 | GET | `/api/units/{id}` | Single unit detail (justification, diff, tests, history, persisted analysis context: API mappings + call graph) |
 | GET | `/api/units/{id}/diff` | Git diff between branch and main |
 | GET | `/api/units/{id}/attempts` / `attempts/diff` | Persisted attempt list + side-by-side diff |
-| GET | `/api/units/{id}/ghidra` | Unit's engine-side view (decompiled context for the unit) |
+| GET | `/api/units/{id}/decomp` | Unit's engine-side view (decompiled context for the unit) |
 | POST | `/api/units/{id}/accept` | Merge branch into main + write acceptance record |
 | POST | `/api/units/{id}/send-back` | Record rejection reason |
 | POST | `/api/units/{id}/patch` | Request retry translation |
@@ -806,7 +806,7 @@ calxgloss live --port 3000
 │     │         │     └─ ["DrawPrimitive", "DrawSprite", ...]
 │     │         │
 │     │         ├──► batch_translate warmup
-│     │         │     ├──► Open scan read cache (re/ghidra-cache/)
+│     │         │     ├──► Open scan read cache (re/decomp-cache/)
 │     │         │     └──► ensure_* the 11 analysis scans
 │     │         │           (typesdb, typeinfer, algorithm, memory,
 │     │         │            sync, callback, controlflow, stringctx,

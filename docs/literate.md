@@ -15,7 +15,7 @@ Calxgloss is a Cargo workspace of 27 crates in five contexts:
 crates/
 ├── calxgloss/          the meta-lib (one file of re-exports)
 ├── shared/             calxgloss-types, calxgloss-config
-├── integrations/       calxgloss-ghidra, -kuna, -llm, -pal, -prompts
+├── integrations/       calxgloss-decomp, -kuna, -llm, -pal, -prompts
 ├── evidence/           13 analysis engines (analysis, callgraph, typesdb, …)
 ├── pipeline/           calxgloss-translator, -verify, -testgen, -git
 └── interface/          calxgloss-cli, -web, -reports
@@ -97,9 +97,9 @@ pub struct FunctionInfo {
     pub name: String,
     pub address: u64,
     pub binary: BinaryIdentity,
-    /// Raw disassembly listing from Ghidra.
+    /// Raw disassembly listing from the decompiler.
     pub disassembly: String,
-    /// Pseudo-C decompiler output from Ghidra.
+    /// Pseudo-C decompiler output.
     pub decompiler_output: String,
     /// Windows API calls identified within this function, with their PAL mappings.
     pub windows_apis: Vec<WindowsApiCall>,
@@ -290,17 +290,17 @@ statement of the problem in the codebase, quoted in full:
 //!
 //! The obvious way to call an original function is to generate an
 //! `extern "C"` block and link against the DLL. That only works for *exported*
-//! symbols. The interesting functions in a real binary are internal: Ghidra
+//! symbols. The interesting functions in a real binary are internal: the decompiler
 //! names them `FUN_18008ed50` and they appear in no export table. Reaching them
 //! means loading the module at runtime and calling `module_base + rva`, which is
 //! what this module generates.
 //!
 //! # Address arithmetic
 //!
-//! Ghidra reports addresses at the image's preferred base, so the RVA is
-//! `va - image_base`. The image is normally *not* loaded at its preferred
-//! base — ASLR and Wine's allocator pick the address — so the runtime call
-//! target is `actual_base + rva`.
+//! The decompiler reports addresses at the image's preferred base, so the RVA is
+//! `va - image_base` (see [`crate::PeImage::rva_from_va`]). The image is
+//! normally *not* loaded at its preferred base — ASLR and Wine's allocator pick
+//! the address — so the runtime call target is `actual_base + rva`.
 ```
 
 Two load modes exist because Delphi binaries need runtime state a bare
@@ -338,7 +338,7 @@ pipeline itself is a struct of clients and optional controls
 // translate. … a `DelayLoad_` thunk is the classic trap: its resolved-import
 // jump decompiles to an unrecovered jumptable plus a bare `return`, and
 // the LLM faithfully translates the wreckage. Refuse before the
-// Ghidra fetch, before any token is spent.
+// scan fetch, before any token is spent.
 self.refuse_root_function(binary, function)?;
 ```
 
@@ -528,7 +528,7 @@ let (prompt, strategy_name) = match &current_strategy {
         // that quotes "Test 3: expected 30, got 0 — assertion failed".
         …
     }
-    RetryStrategy::Escalate => { /* rebuild the prompt with more Ghidra/workspace context */ }
+    RetryStrategy::Escalate => { /* rebuild the prompt with more decompiler/workspace context */ }
     RetryStrategy::EdgeCaseFix => { /* re-verify edge-case tests, prompt with those failures */ }
 };
 ```
