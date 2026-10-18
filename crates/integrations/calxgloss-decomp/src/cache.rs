@@ -87,8 +87,11 @@ use tracing::warn;
 /// marks the Kuna-only engine (issue #214): the Ghidra bridge's documents
 /// are never replayed under a different engine's decompiler. Version 3 marks
 /// the function listing without import pointer slots — a v2 listing names
-/// each IAT slot, and no `decompile` of one can succeed.
-const CACHE_FORMAT_VERSION: u32 = 3;
+/// each IAT slot, and no `decompile` of one can succeed. Version 4 marks the
+/// listing without ambiguous names either — a v3 listing names both thunk
+/// veneers of an import an MSVC link emitted twice, and the engine settles
+/// on neither, so no `decompile` of that name can succeed.
+const CACHE_FORMAT_VERSION: u32 = 4;
 
 /// The `manifest.json` beside a directory's cached documents. All three
 /// fields must match this run's facts for the directory to be warm; the
