@@ -62,6 +62,11 @@ tempfile = "3"
 # The fixture target binary the engine=kuna e2e scan runs against; the
 # reachability test below keeps that wiring honest.
 calxgloss-testfixtures = { path = "../../integrations/calxgloss-testfixtures" }
+# The engine=kuna e2e scan (issue #212): the seam, the Kuna engine behind
+# it, and the type-database scan whose record the run persists.
+calxgloss-ghidra = { path = "../../integrations/calxgloss-ghidra" }
+calxgloss-kuna = { path = "../../integrations/calxgloss-kuna" }
+calxgloss-typesdb = { path = "../../evidence/calxgloss-typesdb" }
 reqwest = { workspace = true, features = ["json", "stream"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tracing-subscriber = { workspace = true }
