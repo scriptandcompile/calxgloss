@@ -44,10 +44,12 @@ decompiler output is written in — `FUN_…`, `LAB_…`, `sub_…`, `uVar1`,
 `local_18`, `thunk_…`, `EXTERNAL:<ordinal>`, `vftable`, the `WARNING`
 banners, `size + -4`, `entry` — because Kuna reproduces that dialect
 (ADR-0041); the config's refusal of stale `[ghidra]` keys and
-`CALXGLOSS_GHIDRA_*` variables, which literally test those names; the
+`CALXGLOSS_GHIDRA_*` variables, which literally test those names; and the
 `Ghidra/Processors/x86` paths in the Kuna build, which are real spec-tree
-paths; and all historical records — CHANGELOG entries, ADRs, archived
-docs, and the Ghidra-era integration notes — left as written.
+paths. Historical records — CHANGELOG entries, ADRs, and archived docs —
+are left as written; the two bridge-era notes that sat loose in `docs/`,
+`ghidra_endpoint_map.md` and `ghidra_integration.md`, are deleted with
+this uptake, their surviving history being the ADRs and the changelog.
 
 ## Consequences
 
