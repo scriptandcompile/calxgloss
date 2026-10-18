@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Kuna engine progress heartbeats and per-function decompile budgets (issue #211, epic X5/#203).**
+  A `kuna` run beats like a Ghidra pass: `KunaSource::begin_pass`/`end_pass` bracket the pass, the
+  work list it notes sizes each beat, and every completed decompile inside the pass emits one
+  `ProgressEvent::BatchProgress` naming the binary, the pass, the function, and its `index`/`total`
+  in the list — nothing beats outside a pass, and the shape is the Ghidra client's. Kuna's three
+  per-function watchdogs are now calxgloss config: `[analysis] max_fn_instructions`,
+  `max_fn_seconds`, and `max_fn_memory_mib` fold into a `KunaBudget` the engine thread arms on the
+  loaded program before the session opens. A function that trips one fails by name —
+  `DecompileBudgetExceeded` says which knob tripped, the engine's own reason, the value to raise,
+  and `--engine ghidra` to fall back to — so one obfuscated function degrades per-function instead
+  of hanging or exhausting the box; a memory knob on a platform that cannot read the process
+  resident set is refused before the engine spawns (`BudgetUnsupported`). Unset knobs leave Kuna's
+  defaults (100 000 instructions, no time budget, no memory limit) and `0` means no limit, Kuna's
+  CLI convention. Ghidra's lifecycle and heartbeat code is untouched.
 - **Kuna engine text dialects: consumers read Kuna's warning, name, and disassembly spellings (issue #210, epic X5/#203).**
   Jump-table triage now fires on the Kuna dialect too: the scanner reads Kuna's inline
   `// jt: jump-as-call` comment (bare slug and `warn:` fallback form included) as an unrecovered
