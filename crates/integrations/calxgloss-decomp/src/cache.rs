@@ -18,9 +18,12 @@
 //! on any field (or a corrupt manifest) treats the directory as cold: it is
 //! wiped and rewritten, so a stale entry is never served. The format version
 //! went to 2 when Kuna became the only engine (issue #214): documents
-//! written by the retired Ghidra bridge are never replayed under Kuna.
-//! (The directory keeps its historical name; the rename is recorded as a
-//! deferral in ADR-0041.)
+//! written by the retired Ghidra bridge are never replayed under Kuna. (The
+//! directory keeps its historical name; the rename is recorded as a deferral
+//! in ADR-0041.) It went to 3 when the function listing dropped the engine's
+//! import pointer slots: a v2 `functions` document still names every IAT
+//! slot, and a consumer that decompiles each listed name then spends one
+//! read per import on an entry the engine refuses.
 //!
 //! **Forcing a cold cache:** the `--refresh-cache` CLI flag (on
 //! `batch-translate`, `auto`, and `live`) routes the run through
@@ -71,8 +74,10 @@ use tracing::warn;
 /// document's shape changes: every existing directory then reads as cold
 /// instead of serving records the new readers cannot interpret. Version 2
 /// marks the Kuna-only engine (issue #214): the Ghidra bridge's documents
-/// are never replayed under a different engine's decompiler.
-const CACHE_FORMAT_VERSION: u32 = 2;
+/// are never replayed under a different engine's decompiler. Version 3 marks
+/// the function listing without import pointer slots — a v2 listing names
+/// each IAT slot, and no `decompile` of one can succeed.
+const CACHE_FORMAT_VERSION: u32 = 3;
 
 /// The `manifest.json` beside a directory's cached documents. All three
 /// fields must match this run's facts for the directory to be warm; the
