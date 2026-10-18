@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Kuna engine scan path: scan records name their engine, release, and pin (issue #208, epic X5/#203).**
+  A scan record produced under `--engine kuna` now carries an `engine` provenance block naming the
+  engine (`kuna`), its release tag (`v1.878`), and the pinned source commit it was built against —
+  the pin is read from `Cargo.lock` at build time and exposed as `calxgloss_kuna::KUNA_PIN_REV`. The
+  identity arrives through a new default `ScanSource::engine_provenance` read the Kuna source
+  overrides and the pipeline forwards, and every evidence engine stamps it onto its `ScanMetadata`
+  at scan time. Ghidra scan records are untouched: the source names nothing, the field is skipped
+  when absent, and the JSON on disk stays byte-for-byte what it was.
 - **Kuna engine scan path: every scan read answers under `--engine kuna` (issue #207, epic X5/#203).**
   The Kuna engine now answers every read the scan seam carries: the string listing, cross-references
   and callers, the type-library listing, structure layouts including bitfields, enum members, data

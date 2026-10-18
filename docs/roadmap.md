@@ -31,11 +31,12 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| X5 | Kuna decompiler engine behind the `ScanSource` seam (`analysis.engine = ghidra \| kuna`) | integrations (new `calxgloss-kuna`) | — | 🔶 in progress | #205–#207 shipped — #208 next | [#203](https://github.com/scriptandcompile/calxgloss/issues/203) |
+| X5 | Kuna decompiler engine behind the `ScanSource` seam (`analysis.engine = ghidra \| kuna`) | integrations (new `calxgloss-kuna`) | — | 🔶 in progress | #205–#208 shipped — #209 next | [#203](https://github.com/scriptandcompile/calxgloss/issues/203) |
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started. Row X5 is in progress
 (engine skeleton + selection, #205, and the core scan reads, #206, shipped
-2026-10-16, and the full read-seam coverage, #207, shipped 2026-10-18);
+2026-10-16, and the full read-seam coverage, #207, and record provenance,
+#208, shipped 2026-10-18);
 no effort estimate yet.
 X5's spec shipped early (2026-10-16, #203). P2.5 (typeinfer Phase 5) shipped through #150 and was
 pruned from this matrix when epic #142 closed (2026-10-14); P3.5 (algorithm
