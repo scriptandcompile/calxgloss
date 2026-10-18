@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Kuna engine scan path: every scan read answers under `--engine kuna` (issue #207, epic X5/#203).**
+  The Kuna engine now answers every read the scan seam carries: the string listing, cross-references
+  and callers, the type-library listing, structure layouts including bitfields, enum members, data
+  items, and raw memory reads. The xref index is built lazily once on the engine thread and cached,
+  answering with the alias-class parity and named referring functions the Ghidra client's xrefs
+  carry, and the seam's callers dedup those names in the shape the call-graph builder consumes. The
+  type listing classifies the engine's interned types by kind with categories synthesized from the
+  kind, which keeps the data-structure-recovery scanner's layout probes always engaged, and type
+  misses arrive in the Ghidra path's NotFound/Malformed vocabulary so probes branch on one fact
+  whichever engine answers. The call-graph builder and the typesdb recovery pass now run over the
+  Kuna source with no engine special case, and the fixture drives all thirteen seam reads end to end.
 - **Kuna engine scan path: the core scan reads answer under `--engine kuna` (issue #206, epic X5/#203).**
   The Kuna engine now answers a scan's core reads from the in-process program: the function
   listing, decompiled pseudo-C for a named function, the import and export tables, and the image
