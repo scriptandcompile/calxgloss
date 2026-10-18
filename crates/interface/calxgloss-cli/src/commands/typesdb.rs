@@ -1,8 +1,8 @@
 //! The `typesdb` command — recover the per-binary type database.
 //!
-//! Runs the three recovery scans — named types from Ghidra's Type Manager,
-//! vtable detection, and string-guided struct inference — against the
-//! program currently open in Ghidra and saves the result to
+//! Runs the three recovery scans — named types from the engine's type
+//! system, vtable detection, and string-guided struct inference —
+//! against the loaded program and saves the result to
 //! `re/analysis/typesdb/{binary}.json` in the workspace. Batch translation
 //! runs the same recovery before its first batch when no database is
 //! cached; this command is the manual entry point: it rebuilds the
@@ -11,7 +11,6 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use calxgloss_typesdb::engine::TypesDBEngine;
 use calxgloss_typesdb::persist::TypeDatabasePersistor;
 use calxgloss_typesdb::rust_decls::render_rust_decls;
@@ -54,16 +53,9 @@ pub async fn handle_typesdb(
 
     info!(binary, workspace = %workspace.display(), "Recovering type database");
 
-    let ghidra_url = &settings.ghidra_url.value;
-    let mut config = GhidraConfig::new(ghidra_url)
-        .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
-    if let Some(key) = &settings.ghidra_api_key {
-        config = config.with_api_key(key.value.clone());
-    }
-    let ghidra = GhidraClient::from_config(config)
-        .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))?;
+    let kuna = load_kuna_source(settings, binary)?;
 
-    let mut engine = TypesDBEngine::new(&ghidra);
+    let mut engine = TypesDBEngine::new(&kuna);
     if no_tag {
         engine = engine.without_tagging();
     }

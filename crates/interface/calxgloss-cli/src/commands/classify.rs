@@ -32,21 +32,20 @@ pub async fn handle_classify(
 ) -> Result<()> {
     info!(count = dlls.len(), "Classifying DLLs");
 
-    // The session preflight (G1-T4): attach to a running GhidraMCP server or
-    // spawn a headless one. Ghidra is needed here only as the fallback when
-    // PE parsing fails, so no wrong-program guard runs — but the server still
-    // comes through `GhidraSession::ensure`, never a bare client.
+    // Kuna is the only analysis engine (issue #214): the analyzer reads
+    // through the seam. The classification counts themselves come from PE
+    // headers on disk; the primary DLL is loaded in-process so the
+    // analyzer has a live source for any engine read it makes.
     let primary = dlls.first().map(String::as_str).unwrap_or("classify");
-    let binaries: Vec<std::path::PathBuf> = dlls.iter().map(|d| target_dir.join(d)).collect();
-    let session = open_ghidra_session(settings, workspace, primary, &binaries, events).await?;
-    let ghidra = session.client().clone();
+    let kuna = load_kuna_at(settings, &target_dir.join(primary))?;
 
     // Initialize analyzer
     let api_mappings = ApiMappings::default();
     let overrides = classification_overrides
         .cloned()
         .unwrap_or_else(|| ClassificationOverrideControl::open(workspace));
-    let analyzer = Analyzer::new(ghidra, api_mappings).with_classification_overrides(overrides);
+    let analyzer = Analyzer::new(calxgloss_ghidra::PipelineSource::from(kuna), api_mappings)
+        .with_classification_overrides(overrides);
 
     // Symbol counts come from PE headers on disk — accurate per-DLL.
     let classifications = analyzer.classify_dlls(dlls, target_dir).await?;
@@ -150,9 +149,6 @@ pub async fn handle_classify(
 
     // Print report
     print_classification_report(&classifications, &report);
-
-    // Release the server if we spawned it; an attached one is left running.
-    session.shutdown().await;
 
     info!(count = classifications.len(), "Classification complete");
     Ok(())

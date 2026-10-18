@@ -2,7 +2,7 @@
 //!
 //! Analyzes mutex/lock usage, atomic operations, threading
 //! constructs, and thread-local storage within each function of an
-//! open Ghidra program. Results are injected as structured
+//! open program. Results are injected as structured
 //! CONCURRENCY sections that name the Rust synchronization primitive —
 //! `std::sync::Mutex`, `parking_lot::Mutex`, `std::sync::RwLock`,
 //! `std::sync::atomic::*`, `std::thread::spawn`, `tokio::spawn`,
@@ -56,7 +56,7 @@
 //!   both sides respect, as a `data_race` claim — no extra Ghidra
 //!   round trips.
 //! - [`engine`] - Scan orchestration: `SyncEngine` runs the per-body
-//!   detectors over one open Ghidra program through a `ScanSource`
+//!   detectors over one loaded program through a `ScanSource`
 //!   (function listing + decompile-by-name), one sequential pass that
 //!   decompiles each function exactly once and keeps the findings in
 //!   scan order, then the cross-function pass over the kept bodies.

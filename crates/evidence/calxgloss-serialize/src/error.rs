@@ -9,9 +9,9 @@ use thiserror::Error;
 /// Errors that can occur during serialization detection operations.
 #[derive(Debug, Error)]
 pub enum SerializeError {
-    /// A GhidraMCP request failed.
-    #[error("GhidraMCP error: {0}")]
-    Ghidra(#[from] calxgloss_ghidra::GhidraError),
+    /// An engine read through the analysis seam failed.
+    #[error("engine error: {0}")]
+    Engine(#[from] calxgloss_ghidra::EngineError),
 
     /// An I/O error occurred while reading or writing detection results.
     #[error("I/O error: {0}")]
@@ -33,9 +33,7 @@ pub enum SerializeError {
     /// scan to be trusted — the signature of the bridge answering from
     /// the wrong program. The skip-rate breaker aborts the scan rather
     /// than letting it persist a phantom-clean record.
-    #[error(
-        "Ghidra failed to decompile {failed} of {total} functions — is the right program open?"
-    )]
+    #[error("the engine failed to decompile {failed} of {total} functions")]
     DecompileBreaker { failed: usize, total: usize },
 
     /// A serialization scan failed for a DLL.

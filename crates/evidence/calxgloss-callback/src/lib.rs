@@ -2,7 +2,7 @@
 //!
 //! Analyzes function-pointer array calls, callback registration sites,
 //! jump-table dispatches, and dynamic-loading plugin shapes within each
-//! function of an open Ghidra program, and chains a callback
+//! function of a loaded program, and chains a callback
 //! registered in one function to another function that calls it across
 //! the kept bodies. Results are injected as structured CALLBACKS
 //! sections that name the Rust dispatch pattern —
@@ -24,7 +24,7 @@
 //!   per-binary results.
 //! - [`engine`] - Scan orchestration: `CallbackEngine` runs the four
 //!   per-body detectors and then the cross-function pass over one open
-//!   Ghidra program through a `ScanSource` (function listing +
+//!   program through a `ScanSource` (function listing +
 //!   decompile-by-name), one sequential pass that decompiles each
 //!   function exactly once and keeps the findings in scan order.
 //! - [`fp_array`] - Function-pointer array detection: `FpArrayDetector`

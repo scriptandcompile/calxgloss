@@ -27,8 +27,7 @@
 //!   `DirectivePlane` that mirrors them on a file in the record of effort.
 //! - `source.rs` — `KunaSource`, the actor thread that owns one program and
 //!   answers every scan read with panic isolation at the seam; it also
-//!   carries the analysis-pass heartbeat the Ghidra client carries (issue
-//!   #211).
+//!   carries the analysis-pass heartbeat (issue #211).
 //! - `specs.rs` — the embedded compiled SLEIGH tree and its cache unpacker
 //!   (provisioned by `build.rs`).
 

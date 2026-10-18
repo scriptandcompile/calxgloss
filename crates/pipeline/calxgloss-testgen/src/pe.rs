@@ -1,7 +1,7 @@
 //! PE image metadata needed to reach functions inside a Windows DLL.
 //!
-//! Baseline execution calls *internal* functions. The GhidraMCP plugin reports
-//! those as virtual addresses, but they are absent from the export table, so
+//! Baseline execution calls *internal* functions. The engine reports those
+//! as virtual addresses, but they are absent from the export table, so
 //! calling them requires three conversions:
 //!
 //! ```text

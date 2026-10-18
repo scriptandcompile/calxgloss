@@ -1,8 +1,8 @@
-//! The `consts` command — detect constant structures for the open binary.
+//! The `consts` command — detect constant structures for a binary.
 //!
 //! Runs the three constant detectors — bitflag group detection,
 //! enumerated-dispatch detection, and repeated-magic-number frequency
-//! analysis — against the program currently open in Ghidra and saves the
+//! analysis — against the loaded program and saves the
 //! result to `re/analysis/consts/{binary}.json` in the workspace, the same
 //! file batch translation will read as prompt context, together with a
 //! rendered Rust codegen file spelling the reconstructed flag families,
@@ -18,7 +18,6 @@ use calxgloss_consts::codegen::render_codegen;
 use calxgloss_consts::engine::ConstEngine;
 use calxgloss_consts::persist::ConstPersistor;
 use calxgloss_consts::types::ConstResult;
-use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use chrono::DateTime;
 use tracing::info;
 
@@ -58,16 +57,9 @@ pub async fn handle_consts(
 
     info!(binary, workspace = %workspace.display(), "Detecting constant structures");
 
-    let ghidra_url = &settings.ghidra_url.value;
-    let mut config = GhidraConfig::new(ghidra_url)
-        .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
-    if let Some(key) = &settings.ghidra_api_key {
-        config = config.with_api_key(key.value.clone());
-    }
-    let ghidra = GhidraClient::from_config(config)
-        .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))?;
+    let kuna = load_kuna_source(settings, binary)?;
 
-    let engine = ConstEngine::new(&ghidra);
+    let engine = ConstEngine::new(&kuna);
     let result = engine
         .scan(binary)
         .await

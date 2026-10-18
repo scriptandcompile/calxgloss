@@ -4,7 +4,7 @@
 //! tracking, atomic operation detection, thread spawn detection,
 //! thread-local storage detection, async-runtime shape detection, and
 //! futex-based synchronization detection — over every function of one
-//! open Ghidra program, then the cross-function pass over the bodies
+//! open program, then the cross-function pass over the bodies
 //! it kept, and assembles their findings into a single [`SyncResult`]
 //! with its scan provenance.
 //!
@@ -28,7 +28,8 @@ use crate::mutex::MutexDetector;
 use crate::threading::ThreadingDetector;
 use crate::tls::TlsDetector;
 use crate::types::{ScanMetadata, SyncFinding, SyncResult};
-use calxgloss_ghidra::{DecompiledFunction, GhidraClient};
+use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_kuna::KunaSource;
 use std::time::Instant;
 use tracing::{info, warn};
 
@@ -36,7 +37,7 @@ use tracing::{info, warn};
 ///
 /// The shared trait from the Ghidra integration crate, re-exported here
 /// so the engine's generic shape names it where it always has;
-/// [`GhidraClient`] implements it over the live HTTP API, and tests
+/// [`KunaSource`] implements it over the in-process engine, and tests
 /// implement it over canned bodies so the orchestration runs without a
 /// server. The futures are `Send` so a scan can be driven from an
 /// orchestrating task.
@@ -47,7 +48,7 @@ pub use calxgloss_ghidra::ScanSource;
 ///
 /// The engine is generic over its [`ScanSource`], so tests can run the
 /// whole orchestration over canned bodies; [`new`](Self::new) builds
-/// one over a live [`GhidraClient`]. Each detector carries no state
+/// one over a loaded [`KunaSource`]. Each detector carries no state
 /// and starts configured with its standard name sets —
 /// [`with_mutex`](Self::with_mutex), [`with_atomics`](Self::with_atomics),
 /// [`with_threads`](Self::with_threads), and [`with_tls`](Self::with_tls)
@@ -56,7 +57,7 @@ pub use calxgloss_ghidra::ScanSource;
 /// reads the mutex detector's configured acquire names, so custom
 /// spellings reach it through [`with_mutex`](Self::with_mutex).
 #[derive(Debug, Clone)]
-pub struct SyncEngine<S = GhidraClient> {
+pub struct SyncEngine<S = KunaSource> {
     source: S,
     mutex: MutexDetector,
     atomics: AtomicDetector,
@@ -67,12 +68,12 @@ pub struct SyncEngine<S = GhidraClient> {
     cross_function: CrossFunctionAnalyzer,
 }
 
-impl SyncEngine<GhidraClient> {
-    /// An engine over a live GhidraMCP client, scanning with the four
+impl SyncEngine<KunaSource> {
+    /// An engine over a loaded Kuna program, scanning with the four
     /// detectors' standard name sets.
-    pub fn new(client: &GhidraClient) -> SyncEngine<GhidraClient> {
+    pub fn new(source: &KunaSource) -> SyncEngine<KunaSource> {
         SyncEngine {
-            source: client.clone(),
+            source: source.clone(),
             mutex: MutexDetector::with_default_names(),
             atomics: AtomicDetector::with_default_names(),
             threads: ThreadingDetector::with_default_names(),
@@ -190,7 +191,7 @@ impl<S> SyncEngine<S> {
     /// async-runtime shapes, then the futex calls — and after every
     /// function the cross-function pass adds its findings, in listing
     /// order, over the bodies this walk already decompiled: no extra
-    /// Ghidra round trips. So two scans of the same program diff
+    /// engine reads. So two scans of the same program diff
     /// cleanly.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad
@@ -238,8 +239,8 @@ impl<S> SyncEngine<S> {
                     skipped += 1;
                     decompile_failures += 1;
                     // Skip-rate breaker: once most of the listing has
-                    // failed to decompile, the scan is reading the
-                    // wrong program (or a half-broken server), and an
+                    // failed to decompile, the scan is reading a
+                    // program the engine cannot analyze, and an
                     // empty result would persist as a phantom-clean
                     // record. Abort with the counts instead of
                     // skipping on.
@@ -294,14 +295,12 @@ impl<S> SyncEngine<S> {
 
         // The cross-function pass runs after the per-function walk,
         // over the bodies the scan already decompiled — no extra
-        // Ghidra round trips — and its findings append in listing
+        // engine reads — and its findings append in listing
         // order, after the per-function findings.
         findings.extend(self.cross_function.analyze(&bodies, &self.mutex));
 
         let mut metadata = ScanMetadata::new(binary);
-        // The source names its engine and pin under `kuna`; the Ghidra
-        // path names nothing and the record stays exactly as it was
-        // (issue #208).
+        // The source names its engine and pin under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
@@ -329,7 +328,7 @@ mod tests {
     use crate::tls::{KeyBinding, TlsKeySignature};
     use crate::types::SyncType;
     use calxgloss_ghidra::{
-        DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
+        DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
         Result, StringLiteral, StructLayout, Symbol, Xref,
     };
     use std::collections::HashMap;
@@ -388,9 +387,8 @@ mod tests {
     impl ScanSource for FakeProgram {
         async fn functions(&self) -> Result<Vec<FunctionSummary>> {
             if self.fail_listing {
-                return Err(GhidraError::Reported {
-                    status: Some(200),
-                    message: "Ghidra is busy".into(),
+                return Err(EngineError::Reported {
+                    message: "the engine is busy".into(),
                 });
             }
             Ok(self.listing.clone())
@@ -399,7 +397,7 @@ mod tests {
         async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
             self.stats.decompiles.lock().unwrap().push(name.to_string());
             if self.fail_decompiles.iter().any(|f| f == name) {
-                return Err(GhidraError::NotFound {
+                return Err(EngineError::NotFound {
                     kind: "function",
                     query: name.to_string(),
                 });
@@ -407,7 +405,7 @@ mod tests {
             self.bodies
                 .get(name)
                 .cloned()
-                .ok_or_else(|| GhidraError::NotFound {
+                .ok_or_else(|| EngineError::NotFound {
                     kind: "function",
                     query: name.to_string(),
                 })
@@ -432,14 +430,14 @@ mod tests {
         }
 
         async fn struct_layout(&self, name: &str) -> Result<StructLayout> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "struct",
                 query: name.to_string(),
             })
         }
 
         async fn enum_values(&self, name: &str) -> Result<EnumDefinition> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "enum",
                 query: name.to_string(),
             })
@@ -1134,7 +1132,7 @@ mod tests {
         let result = SyncEngine::with_source(program).scan("eqmain.dll").await;
         assert!(matches!(
             result,
-            Err(crate::SyncError::Ghidra(GhidraError::Reported { .. }))
+            Err(crate::SyncError::Engine(EngineError::Reported { .. }))
         ));
     }
 

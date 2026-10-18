@@ -7,7 +7,7 @@
 //! nothing today; grouped, it is one claim the scan can make: these
 //! values are colors, and the translation should name them.
 //!
-//! The reading is pure and adds no Ghidra round trips:
+//! The reading is pure and adds no engine reads:
 //! [`color_palette`] walks the program-wide tally the engine built
 //! during its single pass and reports at most one [`ColorConstant`]
 //! record for the whole binary.

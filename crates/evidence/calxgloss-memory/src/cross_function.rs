@@ -5,7 +5,7 @@
 //! and the callee that does release it pairs nothing because no
 //! allocation sits in its own body. This module closes that gap over
 //! the bodies one scan already holds: it derives the call map from the
-//! fetched bodies — no extra Ghidra round trips — and reports the
+//! fetched bodies — no extra engine reads — and reports the
 //! lifecycles that cross a call boundary.
 //!
 //! [`CrossFunctionAnalyzer::analyze`] runs the reading: an allocation

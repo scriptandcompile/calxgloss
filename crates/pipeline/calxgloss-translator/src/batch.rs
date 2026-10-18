@@ -13,9 +13,9 @@
 //! use std::path::Path;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let ghidra = calxgloss_ghidra::GhidraClient::new("http://localhost:8080")?;
+//! let kuna = calxgloss_kuna::KunaSource::load(Path::new("target/game_logic.dll"))?;
 //! let llm = calxgloss_llm::LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;
-//! let pipeline = TranslationPipeline::new(ghidra, llm, calxgloss_pal::ApiMappings::default());
+//! let pipeline = TranslationPipeline::new(kuna, llm, calxgloss_pal::ApiMappings::default());
 //! let verifier = Verifier::new(Path::new("/tmp/calxgloss-work"))?;
 //! let config = calxgloss_translator::RetryConfig::default();
 //!

@@ -1,16 +1,21 @@
-//! The shared read seam for everything an evidence engine pulls from Ghidra.
+//! The shared read seam for everything an evidence engine pulls from the
+//! analysis engine.
 //!
 //! Every evidence-engine crate once carried its own `ScanSource`-shaped
 //! trait, and the copies had grown near-identical. This is their union — the
 //! function listing, decompile-by-name, the string listing, callers,
 //! xrefs-to, the Type Manager reads (data types, struct layouts, enum values,
 //! data items), the import and export listings, and the raw reads the vtable
-//! scan makes (image base, memory bytes) — defined once so the planned read
-//! cache implements it once instead of eleven times. All eleven scan-based
+//! scan makes (image base, memory bytes) — defined once so the read cache
+//! implements it once instead of eleven times. All eleven scan-based
 //! evidence engines — algorithm, callback, consts, control-flow, memory,
 //! serialization, string-context, concurrency, types-database,
 //! type-inference, and API-detection — re-export this trait in place of
 //! their own.
+//!
+//! Kuna is the only analysis engine (issue #214, ADR-0041): the seam answers
+//! through [`KunaSource`] directly or through
+//! [`CachedScanSource`](crate::CachedScanSource), the two-tier read cache.
 //!
 //! Deliberately absent:
 //!
@@ -18,18 +23,18 @@
 //!   ever serves read-only facts. `calxgloss-typesdb`'s vtable scan keeps a
 //!   slim local `TagSink` trait for its one write; the type write-back seam
 //!   lives beside this module as [`TypeWriteSource`](crate::TypeWriteSource),
-//!   implemented by the raw client alone.
+//!   answered by the Kuna directive plane (issue #209).
 //! * **The string-listing filter** — only `calxgloss-typesdb`'s string
 //!   inference takes one, and no production caller sets it; the engine-facing
 //!   shape carries an unfiltered listing, so this trait matches it and the
 //!   inference engine filters the listing itself.
 //! * **The built call graph** — `calxgloss-apidetect`'s `call_graph` read is
 //!   a composite of these reads, assembled by the call-graph builder, which
-//!   will read through this seam itself; the engine keeps a slim local
+//!   reads through this seam itself; the engine keeps a slim local
 //!   `CallGraphSource` trait for it.
 
-use crate::cache::CachedGhidraSource;
-use crate::client::{GhidraClient, GhidraError, Result};
+use crate::cache::CachedScanSource;
+use crate::error::{EngineError, Result};
 use crate::model::{
     DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, EnumMember, FunctionSummary,
     StringLiteral, StructFieldLayout, StructLayout, Symbol, Xref,
@@ -37,13 +42,12 @@ use crate::model::{
 use calxgloss_kuna::KunaSource;
 use calxgloss_types::EngineProvenance;
 
-/// The read-only program facts every evidence engine pulls from Ghidra.
+/// The read-only program facts every evidence engine pulls from the engine.
 ///
-/// [`GhidraClient`] implements it over the live HTTP API,
-/// [`CachedGhidraSource`](crate::CachedGhidraSource) implements it as the
-/// read cache, [`KunaSource`] implements the core reads over the in-process
-/// Kuna engine (issue #206), and tests implement it over canned data. The
-/// futures are `Send` so a scan can be driven from an orchestrating task.
+/// [`KunaSource`] implements the core reads over the in-process Kuna engine
+/// (issue #206), [`CachedScanSource`](crate::CachedScanSource) implements it
+/// as the read cache, and tests implement it over canned data. The futures
+/// are `Send` so a scan can be driven from an orchestrating task.
 pub trait ScanSource {
     /// Every function in the program, in listing order.
     fn functions(&self) -> impl std::future::Future<Output = Result<Vec<FunctionSummary>>> + Send;
@@ -111,69 +115,12 @@ pub trait ScanSource {
     /// Engine identity, not a program read: a scan record stamps this
     /// beside its timing so a reviewer can tell what produced any
     /// decompilation inside the record and re-create or blame it
-    /// (issue #208). The default names nothing — the Ghidra client and
-    /// the read cache leave scan records byte-for-byte what they were —
-    /// while the Kuna source names its engine, pinned release, and
-    /// source fingerprint.
+    /// (issue #208). The default names nothing — a source that adds no
+    /// identity of its own leaves scan records byte-for-byte what they
+    /// were — while the Kuna source names its engine, pinned release,
+    /// and source fingerprint.
     fn engine_provenance(&self) -> Option<EngineProvenance> {
         None
-    }
-}
-
-impl ScanSource for GhidraClient {
-    // The trait's `Result` is the client's own, so each method delegates
-    // straight through; the inherent methods (which take limits or page)
-    // win over the trait's in method resolution.
-    async fn functions(&self) -> Result<Vec<FunctionSummary>> {
-        self.list_functions().await
-    }
-
-    async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
-        self.decompile_function_by_name(name).await
-    }
-
-    async fn strings(&self) -> Result<Vec<StringLiteral>> {
-        self.list_strings(None).await
-    }
-
-    async fn callers(&self, address: u64) -> Result<Vec<String>> {
-        self.callers(address).await
-    }
-
-    async fn xrefs_to(&self, address: u64) -> Result<Vec<Xref>> {
-        self.xrefs_to(address, None).await
-    }
-
-    async fn data_types(&self, category: Option<&str>) -> Result<Vec<DataTypeEntry>> {
-        self.list_data_types(category).await
-    }
-
-    async fn struct_layout(&self, name: &str) -> Result<StructLayout> {
-        self.get_struct_layout(name).await
-    }
-
-    async fn enum_values(&self, name: &str) -> Result<EnumDefinition> {
-        self.get_enum_values(name).await
-    }
-
-    async fn data_items(&self) -> Result<Vec<DataItem>> {
-        self.list_data_items().await
-    }
-
-    async fn imports(&self) -> Result<Vec<Symbol>> {
-        self.imports(None).await
-    }
-
-    async fn exports(&self) -> Result<Vec<Symbol>> {
-        self.exports(None).await
-    }
-
-    async fn image_base(&self) -> Result<u64> {
-        self.image_base().await
-    }
-
-    async fn read_memory(&self, address: u64, length: usize) -> Result<Vec<u8>> {
-        self.read_memory(address, length).await
     }
 }
 
@@ -181,12 +128,11 @@ impl ScanSource for GhidraClient {
 ///
 /// Every read the trait carries maps onto [`KunaSource`]'s inherent API,
 /// with Kuna's named failures mapped onto the seam's error vocabulary: a
-/// missing function, type, or byte range becomes [`GhidraError::NotFound`]
-/// and a kind mismatch [`GhidraError::Malformed`] — the same facts the
-/// Ghidra bridge reports, so layout probes branch on one vocabulary
-/// whichever engine answers. Every other Kuna failure arrives as
-/// [`GhidraError::Reported`] whose message already names the
-/// `--engine ghidra` fallback.
+/// missing function, type, or byte range becomes [`EngineError::NotFound`]
+/// and a kind mismatch [`EngineError::Malformed`] — the same facts the
+/// retired Ghidra bridge reported, so layout probes branch on one
+/// vocabulary. Every other Kuna failure arrives as
+/// [`EngineError::Reported`] carrying the engine's own message.
 impl ScanSource for KunaSource {
     async fn functions(&self) -> Result<Vec<FunctionSummary>> {
         KunaSource::list_functions(self)
@@ -200,7 +146,7 @@ impl ScanSource for KunaSource {
                     })
                     .collect()
             })
-            .map_err(GhidraError::from)
+            .map_err(EngineError::from)
     }
 
     async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
@@ -211,7 +157,7 @@ impl ScanSource for KunaSource {
                 signature: function.signature,
                 body: function.body,
             })
-            .map_err(GhidraError::from)
+            .map_err(EngineError::from)
     }
 
     async fn strings(&self) -> Result<Vec<StringLiteral>> {
@@ -226,12 +172,12 @@ impl ScanSource for KunaSource {
                     })
                     .collect()
             })
-            .map_err(GhidraError::from)
+            .map_err(EngineError::from)
     }
 
     /// The names of the functions holding a reference to `address`, deduped
-    /// in first-reference order — the same shape the Ghidra client's
-    /// `callers` answers with, so the call-graph builder needs no engine
+    /// in first-reference order — the shape the seam's `callers`
+    /// read has always carried, so the call-graph builder needs no engine
     /// special case.
     async fn callers(&self, address: u64) -> Result<Vec<String>> {
         KunaSource::xrefs_to(self, address)
@@ -247,7 +193,7 @@ impl ScanSource for KunaSource {
                 }
                 names
             })
-            .map_err(GhidraError::from)
+            .map_err(EngineError::from)
     }
 
     async fn xrefs_to(&self, address: u64) -> Result<Vec<Xref>> {
@@ -263,7 +209,7 @@ impl ScanSource for KunaSource {
                     })
                     .collect()
             })
-            .map_err(GhidraError::from)
+            .map_err(EngineError::from)
     }
 
     async fn data_types(&self, category: Option<&str>) -> Result<Vec<DataTypeEntry>> {
@@ -280,7 +226,7 @@ impl ScanSource for KunaSource {
                     })
                     .collect()
             })
-            .map_err(GhidraError::from)
+            .map_err(EngineError::from)
     }
 
     async fn struct_layout(&self, name: &str) -> Result<StructLayout> {
@@ -301,7 +247,7 @@ impl ScanSource for KunaSource {
                     })
                     .collect(),
             })
-            .map_err(GhidraError::from)
+            .map_err(EngineError::from)
     }
 
     async fn enum_values(&self, name: &str) -> Result<EnumDefinition> {
@@ -319,7 +265,7 @@ impl ScanSource for KunaSource {
                     })
                     .collect(),
             })
-            .map_err(GhidraError::from)
+            .map_err(EngineError::from)
     }
 
     async fn data_items(&self) -> Result<Vec<DataItem>> {
@@ -336,7 +282,7 @@ impl ScanSource for KunaSource {
                     })
                     .collect()
             })
-            .map_err(GhidraError::from)
+            .map_err(EngineError::from)
     }
 
     async fn imports(&self) -> Result<Vec<Symbol>> {
@@ -352,7 +298,7 @@ impl ScanSource for KunaSource {
                     })
                     .collect()
             })
-            .map_err(GhidraError::from)
+            .map_err(EngineError::from)
     }
 
     async fn exports(&self) -> Result<Vec<Symbol>> {
@@ -368,19 +314,19 @@ impl ScanSource for KunaSource {
                     })
                     .collect()
             })
-            .map_err(GhidraError::from)
+            .map_err(EngineError::from)
     }
 
     async fn image_base(&self) -> Result<u64> {
         KunaSource::image_base(self)
             .await
-            .map_err(GhidraError::from)
+            .map_err(EngineError::from)
     }
 
     async fn read_memory(&self, address: u64, length: usize) -> Result<Vec<u8>> {
         KunaSource::read_memory(self, address, length)
             .await
-            .map_err(GhidraError::from)
+            .map_err(EngineError::from)
     }
 
     fn engine_provenance(&self) -> Option<EngineProvenance> {
@@ -399,31 +345,24 @@ impl ScanSource for KunaSource {
 
 /// The one concrete read source a translation batch hands to every consumer.
 ///
-/// The pipeline builds a [`CachedGhidraSource`] for the target binary at the
+/// The pipeline builds a [`CachedScanSource`] for the target binary at the
 /// top of a batch and every scan, the call-graph build, and the retry/escalation
-/// helpers read through this enum afterwards — `Live` until that cache exists,
+/// helpers read through this enum afterwards — `Kuna` until that cache exists,
 /// `Cached` once it does. Having one concrete type (rather than two call paths)
 /// keeps the pipeline's plumbing generic-free: the same `PipelineSource` value
 /// answers every consumer, and a warm second batch over the same workspace and
-/// unchanged binary costs no live reads at all.
-///
-/// `Kuna` is the third path (issues #206 and #207): the in-process Kuna
-/// engine, answering every scan read with no server at all. A Kuna batch
-/// never silently falls back to the Ghidra server mid-scan — it answers
-/// from one engine or fails by name.
+/// unchanged binary costs no engine reads at all.
 #[derive(Debug, Clone)]
 pub enum PipelineSource {
-    /// No cache active — every read goes straight to the server.
-    Live(GhidraClient),
     /// The batch's shared two-tier cache, scoped to one target binary.
-    Cached(CachedGhidraSource),
+    Cached(CachedScanSource),
     /// The in-process Kuna engine, loaded with exactly one target binary.
     Kuna(KunaSource),
 }
 
-impl From<GhidraClient> for PipelineSource {
-    fn from(client: GhidraClient) -> Self {
-        Self::Live(client)
+impl From<CachedScanSource> for PipelineSource {
+    fn from(source: CachedScanSource) -> Self {
+        Self::Cached(source)
     }
 }
 
@@ -435,12 +374,11 @@ impl From<KunaSource> for PipelineSource {
 
 impl ScanSource for PipelineSource {
     // Each arm delegates to its own `ScanSource` implementation; the cache
-    // tier resolves memo → disk → live, the live tier is the raw client.
-    // The calls are trait-qualified so the client's inherent methods (which
-    // take limits and filters) never shadow the seam's unfiltered reads.
+    // tier resolves memo → disk → engine. The calls are trait-qualified so
+    // the engine's inherent methods (which answer Kuna-native shapes) never
+    // shadow the seam's mapped reads.
     async fn functions(&self) -> Result<Vec<FunctionSummary>> {
         match self {
-            Self::Live(client) => ScanSource::functions(client).await,
             Self::Cached(cache) => ScanSource::functions(cache).await,
             Self::Kuna(source) => ScanSource::functions(source).await,
         }
@@ -448,7 +386,6 @@ impl ScanSource for PipelineSource {
 
     async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
         match self {
-            Self::Live(client) => ScanSource::decompile(client, name).await,
             Self::Cached(cache) => ScanSource::decompile(cache, name).await,
             Self::Kuna(source) => ScanSource::decompile(source, name).await,
         }
@@ -456,7 +393,6 @@ impl ScanSource for PipelineSource {
 
     async fn strings(&self) -> Result<Vec<StringLiteral>> {
         match self {
-            Self::Live(client) => ScanSource::strings(client).await,
             Self::Cached(cache) => ScanSource::strings(cache).await,
             Self::Kuna(source) => ScanSource::strings(source).await,
         }
@@ -464,7 +400,6 @@ impl ScanSource for PipelineSource {
 
     async fn callers(&self, address: u64) -> Result<Vec<String>> {
         match self {
-            Self::Live(client) => ScanSource::callers(client, address).await,
             Self::Cached(cache) => ScanSource::callers(cache, address).await,
             Self::Kuna(source) => ScanSource::callers(source, address).await,
         }
@@ -472,7 +407,6 @@ impl ScanSource for PipelineSource {
 
     async fn xrefs_to(&self, address: u64) -> Result<Vec<Xref>> {
         match self {
-            Self::Live(client) => ScanSource::xrefs_to(client, address).await,
             Self::Cached(cache) => ScanSource::xrefs_to(cache, address).await,
             Self::Kuna(source) => ScanSource::xrefs_to(source, address).await,
         }
@@ -480,7 +414,6 @@ impl ScanSource for PipelineSource {
 
     async fn data_types(&self, category: Option<&str>) -> Result<Vec<DataTypeEntry>> {
         match self {
-            Self::Live(client) => ScanSource::data_types(client, category).await,
             Self::Cached(cache) => ScanSource::data_types(cache, category).await,
             Self::Kuna(source) => ScanSource::data_types(source, category).await,
         }
@@ -488,7 +421,6 @@ impl ScanSource for PipelineSource {
 
     async fn struct_layout(&self, name: &str) -> Result<StructLayout> {
         match self {
-            Self::Live(client) => ScanSource::struct_layout(client, name).await,
             Self::Cached(cache) => ScanSource::struct_layout(cache, name).await,
             Self::Kuna(source) => ScanSource::struct_layout(source, name).await,
         }
@@ -496,7 +428,6 @@ impl ScanSource for PipelineSource {
 
     async fn enum_values(&self, name: &str) -> Result<EnumDefinition> {
         match self {
-            Self::Live(client) => ScanSource::enum_values(client, name).await,
             Self::Cached(cache) => ScanSource::enum_values(cache, name).await,
             Self::Kuna(source) => ScanSource::enum_values(source, name).await,
         }
@@ -504,7 +435,6 @@ impl ScanSource for PipelineSource {
 
     async fn data_items(&self) -> Result<Vec<DataItem>> {
         match self {
-            Self::Live(client) => ScanSource::data_items(client).await,
             Self::Cached(cache) => ScanSource::data_items(cache).await,
             Self::Kuna(source) => ScanSource::data_items(source).await,
         }
@@ -512,7 +442,6 @@ impl ScanSource for PipelineSource {
 
     async fn imports(&self) -> Result<Vec<Symbol>> {
         match self {
-            Self::Live(client) => ScanSource::imports(client).await,
             Self::Cached(cache) => ScanSource::imports(cache).await,
             Self::Kuna(source) => ScanSource::imports(source).await,
         }
@@ -520,7 +449,6 @@ impl ScanSource for PipelineSource {
 
     async fn exports(&self) -> Result<Vec<Symbol>> {
         match self {
-            Self::Live(client) => ScanSource::exports(client).await,
             Self::Cached(cache) => ScanSource::exports(cache).await,
             Self::Kuna(source) => ScanSource::exports(source).await,
         }
@@ -528,7 +456,6 @@ impl ScanSource for PipelineSource {
 
     async fn image_base(&self) -> Result<u64> {
         match self {
-            Self::Live(client) => ScanSource::image_base(client).await,
             Self::Cached(cache) => ScanSource::image_base(cache).await,
             Self::Kuna(source) => ScanSource::image_base(source).await,
         }
@@ -536,19 +463,17 @@ impl ScanSource for PipelineSource {
 
     async fn read_memory(&self, address: u64, length: usize) -> Result<Vec<u8>> {
         match self {
-            Self::Live(client) => ScanSource::read_memory(client, address, length).await,
             Self::Cached(cache) => ScanSource::read_memory(cache, address, length).await,
             Self::Kuna(source) => ScanSource::read_memory(source, address, length).await,
         }
     }
 
     fn engine_provenance(&self) -> Option<EngineProvenance> {
-        // Identity forwards like the reads: only the Kuna arm names an
-        // engine, so a scan record built over this source says which of
-        // the three paths produced it — and a Ghidra-path record stays
-        // unnamed, exactly as before (issue #208).
+        // Identity forwards like the reads: both arms answer through the
+        // Kuna engine, so a scan record built over this source names the
+        // engine, its pinned release, and its source fingerprint (issue
+        // #208).
         match self {
-            Self::Live(client) => ScanSource::engine_provenance(client),
             Self::Cached(cache) => ScanSource::engine_provenance(cache),
             Self::Kuna(source) => ScanSource::engine_provenance(source),
         }

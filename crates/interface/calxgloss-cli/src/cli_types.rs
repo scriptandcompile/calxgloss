@@ -45,28 +45,6 @@ pub(super) struct Cli {
     #[arg(long, global = true, value_name = "DIR")]
     pub(super) workspace: Option<PathBuf>,
 
-    /// Decompiler engine: ghidra or kuna (default: ghidra)
-    ///
-    /// A run uses exactly one engine. The kuna engine is a skeleton in this
-    /// release (issue #205): `doctor` runs under it, every other command
-    /// fails naming `--engine ghidra`.
-    #[arg(long, global = true, value_parser = ["ghidra", "kuna"])]
-    pub(super) engine: Option<String>,
-
-    /// GhidraMCP server URL (default: http://127.0.0.1:8080)
-    #[arg(long, global = true)]
-    pub(super) ghidra_url: Option<String>,
-    /// API key for the GhidraMCP server (optional)
-    #[arg(long, global = true)]
-    pub(super) ghidra_api_key: Option<String>,
-
-    /// Never start a Ghidra server, even when none is running
-    ///
-    /// Overrides `ghidra.auto_start`. The preflight still runs the doctor's
-    /// checks and fails fast naming what is missing, but spawns nothing.
-    #[arg(long, global = true)]
-    pub(super) no_ghidra_autostart: bool,
-
     /// LLM server URL (OpenAI-compatible API)
     #[arg(long, global = true)]
     pub(super) llm_url: Option<String>,
@@ -182,54 +160,29 @@ pub(super) struct BatchTranslateArgs {
     #[arg(long)]
     pub(super) callgraph_verbose: bool,
 
-    /// Force fresh Ghidra reads, ignoring and rewriting the batch's Ghidra
+    /// Force fresh engine reads, ignoring and rewriting the batch's scan
     /// read cache (`re/ghidra-cache/`)
     ///
-    /// Use it after the Ghidra program changed — re-analysis, applied
-    /// types, renames — while the binary's bytes stayed the same: the
-    /// cache's manifest cannot detect that case. Deleting the binary's
-    /// cache directory by hand does the same without a run.
+    /// The cache's manifest keys on the binary's bytes, so a hand-edited
+    /// cache is not detected — use this after tampering with one.
+    /// Deleting the binary's cache directory by hand does the same without
+    /// a run.
     #[arg(long)]
-    pub(super) refresh_ghidra_cache: bool,
+    pub(super) refresh_cache: bool,
 }
 
 /// Arguments for `doctor`.
 #[derive(Args, Debug)]
 pub(super) struct DoctorArgs {
-    /// Install what the check finds missing
-    ///
-    /// Bootstraps a paired Ghidra + GhidraMCP stack under the calxgloss
-    /// install prefix (`<state>/calxgloss/ghidra/`): the plugin's
-    /// `extension.properties` decides which Ghidra build is fetched, every
-    /// download is sha256-verified against the releases API digest, and
-    /// nothing is installed without a JDK 21+ and explicit consent.
+    /// Accepted for compatibility with older scripts; there is nothing to
+    /// install — the Kuna engine is compiled in (issue #214)
     #[arg(long)]
     pub(super) fix: bool,
 
-    /// Consent to the ~570 MB Ghidra download `--fix` performs
+    /// Target binary to load
     ///
-    /// The alternative is `ghidra.auto_install = true` in the config; one
-    /// channel or the other must say yes before anything is fetched.
-    #[arg(long)]
-    pub(super) install_ghidra: bool,
-
-    /// Fetch this Ghidra version instead of the one the plugin names
-    #[arg(long, value_name = "VERSION")]
-    pub(super) ghidra_version: Option<String>,
-
-    /// Install the GhidraMCP extension from this local zip instead of fetching
-    #[arg(long, value_name = "ZIP")]
-    pub(super) plugin_zip: Option<PathBuf>,
-
-    /// Install Ghidra from this local zip instead of downloading it
-    #[arg(long, value_name = "ZIP")]
-    pub(super) ghidra_zip: Option<PathBuf>,
-
-    /// Target binary to load when the engine is kuna
-    ///
-    /// Under `--engine kuna`, doctor loads this file in-process and reports
-    /// its program identity — there is no server to ask which program it has
-    /// open, so the binary must be named. Ignored under the ghidra engine.
+    /// Doctor loads this file in-process with the Kuna engine and reports
+    /// its program identity, so the binary must be named.
     #[arg(long, value_name = "FILE")]
     pub(super) binary: Option<PathBuf>,
 }
@@ -239,46 +192,29 @@ pub(super) struct DoctorArgs {
 pub(super) enum Command {
     /// Create a `calxgloss.toml` configuration file in the current directory.
     ///
-    /// Writes a commented-out template with example settings for `[ghidra]`
-    /// and `[llm]` sections. If a file already exists, it is overwritten.
+    /// Writes a commented-out template with example settings for the
+    /// `[llm]` section. If a file already exists, it is overwritten.
     Init,
 
-    /// Report the whole Ghidra stack in one read-only pass
+    /// Report the analysis engine in one read-only pass
     ///
-    /// Checks the discovered Ghidra install (`$GHIDRA_INSTALL_DIR` →
-    /// `ghidra.install_dir` → the calxgloss install prefix → a
-    /// `*ghidra_*_PUBLIC` glob in the home directory, highest version wins),
-    /// the GhidraMCP extension against it (strict version pairing per
-    /// ADR-0001), and the server on the configured port (kind, version,
-    /// port — "none" when unreachable). Without `--fix` nothing is spawned,
-    /// installed, or modified; every failure carries a remediation hint,
-    /// and any failure exits non-zero so CI can gate on this command.
-    ///
-    /// With `--fix` the missing pieces are bootstrapped: a JDK-21 gate runs
-    /// first, then the newest GhidraMCP release decides which Ghidra build
-    /// is fetched (plugin-first pairing), every download is sha256-verified,
-    /// and both land under the calxgloss install prefix. The ~570 MB Ghidra
-    /// download needs `--install-ghidra` (or `ghidra.auto_install = true`);
-    /// replacing an existing install asks for confirmation first. The full
-    /// read-only check runs again afterwards as verification.
-    ///
-    /// Under `--engine kuna` the report changes shape: no install, plugin,
-    /// or port checks run — the `--binary` target is loaded in-process by
-    /// the Kuna engine and its program identity is reported (issue #205).
+    /// Kuna is the only analysis engine (issue #214): it is compiled in,
+    /// so there is no install, extension, JVM, or server port to check.
+    /// The `--binary` target is loaded in-process and its program identity
+    /// is reported; any failure carries a remediation hint and exits
+    /// non-zero so CI can gate on this command.
     ///
     /// # Examples
     ///
     /// ```text
-    /// calxgloss doctor
-    /// calxgloss doctor --fix --install-ghidra
-    /// calxgloss doctor --engine kuna --binary target.dll
+    /// calxgloss doctor --binary target.dll
     /// ```
     Doctor(DoctorArgs),
 
     /// Classify DLLs, choosing how to treat each one
     Classify {
-        /// The DLLs to classify are named here because Ghidra serves a single
-        /// open program and cannot list what a target links against.
+        /// The DLLs to classify are named here because the engine serves a
+        /// single open program and cannot list what a target links against.
         #[arg(long, required = true)]
         binary: Vec<String>,
     },
@@ -289,11 +225,11 @@ pub(super) enum Command {
     /// Translate multiple functions from a single DLL in one pass
     BatchTranslate(BatchTranslateArgs),
 
-    /// Recover the type database for the binary open in Ghidra.
+    /// Recover the type database for a binary.
     ///
-    /// Runs the three recovery scans — named types from Ghidra's Type
-    /// Manager, vtable detection, and string-guided struct inference —
-    /// against the currently open program and saves the result to
+    /// Runs the three recovery scans — named types from the engine's type
+    /// system, vtable detection, and string-guided struct inference —
+    /// against the loaded program and saves the result to
     /// `re/analysis/typesdb/<binary>.json` in the workspace, alongside a
     /// generated `re/analysis/typesdb/<binary>.rs` file of `#[repr(C)]`
     /// Rust declarations recovered from the database. Batch
@@ -304,11 +240,11 @@ pub(super) enum Command {
     ///
     /// # Arguments
     ///
-    /// * `--binary` — Binary the open Ghidra program was loaded from, e.g.
-    ///   `eqmain.dll`. Names the persisted file.
+    /// * `--binary` — Binary to scan, e.g. `eqmain.dll`. Names the
+    ///   persisted file.
     /// * `--show` — Print a summary of the cached database, and the path
-    ///   of its Rust declarations file when one exists, without
-    ///   connecting to Ghidra.
+    ///   of its Rust declarations file when one exists, without running
+    ///   the scans.
     /// * `--no-tag` — Detect vtable methods without writing
     ///   `vtable-method` tags back into the program.
     ///
@@ -319,7 +255,7 @@ pub(super) enum Command {
     /// calxgloss typesdb --binary eqmain.dll --show
     /// ```
     Typesdb {
-        /// Binary the open Ghidra program was loaded from, e.g. `eqmain.dll`
+        /// Binary to scan, e.g. `eqmain.dll`
         #[arg(long, required = true)]
         binary: String,
 
@@ -327,12 +263,12 @@ pub(super) enum Command {
         #[arg(long)]
         show: bool,
 
-        /// Do not write vtable-method tags back into the Ghidra program
+        /// Do not attempt vtable-method tag write-back
         #[arg(long)]
         no_tag: bool,
     },
 
-    /// Infer parameter types for the binary open in Ghidra.
+    /// Infer parameter types for a binary.
     ///
     /// Runs the three inference detectors — C++ this-pointer detection,
     /// parameter-size detection, and known-type propagation — against the
@@ -345,12 +281,12 @@ pub(super) enum Command {
     ///
     /// # Arguments
     ///
-    /// * `--binary` — Binary the open Ghidra program was loaded from, e.g.
-    ///   `eqmain.dll`. Names the persisted file.
-    /// * `--show` — Print a summary of the cached result without
-    ///   connecting to Ghidra.
+    /// * `--binary` — Binary to scan, e.g. `eqmain.dll`. Names the
+    ///   persisted file.
+    /// * `--show` — Print a summary of the cached result without running
+    ///   the scan.
     /// * `--write-back` — After the scan, apply the surviving inferences
-    ///   back into the open program through the Ghidra type-write API:
+    ///   back through the engine type-write API:
     ///   missing named types are created, undefined-typed parameters,
     ///   returns, and locals are narrowed, and a concrete slot is never
     ///   overwritten. Works with `--show` too, applying the cached result.
@@ -367,7 +303,7 @@ pub(super) enum Command {
     /// calxgloss typeinfer --binary eqmain.dll --write-back --confidence-floor 85
     /// ```
     Typeinfer {
-        /// Binary the open Ghidra program was loaded from, e.g. `eqmain.dll`
+        /// Binary to scan, e.g. `eqmain.dll`
         #[arg(long, required = true)]
         binary: String,
 
@@ -375,7 +311,7 @@ pub(super) enum Command {
         #[arg(long)]
         show: bool,
 
-        /// Apply the inferences back into the open Ghidra program
+        /// Apply the inferences back through the engine type-write API
         #[arg(long)]
         write_back: bool,
 
@@ -384,7 +320,7 @@ pub(super) enum Command {
         confidence_floor: u8,
     },
 
-    /// Recognize algorithms in the binary open in Ghidra.
+    /// Recognize algorithms in a binary.
     ///
     /// Runs the three recognition detectors — control flow signature
     /// matching, string-guided hints, and callback pattern detection —
@@ -397,10 +333,10 @@ pub(super) enum Command {
     ///
     /// # Arguments
     ///
-    /// * `--binary` — Binary the open Ghidra program was loaded from, e.g.
-    ///   `eqmain.dll`. Names the persisted file.
-    /// * `--show` — Print a summary of the cached result without
-    ///   connecting to Ghidra.
+    /// * `--binary` — Binary to scan, e.g. `eqmain.dll`. Names the
+    ///   persisted file.
+    /// * `--show` — Print a summary of the cached result without running
+    ///   the scan.
     /// * `--patterns` — JSON pattern database file: run the scan with
     ///   the file's control flow signatures, string signatures, and
     ///   callback contracts instead of the built-in standard sets. A
@@ -415,7 +351,7 @@ pub(super) enum Command {
     /// calxgloss algorithm --binary eqmain.dll --patterns my-patterns.json
     /// ```
     Algorithm {
-        /// Binary the open Ghidra program was loaded from, e.g. `eqmain.dll`
+        /// Binary to scan, e.g. `eqmain.dll`
         #[arg(long, required = true)]
         binary: String,
 
@@ -434,7 +370,7 @@ pub(super) enum Command {
     /// The lifecycle findings are persisted per binary to
     /// `re/analysis/memory/<binary>.json` in the workspace — the same file
     /// batch translation will read as prompt context. `--show` prints a
-    /// cached result without connecting to Ghidra.
+    /// cached result without running the scan.
     ///
     /// # Arguments
     ///
@@ -463,7 +399,7 @@ pub(super) enum Command {
     /// The concurrency findings are persisted per binary to
     /// `re/analysis/sync/<binary>.json` in the workspace — the same file
     /// batch translation will read as prompt context. `--show` prints a
-    /// cached result without connecting to Ghidra.
+    /// cached result without running the scan.
     ///
     /// # Arguments
     ///
@@ -492,7 +428,7 @@ pub(super) enum Command {
     /// The constant findings are persisted per binary to
     /// `re/analysis/consts/<binary>.json` in the workspace — the same file
     /// batch translation will read as prompt context. `--show` prints a
-    /// cached result without connecting to Ghidra.
+    /// cached result without running the scan.
     ///
     /// # Arguments
     ///
@@ -525,7 +461,7 @@ pub(super) enum Command {
     /// The callback findings are persisted per binary to
     /// `re/analysis/callback/<binary>.json` in the workspace — the same
     /// file batch translation will read as prompt context. `--show`
-    /// prints a cached result without connecting to Ghidra. When the
+    /// prints a cached result without running the scan. When the
     /// workspace also caches a type-inference result, its records fill
     /// real closure contracts into the registration and chain
     /// suggestions; without one the scan is exactly what it was.
@@ -561,7 +497,7 @@ pub(super) enum Command {
     /// The control-flow findings are persisted per binary to
     /// `re/analysis/controlflow/<binary>.json` in the workspace — the same
     /// file batch translation will read as prompt context. `--show`
-    /// prints a cached result without connecting to Ghidra.
+    /// prints a cached result without running the scan.
     ///
     /// # Arguments
     ///
@@ -595,7 +531,7 @@ pub(super) enum Command {
     /// The string-context findings are persisted per binary to
     /// `re/analysis/stringctx/<binary>.json` in the workspace — the same
     /// file batch translation will read as prompt context. `--show`
-    /// prints a cached result without connecting to Ghidra.
+    /// prints a cached result without running the scan.
     ///
     /// # Arguments
     ///
@@ -630,7 +566,7 @@ pub(super) enum Command {
     /// The API findings are persisted per binary to
     /// `re/analysis/apidetect/<binary>.json` in the workspace — the same
     /// file batch translation will read as prompt context. `--show`
-    /// prints a cached result without connecting to Ghidra.
+    /// prints a cached result without running the scan.
     ///
     /// # Arguments
     ///
@@ -660,7 +596,7 @@ pub(super) enum Command {
     /// The serialization findings are persisted per binary to
     /// `re/analysis/serialize/<binary>.json` in the workspace — the same
     /// file batch translation will read as prompt context. `--show`
-    /// prints a cached result without connecting to Ghidra.
+    /// prints a cached result without running the scan.
     ///
     /// # Arguments
     ///
@@ -777,15 +713,15 @@ pub(super) enum Command {
         #[arg(long)]
         callgraph_verbose: bool,
 
-        /// Force fresh Ghidra reads, ignoring and rewriting the batch's
-        /// Ghidra read cache (`re/ghidra-cache/`)
+        /// Force fresh engine reads, ignoring and rewriting the batch's
+        /// scan read cache (`re/ghidra-cache/`)
         ///
-        /// Use it after the Ghidra program changed — re-analysis, applied
-        /// types, renames — while the binary's bytes stayed the same: the
-        /// cache's manifest cannot detect that case. Deleting the binary's
-        /// cache directory by hand does the same without a run.
+        /// The cache's manifest keys on the binary's bytes, so a hand-edited
+        /// cache is not detected — use this after tampering with one.
+        /// Deleting the binary's cache directory by hand does the same
+        /// without a run.
         #[arg(long)]
-        refresh_ghidra_cache: bool,
+        refresh_cache: bool,
     },
 
     /// Start the web review UI server
@@ -883,15 +819,15 @@ pub(super) enum Command {
         #[arg(long)]
         callgraph_verbose: bool,
 
-        /// Force fresh Ghidra reads, ignoring and rewriting the batch's
-        /// Ghidra read cache (`re/ghidra-cache/`)
+        /// Force fresh engine reads, ignoring and rewriting the batch's
+        /// scan read cache (`re/ghidra-cache/`)
         ///
-        /// Use it after the Ghidra program changed — re-analysis, applied
-        /// types, renames — while the binary's bytes stayed the same: the
-        /// cache's manifest cannot detect that case. Deleting the binary's
-        /// cache directory by hand does the same without a run.
+        /// The cache's manifest keys on the binary's bytes, so a hand-edited
+        /// cache is not detected — use this after tampering with one.
+        /// Deleting the binary's cache directory by hand does the same
+        /// without a run.
         #[arg(long)]
-        refresh_ghidra_cache: bool,
+        refresh_cache: bool,
     },
 
     /// Generate shim layers for all crate-replacement DLLs automatically.

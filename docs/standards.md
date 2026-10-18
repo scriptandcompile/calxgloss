@@ -97,9 +97,10 @@ Every library crate follows the same shape:
 
 - Unit tests live in `#[cfg(test)] mod tests` at the bottom of the file they
   test. Cross-module / end-to-end flows go in `tests/integration_tests.rs`.
-- Tests that need a live external service (GhidraMCP, an LLM endpoint) are
-  kept in separate files (e.g. `tests/live.rs`) so they can be run
-  independently of the offline suite.
+- Tests that need a live external service (an LLM endpoint) are kept in
+  separate files (e.g. `tests/live.rs`) so they can be run independently of
+  the offline suite. The analysis engine needs no external service: Kuna
+  loads in-process, so engine tests run offline (issue #214).
 - Test fixtures are built by named helpers, not inline literals:
   `sample_*`, `make_*`, `*_fixture`, `temp_workspace()` (a `tempfile::TempDir`
   for anything touching the filesystem).

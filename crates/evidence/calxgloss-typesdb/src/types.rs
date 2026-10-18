@@ -78,8 +78,8 @@ calxgloss_types::display_serde_label!(TypeKind {
 /// One field of a recovered structure layout.
 ///
 /// The persisted counterpart of the wire shape `calxgloss_ghidra::StructFieldLayout`.
-/// The two stay deliberately split — that one is the parsed `/get_struct_layout`
-/// response owned by the HTTP client, this one the serde'd recovered record —
+/// The two stay deliberately split — that one is the parsed `struct_layout()`
+/// answer owned by the seam, this one the serde'd recovered record —
 /// and [`From<&StructFieldLayout>`] is the only mapping between them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructField {
@@ -227,7 +227,7 @@ impl NamedType {
         }
     }
 
-    /// A structure confirmed by a `get_struct_layout` response.
+    /// A structure confirmed by a `struct_layout()` answer.
     ///
     /// The layout's size and alignment win over the listing's: the layout is
     /// the authoritative read of the same type, and the listing may have
@@ -246,7 +246,7 @@ impl NamedType {
         }
     }
 
-    /// An enumeration confirmed by a `get_enum_values` response.
+    /// An enumeration confirmed by an `enum_values()` answer.
     pub fn from_enum(entry: &DataTypeEntry, definition: &EnumDefinition) -> Self {
         Self {
             name: entry.name.clone(),
@@ -877,7 +877,7 @@ mod tests {
 
     #[test]
     fn from_struct_maps_the_layout_fields() {
-        // The IMAGE_DOS_HEADER layout as `get_struct_layout` renders it.
+        // The IMAGE_DOS_HEADER layout as the `struct_layout()` answer renders it.
         let layout = StructLayout {
             name: "IMAGE_DOS_HEADER".into(),
             size: 128,

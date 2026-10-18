@@ -43,18 +43,19 @@ Calxgloss reverse engineers project executables and DLLs, transforming disassemb
            │                          │                          │                    │
   ┌────────────────┐   ┌────────────────────────────┐  ┌──────────────────┐  ┌────────────────┐
   │calxgloss-ghidra│   │      evidence engines      │  │calxgloss-prompts │  │calxgloss-llm   │
-  │ HTTP client +  │   │ analysis · callgraph       │  │ 5 context tiers  │  │ fault monitors:│
-  │ lifecycle owner│   │ typesdb · typeinfer        │  │ askama templates │  │ hallucination, │
-  │ (ADR-0007)     │   │ algorithm · memory         │  │                  │  │ infinite loop, │
-  │                │   │ sync · consts · callback   │  │                  │  │ divergence,    │
-  │                │   │ controlflow · stringctx    │  │                  │  │ exhaustion     │
-  │                │   │ apidetect · serialize      │  │                  │  │                │
+  │ engine seam:   │   │ analysis · callgraph       │  │ 5 context tiers  │  │ fault monitors:│
+  │ ScanSource ·   │   │ typesdb · typeinfer        │  │ askama templates │  │ hallucination, │
+  │ TypeWriteSource│   │ algorithm · memory         │  │                  │  │ infinite loop, │
+  │ + read cache   │   │ sync · consts · callback   │  │                  │  │ divergence,    │
+  │calxgloss-kuna  │   │ controlflow · stringctx    │  │                  │  │ exhaustion     │
+  │ the engine     │   │ apidetect · serialize      │  │                  │  │                │
   └────────────────┘   └────────────────────────────┘  └──────────────────┘  └────────────────┘
-           │          attach or spawn headless (ADR-0007)
-                                                                                      │
+            │                          │                                         │
+            │       loads the target PE in-process (ADR-0041)                    │
+            ▼                                                                    ▼
   ┌────────────────┐                                                         ┌────────────────┐
-  │ Ghidra +       │                                                         │Local LLM server│
-  │GhidraMCP bridge│                                                         │ Ollama · vLLM  │
+  │ target PE file │                                                         │Local LLM server│
+  │  (read-only)   │                                                         │ Ollama · vLLM  │
   └────────────────┘                                                         └────────────────┘
 
   Foundation: calxgloss-types (shared types) · calxgloss-config (layered settings) ·
@@ -70,9 +71,6 @@ Write your directories and server addresses to a config file once:
 # ~/.config/calxgloss/config.toml
 target_dir = "/path/to/binaries"   # DLLs and EXEs, read-only
 workspace  = "/path/to/workspace"  # where the translated Rust, re/, scratch, and the git repo live
-
-[ghidra]
-url = "http://127.0.0.1:8080"
 
 [llm]
 url   = "http://127.0.0.1:1919/v1"
@@ -109,9 +107,6 @@ target_dir
 workspace
   path         /path/to/workspace                 (config file)
 
-ghidra
-  url          http://127.0.0.1:8080              (config file)
-
 llm
   url          http://127.0.0.1:1919/v1           (config file)
   model        Qwen3.6-35B-A3B-FP8                (environment)
@@ -122,8 +117,8 @@ llm
 
 Settings are resolved in this order, most specific first:
 
-1. a command-line flag (`--target-dir`, `--ghidra-url`, `--llm-model`, ...),
-2. an environment variable (`CALXGLOSS_TARGET_DIR`, `CALXGLOSS_GHIDRA_URL`, `CALXGLOSS_LLM_MODEL`, ...),
+1. a command-line flag (`--target-dir`, `--llm-model`, ...),
+2. an environment variable (`CALXGLOSS_TARGET_DIR`, `CALXGLOSS_LLM_MODEL`, ...),
 3. a TOML file,
 4. a built-in default.
 
@@ -132,8 +127,8 @@ The file is looked for at, in order: the path given to `--config`,
 `~/.config/calxgloss/config.toml`). A file named with `--config` must exist; the
 others are optional.
 
-Ghidra's URL has a default, because GhidraMCP has a well-known port. The LLM URL
-and model have none — a local inference server has no conventional address — so
+The LLM URL and model have no default — a local inference server has no
+conventional address — so
 `translate` reports them as unset, listing all three ways to provide one, rather
 than failing later with a connection error to a port nothing is listening on.
 `target_dir` has no default either: commands that do real work fail fast and
@@ -141,21 +136,22 @@ print the three ways to set it. `workspace` defaults to the current directory �
 and `live`/`serve` always use the current directory, ignoring config and
 environment unless you pass `--workspace`.
 
-### Ghidra Read Cache
+### Scan Read Cache
 
-Batch runs (`batch-translate`, `auto`, `live`) cache every Ghidra read under
-`re/ghidra-cache/<binary>/<sha256>/`, keyed on the target binary's file bytes,
-the Ghidra program name, and the cache format version. A second batch over
-unchanged bytes replays from the cache with zero live reads; changed bytes hash
-to a different directory, so stale entries never need invalidating.
+Batch runs (`batch-translate`, `auto`, `live`) cache every engine read under
+`re/ghidra-cache/<binary>/<sha256>/` (the directory keeps its historical name;
+its rename is deferred in ADR-0041), keyed on the target binary's file bytes,
+the loaded program name, and the cache format version. A second batch over
+unchanged bytes replays from the cache with zero engine reads; changed bytes
+hash to a different directory, so stale entries never need invalidating.
 
-One case the cache cannot detect: the *program inside Ghidra* changed —
-re-analysis, applied types, renames — while the binary's bytes stayed the same
-(the bridge reports no Ghidra version to notice it with). Two ways out:
+One case the cache cannot detect: the *analysis state* changed — re-analysis,
+applied types, renames — while the binary's bytes stayed the same. Two ways
+out:
 
-- run with `--refresh-ghidra-cache` — the run wipes the cache directory for
-  that binary's current bytes (`re/ghidra-cache/<binary>/<sha256>/`), reads
-  everything live once, and rewrites the cache for the next run;
+- run with `--refresh-cache` — the run wipes the cache directory for that
+  binary's current bytes (`re/ghidra-cache/<binary>/<sha256>/`), reads
+  everything from the engine once, and rewrites the cache for the next run;
 - delete `re/ghidra-cache/<binary>/` by hand — every byte version of the
   binary at once.
 
@@ -165,13 +161,14 @@ re-analysis, applied types, renames — while the binary's bytes stayed the same
 |-------|---------|
 | `calxgloss-types` | Shared data structures |
 | `calxgloss-config` | Layered configuration (flags, environment, TOML) |
-| `calxgloss-ghidra` | GhidraMCP HTTP client + Ghidra server lifecycle owner (ADR-0007) |
+| `calxgloss-ghidra` | Engine seam: `ScanSource`/`TypeWriteSource` + scan read cache (ADR-0041) |
+| `calxgloss-kuna` | Kuna analysis engine — PE loading, decompilation, the only engine (ADR-0041) |
 | `calxgloss-llm` | Local LLM client (Ollama/vLLM) |
 | `calxgloss-prompts` | Prompt templates |
 | `calxgloss-pal` | Windows API → Rust mappings |
 | `calxgloss-analysis` | DLL classification, call graphs, API tagging |
 | `calxgloss-callgraph` | Root/leaf detection, translation ordering, context enrichment |
-| `calxgloss-typesdb` | Ghidra type library scanning, vtable detection, struct inference |
+| `calxgloss-typesdb` | Type Manager scanning, vtable detection, struct inference |
 | `calxgloss-typeinfer` | This-pointer detection, parameter size detection, type propagation |
 | `calxgloss-algorithm` | Control-flow signature matching, string-guided hints, callback patterns |
 | `calxgloss-memory` | Allocation/deallocation pair tracking, handle lifecycle, refcount detection |
@@ -183,7 +180,7 @@ re-analysis, applied types, renames — while the binary's bytes stayed the same
 | `calxgloss-apidetect` | Import-table extraction, library-to-Rust-crate mapping, per-function API summaries |
 | `calxgloss-serialize` | Byte-swap call matching, bit-packing pattern recognition, magic-byte format sniffing |
 | `calxgloss-testgen` | FFI bindings, test inputs, baseline execution |
-| `calxgloss-translator` | Ghidra → LLM → Rust pipeline |
+| `calxgloss-translator` | Engine scan → LLM → Rust pipeline |
 | `calxgloss-verify` | Compile and test verification |
 | `calxgloss-git` | Git branch/commit/merge automation |
 | `calxgloss-reports` | Terminal output formatting |

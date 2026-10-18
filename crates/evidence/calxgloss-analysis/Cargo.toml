@@ -8,10 +8,14 @@ repository.workspace = true
 
 [dev-dependencies]
 chrono = { workspace = true }
+calxgloss-testfixtures = { path = "../../integrations/calxgloss-testfixtures" }
 
 [dependencies]
 calxgloss-callgraph = { path = "../calxgloss-callgraph" }
 calxgloss-ghidra = { path = "../../integrations/calxgloss-ghidra" }
+# The Kuna engine: the shim pipeline reads each DLL's exports through it
+# straight from the target directory (issue #214).
+calxgloss-kuna = { path = "../../integrations/calxgloss-kuna" }
 calxgloss-git = { path = "../../pipeline/calxgloss-git" }
 calxgloss-llm = { path = "../../integrations/calxgloss-llm" }
 calxgloss-pal = { path = "../../integrations/calxgloss-pal" }

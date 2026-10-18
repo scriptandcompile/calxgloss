@@ -1,5 +1,10 @@
 # Ghidra Lifecycle Integration — Design
 
+> **Historical.** This design shipped under ADR-0007 and was deleted outright
+> on 2026-10-18 (issue #214, ADR-0041): there is no Ghidra install check, no
+> headless server to spawn, and no project to open — Kuna loads the target
+> in-process. Kept as a record of the retired lifecycle's design.
+
 Goal: starting any Ghidra-dependent calxgloss command (`classify`, `translate`,
 `batch-translate`, `auto`, `patch`) should Just Work — calxgloss verifies the
 Ghidra install, starts a GhidraMCP server headless if none is running, ensures

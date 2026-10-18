@@ -50,7 +50,7 @@
 //!   claim per recoverable interface (or one runtime-level claim when
 //!   no name is recoverable), suggesting the trait-plus-methods shape.
 //! - [`engine`] - Scan orchestration: `ApiEngine` runs the detectors and
-//!   the divergence and COM passes over one open Ghidra program through
+//!   the divergence and COM passes over one loaded program through
 //!   the shared `ScanSource` trait (for the import listing) plus a
 //!   `CallGraphSource` (for the built call graph), one sequential pass
 //!   that keeps the findings in scan order.

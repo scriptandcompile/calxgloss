@@ -17,12 +17,12 @@
 //!   runs, and a rescan replaces the cached document.
 //!
 //! The fake program implements [`ScanSource`], so the whole flow runs
-//! without a Ghidra server.
+//! without an external server.
 
 use std::collections::HashMap;
 
 use calxgloss_ghidra::{
-    DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
+    DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
     Result, StringLiteral, StructLayout, Symbol, Xref,
 };
 use calxgloss_stringctx::engine::{ScanSource, StringContextEngine};
@@ -71,7 +71,7 @@ impl ScanSource for FakeProgram {
         self.bodies
             .get(name)
             .cloned()
-            .ok_or_else(|| GhidraError::NotFound {
+            .ok_or_else(|| EngineError::NotFound {
                 kind: "function",
                 query: name.to_string(),
             })
@@ -96,14 +96,14 @@ impl ScanSource for FakeProgram {
     }
 
     async fn struct_layout(&self, name: &str) -> Result<StructLayout> {
-        Err(GhidraError::NotFound {
+        Err(EngineError::NotFound {
             kind: "struct",
             query: name.to_string(),
         })
     }
 
     async fn enum_values(&self, name: &str) -> Result<EnumDefinition> {
-        Err(GhidraError::NotFound {
+        Err(EngineError::NotFound {
             kind: "enum",
             query: name.to_string(),
         })

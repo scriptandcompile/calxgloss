@@ -1,8 +1,8 @@
-//! The `stringctx` command — map program strings to functions for the open binary.
+//! The `stringctx` command — map program strings to functions for a binary.
 //!
 //! Runs the string-context scan — nine-category string classification,
 //! hybrid body-parse/xref string mapping, and format-string type
-//! inference — against the program currently open in Ghidra and saves the
+//! inference — against the loaded program and saves the
 //! result to `re/analysis/stringctx/{binary}.json` in the workspace, the same
 //! file batch translation will read as prompt context. Batch translation
 //! runs the same scan before its first batch when no result is cached;
@@ -12,7 +12,6 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use calxgloss_stringctx::engine::StringContextEngine;
 use calxgloss_stringctx::persist::StringContextPersistor;
 use calxgloss_stringctx::types::StringContextResult;
@@ -48,16 +47,9 @@ pub async fn handle_stringctx(
 
     info!(binary, workspace = %workspace.display(), "Mapping program strings to functions");
 
-    let ghidra_url = &settings.ghidra_url.value;
-    let mut config = GhidraConfig::new(ghidra_url)
-        .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
-    if let Some(key) = &settings.ghidra_api_key {
-        config = config.with_api_key(key.value.clone());
-    }
-    let ghidra = GhidraClient::from_config(config)
-        .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))?;
+    let kuna = load_kuna_source(settings, binary)?;
 
-    let engine = StringContextEngine::new(&ghidra);
+    let engine = StringContextEngine::new(&kuna);
     let result = engine
         .scan(binary)
         .await

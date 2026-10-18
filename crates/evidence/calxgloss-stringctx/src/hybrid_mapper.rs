@@ -8,8 +8,8 @@
 //!   references resolved against the program's string table, and calls to
 //!   recognized format functions.
 //! - [`extract_strings_from_xrefs`](HybridXrefMapper::extract_strings_from_xrefs)
-//!   consumes the Ghidra client's already-parsed xref records from
-//!   `get_xrefs_to`, the fallback for functions whose body parse found
+//!   consumes the seam's already-parsed xref records from the `xrefs_to()`
+//!   read, the fallback for functions whose body parse found
 //!   nothing.
 //!
 //! The hybrid rule keeps the two apart per function: a function whose
@@ -316,7 +316,7 @@ impl HybridXrefMapper {
 
     /// Turn one string's xref records into per-function usages.
     ///
-    /// The Ghidra client has already parsed `get_xrefs_to`'s response;
+    /// The seam has already parsed the `xrefs_to()` answer;
     /// each xref that names an enclosing function ties that function to
     /// `string`, with the xref rendering as evidence and
     /// [`Xref`](StringSource::Xref) provenance.

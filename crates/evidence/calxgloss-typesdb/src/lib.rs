@@ -1,8 +1,9 @@
 //! Data structure recovery for calxgloss.
 //!
 //! Recovers struct layouts, class hierarchies, vtables, and type aliases from
-//! a binary loaded in Ghidra, persists them to a per-DLL JSON type database,
-//! and feeds the results into LLM translation prompts as structured context.
+//! a binary loaded under the engine, persists them to a per-DLL JSON type
+//! database, and feeds the results into LLM translation prompts as structured
+//! context.
 //!
 //! # Architecture
 //!
@@ -13,10 +14,10 @@
 //!   detected vtables; `InferredStruct`, `InferredField`, `FieldType` for
 //!   string-inferred layouts; `TypeDatabase`, `ScanMetadata` for the
 //!   persisted per-DLL database.
-//! - [`scanner`] - Named type recovery: `TypeLibraryScanner` queries Ghidra's
-//!   Type Manager through the bridge's `list_data_types` / `get_struct_layout`
-//!   / `get_enum_values` endpoints, covering types never applied to a symbol.
-//! - [`vtable`] - Vtable detection: `VtableDetector` scans `list_data_items`
+//! - [`scanner`] - Named type recovery: `TypeLibraryScanner` queries the
+//!   Type Manager through the seam's `data_types()` / `struct_layout()` /
+//!   `enum_values()` reads, covering types never applied to a symbol.
+//! - [`vtable`] - Vtable detection: `VtableDetector` scans `data_items()`
 //!   output for vtable-shaped data objects, resolves method pointers to names
 //!   and addresses, tracks base-class inheritance, and detects COM interfaces.
 //! - [`string_infer`] - String-guided inference: `StringInferenceEngine`

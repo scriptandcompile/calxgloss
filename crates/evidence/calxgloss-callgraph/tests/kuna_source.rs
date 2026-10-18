@@ -42,7 +42,7 @@ async fn the_call_graph_builds_over_the_kuna_source_with_no_special_case() {
     }
 
     // Shape parity: the graph's nodes are exactly the seam's listing, each
-    // with its entry address — the same shape the Ghidra client produces,
+    // with its entry address — the same shape the scan source produces,
     // which is why the builder needs no engine special case.
     let listed = source
         .functions()
@@ -72,7 +72,7 @@ async fn the_call_graph_builds_over_the_kuna_source_with_no_special_case() {
     // recognizes Ghidra's placeholder names (`FUN_…`) — the names Ghidra
     // gives functions it has no real name for. Kuna names every function
     // from the symbol table, so the parser honestly answers none, exactly
-    // as it answers none for a Ghidra program whose calls all carry real
+    // as it answers none for a program whose calls all carry real
     // names. The caller edges, by contrast, come from the seam's xrefs and
     // are richly populated: the statically linked MinGW CRT calls itself
     // throughout the image, and every caller resolves to a listed entry.

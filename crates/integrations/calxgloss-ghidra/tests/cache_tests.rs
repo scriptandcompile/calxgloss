@@ -1,262 +1,32 @@
-//! `CachedGhidraSource` end-to-end, driven through the shared `ScanSource`
-//! seam against a stand-in GhidraMCP server that counts every call it serves.
+//! `CachedScanSource` end-to-end, driven through the shared `ScanSource`
+//! seam over the Kuna engine on the checked-in fixture DLL (issue #214).
 //!
 //! The cache's whole contract is observable from outside: a first instance
 //! fetches live and writes through, a second instance over the same
-//! workspace replays with zero live reads, changed bytes or a mismatched
-//! manifest mean cold, a corrupt document degrades to a live refetch, and
-//! writes and heartbeats pass straight through. Server-side call counts are
-//! the only instrumentation — no cache internals are inspected.
+//! workspace replays from disk, changed bytes or a mismatched manifest mean
+//! cold, a corrupt document degrades to a live refetch, and heartbeats pass
+//! straight through. With no server to count calls at, the instrumentation
+//! is the documents themselves: a tampered document whose value comes back
+//! proves a disk replay, and a corrupt document whose real value comes back
+//! proves a live refetch. No cache internals are inspected.
 
-use calxgloss_ghidra::{
-    CachedGhidraSource, DataItem, DataTypeEntry, FunctionSummary, GhidraClient, GhidraError,
-    NewStructField, ScanSource, StringLiteral, StructFieldLayout, StructLayout, Symbol,
-    TypeWriteSource, Xref,
-};
-use std::collections::HashMap;
+use calxgloss_ghidra::{CachedScanSource, EngineError, FunctionSummary, ScanSource};
+use calxgloss_kuna::KunaSource;
+use calxgloss_testfixtures::{EXPORT_NAMES, STRING_LITERALS, TARGET_FILE_NAME};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 
-const KNOWN_FUNCTION: &str = "FUN_18003e750";
-const PROGRAM: &str = "LaunchPad.exe";
-
-/// The read endpoints `drive_reads` reaches the server through; the cache
-/// must make the second instance's pass over them cost nothing.
-const READ_ENDPOINTS: &[&str] = &[
-    "list_functions",
-    "search_functions",
-    "decompile_function",
-    "list_strings",
-    "get_xrefs_to",
-    "list_data_types",
-    "get_struct_layout",
-    "get_enum_values",
-    "list_data_items",
-    "list_imports",
-    "list_exports",
-    "list_segments",
-    "read_memory",
-];
-
-// ============================================================
-// A counting stand-in GhidraMCP server
-// ============================================================
-
-/// A stand-in server answering every endpoint the seam touches with one
-/// canned record each (in the 6.x bridge's own text formats), counting how
-/// many times it served each endpoint.
-struct FakeServer {
-    base_url: String,
-    calls: Arc<Mutex<HashMap<String, usize>>>,
-    /// endpoint → request bodies received, in arrival order.
-    bodies: Arc<Mutex<HashMap<String, Vec<String>>>>,
-    /// When positive, the next N endpoint calls answer 500 instead of data.
-    fail_next: Arc<AtomicUsize>,
-    /// endpoint → canned 200 body, for write failures the bridge reports
-    /// as prose rather than HTTP status.
-    failures: Arc<Mutex<HashMap<String, String>>>,
-}
-
-impl FakeServer {
-    async fn start() -> Self {
-        Self::serving(PROGRAM).await
-    }
-
-    async fn serving(program: &str) -> Self {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("fake server should bind");
-        let addr = listener.local_addr().expect("fake server address");
-        let calls: Arc<Mutex<HashMap<String, usize>>> = Arc::new(Mutex::new(HashMap::new()));
-        let counted = Arc::clone(&calls);
-        let bodies: Arc<Mutex<HashMap<String, Vec<String>>>> = Arc::new(Mutex::new(HashMap::new()));
-        let recorded = Arc::clone(&bodies);
-        let failing = Arc::new(AtomicUsize::new(0));
-        let failing_task = Arc::clone(&failing);
-        let failures: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
-        let injected = Arc::clone(&failures);
-        let program = program.to_string();
-        tokio::spawn(async move {
-            while let Ok((mut stream, _)) = listener.accept().await {
-                let counted = Arc::clone(&counted);
-                let recorded = Arc::clone(&recorded);
-                let failing = Arc::clone(&failing_task);
-                let injected = Arc::clone(&injected);
-                let program = program.clone();
-                tokio::spawn(async move {
-                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                    let mut request = [0u8; 2048];
-                    let read = stream.read(&mut request).await.unwrap_or(0);
-                    let head = String::from_utf8_lossy(&request[..read]).to_string();
-                    let path = head
-                        .split_whitespace()
-                        .nth(1)
-                        .unwrap_or_default()
-                        .to_string();
-                    let endpoint = path
-                        .split('?')
-                        .next()
-                        .unwrap_or_default()
-                        .trim_start_matches('/');
-                    if endpoint != "favicon.ico" {
-                        let content_length = head
-                            .lines()
-                            .find_map(|line| match line.split_once(':') {
-                                Some((name, value))
-                                    if name.trim().eq_ignore_ascii_case("content-length") =>
-                                {
-                                    value.trim().parse::<usize>().ok()
-                                }
-                                _ => None,
-                            })
-                            .unwrap_or(0);
-                        let header_end = head.find("\r\n\r\n").map(|e| e + 4).unwrap_or(0);
-                        let mut body_so_far = head[header_end.min(head.len())..].to_string();
-                        while body_so_far.len() < content_length {
-                            let mut extra = [0u8; 1024];
-                            let n = stream.read(&mut extra).await.unwrap_or(0);
-                            if n == 0 {
-                                break;
-                            }
-                            body_so_far.push_str(&String::from_utf8_lossy(&extra[..n]));
-                        }
-                        recorded
-                            .lock()
-                            .expect("bodies lock")
-                            .entry(endpoint.to_string())
-                            .or_default()
-                            .push(body_so_far);
-                        *counted
-                            .lock()
-                            .expect("counts lock")
-                            .entry(endpoint.to_string())
-                            .or_insert(0) += 1;
-                    }
-                    let body = if endpoint == "check_connection" {
-                        format!("Connected: GhidraMCP plugin running with program '{program}'")
-                    } else if endpoint == "get_current_address"
-                        || endpoint == "get_current_function"
-                    {
-                        format!(
-                            "{{\"address\":\"180000000\",\"program\":\"{program}\",\"function_name\":\"{KNOWN_FUNCTION}\"}}"
-                        )
-                    } else if endpoint == "list_functions" {
-                        "FUN_18003e750 at 18003e750".to_string()
-                    } else if endpoint == "search_functions" {
-                        "FUN_18003e750 @ 18003e750".to_string()
-                    } else if endpoint == "decompile_function" {
-                        "undefined FUN_18003e750(void)\n{\n  void *pv = malloc(0x10);\n  free(pv);\n}\n"
-                            .to_string()
-                    } else if endpoint == "list_strings" {
-                        "180128d18: \"Journal.txt\"".to_string()
-                    } else if endpoint == "get_xrefs_to" {
-                        "From 18000a3be in FUN_caller [UNCONDITIONAL_CALL]".to_string()
-                    } else if endpoint == "list_data_types" {
-                        "_EXCEPTION_DISPOSITION | excpt.h | 4 bytes | /excpt.h/_EXCEPTION_DISPOSITION"
-                            .to_string()
-                    } else if endpoint == "get_struct_layout" {
-                        "Structure: IMAGE_DOS_HEADER\nSize: 128 bytes\nAlignment: 1\n\nLayout:\nOffset | Size | Type | Name\n-------|------|------|-----\n     0 |    2 | char[2] | e_magic\n"
-                            .to_string()
-                    } else if endpoint == "get_enum_values" {
-                        "Enumeration: _EXCEPTION_DISPOSITION\nSize: 4 bytes\n\nValues:\nName | Value\n-----|------\nExceptionContinueExecution | 0 (0x0)\n"
-                            .to_string()
-                    } else if endpoint == "list_data_items" {
-                        "IMAGE_DOS_HEADER_180000000 @ 180000000 [IMAGE_DOS_HEADER] (128 bytes)"
-                            .to_string()
-                    } else if endpoint == "list_imports" {
-                        "malloc -> EXTERNAL:00000123\nfree -> EXTERNAL:00000124".to_string()
-                    } else if endpoint == "list_exports" {
-                        "DllMain -> 18000c690".to_string()
-                    } else if endpoint == "list_segments" {
-                        ".text: 180000000 - 1801261ff".to_string()
-                    } else if endpoint == "read_memory" {
-                        "{\"address\":\"1801306f0\",\"length\":8,\"data\":[0,171,3,128,1,0,0,0],\"hex\":\"00ab038001000000\"}"
-                            .to_string()
-                    } else if endpoint == "add_function_tag" {
-                        "Tag added".to_string()
-                    } else if endpoint == "set_function_prototype" {
-                        "Function prototype set to: int LaunchPad_main(void)".to_string()
-                    } else if endpoint == "set_local_variable_type" {
-                        "Local variable type set successfully".to_string()
-                    } else if endpoint == "create_struct" {
-                        "struct Widget\n{\n  int x;\n};\n\n".to_string()
-                    } else if endpoint == "create_enum" {
-                        "enum Color\n{\n  RED = 0,\n};\n\n".to_string()
-                    } else if endpoint == "create_typedef" {
-                        "typedef int WidgetHandle;\n\n".to_string()
-                    } else if endpoint == "add_struct_field" {
-                        "Field y added to struct Widget".to_string()
-                    } else {
-                        "Error 404: No context found for request".to_string()
-                    };
-                    let injected_failure = injected.lock().expect("failures lock").remove(endpoint);
-                    let fail = endpoint != "favicon.ico" && failing.load(Ordering::SeqCst) > 0;
-                    if fail {
-                        failing.fetch_sub(1, Ordering::SeqCst);
-                    }
-                    let (status, body) = if let Some(body) = injected_failure {
-                        ("200 OK", body)
-                    } else if fail {
-                        ("500 Internal Server Error", "boom".to_string())
-                    } else {
-                        ("200 OK", body)
-                    };
-                    let response = format!(
-                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    );
-                    let _ = stream.write_all(response.as_bytes()).await;
-                });
-            }
-        });
-        Self {
-            base_url: format!("http://{addr}"),
-            calls,
-            bodies,
-            fail_next: failing,
-            failures,
-        }
-    }
-
-    fn count(&self, endpoint: &str) -> usize {
-        *self
-            .calls
-            .lock()
-            .expect("counts lock")
-            .get(endpoint)
-            .unwrap_or(&0)
-    }
-
-    /// The `i`th request body the server received for `endpoint`.
-    fn body(&self, endpoint: &str, i: usize) -> String {
-        self.bodies
-            .lock()
-            .expect("bodies lock")
-            .get(endpoint)
-            .and_then(|bodies| bodies.get(i))
-            .cloned()
-            .unwrap_or_else(|| panic!("no body recorded for {endpoint} #{i}"))
-    }
-
-    /// Make the next `n` endpoint calls answer 500 instead of data.
-    fn fail_next_calls(&self, n: usize) {
-        self.fail_next.store(n, Ordering::SeqCst);
-    }
-
-    /// Make the next call to `endpoint` answer 200 with `body` — the
-    /// bridge's prose-failure shape, invisible to the HTTP status.
-    fn fail_endpoint(&self, endpoint: &str, body: &str) {
-        self.failures
-            .lock()
-            .expect("failures lock")
-            .insert(endpoint.to_string(), body.to_string());
-    }
-
-    /// How many read-endpoint calls the server has served in total.
-    fn read_calls(&self) -> usize {
-        READ_ENDPOINTS.iter().map(|e| self.count(e)).sum()
-    }
+/// The fixture's own entry point, listed with MinGW's leading underscore.
+fn fixture_export(functions: &[FunctionSummary], want: &str) -> FunctionSummary {
+    functions
+        .iter()
+        .find(|f| f.name.trim_start_matches('_') == want)
+        .unwrap_or_else(|| {
+            panic!(
+                "{want} should be listed, got {:?}",
+                functions.iter().map(|f| &f.name).collect::<Vec<_>>()
+            )
+        })
+        .clone()
 }
 
 // ============================================================
@@ -268,158 +38,98 @@ impl FakeServer {
 #[test]
 fn cached_source_is_clone_send_and_sync() {
     fn assert_clone_send_sync<T: Clone + Send + Sync>() {}
-    assert_clone_send_sync::<CachedGhidraSource>();
+    assert_clone_send_sync::<CachedScanSource>();
 }
 
-fn sample_functions() -> Vec<FunctionSummary> {
-    vec![FunctionSummary {
-        name: KNOWN_FUNCTION.into(),
-        address: 0x18003e750,
-    }]
-}
-
-fn sample_strings() -> Vec<StringLiteral> {
-    vec![StringLiteral {
-        address: 0x180128d18,
-        value: "Journal.txt".into(),
-    }]
-}
-
-fn sample_xrefs() -> Vec<Xref> {
-    vec![Xref {
-        address: 0x18000a3be,
-        function: Some("FUN_caller".into()),
-        kind: Some("UNCONDITIONAL_CALL".into()),
-    }]
-}
-
-fn sample_data_types() -> Vec<DataTypeEntry> {
-    vec![DataTypeEntry {
-        name: "_EXCEPTION_DISPOSITION".into(),
-        category: "excpt.h".into(),
-        size: Some(4),
-        path: "/excpt.h/_EXCEPTION_DISPOSITION".into(),
-    }]
-}
-
-fn sample_struct_layout() -> StructLayout {
-    StructLayout {
-        name: "IMAGE_DOS_HEADER".into(),
-        size: 128,
-        alignment: 1,
-        fields: vec![StructFieldLayout {
-            offset: 0,
-            size: 2,
-            type_name: "char[2]".into(),
-            field_name: "e_magic".into(),
-        }],
-    }
-}
-
-fn sample_data_items() -> Vec<DataItem> {
-    vec![DataItem {
-        label: "IMAGE_DOS_HEADER_180000000".into(),
-        address: 0x180000000,
-        type_name: "IMAGE_DOS_HEADER".into(),
-        length: 128,
-    }]
-}
-
-fn sample_imports() -> Vec<Symbol> {
-    vec![
-        Symbol {
-            name: "malloc".into(),
-            address: 0x123,
-            imported: true,
-        },
-        Symbol {
-            name: "free".into(),
-            address: 0x124,
-            imported: true,
-        },
-    ]
-}
-
-fn sample_exports() -> Vec<Symbol> {
-    vec![Symbol {
-        name: "DllMain".into(),
-        address: 0x18000c690,
-        imported: false,
-    }]
-}
-
-/// Drive every cached read once, asserting each answers with the canned
-/// record — cached or not, the values must be the server's own.
-async fn drive_reads<S: ScanSource>(source: &S) {
-    assert_eq!(
-        source.functions().await.expect("function listing"),
-        sample_functions()
-    );
-    let body = source
-        .decompile(KNOWN_FUNCTION)
-        .await
-        .expect("decompile by name");
-    assert!(
-        body.body.contains("malloc(0x10)"),
-        "the decompiled body should come through: {body:?}"
-    );
-    assert_eq!(source.strings().await.expect("strings"), sample_strings());
-    assert_eq!(
-        source.callers(0x18003e750).await.expect("callers"),
-        vec!["FUN_caller".to_string()]
-    );
-    assert_eq!(
-        source.xrefs_to(0x18003e750).await.expect("xrefs"),
-        sample_xrefs()
-    );
-    assert_eq!(
-        source.data_types(None).await.expect("data types"),
-        sample_data_types()
-    );
-    assert_eq!(
-        source
-            .struct_layout("IMAGE_DOS_HEADER")
-            .await
-            .expect("struct layout"),
-        sample_struct_layout()
-    );
-    assert_eq!(
-        source
-            .enum_values("_EXCEPTION_DISPOSITION")
-            .await
-            .expect("enum values")
-            .name,
-        "_EXCEPTION_DISPOSITION"
-    );
-    assert_eq!(
-        source.data_items().await.expect("data items"),
-        sample_data_items()
-    );
-    assert_eq!(source.imports().await.expect("imports"), sample_imports());
-    assert_eq!(source.exports().await.expect("exports"), sample_exports());
-    assert_eq!(source.image_base().await.expect("image base"), 0x180000000);
-    assert_eq!(
-        source
-            .read_memory(0x1801306f0, 8)
-            .await
-            .expect("memory bytes"),
-        vec![0, 171, 3, 128, 1, 0, 0, 0]
-    );
-}
-
-/// A workspace holding a target binary of `bytes`, returning its path.
-fn workspace_with_binary(bytes: &[u8]) -> (tempfile::TempDir, PathBuf) {
+/// A temp workspace holding a copy of the fixture binary, returning the
+/// workspace and the copy's path.
+fn workspace_with_fixture() -> (tempfile::TempDir, PathBuf) {
+    let fixture = calxgloss_testfixtures::load_target()
+        .expect("fixture target should build and validate from the integration tests");
     let dir = tempfile::TempDir::new().expect("temp workspace");
-    let binary = dir.path().join(PROGRAM);
-    std::fs::write(&binary, bytes).expect("binary written");
+    let binary = dir.path().join(TARGET_FILE_NAME);
+    std::fs::copy(fixture.path(), &binary).expect("fixture copied into the workspace");
     (dir, binary)
 }
 
-async fn cached_over(fake: &FakeServer, workspace: &Path, binary: &Path) -> CachedGhidraSource {
-    let client = GhidraClient::new(&fake.base_url).expect("fake ghidra client");
-    CachedGhidraSource::new(client, workspace, PROGRAM, binary)
+fn cached_source(workspace: &Path, binary: &Path) -> CachedScanSource {
+    let source = KunaSource::load(binary).expect("the fixture must load for scanning with Kuna");
+    CachedScanSource::new(source, workspace, TARGET_FILE_NAME, binary).expect("cached source")
+}
+
+/// Drive every cached read once, asserting each answers with the fixture's
+/// own values — cached or not, the answers must be the engine's.
+async fn drive_reads<S: ScanSource>(source: &S) {
+    let functions = source.functions().await.expect("function listing");
+    let tick = fixture_export(&functions, "fixture_tick");
+    let body = source
+        .decompile(&tick.name)
         .await
-        .expect("cached source")
+        .expect("decompile by listed name");
+    assert!(
+        body.body.contains("fixture_tick"),
+        "the decompiled body should name its own function: {body:?}"
+    );
+    let strings = source.strings().await.expect("strings");
+    for want in STRING_LITERALS {
+        assert!(
+            strings.iter().any(|s| s.value == *want),
+            "the string listing should carry {want:?}"
+        );
+    }
+    let base = source.image_base().await.expect("image base");
+    assert!(base > 0, "a PE image base is reported");
+    let exports = source.exports().await.expect("exports");
+    for want in EXPORT_NAMES {
+        assert!(
+            exports
+                .iter()
+                .any(|e| e.name.trim_start_matches('_') == *want),
+            "the export listing should carry {want}"
+        );
+    }
+    let imports = source.imports().await.expect("imports");
+    assert!(
+        imports.iter().any(|i| i.name.contains("puts")),
+        "the import listing should carry puts, got {:?}",
+        imports.iter().map(|i| &i.name).collect::<Vec<_>>()
+    );
+    assert!(
+        !source.data_items().await.expect("data items").is_empty(),
+        "the fixture carries in-image globals"
+    );
+    assert!(
+        !source
+            .data_types(None)
+            .await
+            .expect("data types")
+            .is_empty(),
+        "the engine interns its core vocabulary"
+    );
+    let iobuf = source
+        .struct_layout("_iobuf")
+        .await
+        .expect("the engine's analysis interns _iobuf");
+    assert_eq!(iobuf.name, "_iobuf");
+    assert_eq!(
+        source.read_memory(base, 2).await.expect("memory bytes"),
+        b"MZ"
+    );
+    // A referenced literal answers xrefs and callers.
+    let mut xref_site = None;
+    for s in strings.iter().take(8) {
+        let xrefs = source.xrefs_to(s.address).await.expect("xrefs read");
+        if !xrefs.is_empty() {
+            xref_site = Some(s.address);
+            break;
+        }
+    }
+    let address = xref_site.expect("a fixture literal is referenced by code");
+    let callers = source.callers(address).await.expect("callers read");
+    assert!(
+        !callers.is_empty(),
+        "the referring function is named for {address:x}"
+    );
 }
 
 // ============================================================
@@ -428,22 +138,13 @@ async fn cached_over(fake: &FakeServer, workspace: &Path, binary: &Path) -> Cach
 
 #[tokio::test]
 async fn a_first_instance_fetches_live_and_writes_each_item_through() {
-    let fake = FakeServer::start().await;
-    let (workspace, binary) = workspace_with_binary(b"the program's bytes");
-    let source = cached_over(&fake, workspace.path(), &binary).await;
+    let (workspace, binary) = workspace_with_fixture();
+    let source = cached_source(workspace.path(), &binary);
 
     drive_reads(&source).await;
 
-    for endpoint in READ_ENDPOINTS {
-        // The client derives `callers` from `get_xrefs_to`, so a cold pass
-        // hits that endpoint once per cache key.
-        let expected = usize::from(*endpoint == "get_xrefs_to") + 1;
-        assert_eq!(
-            fake.count(endpoint),
-            expected,
-            "a cold cache fetches {endpoint} exactly once per key"
-        );
-    }
+    let functions = source.functions().await.expect("function listing");
+    let tick = fixture_export(&functions, "fixture_tick");
     let dir = source.cache_dir().expect("the disk tier is on");
     for entry in [
         "manifest.json",
@@ -453,132 +154,173 @@ async fn a_first_instance_fetches_live_and_writes_each_item_through() {
         "exports.json",
         "image_base.json",
         "data_items.json",
-        "decompile/FUN_18003e750.json",
-        "callers/18003e750.json",
-        "xrefs_to/18003e750.json",
         "data_types/all.json",
-        "struct_layout/IMAGE_DOS_HEADER.json",
-        "enum_values/_EXCEPTION_DISPOSITION.json",
-        "memory/1801306f0-8.json",
+        "struct_layout/_iobuf.json",
+        &format!("decompile/{}.json", tick.name),
     ] {
         assert!(
             dir.join(entry).is_file(),
             "{entry} should be written through as one document"
         );
     }
+    // Address-keyed documents land under the fixture's own addresses.
+    let base = source.image_base().await.expect("image base");
+    assert!(
+        dir.join(format!("memory/{base:x}-2.json")).is_file(),
+        "the memory read is filed under its range"
+    );
 }
 
 #[tokio::test]
-async fn a_second_instance_over_the_same_workspace_replays_with_zero_live_reads() {
-    let fake = FakeServer::start().await;
-    let (workspace, binary) = workspace_with_binary(b"the program's bytes");
+async fn a_second_instance_over_the_same_workspace_replays_from_disk() {
+    let (workspace, binary) = workspace_with_fixture();
 
-    let first = cached_over(&fake, workspace.path(), &binary).await;
+    let first = cached_source(workspace.path(), &binary);
     drive_reads(&first).await;
-    let after_first_run = fake.read_calls();
+    let dir = first
+        .cache_dir()
+        .expect("the disk tier is on")
+        .to_path_buf();
+
+    // Tamper the listing with a value the engine could never answer. If a
+    // fresh instance returns it, that read came off disk — the only
+    // possible replay source — with no engine round trip at all.
+    let sentinel_functions = vec![FunctionSummary {
+        name: "sentinel_function".into(),
+        address: 1,
+    }];
+    calxgloss_types::save_json(&dir.join("functions.json"), &sentinel_functions)
+        .expect("functions tampered");
+
+    let second = cached_source(workspace.path(), &binary);
+    let replayed = second.functions().await.expect("function listing");
     assert_eq!(
-        after_first_run,
-        READ_ENDPOINTS.len() + 1,
-        "one live call per key (callers rides the xrefs endpoint)"
+        replayed, sentinel_functions,
+        "the second instance must replay the tampered document, proving a disk read"
     );
 
-    // A fresh instance (fresh client, fresh memo) over the same workspace
-    // and the same bytes replays every read from disk.
-    let second = cached_over(&fake, workspace.path(), &binary).await;
-    drive_reads(&second).await;
-    assert_eq!(
-        fake.read_calls(),
-        after_first_run,
-        "the second instance must not touch the server for cached reads"
-    );
+    // And the untouched documents replay the engine's own values: the
+    // string listing still carries the fixture's literals.
+    let strings = second.strings().await.expect("strings replay");
+    for want in STRING_LITERALS {
+        assert!(
+            strings.iter().any(|s| s.value == *want),
+            "the intact string document should replay {want:?}"
+        );
+    }
 }
 
 #[tokio::test]
 async fn a_refresh_instance_goes_cold_and_rewrites_the_cache() {
-    let fake = FakeServer::start().await;
-    let (workspace, binary) = workspace_with_binary(b"the program's bytes");
+    let (workspace, binary) = workspace_with_fixture();
 
-    let first = cached_over(&fake, workspace.path(), &binary).await;
+    let first = cached_source(workspace.path(), &binary);
     drive_reads(&first).await;
-    let after_first_run = fake.read_calls();
+    let dir = first
+        .cache_dir()
+        .expect("the disk tier is on")
+        .to_path_buf();
 
-    // The refresh escape hatch (issue #106): same workspace, same bytes,
-    // warm disk tier — a refreshing instance ignores it, refetching every
-    // key live.
-    let client = GhidraClient::new(&fake.base_url).expect("fake ghidra client");
-    let refreshed = CachedGhidraSource::new_refresh(client, workspace.path(), PROGRAM, &binary)
-        .await
+    // Tamper the listing, then take the refresh escape hatch (issue #106):
+    // same workspace, same bytes, warm disk tier — a refreshing instance
+    // ignores it and refetches from the engine.
+    let sentinel = vec![FunctionSummary {
+        name: "sentinel_function".into(),
+        address: 1,
+    }];
+    calxgloss_types::save_json(&dir.join("functions.json"), &sentinel).expect("tampered");
+    let source = KunaSource::load(&binary).expect("fixture loads");
+    let refreshed = CachedScanSource::new_refresh(source, &workspace, TARGET_FILE_NAME, &binary)
         .expect("refreshing cached source");
-    drive_reads(&refreshed).await;
-    assert_eq!(
-        fake.read_calls() - after_first_run,
-        READ_ENDPOINTS.len() + 1,
-        "a refresh refetches every key live (callers rides the xrefs endpoint)"
+    let functions = refreshed.functions().await.expect("refreshed listing");
+    assert!(
+        functions
+            .iter()
+            .any(|f| f.name.trim_start_matches('_') == "fixture_tick"),
+        "a refresh refetches live instead of replaying the tampered document"
     );
 
-    // And the refresh rewrote the cache: a third plain instance over the
-    // same workspace replays warm again at zero live cost.
-    let third = cached_over(&fake, workspace.path(), &binary).await;
-    drive_reads(&third).await;
-    assert_eq!(
-        fake.read_calls(),
-        after_first_run * 2,
-        "the rewritten cache replays with no further live reads"
+    // And the refresh rewrote the cache: a third plain instance replays the
+    // engine's values, not the sentinel.
+    let third = cached_source(workspace.path(), &binary);
+    let replayed = third.functions().await.expect("third listing");
+    assert_ne!(
+        replayed, sentinel,
+        "the rewritten cache replays the engine's own listing"
+    );
+    assert!(
+        replayed
+            .iter()
+            .any(|f| f.name.trim_start_matches('_') == "fixture_tick")
     );
 }
 
 #[tokio::test]
-async fn concurrent_misses_of_one_item_fire_exactly_one_live_request() {
-    let fake = FakeServer::start().await;
-    let (workspace, binary) = workspace_with_binary(b"the program's bytes");
-    let source = cached_over(&fake, workspace.path(), &binary).await;
+async fn concurrent_misses_of_one_item_share_one_fill() {
+    let (workspace, binary) = workspace_with_fixture();
+    let source = cached_source(workspace.path(), &binary);
+    let functions = source.functions().await.expect("function listing");
+    let tick = fixture_export(&functions, "fixture_tick");
 
-    let clones: Vec<CachedGhidraSource> = (0..5).map(|_| source.clone()).collect::<Vec<_>>();
+    let clones: Vec<CachedScanSource> = (0..5).map(|_| source.clone()).collect::<Vec<_>>();
     let handles: Vec<_> = clones
         .into_iter()
-        .map(|s| tokio::spawn(async move { s.decompile(KNOWN_FUNCTION).await }))
+        .map(|s| {
+            let name = tick.name.clone();
+            tokio::spawn(async move { s.decompile(&name).await })
+        })
         .collect();
+    let mut bodies = Vec::new();
     for handle in handles {
         let body = handle.await.expect("task ran").expect("decompile");
-        assert!(body.body.contains("malloc(0x10)"));
+        bodies.push(body);
     }
-    assert_eq!(
-        fake.count("decompile_function"),
-        1,
-        "five concurrent misses of one key share one live decompile"
-    );
-    assert_eq!(fake.count("search_functions"), 1);
+    for body in &bodies[1..] {
+        assert_eq!(
+            body, &bodies[0],
+            "five concurrent misses of one key share one fill"
+        );
+    }
 }
 
 #[tokio::test]
 async fn a_failed_live_fetch_is_not_cached_and_does_not_poison_the_key() {
-    let fake = FakeServer::start().await;
-    let (workspace, binary) = workspace_with_binary(b"fail once");
-    let source = cached_over(&fake, workspace.path(), &binary).await;
+    let (workspace, binary) = workspace_with_fixture();
+    let source = cached_source(workspace.path(), &binary);
 
-    // The name-based decompile goes through search_functions first; force
-    // that first live hop to fail.
-    fake.fail_next_calls(1);
-    let first = source.decompile(KNOWN_FUNCTION).await;
-    assert!(first.is_err(), "the forced 500 should surface as an error");
-
-    // A later read retries live rather than replaying the failure.
-    let second = source
-        .decompile(KNOWN_FUNCTION)
+    let err = source
+        .decompile("no_such_function_anywhere")
         .await
-        .expect("the retry should go live again");
-    assert!(second.body.contains("malloc(0x10)"));
-    // And the successful fetch is now cached for further reads.
-    let third = source
-        .decompile(KNOWN_FUNCTION)
-        .await
-        .expect("the successful fetch should be cached");
-    assert_eq!(third.body, second.body);
+        .expect_err("an unknown name is a named miss");
+    assert!(
+        matches!(&err, EngineError::NotFound { kind, query }
+            if *kind == "function" && query == "no_such_function_anywhere"),
+        "{err}"
+    );
 
-    // The failed search and the successful one both reached the server; the
-    // replay did not.
-    assert_eq!(fake.count("search_functions"), 2);
-    assert_eq!(fake.count("decompile_function"), 1);
+    // The failure was never written through — the key stays a plain miss.
+    let dir = source.cache_dir().expect("the disk tier is on");
+    assert!(
+        !dir.join("decompile")
+            .join("no_such_function_anywhere.json")
+            .exists(),
+        "a failed fetch writes nothing"
+    );
+
+    // A later read of the same key goes to the engine again, and a real
+    // decompile still works around the failed key.
+    let again = source
+        .decompile("no_such_function_anywhere")
+        .await
+        .expect_err("the retry is a fresh miss, not a replayed failure");
+    assert!(matches!(again, EngineError::NotFound { .. }));
+    let functions = source.functions().await.expect("function listing");
+    let tick = fixture_export(&functions, "fixture_tick");
+    let body = source
+        .decompile(&tick.name)
+        .await
+        .expect("a real decompile still works");
+    assert!(body.body.contains("fixture_tick"));
 }
 
 // ============================================================
@@ -587,21 +329,26 @@ async fn a_failed_live_fetch_is_not_cached_and_does_not_poison_the_key() {
 
 #[tokio::test]
 async fn changed_binary_bytes_yield_a_cold_cache_under_a_new_directory() {
-    let fake = FakeServer::start().await;
-    let (workspace, binary) = workspace_with_binary(b"the program's bytes");
+    let (workspace, binary) = workspace_with_fixture();
 
-    let first = cached_over(&fake, workspace.path(), &binary).await;
+    let first = cached_source(workspace.path(), &binary);
     first.functions().await.expect("first listing");
 
-    // A rebuilt binary: same identity, different bytes.
-    std::fs::write(&binary, b"a rebuilt program").expect("binary rewritten");
-    let second = cached_over(&fake, workspace.path(), &binary).await;
-    second.functions().await.expect("second listing");
+    // A rebuilt binary: same identity, different bytes. Flipping the COFF
+    // TimeDateStamp changes the file hash while keeping the image valid —
+    // it sits four bytes past the Machine field, at signature + 8.
+    let mut bytes = std::fs::read(&binary).expect("binary readable");
+    let pe_sig = find_pe_signature(&bytes).expect("the fixture is a PE");
+    bytes[pe_sig + 8] ^= 0xff; // TimeDateStamp
+    std::fs::write(&binary, &bytes).expect("binary rewritten");
 
-    assert_eq!(
-        fake.count("list_functions"),
-        2,
-        "changed bytes must not serve the old cache"
+    let second = cached_source(workspace.path(), &binary);
+    let functions = second.functions().await.expect("second listing");
+    assert!(
+        functions
+            .iter()
+            .any(|f| f.name.trim_start_matches('_') == "fixture_tick"),
+        "the second instance reads its own build, not the old cache"
     );
     assert_ne!(
         first.cache_dir().expect("first dir"),
@@ -618,15 +365,21 @@ async fn changed_binary_bytes_yield_a_cold_cache_under_a_new_directory() {
     assert_eq!(identity_dir.count(), 2, "the old hash directory is kept");
 }
 
+fn find_pe_signature(bytes: &[u8]) -> Option<usize> {
+    bytes.windows(4).position(|w| w == b"PE\0\0")
+}
+
 #[tokio::test]
 async fn a_manifest_field_mismatch_yields_a_cold_cache() {
     for field in ["binary_sha256", "format_version", "program"] {
-        let fake = FakeServer::start().await;
-        let (workspace, binary) = workspace_with_binary(b"the program's bytes");
-        let first = cached_over(&fake, workspace.path(), &binary).await;
+        let (workspace, binary) = workspace_with_fixture();
+        let first = cached_source(workspace.path(), &binary);
         first.functions().await.expect("first listing");
 
-        let dir = first.cache_dir().expect("the disk tier is on");
+        let dir = first
+            .cache_dir()
+            .expect("the disk tier is on")
+            .to_path_buf();
         let manifest_path = dir.join("manifest.json");
         let mut manifest: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&manifest_path).expect("manifest"))
@@ -638,93 +391,73 @@ async fn a_manifest_field_mismatch_yields_a_cold_cache() {
         }
         std::fs::write(&manifest_path, manifest.to_string()).expect("manifest tampered");
 
-        let second = cached_over(&fake, workspace.path(), &binary).await;
+        let second = cached_source(workspace.path(), &binary);
         assert!(
             !dir.join("functions.json").is_file(),
             "a cold directory must be wiped at construction, before any refetch"
         );
-        second.functions().await.expect("second listing");
-        assert_eq!(
-            fake.count("list_functions"),
-            2,
-            "a {field} mismatch must treat the directory as cold"
+        let functions = second.functions().await.expect("second listing");
+        assert!(
+            functions
+                .iter()
+                .any(|f| f.name.trim_start_matches('_') == "fixture_tick"),
+            "a {field} mismatch must treat the directory as cold and refetch"
         );
     }
 }
 
 #[tokio::test]
-async fn a_different_program_name_from_the_probe_yields_a_cold_cache() {
-    let (workspace, binary) = workspace_with_binary(b"the program's bytes");
-
-    let fake = FakeServer::serving(PROGRAM).await;
-    let first = cached_over(&fake, workspace.path(), &binary).await;
-    first.functions().await.expect("first listing");
-
-    // The same bytes, but Ghidra now has a different program open.
-    let other = FakeServer::serving("Rebuilt.exe").await;
-    let second = cached_over(&other, workspace.path(), &binary).await;
-    second.functions().await.expect("second listing");
-    assert_eq!(
-        other.count("list_functions"),
-        1,
-        "the program-name mismatch must force a cold read"
-    );
-}
-
-#[tokio::test]
 async fn a_corrupt_cache_document_refetches_live_instead_of_failing() {
-    let fake = FakeServer::start().await;
-    let (workspace, binary) = workspace_with_binary(b"the program's bytes");
+    let (workspace, binary) = workspace_with_fixture();
 
-    let first = cached_over(&fake, workspace.path(), &binary).await;
+    let first = cached_source(workspace.path(), &binary);
     first.functions().await.expect("first listing");
     first.strings().await.expect("first strings");
 
-    let dir = first.cache_dir().expect("the disk tier is on");
+    let dir = first
+        .cache_dir()
+        .expect("the disk tier is on")
+        .to_path_buf();
     std::fs::write(dir.join("functions.json"), "{ not json").expect("document corrupted");
 
-    let second = cached_over(&fake, workspace.path(), &binary).await;
-    assert_eq!(
-        second
-            .functions()
-            .await
-            .expect("corrupt entry refetched live"),
-        sample_functions()
+    let second = cached_source(workspace.path(), &binary);
+    let functions = second
+        .functions()
+        .await
+        .expect("corrupt entry refetched live");
+    assert!(
+        functions
+            .iter()
+            .any(|f| f.name.trim_start_matches('_') == "fixture_tick"),
+        "the corrupt document fell back to a live engine read"
     );
-    assert_eq!(
-        second.strings().await.expect("intact entry replayed"),
-        sample_strings()
-    );
-    assert_eq!(
-        fake.count("list_functions"),
-        2,
-        "the corrupt entry went live"
-    );
-    assert_eq!(fake.count("list_strings"), 1, "the intact entry did not");
+    let strings = second.strings().await.expect("intact entry replayed");
+    for want in STRING_LITERALS {
+        assert!(
+            strings.iter().any(|s| s.value == *want),
+            "the intact string document should still replay {want:?}"
+        );
+    }
 }
 
 #[tokio::test]
-async fn a_missing_binary_file_degrades_to_pass_through_live_reads() {
-    let fake = FakeServer::start().await;
-    let workspace = tempfile::TempDir::new().expect("temp workspace");
-    let missing = workspace.path().join("absent.exe");
+async fn an_unreadable_binary_path_degrades_to_pass_through_engine_reads() {
+    let (workspace, binary) = workspace_with_fixture();
 
-    let client = GhidraClient::new(&fake.base_url).expect("fake ghidra client");
-    let source = CachedGhidraSource::new(client, workspace.path(), "absent.exe", &missing)
-        .await
+    // The engine loaded the real fixture; the *hashing* path is missing,
+    // which drops the disk tier but leaves the loaded engine answering.
+    let source = KunaSource::load(&binary).expect("the fixture loads");
+    let missing = workspace.path().join("absent.exe");
+    let cached = CachedScanSource::new(source, workspace.path(), TARGET_FILE_NAME, &missing)
         .expect("a missing binary is not a construction error");
 
-    assert!(source.cache_dir().is_none(), "the disk tier is off");
-    drive_reads(&source).await;
-    assert_eq!(
-        fake.count("list_functions"),
-        1,
-        "reads pass straight through to the live client"
-    );
-    assert_eq!(
-        fake.count("get_current_address"),
-        0,
-        "no manifest, no probe"
+    assert!(cached.cache_dir().is_none(), "the disk tier is off");
+    let functions = cached.functions().await.expect("pass-through listing");
+    assert!(
+        functions
+            .iter()
+            .any(|f| f.name.trim_start_matches('_') == "fixture_tick"),
+        "reads pass straight through to the engine"
     );
     assert!(
         !workspace.path().join("re").exists(),
@@ -737,81 +470,66 @@ async fn a_missing_binary_file_degrades_to_pass_through_live_reads() {
 // ============================================================
 
 #[tokio::test]
-async fn write_calls_are_never_cached_and_heartbeats_pass_straight_through() {
-    let fake = FakeServer::start().await;
-    let (workspace, binary) = workspace_with_binary(b"the program's bytes");
-    let source = cached_over(&fake, workspace.path(), &binary).await;
+async fn function_tagging_is_refused_by_name() {
+    let (workspace, binary) = workspace_with_fixture();
+    let source = cached_source(workspace.path(), &binary);
+    let functions = source.functions().await.expect("function listing");
+    let tick = fixture_export(&functions, "fixture_tick");
 
-    // Writes delegate every time — a cache that swallowed one would leave
-    // Ghidra and the pipeline disagreeing about what was tagged.
-    source
-        .add_function_tag(KNOWN_FUNCTION, "candidate")
+    let err = source
+        .add_function_tag(&tick.name, "candidate")
         .await
-        .expect("tag 1");
-    source
-        .add_function_tag(KNOWN_FUNCTION, "candidate")
-        .await
-        .expect("tag 2");
-    assert_eq!(fake.count("add_function_tag"), 2, "writes are never cached");
+        .expect_err("Kuna has no tag write-back");
+    assert!(
+        matches!(&err, EngineError::Reported { message } if message.contains("Kuna")),
+        "the refusal must name the engine: {err}"
+    );
+}
 
-    // begin_pass/end_pass arm the wrapped client's heartbeat. Beats count
-    // work items consumed — live or cached — but are throttled, so the
-    // second decompile (a memo hit, right behind the first beat) counts
-    // without emitting: nothing is due inside the throttle window.
+#[tokio::test]
+async fn heartbeats_pass_straight_through_and_beat_for_live_and_warm_work() {
+    let (workspace, binary) = workspace_with_fixture();
+    let source = cached_source(workspace.path(), &binary);
+
     let events = calxgloss_types::TranslationEvents::new(64);
     let mut rx = events.subscribe();
-    source.begin_pass(PROGRAM, "call graph", &events);
-    source
-        .decompile(KNOWN_FUNCTION)
-        .await
-        .expect("live decompile");
+    source.begin_pass(TARGET_FILE_NAME, "call graph", &events);
+    let functions = source.functions().await.expect("live listing");
+    let tick = fixture_export(&functions, "fixture_tick");
+    source.decompile(&tick.name).await.expect("live decompile");
     let beat = rx.try_recv().expect("the live decompile beat");
     assert!(
         matches!(&beat, calxgloss_types::ProgressEvent::BatchProgress { pass, .. } if pass == "call graph"),
         "expected a BatchProgress beat, got {beat:?}"
     );
-    source
-        .decompile(KNOWN_FUNCTION)
-        .await
-        .expect("cached decompile");
-    // The memo hit counts as the second work item; whether it *emits*
-    // depends on the throttle clock, so accept at most its own beat.
-    let extra: Vec<calxgloss_types::ProgressEvent> =
-        std::iter::from_fn(|| rx.try_recv().ok()).collect();
-    assert!(
-        extra.len() <= 1
-            && extra.iter().all(|e| matches!(e,
-                calxgloss_types::ProgressEvent::BatchProgress { index, .. } if *index == 2)),
-        "the memo hit emits at most its own beat: {extra:?}"
-    );
     source.end_pass();
     source
-        .decompile("FUN_other")
+        .decompile(&tick.name)
         .await
-        .expect("live decompile, pass over");
+        .expect("memo-hit decompile, pass over");
     assert!(rx.try_recv().is_err(), "after end_pass nothing beats");
 }
 
 #[tokio::test]
 async fn a_warm_replay_still_beats_the_heartbeat_per_decompile() {
-    let fake = FakeServer::start().await;
-    let (workspace, binary) = workspace_with_binary(b"the program's bytes");
+    let (workspace, binary) = workspace_with_fixture();
 
     // A cold run fills the disk tier.
-    let first = cached_over(&fake, workspace.path(), &binary).await;
+    let first = cached_source(workspace.path(), &binary);
     drive_reads(&first).await;
-    let after_first_run = fake.read_calls();
 
-    // A warm instance armed for a pass consumes work items without a live
-    // round trip — the heartbeat must still count them, or the dashboard's
-    // per-binary activity line goes silent on every warm run (issue #121).
-    let second = cached_over(&fake, workspace.path(), &binary).await;
+    // A warm instance armed for a pass consumes work items without an
+    // engine round trip — the heartbeat must still count them, or the
+    // dashboard's per-binary activity line goes silent on every warm run
+    // (issue #121).
+    let second = cached_source(workspace.path(), &binary);
     let events = calxgloss_types::TranslationEvents::new(64);
     let mut rx = events.subscribe();
-    second.begin_pass(PROGRAM, "type inference", &events);
+    second.begin_pass(TARGET_FILE_NAME, "type inference", &events);
     let listed = second.functions().await.expect("warm function listing");
+    let tick = fixture_export(&listed, "fixture_tick");
     second
-        .decompile(KNOWN_FUNCTION)
+        .decompile(&tick.name)
         .await
         .expect("disk-hit decompile");
     let beat = rx.try_recv().expect("a disk-hit decompile beats");
@@ -823,9 +541,9 @@ async fn a_warm_replay_still_beats_the_heartbeat_per_decompile() {
             index,
             total,
         } => {
-            assert_eq!(binary, PROGRAM);
+            assert_eq!(binary, TARGET_FILE_NAME);
             assert_eq!(pass, "type inference");
-            assert_eq!(function, KNOWN_FUNCTION, "the warm worklist names the item");
+            assert_eq!(function, &tick.name, "the warm worklist names the item");
             assert_eq!(*index, 1);
             assert_eq!(*total, listed.len(), "the warm worklist carries the total");
         }
@@ -833,46 +551,38 @@ async fn a_warm_replay_still_beats_the_heartbeat_per_decompile() {
     }
 
     // Re-armed, the next decompile is a memo hit — it beats too.
-    second.begin_pass(PROGRAM, "call graph", &events);
+    second.begin_pass(TARGET_FILE_NAME, "call graph", &events);
     second
-        .decompile(KNOWN_FUNCTION)
+        .decompile(&tick.name)
         .await
         .expect("memo-hit decompile");
     let memo_beat = rx.try_recv().expect("a memo-hit decompile beats");
     assert!(
         matches!(&memo_beat, calxgloss_types::ProgressEvent::BatchProgress { pass, function, .. }
-            if pass == "call graph" && function == KNOWN_FUNCTION),
+            if pass == "call graph" && function == &tick.name),
         "the memo hit beats by name: {memo_beat:?}"
     );
     second.end_pass();
-
-    assert_eq!(
-        fake.read_calls(),
-        after_first_run,
-        "the whole warm pass never touched the server"
-    );
 }
 
 #[tokio::test]
 async fn an_interrupted_run_leaves_every_written_entry_individually_valid() {
-    let fake = FakeServer::start().await;
-    let (workspace, binary) = workspace_with_binary(b"the program's bytes");
+    let (workspace, binary) = workspace_with_fixture();
 
     // A run that fetched three items and stopped — what a crash or Ctrl-C
     // leaves behind.
-    let first = cached_over(&fake, workspace.path(), &binary).await;
+    let first = cached_source(workspace.path(), &binary);
     first.functions().await.expect("functions");
     first.strings().await.expect("strings");
-    first
-        .decompile(KNOWN_FUNCTION)
-        .await
-        .expect("one decompile");
+    let functions = first.functions().await.expect("listing");
+    let tick = fixture_export(&functions, "fixture_tick");
+    first.decompile(&tick.name).await.expect("one decompile");
 
     let dir = source_dir(&first);
     for entry in [
         "functions.json",
         "strings.json",
-        "decompile/FUN_18003e750.json",
+        &format!("decompile/{}.json", tick.name),
     ] {
         let document = std::fs::read_to_string(dir.join(entry)).expect("entry written");
         let parsed: Result<serde_json::Value, _> = serde_json::from_str(&document);
@@ -890,24 +600,27 @@ async fn an_interrupted_run_leaves_every_written_entry_individually_valid() {
         "what was never fetched was never written"
     );
 
-    // The restart resumes from where it stopped: the three written entries
-    // replay with zero live calls, the rest fetch normally.
-    let reads_before = fake.read_calls();
-    let second = cached_over(&fake, workspace.path(), &binary).await;
-    second.functions().await.expect("replayed functions");
-    second.strings().await.expect("replayed strings");
-    second
-        .decompile(KNOWN_FUNCTION)
-        .await
-        .expect("replayed decompile");
-    assert_eq!(
-        fake.read_calls(),
-        reads_before,
-        "the partial cache resumes the run without refetching"
+    // The restart resumes from where it stopped: the written entries
+    // replay, the rest fetch normally. Tamper the replayed ones — the
+    // restart must return the tampered values (proof they came from disk)
+    // while the never-fetched ones arrive live from the engine.
+    let dir2 = dir.clone();
+    let sentinel = vec![FunctionSummary {
+        name: "sentinel_function".into(),
+        address: 1,
+    }];
+    calxgloss_types::save_json(&dir2.join("functions.json"), &sentinel).expect("tampered");
+    let second = cached_source(workspace.path(), &binary);
+    let replayed = second.functions().await.expect("replayed functions");
+    assert_eq!(replayed, sentinel, "the partial cache resumes from disk");
+    let imports = second.imports().await.expect("freshly fetched imports");
+    assert!(
+        imports.iter().any(|i| i.name.contains("puts")),
+        "what was never written fetches live"
     );
 }
 
-fn source_dir(source: &CachedGhidraSource) -> PathBuf {
+fn source_dir(source: &CachedScanSource) -> PathBuf {
     source
         .cache_dir()
         .expect("the disk tier is on")
@@ -934,137 +647,15 @@ fn has_temp_residue(dir: &Path) -> bool {
 }
 
 // ============================================================
-// TypeWriteSource: the write side of the seam (issue #149)
+// Provenance pass-through (issue #208)
 // ============================================================
 
-/// Drive every `TypeWriteSource` method through one instance of the seam —
-/// generic over it, so the same driver proves the client's implementation
-/// whatever else implements the trait later.
-async fn drive_writes<W: TypeWriteSource>(source: &W) {
-    source
-        .set_function_prototype(0x18003e750, "int LaunchPad_main(void)")
-        .await
-        .expect("set prototype");
-    source
-        .set_local_variable_type(0x18003e750, "pvVar1", "char *")
-        .await
-        .expect("set local");
-    source
-        .create_struct(
-            "Widget",
-            &[
-                NewStructField::new("x", "int"),
-                NewStructField::new("y", "char *").at_offset(4),
-            ],
-        )
-        .await
-        .expect("create struct");
-    source
-        .create_enum("Color", &[("RED", 0), ("GREEN", 1)], 4)
-        .await
-        .expect("create enum");
-    source
-        .create_typedef("WidgetHandle", "Widget *")
-        .await
-        .expect("create typedef");
-    source
-        .add_struct_field("Widget", "z", "int", None)
-        .await
-        .expect("add field");
-}
-
-#[tokio::test]
-async fn write_payloads_reach_the_v6_endpoints_in_the_bridge_s_shape() {
-    let fake = FakeServer::start().await;
-    let client = GhidraClient::new(&fake.base_url).expect("client");
-    drive_writes(&client).await;
-
-    for endpoint in [
-        "set_function_prototype",
-        "set_local_variable_type",
-        "create_struct",
-        "create_enum",
-        "create_typedef",
-        "add_struct_field",
-    ] {
-        assert_eq!(fake.count(endpoint), 1, "{endpoint} hit exactly once");
-    }
-
-    // Addresses ride as bare hex, names as strings — the exact keys the
-    // 6.0.0 bridge's @RequestBody maps read.
-    assert_eq!(
-        fake.body("set_function_prototype", 0),
-        r#"{"function_address":"18003e750","prototype":"int LaunchPad_main(void)"}"#
-    );
-    assert_eq!(
-        fake.body("set_local_variable_type", 0),
-        r#"{"function_address":"18003e750","new_type":"char *","variable_name":"pvVar1"}"#
-    );
-    assert_eq!(
-        fake.body("create_struct", 0),
-        r#"{"fields":[{"name":"x","type":"int"},{"name":"y","offset":4,"type":"char *"}],"name":"Widget"}"#
-    );
-    // The bridge maps values as a Map<String, Integer> — a JSON object,
-    // not an array.
-    assert_eq!(
-        fake.body("create_enum", 0),
-        r#"{"name":"Color","size":4,"values":{"GREEN":1,"RED":0}}"#
-    );
-    assert_eq!(
-        fake.body("create_typedef", 0),
-        r#"{"base_type":"Widget *","name":"WidgetHandle"}"#
-    );
-    // An omitted offset is absent from the payload, not null.
-    assert_eq!(
-        fake.body("add_struct_field", 0),
-        r#"{"field_name":"z","field_type":"int","struct_name":"Widget"}"#
-    );
-}
-
-#[tokio::test]
-async fn write_failures_parse_into_the_named_error_kinds() {
-    let fake = FakeServer::start().await;
-    let client = GhidraClient::new(&fake.base_url).expect("client");
-
-    // A JSON-shaped failure body classifies as Reported.
-    fake.fail_endpoint(
-        "set_local_variable_type",
-        r#"{"error":"Variable not found"}"#,
-    );
-    let err = client
-        .set_local_variable_type(0x18003e750, "missing", "char *")
-        .await
-        .expect_err("the bridge said no");
-    assert!(
-        matches!(&err, GhidraError::Reported { message, .. } if message == "Variable not found"),
-        "{err}"
-    );
-
-    // A prose failure from Response.text classifies as Reported too —
-    // invisible to the HTTP status, caught by the error prefixes.
-    fake.fail_endpoint(
-        "create_struct",
-        "Structure with name 'Widget' already exists",
-    );
-    let err = client
-        .create_struct("Widget", &[])
-        .await
-        .expect_err("the bridge said no");
-    assert!(
-        matches!(&err, GhidraError::Reported { message, .. }
-            if message == "Structure with name 'Widget' already exists"),
-        "{err}"
-    );
-
-    // The add-struct-field not-found sentinel becomes NotFound.
-    fake.fail_endpoint("add_struct_field", "Structure not found: Widget");
-    let err = client
-        .add_struct_field("Widget", "z", "int", None)
-        .await
-        .expect_err("the bridge said no");
-    assert!(
-        matches!(&err, GhidraError::NotFound { kind, query }
-            if *kind == "structure" && query == "Widget"),
-        "{err}"
-    );
+#[test]
+fn the_cache_forwards_the_engine_provenance() {
+    let (workspace, binary) = workspace_with_fixture();
+    let source = cached_source(workspace.path(), &binary);
+    let provenance = source
+        .engine_provenance()
+        .expect("the wrapped Kuna source names its engine");
+    assert_eq!(provenance.name, "kuna");
 }

@@ -24,14 +24,6 @@ pub async fn handle_auto_shim(
 ) -> Result<()> {
     info!("Starting auto-shim pipeline");
 
-    // The session preflight (G1-T4): attach or spawn. The wrong-program guard
-    // runs per DLL inside the shim pipeline, through this session. The
-    // project bootstrap (G1-T6) waits until the DLL list is known below —
-    // it is decided from the filter or the classification records.
-    let primary = dll_filter.unwrap_or("auto-shim");
-    let session = open_ghidra_session(settings, workspace, primary, &[], None).await?;
-    let ghidra = session.client().clone();
-
     // Initialize LLM client.
     let llm_url = settings
         .llm_url
@@ -48,14 +40,17 @@ pub async fn handle_auto_shim(
     let llm = LlmClient::from_url(llm_url, llm_model)
         .with_context(|| format!("Failed to initialize LLM client at {}", llm_url))?;
 
-    // Initialize analyzer for classification reading.
-    let api_mappings = ApiMappings::default();
-    let analyzer = Analyzer::new(ghidra.clone(), api_mappings);
-
     // Determine which DLLs to process.
     let (dll_names, classifications): (Vec<String>, Vec<calxgloss_analysis::DllClassification>) =
         if let Some(binary) = dll_filter {
-            // Process a single specified DLL.
+            // Process a single specified DLL: Kuna reads it from the target
+            // directory for the classification pass.
+            let source = calxgloss_kuna::KunaSource::load(&target_dir.join(binary))
+                .with_context(|| format!("Failed to load {binary} with Kuna"))?;
+            let analyzer = Analyzer::new(
+                calxgloss_ghidra::PipelineSource::from(source),
+                ApiMappings::default(),
+            );
             let classification = analyzer.classify_dll(binary).await?;
             let names: Vec<String> = vec![binary.to_string()];
             (names, vec![classification])
@@ -110,15 +105,6 @@ pub async fn handle_auto_shim(
 
     info!(count = dll_names.len(), dlls = ?dll_names, "Auto-shim targets");
 
-    // The project bootstrap (G1-T6, issue #116), now that the DLLs are
-    // known: the shim pipeline decompiles each one through this session,
-    // so every one must be loaded and analyzed in the project first.
-    let binaries: Vec<std::path::PathBuf> = dll_names.iter().map(|d| target_dir.join(d)).collect();
-    session
-        .ensure_project(workspace, &binaries, None)
-        .await
-        .with_context(|| "Failed to load the shim DLLs into the Ghidra project")?;
-
     // Initialize verifier.
     let verifier = Verifier::new(workspace).context("Failed to create verifier")?;
 
@@ -132,7 +118,7 @@ pub async fn handle_auto_shim(
     // Run the auto-shim pipeline.
     let results = shim_pipeline::generate_all_shims(
         &classifications,
-        &session,
+        target_dir,
         llm,
         verifier,
         workspace,
@@ -196,9 +182,6 @@ pub async fn handle_auto_shim(
     }
 
     println!();
-
-    // Release the server if we spawned it; an attached one is left running.
-    session.shutdown().await;
 
     info!(count = dll_names.len(), "Auto-shim complete");
     Ok(())

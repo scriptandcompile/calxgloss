@@ -5,8 +5,9 @@
 //!
 //! - **Persistence round-trip** — build a graph in memory, save to disk,
 //!   load it back, and re-classify with root/leaf detectors.
-//! - **Full pipeline (ignored)** — requires a running GhidraMCP server
-//!   and is skipped by default.
+//!
+//! The engine-backed end-to-end build lives in `tests/kuna_source.rs`, over
+//! the fixture DLL — no server needed (issue #214).
 
 use std::collections::HashMap;
 
@@ -201,70 +202,6 @@ fn test_root_detection_classifies_dllmain() {
         .find(|f| f.name == "DllMain")
         .expect("DllMain should exist");
     assert_eq!(dllmain.node_category, NodeCategory::Root);
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
-}
-
-/// ---------------------------------------------------------------------------
-/// Full pipeline (requires Ghidra)
-/// ---------------------------------------------------------------------------
-/// End-to-end test: fetch functions from Ghidra, build graph, classify, persist.
-///
-/// Ignored by default because it requires a live GhidraMCP server with a
-/// program open.  Run with:
-///
-/// ```text
-/// CALXGLOSS_GHIDRA_URL=http://127.0.0.1:8080 \
-///     cargo test -p calxgloss-callgraph --test integration_tests full_pipeline -- --ignored --nocapture
-/// ```
-#[tokio::test]
-#[ignore = "needs a running GhidraMCP server with a program open"]
-async fn test_full_pipeline_ghidra_to_persist() {
-    let url = std::env::var("CALXGLOSS_GHIDRA_URL").expect("CALXGLOSS_GHIDRA_URL");
-    let ghidra = calxgloss_ghidra::GhidraClient::new(&url).expect("connect to Ghidra");
-
-    let functions = ghidra
-        .list_functions()
-        .await
-        .expect("list_functions should succeed");
-    assert!(
-        !functions.is_empty(),
-        "expected at least one function in the open program"
-    );
-
-    // Build the graph.
-    let builder = calxgloss_callgraph::CallGraphBuilder::new(ghidra, "test.dll");
-    let mut graph = builder.build().await.expect("build should succeed");
-
-    // All functions should be present.
-    assert_eq!(graph.functions.len(), functions.len());
-
-    // Classify.
-    classify_graph(&mut graph);
-
-    // Verify no function is unclassified.
-    for func in &graph.functions {
-        assert!(
-            matches!(
-                func.node_category,
-                NodeCategory::Root | NodeCategory::Leaf | NodeCategory::Middle
-            ),
-            "function {} has unclassified category",
-            func.name
-        );
-    }
-
-    // Persist and reload.
-    let temp_dir = std::env::temp_dir().join("calxgloss_integration_pipeline");
-    let _ = std::fs::remove_dir_all(&temp_dir);
-    std::fs::create_dir_all(&temp_dir).unwrap();
-
-    let persistor = CallGraphPersistor::new(&temp_dir);
-    persistor.save(&graph).unwrap();
-    let loaded = persistor.load("test.dll").unwrap();
-
-    assert_eq!(loaded.functions.len(), graph.functions.len());
-    assert_eq!(loaded.binary, graph.binary);
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }

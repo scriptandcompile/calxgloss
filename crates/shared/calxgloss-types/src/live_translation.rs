@@ -219,7 +219,7 @@ mod tests {
             function: "DrawPrimitive".into(),
             phase: TranslationPhase::LlmCall,
             phase_history: vec![PhaseRecord {
-                phase: TranslationPhase::GhidraFetch,
+                phase: TranslationPhase::ScanFetch,
                 elapsed_secs: 0.0,
             }],
             elapsed_secs: 47.25,
@@ -263,9 +263,9 @@ mod tests {
         let fresh = LiveUnitProgress {
             binary: "game_logic.dll".into(),
             function: "Update".into(),
-            phase: TranslationPhase::GhidraFetch,
+            phase: TranslationPhase::ScanFetch,
             phase_history: vec![PhaseRecord {
-                phase: TranslationPhase::GhidraFetch,
+                phase: TranslationPhase::ScanFetch,
                 elapsed_secs: 0.0,
             }],
             elapsed_secs: 1.0,

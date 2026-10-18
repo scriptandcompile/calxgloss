@@ -73,9 +73,8 @@ impl KunaProgram {
 /// Load `path` as a program with the Kuna engine, selecting the language
 /// from the file itself.
 ///
-/// A failure is always [`KunaError::LoadFailed`] naming the path, Kuna's
-/// own reason, and the `--engine ghidra` fallback — never a raw upstream
-/// backtrace.
+/// A failure is always [`KunaError::LoadFailed`] naming the path and Kuna's
+/// own reason — never a raw upstream backtrace.
 pub fn load(path: &Path) -> Result<KunaProgram> {
     let spec_root = specs::spec_root()?;
     let mut program = engine::bootstrap_from_object(&path.to_string_lossy(), "", &[spec_root])

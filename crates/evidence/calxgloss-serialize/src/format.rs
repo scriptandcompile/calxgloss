@@ -10,7 +10,7 @@
 //!
 //! The combiner reads no body of its own: it consumes exactly the
 //! findings the single-pass scan already collected for the function,
-//! so the deepening costs no extra Ghidra round trips. The body is
+//! so the deepening costs no extra engine reads. The body is
 //! consulted only to place the readings in body order — the readings
 //! themselves are the whole claim.
 //!

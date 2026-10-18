@@ -25,7 +25,7 @@ use calxgloss_ghidra::DecompiledFunction;
 /// Bit-packing pattern detection over decompiled functions.
 ///
 /// The detector owns no name set — the pack and unpack shapes are the
-/// whole configuration — and holds no Ghidra client of its own and
+/// whole configuration — and holds no scan source of its own and
 /// never writes back to the program; one detector serves an entire
 /// scan and can be shared by reference across concurrent per-function
 /// passes. It is swappable whole on the engine through

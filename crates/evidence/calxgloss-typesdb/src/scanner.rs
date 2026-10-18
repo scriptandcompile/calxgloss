@@ -1,7 +1,7 @@
-//! Named type recovery from Ghidra's Type Manager.
+//! Named type recovery from the Type Manager.
 //!
-//! [`TypeLibraryScanner`] with `scan_named_types()` queries the bridge's
-//! `list_data_types` / `get_struct_layout` / `get_enum_values` endpoints and
+//! [`TypeLibraryScanner`] with `scan_named_types()` queries the seam's
+//! `data_types()` / `struct_layout()` / `enum_values()` reads and
 //! returns every named type in the Type Manager — including types never
 //! applied to a symbol. Malformed or partially available type data degrades
 //! gracefully rather than failing the whole scan.
@@ -19,7 +19,8 @@
 
 use crate::error::Result;
 use crate::types::{NamedType, TypeKind};
-use calxgloss_ghidra::{DataTypeEntry, GhidraClient, GhidraError, ScanSource};
+use calxgloss_ghidra::{DataTypeEntry, EngineError, ScanSource};
+use calxgloss_kuna::KunaSource;
 use std::collections::HashSet;
 use tracing::{debug, info};
 
@@ -149,18 +150,18 @@ impl KindHints {
 /// Named type recovery from Ghidra's Type Manager.
 ///
 /// The scanner is generic over [`ScanSource`] so tests can drive it
-/// with canned responses; [`new`](Self::new) builds one over a live
-/// [`GhidraClient`].
+/// with canned responses; [`new`](Self::new) builds one over a loaded
+/// [`KunaSource`].
 #[derive(Debug, Clone)]
-pub struct TypeLibraryScanner<S = GhidraClient> {
+pub struct TypeLibraryScanner<S = KunaSource> {
     source: S,
     category: Option<String>,
 }
 
-impl TypeLibraryScanner<GhidraClient> {
-    /// A scanner over a live GhidraMCP client.
-    pub fn new(client: &GhidraClient) -> TypeLibraryScanner<GhidraClient> {
-        Self::with_source(client.clone())
+impl TypeLibraryScanner<KunaSource> {
+    /// A scanner over a loaded Kuna program.
+    pub fn new(source: &KunaSource) -> TypeLibraryScanner<KunaSource> {
+        Self::with_source(source.clone())
     }
 }
 
@@ -294,10 +295,10 @@ enum Probe {
 /// still resolve the type, and if neither does the type degrades. Anything
 /// else — transport, a reported server failure — is a broken scan, not a
 /// broken type.
-fn is_layout_miss(error: &GhidraError) -> bool {
+fn is_layout_miss(error: &EngineError) -> bool {
     matches!(
         error,
-        GhidraError::NotFound { .. } | GhidraError::Malformed { .. }
+        EngineError::NotFound { .. } | EngineError::Malformed { .. }
     )
 }
 
@@ -350,7 +351,7 @@ mod tests {
         }
     }
 
-    /// A canned probe outcome. `GhidraError` is not `Clone`, so failures are
+    /// A canned probe outcome. `EngineError` is not `Clone`, so failures are
     /// stored as outcome tags and built fresh at probe time.
     #[derive(Clone)]
     enum Canned<T> {
@@ -399,38 +400,36 @@ mod tests {
     }
 
     /// The error a canned outcome produces for a structure probe.
-    fn struct_error(name: &str, outcome: &Canned<StructLayout>) -> GhidraError {
+    fn struct_error(name: &str, outcome: &Canned<StructLayout>) -> EngineError {
         match outcome {
-            Canned::NotFound => GhidraError::NotFound {
+            Canned::NotFound => EngineError::NotFound {
                 kind: "structure",
                 query: name.to_string(),
             },
-            Canned::NotThatKind => GhidraError::Malformed {
+            Canned::NotThatKind => EngineError::Malformed {
                 kind: "structure layout",
                 detail: format!("Data type is not a structure: {name}"),
             },
-            Canned::ServerFailure => GhidraError::Reported {
-                status: Some(200),
-                message: "Ghidra is busy".into(),
+            Canned::ServerFailure => EngineError::Reported {
+                message: "the engine is busy".into(),
             },
             Canned::Found(_) => unreachable!("a found layout is not an error"),
         }
     }
 
     /// The error a canned outcome produces for an enumeration probe.
-    fn enum_error(name: &str, outcome: &Canned<EnumDefinition>) -> GhidraError {
+    fn enum_error(name: &str, outcome: &Canned<EnumDefinition>) -> EngineError {
         match outcome {
-            Canned::NotFound => GhidraError::NotFound {
+            Canned::NotFound => EngineError::NotFound {
                 kind: "enumeration",
                 query: name.to_string(),
             },
-            Canned::NotThatKind => GhidraError::Malformed {
+            Canned::NotThatKind => EngineError::Malformed {
                 kind: "enumeration values",
                 detail: format!("Data type is not an enumeration: {name}"),
             },
-            Canned::ServerFailure => GhidraError::Reported {
-                status: Some(200),
-                message: "Ghidra is busy".into(),
+            Canned::ServerFailure => EngineError::Reported {
+                message: "the engine is busy".into(),
             },
             Canned::Found(_) => unreachable!("a found definition is not an error"),
         }
@@ -462,7 +461,7 @@ mod tests {
             match self.layouts.get(name) {
                 Some(Canned::Found(layout)) => Ok(layout.clone()),
                 Some(outcome) => Err(struct_error(name, outcome)),
-                None => Err(GhidraError::NotFound {
+                None => Err(EngineError::NotFound {
                     kind: "structure",
                     query: name.to_string(),
                 }),
@@ -474,7 +473,7 @@ mod tests {
             match self.enums.get(name) {
                 Some(Canned::Found(definition)) => Ok(definition.clone()),
                 Some(outcome) => Err(enum_error(name, outcome)),
-                None => Err(GhidraError::NotFound {
+                None => Err(EngineError::NotFound {
                     kind: "enumeration",
                     query: name.to_string(),
                 }),
@@ -486,7 +485,7 @@ mod tests {
         }
 
         async fn decompile(&self, name: &str) -> GhidraResult<DecompiledFunction> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "function",
                 query: name.to_string(),
             })
@@ -729,7 +728,7 @@ mod tests {
         let result = scanner_over(source).scan_named_types().await;
         assert!(matches!(
             result,
-            Err(TypesDbError::Ghidra(GhidraError::Reported { .. }))
+            Err(TypesDbError::Engine(EngineError::Reported { .. }))
         ));
     }
 

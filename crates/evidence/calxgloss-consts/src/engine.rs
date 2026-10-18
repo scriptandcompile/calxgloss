@@ -2,7 +2,7 @@
 //!
 //! [`ConstEngine`] runs the three detectors — bitmask group detection,
 //! sequential enum candidate detection, and repeated-value frequency
-//! analysis — over every function of one open Ghidra program and
+//! analysis — over every function of one loaded program and
 //! assembles their findings into a single [`ConstResult`] with its
 //! scan provenance.
 //!
@@ -34,7 +34,7 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use calxgloss_ghidra::GhidraClient;
+use calxgloss_kuna::KunaSource;
 use tracing::{info, warn};
 
 use crate::bitmask::BitmaskDetector;
@@ -51,7 +51,7 @@ use crate::types::{BitflagGroup, ConstFinding, ConstResult, ScanMetadata};
 ///
 /// The shared trait from the Ghidra integration crate, re-exported here
 /// so the engine's generic shape names it where it always has;
-/// [`GhidraClient`] implements it over the live HTTP API, and tests
+/// [`KunaSource`] implements it over the in-process engine, and tests
 /// implement it over canned bodies so the orchestration runs without a
 /// server. The futures are `Send` so a scan can be driven from an
 /// orchestrating task.
@@ -61,25 +61,25 @@ pub use calxgloss_ghidra::ScanSource;
 ///
 /// The engine is generic over its [`ScanSource`], so tests can run the
 /// whole orchestration over canned bodies; [`new`](Self::new) builds
-/// one over a live [`GhidraClient`]. Each detector carries no state
+/// one over a loaded [`KunaSource`]. Each detector carries no state
 /// and starts configured with its standard thresholds —
 /// [`with_bitmask`](Self::with_bitmask), [`with_sequential`](Self::with_sequential),
 /// and [`with_frequency`](Self::with_frequency) swap a detector's
 /// thresholds whole — so one instance of each serves the whole scan.
 #[derive(Debug, Clone)]
-pub struct ConstEngine<S = GhidraClient> {
+pub struct ConstEngine<S = KunaSource> {
     source: S,
     bitmask: BitmaskDetector,
     sequential: SequentialDetector,
     frequency: FrequencyAnalyzer,
 }
 
-impl ConstEngine<GhidraClient> {
-    /// An engine over a live GhidraMCP client, scanning with the three
+impl ConstEngine<KunaSource> {
+    /// An engine over a loaded Kuna program, scanning with the three
     /// detectors' standard thresholds.
-    pub fn new(client: &GhidraClient) -> ConstEngine<GhidraClient> {
+    pub fn new(source: &KunaSource) -> ConstEngine<KunaSource> {
         ConstEngine {
-            source: client.clone(),
+            source: source.clone(),
             bitmask: BitmaskDetector::with_default_threshold(),
             sequential: SequentialDetector::with_default_threshold(),
             frequency: FrequencyAnalyzer::with_default_thresholds(),
@@ -195,8 +195,8 @@ impl<S> ConstEngine<S> {
                     skipped += 1;
                     decompile_failures += 1;
                     // Skip-rate breaker: once most of the listing has
-                    // failed to decompile, the scan is reading the
-                    // wrong program (or a half-broken server), and an
+                    // failed to decompile, the scan is reading a
+                    // program the engine cannot analyze, and an
                     // empty result would persist as a phantom-clean
                     // record. Abort with the counts instead of
                     // skipping on.
@@ -263,9 +263,7 @@ impl<S> ConstEngine<S> {
         // the palette lands last among the program-level findings.
         findings.extend(color_palette(&frequency_tally).map(ConstFinding::ColorConstant));
         let mut metadata = ScanMetadata::new(binary);
-        // The source names its engine and pin under `kuna`; the Ghidra
-        // path names nothing and the record stays exactly as it was
-        // (issue #208).
+        // The source names its engine and pin under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
@@ -291,7 +289,7 @@ mod tests {
     use crate::sequential::SequentialDetector;
     use crate::types::Confidence;
     use calxgloss_ghidra::{
-        DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
+        DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
         Result, StringLiteral, StructLayout, Symbol, Xref,
     };
     use std::collections::HashMap;
@@ -350,9 +348,8 @@ mod tests {
     impl ScanSource for FakeProgram {
         async fn functions(&self) -> Result<Vec<FunctionSummary>> {
             if self.fail_listing {
-                return Err(GhidraError::Reported {
-                    status: Some(200),
-                    message: "Ghidra is busy".into(),
+                return Err(EngineError::Reported {
+                    message: "the engine is busy".into(),
                 });
             }
             Ok(self.listing.clone())
@@ -361,7 +358,7 @@ mod tests {
         async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
             self.stats.decompiles.lock().unwrap().push(name.to_string());
             if self.fail_decompiles.iter().any(|f| f == name) {
-                return Err(GhidraError::NotFound {
+                return Err(EngineError::NotFound {
                     kind: "function",
                     query: name.to_string(),
                 });
@@ -369,7 +366,7 @@ mod tests {
             self.bodies
                 .get(name)
                 .cloned()
-                .ok_or_else(|| GhidraError::NotFound {
+                .ok_or_else(|| EngineError::NotFound {
                     kind: "function",
                     query: name.to_string(),
                 })
@@ -394,14 +391,14 @@ mod tests {
         }
 
         async fn struct_layout(&self, name: &str) -> Result<StructLayout> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "struct",
                 query: name.to_string(),
             })
         }
 
         async fn enum_values(&self, name: &str) -> Result<EnumDefinition> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "enum",
                 query: name.to_string(),
             })
@@ -1164,7 +1161,7 @@ mod tests {
         let result = ConstEngine::with_source(program).scan("eqmain.dll").await;
         assert!(matches!(
             result,
-            Err(crate::ConstError::Ghidra(GhidraError::Reported { .. }))
+            Err(crate::ConstError::Engine(EngineError::Reported { .. }))
         ));
     }
 

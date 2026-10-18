@@ -396,7 +396,7 @@ pub struct ExtractedCall {
 ///
 /// The engine is stateless: every reading comes from the decompiled
 /// function it is handed, so one engine serves an entire scan and can be
-/// shared across concurrent per-function passes. It holds no Ghidra client
+/// shared across concurrent per-function passes. It holds no scan source
 /// of its own — the [`DecompiledFunction`] text is fetched once per
 /// function and read by every detector — and it never writes back to the
 /// program, only reporting what the body's call sites imply.

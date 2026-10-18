@@ -5,16 +5,16 @@ use thiserror::Error;
 /// Unified error type for the translation pipeline.
 #[derive(Debug, Error)]
 pub enum TranslatorError {
-    /// Failed to fetch function information from Ghidra.
+    /// Failed to read the function through the analysis seam.
     ///
-    /// The source is boxed: `GhidraError` carries fat variants (a reqwest
-    /// error beside a URL), and unboxed this variant alone pushed
-    /// `Result`'s `Err` half past clippy's `result_large_err` threshold.
+    /// The source is boxed: `EngineError` carries fat variants, and unboxed
+    /// this variant alone pushed `Result`'s `Err` half past clippy's
+    /// `result_large_err` threshold.
     #[error("failed to get function '{function}' from DLL '{binary}': {source}")]
-    GhidraFetch {
+    ScanFetch {
         binary: String,
         function: String,
-        source: Box<calxgloss_ghidra::GhidraError>,
+        source: Box<calxgloss_ghidra::EngineError>,
     },
 
     /// Failed to call the LLM.

@@ -58,7 +58,7 @@
 //!   network-order traffic and which functions contribute each —
 //!   appended after the per-function findings.
 //! - [`engine`] - Scan orchestration: `SerializeEngine` runs the
-//!   detectors over one open Ghidra program through a `ScanSource`
+//!   detectors over one loaded program through a `ScanSource`
 //!   (function listing + decompile-by-name), one sequential pass that
 //!   decompiles each function exactly once and keeps the findings in
 //!   scan order.

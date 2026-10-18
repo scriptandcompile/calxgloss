@@ -15,7 +15,7 @@ Calxgloss is a Cargo workspace of 27 crates in five contexts:
 crates/
 ├── calxgloss/          the meta-lib (one file of re-exports)
 ├── shared/             calxgloss-types, calxgloss-config
-├── integrations/       calxgloss-ghidra, -llm, -pal, -prompts
+├── integrations/       calxgloss-ghidra, -kuna, -llm, -pal, -prompts
 ├── evidence/           13 analysis engines (analysis, callgraph, typesdb, …)
 ├── pipeline/           calxgloss-translator, -verify, -testgen, -git
 └── interface/          calxgloss-cli, -web, -reports
@@ -40,8 +40,9 @@ Everything the harness does is a flow of serializable values between crates
 that never call each other directly. That vocabulary lives in
 `crates/shared/calxgloss-types`, re-exported flat at the crate root
 (`src/lib.rs:L56-L82`) so consumers write `calxgloss_types::FunctionInfo`.
-It deliberately contains **no analysis logic and no service calls** — Ghidra,
-LLM, and test runners live in engine crates that only exchange these records.
+It deliberately contains **no analysis logic and no service calls** — the
+engine, the LLM, and test runners live in crates that only exchange these
+records.
 
 ### 1.1 A DLL's category is the strategy switch
 
@@ -87,8 +88,8 @@ most consequential decision the system makes.
 
 ### 1.2 What a function *is*, before it is translated
 
-The record Ghidra produces for one function is the primary input to the
-pipeline:
+The record the engine produces for one function is the primary input to
+the pipeline:
 
 ```rust
 // crates/shared/calxgloss-types/src/function.rs:L135-L162
@@ -112,7 +113,7 @@ pub struct FunctionInfo {
 }
 ```
 
-Note the assumption baked into the type: *Ghidra has already run*. These
+Note the assumption baked into the type: *the engine has already run*. These
 records never invoke it; consumers must treat the text as opaque and possibly
 stale. Each tagged API call carries its translation target with it:
 
@@ -213,34 +214,41 @@ harness.
 
 ---
 
-## 2. The eyes: Ghidra and the PAL
+## 2. The eyes: the engine and the PAL
 
-### 2.1 `GhidraClient` — one open program, many endpoints
+### 2.1 `KunaSource` — the program, loaded in-process
 
-Ghidra is reached through the GhidraMCP HTTP bridge (ADR-0001 pins strict
-version pairing; ADR-0007 gives calxgloss ownership of the server's
-lifecycle). The client in
-`crates/integrations/calxgloss-ghidra/src/client.rs` is a thin typed surface
-over ~40 endpoints. Name-based lookups resolve through search first:
+The analysis engine is Kuna — a Rust port of Ghidra's decompiler — loaded
+in-process from the target binary (ADR-0041, superseding ADR-0001's HTTP
+bridge and ADR-0007's JVM lifecycle; issue #214 retired those outright).
+The seam crate keeps the vocabulary the pipeline was built against: the
+`ScanSource`/`TypeWriteSource` traits, the answer shapes, and the read
+cache. Every read is a command to the engine thread; name-based lookups
+resolve inside the engine:
 
 ```rust
-// crates/integrations/calxgloss-ghidra/src/client.rs:L763-L774
-pub async fn decompile_function_by_name(&self, function: &str) -> Result<DecompiledFunction> {
-    let matches = self.search_functions(function, Some(10)).await?;
-    let found = matches
-        .iter()
-        .find(|f| f.name == function)
-        .or(matches.first())
-        .ok_or_else(|| GhidraError::NotFound { kind: "function", query: function.to_string() })?;
-    self.decompile_function(found.address).await
+// crates/integrations/calxgloss-kuna/src/source.rs:L514-L528
+pub async fn decompile_function(&self, name: &str) -> Result<KunaDecompiled> {
+    let (reply, answer) = oneshot::channel();
+    self.send(Command::Decompile {
+        name: name.to_string(),
+        reply,
+    })?;
+    let outcome = answer.await.map_err(|_| KunaError::EngineUnavailable)?;
+    // The round trip completed — one work item of any armed pass done,
+    // whether or not the engine answered with a body: a function that
+    // tripped a budget or refused still consumed its slot, so the
+    // pass's progress must move (issue #211).
+    self.tick(name);
+    outcome
 }
 ```
 
 A subtlety worth noticing: long scans (a full decompile pass over a DLL can
-take minutes) would look like a hang on the web dashboard. The client carries
-a *heartbeat* — `begin_pass`/`end_pass` plus a `tick` per decompile
-(`client.rs:L423-L509`) — that beats every 500 ms into the progress-event
-channel so the UI can show *which function* Ghidra is chewing on.
+take minutes) would look like a hang on the web dashboard. The engine source
+carries a *heartbeat* — `begin_pass`/`end_pass` plus a `tick` per decompile
+(`source.rs:L440-L500`) — that beats into the progress-event channel so the
+UI can show *which function* the engine is chewing on.
 
 ### 2.2 The PAL — a static Windows-API → Rust mapping table
 
@@ -338,7 +346,7 @@ self.refuse_root_function(binary, function)?;
 analysis failures ride inside the pseudo-C as `WARNING` comments:
 
 ```rust
-// pipeline.rs:L731-L736
+// pipeline.rs:L740-L745
 // Triage: Ghidra's analysis failures ride inside the pseudo-C as
 // WARNING comments. Name them before the LLM sees the body — an
 // unrecovered jump table otherwise becomes a plausible, hollow
@@ -694,7 +702,7 @@ overlay files, never derived from artifacts (ADR-0003).
 
 ### 8.1 The graph decides the order
 
-`calxgloss-callgraph` builds the graph from Ghidra xrefs, classifies every
+`calxgloss-callgraph` builds the graph from engine xrefs, classifies every
 node `Root`/`Leaf`/`Middle`/`Skip` (root_detector, leaf_detector), and the
 orderer turns it into a work queue:
 
@@ -759,10 +767,10 @@ run. Each `ensure_*` follows one pattern — check the workspace cache, else
 scan, else *degrade*:
 
 ```rust
-// crates/pipeline/calxgloss-translator/src/pipeline.rs:L1917-L1969 (pattern, abridged)
+// crates/pipeline/calxgloss-translator/src/pipeline.rs:L1923+ (pattern, abridged)
 pub async fn ensure_type_database(&self, binary: &str) -> bool {
     // cached re/analysis/typesdb/<binary>.json? reuse it.
-    // else run the three recovery scans against the open Ghidra program,
+    // else run the three recovery scans against the loaded program,
     //     save the JSON + generated #[repr(C)] declarations.
     // on scan or save failure: warn! and return false — the batch continues
     //     with less context rather than dying.
@@ -772,10 +780,10 @@ pub async fn ensure_type_database(&self, binary: &str) -> bool {
 There are eleven of these (`ensure_type_database` through
 `ensure_serialize_detection`, `pipeline.rs:L1917-L2661`), one per evidence
 engine, and each has the same trio of tests: *cached result reused without
-rescanning*, *failed scan degrades instead of failing*, *no workspace skips
-the recovery*. A test with a counting fake Ghidra proves a second batch over
-unchanged bytes makes **zero** live Ghidra reads
-(`pipeline.rs:L5019-L5086`) — the cache is load-bearing, not decorative.
+rescanning*, *cache miss scans and saves through the engine*, *no workspace
+skips the recovery*. A test that tampers the cached scan documents and
+re-runs the batch proves the second batch replays the tampered bytes back
+into its results — the cache is load-bearing, not decorative.
 
 ---
 
@@ -802,12 +810,12 @@ let flags = FileConfig { … };
 let settings = Settings::resolve(&layers, flags, &loaded);
 ```
 
-Flags > environment (`CALXGLOSS_GHIDRA_URL`, …) > config file
+Flags > environment (`CALXGLOSS_LLM_URL`, …) > config file
 (`./calxgloss.toml`) > built-in defaults. Secrets load but never print —
 `calxgloss config` shows `<set>`.
 
 The `Command` enum (`cli_types.rs:L224-L924`) is the full surface: `init`,
-`doctor` (read-only Ghidra-stack report, `--fix` bootstraps it), `classify`,
+`doctor` (checks the Kuna engine loads the target; `--fix` has nothing to install), `classify`,
 `translate`, `batch-translate`, `auto`, `serve`, `live`, `verify`,
 `dashboard` — whose `view`/`accept`/`reject`/`accept-all` subcommands live in
 `DashboardSubcommand` (`cli_types.rs:L928-L1018`) — `auto-shim`, `gc`,
@@ -855,7 +863,7 @@ fresh attempt branch.
 ## 10. The evidence engines
 
 Thirteen crates under `crates/evidence/` each answer one question about the
-binary, all reading the *open Ghidra program* through `GhidraClient` and
+binary, all reading the *loaded program* through the `ScanSource` seam and
 writing JSON documents into the workspace's `re/analysis/` tree. In the
 Cargo.toml's words:
 

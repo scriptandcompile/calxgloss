@@ -27,7 +27,9 @@
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let analyzer = Analyzer::new(
-//!     calxgloss_ghidra::GhidraClient::new("http://localhost:8080")?,
+//!     calxgloss_ghidra::PipelineSource::from(calxgloss_kuna::KunaSource::load(
+//!         std::path::Path::new("d3d9.dll"),
+//!     )?),
 //!     Default::default(),
 //! );
 //! let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;

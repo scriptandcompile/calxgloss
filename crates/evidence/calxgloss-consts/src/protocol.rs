@@ -8,7 +8,7 @@
 //! another repeated number: it has a name and a protocol or format it
 //! belongs to, and the scan can say so.
 //!
-//! The reading is pure and adds no Ghidra round trips: [`protocol_constants`]
+//! The reading is pure and adds no engine reads: [`protocol_constants`]
 //! walks the program-wide tally the engine built during its single
 //! pass and reports one [`ProtocolConstant`] record per tallied value
 //! that matches the built-in table. The match reads the *full* tally

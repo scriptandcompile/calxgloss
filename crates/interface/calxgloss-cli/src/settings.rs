@@ -9,50 +9,19 @@ use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use calxgloss_config::{
-    AnalysisSection, EXAMPLE, FileConfig, GhidraSection, Layers, LlmSection, LoadedConfig,
-    Resolved, defaults,
+    AnalysisSection, EXAMPLE, FileConfig, Layers, LlmSection, LoadedConfig, Resolved, defaults,
 };
-
-/// The decompiler engine a run uses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Engine {
-    /// The GhidraMCP engine: the full pipeline, and the default.
-    Ghidra,
-    /// The in-process Kuna engine: a skeleton in this release (issue #205).
-    Kuna,
-}
 
 /// Every setting the commands need, after layering.
 ///
-/// The Ghidra URL is always present: GhidraMCP has a well-known default port, so
-/// a sensible value exists and guessing it beats refusing to run. The LLM URL and
-/// model are genuinely optional here, because a local inference server has no
-/// conventional address — they are demanded by [`require`] at the point of use
-/// and reported with instructions when absent.
+/// Kuna is the only analysis engine (issue #214): it is compiled in and
+/// loaded from the target file, so there is no engine choice and no server
+/// to configure. The LLM URL and model are genuinely optional here, because
+/// a local inference server has no conventional address — they are demanded
+/// by [`require`] at the point of use and reported with instructions when
+/// absent.
 #[derive(Debug, Clone)]
 pub struct Settings {
-    /// Where to reach GhidraMCP.
-    pub ghidra_url: Resolved<String>,
-    /// Bearer token for GhidraMCP, when one is required.
-    pub ghidra_api_key: Option<Resolved<String>>,
-    /// Where the Ghidra install lives, when configured; absent means discover.
-    pub ghidra_install_dir: Option<Resolved<String>>,
-    /// Whether calxgloss may start a headless Ghidra server (G1-T7).
-    pub ghidra_auto_start: Resolved<bool>,
-    /// The GUI-vs-headless preference: `auto`, `always`, or `never`.
-    pub ghidra_headless: Resolved<String>,
-    /// The `.gpr` project override, when configured; absent means the default.
-    pub ghidra_project: Option<Resolved<String>>,
-    /// The minimum acceptable Ghidra install version, when configured.
-    pub ghidra_min_version: Option<Resolved<String>>,
-    /// Boot budget for a spawned headless server, in seconds.
-    pub ghidra_start_timeout_secs: Resolved<u64>,
-    /// Whether `doctor --fix` may download without `--install-ghidra` (G1-T8).
-    pub ghidra_auto_install: Resolved<bool>,
-    /// The Ghidra version pinned for the bootstrap, when configured.
-    pub ghidra_pin_version: Option<Resolved<String>>,
-    /// The JDK home the bootstrap's Java gate runs, when configured.
-    pub ghidra_java_home: Option<Resolved<String>>,
     /// Where to reach the LLM server, if configured.
     pub llm_url: Option<Resolved<String>>,
     /// Which model to ask for, if configured.
@@ -75,8 +44,6 @@ pub struct Settings {
     pub target_dir: Option<Resolved<String>>,
     /// The workspace: where the translated Rust, `re/`, scratch, and the git repo live.
     pub workspace: Option<Resolved<String>>,
-    /// The decompiler engine: `ghidra` (the default) or `kuna`.
-    pub engine: Resolved<String>,
     /// Per-function instruction budget for the Kuna engine, when configured.
     pub max_fn_instructions: Option<Resolved<u64>>,
     /// Per-function time budget, in seconds, for the Kuna engine, when configured.
@@ -101,103 +68,13 @@ impl Settings {
             max_retries: flag_retries,
             strategy: _,
         } = flags.llm;
-        let GhidraSection {
-            url: flag_ghidra,
-            api_key: flag_ghidra_key,
-            install_dir: flag_ghidra_install,
-            auto_start: flag_ghidra_auto_start,
-            headless: flag_ghidra_headless,
-            project: flag_ghidra_project,
-            min_version: flag_ghidra_min_version,
-            start_timeout_secs: flag_ghidra_start_timeout,
-            auto_install: flag_ghidra_auto_install,
-            pin_version: flag_ghidra_pin_version,
-            java_home: flag_ghidra_java_home,
-        } = flags.ghidra;
         let AnalysisSection {
-            engine: flag_engine,
             max_fn_instructions: flag_max_fn_instructions,
             max_fn_seconds: flag_max_fn_seconds,
             max_fn_memory_mib: flag_max_fn_memory_mib,
         } = flags.analysis;
 
         Self {
-            ghidra_url: layers
-                .resolve(
-                    flag_ghidra,
-                    layers.env.ghidra.url.clone(),
-                    layers.file.ghidra.url.clone(),
-                    Some(defaults::GHIDRA_URL.to_string()),
-                )
-                .expect("the Ghidra URL has a default, so it always resolves"),
-            ghidra_api_key: layers.resolve(
-                flag_ghidra_key,
-                layers.env.ghidra.api_key.clone(),
-                layers.file.ghidra.api_key.clone(),
-                None,
-            ),
-            ghidra_install_dir: layers.resolve(
-                flag_ghidra_install,
-                layers.env.ghidra.install_dir.clone(),
-                layers.file.ghidra.install_dir.clone(),
-                None,
-            ),
-            ghidra_auto_start: layers
-                .resolve(
-                    flag_ghidra_auto_start,
-                    layers.env.ghidra.auto_start,
-                    layers.file.ghidra.auto_start,
-                    Some(defaults::GHIDRA_AUTO_START),
-                )
-                .expect("auto_start has a default"),
-            ghidra_headless: layers
-                .resolve(
-                    flag_ghidra_headless,
-                    layers.env.ghidra.headless.clone(),
-                    layers.file.ghidra.headless.clone(),
-                    Some(defaults::GHIDRA_HEADLESS.to_string()),
-                )
-                .expect("headless has a default"),
-            ghidra_project: layers.resolve(
-                flag_ghidra_project,
-                layers.env.ghidra.project.clone(),
-                layers.file.ghidra.project.clone(),
-                None,
-            ),
-            ghidra_min_version: layers.resolve(
-                flag_ghidra_min_version,
-                layers.env.ghidra.min_version.clone(),
-                layers.file.ghidra.min_version.clone(),
-                None,
-            ),
-            ghidra_start_timeout_secs: layers
-                .resolve(
-                    flag_ghidra_start_timeout,
-                    layers.env.ghidra.start_timeout_secs,
-                    layers.file.ghidra.start_timeout_secs,
-                    Some(defaults::GHIDRA_START_TIMEOUT_SECS),
-                )
-                .expect("start_timeout_secs has a default"),
-            ghidra_auto_install: layers
-                .resolve(
-                    flag_ghidra_auto_install,
-                    layers.env.ghidra.auto_install,
-                    layers.file.ghidra.auto_install,
-                    Some(defaults::GHIDRA_AUTO_INSTALL),
-                )
-                .expect("auto_install has a default"),
-            ghidra_pin_version: layers.resolve(
-                flag_ghidra_pin_version,
-                layers.env.ghidra.pin_version.clone(),
-                layers.file.ghidra.pin_version.clone(),
-                None,
-            ),
-            ghidra_java_home: layers.resolve(
-                flag_ghidra_java_home,
-                layers.env.ghidra.java_home.clone(),
-                layers.file.ghidra.java_home.clone(),
-                None,
-            ),
             llm_url: layers.resolve(
                 flag_url,
                 layers.env.llm.url.clone(),
@@ -258,14 +135,6 @@ impl Settings {
                 layers.file.workspace.clone(),
                 None,
             ),
-            engine: layers
-                .resolve(
-                    flag_engine,
-                    layers.env.analysis.engine.clone(),
-                    layers.file.analysis.engine.clone(),
-                    Some(defaults::ANALYSIS_ENGINE.to_string()),
-                )
-                .expect("engine has a default"),
             // Budgets have no calxgloss default: absence means "use Kuna's own",
             // so they resolve with no default and stay unset until configured.
             max_fn_instructions: layers.resolve(
@@ -323,51 +192,16 @@ impl Settings {
         Ok(found)
     }
 
-    /// The engine this run selected.
-    ///
-    /// A value outside `ghidra`/`kuna` — reachable through the config file
-    /// or env, since the flag's parser rejects it — is named with the layer
-    /// that supplied it, the same attribution `ghidra.headless` gets.
-    pub fn engine_choice(&self) -> Result<Engine> {
-        match self.engine.value.as_str() {
-            "ghidra" => Ok(Engine::Ghidra),
-            "kuna" => Ok(Engine::Kuna),
-            other => bail!(
-                "analysis.engine = {other:?} (from {}) is not a valid engine; \
-                 expected ghidra or kuna",
-                self.engine.source
-            ),
-        }
-    }
-
     /// Fold the configured budget knobs into the shape the Kuna engine takes.
     ///
     /// Unset knobs stay `None`, which leaves Kuna's own defaults in force;
     /// the values pass through verbatim, including `0`'s "no limit" meaning.
-    /// The Kuna scan path that consumes this lands in #212.
-    #[allow(dead_code)] // consumed by the kuna scan wiring in #212
     pub fn kuna_budget(&self) -> calxgloss_kuna::KunaBudget {
         calxgloss_kuna::KunaBudget {
             max_instructions: self.max_fn_instructions.as_ref().map(|r| r.value),
             max_fn_seconds: self.max_fn_seconds.as_ref().map(|r| r.value),
             max_fn_memory_mib: self.max_fn_memory_mib.as_ref().map(|r| r.value),
         }
-    }
-
-    /// Demand the Ghidra engine, or fail by name under `kuna`.
-    ///
-    /// A run uses exactly one engine (issue #205): until the Kuna scan path
-    /// lands (#206–#213), a Kuna run's Ghidra-dependent commands say so
-    /// instead of quietly driving the other engine.
-    pub fn require_ghidra_engine(&self) -> Result<()> {
-        if self.engine_choice()? == Engine::Kuna {
-            bail!(
-                "engine = kuna (from {}) but this command needs the ghidra engine: \
-                 the kuna engine is a skeleton in this release — re-run with --engine ghidra",
-                self.engine.source
-            );
-        }
-        Ok(())
     }
 }
 
@@ -498,36 +332,7 @@ pub fn render(s: &Settings) -> String {
     out.push_str("\nworkspace\n");
     row(&mut out, "path", s.workspace.as_ref(), false);
 
-    out.push_str("\nghidra\n");
-    row(&mut out, "url", Some(&s.ghidra_url), false);
-    row(&mut out, "api_key", s.ghidra_api_key.as_ref(), true);
-    row(
-        &mut out,
-        "install_dir",
-        s.ghidra_install_dir.as_ref(),
-        false,
-    );
-    num(&mut out, "auto_start", &s.ghidra_auto_start);
-    row(&mut out, "headless", Some(&s.ghidra_headless), false);
-    row(&mut out, "project", s.ghidra_project.as_ref(), false);
-    row(
-        &mut out,
-        "min_version",
-        s.ghidra_min_version.as_ref(),
-        false,
-    );
-    num(&mut out, "start_timeout_secs", &s.ghidra_start_timeout_secs);
-    num(&mut out, "auto_install", &s.ghidra_auto_install);
-    row(
-        &mut out,
-        "pin_version",
-        s.ghidra_pin_version.as_ref(),
-        false,
-    );
-    row(&mut out, "java_home", s.ghidra_java_home.as_ref(), false);
-
     out.push_str("\nanalysis\n");
-    row(&mut out, "engine", Some(&s.engine), false);
     opt_num(
         &mut out,
         "max_fn_instructions",
@@ -567,140 +372,6 @@ mod tests {
             searched: vec![PathBuf::from("calxgloss.toml")],
         };
         Settings::resolve(&layers, flags, &loaded)
-    }
-
-    #[test]
-    fn test_ghidra_url_falls_back_to_the_default() {
-        let s = settings_from(FileConfig::default(), FileConfig::default());
-        assert_eq!(s.ghidra_url.value, defaults::GHIDRA_URL);
-        assert_eq!(s.ghidra_url.source, Source::Default);
-    }
-
-    #[test]
-    fn test_a_flag_beats_the_file() {
-        let file = FileConfig {
-            ghidra: GhidraSection {
-                url: Some("http://from-file:8080".into()),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let flags = FileConfig {
-            ghidra: GhidraSection {
-                url: Some("http://from-flag:8080".into()),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let s = settings_from(flags, file);
-        assert_eq!(s.ghidra_url.value, "http://from-flag:8080");
-        assert_eq!(s.ghidra_url.source, Source::Flag);
-    }
-
-    #[test]
-    fn test_ghidra_install_dir_comes_from_the_file_layer() {
-        // The install dir has no default on purpose: absence means "discover",
-        // which is a different state from a guessed path.
-        let file = FileConfig {
-            ghidra: GhidraSection {
-                install_dir: Some("/opt/ghidra_12.1.2_PUBLIC".into()),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let s = settings_from(FileConfig::default(), file);
-        assert_eq!(
-            s.ghidra_install_dir.as_ref().expect("set").value,
-            "/opt/ghidra_12.1.2_PUBLIC"
-        );
-        assert_eq!(
-            s.ghidra_install_dir.as_ref().expect("set").source,
-            Source::File
-        );
-        let s = settings_from(FileConfig::default(), FileConfig::default());
-        assert!(s.ghidra_install_dir.is_none());
-    }
-
-    #[test]
-    fn test_ghidra_lifecycle_settings_fall_back_to_their_defaults() {
-        // G1-T7: spawning is the norm, so the knobs default to "do the
-        // sensible thing" rather than demanding configuration.
-        let s = settings_from(FileConfig::default(), FileConfig::default());
-        assert!(s.ghidra_auto_start.value);
-        assert_eq!(s.ghidra_auto_start.source, Source::Default);
-        assert_eq!(s.ghidra_headless.value, "auto");
-        assert_eq!(s.ghidra_headless.source, Source::Default);
-        assert!(s.ghidra_project.is_none());
-        assert!(s.ghidra_min_version.is_none());
-        assert_eq!(
-            s.ghidra_start_timeout_secs.value,
-            defaults::GHIDRA_START_TIMEOUT_SECS
-        );
-        assert_eq!(s.ghidra_start_timeout_secs.source, Source::Default);
-        // G1-T8: a ~570 MB download is never consented to by default.
-        assert!(!s.ghidra_auto_install.value);
-        assert_eq!(s.ghidra_auto_install.source, Source::Default);
-        assert!(s.ghidra_pin_version.is_none());
-        assert!(s.ghidra_java_home.is_none());
-    }
-
-    #[test]
-    fn test_ghidra_lifecycle_keys_come_from_the_file_layer() {
-        let file = FileConfig {
-            ghidra: GhidraSection {
-                auto_start: Some(false),
-                headless: Some("always".into()),
-                project: Some("/run/eq/ghidra/EverQuest.gpr".into()),
-                min_version: Some("12.1".into()),
-                start_timeout_secs: Some(120),
-                auto_install: Some(true),
-                pin_version: Some("12.1.2".into()),
-                java_home: Some("/usr/lib/jvm/java-21".into()),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let s = settings_from(FileConfig::default(), file);
-        assert!(!s.ghidra_auto_start.value);
-        assert_eq!(s.ghidra_auto_start.source, Source::File);
-        assert_eq!(s.ghidra_headless.value, "always");
-        assert_eq!(s.ghidra_headless.source, Source::File);
-        assert_eq!(
-            s.ghidra_project.as_ref().expect("set").value,
-            "/run/eq/ghidra/EverQuest.gpr"
-        );
-        assert_eq!(s.ghidra_min_version.as_ref().expect("set").value, "12.1");
-        assert_eq!(s.ghidra_start_timeout_secs.value, 120);
-        assert_eq!(s.ghidra_start_timeout_secs.source, Source::File);
-        assert!(s.ghidra_auto_install.value);
-        assert_eq!(s.ghidra_pin_version.as_ref().expect("set").value, "12.1.2");
-        assert_eq!(
-            s.ghidra_java_home.as_ref().expect("set").value,
-            "/usr/lib/jvm/java-21"
-        );
-    }
-
-    #[test]
-    fn test_no_autostart_flag_beats_a_file_that_allows_it() {
-        // `--no-ghidra-autostart` is the flag layer's only lifecycle input,
-        // and it only ever turns autostart off.
-        let file = FileConfig {
-            ghidra: GhidraSection {
-                auto_start: Some(true),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let flags = FileConfig {
-            ghidra: GhidraSection {
-                auto_start: Some(false),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let s = settings_from(flags, file);
-        assert!(!s.ghidra_auto_start.value);
-        assert_eq!(s.ghidra_auto_start.source, Source::Flag);
     }
 
     #[test]
@@ -762,10 +433,6 @@ mod tests {
         assert!(out.contains("(config file)"), "{out}");
         assert!(out.contains("(default)"), "{out}");
         assert!(out.contains("http://127.0.0.1:1919/v1"), "{out}");
-        // The G1-T7 lifecycle knobs are reported too, with their sources.
-        assert!(out.contains("auto_start"), "{out}");
-        assert!(out.contains("headless"), "{out}");
-        assert!(out.contains("start_timeout"), "{out}");
     }
 
     #[test]
@@ -827,95 +494,6 @@ mod tests {
         let s = Settings::resolve(&layers, FileConfig::default(), &loaded);
         assert_eq!(s.config_path.as_deref(), Some(path.as_path()));
         assert_eq!(s.require_llm_model().unwrap(), "m");
-    }
-
-    #[test]
-    fn test_the_engine_defaults_to_ghidra() {
-        // Issue #205: no existing run changes engine by surprise.
-        let s = settings_from(FileConfig::default(), FileConfig::default());
-        assert_eq!(s.engine.value, "ghidra");
-        assert_eq!(s.engine.source, Source::Default);
-        assert_eq!(s.engine_choice().unwrap(), Engine::Ghidra);
-        assert!(s.require_ghidra_engine().is_ok());
-    }
-
-    #[test]
-    fn test_the_engine_comes_from_the_file_layer() {
-        let file = FileConfig {
-            analysis: AnalysisSection {
-                engine: Some("kuna".into()),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let s = settings_from(FileConfig::default(), file);
-        assert_eq!(s.engine.value, "kuna");
-        assert_eq!(s.engine.source, Source::File);
-        assert_eq!(s.engine_choice().unwrap(), Engine::Kuna);
-    }
-
-    #[test]
-    fn test_an_engine_flag_beats_the_file() {
-        let file = FileConfig {
-            analysis: AnalysisSection {
-                engine: Some("kuna".into()),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let flags = FileConfig {
-            analysis: AnalysisSection {
-                engine: Some("ghidra".into()),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let s = settings_from(flags, file);
-        assert_eq!(s.engine.value, "ghidra");
-        assert_eq!(s.engine.source, Source::Flag);
-    }
-
-    #[test]
-    fn test_an_invalid_configured_engine_is_named_with_its_layer() {
-        // The flag's parser rejects invalid values, so only the file and env
-        // layers can carry one — and then the run says which layer supplied it.
-        let file = FileConfig {
-            analysis: AnalysisSection {
-                engine: Some("ida".into()),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let s = settings_from(FileConfig::default(), file);
-        let err = s.engine_choice().unwrap_err().to_string();
-        assert!(err.contains("ida"), "{err}");
-        assert!(err.contains("config file"), "{err}");
-        assert!(s.require_ghidra_engine().is_err());
-    }
-
-    #[test]
-    fn test_require_ghidra_engine_names_the_fallback_under_kuna() {
-        // The one-engine rule: a Kuna run's Ghidra-dependent command fails
-        // by name, pointing at the fallback, not at a stack trace.
-        let file = FileConfig {
-            analysis: AnalysisSection {
-                engine: Some("kuna".into()),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let s = settings_from(FileConfig::default(), file);
-        let err = s.require_ghidra_engine().unwrap_err().to_string();
-        assert!(err.contains("kuna"), "{err}");
-        assert!(err.contains("--engine ghidra"), "{err}");
-    }
-
-    #[test]
-    fn test_the_render_shows_the_engine_and_its_source() {
-        let s = settings_from(FileConfig::default(), FileConfig::default());
-        let out = render(&s);
-        assert!(out.contains("analysis"), "{out}");
-        assert!(out.contains("engine") && out.contains("ghidra"), "{out}");
     }
 
     #[test]

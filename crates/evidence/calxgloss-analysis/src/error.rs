@@ -8,9 +8,9 @@ use thiserror::Error;
 /// Errors that can occur during analysis operations.
 #[derive(Debug, Error)]
 pub enum AnalysisError {
-    /// A GhidraMCP request failed.
-    #[error("GhidraMCP error: {0}")]
-    Ghidra(#[from] calxgloss_ghidra::GhidraError),
+    /// An engine read through the analysis seam failed.
+    #[error("engine error: {0}")]
+    Engine(#[from] calxgloss_ghidra::EngineError),
 
     /// An I/O or general error occurred.
     #[error("{0}")]

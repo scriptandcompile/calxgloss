@@ -2,7 +2,7 @@
 name = "calxgloss-ghidra"
 version.workspace = true
 edition.workspace = true
-description = "GhidraMCP HTTP client for pulling disassembly, decompiler output, and symbol data"
+description = "Analysis-engine seam: the ScanSource/TypeWriteSource vocabulary, the read cache, and the Kuna-backed implementations"
 license.workspace = true
 repository.workspace = true
 
@@ -12,16 +12,12 @@ calxgloss-types = { path = "../../shared/calxgloss-types" }
 # direction is ghidra → kuna, never the reverse: the seam trait lives here, so
 # a kuna → ghidra edge would be a cycle.
 calxgloss-kuna = { path = "../calxgloss-kuna" }
-reqwest = { workspace = true, features = ["json"] }
 sha2 = { workspace = true }
-zip = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
-url = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
-libc = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros"] }

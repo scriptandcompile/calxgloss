@@ -74,25 +74,19 @@ pub async fn handle_translate(
         "Starting translation"
     );
 
-    // `target` is the path the function is being translated out of, used here
-    // only to place the output. Ghidra identifies the program itself, so the
-    // path is not sent to it.
-    let _target_dir = target.parent().unwrap_or(target).to_path_buf();
+    // `target` is the path the function is being translated out of: the
+    // Kuna engine loads the file itself, so the same path feeds both the
+    // scan and the output placement below.
 
     // Set up the output crate directory structure.
     let (_, crate_src_dir) =
         setup_translation_crate(&workspace, binary).context("Failed to create output crate")?;
 
-    // The session preflight (G1-T4): attach or spawn, then the wrong-program
-    // guard (incident 2026-10-08) — the scan below only means anything if the
-    // server is serving the target binary.
-    let session =
-        open_ghidra_session(settings, &workspace, binary, &[target.to_path_buf()], None).await?;
-    session
-        .ensure_current_program(binary)
-        .await
-        .with_context(|| format!("GhidraMCP is not serving {binary}"))?;
-    let ghidra = session.client().clone();
+    // Kuna is the only analysis engine (issue #214): the scan source is
+    // loaded in-process from the target file, so there is no server to
+    // attach to and no wrong-program guard to run — the file named on the
+    // command line is the program the scan reads.
+    let kuna = load_kuna_at(settings, target)?;
 
     // Initialize LLM client
     let mut llm_config = calxgloss_llm::LlmConfig::new(llm_url, llm_model)
@@ -114,8 +108,8 @@ pub async fn handle_translate(
 
     // Build translation pipeline
     let api_mappings = calxgloss_pal::ApiMappings::default();
-    let detector = build_hallucination_detector(&ghidra, &api_mappings).await;
-    let mut pipeline = TranslationPipeline::new(ghidra, llm, api_mappings)
+    let detector = build_hallucination_detector(&kuna, &api_mappings).await;
+    let mut pipeline = TranslationPipeline::new(kuna, llm, api_mappings)
         .with_testgen(testgen)
         .with_hallucination_detector(detector);
     if no_callgraph {
@@ -352,7 +346,6 @@ pub async fn handle_translate(
     }
 
     // Release the server if we spawned it; an attached one is left running.
-    session.shutdown().await;
 
     Ok(())
 }

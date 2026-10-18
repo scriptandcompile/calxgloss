@@ -6,7 +6,7 @@
 //! # Usage
 //!
 //! ```
-//! use calxgloss::{GhidraClient, LlmClient, TranslationPipeline, ApiMappings};
+//! use calxgloss::{KunaSource, LlmClient, TranslationPipeline, ApiMappings};
 //! ```
 
 // ============================================================
@@ -49,23 +49,19 @@ pub use calxgloss_types::{
 };
 
 // ============================================================
-// calxgloss-ghidra — GhidraMCP HTTP client
+// calxgloss-ghidra — the analysis seam, and calxgloss-kuna — the engine
 // ============================================================
 
+pub use calxgloss_ghidra::CachedScanSource;
 pub use calxgloss_ghidra::DecompiledFunction;
-pub use calxgloss_ghidra::FunctionBody;
-pub use calxgloss_ghidra::FunctionReport;
+pub use calxgloss_ghidra::EngineError;
 pub use calxgloss_ghidra::FunctionSummary;
-pub use calxgloss_ghidra::GhidraClient;
-pub use calxgloss_ghidra::GhidraConfig;
-pub use calxgloss_ghidra::GhidraError;
-pub use calxgloss_ghidra::OpenProgram;
-pub use calxgloss_ghidra::ProgramInfo;
-pub use calxgloss_ghidra::Segment;
+pub use calxgloss_ghidra::PipelineSource;
 pub use calxgloss_ghidra::StringLiteral;
 pub use calxgloss_ghidra::Symbol;
 pub use calxgloss_ghidra::Xref;
 pub use calxgloss_ghidra::rva_from_va;
+pub use calxgloss_kuna::KunaSource;
 
 // ============================================================
 // calxgloss-llm — Local LLM client
@@ -367,7 +363,6 @@ pub use calxgloss_reports::prompt_acceptance;
 // The generic names are qualified on re-export so the crate root stays
 // readable: `load_config`, `CONFIG_PROJECT_FILE`, `CONFIG_EXAMPLE`.
 pub use calxgloss_config::{
-    ConfigError, EXAMPLE as CONFIG_EXAMPLE, FileConfig, GhidraSection, Layers, LlmSection,
-    LoadedConfig, PROJECT_FILE as CONFIG_PROJECT_FILE, Resolved, Source, defaults,
-    load as load_config,
+    ConfigError, EXAMPLE as CONFIG_EXAMPLE, FileConfig, Layers, LlmSection, LoadedConfig,
+    PROJECT_FILE as CONFIG_PROJECT_FILE, Resolved, Source, defaults, load as load_config,
 };

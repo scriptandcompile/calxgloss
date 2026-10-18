@@ -29,9 +29,9 @@
 //! - [`cross_function`] - Cross-function lifecycle tracking: an
 //!   allocation left open by one function and released by a callee it
 //!   was handed to, read over the bodies one scan already holds — no
-//!   extra Ghidra round trips.
+//!   extra engine reads.
 //! - [`engine`] - Scan orchestration: `MemoryEngine` runs the three
-//!   detectors over one open Ghidra program through a `ScanSource`
+//!   detectors over one loaded program through a `ScanSource`
 //!   (function listing + decompile-by-name), one sequential pass that
 //!   decompiles each function exactly once and keeps the findings in
 //!   scan order.

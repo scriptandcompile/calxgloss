@@ -1,8 +1,8 @@
-//! The `algorithm` command — recognize algorithms in the open binary.
+//! The `algorithm` command — recognize algorithms in a binary.
 //!
 //! Runs the three recognition detectors — control flow signature
 //! matching, string-guided hints, and callback pattern detection —
-//! against the program currently open in Ghidra and saves the result to
+//! against the loaded program and saves the result to
 //! `re/analysis/algorithm/{binary}.json` in the workspace. Batch
 //! translation runs the same scan before its first batch when no result
 //! is cached; this command is the manual entry point: it rebuilds the
@@ -22,7 +22,6 @@ use calxgloss_algorithm::pattern_db::PatternDatabase;
 use calxgloss_algorithm::persist::AlgorithmPersistor;
 use calxgloss_algorithm::types::AlgorithmRecognitionResult;
 use calxgloss_algorithm::types::DetectionMethod;
-use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use chrono::DateTime;
 use tracing::info;
 
@@ -59,16 +58,9 @@ pub async fn handle_algorithm(
 
     info!(binary, workspace = %workspace.display(), "Recognizing algorithms");
 
-    let ghidra_url = &settings.ghidra_url.value;
-    let mut config = GhidraConfig::new(ghidra_url)
-        .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
-    if let Some(key) = &settings.ghidra_api_key {
-        config = config.with_api_key(key.value.clone());
-    }
-    let ghidra = GhidraClient::from_config(config)
-        .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))?;
+    let kuna = load_kuna_source(settings, binary)?;
 
-    let engine = AlgorithmEngine::new(&ghidra);
+    let engine = AlgorithmEngine::new(&kuna);
     // A malformed database fails the run loudly — the error already
     // names the file path and the reason, so a typo never silently
     // degrades recognition to a partial set.

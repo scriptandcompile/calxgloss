@@ -18,8 +18,8 @@
 │  │    └─ run_translation     │    │    └─ WebSocket events   │  │
 │  │        _for_dll()×N       │    │                          │  │
 │  │      │                    │    │  pause / resume / stop / │  │
-│  │      ├─ Ghidra session    │    │  start endpoints drive   │  │
-│  │      │  (attach or spawn) │    │  the shared pipeline     │  │
+│  │      ├─ Kuna engine load  │    │  start endpoints drive   │  │
+│  │      │  (in-process)      │    │  the shared pipeline     │  │
 │  │      ├─ analysis warmup   │    │  state machine           │  │
 │  │      │  (11 evidence      │    │                          │  │
 │  │      │   scans per binary)│    │                          │  │
@@ -46,10 +46,10 @@ Before any work starts, three layers of configuration are merged (most specific 
 
 | Layer | Source | Override priority |
 |-------|--------|-------------------|
-| **Flags** | CLI args (`--ghidra-url`, `--llm-url`, etc.) | Highest |
-| **Environment** | `CALXGLOSS_GHIDRA_URL`, `CALXGLOSS_LLM_URL`, etc. | Middle |
+| **Flags** | CLI args (`--llm-url`, `--llm-model`, etc.) | Highest |
+| **Environment** | `CALXGLOSS_LLM_URL`, `CALXGLOSS_LLM_MODEL`, etc. | Middle |
 | **File** | `./calxgloss.toml` or `~/.config/calxgloss/config.toml` | Lowest |
-| **Defaults** | Built-in (e.g. GhidraMCP at `http://127.0.0.1:8080`) | Lowest |
+| **Defaults** | Built-in (e.g. `workspace` = current directory; the LLM has none) | Lowest |
 
 All LLM keys are loaded but never printed — `calxgloss config` shows `<set>` for secrets.
 
@@ -83,8 +83,8 @@ Binaries (from scan) ──► Analyzer.classify_dlls()
                                 │
                     ┌───────────┴───────────┐
                     │                       │
-              GhidraClient              PE Parser
-              (list_functions)          (fallback)
+              KunaSource                PE Parser
+              (functions())             (fallback)
               for API tags              for export tables
                     │                       │
                     └───────────┬───────────┘
@@ -126,28 +126,24 @@ Classification records are written to **`re/classify/{dll_name}.json`** on disk 
 
 For each classified binary, `run_translation_for_dll()` runs the full pipeline.
 
-**Ghidra session preflight (once per run, ADR-0007):** before any listing,
-`open_ghidra_session()` attaches to a GhidraMCP server already answering on the
-configured port or spawns and owns a headless one (JDK-21 gate, Ghidra install
-discovery, strict extension pairing). The session creates/opens the Ghidra
-project and runs auto-analysis for each target, emitting `GhidraServerStarted`,
-`GhidraProjectCreated`, and `GhidraProgramAnalyzed` events. At the start of
-every per-binary pass the session's **wrong-program guard**
-(`ensure_current_program`) re-verifies the server is actually serving the
-target binary before anything is listed or translated.
+**Engine load (once per binary, ADR-0041):** before any listing, the target
+binary is loaded in-process under the Kuna engine (`KunaSource::load`) — the
+only engine (issue #214). There is no server to attach to or spawn, no JVM, no
+install step, and no wrong-program guard: the engine answers from the exact
+file the run hashes for its read cache.
 
 ```
-run_translation_for_dll(binary, binary_path, workspace, settings, session, …)
+run_translation_for_dll(binary, binary_path, workspace, skip_git, settings, …)
 │
 ├──► emit BatchStarted { binary }
 │
-├──► session.ensure_current_program(binary)   ← wrong-program guard
+├──► KunaSource::load(binary_path)   ← the engine, in-process
 │
-├──► GhidraClient.list_functions()
-│    └─ Returns FunctionSummary[] (name only — Ghidra serves
-│       one open program at a time)
+├──► ScanSource::functions(&source)
+│    └─ Returns FunctionSummary[] (name only — the engine lists
+│       one program at a time)
 │
-├──► TranslationPipeline::new(ghidra, llm, api_mappings)
+├──► TranslationPipeline::new(kuna, llm, api_mappings)
 │    └─ Also creates: TestGenerator, Analyzer
 │
 ├──► GitManager::init_repo(workspace)
@@ -159,7 +155,7 @@ run_translation_for_dll(binary, binary_path, workspace, settings, session, …)
 └──► pipeline.batch_translate(binary, functions, retry_config, verifier)
 ```
 
-#### 3.2.1 Batch Warmup — Ghidra Read Cache + Analysis Methodologies
+#### 3.2.1 Batch Warmup — Scan Read Cache + Analysis Methodologies
 
 `batch_translate` opens with two steps before any function is translated
 (`crates/pipeline/calxgloss-translator/src/pipeline.rs`):
@@ -168,14 +164,14 @@ run_translation_for_dll(binary, binary_path, workspace, settings, session, …)
 pipeline.batch_translate(binary, functions, …)
 │
 ├──► begin_cached_source(binary)
-│    └─ Opens CachedGhidraSource over the GhidraClient:
-│       a two-tier read-through cache for every Ghidra read
+│    └─ Opens CachedScanSource over the KunaSource:
+│       a two-tier read-through cache for every engine read
 │       (memo → disk documents under re/ghidra-cache/
-│       {binary identity}/{sha256}/ → live client, write-through).
+│       {binary identity}/{sha256}/ → engine read, write-through).
 │       Validity is the binary's SHA-256: changed bytes mean a
-│       different directory. --refresh-ghidra-cache wipes and
-│       rewrites the directory. A failed cache open degrades to
-│       live reads, never fails the batch.
+│       different directory. --refresh-cache wipes and rewrites
+│       the directory. A failed cache build degrades to engine
+│       reads, never fails the batch.
 │
 └──► ensure_* warmup — the eleven analysis scans, in order:
      ensure_type_database          → re/analysis/typesdb/{binary}.json
@@ -196,7 +192,7 @@ if a result is already saved for the binary, the scan is skipped entirely;
 otherwise the engine runs over the batch's `ScanSource` (live or cached), and
 its result is saved. A failed scan or failed save only logs a warning: missing
 analysis context degrades the prompts, it never fails the batch. While a pass
-walks the program, the Ghidra client's heartbeat is armed (`begin_pass` /
+walks the program, the engine's heartbeat is armed (`begin_pass` /
 `end_pass`) and beats a `BatchProgress { binary, pass, function, index, total }`
 event, throttled to 500 ms, so the dashboard shows which function a minutes-long
 scan is on.
@@ -213,19 +209,19 @@ prioritized functions sort to the front):
 ```
 pipeline.translate(binary, function)
 │
-│  Step 1: Fetch Function Metadata from GhidraMCP
+│  Step 1: Fetch Function Metadata from the Engine
 │  ─────────────────────────────────────────────
-│  GhidraClient.search_functions(function)
-│    └─ Exact match lookup
-│  GhidraClient.function_report(address)
-│    └─ Returns FunctionInfo {
+│  fetch_function(binary, function)
+│    └─ Seam reads: functions() resolves the name,
+│       decompile() gives the body, callers()/xrefs_to()
+│       give the call edges → FunctionInfo {
 │        name, address, disassembly, decompiler_output,
 │        callers[], callees[]    ← from xrefs + decompiler
 │      }
 │
 │  Step 2: Tag Windows APIs
 │  ───────────────────────
-│  GhidraClient.imports()           ← import names from Ghidra
+│  ScanSource::imports(&source)     ← import names from the engine
 │  Analyzer.tag_windows_apis(disassembly, imports)
 │    └─ Matches disassembly tokens against PAL mappings
 │    └─ Returns WindowsApiCall[] { name, category, pal_mapping }
@@ -409,7 +405,7 @@ If git is skipped (`--skip-git`), these steps are bypassed but the code is still
 ## 4. Analysis Methodologies — The Evidence Crates
 
 Eleven methodology crates under `crates/evidence/` (beside the call-graph and
-orchestration crates) each implement a **methodology**: a per-binary scan that reads Ghidra facts through
+orchestration crates) each implement a **methodology**: a per-binary scan that reads engine facts through
 the shared `ScanSource` seam, detects structured findings, persists them as one
 JSON document per binary under `re/analysis/{methodology}/{binary}.json`, and
 feeds the findings tied to a function into its translation prompts.
@@ -420,17 +416,17 @@ feeds the findings tied to a function into its translation prompts.
   one trait for every read: `functions`, `decompile`, `strings`, `callers`,
   `xrefs_to`, `data_types`, `struct_layout`, `enum_values`, `data_items`,
   `imports`, `exports`, `image_base`, `read_memory`. Engines never talk HTTP;
-  they run over a live `GhidraClient`, a `CachedGhidraSource` (the batch read
-  cache), or a fake in tests.
+  they run over a loaded `KunaSource`, a `CachedScanSource` (the batch read
+  cache), or a canned program in tests.
 - **One decompile per function per scan.** Each engine's orchestration walks
   the function listing once, decompiles each body exactly once (served from the
   batch cache after the first scan), and keeps the bodies. Cross-function
   passes — memory hand-offs, lock orders, callback chains, mutual recursion,
   cross-field correlation, string hand-offs — read those kept bodies, adding
-  **no extra Ghidra round trips**.
+  **no extra engine reads**.
 - **The persisted JSON is the cache.** The batch warmup (§3.2.1) skips any
   scan whose document already exists; `--show` prints a cached document
-  without connecting to Ghidra.
+  without loading the engine.
 - **Graceful degradation.** A failed scan logs a warning and the batch
   proceeds; a missing or corrupt document yields empty prompt context —
   missing evidence degrades a prompt, it never fails a translation.
@@ -441,7 +437,7 @@ feeds the findings tied to a function into its translation prompts.
 
 | Methodology | Crate | Detectors | Prompt section |
 |-------------|-------|-----------|----------------|
-| Type database | `calxgloss-typesdb` | Named types from Ghidra's Type Manager; vtable detection (method pointers, base-class inheritance, COM interfaces); string-guided struct inference; STL/MFC shape flagging | `DATA STRUCTURES` (escalate) / `SHARED DATA STRUCTURES` (module tiers) |
+| Type database | `calxgloss-typesdb` | Named types from the Type Manager; vtable detection (method pointers, base-class inheritance, COM interfaces); string-guided struct inference; STL/MFC shape flagging | `DATA STRUCTURES` (escalate) / `SHARED DATA STRUCTURES` (module tiers) |
 | Type inference | `calxgloss-typeinfer` | C++ this-pointer detection; parameter-size detection; known-type propagation through a signature database; cross-function propagation (callee→caller and caller→callee), local-variable chains, return types from caller usage, C-mangling contracts | `TYPE INFORMATION` |
 | Algorithm recognition | `calxgloss-algorithm` | Control-flow signature matching (sort, search, hash lookup, state machine…); string-guided hints (CRC, md5, sha, gzip…); callback-shape patterns; multi-function correlation (divide-and-conquer, sort+comparator); a JSON pattern database can replace the built-in sets (`--patterns`) | `RECOGNIZED ALGORITHMS` |
 | Memory lifecycle | `calxgloss-memory` | `malloc`/`free` pairs → `Box`; handle pairs (`CreateFileW`/`CloseHandle`, `fopen`/`fclose`) → RAII guard with `Drop`; ref-count patterns (`AddRef`/`Release`) → `Rc`/`Arc`; cross-function allocation tracking, leaks, ownership moves, per-type Drop suggestions | `MEMORY LIFECYCLE` |
@@ -465,7 +461,7 @@ feeds the findings tied to a function into its translation prompts.
   in this function's body, vtable, xrefs, or call path).
 
 **Manual entry points** — every methodology is also a CLI command running the
-same engine against the binary currently open in Ghidra:
+same engine against a target binary loaded in-process:
 
 ```text
 calxgloss typesdb     --binary eqmain.dll [--show] [--no-tag]
@@ -481,7 +477,7 @@ calxgloss apidetect   --binary eqmain.dll [--show]
 calxgloss serialize   --binary eqmain.dll [--show]
 ```
 
-**Write-back into Ghidra** — the read cache never implements the write side;
+**Write-back into the program** — the read cache never implements the write side;
 type writes go through the separate `TypeWriteSource` trait
 (`set_function_prototype`, `set_local_variable_type`, `create_struct`,
 `create_enum`, `create_typedef`, `add_struct_field`):
@@ -511,16 +507,13 @@ A `TranslationEvents` broadcast channel (capacity 256) carries progress events f
 
 | Event | When Emitted |
 |-------|-------------|
-| `GhidraServerStarted { url, pid }` | A calxgloss-owned headless GhidraMCP booted |
-| `GhidraProjectCreated { path }` | The run's Ghidra project was created/opened |
-| `GhidraProgramAnalyzed { dll, secs }` | Startup auto-analysis finished for a binary |
 | `PipelineStateChanged { previous, state }` | Any pipeline-control transition (start/pause/resume/stop/complete/fail) |
 | `QueuePlanned { binaries }` | The live loop's ordered run plan, once before the first pass |
 | `ClassificationComplete { binary, category, strategy, crate_replacement, exported_symbols, imported_symbols }` | After binary classification |
 | `BatchStarted { binary }` | The per-binary pass begins (before any unit exists) |
 | `BatchProgress { binary, pass, function, index, total }` | Heartbeat of a pre-translation pass (call graph, the evidence scans), throttled to 500 ms |
-| `TranslationStarted { binary, function }` | Before Ghidra fetch |
-| `GhidraFetchComplete { binary, function, address, disassembly_lines }` | After function metadata loaded |
+| `TranslationStarted { binary, function }` | Before the engine fetch |
+| `ScanFetchComplete { binary, function, address, disassembly_lines }` | After function metadata loaded |
 | `ApiTaggingComplete { binary, function, tagged_apis }` | After Windows API tagging |
 | `TestsGenerated { binary, function, test_count }` | After baseline test generation |
 | `ContextTierSelected { binary, function, tier, tier_label, complexity, api_call_count }` | After complexity analysis, before the first LLM call (re-emitted when the tier escalates) |
@@ -549,7 +542,7 @@ TranslationPipeline
         │ emit(ProgressEvent::BatchStarted{...})
         │ emit(ProgressEvent::BatchProgress{...})   ← scan heartbeats
         │ emit(ProgressEvent::TranslationStarted{...})
-        │ emit(ProgressEvent::GhidraFetchComplete{...})
+        │ emit(ProgressEvent::ScanFetchComplete{...})
         │ emit(ProgressEvent::ApiTaggingComplete{...})
         │ emit(ProgressEvent::TestsGenerated{...})
         │ emit(ProgressEvent::ContextTierSelected{...})
@@ -631,9 +624,9 @@ The `ProgressState` in the web server maps `"binary/function"` keys to `Progress
 │   │   ├── prompt_strategy_log.json ← per-prompt strategy outcomes
 │   │   ├── fault_log.json           ← fault events with recovery guidance
 │   │   └── llm_io/log.jsonl         ← live-mode prompt/response log
-│   ├── ghidra-cache/                ← two-tier Ghidra read cache
-│   │   └── {binary identity}/
-│   │       └── {sha256 of binary}/  ← manifest.json + per-endpoint
+│   ├── ghidra-cache/                ← two-tier scan read cache
+│   │   └── {binary identity}/       ← (historical name, ADR-0041)
+│   │       └── {sha256 of binary}/  ← manifest.json + per-read
 │   │           ├── functions.json   ←   documents: functions,
 │   │           ├── decompile/…      ←   decompile/{fn}.json,
 │   │           ├── callers/…        ←   callers/{addr}.json,
@@ -692,7 +685,7 @@ The `ProgressState` in the web server maps `"binary/function"` keys to `Progress
 | GET | `/api/units/{id}` | Single unit detail (justification, diff, tests, history, persisted analysis context: API mappings + call graph) |
 | GET | `/api/units/{id}/diff` | Git diff between branch and main |
 | GET | `/api/units/{id}/attempts` / `attempts/diff` | Persisted attempt list + side-by-side diff |
-| GET | `/api/units/{id}/ghidra` | Unit's Ghidra-side view (analysis context for the unit) |
+| GET | `/api/units/{id}/ghidra` | Unit's engine-side view (decompiled context for the unit) |
 | POST | `/api/units/{id}/accept` | Merge branch into main + write acceptance record |
 | POST | `/api/units/{id}/send-back` | Record rejection reason |
 | POST | `/api/units/{id}/patch` | Request retry translation |
@@ -786,9 +779,8 @@ calxgloss live --port 3000
 │     └─ Listens for browser connections
 │     └─ Broadcasts ProgressEvents to all WS clients
 │
-├──► Ghidra session preflight
-│     └─ Attach to a running GhidraMCP, or spawn a headless one
-│     └─ Create/open the Ghidra project; auto-analyze targets
+├──► Engine load (in-process, ADR-0041)
+│     └─ KunaSource::load per binary — no server, no JVM
 │
 ├──► handle_auto() in continue_mode = true
 │     │
@@ -800,7 +792,7 @@ calxgloss live --port 3000
 │     │     └─ d3d9.dll: pending
 │     │
 │     ├──► handle_classify() [unclassified binaries only]
-│     │     └─ Ghidra → PE parse → classification
+│     │     └─ Engine scan → PE parse → classification
 │     │     └─ Write re/classify/{dll}.json
 │     │     └─ Commit to main
 │     │     └─ Emit ClassificationComplete event
@@ -810,11 +802,11 @@ calxgloss live --port 3000
 │     │   └──► run_translation_for_dll(binary)
 │     │         │
 │     │         ├──► emit BatchStarted; wrong-program guard
-│     │         ├──► GhidraClient.list_functions()
+│     │         ├──► ScanSource::functions()
 │     │         │     └─ ["DrawPrimitive", "DrawSprite", ...]
 │     │         │
 │     │         ├──► batch_translate warmup
-│     │         │     ├──► Open Ghidra read cache (re/ghidra-cache/)
+│     │         │     ├──► Open scan read cache (re/ghidra-cache/)
 │     │         │     └──► ensure_* the 11 analysis scans
 │     │         │           (typesdb, typeinfer, algorithm, memory,
 │     │         │            sync, callback, controlflow, stringctx,
@@ -849,7 +841,7 @@ calxgloss live --port 3000
 ```
 
 **Total data flow per function:**
-1. **GhidraMCP** → disassembly, decompiler pseudo-C, call graph, imports
+1. **Engine scan** → disassembly, decompiler pseudo-C, call graph, imports
 2. **PAL mappings** → Windows API tags attached to disassembly tokens
 3. **Baseline tests** → 10-20+ test cases with input patterns (no expected output yet)
 4. **Evidence base** → the eleven methodology documents (recovered once per binary, cached under `re/analysis/`) supply per-function context: types, inferred types, algorithms, memory, concurrency, callbacks, control flow, strings, APIs, constants, serialization

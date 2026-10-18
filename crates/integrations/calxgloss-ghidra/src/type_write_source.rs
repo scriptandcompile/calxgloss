@@ -2,17 +2,14 @@
 //!
 //! [`ScanSource`](crate::ScanSource) is the read-only sibling: everything an
 //! evidence engine pulls *out* of a program. This trait is what calxgloss
-//! puts *in* — the v6.0.0 bridge's type-writing endpoints, the capability
-//! ADR-0001 chose that bridge for: setting a function's prototype, setting
-//! the type of one of a function's variables, and creating the named types
-//! an inferred type refers to but the Type Manager does not hold yet
-//! (structure, enumeration, typedef, structure field).
+//! puts *in* — setting a function's prototype, setting the type of one of a
+//! function's variables, and creating the named types an inferred type refers
+//! to but the Type Manager does not hold yet (structure, enumeration,
+//! typedef, structure field).
 //!
-//! Two implementations, one per engine (ADR-0020's rule: the read cache
-//! implements neither write trait):
+//! One implementation (ADR-0020's rule: the read cache implements neither
+//! write trait):
 //!
-//! * [`GhidraClient`] writes through the live HTTP API into the open Ghidra
-//!   program — the write lands in the program the next read sees.
 //! * [`KunaSource`](calxgloss_kuna::KunaSource) has no persistent program
 //!   to mutate: each call compiles to a Kuna directive in the plane behind
 //!   the source (issue #209), which takes effect in the live session as far
@@ -25,19 +22,13 @@
 //!   writes are never cached, following the `add_function_tag` precedent —
 //!   so a write-back pass is handed the raw source, and every write reaches
 //!   the engine.
-//! * **Renaming, comments, tags, globals** — the bridge has endpoints for
-//!   those too; this seam covers only what type write-back needs.
-//!
-//! Endpoint naming follows the bridge's v6.0.0 spelling recorded in
-//! `docs/ghidra_endpoint_map.md`: the dev-branch docs' `set_variable_type`
-//! is `set_local_variable_type` here, and both setters address the function
-//! by address — the bridge parses that parameter as an address and refuses
-//! a name.
+//! * **Renaming, comments, tags, globals** — the seam covers only what type
+//!   write-back needs.
 
 use calxgloss_kuna::KunaSource;
 use calxgloss_kuna::directives::KunaNewField;
 
-use crate::client::{GhidraClient, GhidraError, Result};
+use crate::error::{EngineError, Result};
 
 /// One field of a structure to be created, as `create_struct` takes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,15 +59,14 @@ impl<'a> NewStructField<'a> {
     }
 }
 
-/// The type-writing operations the v6.0.0 bridge offers, the write-side
-/// sibling of [`ScanSource`](crate::ScanSource).
+/// The type-writing operations the pipeline pushes back into a loaded
+/// program, the write-side sibling of [`ScanSource`](crate::ScanSource).
 ///
-/// [`GhidraClient`] implements it over the live HTTP API, and
 /// [`KunaSource`](calxgloss_kuna::KunaSource) implements it over the Kuna
-/// directive plane — and those are the only implementers: the read cache
-/// deliberately never wraps writes, so a type-write pass is handed the raw
-/// source and every write reaches the engine. The futures are `Send` so a
-/// write-back pass can be driven from an orchestrating task.
+/// directive plane — the only implementer: the read cache deliberately
+/// never wraps writes, so a type-write pass is handed the raw source and
+/// every write reaches the engine. The futures are `Send` so a write-back
+/// pass can be driven from an orchestrating task.
 pub trait TypeWriteSource {
     /// Set the full prototype — return type and parameter types — of the
     /// function at `function_address`.
@@ -146,49 +136,6 @@ pub trait TypeWriteSource {
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 }
 
-impl TypeWriteSource for GhidraClient {
-    // The trait's `Result` is the client's own, so each method delegates
-    // straight through; the inherent methods win over the trait's in method
-    // resolution, exactly as with `ScanSource`.
-    async fn set_function_prototype(&self, function_address: u64, prototype: &str) -> Result<()> {
-        self.set_function_prototype(function_address, prototype)
-            .await
-    }
-
-    async fn set_local_variable_type(
-        &self,
-        function_address: u64,
-        variable: &str,
-        type_name: &str,
-    ) -> Result<()> {
-        self.set_local_variable_type(function_address, variable, type_name)
-            .await
-    }
-
-    async fn create_struct(&self, name: &str, fields: &[NewStructField<'_>]) -> Result<()> {
-        self.create_struct(name, fields).await
-    }
-
-    async fn create_enum(&self, name: &str, values: &[(&str, i64)], size: u32) -> Result<()> {
-        self.create_enum(name, values, size).await
-    }
-
-    async fn create_typedef(&self, name: &str, base_type: &str) -> Result<()> {
-        self.create_typedef(name, base_type).await
-    }
-
-    async fn add_struct_field(
-        &self,
-        struct_name: &str,
-        field_name: &str,
-        field_type: &str,
-        offset: Option<u32>,
-    ) -> Result<()> {
-        self.add_struct_field(struct_name, field_name, field_type, offset)
-            .await
-    }
-}
-
 impl TypeWriteSource for KunaSource {
     // The Kuna source's inherent methods answer in Kuna-native shape; the
     // seam only maps the field struct and folds a KunaError into the
@@ -197,7 +144,7 @@ impl TypeWriteSource for KunaSource {
     async fn set_function_prototype(&self, function_address: u64, prototype: &str) -> Result<()> {
         self.set_function_prototype(function_address, prototype)
             .await
-            .map_err(GhidraError::from)
+            .map_err(EngineError::from)
     }
 
     async fn set_local_variable_type(
@@ -208,7 +155,7 @@ impl TypeWriteSource for KunaSource {
     ) -> Result<()> {
         self.set_local_variable_type(function_address, variable, type_name)
             .await
-            .map_err(GhidraError::from)
+            .map_err(EngineError::from)
     }
 
     async fn create_struct(&self, name: &str, fields: &[NewStructField<'_>]) -> Result<()> {
@@ -222,19 +169,19 @@ impl TypeWriteSource for KunaSource {
             .collect();
         self.create_struct(name, &fields)
             .await
-            .map_err(GhidraError::from)
+            .map_err(EngineError::from)
     }
 
     async fn create_enum(&self, name: &str, values: &[(&str, i64)], size: u32) -> Result<()> {
         self.create_enum(name, values, size)
             .await
-            .map_err(GhidraError::from)
+            .map_err(EngineError::from)
     }
 
     async fn create_typedef(&self, name: &str, base_type: &str) -> Result<()> {
         self.create_typedef(name, base_type)
             .await
-            .map_err(GhidraError::from)
+            .map_err(EngineError::from)
     }
 
     async fn add_struct_field(
@@ -246,19 +193,19 @@ impl TypeWriteSource for KunaSource {
     ) -> Result<()> {
         self.add_struct_field(struct_name, field_name, field_type, offset)
             .await
-            .map_err(GhidraError::from)
+            .map_err(EngineError::from)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::CachedGhidraSource;
+    use crate::cache::CachedScanSource;
 
     /// The read cache must never grow a write impl — writes belong to the
-    /// raw client so every one reaches the server (the function-tag
+    /// raw source so every one reaches the engine (the function-tag
     /// precedent). These two impls are the tripwire: the moment anyone
-    /// writes `impl TypeWriteSource for CachedGhidraSource`, the blanket
+    /// writes `impl TypeWriteSource for CachedScanSource`, the blanket
     /// impl and the concrete one collide (E0119) and the crate stops
     /// compiling. Negative reasoning is only available inside the crate
     /// that defines the trait, which is why the guard lives here rather
@@ -269,14 +216,14 @@ mod tests {
 
     impl<T: TypeWriteSource> WriteSourceProbe for Probe<T> {}
 
-    impl WriteSourceProbe for Probe<CachedGhidraSource> {}
+    impl WriteSourceProbe for Probe<CachedScanSource> {}
 
     #[test]
     fn the_cache_never_implements_the_write_trait() {
         // The tripwire is the impls above; this call names the contract
         // for whoever reads the compile failure.
         fn assert_probe<T: WriteSourceProbe>() {}
-        assert_probe::<Probe<CachedGhidraSource>>();
+        assert_probe::<Probe<CachedScanSource>>();
     }
 
     #[test]

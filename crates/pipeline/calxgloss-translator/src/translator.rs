@@ -2,7 +2,7 @@
 //!
 //! This module provides the simplest translation path: you provide the LLM with
 //! disassembly and decompiler output, and it returns Rust code. It skips
-//! GhidraMCP fetching, API tagging, and test generation — useful for manual
+//! engine fetching, API tagging, and test generation — useful for manual
 //! or cached data.
 
 use calxgloss_llm::{LlmClient, LlmMessage};
@@ -90,7 +90,7 @@ pub struct Translation {
 /// let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;
 /// let translator = Translator::new(llm);
 ///
-/// // Use with raw data — no GhidraMCP call
+/// // Use with raw data — no engine call
 /// let translation = translator
 ///     .translate_raw("game_logic.dll", "DrawSprite", "disassembly text here", "pseudo-C here")
 ///     .await?;

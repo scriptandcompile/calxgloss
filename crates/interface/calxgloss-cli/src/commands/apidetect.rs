@@ -1,9 +1,9 @@
-//! The `apidetect` command — identify the libraries and APIs of the open binary.
+//! The `apidetect` command — identify the libraries and APIs of a binary.
 //!
 //! Runs the two API detectors — the import-table scanner and the
 //! per-function call-graph summary — plus the platform-divergence and
 //! COM readings, against the program currently open
-//! in Ghidra and saves the result to `re/analysis/apidetect/{binary}.json`
+//! loaded and saves the result to `re/analysis/apidetect/{binary}.json`
 //! in the workspace, the same file batch translation will read as prompt
 //! context, together with a rendered FFI bindings file declaring
 //! the imports no crate replaces and a Cargo.toml-style dependency
@@ -20,7 +20,6 @@ use calxgloss_apidetect::engine::ApiEngine;
 use calxgloss_apidetect::ffi_bindings::{render_dependency_manifest, render_ffi_bindings};
 use calxgloss_apidetect::persist::ApiPersistor;
 use calxgloss_apidetect::types::ApiDetectionResult;
-use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use chrono::DateTime;
 use tracing::info;
 
@@ -64,16 +63,9 @@ pub async fn handle_apidetect(
 
     info!(binary, workspace = %workspace.display(), "Identifying libraries and APIs");
 
-    let ghidra_url = &settings.ghidra_url.value;
-    let mut config = GhidraConfig::new(ghidra_url)
-        .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
-    if let Some(key) = &settings.ghidra_api_key {
-        config = config.with_api_key(key.value.clone());
-    }
-    let ghidra = GhidraClient::from_config(config)
-        .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))?;
+    let kuna = load_kuna_source(settings, binary)?;
 
-    let engine = ApiEngine::new(&ghidra);
+    let engine = ApiEngine::new(&kuna);
     let result = engine
         .scan(binary)
         .await

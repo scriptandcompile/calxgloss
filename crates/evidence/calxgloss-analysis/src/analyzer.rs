@@ -4,7 +4,7 @@
 use crate::classify::{classification_reason, classify_dll_name, crate_replacement_for};
 use crate::error::AnalysisError as Error;
 use crate::error::Result;
-use calxgloss_ghidra::GhidraClient;
+use calxgloss_ghidra::{PipelineSource, ScanSource};
 use calxgloss_pal::ApiMappings;
 use calxgloss_types::{
     ClassificationOverrideControl, DllCategory, DllInfo, FunctionInfo, WindowsApiCall,
@@ -120,24 +120,29 @@ pub struct FunctionAnalysis {
 /// Analyzes target DLLs: classifies them, extracts function metadata,
 /// and tags Windows API calls with their cross-platform mappings.
 ///
-/// The analyzer combines data from a GhidraMCP server (imports, exports,
-/// disassembly, decompiler output, call graphs) with the static PAL mapping
-/// table to produce structured analysis results.
+/// The analyzer combines data from the analysis seam (imports, exports,
+/// decompiler output, call graphs) with the static PAL mapping table to
+/// produce structured analysis results.
 ///
 /// # Construction
 ///
-/// ```
+/// ```no_run
 /// use calxgloss_analysis::Analyzer;
 /// use calxgloss_pal::ApiMappings;
 ///
-/// let ghidra = calxgloss_ghidra::GhidraClient::new("http://localhost:8080").unwrap();
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let source = calxgloss_ghidra::PipelineSource::from(
+///     calxgloss_kuna::KunaSource::load("eqmain.dll".as_ref())?,
+/// );
 /// let mappings = ApiMappings::default();
-/// let analyzer = Analyzer::new(ghidra, mappings);
+/// let analyzer = Analyzer::new(source, mappings);
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Debug, Clone)]
 pub struct Analyzer {
-    /// Client for querying the GhidraMCP server.
-    ghidra: GhidraClient,
+    /// The program facts, pulled through the analysis seam.
+    source: PipelineSource,
 
     /// Windows API → Rust equivalent mapping table.
     api_mappings: ApiMappings,
@@ -150,13 +155,15 @@ pub struct Analyzer {
 }
 
 impl Analyzer {
-    /// Creates a new analyzer with the given Ghidra client and API mappings.
+    /// Creates a new analyzer over the pipeline's scan source and API
+    /// mappings.
     ///
-    /// The analyzer uses the Ghidra client to fetch DLL/function metadata and
-    /// the API mappings to tag Windows API calls with their PAL replacements.
-    pub fn new(ghidra: GhidraClient, api_mappings: ApiMappings) -> Self {
+    /// The analyzer pulls DLL/function metadata through the scan source and
+    /// uses the API mappings to tag Windows API calls with their PAL
+    /// replacements.
+    pub fn new(source: PipelineSource, api_mappings: ApiMappings) -> Self {
         Self {
-            ghidra,
+            source,
             api_mappings,
             classification_overrides: None,
         }
@@ -173,8 +180,9 @@ impl Analyzer {
         self
     }
 
-    /// Classifies a single DLL by fetching its metadata from Ghidra and
-    /// applying classification heuristics based on the DLL filename.
+    /// Classifies a single DLL by fetching its metadata from the loaded
+    /// program and applying classification heuristics based on the DLL
+    /// filename.
     ///
     /// # Arguments
     ///
@@ -182,12 +190,12 @@ impl Analyzer {
     ///
     /// # A note on the symbol counts
     ///
-    /// Ghidra serves one program at a time and exposes no per-DLL routing, so
-    /// `exports_count` and `imports_count` are the counts for whichever program
-    /// is open in Ghidra — not for the DLL named in `binary`. The category itself
-    /// comes from the filename and is unaffected. Call this when the open
-    /// program is the DLL you mean; otherwise the counts describe something
-    /// else while still being attached to `binary`.
+    /// The engine holds one program at a time and exposes no per-DLL routing,
+    /// so `exports_count` and `imports_count` are the counts for the loaded
+    /// program — not necessarily for the DLL named in `binary`. The category
+    /// itself comes from the filename and is unaffected. Call this when the
+    /// loaded program is the DLL you mean; otherwise the counts describe
+    /// something else while still being attached to `binary`.
     ///
     /// # Example
     ///
@@ -196,25 +204,27 @@ impl Analyzer {
     /// use calxgloss_pal::ApiMappings;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let ghidra = calxgloss_ghidra::GhidraClient::new("http://localhost:8080")?;
-    /// let analyzer = Analyzer::new(ghidra, ApiMappings::default());
+    /// let source = calxgloss_ghidra::PipelineSource::from(
+    ///     calxgloss_kuna::KunaSource::load("game_logic.dll".as_ref())?,
+    /// );
+    /// let analyzer = Analyzer::new(source, ApiMappings::default());
     ///
     /// let classification = analyzer.classify_dll("game_logic.dll").await?;
     /// println!("Strategy: {:?}", classification.strategy);
     /// # Ok(())
     /// # }
     /// ```
-    #[instrument(skip(self), fields(binary, base_url = %self.ghidra.base_url()))]
+    #[instrument(skip(self), fields(binary))]
     pub async fn classify_dll(&self, binary: &str) -> Result<DllClassification> {
         debug!(binary, "Classifying DLL");
 
-        // Symbol counts come from the program currently open in Ghidra; see the
-        // note on this method about what that means for a named DLL.
-        let imports = self.ghidra.imports(None).await.unwrap_or_else(|e| {
+        // Symbol counts come from the loaded program; see the note on this
+        // method about what that means for a named DLL.
+        let imports = ScanSource::imports(&self.source).await.unwrap_or_else(|e| {
             warn!(binary, error = %e, "Could not read imports; counting none");
             Vec::new()
         });
-        let exports = self.ghidra.exports(None).await.unwrap_or_else(|e| {
+        let exports = ScanSource::exports(&self.source).await.unwrap_or_else(|e| {
             warn!(binary, error = %e, "Could not read exports; counting none");
             Vec::new()
         });
@@ -311,8 +321,10 @@ impl Analyzer {
     /// use calxgloss_pal::ApiMappings;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let ghidra = calxgloss_ghidra::GhidraClient::new("http://localhost:8080")?;
-    /// let analyzer = Analyzer::new(ghidra, ApiMappings::default());
+    /// let source = calxgloss_ghidra::PipelineSource::from(
+    ///     calxgloss_kuna::KunaSource::load("eqmain.dll".as_ref())?,
+    /// );
+    /// let analyzer = Analyzer::new(source, ApiMappings::default());
     ///
     /// let names = vec!["eqmain.dll".to_string(), "eqgui.dll".to_string()];
     /// let target_dir = std::path::Path::new("/path/to/targets");
@@ -322,7 +334,7 @@ impl Analyzer {
     /// # Ok(())
     /// # }
     /// ```
-    #[instrument(skip(self, dlls, target_dir), fields(count = dlls.len(), base_url = %self.ghidra.base_url()))]
+    #[instrument(skip(self, dlls, target_dir), fields(count = dlls.len()))]
     pub async fn classify_dlls(
         &self,
         dlls: &[String],
@@ -362,17 +374,15 @@ impl Analyzer {
 
     /// Performs complete analysis on a single function.
     ///
-    /// Resolves `function` to an address in the program open in Ghidra, fetches
-    /// its decompilation, disassembly and cross-references, then tags any
-    /// Windows API calls found in the program's imports using
-    /// [`tag_windows_apis`].
+    /// Resolves `function` to an address in the loaded program, fetches its
+    /// decompilation and cross-references, then tags the Windows API calls
+    /// among its callees using [`tag_windows_apis`].
     ///
     /// # Arguments
     ///
     /// * `binary` — The DLL the function belongs to. Recorded on the result; the
-    ///   lookup itself is against the program Ghidra has open, which must be
-    ///   this DLL.
-    /// * `function` — The function name, as Ghidra knows it.
+    ///   lookup itself is against the loaded program, which must be this DLL.
+    /// * `function` — The function name, as the engine lists it.
     ///
     /// # Example
     ///
@@ -381,41 +391,41 @@ impl Analyzer {
     /// use calxgloss_pal::ApiMappings;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let ghidra = calxgloss_ghidra::GhidraClient::new("http://localhost:8080")?;
-    /// let analyzer = Analyzer::new(ghidra, ApiMappings::default());
+    /// let source = calxgloss_ghidra::PipelineSource::from(
+    ///     calxgloss_kuna::KunaSource::load("game_logic.dll".as_ref())?,
+    /// );
+    /// let analyzer = Analyzer::new(source, ApiMappings::default());
     ///
     /// let analysis = analyzer.analyze_function("game_logic.dll", "DrawSprite").await?;
     /// println!("Found {} tagged Windows API calls", analysis.tagged_apis.len());
     /// # Ok(())
     /// # }
     /// ```
-    #[instrument(skip(self), fields(binary, function, base_url = %self.ghidra.base_url()))]
+    #[instrument(skip(self), fields(binary, function))]
     pub async fn analyze_function(&self, binary: &str, function: &str) -> Result<FunctionAnalysis> {
         debug!(binary, function, "Analyzing function");
 
-        // Ghidra has no lookup that returns a function without an address, so
-        // the name is resolved first. A partial match is refused rather than
-        // guessed at, since silently analysing the wrong function would produce
-        // a plausible but irrelevant translation.
-        let matches = self.ghidra.search_functions(function, Some(1)).await?;
-        let found = matches.iter().find(|m| m.name == function).ok_or_else(|| {
-            Error::FunctionAnalysisFailed {
+        // The seam has no lookup that returns a function without an address,
+        // so the name is resolved through the function listing first. A
+        // partial match is refused rather than guessed at, since silently
+        // analysing the wrong function would produce a plausible but
+        // irrelevant translation.
+        let listing = ScanSource::functions(&self.source).await?;
+        let found = listing
+            .into_iter()
+            .find(|m| m.name == function)
+            .ok_or_else(|| Error::FunctionAnalysisFailed {
                 binary: binary.to_string(),
                 function: function.to_string(),
                 reason: format!(
-                    "no function by that exact name in the program Ghidra has open; the \
-                         search matched {:?}. If the name is a substring of the real one, pass \
-                         the full name.",
-                    matches.iter().map(|m| &m.name).collect::<Vec<_>>()
+                    "no function by that exact name in the loaded program; if the name \
+                         is a substring of the real one, pass the full name."
                 ),
-            }
-        })?;
-        let report = self.ghidra.function_report(found.address).await?;
+            })?;
+        let decompiled = ScanSource::decompile(&self.source, &found.name).await?;
 
-        // Imports of the open program, used to spot Windows API calls.
-        let import_names: Vec<String> = self
-            .ghidra
-            .imports(None)
+        // Imports of the loaded program, used to spot Windows API calls.
+        let import_names: Vec<String> = ScanSource::imports(&self.source)
             .await
             .unwrap_or_else(|e| {
                 warn!(error = %e, "Could not read imports; tagging no API calls");
@@ -425,27 +435,35 @@ impl Analyzer {
             .map(|s| s.name)
             .collect();
 
-        // Tag Windows API calls in the function's disassembly
-        let tagged_apis = self.tag_windows_apis(&report.disassembly, &import_names)?;
+        // Tag Windows API calls among the names the decompiled body calls,
+        // intersected with the program's imports — the calls the engine can
+        // see are the ones worth tagging.
+        let callees = calxgloss_ghidra::parse::callees_from_decompiled(&decompiled.body);
+        let called_imports: Vec<String> = callees
+            .iter()
+            .filter(|callee| import_names.iter().any(|i| i == *callee))
+            .cloned()
+            .collect();
+        let tagged_apis = self.tag_windows_apis("", &called_imports)?;
 
-        // Ghidra has no call-graph endpoint. Callers come from the
+        // The seam has no call-graph endpoint. Callers come from the
         // cross-references to the entry; callees are scraped from the
         // decompiled body, which cannot see calls made through a function
         // pointer.
-        let call_graph: Vec<String> = report
-            .callers
-            .iter()
-            .chain(report.callees.iter())
-            .cloned()
-            .collect();
+        let callers = ScanSource::callers(&self.source, found.address)
+            .await
+            .unwrap_or_default();
+        let call_graph: Vec<String> = callers.iter().chain(callees.iter()).cloned().collect();
 
         let analysis = FunctionAnalysis {
             function_info: FunctionInfo {
-                name: report.name.clone(),
-                address: report.address,
+                name: decompiled.name.clone(),
+                address: found.address,
                 binary: binary.to_string().into(),
-                disassembly: report.disassembly,
-                decompiler_output: report.decompiled.body,
+                // The seam carries no disassembly read — the engine answers
+                // pseudo-C — so the record keeps the field empty.
+                disassembly: String::new(),
+                decompiler_output: decompiled.body,
                 windows_apis: Vec::new(),
                 call_graph: call_graph.clone(),
                 disassembly_hints: Vec::new(),
@@ -471,30 +489,34 @@ impl Analyzer {
     /// the PAL mapping table. For each import that matches a known Windows API,
     /// records the API name, its category, and the PAL mapping target.
     ///
-    /// This is a pure analysis function that doesn't require Ghidra network calls —
-    /// it works with the disassembly text and import list provided.
+    /// This is a pure analysis function that reaches no engine at all —
+    /// it works with the text and import list provided.
     ///
     /// # Arguments
     ///
-    /// * `disassembly` — The raw disassembly text for the function.
+    /// * `disassembly` — The function's listing text; an import is tagged
+    ///   when its name appears in it (an empty string tags every import).
     /// * `imports` — The list of imports for the DLL containing the function.
     ///
     /// # Example
     ///
     /// ```no_run
     /// use calxgloss_analysis::Analyzer;
-    /// use calxgloss_types::Import;
     /// use calxgloss_pal::ApiMappings;
-    /// use calxgloss_ghidra::GhidraClient;
     ///
-    /// let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
-    /// let analyzer = Analyzer::new(ghidra, ApiMappings::default());
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let source = calxgloss_ghidra::PipelineSource::from(
+    ///     calxgloss_kuna::KunaSource::load("game_logic.dll".as_ref())?,
+    /// );
+    /// let analyzer = Analyzer::new(source, ApiMappings::default());
     ///
     /// let imports = vec!["CreateFileA".to_string(), "ReadFile".to_string()];
     ///
     /// let tagged = analyzer.tag_windows_apis("", &imports).unwrap();
     /// assert_eq!(tagged.len(), 2);
     /// assert_eq!(tagged[0].name, "CreateFileA");
+    /// # Ok(())
+    /// # }
     /// ```
     ///
     /// # Arguments
@@ -584,9 +606,9 @@ impl Analyzer {
         &self.api_mappings
     }
 
-    /// Returns a reference to the Ghidra client used by this analyzer.
-    pub fn ghidra_client(&self) -> &GhidraClient {
-        &self.ghidra
+    /// Returns a reference to the scan source this analyzer reads through.
+    pub fn source(&self) -> &PipelineSource {
+        &self.source
     }
 
     /// Builds, classifies, and persists a call graph for a single DLL.
@@ -618,8 +640,10 @@ impl Analyzer {
     /// use std::path::Path;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let ghidra = calxgloss_ghidra::GhidraClient::new("http://localhost:8080")?;
-    /// let analyzer = Analyzer::new(ghidra, ApiMappings::default());
+    /// let source = calxgloss_ghidra::PipelineSource::from(
+    ///     calxgloss_kuna::KunaSource::load("eqmain.dll".as_ref())?,
+    /// );
+    /// let analyzer = Analyzer::new(source, ApiMappings::default());
     ///
     /// let graph = analyzer.build_call_graph("eqmain.dll", Path::new("/workspace"), None).await?;
     /// for func in &graph.functions {
@@ -643,7 +667,7 @@ impl Analyzer {
         workspace: &std::path::Path,
         cache_dir: Option<&std::path::Path>,
     ) -> anyhow::Result<calxgloss_callgraph::CallGraph> {
-        crate::callgraph::build_enriched_call_graph(&self.ghidra, dll_name, workspace, cache_dir)
+        crate::callgraph::build_enriched_call_graph(&self.source, dll_name, workspace, cache_dir)
             .await
     }
 
@@ -809,14 +833,16 @@ fn estimate_complexity(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calxgloss_ghidra::GhidraClient;
     use calxgloss_pal::ApiMappings;
     use calxgloss_types::{Export, Import};
 
     fn test_analyzer() -> Analyzer {
-        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let fixture = calxgloss_testfixtures::load_target().expect("fixture target");
+        let source = calxgloss_ghidra::PipelineSource::from(
+            calxgloss_kuna::KunaSource::load(fixture.path()).expect("fixture loads"),
+        );
         let api_mappings = ApiMappings::default();
-        Analyzer::new(ghidra, api_mappings)
+        Analyzer::new(source, api_mappings)
     }
 
     #[test]

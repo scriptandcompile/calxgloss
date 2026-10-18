@@ -1,6 +1,6 @@
 # ADR-0007: calxgloss owns the Ghidra server lifecycle — attach-or-spawn, never touch what it didn't start
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0041 (2026-10-18, issue #214 — the lifecycle module is deleted; the engine loads in-process)
 - **Date:** 2026-10-12 (G1 shipped, epic #110; recorded 2026-10-13)
 - **Deciders:** Arthur (solo project)
 

@@ -93,7 +93,7 @@ impl ByteSwapSignature {
 /// `short`, `ntohl`/`htonl` a 32-bit `unsigned long` on the 32-bit
 /// convention the decompiler writes, and the `__builtin_bswapN`
 /// spellings name their width in the name itself. The detector holds
-/// no Ghidra client of its own and never writes back to the program;
+/// no scan source of its own and never writes back to the program;
 /// one detector serves an entire scan and can be shared by reference
 /// across concurrent per-function passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

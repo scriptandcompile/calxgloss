@@ -95,7 +95,7 @@ impl AllocatorSignature {
 /// [`allocators`](Self::allocators) and [`deallocators`](Self::deallocators)
 /// report them in configuration order, so two trackers built the same
 /// way scan identically and results diff cleanly. The tracker holds no
-/// Ghidra client of its own and never writes back to the program; one
+/// scan source of its own and never writes back to the program; one
 /// tracker serves an entire scan and can be shared by reference across
 /// concurrent per-function passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

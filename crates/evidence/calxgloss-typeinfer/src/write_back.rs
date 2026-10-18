@@ -1,4 +1,4 @@
-//! Writing the surviving inferences back into the open Ghidra program.
+//! Writing the surviving inferences back into the loaded program.
 //!
 //! The scan's records are hypotheses persisted to JSON; this module is where
 //! a deliberate operator run turns selected ones into program facts through
@@ -92,7 +92,7 @@ pub enum SkipReason {
     /// Ghidra already types the slot concretely — only undefined slots are
     /// narrowed, so a hand-typed slot survives the pass.
     ConcreteSlot,
-    /// The record's function is not in the open program's listing.
+    /// The record's function is not in the loaded program's listing.
     FunctionNotFound,
     /// The slot the record names is not in the function's current signature
     /// or decompiled body.
@@ -152,10 +152,10 @@ pub struct WriteBackReport {
 // The driver
 // ============================================================
 
-/// The write-back pass, generic over both Ghidra seams: `S` answers the
+/// The write-back pass, generic over both engine seams: `S` answers the
 /// reads the pass needs (the function listing for addresses, the current
 /// prototypes and bodies, the Type Manager's names) and `W` carries the
-/// writes. The CLI hands both the raw [`GhidraClient`](calxgloss_ghidra::GhidraClient)
+/// writes. The CLI hands both the loaded [`calxgloss_kuna::KunaSource`]
 /// — the read cache never implements the write trait (ADR-0020) — and tests
 /// hand a canned program and a recording writer.
 #[derive(Debug)]
@@ -176,7 +176,7 @@ impl<'a, S: ScanSource, W: TypeWriteSource> WriteBack<'a, S, W> {
         }
     }
 
-    /// Apply `result`'s surviving inferences to the open program.
+    /// Apply `result`'s surviving inferences to the loaded program.
     ///
     /// The order is fixed: create missing named types → set function
     /// prototypes → set local-variable types. Only the setup reads — the
@@ -722,7 +722,7 @@ mod tests {
     use std::sync::Mutex;
 
     use calxgloss_ghidra::{
-        DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, GhidraError, NewStructField,
+        DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, NewStructField,
         StringLiteral, StructLayout, Symbol, Xref,
     };
 
@@ -783,7 +783,7 @@ mod tests {
                 .collect())
         }
         async fn decompile(&self, name: &str) -> calxgloss_ghidra::Result<DecompiledFunction> {
-            self.bodies.get(name).cloned().ok_or(GhidraError::NotFound {
+            self.bodies.get(name).cloned().ok_or(EngineError::NotFound {
                 kind: "function",
                 query: name.to_string(),
             })
@@ -813,13 +813,13 @@ mod tests {
             Ok(Vec::new())
         }
         async fn struct_layout(&self, _name: &str) -> calxgloss_ghidra::Result<StructLayout> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "structure",
                 query: String::new(),
             })
         }
         async fn enum_values(&self, _name: &str) -> calxgloss_ghidra::Result<EnumDefinition> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "enum",
                 query: String::new(),
             })
@@ -860,8 +860,7 @@ mod tests {
         fn record(&self, line: &str) -> calxgloss_ghidra::Result<()> {
             self.calls.lock().expect("lock").push(line.to_string());
             if self.fail_containing.iter().any(|bad| line.contains(bad)) {
-                return Err(GhidraError::Reported {
-                    status: Some(200),
+                return Err(EngineError::Reported {
                     message: format!("refused: {line}"),
                 });
             }

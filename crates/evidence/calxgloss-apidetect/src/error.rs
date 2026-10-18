@@ -9,9 +9,9 @@ use thiserror::Error;
 /// Errors that can occur during API identification operations.
 #[derive(Debug, Error)]
 pub enum ApiError {
-    /// A GhidraMCP request failed.
-    #[error("GhidraMCP error: {0}")]
-    Ghidra(#[from] calxgloss_ghidra::GhidraError),
+    /// An engine read through the analysis seam failed.
+    #[error("engine error: {0}")]
+    Engine(#[from] calxgloss_ghidra::EngineError),
 
     /// The call graph the per-function summary traverses could not be built.
     #[error("call graph build failed: {reason}")]

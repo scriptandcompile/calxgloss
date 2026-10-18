@@ -35,17 +35,17 @@ use crate::utils::*;
 /// Run batch translation for a single DLL.
 ///
 /// This function encapsulates all the plumbing needed to translate one DLL:
-/// Ghidra setup, LLM client, test generator, pipeline, git operations, and
+/// engine load, LLM client, test generator, pipeline, git operations, and
 /// result reporting.  Both `handle_auto` and `handle_live` call this.
 ///
-/// The Ghidra `session` is opened once per run by the caller — one server
-/// (attached or spawned) serves every binary's pass, and the wrong-program
-/// guard re-verifies the target at the start of each pass.
+/// The Kuna engine is loaded per pass from `binary_path` (issue #214) —
+/// the file named for the pass is the program the scan reads, so there is
+/// no server to attach to and no wrong-program guard to run.
 ///
 /// `scope` restricts which functions re-enter the translation queue based on
 /// the recorded attempt history (see [`scope_functions`]);
 /// [`RunScope::AllFunctions`] keeps the plain behaviour.
-// The per-binary plumbing (Ghidra, LLM, git, live hooks) is one coherent
+// The per-binary plumbing (engine, LLM, git, live hooks) is one coherent
 // pass — bundling it into a struct would scatter the call site for no gain.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_translation_for_dll(
@@ -54,12 +54,11 @@ pub async fn run_translation_for_dll(
     workspace: &Path,
     skip_git: bool,
     settings: &Settings,
-    session: &calxgloss_ghidra::lifecycle::GhidraSession,
     events: Option<&TranslationEvents>,
     no_callgraph: bool,
     callgraph_cache: Option<PathBuf>,
     callgraph_verbose: bool,
-    refresh_ghidra_cache: bool,
+    refresh_cache: bool,
     stop: Option<&StopSignal>,
     control: Option<&PipelineControl>,
     cancellation: Option<&UnitCancellation>,
@@ -78,31 +77,27 @@ pub async fn run_translation_for_dll(
         });
     }
 
-    // The wrong-program guard (incident 2026-10-08) before anything is
-    // listed: the session's server only answers for this binary if it is
-    // actually serving it.
-    session
-        .ensure_current_program(binary)
-        .await
-        .with_context(|| format!("GhidraMCP is not serving {binary}"))?;
-    let ghidra = session.client().clone();
+    // Kuna is the only analysis engine (issue #214): the scan source is
+    // loaded in-process from the binary file before anything is listed —
+    // the file named for this pass is the program the scan reads.
+    let kuna = load_kuna_at(settings, binary_path)?;
 
-    // List functions from Ghidra
-    let summaries = ghidra
-        .list_functions()
+    // List functions from the engine
+    use calxgloss_ghidra::ScanSource;
+    let summaries = ScanSource::functions(&kuna)
         .await
-        .with_context(|| "Failed to list functions from GhidraMCP")?;
+        .with_context(|| "Failed to list functions from the engine")?;
 
     if summaries.is_empty() {
-        warn!("GhidraMCP returned no functions");
-        println_content("No functions found in the open Ghidra program.");
+        warn!("the engine listed no functions");
+        println_content("No functions found in the loaded program.");
         return Ok(());
     }
 
     let function_names: Vec<String> = summaries.into_iter().map(|s| s.name).collect();
     info!(
         count = function_names.len(),
-        "Enumerated functions from Ghidra"
+        "Enumerated functions from the engine"
     );
 
     // W2.3 scope selectors: only-queued / only-failed restrict the queue plan
@@ -163,8 +158,8 @@ pub async fn run_translation_for_dll(
 
     // Build translation pipeline
     let api_mappings = calxgloss_pal::ApiMappings::default();
-    let detector = build_hallucination_detector(&ghidra, &api_mappings).await;
-    let mut pipeline = TranslationPipeline::new(ghidra, llm, api_mappings)
+    let detector = build_hallucination_detector(&kuna, &api_mappings).await;
+    let mut pipeline = TranslationPipeline::new(kuna, llm, api_mappings)
         .with_testgen(testgen)
         .with_hallucination_detector(detector);
     if no_callgraph {
@@ -195,13 +190,13 @@ pub async fn run_translation_for_dll(
         pipeline = pipeline.with_overrides(override_control.clone());
     }
     pipeline = pipeline.with_workspace(workspace);
-    // The batch's shared Ghidra read cache keys on the target binary's
+    // The batch's shared scan read cache keys on the target binary's
     // file bytes (issue #105).
     pipeline = pipeline.with_binary_path(binary_path);
     // The refresh escape hatch (issue #106): force the cache cold when the
-    // operator says the Ghidra program changed under unchanged bytes.
-    if refresh_ghidra_cache {
-        pipeline = pipeline.with_refresh_ghidra_cache();
+    // operator says the cached reads are stale.
+    if refresh_cache {
+        pipeline = pipeline.with_refresh_cache();
     }
 
     // Git setup
@@ -380,7 +375,7 @@ pub async fn run_translation_for_dll(
 ///
 /// Ensure the workspace is a git repository before the run's slow steps
 /// begin (issue #123). A clean start otherwise leaves the dashboard — the
-/// only visible surface during the Ghidra preflight — reporting "Not a Git
+/// only visible surface during the engine load — reporting "Not a Git
 /// repository" until translation finally reaches its own git setup.
 /// Idempotent: `Repository::init` on an existing repo keeps its history.
 fn ensure_workspace_repo(workspace: &Path, skip_git: bool) -> Result<()> {
@@ -413,7 +408,7 @@ pub async fn handle_auto(
     no_callgraph: bool,
     callgraph_cache: Option<PathBuf>,
     callgraph_verbose: bool,
-    refresh_ghidra_cache: bool,
+    refresh_cache: bool,
     stop: Option<&StopSignal>,
     control: Option<&PipelineControl>,
     cancellation: Option<&UnitCancellation>,
@@ -482,28 +477,9 @@ pub async fn handle_auto(
     let force_classify = run.is_some_and(|r| r.phase == calxgloss::RunPhase::Classify);
 
     // The workspace record tree comes first (issue #123): `.git` exists
-    // before the slow Ghidra preflight, so a clean start never leaves the
-    // dashboard warning about an uninitialized workspace.
+    // before any scan work, so a clean start never leaves the dashboard
+    // warning about an uninitialized workspace.
     ensure_workspace_repo(&workspace, skip_git)?;
-
-    // The session preflight (G1-T4) runs once for the whole auto run: one
-    // server — attached or spawned — serves every binary's pass, and the
-    // `events` handle gets a `GhidraServerStarted` if one had to be started.
-    // (The classify step opens its own preflight, which simply attaches to
-    // the server already running here.)
-    println!(
-        "  {} Connecting to GhidraMCP at {}…",
-        cyan_bold("→"),
-        bold(&settings.ghidra_url.value)
-    );
-    let session = open_ghidra_session(
-        settings,
-        &workspace,
-        &dlls[0],
-        &dlls.iter().map(|d| target_dir.join(d)).collect::<Vec<_>>(),
-        events,
-    )
-    .await?;
 
     println!();
     hsep_bold();
@@ -659,12 +635,11 @@ pub async fn handle_auto(
                 &workspace,
                 skip_git,
                 settings,
-                &session,
                 events,
                 no_callgraph,
                 callgraph_cache.clone(),
                 callgraph_verbose,
-                refresh_ghidra_cache,
+                refresh_cache,
                 stop,
                 control,
                 cancellation,
@@ -713,12 +688,11 @@ pub async fn handle_auto(
             &workspace,
             skip_git,
             settings,
-            &session,
             events,
             no_callgraph,
             callgraph_cache,
             callgraph_verbose,
-            refresh_ghidra_cache,
+            refresh_cache,
             stop,
             control,
             cancellation,
@@ -730,7 +704,6 @@ pub async fn handle_auto(
     }
 
     // Release the server if we spawned it; an attached one is left running.
-    session.shutdown().await;
 
     Ok(())
 }

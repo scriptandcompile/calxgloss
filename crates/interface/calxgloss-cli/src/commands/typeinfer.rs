@@ -1,9 +1,9 @@
-//! The `typeinfer` command — infer parameter types for the open binary.
+//! The `typeinfer` command — infer parameter types for a binary.
 //!
 //! Runs the inference detectors — C++ this-pointer detection,
 //! parameter-size detection, known-type propagation, cross-function
 //! propagation, assignment chains, caller return usage, and name mangling —
-//! against the program currently open in Ghidra and saves the result to
+//! against the loaded program and saves the result to
 //! `re/analysis/typeinfer/{binary}.json` in the workspace. Batch translation
 //! runs the same scan before its first batch when no result is cached;
 //! this command is the manual entry point: it rebuilds the result on
@@ -14,7 +14,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use calxgloss_ghidra::{GhidraClient, GhidraConfig};
+use calxgloss_kuna::KunaSource;
 use calxgloss_typeinfer::engine::TypeInferEngine;
 use calxgloss_typeinfer::persist::TypeInferPersistor;
 use calxgloss_typeinfer::types::{Confidence, InferenceMethod, InferredType, TypeInferenceResult};
@@ -27,18 +27,6 @@ use crate::utils::*;
 
 /// How many entries a detail section lists before collapsing the rest.
 const DETAIL_LIMIT: usize = 10;
-
-/// Connect to the GhidraMCP server the settings point at.
-async fn connect_ghidra(settings: &Settings) -> Result<GhidraClient> {
-    let ghidra_url = &settings.ghidra_url.value;
-    let mut config = GhidraConfig::new(ghidra_url)
-        .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
-    if let Some(key) = &settings.ghidra_api_key {
-        config = config.with_api_key(key.value.clone());
-    }
-    GhidraClient::from_config(config)
-        .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))
-}
 
 /// Handle the `typeinfer` subcommand: infer parameter types for `binary`,
 /// or print the cached result when `show` is set. With `write_back`, apply
@@ -63,17 +51,17 @@ pub async fn handle_typeinfer(
         })?;
         print_type_inference_report(&result, &persistor.path_for(binary));
         if write_back {
-            let ghidra = connect_ghidra(settings).await?;
-            run_write_back(&ghidra, &result, binary, confidence_floor).await?;
+            let kuna = load_kuna_source(settings, binary)?;
+            run_write_back(&kuna, &result, binary, confidence_floor).await?;
         }
         return Ok(());
     }
 
     info!(binary, workspace = %workspace.display(), "Inferring parameter types");
 
-    let ghidra = connect_ghidra(settings).await?;
+    let kuna = load_kuna_source(settings, binary)?;
 
-    let engine = TypeInferEngine::new(&ghidra);
+    let engine = TypeInferEngine::new(&kuna);
     let result = engine
         .scan(binary)
         .await
@@ -84,22 +72,21 @@ pub async fn handle_typeinfer(
 
     print_type_inference_report(&result, &persistor.path_for(binary));
     if write_back {
-        run_write_back(&ghidra, &result, binary, confidence_floor).await?;
+        run_write_back(&kuna, &result, binary, confidence_floor).await?;
     }
     Ok(())
 }
 
-/// Apply the result into the open program through the write seam and
-/// print the applied / skipped / failed report. The raw client answers
-/// both seams — the read cache never implements the write trait
-/// (ADR-0020).
+/// Apply the result through the engine type-write seam and print the
+/// applied / skipped / failed report. The Kuna source answers both seams
+/// — the read cache never implements the write trait (ADR-0020).
 async fn run_write_back(
-    ghidra: &GhidraClient,
+    kuna: &KunaSource,
     result: &TypeInferenceResult,
     binary: &str,
     confidence_floor: u8,
 ) -> Result<()> {
-    let report = WriteBack::new(ghidra, ghidra, Confidence::new(confidence_floor))
+    let report = WriteBack::new(kuna, kuna, Confidence::new(confidence_floor))
         .apply(result)
         .await
         .with_context(|| format!("Type write-back failed for {binary}"))?;

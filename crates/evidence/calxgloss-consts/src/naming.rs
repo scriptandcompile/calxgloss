@@ -9,7 +9,7 @@
 //! identifier — `SIZE_0x280` — instead of the mechanical
 //! `VALUE_0x280` the tally alone could offer.
 //!
-//! The reading is pure and adds no Ghidra round trips: [`context_names`]
+//! The reading is pure and adds no engine reads: [`context_names`]
 //! walks the shared tokenizer's stream over one body and reports, in
 //! body order, each literal an assignment or comparison names. The
 //! engine keeps the first qualifying sighting per value across the

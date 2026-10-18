@@ -73,9 +73,9 @@ crate/feature):
 
 **Standing usage:**
 
-- **`diagnosing-bugs`** for the hard ones (Ghidra bridge flakiness,
+- **`diagnosing-bugs`** for the hard ones (engine integration bugs,
   nondeterministic LLM output, regressions between known-good commits).
-- **`research`** for Ghidra/PE/LLM primary-source questions — it runs as a
+- **`research`** for Kuna/PE/LLM primary-source questions — it runs as a
   background agent and leaves a cited Markdown file.
 - **`code-review`** per commit unit: give it a fixed point ("review since
   `<sha>`"). Both axes now have teeth — the Standards axis reads
@@ -97,9 +97,9 @@ crate/feature):
 | `to-spec`, `to-tickets`, `implement` | Multi-session build flow; `implement` also covers the small increments you do most often. |
 | `tdd` | Direct match for core principle #3 (test-driven decompilation). |
 | `code-review` | Standards+Spec review of each commit unit. The Standards axis now reads `docs/standards.md` (error handling, crate anatomy, persistence, testing) — linked from `AGENTS.md`. |
-| `diagnosing-bugs` | Strong fit: forces a tight red-test loop before theorising — ideal for LLM-pipeline and Ghidra-bridge bugs. |
+| `diagnosing-bugs` | Strong fit: forces a tight red-test loop before theorising — ideal for LLM-pipeline and engine bugs. |
 | `retro` | Harness-improvement loop; philosophically identical to what calxgloss does to binaries. |
-| `research` | Primary-source reading for Ghidra/API questions, backgrounded. |
+| `research` | Primary-source reading for engine/API questions, backgrounded. |
 | `prototype` | Throwaway code to settle state-model questions (e.g. callgraph data shapes). |
 | `handoff` | Session hygiene; used by the main flow's prototype detour. |
 | `codebase-design` | Deep-module vocabulary that `tdd` and `improve-codebase-architecture` speak; pairs with graft. |
@@ -113,7 +113,7 @@ crate/feature):
 | `wayfinder` | For efforts too big/foggy to plan. `roadmap.md` already *is* your wayfinder output — keep it for the next greenfield-scale effort only. Do not run it on already-mapped work. |
 | `implement-spec` | Whole-spec orchestration with parallel implementer subagents. Powerful but heavy; try it once on a well-partitioned phase before adopting. |
 | `triage` | Kept because the tracker is now GitHub Issues — useful once the repo gets external issues/PRs. Solo today, so expect light use. |
-| `wizard` | Useful for genuinely human-only steps (Ghidra plugin install, API keys for hosted LLM fallbacks). Otherwise ignore. |
+| `wizard` | Useful for genuinely human-only steps (API keys for hosted LLM fallbacks). Otherwise ignore. |
 | `wait-what` | Tiny, manual-only; inert until `GLOSSARY-MAP.md`/`GLOSSARY.md` exist (see §2 follow-ups). |
 | `to-questionnaire` | Solo project — no stakeholders to interview. Keep only if you ever collaborate; otherwise remove. |
 

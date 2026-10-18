@@ -158,9 +158,9 @@ async fn the_import_and_export_tables_and_the_image_base_answer_from_the_fixture
 
 #[tokio::test]
 async fn one_source_answers_from_exactly_one_target_binary() {
-    // The wrong-program failure the Ghidra path guards against is
-    // structural here: one handle loaded one path, and every read answers
-    // from that one program.
+    // One handle loaded one path, and every read answers
+    // from that one program — a wrong-program mix-up is structurally
+    // impossible.
     let fixture = calxgloss_testfixtures::load_target()
         .expect("fixture target should build and validate from the integration tests");
     let source = fixture_source();
@@ -185,7 +185,7 @@ async fn a_source_that_cannot_load_hands_back_no_handle() {
     // read through — the only way to ask a question is through a handle, so
     // a dead program is unreachable by construction. What is observable is
     // the failure itself: the same named load failure the plain loader
-    // reports, fallback spelled out.
+    // reports, naming the path and Kuna's own reason.
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("not-a-binary.dll");
     std::fs::write(&path, b"just text, not a PE").expect("write the junk file");
@@ -194,5 +194,8 @@ async fn a_source_that_cannot_load_hands_back_no_handle() {
         matches!(error, KunaError::LoadFailed { .. }),
         "a failed scan-load is the same named load failure, got {error:?}"
     );
-    assert!(error.to_string().contains("--engine ghidra"));
+    assert!(
+        error.to_string().contains(&path.display().to_string()),
+        "the failure names the unloadable path: {error}"
+    );
 }

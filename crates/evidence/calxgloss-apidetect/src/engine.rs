@@ -9,12 +9,12 @@
 //! everything into one [`ApiDetectionResult`]. The engine is generic
 //! over the shared [`ScanSource`] plus a [`CallGraphSource`] for the
 //! built graph, so tests can run the whole orchestration over canned
-//! data; [`new`](Self::new) builds one over a live [`GhidraClient`].
+//! data; [`new`](Self::new) builds one over a loaded [`KunaSource`].
 
 use std::time::Instant;
 
 use calxgloss_callgraph::{CallGraphBuilder, FunctionCallGraph};
-use calxgloss_ghidra::GhidraClient;
+use calxgloss_kuna::KunaSource;
 use tracing::{info, warn};
 
 use crate::api_summary::ApiSummaryDetector;
@@ -28,7 +28,7 @@ use crate::types::{ApiDetectionResult, ScanMetadata};
 ///
 /// The shared trait from the Ghidra integration crate, re-exported here
 /// so the engine's generic shape names it where it always has;
-/// [`GhidraClient`] implements it over the live HTTP API, and tests
+/// [`KunaSource`] implements it over the in-process engine, and tests
 /// implement it over canned listings so the orchestration runs without
 /// a server. The futures are `Send` so a scan can be driven from an
 /// orchestrating task.
@@ -49,14 +49,15 @@ pub trait CallGraphSource {
     ) -> impl std::future::Future<Output = Result<Vec<FunctionCallGraph>>> + Send;
 }
 
-impl CallGraphSource for GhidraClient {
+impl CallGraphSource for KunaSource {
     async fn call_graph(&self, binary: &str) -> Result<Vec<FunctionCallGraph>> {
-        let graph = CallGraphBuilder::new(self.clone(), binary)
-            .build()
-            .await
-            .map_err(|error| ApiError::CallGraph {
-                reason: error.to_string(),
-            })?;
+        let graph =
+            CallGraphBuilder::new(calxgloss_ghidra::PipelineSource::from(self.clone()), binary)
+                .build()
+                .await
+                .map_err(|error| ApiError::CallGraph {
+                    reason: error.to_string(),
+                })?;
         Ok(graph.functions)
     }
 }
@@ -83,18 +84,18 @@ impl CallGraphSource for calxgloss_ghidra::PipelineSource {
 /// and [`with_summary_detector`](Self::with_summary_detector) swap a
 /// detector whole — so one instance of each serves the whole scan.
 #[derive(Debug, Clone)]
-pub struct ApiEngine<S = GhidraClient> {
+pub struct ApiEngine<S = KunaSource> {
     source: S,
     scanner: ImportTableScanner,
     detector: ApiSummaryDetector,
 }
 
-impl ApiEngine<GhidraClient> {
-    /// An engine over a live GhidraMCP client, scanning with the
+impl ApiEngine<KunaSource> {
+    /// An engine over a loaded Kuna program, scanning with the
     /// builtin library mappings.
-    pub fn new(client: &GhidraClient) -> ApiEngine<GhidraClient> {
+    pub fn new(source: &KunaSource) -> ApiEngine<KunaSource> {
         ApiEngine {
-            source: client.clone(),
+            source: source.clone(),
             scanner: ImportTableScanner::new(),
             detector: ApiSummaryDetector::new(),
         }
@@ -191,9 +192,7 @@ impl<S> ApiEngine<S> {
         }
 
         let mut metadata = ScanMetadata::new(binary);
-        // The source names its engine and pin under `kuna`; the Ghidra
-        // path names nothing and the record stays exactly as it was
-        // (issue #208).
+        // The source names its engine and pin under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
@@ -214,7 +213,7 @@ mod tests {
     use crate::types::Confidence;
     use calxgloss_callgraph::CallGraphEdge;
     use calxgloss_ghidra::{
-        DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
+        DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
         StringLiteral, StructLayout, Symbol, Xref,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -252,7 +251,7 @@ mod tests {
         }
 
         async fn decompile(&self, name: &str) -> calxgloss_ghidra::Result<DecompiledFunction> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "function",
                 query: name.to_string(),
             })
@@ -278,14 +277,14 @@ mod tests {
         }
 
         async fn struct_layout(&self, name: &str) -> calxgloss_ghidra::Result<StructLayout> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "struct",
                 query: name.to_string(),
             })
         }
 
         async fn enum_values(&self, name: &str) -> calxgloss_ghidra::Result<EnumDefinition> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "enum",
                 query: name.to_string(),
             })
@@ -297,9 +296,8 @@ mod tests {
 
         async fn imports(&self) -> calxgloss_ghidra::Result<Vec<Symbol>> {
             if self.fail_imports {
-                return Err(GhidraError::Reported {
-                    status: Some(200),
-                    message: "Ghidra is busy".into(),
+                return Err(EngineError::Reported {
+                    message: "the engine is busy".into(),
                 });
             }
             Ok(self.imports.clone())
@@ -595,7 +593,7 @@ mod tests {
             .scan("game.exe")
             .await
             .unwrap_err();
-        assert!(matches!(error, ApiError::Ghidra(_)));
+        assert!(matches!(error, ApiError::Engine(_)));
     }
 
     #[tokio::test]

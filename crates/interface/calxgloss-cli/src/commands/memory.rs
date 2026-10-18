@@ -1,8 +1,8 @@
-//! The `memory` command — detect memory lifecycles for the open binary.
+//! The `memory` command — detect memory lifecycles for a binary.
 //!
 //! Runs the three lifecycle detectors — allocation/release pair tracking,
 //! handle lifetime detection, and reference-counting detection — against
-//! the program currently open in Ghidra and saves the result to
+//! the loaded program and saves the result to
 //! `re/analysis/memory/{binary}.json` in the workspace, the same file batch
 //! translation will read as prompt context. Batch translation runs the
 //! same scan before its first batch when no result is cached; this
@@ -12,7 +12,6 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use calxgloss_memory::engine::MemoryEngine;
 use calxgloss_memory::persist::MemoryPersistor;
 use calxgloss_memory::types::MemoryResult;
@@ -48,16 +47,9 @@ pub async fn handle_memory(
 
     info!(binary, workspace = %workspace.display(), "Detecting memory lifecycles");
 
-    let ghidra_url = &settings.ghidra_url.value;
-    let mut config = GhidraConfig::new(ghidra_url)
-        .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
-    if let Some(key) = &settings.ghidra_api_key {
-        config = config.with_api_key(key.value.clone());
-    }
-    let ghidra = GhidraClient::from_config(config)
-        .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))?;
+    let kuna = load_kuna_source(settings, binary)?;
 
-    let engine = MemoryEngine::new(&ghidra);
+    let engine = MemoryEngine::new(&kuna);
     let result = engine
         .scan(binary)
         .await

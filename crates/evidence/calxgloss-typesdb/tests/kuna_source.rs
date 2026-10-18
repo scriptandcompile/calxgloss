@@ -8,7 +8,7 @@
 //! Ghidra bridge uses, so the scanner branches on one fact whichever engine
 //! answers.
 
-use calxgloss_ghidra::{GhidraError, ScanSource};
+use calxgloss_ghidra::{EngineError, ScanSource};
 use calxgloss_kuna::KunaSource;
 use calxgloss_typesdb::scanner::TypeLibraryScanner;
 use calxgloss_typesdb::types::TypeKind;
@@ -72,7 +72,7 @@ async fn probe_misses_arrive_in_the_ghidra_vocabulary_under_kuna() {
     assert!(
         matches!(
             &missing,
-            GhidraError::NotFound { kind, query }
+            EngineError::NotFound { kind, query }
                 if *kind == "type" && query == "no_such_type_anywhere"
         ),
         "expected the bridge's NotFound, got {missing:?}"
@@ -85,14 +85,14 @@ async fn probe_misses_arrive_in_the_ghidra_vocabulary_under_kuna() {
         .await
         .expect_err("a builtin is not a structure");
     assert!(
-        matches!(&mismatch, GhidraError::Malformed { kind, .. } if *kind == "structure layout"),
+        matches!(&mismatch, EngineError::Malformed { kind, .. } if *kind == "structure layout"),
         "expected the bridge's Malformed, got {mismatch:?}"
     );
     let enum_mismatch = ScanSource::enum_values(&source, "int4")
         .await
         .expect_err("a builtin is not an enumeration");
     assert!(
-        matches!(&enum_mismatch, GhidraError::Malformed { kind, .. } if *kind == "enumeration"),
+        matches!(&enum_mismatch, EngineError::Malformed { kind, .. } if *kind == "enumeration"),
         "expected the bridge's Malformed, got {enum_mismatch:?}"
     );
 }

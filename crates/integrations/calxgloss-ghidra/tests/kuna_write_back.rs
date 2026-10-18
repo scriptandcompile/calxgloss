@@ -5,8 +5,8 @@
 //! `KunaSource`, read back through `ScanSource` — over the checked-in
 //! fixture DLL: a write compiles to a directive that changes what the
 //! seam's own reads answer, the directive file persists in the record of
-//! effort and replays on a fresh load, and misses arrive in the Ghidra
-//! path's error vocabulary. The engine-native API is pinned in
+//! effort and replays on a fresh load, and misses arrive in the seam's own
+//! error vocabulary. The engine-native API is pinned in
 //! `calxgloss-kuna/tests/kuna_write_back.rs`.
 //!
 //! Both seams are RPITIT traits, not dyn-compatible, so the calls below
@@ -14,7 +14,7 @@
 //! also forces the seam's mapping rather than the source's inherent
 //! method of the same name.
 
-use calxgloss_ghidra::{GhidraError, NewStructField, ScanSource, TypeWriteSource};
+use calxgloss_ghidra::{EngineError, NewStructField, ScanSource, TypeWriteSource};
 use calxgloss_kuna::KunaSource;
 use calxgloss_kuna::directives::directive_file_path;
 use calxgloss_testfixtures::TARGET_FILE_NAME;
@@ -157,18 +157,18 @@ async fn a_struct_written_through_the_seam_survives_a_reload() {
 }
 
 #[tokio::test]
-async fn seam_refusals_arrive_in_the_ghidra_path_error_vocabulary() {
+async fn seam_refusals_arrive_in_the_seam_error_vocabulary() {
     let dir = tempfile::tempdir().expect("temp dir");
     let source = source_with_plane(dir.path());
 
-    // A function that is not there is the same named NotFound the Ghidra
-    // path reports — the Kuna fold, not a new error shape.
+    // A function that is not there is the same named NotFound the seam
+    // reports — the Kuna fold, not a new error shape.
     let error =
         TypeWriteSource::set_function_prototype(&source, 0xdead_beef, "int no_such_function(void)")
             .await
             .expect_err("a prototype at a missing function's address must be refused");
     assert!(
-        matches!(&error, GhidraError::NotFound { kind, query }
+        matches!(&error, EngineError::NotFound { kind, query }
             if *kind == "function" && query == "0xdeadbeef"),
         "expected the seam's NotFound, got {error:?}"
     );
@@ -177,7 +177,7 @@ async fn seam_refusals_arrive_in_the_ghidra_path_error_vocabulary() {
         .await
         .expect_err("a field on a missing struct must be refused");
     assert!(
-        matches!(&error, GhidraError::NotFound { kind, query }
+        matches!(&error, EngineError::NotFound { kind, query }
             if *kind == "type" && query == "NO_SUCH"),
         "expected the seam's NotFound, got {error:?}"
     );

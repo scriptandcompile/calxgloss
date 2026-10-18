@@ -67,7 +67,7 @@ pub struct RetryLoopCtx<'a> {
 /// # Arguments
 ///
 /// * `initial_translation` — The initial [`Translation`] to verify and retry.
-/// * `ctx` — A [`RetryLoopCtx`] holding the verifier, LLM, Ghidra client,
+/// * `ctx` — A [`RetryLoopCtx`] holding the verifier, LLM, scan source,
 ///   configuration, and optional extras.
 pub async fn try_translate_with_retry(
     initial_translation: Translation,
@@ -1718,9 +1718,10 @@ mod tests {
 
         let llm_base = fake_llm().await;
         let llm = LlmClient::from_url(&llm_base, "test-model").expect("llm client");
-        let ghidra =
-            calxgloss_ghidra::GhidraClient::new("http://127.0.0.1:1").expect("ghidra client");
-        let source = calxgloss_ghidra::PipelineSource::Live(ghidra);
+        let target = calxgloss_testfixtures::load_target().expect("fixture target");
+        let kuna = calxgloss_kuna::KunaSource::load(target.path())
+            .expect("the fixture must load for scanning with Kuna");
+        let source = calxgloss_ghidra::PipelineSource::Kuna(kuna);
         let verifier = Verifier::new(&ws.path().join("verify")).expect("verifier");
         let config = RetryConfig {
             max_attempts: 2,

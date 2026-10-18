@@ -1,18 +1,13 @@
-//! Domain types parsed out of GhidraMCP's responses.
+//! Domain types the seam answers carry — the record shapes the engine
+//! fills and the persisted records keep (issue #214).
 //!
-//! The server answers most endpoints in `text/plain` with one record per line,
-//! and the 6.x bridge answers a few (`get_current_address`, `list_imports`,
-//! `list_open_programs`) in JSON, so these types exist to give both shapes a
-//! common shape. Each parser lives next to the type it produces and is written
-//! against the exact formats the server emits.
+//! The Ghidra-shaped spellings these names describe (`FUN_…` names, Ghidra's
+//! type vocabulary, the decompiler's signature line) are the dialect the
+//! Kuna engine reproduces and the pipeline's text handling reads.
 
 use std::fmt;
 
 /// A function found by a listing or search.
-///
-/// Two endpoints render the same pair in different separators, so both are
-/// accepted: `/list_functions` writes `name at addr` while `/search_functions`
-/// writes `name @ addr`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FunctionSummary {
     /// The Ghidra function name, e.g. `FUN_18008ed50`.
@@ -27,43 +22,20 @@ impl fmt::Display for FunctionSummary {
     }
 }
 
-/// Entry point and body range of a function.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FunctionBody {
-    /// The function's Ghidra name.
-    pub name: String,
-    /// First address of the function.
-    pub entry: u64,
-    /// First address after the function.
-    pub end: u64,
-}
-
-impl FunctionBody {
-    /// Size of the function in bytes.
-    pub fn len(&self) -> u64 {
-        self.end.saturating_sub(self.entry)
-    }
-
-    /// Whether the function contains no instructions.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-}
-
 /// A cross-reference between two addresses.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Xref {
     /// The address the reference runs between.
     pub address: u64,
-    /// The name of the function on the referring side, when the server named
-    /// one. Absent for references with no enclosing function.
+    /// The name of the function on the referring side, when the engine
+    /// named one. Absent for references with no enclosing function.
     pub function: Option<String>,
     /// The reference type as Ghidra labels it, e.g. `UNCONDITIONAL_CALL`.
     pub kind: Option<String>,
 }
 
 impl Xref {
-    /// A one-line rendering matching the server's own format.
+    /// A one-line rendering in the decompiler listing's own shape.
     pub fn to_line(&self) -> String {
         let mut line = format!("{:#x}", self.address);
         if let Some(f) = &self.function {
@@ -96,100 +68,22 @@ impl fmt::Display for Symbol {
     }
 }
 
-/// A memory region of the loaded program.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Segment {
-    /// The segment name as Ghidra labels it, e.g. `.text`.
-    pub name: String,
-    /// First mapped address.
-    pub start: u64,
-    /// One past the last mapped address.
-    pub end: u64,
-}
-
-impl Segment {
-    /// Size of the segment in bytes.
-    pub fn len(&self) -> u64 {
-        self.end.saturating_sub(self.start)
-    }
-
-    /// Whether the segment covers no memory.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-}
-
 /// A defined string literal and where it lives.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StringLiteral {
     /// Address of the string.
     pub address: u64,
-    /// The string's contents, with the server's surrounding quotes removed.
+    /// The string's contents, with surrounding quotes removed.
     pub value: String,
 }
 
-/// A program currently open in the Ghidra instance the server is attached to.
+/// A decompiled function: the pseudo-C body plus the signature the decompiler
+/// inferred.
 ///
-/// The 6.x bridge can hold several programs at once and answer queries against
-/// whichever is current, so this records what is available and which one that is.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OpenProgram {
-    /// The program's name inside the Ghidra project, e.g. `eqmain.dll`.
-    pub name: String,
-    /// Its path inside the project, e.g. `/eqmain.dll`.
-    pub path: String,
-    /// Whether queries currently run against this program.
-    pub is_current: bool,
-    /// Number of functions Ghidra has identified, when the server reported one.
-    pub function_count: Option<u64>,
-}
-
-/// Which flavour of GhidraMCP server answered the connection probe.
-///
-/// The two run the same HTTP API but not the same endpoint set: the cursor
-/// endpoints (`get_current_address`, `get_current_function`) are GUI-only, so
-/// what a probe can verify depends on which kind is on the other end.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ServerKind {
-    /// The standalone headless server (`GhidraMCPHeadlessServer`).
-    Headless,
-    /// The plugin running inside a Ghidra GUI CodeBrowser.
-    Gui,
-}
-
-impl fmt::Display for ServerKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Headless => write!(f, "headless"),
-            Self::Gui => write!(f, "GUI"),
-        }
-    }
-}
-
-/// Who answered the `check_connection` probe: which kind of server, which
-/// plugin version it named, and which program it has open, as far as its
-/// answer form carries each.
-///
-/// The headless form names a version but no program; the GUI form names a
-/// program but no version — the plugin version rides on the Ghidra build it
-/// is installed into, which later lifecycle checks pin down.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServerInfo {
-    /// Headless or GUI.
-    pub kind: ServerKind,
-    /// Plugin/server version the answer named, e.g. `6.0.0` — only the
-    /// headless form carries one.
-    pub version: Option<String>,
-    /// Program the server reports as current, when its answer named one.
-    pub program: Option<String>,
-}
-
-/// A decompiled function: the pseudo-C body plus the signature Ghidra inferred.
-///
-/// The signature is taken from the body because it is the only place Ghidra
-/// reports real parameter types. The `Signature:` line of
-/// `get_function_by_address` reads `undefined name(void)` for a function that
-/// actually takes arguments, so it cannot be used to recover one.
+/// The signature is taken from the body because it is the only place the
+/// engine reports real parameter types — the metadata's own signature line
+/// reads `undefined name(void)` for a function that actually takes
+/// arguments, so it cannot be used to recover one.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DecompiledFunction {
     /// The function's Ghidra name.
@@ -202,12 +96,12 @@ pub struct DecompiledFunction {
 }
 
 impl DecompiledFunction {
-    /// The parameter names in declaration order, as Ghidra numbers them
-    /// (`param_1`, `param_2`, …).
+    /// The parameter names in declaration order, as the decompiler numbers
+    /// them (`param_1`, `param_2`, …).
     ///
     /// Test generation needs the names because it keys test-case inputs by
-    /// parameter name, so a name the server uses here has to match the one the
-    /// signature carries.
+    /// parameter name, so a name the engine uses here has to match the one
+    /// the signature carries.
     pub fn parameter_names(&self) -> Vec<String> {
         let Some(open) = self.signature.find('(') else {
             return Vec::new();
@@ -239,33 +133,7 @@ impl DecompiledFunction {
     }
 }
 
-/// Everything the client can assemble about one function.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FunctionReport {
-    /// The function's Ghidra name.
-    pub name: String,
-    /// Entry point virtual address.
-    pub address: u64,
-    /// Decompiled pseudo-C, with its inferred signature.
-    pub decompiled: DecompiledFunction,
-    /// Raw disassembly listing, one instruction per line.
-    pub disassembly: String,
-    /// Entry and body range.
-    pub body: Option<FunctionBody>,
-    /// Functions that call this one.
-    pub callers: Vec<String>,
-    /// Functions this one calls.
-    pub callees: Vec<String>,
-}
-
-impl FunctionReport {
-    /// The inferred signature, for handing to signature parsers.
-    pub fn signature(&self) -> &str {
-        &self.decompiled.signature
-    }
-}
-
-/// A named type in Ghidra's Type Manager, as `/list_data_types` renders it.
+/// A named type in the Type Manager, as the `data_types()` answer renders it.
 ///
 /// The Type Manager holds every type Ghidra knows about — including types
 /// never applied to a symbol — which is what makes this listing the source
@@ -283,7 +151,7 @@ pub struct DataTypeEntry {
     pub path: String,
 }
 
-/// A defined data object in the listing, as `/list_data_items` renders it.
+/// A defined data object in the listing, as the `data_items()` answer does.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DataItem {
     /// The label Ghidra shows, e.g. `IMAGE_DOS_HEADER_180000000`, or a
@@ -309,7 +177,7 @@ impl fmt::Display for DataItem {
 
 /// One field of a structure layout.
 ///
-/// Wire shape for `/get_struct_layout` only. The persisted recovered shape is
+/// Wire shape for the `struct_layout()` answer only. The persisted recovered shape is
 /// `calxgloss-typesdb`'s `StructField`; the two stay deliberately split (wire
 /// vs. persisted ownership) and are mapped by its `From<&StructFieldLayout>`
 /// impl — the only place the shapes meet.
@@ -321,11 +189,11 @@ pub struct StructFieldLayout {
     pub size: u64,
     /// The field's data type name, e.g. `dword` or `char[2]`.
     pub type_name: String,
-    /// Field name; the server writes `(unnamed)` for anonymous fields.
+    /// Field name; the engine writes `(unnamed)` for anonymous fields.
     pub field_name: String,
 }
 
-/// A structure's full field layout, as `/get_struct_layout` renders it.
+/// A structure's full field layout, as the `struct_layout()` answer renders it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StructLayout {
     /// The structure name.
@@ -340,7 +208,7 @@ pub struct StructLayout {
 
 /// One member of an enumeration.
 ///
-/// Wire shape for `/get_enum_values` only. The persisted recovered shape is
+/// Wire shape for the `enum_values()` answer only. The persisted recovered shape is
 /// `calxgloss-typesdb`'s `EnumMember`; the records are identical but stay
 /// split on purpose, mapped by its `From<&EnumMember>` impl.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -351,7 +219,7 @@ pub struct EnumMember {
     pub value: i64,
 }
 
-/// An enumeration and its members, as `/get_enum_values` renders it.
+/// An enumeration and its members, as the `enum_values()` answer renders it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EnumDefinition {
     /// The enumeration name.
@@ -362,64 +230,24 @@ pub struct EnumDefinition {
     pub members: Vec<EnumMember>,
 }
 
-/// The project the headless server currently holds open, as
-/// `/get_project_info` renders it.
+/// Convert a program virtual address into a file-relative one.
 ///
-/// With no project open the endpoint answers just `{"has_project": false}`,
-/// so everything past the flag is optional.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectInfo {
-    /// Whether a project is open at all.
-    pub has_project: bool,
-    /// The open project's name, e.g. `eqmain`.
-    pub name: Option<String>,
-    /// Files held in the project, when the server counted them.
-    pub file_count: Option<u64>,
-    /// Files whose content type is a program, when the server counted them.
-    pub program_count: Option<u64>,
+/// The program's image base is the lowest mapped address, and subtracting it
+/// yields the RVA the PE headers index exports and imports by.
+pub fn rva_from_va(image_base: u64, va: u64) -> Option<u32> {
+    let rva = va.checked_sub(image_base)?;
+    u32::try_from(rva).ok()
 }
 
-/// A program the server opened into its current program slot, as
-/// `/load_program` and `/load_program_from_project` render it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LoadedProgram {
-    /// The program's name inside the project, e.g. `eqmain.dll`.
-    pub name: String,
-    /// The language the loader settled on, e.g. `x86:LE:64:default` — only
-    /// `/load_program` reports one.
-    pub language: Option<String>,
-    /// Its path inside the project, e.g. `/eqmain.dll` — only
-    /// `/load_program_from_project` reports one.
-    pub path: Option<String>,
-}
+#[cfg(test)]
+mod tests {
+    use super::rva_from_va;
 
-/// What a `/run_analysis` call reported when it returned.
-///
-/// The endpoint blocks until the analysis finishes, so this is the summary
-/// of the run that just completed, not a status snapshot.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AnalysisOutcome {
-    /// Wall-clock duration the server reported, in milliseconds.
-    pub duration_ms: u64,
-    /// Functions in the program once analysis finished.
-    pub total_functions: u64,
-    /// Functions the analysis discovered.
-    pub new_functions: u64,
-    /// The analyzed program's name.
-    pub program: String,
-}
-
-/// One program's auto-analysis state, as `/analysis_status` renders it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AnalysisStatus {
-    /// The program's name.
-    pub name: String,
-    /// Whether analysis is running right now.
-    pub analyzing: bool,
-    /// Whether the program carries Ghidra's analyzed flag.
-    pub analyzed: bool,
-    /// Whether Ghidra would prompt to analyze this program.
-    pub should_ask_to_analyze: bool,
-    /// Functions Ghidra has identified so far.
-    pub function_count: u64,
+    #[test]
+    fn rva_from_va_subtracts_the_image_base() {
+        assert_eq!(rva_from_va(0x180000000, 0x18008ed50), Some(0x8ed50));
+        // A VA below the image base is not addressable, and silently wrapping
+        // would produce a plausible-looking but wrong RVA.
+        assert_eq!(rva_from_va(0x180000000, 0x17ffffff), None);
+    }
 }

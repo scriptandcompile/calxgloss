@@ -32,13 +32,13 @@ pub async fn handle_batch_translate(
         all_functions,
         skip_git,
         no_callgraph,
-        refresh_ghidra_cache,
+        refresh_cache,
         ..
     } = args;
     let (target, binary) = (target.as_path(), binary.as_str());
     let skip_git = *skip_git;
     let no_callgraph = *no_callgraph;
-    let refresh_ghidra_cache = *refresh_ghidra_cache;
+    let refresh_cache = *refresh_cache;
 
     let llm_url = settings.require_llm_url()?;
     let llm_model = settings.require_llm_model()?;
@@ -59,33 +59,29 @@ pub async fn handle_batch_translate(
         "Starting batch translation"
     );
 
-    // The session preflight (G1-T4): attach or spawn, then the wrong-program
-    // guard (incident 2026-10-08) — every function listed and translated
-    // below belongs to the target binary only if the server is serving it.
-    let session =
-        open_ghidra_session(settings, &workspace, binary, &[target.to_path_buf()], None).await?;
-    session
-        .ensure_current_program(binary)
-        .await
-        .with_context(|| format!("GhidraMCP is not serving {binary}"))?;
+    // Kuna is the only analysis engine (issue #214): the scan source is
+    // loaded in-process from the target file, so there is no server to
+    // attach to and no wrong-program guard to run — the file named on the
+    // command line is the program every listing and translation below
+    // reads.
+    let kuna = load_kuna_at(settings, target)?;
 
     // Determine which functions to translate
     let function_list = if *all_functions {
-        // List all functions from Ghidra
-        let summaries = session
-            .client()
-            .list_functions()
+        // List all functions from the engine
+        use calxgloss_ghidra::ScanSource;
+        let summaries = ScanSource::functions(&kuna)
             .await
-            .with_context(|| "Failed to list functions from GhidraMCP")?;
+            .with_context(|| "Failed to list functions from the engine")?;
 
         if summaries.is_empty() {
-            warn!("GhidraMCP returned no functions; nothing to translate");
-            println!("No functions found in the open Ghidra program.");
+            warn!("the engine listed no functions; nothing to translate");
+            println!("No functions found in the loaded program.");
             return Ok(());
         }
 
         let names: Vec<String> = summaries.into_iter().map(|s| s.name).collect();
-        info!(count = names.len(), "Enumerated functions from Ghidra");
+        info!(count = names.len(), "Enumerated functions from the engine");
         names
     } else if let Some(comma_sep) = functions {
         // Parse comma-separated function names
@@ -111,9 +107,6 @@ pub async fn handle_batch_translate(
     let (_, crate_src_dir) =
         setup_translation_crate(&workspace, binary).context("Failed to create output crate")?;
 
-    // The pipeline drives the same session the preflight established.
-    let ghidra = session.client().clone();
-
     // Initialize LLM client
     let mut llm_config = calxgloss_llm::LlmConfig::new(llm_url, llm_model)
         .with_context(|| format!("Failed to parse LLM URL: {}", llm_url))?;
@@ -132,8 +125,8 @@ pub async fn handle_batch_translate(
 
     // Build translation pipeline
     let api_mappings = calxgloss_pal::ApiMappings::default();
-    let detector = build_hallucination_detector(&ghidra, &api_mappings).await;
-    let mut pipeline = TranslationPipeline::new(ghidra, llm, api_mappings)
+    let detector = build_hallucination_detector(&kuna, &api_mappings).await;
+    let mut pipeline = TranslationPipeline::new(kuna, llm, api_mappings)
         .with_testgen(testgen)
         .with_hallucination_detector(detector);
     if no_callgraph {
@@ -146,13 +139,13 @@ pub async fn handle_batch_translate(
         pipeline = pipeline.with_callgraph_verbose();
     }
     pipeline = pipeline.with_workspace(&workspace);
-    // The batch's shared Ghidra read cache keys on the target binary's
+    // The batch's shared scan read cache keys on the target binary's
     // file bytes (issue #105) — hand the pipeline the file it was given.
     pipeline = pipeline.with_binary_path(target);
     // The refresh escape hatch (issue #106): force the cache cold when the
-    // operator says the Ghidra program changed under unchanged bytes.
-    if refresh_ghidra_cache {
-        pipeline = pipeline.with_refresh_ghidra_cache();
+    // operator says the cached reads are stale.
+    if refresh_cache {
+        pipeline = pipeline.with_refresh_cache();
     }
 
     // Git setup
@@ -290,7 +283,6 @@ pub async fn handle_batch_translate(
     }
 
     // Release the server if we spawned it; an attached one is left running.
-    session.shutdown().await;
 
     Ok(())
 }

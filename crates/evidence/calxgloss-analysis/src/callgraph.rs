@@ -20,13 +20,13 @@
 //!
 //! ```no_run
 //! use calxgloss_analysis::build_enriched_call_graph;
-//! use calxgloss_ghidra::GhidraClient;
+//! use calxgloss_kuna::KunaSource;
 //! use std::path::Path;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let ghidra = GhidraClient::new("http://localhost:8080")?;
+//! let kuna = KunaSource::load(Path::new("/workspace/targets/eqmain.dll"))?;
 //!
-//! let graph = build_enriched_call_graph(&ghidra, "eqmain.dll", Path::new("/workspace"), None).await?;
+//! let graph = build_enriched_call_graph(&kuna, "eqmain.dll", Path::new("/workspace"), None).await?;
 //!
 //! calxgloss_analysis::print_call_graph_stats(&graph);
 //!
@@ -195,8 +195,8 @@ pub fn print_call_graph_stats(graph: &calxgloss_callgraph::CallGraph) {
 ///
 /// # Arguments
 ///
-/// * `source` — The scan source used to fetch function data: a live
-///   [`GhidraClient`](calxgloss_ghidra::GhidraClient) or a batch's cached source.
+/// * `source` — The scan source used to fetch function data: a loaded
+///   [`KunaSource`](calxgloss_kuna::KunaSource) or a batch's cached source.
 /// * `dll_name` — The DLL filename (e.g., `"eqmain.dll"`).
 /// * `workspace` — The workspace root directory (used as base for cache path).
 /// * `cache_dir` — Explicit directory for call graph JSON files. If `None`,

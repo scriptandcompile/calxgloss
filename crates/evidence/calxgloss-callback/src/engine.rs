@@ -3,7 +3,7 @@
 //! [`CallbackEngine`] runs the callback detectors — function-pointer
 //! array calls, callback registrations, jump-table dispatches, and
 //! dynamic-loading plugin shapes — over every function of one open
-//! Ghidra program, then the cross-function pass over the bodies it
+//! program, then the cross-function pass over the bodies it
 //! kept, and assembles their findings into a single
 //! [`CallbackResult`] with its scan provenance.
 //!
@@ -26,7 +26,8 @@ use crate::jump_table::JumpTableDetector;
 use crate::plugin::PluginDetector;
 use crate::signatures::{SignatureMap, enrich_suggestion};
 use crate::types::{CallbackFinding, CallbackResult, ScanMetadata};
-use calxgloss_ghidra::{DecompiledFunction, GhidraClient};
+use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_kuna::KunaSource;
 use std::time::Instant;
 use tracing::{info, warn};
 
@@ -34,7 +35,7 @@ use tracing::{info, warn};
 ///
 /// The shared trait from the Ghidra integration crate, re-exported here
 /// so the engine's generic shape names it where it always has;
-/// [`GhidraClient`] implements it over the live HTTP API, and tests
+/// [`KunaSource`] implements it over the in-process engine, and tests
 /// implement it over canned bodies so the orchestration runs without a
 /// server. The futures are `Send` so a scan can be driven from an
 /// orchestrating task.
@@ -44,7 +45,7 @@ pub use calxgloss_ghidra::ScanSource;
 ///
 /// The engine is generic over its [`ScanSource`], so tests can run the
 /// whole orchestration over canned bodies; [`new`](Self::new) builds
-/// one over a live [`GhidraClient`]. Each detector carries no state
+/// one over a loaded [`KunaSource`]. Each detector carries no state
 /// and starts configured with its standard name set —
 /// [`with_fp_array`](Self::with_fp_array),
 /// [`with_registration`](Self::with_registration),
@@ -56,7 +57,7 @@ pub use calxgloss_ghidra::ScanSource;
 /// registration and chain suggestions in place; with no map the scan
 /// is exactly what it was.
 #[derive(Debug, Clone)]
-pub struct CallbackEngine<S = GhidraClient> {
+pub struct CallbackEngine<S = KunaSource> {
     source: S,
     fp_array: FpArrayDetector,
     registration: CallbackRegDetector,
@@ -66,12 +67,12 @@ pub struct CallbackEngine<S = GhidraClient> {
     signatures: SignatureMap,
 }
 
-impl CallbackEngine<GhidraClient> {
-    /// An engine over a live GhidraMCP client, scanning with the
+impl CallbackEngine<KunaSource> {
+    /// An engine over a loaded Kuna program, scanning with the
     /// detectors' standard name sets.
-    pub fn new(client: &GhidraClient) -> CallbackEngine<GhidraClient> {
+    pub fn new(source: &KunaSource) -> CallbackEngine<KunaSource> {
         CallbackEngine {
-            source: client.clone(),
+            source: source.clone(),
             fp_array: FpArrayDetector::with_default_names(),
             registration: CallbackRegDetector::with_default_names(),
             jump_table: JumpTableDetector::with_default_prefixes(),
@@ -163,7 +164,7 @@ impl<S> CallbackEngine<S> {
     /// the registrations, then the jump tables, then the plugin
     /// shapes — and after every function the cross-function pass adds
     /// its chain findings, in listing order, over the bodies this
-    /// walk already decompiled: no extra Ghidra round trips. So two
+    /// walk already decompiled: no extra engine reads. So two
     /// scans of the same program diff cleanly.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad
@@ -214,8 +215,8 @@ impl<S> CallbackEngine<S> {
                     skipped += 1;
                     decompile_failures += 1;
                     // Skip-rate breaker: once most of the listing has
-                    // failed to decompile, the scan is reading the
-                    // wrong program (or a half-broken server), and an
+                    // failed to decompile, the scan is reading a
+                    // program the engine cannot analyze, and an
                     // empty result would persist as a phantom-clean
                     // record. Abort with the counts instead of
                     // skipping on.
@@ -261,7 +262,7 @@ impl<S> CallbackEngine<S> {
 
         // The cross-function pass runs after the per-function walk,
         // over the bodies the scan already decompiled — no extra
-        // Ghidra round trips — and its findings append in listing
+        // engine reads — and its findings append in listing
         // order, after the per-function findings. A chain's callback
         // is enriched like a registration's; the event-system
         // suggestion names a crowd of handlers whose contracts can
@@ -281,9 +282,7 @@ impl<S> CallbackEngine<S> {
         findings.extend(cross_findings);
 
         let mut metadata = ScanMetadata::new(binary);
-        // The source names its engine and pin under `kuna`; the Ghidra
-        // path names nothing and the record stays exactly as it was
-        // (issue #208).
+        // The source names its engine and pin under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
@@ -307,7 +306,7 @@ mod tests {
     use super::*;
     use crate::signatures::{CallableSignature, SignatureMap};
     use calxgloss_ghidra::{
-        DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
+        DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
         Result, StringLiteral, StructLayout, Symbol, Xref,
     };
     use std::collections::HashMap;
@@ -366,9 +365,8 @@ mod tests {
     impl ScanSource for FakeProgram {
         async fn functions(&self) -> Result<Vec<FunctionSummary>> {
             if self.fail_listing {
-                return Err(GhidraError::Reported {
-                    status: Some(200),
-                    message: "Ghidra is busy".into(),
+                return Err(EngineError::Reported {
+                    message: "the engine is busy".into(),
                 });
             }
             Ok(self.listing.clone())
@@ -377,7 +375,7 @@ mod tests {
         async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
             self.stats.decompiles.lock().unwrap().push(name.to_string());
             if self.fail_decompiles.iter().any(|f| f == name) {
-                return Err(GhidraError::NotFound {
+                return Err(EngineError::NotFound {
                     kind: "function",
                     query: name.to_string(),
                 });
@@ -385,7 +383,7 @@ mod tests {
             self.bodies
                 .get(name)
                 .cloned()
-                .ok_or_else(|| GhidraError::NotFound {
+                .ok_or_else(|| EngineError::NotFound {
                     kind: "function",
                     query: name.to_string(),
                 })
@@ -410,14 +408,14 @@ mod tests {
         }
 
         async fn struct_layout(&self, name: &str) -> Result<StructLayout> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "struct",
                 query: name.to_string(),
             })
         }
 
         async fn enum_values(&self, name: &str) -> Result<EnumDefinition> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "enum",
                 query: name.to_string(),
             })
@@ -652,7 +650,7 @@ mod tests {
                 // the counts and points at the wrong-program cause.
                 assert_eq!(
                     error.to_string(),
-                    "Ghidra failed to decompile 2 of 2 functions — is the right program open?"
+                    "the engine failed to decompile 2 of 2 functions"
                 );
             }
             other => panic!("expected the skip-rate breaker, got {other:?}"),
@@ -718,7 +716,7 @@ mod tests {
             .await;
         assert!(matches!(
             result,
-            Err(crate::CallbackError::Ghidra(GhidraError::Reported { .. }))
+            Err(crate::CallbackError::Engine(EngineError::Reported { .. }))
         ));
     }
 

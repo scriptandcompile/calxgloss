@@ -1,11 +1,6 @@
 //! Utility functions for the CLI.
 
-use anyhow::{Context, Result, anyhow};
-use calxgloss::TranslationEvents;
-use calxgloss_ghidra::lifecycle::{
-    BRIDGE_DEFAULT_PORT, GhidraSession, HeadlessMode, SessionRequest, StackRequest,
-    default_project, socket_dir,
-};
+use anyhow::{Context, Result};
 pub use calxgloss_reports::{
     print_batch_summary, print_classification_report, print_failure, print_git_status,
     print_verification_results,
@@ -13,127 +8,32 @@ pub use calxgloss_reports::{
 pub use calxgloss_translator::RetryStrategy;
 pub use calxgloss_verify::Verifier;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 pub use tracing::{debug, warn};
 
-/// The user's local state directory: `$XDG_STATE_HOME`, falling back to
-/// `~/.local/share` — the XDG base directory for data that survives between
-/// sessions but is not configuration.
-pub(super) fn state_dir(home: &Path) -> PathBuf {
-    std::env::var_os("XDG_STATE_HOME")
-        .filter(|value| !value.as_os_str().is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".local/share"))
-}
-
-/// The install prefix `doctor --fix` installs into — and every discovery
-/// pass names, so a bootstrap's installs are found without env or config:
-/// `<state>/calxgloss/ghidra/`.
-pub(super) fn managed_install_prefix(home: &Path) -> PathBuf {
-    state_dir(home).join("calxgloss/ghidra")
-}
-
-/// Open the session preflight (G1-T4) every Ghidra command starts from:
-/// attach to a running GhidraMCP server — reconciling a stale configured
-/// port against the servers registered in the bridge's runtime-socket
-/// directory (G1-T5) — or spawn a supervised headless one under the
-/// doctor's install and extension checks.
-///
-/// The discovery inputs — `$GHIDRA_INSTALL_DIR`, the layered
-/// `ghidra.install_dir` setting, `$HOME`, and `$XDG_RUNTIME_DIR` — are read
-/// here so the lifecycle checks stay pure and testable; the project path
-/// defaults to `<workspace>/ghidra/<binary>.gpr`, beside which a spawned
-/// server's log and pid files land. The returned session tracks ownership:
-/// an owned server is shut down by [`GhidraSession::shutdown`] (or killed on
-/// drop), an attached one is left untouched.
-///
-/// The project bootstrap (G1-T6, issue #116) then runs on the same session:
-/// the `.gpr` is created on the first run and reused after, and every path
-/// in `binaries` — the binaries this command will actually read — is loaded
-/// into the project and analyzed, skipping what a live server already
-/// holds open or the analysis cache says is done. A command whose binaries
-/// are only known later (auto-shim's classified DLL list) passes an empty
-/// slice here and calls [`GhidraSession::ensure_project`] itself once they
-/// are; the bootstrap is idempotent, so a second pass costs two probes.
-pub(super) async fn open_ghidra_session(
+/// Load the Kuna engine over `target_dir/<binary>` — the scan commands'
+/// single entry into the analysis engine (issue #214). Kuna reads the file
+/// in-process, so there is no server to connect to; a missing or unreadable
+/// target fails naming the path it was looked for at.
+pub(super) fn load_kuna_source(
     settings: &crate::Settings,
-    workspace: &Path,
     binary: &str,
-    binaries: &[PathBuf],
-    events: Option<&TranslationEvents>,
-) -> Result<GhidraSession> {
-    let env_install = std::env::var_os("GHIDRA_INSTALL_DIR").map(PathBuf::from);
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let xdg_runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
-    let uid = std::fs::metadata("/proc/self")
-        .ok()
-        .map(|meta| std::os::unix::fs::MetadataExt::uid(&meta));
-    let sockets = socket_dir(xdg_runtime.as_deref(), uid);
-    let config_install = settings
-        .ghidra_install_dir
-        .as_ref()
-        .map(|r| PathBuf::from(&r.value));
-    let managed_prefix = home.as_deref().map(managed_install_prefix);
-    // The `ghidra.headless` mode is a config string, so a typo is named with
-    // the layer it came from — the same attribution `config` shows.
-    let headless: HeadlessMode = settings.ghidra_headless.value.parse().map_err(|_| {
-        anyhow!(
-            "ghidra.headless = {:?} (from {}) is not a valid mode; expected auto, always, \
-             or never",
-            settings.ghidra_headless.value,
-            settings.ghidra_headless.source,
-        )
-    })?;
-    // `ghidra.project` overrides the default `<workspace>/ghidra/<target>.gpr`.
-    let project = settings
-        .ghidra_project
+) -> Result<calxgloss_kuna::KunaSource> {
+    let target_dir = settings
+        .target_dir
         .as_ref()
         .map(|r| PathBuf::from(&r.value))
-        .unwrap_or_else(|| default_project(workspace, binary));
-    let request = SessionRequest {
-        url: &settings.ghidra_url.value,
-        api_key: settings.ghidra_api_key.as_ref().map(|r| r.value.as_str()),
-        project: &project,
-        socket_dir: sockets.as_deref(),
-        fallback_port: BRIDGE_DEFAULT_PORT,
-        stack: StackRequest {
-            env_install_dir: env_install.as_deref(),
-            config_install_dir: config_install.as_deref(),
-            home: home.as_deref(),
-            managed_prefix: managed_prefix.as_deref(),
-        },
-        start_timeout: Duration::from_secs(settings.ghidra_start_timeout_secs.value),
-        auto_start: settings.ghidra_auto_start.value,
-        headless,
-        min_version: settings
-            .ghidra_min_version
-            .as_ref()
-            .map(|r| r.value.as_str()),
-    };
-    let session = GhidraSession::ensure(&request, events)
-        .await
-        .with_context(|| {
-            format!(
-                "Failed to attach to or start a GhidraMCP server at {}",
-                settings.ghidra_url.value
-            )
-        })?;
-    // Bootstrap only the binaries that exist on disk: commands like
-    // `translate` take a `--target` path that is decorative once a live
-    // server already holds the program (Ghidra identifies programs
-    // itself), and the wrong-program guard still verifies the name.
-    let present: Vec<PathBuf> = binaries.iter().filter(|p| p.exists()).cloned().collect();
-    if present.len() < binaries.len() {
-        warn!(
-            missing = binaries.len() - present.len(),
-            "Some target binaries are not on disk; the project bootstrap skips them"
-        );
-    }
-    session
-        .ensure_project(workspace, &present, events)
-        .await
-        .with_context(|| "Failed to load the run's binaries into the Ghidra project")?;
-    Ok(session)
+        .unwrap_or_else(|| std::env::current_dir().expect("Failed to read current directory"));
+    load_kuna_at(settings, &target_dir.join(binary))
+}
+
+/// Load the Kuna engine at an explicit file path, honoring the `[analysis]`
+/// per-function budgets from the settings (issue #211).
+pub(super) fn load_kuna_at(
+    settings: &crate::Settings,
+    path: &Path,
+) -> Result<calxgloss_kuna::KunaSource> {
+    calxgloss_kuna::KunaSource::load_with_budget(path, None, settings.kuna_budget())
+        .with_context(|| format!("Failed to load {} with the Kuna engine", path.display()))
 }
 
 /// Resolve the workspace: `--workspace` flag > settings > CWD.

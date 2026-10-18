@@ -11,7 +11,7 @@
 //!
 //! The combiner reads no body of its own: it consumes exactly the
 //! findings the single-pass scan already collected for the function,
-//! so the deepening costs no extra Ghidra round trips. It consults the
+//! so the deepening costs no extra engine reads. It consults the
 //! configured signature table only to tell protocol entries apart from
 //! file-format ones — a protocol magic that is not in the configured
 //! table's protocol section claims nothing.

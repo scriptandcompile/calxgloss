@@ -2,14 +2,14 @@
 //!
 //! [`TypesDBEngine`] runs the three recovery engines — named type recovery,
 //! vtable detection, and string-guided inference — concurrently against one
-//! open Ghidra program and assembles their results into a single
+//! loaded program and assembles their results into a single
 //! [`TypeDatabase`] with its scan provenance.
 //!
-//! The three scans read disjoint endpoint sets (`list_data_types`,
-//! `list_data_items` + `read_memory`, and `list_strings` + `get_xrefs_to`),
+//! The three scans read disjoint seam reads (`data_types()`,
+//! `data_items()` + `read_memory()`, and `strings()` + `xrefs_to()`),
 //! so they run as concurrent tasks rather than one after another. Each engine
 //! already degrades internally for missing or malformed data, so an error
-//! surfacing here means the server itself failed mid-scan; the run aborts
+//! surfacing here means the engine itself failed mid-scan; the run aborts
 //! with that error rather than returning a database whose sections were
 //! built against different programs or different moments.
 //!
@@ -38,7 +38,7 @@ use crate::types::{
     TypeKind, Vtable,
 };
 use crate::vtable::{TagSink, VtableDetector};
-use calxgloss_ghidra::GhidraClient;
+use calxgloss_kuna::KunaSource;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
@@ -46,7 +46,7 @@ use tracing::info;
 
 /// The shared trait from the Ghidra integration crate, re-exported here
 /// so the engine's generic shape names it where it always has;
-/// [`GhidraClient`] implements it over the live HTTP API, and tests
+/// [`KunaSource`] implements it over the in-process engine, and tests
 /// implement it over canned listings so the orchestration runs without
 /// a server. The futures are `Send` so a scan can be driven from an
 /// orchestrating task.
@@ -56,21 +56,21 @@ pub use calxgloss_ghidra::ScanSource;
 ///
 /// The engine is generic over the same source traits as the scanners it
 /// drives, so tests can run the whole orchestration over canned responses;
-/// [`new`](Self::new) builds one over a live [`GhidraClient`].
+/// [`new`](Self::new) builds one over a loaded [`KunaSource`].
 #[derive(Debug, Clone)]
-pub struct TypesDBEngine<S = GhidraClient> {
+pub struct TypesDBEngine<S = KunaSource> {
     scanner: TypeLibraryScanner<S>,
     vtables: VtableDetector<S>,
     strings: StringInferenceEngine<S>,
 }
 
-impl TypesDBEngine<GhidraClient> {
-    /// An engine over a live GhidraMCP client.
-    pub fn new(client: &GhidraClient) -> TypesDBEngine<GhidraClient> {
+impl TypesDBEngine<KunaSource> {
+    /// An engine over a loaded Kuna program.
+    pub fn new(source: &KunaSource) -> TypesDBEngine<KunaSource> {
         TypesDBEngine {
-            scanner: TypeLibraryScanner::new(client),
-            vtables: VtableDetector::new(client),
-            strings: StringInferenceEngine::new(client),
+            scanner: TypeLibraryScanner::new(source),
+            vtables: VtableDetector::new(source),
+            strings: StringInferenceEngine::new(source),
         }
     }
 }
@@ -155,9 +155,7 @@ impl<S> TypesDBEngine<S> {
         let stl_flagged = flag_stl_types(&mut named_types, &mut vtables, &mut inferred_structs);
 
         let mut metadata = ScanMetadata::new(binary);
-        // The source names its engine and pin under `kuna`; the Ghidra
-        // path names nothing and the record stays exactly as it was
-        // (issue #208). The three scanners share one source, so any of
+        // The source names its engine and pin under `kuna` (issue #208). The three scanners share one source, so any of
         // them can answer for it.
         metadata.engine = self.scanner.source().engine_provenance();
         metadata.duration_secs = started.elapsed().as_secs();
@@ -541,7 +539,7 @@ mod tests {
     use crate::stl::StlKind;
     use crate::types::{FieldType, StructField, VtableMethod};
     use calxgloss_ghidra::{
-        DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
+        DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
         Result as GhidraResult, StringLiteral, StructFieldLayout, StructLayout, Symbol, Xref,
     };
     use std::collections::HashMap;
@@ -931,7 +929,7 @@ mod tests {
             self.layouts
                 .get(name)
                 .cloned()
-                .ok_or_else(|| GhidraError::NotFound {
+                .ok_or_else(|| EngineError::NotFound {
                     kind: "structure",
                     query: name.to_string(),
                 })
@@ -944,7 +942,7 @@ mod tests {
             self.enums
                 .get(name)
                 .cloned()
-                .ok_or_else(|| GhidraError::NotFound {
+                .ok_or_else(|| EngineError::NotFound {
                     kind: "enumeration",
                     query: name.to_string(),
                 })
@@ -955,9 +953,8 @@ mod tests {
             yield_now().await;
             self.exit();
             if self.fail_items {
-                return Err(GhidraError::Reported {
-                    status: Some(200),
-                    message: "Ghidra is busy".into(),
+                return Err(EngineError::Reported {
+                    message: "the engine is busy".into(),
                 });
             }
             Ok(self.items.clone())
@@ -984,7 +981,7 @@ mod tests {
             self.memory
                 .get(&address)
                 .cloned()
-                .ok_or_else(|| GhidraError::NotFound {
+                .ok_or_else(|| EngineError::NotFound {
                     kind: "memory",
                     query: format!("{address:x}"),
                 })
@@ -1005,7 +1002,7 @@ mod tests {
         }
 
         async fn decompile(&self, name: &str) -> GhidraResult<DecompiledFunction> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "function",
                 query: name.to_string(),
             })
@@ -1106,7 +1103,7 @@ mod tests {
         let result = TypesDBEngine::with_source(program).scan("eqmain.dll").await;
         assert!(matches!(
             result,
-            Err(TypesDbError::Ghidra(GhidraError::Reported { .. }))
+            Err(TypesDbError::Engine(EngineError::Reported { .. }))
         ));
     }
 

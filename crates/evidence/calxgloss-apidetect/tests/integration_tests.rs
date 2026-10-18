@@ -26,7 +26,7 @@
 //!   feature flags inlined and no versions claimed.
 //!
 //! The fake program implements [`ScanSource`] and [`CallGraphSource`], so
-//! the whole flow runs without a Ghidra server.
+//! the whole flow runs without an external server.
 
 use calxgloss_apidetect::engine::{ApiEngine, CallGraphSource, ScanSource};
 use calxgloss_apidetect::ffi_bindings::{render_dependency_manifest, render_ffi_bindings};
@@ -34,7 +34,7 @@ use calxgloss_apidetect::persist::ApiPersistor;
 use calxgloss_apidetect::types::ApiFinding;
 use calxgloss_callgraph::{CallGraphEdge, CallType, FunctionCallGraph};
 use calxgloss_ghidra::{
-    DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
+    DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
     StringLiteral, StructLayout, Symbol, Xref,
 };
 use tempfile::TempDir;
@@ -92,7 +92,7 @@ impl ScanSource for FakeProgram {
     }
 
     async fn decompile(&self, name: &str) -> calxgloss_ghidra::Result<DecompiledFunction> {
-        Err(GhidraError::NotFound {
+        Err(EngineError::NotFound {
             kind: "function",
             query: name.to_string(),
         })
@@ -118,14 +118,14 @@ impl ScanSource for FakeProgram {
     }
 
     async fn struct_layout(&self, name: &str) -> calxgloss_ghidra::Result<StructLayout> {
-        Err(GhidraError::NotFound {
+        Err(EngineError::NotFound {
             kind: "struct",
             query: name.to_string(),
         })
     }
 
     async fn enum_values(&self, name: &str) -> calxgloss_ghidra::Result<EnumDefinition> {
-        Err(GhidraError::NotFound {
+        Err(EngineError::NotFound {
             kind: "enum",
             query: name.to_string(),
         })
@@ -315,7 +315,7 @@ async fn a_loaded_result_answers_the_pipeline_lookups() {
 
 #[tokio::test]
 async fn a_loaded_result_renders_into_the_escalate_prompt() {
-    // The whole escalate path, no Ghidra server needed: the fixture
+    // The whole escalate path, no external server needed: the fixture
     // document on disk answers the per-function lookup, the findings
     // render into `ApiInfo` prompt data, and the rendered escalate
     // prompt carries the LIBRARIES AND APIS section with each

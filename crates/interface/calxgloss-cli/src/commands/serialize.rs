@@ -1,12 +1,12 @@
 //! The `serialize` command — detect endianness and serialization
-//! patterns for the open binary.
+//! patterns for a binary.
 //!
 //! Runs the serialization detectors — byte-swap call matching, manual
 //! bit-packing recognition, magic-byte format sniffing, cross-field
 //! validation reading, the composed serialization layout, the
 //! corroborated protocol message identification, and the program-wide
 //! endianness profile — against the
-//! program currently open in Ghidra and saves the result to
+//! loaded program and saves the result to
 //! `re/analysis/serialize/{binary}.json` in the workspace, the same file
 //! batch translation will read as prompt context. Batch translation runs
 //! the same scan before its first batch when no result is cached; this
@@ -16,7 +16,6 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use calxgloss_serialize::engine::SerializeEngine;
 use calxgloss_serialize::persist::SerializePersistor;
 use calxgloss_serialize::types::SerializeResult;
@@ -52,16 +51,9 @@ pub async fn handle_serialize(
 
     info!(binary, workspace = %workspace.display(), "Detecting serialization patterns");
 
-    let ghidra_url = &settings.ghidra_url.value;
-    let mut config = GhidraConfig::new(ghidra_url)
-        .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
-    if let Some(key) = &settings.ghidra_api_key {
-        config = config.with_api_key(key.value.clone());
-    }
-    let ghidra = GhidraClient::from_config(config)
-        .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))?;
+    let kuna = load_kuna_source(settings, binary)?;
 
-    let engine = SerializeEngine::new(&ghidra);
+    let engine = SerializeEngine::new(&kuna);
     let result = engine
         .scan(binary)
         .await

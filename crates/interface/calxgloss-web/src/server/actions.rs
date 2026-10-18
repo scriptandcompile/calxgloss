@@ -47,6 +47,10 @@ pub struct ActionsState {
     /// re-check and record write atomic against racing actions on a unit
     /// (e.g. a fast Accept-then-Send-Back double-click).
     action_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Where the target binaries live (issue #214): a patch retry loads
+    /// the Kuna engine from `target_dir/<binary>`. `None` means retries
+    /// refuse by name rather than guessing a path.
+    target_dir: Option<PathBuf>,
 }
 
 impl ActionsState {
@@ -54,12 +58,25 @@ impl ActionsState {
         Self {
             repo_path,
             action_lock: Arc::new(tokio::sync::Mutex::new(())),
+            target_dir: None,
         }
+    }
+
+    /// Set the directory the target binaries live in, so patch retries
+    /// can load the Kuna engine over `target_dir/<binary>`.
+    pub fn with_target_dir(mut self, target_dir: impl Into<PathBuf>) -> Self {
+        self.target_dir = Some(target_dir.into());
+        self
     }
 
     /// Returns the path to the repository.
     pub fn repo_path(&self) -> &Path {
         &self.repo_path
+    }
+
+    /// Where the target binaries live, for engine loads in patch retries.
+    pub fn target_dir(&self) -> Option<&Path> {
+        self.target_dir.as_deref()
     }
 
     /// Begins one review action on a unit: captures the unit's persisted
@@ -492,9 +509,19 @@ async fn request_patch_spawning(
     let attempt = next_branch.attempt;
     let branch_name = next_branch.name.clone();
     let branch_name_for_log = branch_name.clone();
+    let target_dir = state.target_dir().map(|p| p.to_path_buf());
 
     spawn_retry(Box::pin(async move {
-        if let Err(e) = run_patch_retry(&repo_path, &issue_str, &binary, &function, attempt).await {
+        if let Err(e) = run_patch_retry(
+            &repo_path,
+            target_dir.as_deref(),
+            &issue_str,
+            &binary,
+            &function,
+            attempt,
+        )
+        .await
+        {
             warn!("Patch retry failed for {branch_name_for_log}: {e}");
         }
     }));
@@ -518,16 +545,23 @@ async fn request_patch_spawning(
 /// commits the result to the next-attempt branch.
 async fn run_patch_retry(
     repo_path: &Path,
+    target_dir: Option<&Path>,
     _issue: &str,
     binary: &str,
     function: &str,
     attempt: u32,
 ) -> Result<(), anyhow::Error> {
-    // Build Ghidra client
-    let ghidra = calxgloss_ghidra::GhidraClient::new(
-        &std::env::var("GHIDRA_URL").unwrap_or_else(|_| "http://localhost:8080".to_string()),
-    )
-    .map_err(|e| anyhow::anyhow!("Ghidra client: {e}"))?;
+    // Kuna is the only analysis engine (issue #214): the scan source is
+    // loaded in-process from the target file, so a retry needs the target
+    // directory the binary lives in — refuse by name when the server was
+    // started without one rather than guessing a path.
+    let target_dir = target_dir.ok_or_else(|| {
+        anyhow::anyhow!(
+            "no target directory configured: this server was started without a              target_dir, so {binary} cannot be loaded for the patch retry"
+        )
+    })?;
+    let kuna = calxgloss_kuna::KunaSource::load(&target_dir.join(binary))
+        .map_err(|e| anyhow::anyhow!("Kuna engine: {e}"))?;
 
     let llm_url =
         std::env::var("LLM_URL").unwrap_or_else(|_| "http://localhost:11434/v1".to_string());
@@ -536,11 +570,11 @@ async fn run_patch_retry(
     let llm = calxgloss_llm::LlmClient::from_url(&llm_url, &llm_model)
         .map_err(|e| anyhow::anyhow!("LLM client: {e}"))?;
 
-    // Build the hallucination detector from Ghidra symbols and PAL APIs
-    // before creating the pipeline (which consumes the Ghidra client).
+    // Build the hallucination detector from engine symbols and PAL APIs
+    // before creating the pipeline (which consumes the scan source).
     let api_mappings = calxgloss_pal::ApiMappings::default();
-    let detector = calxgloss_translator::build_hallucination_detector(&ghidra, &api_mappings).await;
-    let pipeline = TranslationPipeline::new(ghidra, llm, api_mappings)
+    let detector = calxgloss_translator::build_hallucination_detector(&kuna, &api_mappings).await;
+    let pipeline = TranslationPipeline::new(kuna, llm, api_mappings)
         .with_workspace(repo_path.to_path_buf())
         .with_hallucination_detector(detector);
 

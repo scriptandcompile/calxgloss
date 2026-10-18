@@ -2,7 +2,7 @@
 //!
 //! [`StringInferenceEngine`] with `infer_structures()` runs the full
 //! collect → cluster → infer → score pipeline: literals come from the
-//! bridge's `list_strings` (regex filter plus quality filtering),
+//! seam's `strings()` read (regex filter plus quality filtering),
 //! cross-reference clustering groups them into candidate structs, and
 //! confidence scoring filters candidates against a configurable threshold.
 //!
@@ -14,7 +14,8 @@
 
 use crate::error::Result;
 use crate::types::{Confidence, FieldType, InferredField, InferredStruct, NameOrigin};
-use calxgloss_ghidra::{GhidraClient, GhidraError, ScanSource, StringLiteral};
+use calxgloss_ghidra::{EngineError, ScanSource, StringLiteral};
+use calxgloss_kuna::KunaSource;
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use tracing::{debug, info, warn};
@@ -385,10 +386,10 @@ fn score(cluster: &Cluster, origin: NameOrigin, clean_fields: usize, fields: usi
 /// A literal whose cross-references cannot be read simply fails to cluster,
 /// degrading one candidate. Anything else — transport, a reported server
 /// failure — is a broken run, because every later literal would hit it too.
-fn is_reference_miss(error: &GhidraError) -> bool {
+fn is_reference_miss(error: &EngineError) -> bool {
     matches!(
         error,
-        GhidraError::NotFound { .. } | GhidraError::Malformed { .. }
+        EngineError::NotFound { .. } | EngineError::Malformed { .. }
     )
 }
 
@@ -399,10 +400,10 @@ fn is_reference_miss(error: &GhidraError) -> bool {
 /// String-guided struct inference over the program's literals.
 ///
 /// The engine is generic over [`ScanSource`] so tests can drive it with
-/// canned responses; [`new`](Self::new) builds one over a live
-/// [`GhidraClient`].
+/// canned responses; [`new`](Self::new) builds one over a loaded
+/// [`KunaSource`].
 #[derive(Debug, Clone)]
-pub struct StringInferenceEngine<S = GhidraClient> {
+pub struct StringInferenceEngine<S = KunaSource> {
     source: S,
     filter: Option<String>,
     min_fields: usize,
@@ -411,10 +412,10 @@ pub struct StringInferenceEngine<S = GhidraClient> {
     pointer_size: u64,
 }
 
-impl StringInferenceEngine<GhidraClient> {
-    /// An engine over a live GhidraMCP client.
-    pub fn new(client: &GhidraClient) -> StringInferenceEngine<GhidraClient> {
-        Self::with_source(client.clone())
+impl StringInferenceEngine<KunaSource> {
+    /// An engine over a loaded Kuna program.
+    pub fn new(source: &KunaSource) -> StringInferenceEngine<KunaSource> {
+        Self::with_source(source.clone())
     }
 }
 
@@ -726,9 +727,8 @@ mod tests {
     impl ScanSource for MockSource {
         async fn strings(&self) -> GhidraResult<Vec<StringLiteral>> {
             if self.listing_failure {
-                return Err(GhidraError::Reported {
-                    status: Some(200),
-                    message: "Ghidra is busy".into(),
+                return Err(EngineError::Reported {
+                    message: "the engine is busy".into(),
                 });
             }
             Ok(self.literals.clone())
@@ -737,13 +737,12 @@ mod tests {
         async fn xrefs_to(&self, address: u64) -> GhidraResult<Vec<Xref>> {
             self.reads.lock().unwrap().push(address);
             if self.busy.contains(&address) {
-                return Err(GhidraError::Reported {
-                    status: Some(200),
-                    message: "Ghidra is busy".into(),
+                return Err(EngineError::Reported {
+                    message: "the engine is busy".into(),
                 });
             }
             if self.unreadable.contains(&address) {
-                return Err(GhidraError::NotFound {
+                return Err(EngineError::NotFound {
                     kind: "cross-references",
                     query: format!("{address:x}"),
                 });
@@ -756,7 +755,7 @@ mod tests {
         }
 
         async fn decompile(&self, name: &str) -> GhidraResult<DecompiledFunction> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "function",
                 query: name.to_string(),
             })
@@ -771,14 +770,14 @@ mod tests {
         }
 
         async fn struct_layout(&self, name: &str) -> GhidraResult<StructLayout> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "structure",
                 query: name.to_string(),
             })
         }
 
         async fn enum_values(&self, name: &str) -> GhidraResult<EnumDefinition> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "enumeration",
                 query: name.to_string(),
             })
@@ -801,7 +800,7 @@ mod tests {
         }
 
         async fn read_memory(&self, address: u64, _length: usize) -> GhidraResult<Vec<u8>> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "memory",
                 query: format!("{address:x}"),
             })
@@ -1109,7 +1108,7 @@ mod tests {
         let result = engine_over(source).infer_structures().await;
         assert!(matches!(
             result,
-            Err(TypesDbError::Ghidra(GhidraError::Reported { .. }))
+            Err(TypesDbError::Engine(EngineError::Reported { .. }))
         ));
     }
 
@@ -1121,7 +1120,7 @@ mod tests {
         let result = engine_over(source).infer_structures().await;
         assert!(matches!(
             result,
-            Err(TypesDbError::Ghidra(GhidraError::Reported { .. }))
+            Err(TypesDbError::Engine(EngineError::Reported { .. }))
         ));
     }
 

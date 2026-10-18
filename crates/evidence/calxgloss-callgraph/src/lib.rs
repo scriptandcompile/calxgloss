@@ -29,9 +29,11 @@
 //! use calxgloss_callgraph::{CallGraphBuilder, RootDetector, LeafDetector, CallGraphPersistor};
 //!
 //! # async fn example() -> anyhow::Result<()> {
-//! let ghidra = calxgloss_ghidra::GhidraClient::new("http://localhost:8080")?;
+//! let source = calxgloss_ghidra::PipelineSource::from(
+//!     calxgloss_kuna::KunaSource::load("eqmain.dll".as_ref())?,
+//! );
 //!
-//! let builder = CallGraphBuilder::new(ghidra, "eqmain.dll");
+//! let builder = CallGraphBuilder::new(source, "eqmain.dll");
 //! let graph = builder.build().await?;
 //!
 //! let root_detector = RootDetector::new();

@@ -1,5 +1,10 @@
 # GhidraMCP v6.0.0 — Endpoint Mapping & Record Formats
 
+> **Historical.** The Ghidra engine was retired on 2026-10-18 (issue #214,
+> ADR-0041): the HTTP client this document maps is deleted and Kuna is the
+> only analysis engine. Kept as a record of the bridge's wire format — the
+> parse scraper still recognizes these record shapes.
+
 Reference for the `calxgloss-ghidra` client port (P1 Phase 0a, completed
 2026-10-03; decision recorded in
 `docs/adr/0001-bethington-ghidra-mcp-bridge.md`). Use `GET /mcp/schema` on a

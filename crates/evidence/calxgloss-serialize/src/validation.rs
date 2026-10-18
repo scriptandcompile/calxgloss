@@ -32,7 +32,7 @@ use calxgloss_ghidra::DecompiledFunction;
 /// Cross-field validation detection over decompiled functions.
 ///
 /// The detector holds no configuration — the reading is a fixed shape
-/// rule over comparison lines — and no Ghidra client of its own; one
+/// rule over comparison lines — and no scan source of its own; one
 /// detector serves an entire scan and can be shared by reference
 /// across concurrent per-function passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

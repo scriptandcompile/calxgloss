@@ -240,7 +240,7 @@ pub struct CallbackDetection<'a> {
 /// [`add_pattern`](Self::add_pattern), and [`patterns`](Self::patterns)
 /// reports the set in configuration order, so two databases built the
 /// same way scan identically and results diff cleanly. The database
-/// holds no Ghidra client of its own and never writes back to the
+/// holds no scan source of its own and never writes back to the
 /// program; one database serves an entire scan and can be shared by
 /// reference across concurrent per-function passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -729,7 +729,7 @@ mod tests {
 
     #[test]
     fn caller_names_arrive_in_whatever_shape_the_call_graph_hands_them() {
-        // The call graph and Ghidra client spell names as `String` and
+        // Caller names arrive spelled as `String` and
         // `&str` alike; the match reads them the same way.
         let db = CallbackPatternDb::with_default_patterns();
         let owned = "qsort".to_string();

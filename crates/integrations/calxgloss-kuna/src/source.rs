@@ -7,8 +7,8 @@
 //! the program outright, requests arrive over an unbounded channel (whose
 //! sender is `Send + Sync`, so the seam's `&self` futures stay `Send`), and
 //! each answer rides a oneshot back. One handle loads exactly one target
-//! binary, on that one thread — the wrong-program failure the Ghidra path
-//! guards against is structurally impossible here.
+//! binary, on that one thread — a wrong-program mix-up is structurally
+//! impossible here.
 //!
 //! Every engine call runs inside `catch_unwind` on the engine thread: an
 //! upstream panic costs one named [`KunaError::EngineFault`], never a process
@@ -42,9 +42,8 @@
 //! The pass heartbeat and the decompile budgets (issue #211): a scan pass
 //! arms the source with [`begin_pass`](KunaSource::begin_pass), and while
 //! armed every completed decompile beats a throttled
-//! [`ProgressEvent::BatchProgress`] in the same shape the Ghidra client
-//! emits, so the web UI and logs see identical progress semantics whichever
-//! engine answers. Per-function instruction/time/memory budgets
+//! [`ProgressEvent::BatchProgress`] in a shape the web UI and logs already
+//! render, so progress semantics are identical whichever scan runs. Per-function instruction/time/memory budgets
 //! ([`KunaBudget`]) are armed at load; a function that trips one fails with
 //! the named [`KunaError::DecompileBudgetExceeded`] instead of hanging or
 //! exhausting the box.
@@ -292,8 +291,8 @@ struct SourceInner {
     entry: Option<u64>,
     num_symbols: usize,
     /// Armed by `begin_pass` while an analysis pass walks the program;
-    /// clones share it so every handle to one source beats as one — the
-    /// same shape the Ghidra client's heartbeat carries (issue #211).
+    /// clones share it so every handle to one source beats as one
+    /// (issue #211).
     heartbeat: Mutex<Option<Arc<Heartbeat>>>,
 }
 
@@ -307,8 +306,8 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
 /// decompile counts as one work item and beats a `BatchProgress` event,
 /// throttled to [`HEARTBEAT_INTERVAL`]. `list_functions` during the pass
 /// records the work list — its size is the total. Kuna decompiles by name,
-/// so the beat names the function the caller asked for directly; no
-/// address-to-name resolution is needed as the Ghidra client's needs.
+/// so the beat names the function the caller asked for directly —
+/// no address-to-name resolution is needed.
 #[derive(Debug)]
 struct Heartbeat {
     binary: BinaryIdentity,
@@ -433,8 +432,9 @@ impl KunaSource {
     ///
     /// While armed, every completed decompile beats a
     /// [`ProgressEvent::BatchProgress`] naming the pass and the function it
-    /// just pulled, in the same shape the Ghidra client emits — the web UI
-    /// and logs see identical progress semantics whichever engine answers.
+    /// just pulled, in a shape the web UI and logs
+    /// already render — progress semantics are identical whichever scan
+    /// runs.
     /// One pass at a time: a new `begin_pass` replaces any pass left armed
     /// by an error path that skipped [`end_pass`](Self::end_pass).
     pub fn begin_pass(&self, binary: &str, pass: &str, events: &TranslationEvents) {
@@ -455,16 +455,21 @@ impl KunaSource {
 
     /// Record the pass's work list: its size is the total the beats count
     /// against. `list_functions` notes it automatically during an armed
-    /// pass; the pipeline may also note the list it is walking itself.
-    pub(crate) fn note_worklist(&self, functions: &[KunaFunction]) {
+    /// pass; the read cache also notes the listing it served warm, so a
+    /// cached run's "n of m" keeps moving (issue #121).
+    pub fn note_worklist(&self, total: usize) {
         if let Some(hb) = self.active_heartbeat() {
-            hb.total.store(functions.len(), Ordering::Relaxed);
+            hb.total.store(total, Ordering::Relaxed);
         }
     }
 
     /// Count one completed decompile and beat if due: always for the first
     /// and last item, otherwise at most once per [`HEARTBEAT_INTERVAL`].
-    fn tick(&self, name: &str) {
+    ///
+    /// `decompile_function` ticks itself; the read cache calls this for a
+    /// body served warm, which never reaches the engine but is still a work
+    /// item the pass consumed (issue #121).
+    pub fn tick(&self, name: &str) {
         let Some(hb) = self.active_heartbeat() else {
             return;
         };
@@ -501,7 +506,7 @@ impl KunaSource {
         let (reply, answer) = oneshot::channel();
         self.send(Command::Functions(reply))?;
         let list = answer.await.map_err(|_| KunaError::EngineUnavailable)??;
-        self.note_worklist(&list);
+        self.note_worklist(list.len());
         Ok(list)
     }
 
@@ -1740,8 +1745,9 @@ mod tests {
             }
             other => panic!("expected an EngineFault, got {other:?}"),
         }
-        // The message names the fallback, like every other Kuna failure.
-        assert!(fault.to_string().contains("--engine ghidra"));
+        // The message says the panic was caught at the seam, so the
+        // process survives the engine's own bug.
+        assert!(fault.to_string().contains("caught at the engine seam"));
     }
 
     #[test]
@@ -1996,9 +2002,8 @@ mod tests {
 
     #[tokio::test]
     async fn heartbeat_beats_per_decompile_only_while_a_kuna_pass_is_active() {
-        // The same shape the Ghidra client's heartbeat test asserts: one
-        // beat per completed decompile inside the pass, resolved names,
-        // and nothing outside it.
+        // One beat per completed decompile inside the pass,
+        // resolved names, and nothing outside it.
         let (path, _) = fixture_bytes();
         let source = KunaSource::load(&path).expect("the fixture must load");
         let events = TranslationEvents::new(64);
@@ -2006,16 +2011,7 @@ mod tests {
         let names = calxgloss_testfixtures::EXPORT_NAMES;
 
         source.begin_pass("fixture_target.dll", "type inference", &events);
-        source.note_worklist(&[
-            KunaFunction {
-                name: names[0].into(),
-                address: 0,
-            },
-            KunaFunction {
-                name: names[1].into(),
-                address: 0,
-            },
-        ]);
+        source.note_worklist(2);
         source
             .decompile_function(names[0])
             .await
@@ -2091,8 +2087,8 @@ mod tests {
         }
         let message = error.to_string();
         assert!(
-            message.contains("[analysis]") && message.contains("--engine ghidra"),
-            "the message names the knob to raise and the fallback: {message}"
+            message.contains("[analysis]") && message.contains("raise the budget"),
+            "the message names the knob to raise: {message}"
         );
         // The rest of the run degrades past it, not into a hang: an
         // unbudgeted read still answers over the same source.

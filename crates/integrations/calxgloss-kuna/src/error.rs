@@ -2,17 +2,14 @@
 
 /// Why a Kuna engine operation failed.
 ///
-/// Every variant names what broke and, where the fallback matters, points at
-/// it: a Kuna failure under `--engine kuna` has to say that `--engine ghidra`
-/// is the working path, rather than surfacing an upstream backtrace.
+/// Every variant names what broke and, where the operator can act, says what
+/// to do — raise a budget, repair a directive file — rather than surfacing an
+/// upstream backtrace. Kuna is the only analysis engine (issue #214), so no
+/// variant points at another one.
 #[derive(Debug, thiserror::Error)]
 pub enum KunaError {
     /// A target binary could not be loaded by the Kuna engine.
-    #[error(
-        "the Kuna engine could not load {path}: {reason}\n\
-         the Kuna engine is a skeleton in this release; re-run with --engine ghidra \
-         for the full pipeline"
-    )]
+    #[error("the Kuna engine could not load {path}: {reason}")]
     LoadFailed {
         /// The target that failed to load.
         path: String,
@@ -22,11 +19,7 @@ pub enum KunaError {
 
     /// The embedded SLEIGH spec tree could not be unpacked to a writable
     /// cache directory, so no engine load can resolve a language.
-    #[error(
-        "the Kuna engine could not unpack its embedded SLEIGH specs: {reason}\n\
-         the Kuna engine is a skeleton in this release; re-run with --engine ghidra \
-         for the full pipeline"
-    )]
+    #[error("the Kuna engine could not unpack its embedded SLEIGH specs: {reason}")]
     SpecsUnavailable {
         /// Why every cache location was rejected.
         reason: String,
@@ -37,10 +30,7 @@ pub enum KunaError {
     /// The thread exits when the last [`KunaSource`](crate::source::KunaSource)
     /// handle drops, or after a fatal load failure; either way the caller
     /// holds a handle to a program that is no longer running.
-    #[error(
-        "the Kuna engine is no longer answering requests; its program thread has exited\n\
-         re-run with --engine ghidra for the full pipeline"
-    )]
+    #[error("the Kuna engine is no longer answering requests; its program thread has exited")]
     EngineUnavailable,
 
     /// No function in the loaded program carries the requested name.
@@ -58,8 +48,7 @@ pub enum KunaError {
     /// named failure — never a process abort (issue #206).
     #[error(
         "the Kuna engine panicked in `{call}`: {panic}\n\
-         the panic was caught at the engine seam; re-run with --engine ghidra \
-         for the full pipeline"
+         the panic was caught at the engine seam"
     )]
     EngineFault {
         /// The engine call that panicked.
@@ -73,10 +62,7 @@ pub enum KunaError {
     /// The Kuna source answers these seam reads from the same file the
     /// engine loaded, through the `object` crate; a file the engine parsed
     /// but these tables cannot is named here rather than answered empty.
-    #[error(
-        "the Kuna engine could not read the container tables of {path}: {reason}\n\
-         re-run with --engine ghidra for the full pipeline"
-    )]
+    #[error("the Kuna engine could not read the container tables of {path}: {reason}")]
     TablesUnreadable {
         /// The target whose tables were read.
         path: String,
@@ -85,10 +71,7 @@ pub enum KunaError {
     },
 
     /// The engine refused to decompile one function it knows exists.
-    #[error(
-        "the Kuna engine could not decompile '{name}': {reason}\n\
-         re-run with --engine ghidra for the full pipeline"
-    )]
+    #[error("the Kuna engine could not decompile '{name}': {reason}")]
     DecompileFailed {
         /// The function the decompile named.
         name: String,
@@ -106,8 +89,7 @@ pub enum KunaError {
     /// run to one obfuscated body.
     #[error(
         "the Kuna engine stopped decompiling '{name}': the {budget} budget tripped ({reason})\n\
-         raise the budget in the [analysis] config block, or re-run with --engine ghidra \
-         for the full pipeline"
+         raise the budget in the [analysis] config block"
     )]
     DecompileBudgetExceeded {
         /// The function the decompile named.
@@ -126,7 +108,7 @@ pub enum KunaError {
     /// refusal Kuna's CLI makes for `--max-fn-memory`.
     #[error(
         "the Kuna engine cannot enforce the {knob} budget on this platform: {reason}\n\
-         drop the setting, or re-run with --engine ghidra for the full pipeline"
+         drop the setting"
     )]
     BudgetUnsupported {
         /// The config knob that could not be armed.

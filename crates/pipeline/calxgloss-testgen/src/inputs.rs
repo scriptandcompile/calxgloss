@@ -99,9 +99,9 @@ impl DisassemblyEdgeCases {
     /// - `cmp reg, -1` — negative one checks
     /// - `cmp reg, 256` / `cmp reg, 65536` — common boundary values
     ///
-    /// Both spellings read: the lowercase objdump-style text GhidraMCP
-    /// serves (`cmp eax, 256`) and Kuna's uppercase SLEIGH listing with
-    /// `0x` hex immediates (`CMP EAX,0x64`).
+    /// Both spellings read: the lowercase objdump-style spelling the
+    /// retired bridge used to serve (`cmp eax, 256`) and the engine's
+    /// uppercase SLEIGH listing with `0x` hex immediates (`CMP EAX,0x64`).
     ///
     /// # Arguments
     ///
@@ -722,8 +722,8 @@ mod tests {
 
     #[test]
     fn ghidra_mcp_style_lowercase_text_still_reads() {
-        // The lowercase objdump-style spelling GhidraMCP serves — the
-        // Kuna additions must not change what this yields.
+        // The lowercase objdump-style spelling the retired bridge served —
+        // the Kuna additions must not change what this yields.
         let cases = DisassemblyEdgeCases::from_disassembly(
             "cmp eax, 0\nje zero_handler\ncmp ecx, 256\nja out_of_bounds\ncmp edx, -1\ntest eax, eax",
         );

@@ -9,9 +9,9 @@ use thiserror::Error;
 /// Errors that can occur during type database operations.
 #[derive(Debug, Error)]
 pub enum TypesDbError {
-    /// A GhidraMCP request failed.
-    #[error("GhidraMCP error: {0}")]
-    Ghidra(#[from] calxgloss_ghidra::GhidraError),
+    /// An engine read through the analysis seam failed.
+    #[error("engine error: {0}")]
+    Engine(#[from] calxgloss_ghidra::EngineError),
 
     /// An I/O error occurred while reading or writing the type database.
     #[error("I/O error: {0}")]

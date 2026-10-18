@@ -13,12 +13,12 @@
 //!   and a rescan replaces the cached document.
 //!
 //! The fake program implements [`ScanSource`], so the whole flow runs
-//! without a Ghidra server.
+//! without an external server.
 
 use std::collections::HashMap;
 
 use calxgloss_ghidra::{
-    DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
+    DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
     NewStructField, Result, StringLiteral, StructLayout, Symbol, TypeWriteSource, Xref,
 };
 use calxgloss_prompts::TypeInfo;
@@ -84,7 +84,7 @@ impl ScanSource for FakeProgram {
         self.bodies
             .get(name)
             .cloned()
-            .ok_or_else(|| GhidraError::NotFound {
+            .ok_or_else(|| EngineError::NotFound {
                 kind: "function",
                 query: name.to_string(),
             })
@@ -109,14 +109,14 @@ impl ScanSource for FakeProgram {
     }
 
     async fn struct_layout(&self, name: &str) -> Result<StructLayout> {
-        Err(GhidraError::NotFound {
+        Err(EngineError::NotFound {
             kind: "struct",
             query: name.to_string(),
         })
     }
 
     async fn enum_values(&self, name: &str) -> Result<EnumDefinition> {
-        Err(GhidraError::NotFound {
+        Err(EngineError::NotFound {
             kind: "enum",
             query: name.to_string(),
         })
@@ -589,7 +589,7 @@ async fn results_for_two_binaries_stay_independent() {
 // ------------------------------------------------------------
 
 /// A writer recording every call it receives, so the write-back pass can
-/// be checked without a Ghidra server.
+/// be checked without an external server.
 #[derive(Default)]
 struct RecordingWriter {
     calls: std::sync::Mutex<Vec<String>>,
@@ -652,7 +652,7 @@ impl TypeWriteSource for RecordingWriter {
 #[tokio::test]
 async fn a_persisted_scan_reads_back_and_writes_into_the_program() {
     // The full --write-back shape: scan, persist, read the document back,
-    // and apply it through the write seam — no Ghidra server anywhere.
+    // and apply it through the write seam — no external server anywhere.
     let workspace = TempDir::new().unwrap();
     let program = program();
     let result = TypeInferEngine::with_source(program.clone())

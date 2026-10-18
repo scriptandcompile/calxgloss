@@ -8,7 +8,6 @@ repository.workspace = true
 
 [dependencies]
 calxgloss-types = { path = "../../shared/calxgloss-types" }
-calxgloss-ghidra = { path = "../../integrations/calxgloss-ghidra" }
 goblin = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }

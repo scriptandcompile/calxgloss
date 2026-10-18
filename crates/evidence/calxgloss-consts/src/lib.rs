@@ -1,7 +1,7 @@
 //! Constant and enum recovery for calxgloss.
 //!
 //! Analyzes bitflag usage, enumerated dispatch, and repeated magic
-//! numbers within each function of an open Ghidra program. Results are
+//! numbers within each function of a loaded program. Results are
 //! injected as structured CONSTANTS sections that name the Rust shape
 //! the translation should aim at — a `bitflags!`-style struct for a
 //! flag-bit group, an `enum` for a contiguous switch run, a named
@@ -42,7 +42,7 @@
 //!   constants — deterministic, naming only what the findings support,
 //!   and never read back (ADR-0013).
 //! - [`engine`] - Scan orchestration: `ConstEngine` runs the three
-//!   detectors over one open Ghidra program through a `ScanSource`
+//!   detectors over one loaded program through a `ScanSource`
 //!   (function listing + decompile-by-name), one sequential pass that
 //!   decompiles each function exactly once and keeps the findings in
 //!   scan order, then merges the scan's own bitflag groups into

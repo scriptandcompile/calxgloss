@@ -117,7 +117,7 @@ impl StringSignature {
 /// with [`add_signature`](Self::add_signature), and
 /// [`signatures`](Self::signatures) reports the set in configuration
 /// order, so two engines built the same way scan identically and
-/// results diff cleanly. The engine holds no Ghidra client and never
+/// results diff cleanly. The engine holds no scan source and never
 /// writes back to the program; one engine serves an entire scan and
 /// can be shared by reference across concurrent per-function passes,
 /// each handed that function's body beside the program's string

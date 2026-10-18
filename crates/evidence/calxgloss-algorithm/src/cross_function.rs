@@ -8,7 +8,7 @@
 //! fourth detector: it derives the program's call map from the bodies the
 //! scan already decompiles (the program-function names appearing in each
 //! fetched body) and matches [`CorrelationRelationship`] records against
-//! it, so the whole pass costs zero extra Ghidra round trips — the same
+//! it, so the whole pass costs zero extra engine reads — the same
 //! spirit as typeinfer's shared caller-body cache. Its standard score
 //! lives beside the other detectors' in the
 //! [`confidence`](crate::confidence) module.
@@ -147,7 +147,7 @@ impl CorrelationRelationship {
 /// builds a detector over [`default_relationships`]. The set's
 /// configuration order is scan order, the way every detector's has been:
 /// a function fitting two relationships reports both, first the one
-/// configured first. The detector holds no Ghidra client and never reads
+/// configured first. The detector holds no scan source and never reads
 /// the program itself — [`detect_correlations`](Self::detect_correlations)
 /// is handed the bodies the scan already fetched — so it adds no round
 /// trips and one detector serves a whole scan.

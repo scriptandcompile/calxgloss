@@ -40,7 +40,7 @@ use calxgloss_types::{closing_paren, is_ident_byte, line_at, skip_string, skip_w
 /// handler-array spellings decompiled binaries most often use; a
 /// program that files its dispatch under a different name configures
 /// it through [`with_names`](Self::with_names). The detector holds no
-/// Ghidra client of its own and never writes back to the program; one
+/// scan source of its own and never writes back to the program; one
 /// detector serves an entire scan and can be shared by reference
 /// across concurrent per-function passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

@@ -2,7 +2,7 @@
 
 use tracing::debug;
 
-use crate::schema::{AnalysisSection, FileConfig, GhidraSection, LlmSection};
+use crate::schema::{AnalysisSection, FileConfig, LlmSection};
 
 /// Which layer a resolved value came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,19 +66,6 @@ impl Layers {
             env: FileConfig {
                 target_dir: var("CALXGLOSS_TARGET_DIR"),
                 workspace: var("CALXGLOSS_WORKSPACE"),
-                ghidra: GhidraSection {
-                    url: var("CALXGLOSS_GHIDRA_URL"),
-                    api_key: var("CALXGLOSS_GHIDRA_API_KEY"),
-                    install_dir: var("CALXGLOSS_GHIDRA_INSTALL_DIR"),
-                    auto_start: bool_var("CALXGLOSS_GHIDRA_AUTO_START"),
-                    headless: var("CALXGLOSS_GHIDRA_HEADLESS"),
-                    project: var("CALXGLOSS_GHIDRA_PROJECT"),
-                    min_version: var("CALXGLOSS_GHIDRA_MIN_VERSION"),
-                    start_timeout_secs: u64_var("CALXGLOSS_GHIDRA_START_TIMEOUT_SECS"),
-                    auto_install: bool_var("CALXGLOSS_GHIDRA_AUTO_INSTALL"),
-                    pin_version: var("CALXGLOSS_GHIDRA_PIN_VERSION"),
-                    java_home: var("CALXGLOSS_GHIDRA_JAVA_HOME"),
-                },
                 llm: LlmSection {
                     url: var("CALXGLOSS_LLM_URL"),
                     model: var("CALXGLOSS_LLM_MODEL"),
@@ -89,9 +76,8 @@ impl Layers {
                     strategy: var("CALXGLOSS_LLM_STRATEGY"),
                 },
                 analysis: AnalysisSection {
-                    engine: var("CALXGLOSS_ANALYSIS_ENGINE"),
-                    // Budgets are file-only: they belong with the engine choice
-                    // in the config file, not the environment.
+                    // Budgets are file-only: they belong in the config file,
+                    // not the environment.
                     max_fn_instructions: None,
                     max_fn_seconds: None,
                     max_fn_memory_mib: None,
@@ -158,27 +144,8 @@ fn u32_var(name: &str) -> Option<u32> {
     numeric_var!(name, u32)
 }
 
-fn u64_var(name: &str) -> Option<u64> {
-    numeric_var!(name, u64)
-}
-
 fn f32_var(name: &str) -> Option<f32> {
     numeric_var!(name, f32)
-}
-
-/// Read a boolean environment variable: `true`/`false`, any case.
-///
-/// Like the numeric variables, a value that does not parse is skipped rather
-/// than fatal — a typo in a shell profile degrades to the next layer.
-fn bool_var(name: &str) -> Option<bool> {
-    var(name).and_then(|v| match v.trim().to_ascii_lowercase().as_str() {
-        "true" => Some(true),
-        "false" => Some(false),
-        _ => {
-            debug!(variable = name, value = %v, "Ignoring unparseable environment variable");
-            None
-        }
-    })
 }
 
 #[cfg(test)]
@@ -252,16 +219,12 @@ mod tests {
     }
 
     #[test]
-    fn test_reads_both_sections() {
+    fn test_reads_the_llm_section() {
         let dir = tempfile::tempdir().unwrap();
         let path = write(
             dir.path(),
             "c.toml",
             r#"
-[ghidra]
-url = "http://10.0.0.5:8080"
-install_dir = "/opt/ghidra_12.1.2_PUBLIC"
-
 [llm]
 url = "http://10.0.0.6:1919/v1"
 model = "some-model"
@@ -271,11 +234,6 @@ max_retries = 5
 "#,
         );
         let c = load(Some(&path)).unwrap().file;
-        assert_eq!(c.ghidra.url.as_deref(), Some("http://10.0.0.5:8080"));
-        assert_eq!(
-            c.ghidra.install_dir.as_deref(),
-            Some("/opt/ghidra_12.1.2_PUBLIC")
-        );
         assert_eq!(c.llm.url.as_deref(), Some("http://10.0.0.6:1919/v1"));
         assert_eq!(c.llm.model.as_deref(), Some("some-model"));
         assert_eq!(c.llm.context_window, Some(4096));
@@ -284,41 +242,41 @@ max_retries = 5
     }
 
     #[test]
-    fn test_the_lifecycle_keys_come_from_the_file_layer() {
+    fn test_a_stale_ghidra_section_is_refused_by_name() {
+        // Issue #214: Kuna is the only analysis engine. A leftover [ghidra]
+        // block is an unknown section — the parse error names it, and the
+        // printed example shows the file that replaces it.
         let dir = tempfile::tempdir().unwrap();
         let path = write(
             dir.path(),
             "c.toml",
             r#"
 [ghidra]
-auto_start = false
-headless = "always"
-project = "/run/eq/ghidra/EverQuest.gpr"
-min_version = "12.1"
-start_timeout_secs = 120
-auto_install = true
-pin_version = "12.1.2"
-java_home = "/usr/lib/jvm/java-21"
+url = "http://10.0.0.5:8080"
+install_dir = "/opt/ghidra_12.1.2_PUBLIC"
 "#,
         );
-        let c = load(Some(&path)).unwrap().file;
-        assert_eq!(c.ghidra.auto_start, Some(false));
-        assert_eq!(c.ghidra.headless.as_deref(), Some("always"));
-        assert_eq!(
-            c.ghidra.project.as_deref(),
-            Some("/run/eq/ghidra/EverQuest.gpr")
+        let err = load(Some(&path)).unwrap_err();
+        let ConfigError::Invalid {
+            problem, expected, ..
+        } = err
+        else {
+            panic!("expected an invalid-config error, got {err:?}");
+        };
+        assert!(
+            problem.contains("ghidra"),
+            "problem should name the stale section: {problem}"
         );
-        assert_eq!(c.ghidra.min_version.as_deref(), Some("12.1"));
-        assert_eq!(c.ghidra.start_timeout_secs, Some(120));
-        assert_eq!(c.ghidra.auto_install, Some(true));
-        assert_eq!(c.ghidra.pin_version.as_deref(), Some("12.1.2"));
-        assert_eq!(c.ghidra.java_home.as_deref(), Some("/usr/lib/jvm/java-21"));
+        assert!(
+            expected.contains("[llm]"),
+            "the example should show the valid file"
+        );
     }
 
     #[test]
-    fn test_an_unknown_lifecycle_key_is_still_rejected() {
-        // The new keys must not loosen the deny list: a near-miss like
-        // `autostart` is a misconfiguration, not something to ignore.
+    fn test_a_stale_ghidra_key_is_refused_by_name() {
+        // A near-miss like `autostart` inside a stale block is also refused,
+        // naming the offending key.
         let dir = tempfile::tempdir().unwrap();
         let path = write(dir.path(), "c.toml", "[ghidra]\nautostart = false\n");
         assert!(matches!(
@@ -328,54 +286,18 @@ java_home = "/usr/lib/jvm/java-21"
     }
 
     #[test]
-    fn test_a_wrongly_typed_lifecycle_value_is_rejected() {
-        // `auto_start = "false"` is a string, not a bool — coercing it would
-        // hide the mistake, like the quoted context_window case.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write(dir.path(), "c.toml", "[ghidra]\nauto_start = \"false\"\n");
-        assert!(matches!(
-            load(Some(&path)),
-            Err(ConfigError::Invalid { .. })
-        ));
-    }
-
-    #[test]
     #[serial_test::serial]
-    fn test_the_lifecycle_env_vars_reach_the_env_layer() {
+    fn test_the_ghidra_env_vars_are_no_longer_read() {
+        // Issue #214: the CALXGLOSS_GHIDRA_* variables are gone; setting one
+        // changes nothing.
         let mut guard = EnvGuard::new();
+        guard.set("CALXGLOSS_GHIDRA_URL", Some("http://10.0.0.5:8080".into()));
         guard.set("CALXGLOSS_GHIDRA_AUTO_START", Some("false".into()));
-        guard.set("CALXGLOSS_GHIDRA_HEADLESS", Some("never".into()));
-        guard.set(
-            "CALXGLOSS_GHIDRA_PROJECT",
-            Some("/run/eq/EverQuest.gpr".into()),
-        );
-        guard.set("CALXGLOSS_GHIDRA_MIN_VERSION", Some("12.1".into()));
-        guard.set("CALXGLOSS_GHIDRA_START_TIMEOUT_SECS", Some("junk".into()));
-        guard.set("CALXGLOSS_GHIDRA_AUTO_INSTALL", Some("true".into()));
-        guard.set("CALXGLOSS_GHIDRA_PIN_VERSION", Some("12.1.2".into()));
-        guard.set(
-            "CALXGLOSS_GHIDRA_JAVA_HOME",
-            Some("/usr/lib/jvm/java-21".into()),
-        );
         let layers = Layers::from_env();
         // Guard drops and restores the env here.
         drop(guard);
 
-        assert_eq!(layers.env.ghidra.auto_start, Some(false));
-        assert_eq!(layers.env.ghidra.headless.as_deref(), Some("never"));
-        assert_eq!(
-            layers.env.ghidra.project.as_deref(),
-            Some("/run/eq/EverQuest.gpr")
-        );
-        assert_eq!(layers.env.ghidra.min_version.as_deref(), Some("12.1"));
-        // An unparseable number is skipped, like every other numeric var.
-        assert_eq!(layers.env.ghidra.start_timeout_secs, None);
-        assert_eq!(layers.env.ghidra.auto_install, Some(true));
-        assert_eq!(layers.env.ghidra.pin_version.as_deref(), Some("12.1.2"));
-        assert_eq!(
-            layers.env.ghidra.java_home.as_deref(),
-            Some("/usr/lib/jvm/java-21")
-        );
+        assert_eq!(layers.env, FileConfig::default());
     }
 
     #[test]
@@ -387,7 +309,6 @@ java_home = "/usr/lib/jvm/java-21"
         let c = load(Some(&path)).unwrap().file;
         assert_eq!(c.llm.model.as_deref(), Some("m"));
         assert_eq!(c.llm.url, None);
-        assert_eq!(c.ghidra.url, None);
     }
 
     #[test]
@@ -420,11 +341,26 @@ java_home = "/usr/lib/jvm/java-21"
     }
 
     #[test]
-    fn test_the_analysis_engine_key_comes_from_the_file_layer() {
+    fn test_a_stale_analysis_engine_key_is_refused_by_name() {
+        // Issue #214: the engine is no longer a choice; a leftover
+        // `engine = ` line is an unknown key, refused by name.
         let dir = tempfile::tempdir().unwrap();
         let path = write(dir.path(), "c.toml", "[analysis]\nengine = \"kuna\"\n");
-        let c = load(Some(&path)).unwrap().file;
-        assert_eq!(c.analysis.engine.as_deref(), Some("kuna"));
+        let err = load(Some(&path)).unwrap_err();
+        let ConfigError::Invalid {
+            problem, expected, ..
+        } = err
+        else {
+            panic!("expected an invalid-config error, got {err:?}");
+        };
+        assert!(
+            problem.contains("engine"),
+            "problem should name the stale key: {problem}"
+        );
+        assert!(
+            expected.contains("[analysis]"),
+            "the example should show the valid file"
+        );
     }
 
     #[test]
@@ -466,24 +402,16 @@ java_home = "/usr/lib/jvm/java-21"
     }
 
     #[test]
-    fn test_a_wrongly_typed_analysis_engine_is_rejected() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write(dir.path(), "c.toml", "[analysis]\nengine = 1\n");
-        assert!(matches!(
-            load(Some(&path)),
-            Err(ConfigError::Invalid { .. })
-        ));
-    }
-
-    #[test]
     #[serial_test::serial]
-    fn test_the_analysis_engine_env_var_reaches_the_env_layer() {
+    fn test_the_analysis_engine_env_var_is_no_longer_read() {
+        // Issue #214: CALXGLOSS_ANALYSIS_ENGINE is gone; setting it changes
+        // nothing.
         let mut guard = EnvGuard::new();
         guard.set("CALXGLOSS_ANALYSIS_ENGINE", Some("kuna".into()));
         let layers = Layers::from_env();
         // Guard drops and restores the env here.
         drop(guard);
-        assert_eq!(layers.env.analysis.engine.as_deref(), Some("kuna"));
+        assert_eq!(layers.env, FileConfig::default());
     }
 
     #[test]
@@ -648,9 +576,5 @@ java_home = "/usr/lib/jvm/java-21"
         use EXAMPLE;
         let parsed: FileConfig = toml::from_str(EXAMPLE).expect("EXAMPLE must parse");
         assert_eq!(parsed.llm.model.as_deref(), Some("Qwen3.6-35B-A3B-FP8"));
-        assert_eq!(parsed.ghidra.url.as_deref(), Some("http://127.0.0.1:8080"));
-        // The example names the engine key commented-out: the built-in default
-        // stays `ghidra`, so the file must not pre-commit a reader to kuna.
-        assert_eq!(parsed.analysis.engine, None);
     }
 }

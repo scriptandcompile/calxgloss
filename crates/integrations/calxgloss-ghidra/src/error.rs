@@ -1,313 +1,118 @@
-//! Recognising failure in GhidraMCP's responses.
+//! The seam's error vocabulary — the failure facts every engine's reads fold into.
 //!
-//! The server reports most failures as `200 OK` with an explanation in the
-//! body — either a plain-text line or, on the 6.x bridge, a JSON object like
-//! `{"error":"No function found for 1"}` — so a client that trusts the status
-//! code silently accepts error text as data. Every response therefore goes
-//! through [`classify`] before its content is parsed.
-//!
-//! The recognised messages are the ones the server actually emits, taken from
-//! the Ghidra plugin's string constants. A body that is not recognised is
-//! treated as content, not an error: a newly worded message should surface as
-//! odd data for a human to read rather than as a spurious failure.
+//! Kuna is the only analysis engine (issue #214, ADR-0041), and its named
+//! failures are folded into this vocabulary at the seam (ADR-0039's fold): a
+//! missing function, type, or byte range is [`EngineError::NotFound`] and a
+//! kind mismatch [`EngineError::Malformed`] — the same facts the old Ghidra
+//! bridge reported, so layout probes and retry logic branch on one vocabulary
+//! whichever engine answers. Every other engine failure arrives as
+//! [`EngineError::Reported`] carrying the engine's own self-explaining message.
 
-/// Body prefixes the server sends instead of a result.
-///
-/// Matched case-insensitively against the trimmed body's start, so a message
-/// that gains detail later still matches.
-const SERVER_ERROR_PREFIXES: &[&str] = &[
-    // Missing or unusable parameters.
-    "Address is required",
-    "Function name is required",
-    "Function address is required",
-    "Function prototype is required",
-    "Search term is required",
-    "Program name is required",
-    "Error decoding URL parameter",
-    // Nothing at the requested location.
-    "Function not found",
-    "No function found at address",
-    "No function found at or containing address",
-    "No function found for",
-    "No function at current location",
-    "No program found",
-    "No functions matching",
-    "No context found for request",
-    // The operation itself failed.
-    "Error decompiling function",
-    "Error disassembling function",
-    "Error getting function",
-    "Error getting function references",
-    "Error getting references from address",
-    "Error getting references to address",
-    "Error applying function signature",
-    "Error renaming function",
-    "Error setting function prototype",
-    "Error setting variable type",
-    "Base type not found",
-    // Type write-back (the v6.0.0 write endpoints answer these as prose).
-    // `Structure not found: …` is deliberately absent: the read side turns
-    // that sentinel into `NotFound` itself, and the write side mirrors it.
-    "Failed to set function prototype",
-    "Structure name is required",
-    "Fields JSON is required",
-    "fields parameter must be a JSON array",
-    "No valid fields parsed",
-    "Unknown field type",
-    "Structure with name",
-    "Enumeration name is required",
-    "Values JSON is required",
-    "Invalid size",
-    "No valid enum values could be parsed",
-    "Enumeration with name",
-    "Typedef name is required",
-    "Base type is required",
-    "Could not resolve base type",
-    "Field name is required",
-    "Field type is required",
-    "Field data type not found",
-    "Error adding struct field",
-    "Error creating enumeration",
-    "Error parsing values JSON",
-];
+use thiserror::Error;
 
-/// What a response turned out to be.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Classification<'a> {
-    /// The body is a result.
-    Content,
-    /// The body is the server explaining a failure.
-    Failure(&'a str),
-    /// The body is the server explaining a failure, prefixed by a status code.
-    /// This is the shape the MCP bridge produces when it forwards an error.
-    FailureWithStatus(u16, &'a str),
-    /// The body could not be understood at all.
-    Unrecognised(&'a str),
+/// Errors from the scan seam, whichever engine answers the reads.
+#[derive(Debug, Error)]
+pub enum EngineError {
+    /// The engine answered, and its answer was an explanation rather than a
+    /// result.
+    ///
+    /// The message is the engine's own — Kuna's failures are named and
+    /// self-explaining, so this variant usually carries the whole diagnosis.
+    #[error("the engine reported an error: {message}")]
+    Reported { message: String },
+
+    /// Nothing in the loaded program matched the request.
+    #[error("the engine has no {kind} matching '{query}'")]
+    NotFound { kind: &'static str, query: String },
+
+    /// An answer was a result but did not have the shape the read promises.
+    #[error("could not read {kind} from the engine's answer: {detail}")]
+    Malformed { kind: &'static str, detail: String },
 }
 
-/// Decide whether a response body is a result or an error message.
+/// The result type every seam read answers with.
+pub type Result<T> = std::result::Result<T, EngineError>;
+
+/// Fold a Kuna engine failure into the seam's error vocabulary (ADR-0039).
 ///
-/// This is the crate's load-bearing assumption about the server: the status code
-/// is not enough, and a body must be inspected before it is trusted.
-pub fn classify(body: &str) -> Classification<'_> {
-    let trimmed = body.trim();
-
-    // A 6.x-bridge failure: `{"error":"No function found for 1"}`, sent with
-    // status 200 like everything else.
-    if let Some(message) = json_error_message(trimmed) {
-        return Classification::Failure(message);
-    }
-
-    // A bridge-shaped failure: `Error 404: No context found for request`.
-    if let Some(rest) = trimmed.strip_prefix("Error ")
-        && let Some((code, message)) = rest.split_once(':')
-        && let Ok(status) = code.trim().parse::<u16>()
-    {
-        return Classification::FailureWithStatus(status, message.trim());
-    }
-
-    // A transport-level failure the bridge could not even attempt.
-    if trimmed.starts_with("Request failed:") {
-        return Classification::Failure(trimmed);
-    }
-
-    for prefix in SERVER_ERROR_PREFIXES {
-        if starts_with_ignore_ascii_case(trimmed, prefix) {
-            return Classification::Failure(trimmed);
+/// A missing function or type is the same fact in the same shape — consumers
+/// already branch on [`NotFound`](Self::NotFound) for a bad name, and the
+/// typesdb scanner's layout probes read a kind mismatch as
+/// [`Malformed`](Self::Malformed). Every other Kuna failure is already a
+/// named, self-explaining message, so it rides the seam as a
+/// [`Reported`](Self::Reported) explanation.
+impl From<calxgloss_kuna::error::KunaError> for EngineError {
+    fn from(error: calxgloss_kuna::error::KunaError) -> Self {
+        match error {
+            calxgloss_kuna::error::KunaError::FunctionNotFound { name } => EngineError::NotFound {
+                kind: "function",
+                query: name,
+            },
+            calxgloss_kuna::error::KunaError::TypeNotFound { name } => EngineError::NotFound {
+                kind: "type",
+                query: name,
+            },
+            calxgloss_kuna::error::KunaError::NotAStruct { name } => EngineError::Malformed {
+                kind: "structure layout",
+                detail: format!("the Kuna engine's type manager has no structure named '{name}'"),
+            },
+            calxgloss_kuna::error::KunaError::NotAnEnum { name } => EngineError::Malformed {
+                kind: "enumeration",
+                detail: format!("the Kuna engine's type manager has no enumeration named '{name}'"),
+            },
+            calxgloss_kuna::error::KunaError::MemoryUnmapped { address, length } => {
+                EngineError::NotFound {
+                    kind: "memory",
+                    query: format!("{address:#x} ({length} bytes)"),
+                }
+            }
+            other => EngineError::Reported {
+                message: other.to_string(),
+            },
         }
     }
-
-    // An empty body is not a result. Treating it as one would let a silently
-    // blank response read as "no such function", which is a different claim.
-    if trimmed.is_empty() {
-        return Classification::Unrecognised(trimmed);
-    }
-
-    Classification::Content
-}
-
-/// Whether `text` starts with `prefix`, ignoring ASCII case.
-fn starts_with_ignore_ascii_case(text: &str, prefix: &str) -> bool {
-    text.len() >= prefix.len() && text[..prefix.len()].eq_ignore_ascii_case(prefix)
-}
-
-/// Extract the message from a JSON error body, if the body is one.
-///
-/// The 6.x bridge answers failures with `{"error":"..."}`. The scan is textual
-/// rather than a full parse because the result borrows from the body, and an
-/// object that merely *contains* an `error` key deeper inside is content, not a
-/// failure — only a top-level `error` string counts.
-fn json_error_message(body: &str) -> Option<&str> {
-    let rest = body.strip_prefix('{')?.trim_start();
-    let rest = rest.strip_prefix("\"error\"")?.trim_start();
-    let rest = rest.strip_prefix(':')?.trim_start();
-    let rest = rest.strip_prefix('"')?;
-    // Read to the closing quote, stepping over `\"` escapes so an escaped
-    // quote inside the message cannot end it early.
-    let bytes = rest.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => i += 2,
-            b'"' => return Some(&rest[..i]),
-            _ => i += 1,
-        }
-    }
-    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use calxgloss_kuna::error::KunaError;
 
     #[test]
-    fn test_recognises_real_server_messages() {
-        for body in [
-            "Address is required",
-            "Function not found",
-            "No function found at or containing address 0xdeadbeef",
-            "No functions matching 'zzz'",
-            "Error decompiling function: boom",
-            "Error getting references to address: boom",
-        ] {
-            assert!(
-                matches!(classify(body), Classification::Failure(_)),
-                "should be a failure: {body:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_recognises_bridge_shaped_failures() {
-        assert_eq!(
-            classify("Error 404: <h1>404 Not Found</h1>No context found for request"),
-            Classification::FailureWithStatus(
-                404,
-                "<h1>404 Not Found</h1>No context found for request"
-            )
-        );
+    fn a_kuna_miss_folds_into_a_named_not_found() {
+        let err = EngineError::from(KunaError::FunctionNotFound {
+            name: "FUN_18003e750".into(),
+        });
         assert!(matches!(
-            classify("Request failed: Connection refused"),
-            Classification::Failure(_)
+            err,
+            EngineError::NotFound {
+                kind: "function",
+                ..
+            }
         ));
-    }
-
-    #[test]
-    fn test_recognises_json_shaped_failures() {
-        // The 6.x bridge answers failures as `200 OK` with `{"error": "..."}`.
-        assert_eq!(
-            classify("{\"error\":\"No function found for 1\"}"),
-            Classification::Failure("No function found for 1")
-        );
-        assert_eq!(
-            classify(" {\"error\" : \"Search term is required\"} "),
-            Classification::Failure("Search term is required")
-        );
-        // An escaped quote must not end the message early.
-        assert_eq!(
-            classify("{\"error\":\"bad \\\"name\\\"\"}"),
-            Classification::Failure("bad \\\"name\\\"")
+        assert!(
+            err.to_string().contains("FUN_18003e750"),
+            "the miss names what was asked for: {err}"
         );
     }
 
     #[test]
-    fn test_json_results_are_not_mistaken_for_failures() {
-        // These are real 6.x-bridge result bodies; the `error` scan must only
-        // fire on a top-level `error` key.
-        for body in [
-            "{\"function_count\":4587,\"program\":\"eqmain.dll\"}",
-            "{\"address\":\"1800e2110\",\"program\":\"/eqmain.dll\"}",
-            "{\"success\":true,\"switched_to\":\"eqmain.dll\"}",
-            "[{\"name\":\"Ordinal_7\",\"address\":\"EXTERNAL:00000001\"}]",
-        ] {
-            assert_eq!(
-                classify(body),
-                Classification::Content,
-                "should be content: {body:?}"
-            );
-        }
+    fn a_kuna_kind_mismatch_folds_into_malformed() {
+        let err = EngineError::from(KunaError::NotAStruct {
+            name: "COLOR".into(),
+        });
+        assert!(matches!(err, EngineError::Malformed { .. }));
     }
 
     #[test]
-    fn test_real_content_is_not_mistaken_for_failure() {
-        // Each of these is a real response body; misreading any of them as an
-        // error would make the client report failures for a working server.
-        for body in [
-            "FUN_18008ed50 @ 18008ed50",
-            "FUN_180001090 at 180001090",
-            "longlong FUN_18008ed50(longlong param_1,int param_2)\n\n{\n  return 0;\n}",
-            "dll_main -> 18000c690",
-            "From 18000a3be in FUN_18000a0d0 [UNCONDITIONAL_CALL]",
-            ".text: 180001000 - 1801261ff",
-            "180127cd8: \"Everquest\"",
-            "Function: FUN_18008ed50 at 18008ed50",
-            "18008ed50: MOVSXD RAX,EDX",
-            // A real response that happens to contain the word "error".
-            "180127cd8: \"error handling\"",
-        ] {
-            assert_eq!(
-                classify(body),
-                Classification::Content,
-                "should be content: {body:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_blank_body_is_not_content() {
-        // Reading a blank body as "content" would claim the program has no such
-        // function, which is a stronger statement than "the server said nothing".
-        assert!(matches!(
-            classify("   \n  "),
-            Classification::Unrecognised(_)
-        ));
-    }
-
-    #[test]
-    fn test_matching_ignores_case() {
-        assert!(matches!(
-            classify("address is required"),
-            Classification::Failure(_)
-        ));
-    }
-
-    #[test]
-    fn test_recognises_type_write_back_failures() {
-        // The v6.0.0 write endpoints answer refusals as prose; a client
-        // that trusted the 200 would report a write that never landed.
-        for body in [
-            "Failed to set function prototype: could not parse",
-            "Structure with name 'Widget' already exists",
-            "No valid fields parsed",
-            "Unknown field type: Widget",
-            "Enumeration with name 'Color' already exists",
-            "Could not resolve base type: Widget *",
-            "Field data type not found: Widget",
-            "Error adding struct field: boom",
-        ] {
-            assert!(
-                matches!(classify(body), Classification::Failure(_)),
-                "should be a failure: {body:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_write_success_bodies_stay_content() {
-        // The write endpoints' own success answers must not trip the
-        // prefixes above — a successful write read as a failure would
-        // abort a whole write-back pass.
-        for body in [
-            "Function prototype set to: int main(void)",
-            "struct Widget\n{\n  int x;\n};\n\n",
-            "Field y added to struct Widget",
-            "typedef int WidgetHandle;\n\n",
-        ] {
-            assert_eq!(
-                classify(body),
-                Classification::Content,
-                "should be content: {body:?}"
-            );
+    fn any_other_kuna_failure_rides_as_reported() {
+        let err = EngineError::from(KunaError::EngineFault {
+            call: "decompile".into(),
+            panic: "boom".into(),
+        });
+        match err {
+            EngineError::Reported { message } => assert!(message.contains("boom")),
+            other => panic!("expected Reported, got {other:?}"),
         }
     }
 }

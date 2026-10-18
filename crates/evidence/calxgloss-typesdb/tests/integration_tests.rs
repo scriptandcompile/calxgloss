@@ -13,13 +13,13 @@
 //!   a rescan replaces the cached document.
 //!
 //! The fake program implements the shared `ScanSource` seam and the vtable
-//! scan's `TagSink`, so the whole flow runs without a Ghidra server;
+//! scan's `TagSink`, so the whole flow runs without an external server;
 //! `tests/live.rs` covers the real bridge.
 
 use std::collections::HashMap;
 
 use calxgloss_ghidra::{
-    DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
+    DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
     StringLiteral, StructFieldLayout, StructLayout, Symbol, Xref,
 };
 use calxgloss_prompts::StructuredData;
@@ -243,7 +243,7 @@ impl ScanSource for FakeProgram {
         self.layouts
             .get(name)
             .cloned()
-            .ok_or_else(|| GhidraError::NotFound {
+            .ok_or_else(|| EngineError::NotFound {
                 kind: "structure",
                 query: name.to_string(),
             })
@@ -253,7 +253,7 @@ impl ScanSource for FakeProgram {
         self.enums
             .get(name)
             .cloned()
-            .ok_or_else(|| GhidraError::NotFound {
+            .ok_or_else(|| EngineError::NotFound {
                 kind: "enumeration",
                 query: name.to_string(),
             })
@@ -275,7 +275,7 @@ impl ScanSource for FakeProgram {
         self.memory
             .get(&address)
             .cloned()
-            .ok_or_else(|| GhidraError::NotFound {
+            .ok_or_else(|| EngineError::NotFound {
                 kind: "memory",
                 query: format!("{address:x}"),
             })
@@ -290,7 +290,7 @@ impl ScanSource for FakeProgram {
     }
 
     async fn decompile(&self, name: &str) -> calxgloss_ghidra::Result<DecompiledFunction> {
-        Err(GhidraError::NotFound {
+        Err(EngineError::NotFound {
             kind: "function",
             query: name.to_string(),
         })

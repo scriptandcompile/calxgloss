@@ -14,7 +14,7 @@ use crate::identity::{BinaryIdentity, UnitKey};
 ///
 /// Events are emitted at key milestones:
 /// - Pipeline start / completion / failure
-/// - Ghidra data fetch (function metadata, imports)
+/// - Scan fetch (function metadata, imports)
 /// - Baseline test generation
 /// - Each translation attempt (compile, test, LLM call)
 ///
@@ -52,8 +52,8 @@ pub enum ProgressEvent {
         binary: BinaryIdentity,
         function: String,
     },
-    /// GhidraMCP returned function metadata (disassembly, decompiler output).
-    GhidraFetchComplete {
+    /// The engine returned function metadata (disassembly, decompiler output).
+    ScanFetchComplete {
         binary: BinaryIdentity,
         function: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -341,40 +341,6 @@ pub enum ProgressEvent {
         binary: BinaryIdentity,
         function: String,
     },
-    /// A headless GhidraMCP server that calxgloss started itself has booted —
-    /// the preflight found nothing answering on the configured port and chose
-    /// to spawn one rather than attach (issue #114, G1-T4).
-    ///
-    /// Batch-level (no unit key): the server serves the whole run, not one
-    /// binary, and it names no phase — the run has not started work yet.
-    GhidraServerStarted {
-        /// The URL the calxgloss-owned server answers on.
-        url: String,
-        /// The PID of the server process calxgloss started and owns.
-        pid: u32,
-    },
-    /// The Ghidra project backing this run was created at startup, or an
-    /// existing one was opened on a server that had none (or another) open
-    /// (issue #116, G1-T6).
-    ///
-    /// Batch-level (no unit key): the project serves the whole run, not one
-    /// binary, and it names no phase — the run has not started work yet.
-    GhidraProjectCreated {
-        /// Path of the `.gpr` project file the server now has open.
-        path: String,
-    },
-    /// Ghidra static analysis ran for one binary during startup bootstrap,
-    /// and the result was recorded in the analysis cache so later runs skip
-    /// it (issue #116, G1-T6).
-    ///
-    /// Batch-level (no unit key): the analysis belongs to the project, not
-    /// to a translation unit, and it names no phase.
-    GhidraProgramAnalyzed {
-        /// The binary that was analyzed.
-        dll: String,
-        /// Wall-clock duration of the analysis, in seconds.
-        secs: u64,
-    },
 }
 
 impl ProgressEvent {
@@ -384,7 +350,7 @@ impl ProgressEvent {
     pub fn unit_key(&self) -> Option<UnitKey> {
         match self {
             ProgressEvent::TranslationStarted { binary, function }
-            | ProgressEvent::GhidraFetchComplete {
+            | ProgressEvent::ScanFetchComplete {
                 binary, function, ..
             }
             | ProgressEvent::ApiTaggingComplete {
@@ -446,10 +412,7 @@ impl ProgressEvent {
             | ProgressEvent::QueuePlanned { .. }
             | ProgressEvent::BatchProgress { .. }
             | ProgressEvent::BatchSummary { .. }
-            | ProgressEvent::PipelineStateChanged { .. }
-            | ProgressEvent::GhidraServerStarted { .. }
-            | ProgressEvent::GhidraProjectCreated { .. }
-            | ProgressEvent::GhidraProgramAnalyzed { .. } => None,
+            | ProgressEvent::PipelineStateChanged { .. } => None,
         }
     }
 }
@@ -460,10 +423,10 @@ impl std::fmt::Display for ProgressEvent {
             ProgressEvent::TranslationStarted { binary, function } => {
                 write!(f, "Starting translation of {function} ({binary})")
             }
-            ProgressEvent::GhidraFetchComplete {
+            ProgressEvent::ScanFetchComplete {
                 binary, function, ..
             } => {
-                write!(f, "Fetched Ghidra data for {function} ({binary})")
+                write!(f, "Fetched engine data for {function} ({binary})")
             }
             ProgressEvent::ApiTaggingComplete {
                 binary,
@@ -738,15 +701,6 @@ impl std::fmt::Display for ProgressEvent {
             ProgressEvent::UnitCancelled { binary, function } => {
                 write!(f, "Cancelled in-flight unit {function} ({binary})")
             }
-            ProgressEvent::GhidraServerStarted { url, pid } => {
-                write!(f, "Ghidra headless server started (pid {pid}) at {url}")
-            }
-            ProgressEvent::GhidraProjectCreated { path } => {
-                write!(f, "Ghidra project ready at {path}")
-            }
-            ProgressEvent::GhidraProgramAnalyzed { dll, secs } => {
-                write!(f, "Ghidra analysis of {dll} finished in {secs}s")
-            }
         }
     }
 }
@@ -762,8 +716,9 @@ impl std::fmt::Display for ProgressEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TranslationPhase {
-    /// Fetching function metadata (disassembly, decompiler output) from Ghidra.
-    GhidraFetch,
+    /// Fetching function metadata (disassembly, decompiler output) from the
+    /// engine.
+    ScanFetch,
     /// Tagging Windows API calls referenced by the function.
     ApiTagging,
     /// Generating baseline tests from observed behavior.
@@ -793,8 +748,8 @@ impl TranslationPhase {
     /// the phase history.
     pub fn from_event(event: &ProgressEvent) -> Option<Self> {
         match event {
-            ProgressEvent::TranslationStarted { .. } => Some(TranslationPhase::GhidraFetch),
-            ProgressEvent::GhidraFetchComplete { .. } => Some(TranslationPhase::ApiTagging),
+            ProgressEvent::TranslationStarted { .. } => Some(TranslationPhase::ScanFetch),
+            ProgressEvent::ScanFetchComplete { .. } => Some(TranslationPhase::ApiTagging),
             ProgressEvent::ApiTaggingComplete { .. } => Some(TranslationPhase::TestGen),
             ProgressEvent::TestsGenerated { .. } => Some(TranslationPhase::ContextTier),
             ProgressEvent::ContextTierSelected { .. } => Some(TranslationPhase::ContextTier),
@@ -1526,73 +1481,9 @@ mod tests {
     }
 
     #[test]
-    fn ghidra_server_started_is_batch_scoped_phaseless_and_tagged() {
-        let event = ProgressEvent::GhidraServerStarted {
-            url: "http://127.0.0.1:8089".into(),
-            pid: 4123,
-        };
-        assert_eq!(event.unit_key(), None, "run-level, not unit-scoped");
-        assert!(
-            TranslationPhase::from_event(&event).is_none(),
-            "a server boot names no unit phase"
-        );
-        let json = serde_json::to_value(&event).expect("serializes");
-        assert_eq!(json["event"], "ghidra_server_started");
-        assert_eq!(json["url"], "http://127.0.0.1:8089");
-        assert_eq!(json["pid"], 4123);
-        let shown = event.to_string();
-        assert!(
-            shown.contains("4123") && shown.contains("8089"),
-            "display names the pid and the port: {shown}"
-        );
-    }
-
-    #[test]
-    fn ghidra_project_created_is_batch_scoped_phaseless_and_tagged() {
-        let event = ProgressEvent::GhidraProjectCreated {
-            path: "/work/ghidra/target.gpr".into(),
-        };
-        assert_eq!(event.unit_key(), None, "run-level, not unit-scoped");
-        assert!(
-            TranslationPhase::from_event(&event).is_none(),
-            "a project bootstrap names no unit phase"
-        );
-        let json = serde_json::to_value(&event).expect("serializes");
-        assert_eq!(json["event"], "ghidra_project_created");
-        assert_eq!(json["path"], "/work/ghidra/target.gpr");
-        let shown = event.to_string();
-        assert!(
-            shown.contains("target.gpr"),
-            "display names the project path: {shown}"
-        );
-    }
-
-    #[test]
-    fn ghidra_program_analyzed_is_batch_scoped_phaseless_and_tagged() {
-        let event = ProgressEvent::GhidraProgramAnalyzed {
-            dll: "target.dll".into(),
-            secs: 42,
-        };
-        assert_eq!(event.unit_key(), None, "run-level, not unit-scoped");
-        assert!(
-            TranslationPhase::from_event(&event).is_none(),
-            "a bootstrap analysis names no unit phase"
-        );
-        let json = serde_json::to_value(&event).expect("serializes");
-        assert_eq!(json["event"], "ghidra_program_analyzed");
-        assert_eq!(json["dll"], "target.dll");
-        assert_eq!(json["secs"], 42);
-        let shown = event.to_string();
-        assert!(
-            shown.contains("target.dll") && shown.contains("42"),
-            "display names the binary and the duration: {shown}"
-        );
-    }
-
-    #[test]
     fn translation_phase_serde_round_trip() {
         let phases = [
-            TranslationPhase::GhidraFetch,
+            TranslationPhase::ScanFetch,
             TranslationPhase::ApiTagging,
             TranslationPhase::TestGen,
             TranslationPhase::ContextTier,
@@ -1612,8 +1503,8 @@ mod tests {
             "\"llm_call\""
         );
         assert_eq!(
-            serde_json::to_string(&TranslationPhase::GhidraFetch).expect("serialize"),
-            "\"ghidra_fetch\""
+            serde_json::to_string(&TranslationPhase::ScanFetch).expect("serialize"),
+            "\"scan_fetch\""
         );
     }
 
@@ -1638,7 +1529,7 @@ mod tests {
                 binary: "d".into(),
                 function: "f".into(),
             },
-            ProgressEvent::GhidraFetchComplete {
+            ProgressEvent::ScanFetchComplete {
                 binary: "d".into(),
                 function: "f".into(),
                 address: None,
@@ -1722,7 +1613,7 @@ mod tests {
         assert_eq!(
             derived,
             vec![
-                Some(TranslationPhase::GhidraFetch),
+                Some(TranslationPhase::ScanFetch),
                 Some(TranslationPhase::ApiTagging),
                 Some(TranslationPhase::TestGen),
                 Some(TranslationPhase::ContextTier),

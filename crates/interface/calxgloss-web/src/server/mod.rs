@@ -399,16 +399,17 @@ pub struct ProgressState {
     /// `BatchProgress`, cleared when a new `BatchStarted` replaces the
     /// pass or that DLL's `BatchSummary` lands.
     activity: Arc<RwLock<Option<(BinaryIdentity, BinaryActivity)>>>,
-    /// Startup ingestion state (issue #124) — `started` is set by the first
-    /// Ghidra preflight event, `analyzed` names the binaries whose Ghidra
-    /// auto-analysis finished during bootstrap. The pipeline view lights
-    /// `project_ingestion` from this while nothing else has named a binary.
+    /// Startup ingestion state (issue #124). The Ghidra preflight events
+    /// that used to set it are retired with the engine (issue #214), so
+    /// this stays empty and the pipeline view derives `project_ingestion`
+    /// from classification counts alone.
     ingestion: Arc<RwLock<IngestionState>>,
 }
 
-/// Startup ingestion state folded from the Ghidra preflight events
-/// (issue #124): whether the preflight has begun, and which binaries'
-/// auto-analysis has landed.
+/// Startup ingestion state (issue #124): whether startup ingestion has
+/// begun and which binaries' analysis has landed. Retired producers
+/// (issue #214) leave it empty; the pipeline view still folds
+/// classification counts into the phase.
 #[derive(Debug, Default, Clone)]
 pub struct IngestionState {
     pub started: bool,
@@ -475,7 +476,7 @@ impl ProgressState {
     pub async fn on_event(&self, event: &ProgressEvent) {
         match event {
             ProgressEvent::TranslationStarted { .. }
-            | ProgressEvent::GhidraFetchComplete { .. }
+            | ProgressEvent::ScanFetchComplete { .. }
             | ProgressEvent::ApiTaggingComplete { .. }
             | ProgressEvent::TestsGenerated { .. }
             | ProgressEvent::ContextTierSelected { .. }
@@ -583,31 +584,6 @@ impl ProgressState {
                 // by `/api/server/status` and echoed to WS clients by the
                 // broadcast. Nothing to fold into the per-unit view.
             }
-            ProgressEvent::GhidraServerStarted { .. } => {
-                // Preflight spawned a headless Ghidra server (issue #114).
-                // The event rides the broadcast for the activity feed, and
-                // it starts the ingestion phase (issue #124) — the server
-                // belongs to the run, not to a binary.
-                self.ingestion.write().await.started = true;
-            }
-            ProgressEvent::GhidraProjectCreated { .. } => {
-                // Startup project bootstrap (issue #116): the project
-                // belongs to the run; it also says ingestion is underway
-                // (issue #124).
-                self.ingestion.write().await.started = true;
-            }
-            ProgressEvent::GhidraProgramAnalyzed { dll, .. } => {
-                // One binary's auto-analysis landed (issue #116) — it joins
-                // the analyzed set so the pipeline view can count ingestion
-                // progress and name the binary before any unit event does
-                // (issue #124).
-                let mut ingestion = self.ingestion.write().await;
-                ingestion.started = true;
-                let binary = BinaryIdentity::new(dll);
-                if !ingestion.analyzed.contains(&binary) {
-                    ingestion.analyzed.push(binary);
-                }
-            }
         }
     }
 
@@ -631,10 +607,9 @@ impl ProgressState {
         // then finds the record already there and never clobbers it.
         let entry = entries.entry(key).or_insert_with(|| {
             // A started unit begins in the phase its first event derives.
-            // `TranslationStarted` always derives GhidraFetch (unit-tested);
+            // `TranslationStarted` always derives ScanFetch (unit-tested);
             // fall back to it rather than panic if that ever changes.
-            let phase =
-                TranslationPhase::from_event(event).unwrap_or(TranslationPhase::GhidraFetch);
+            let phase = TranslationPhase::from_event(event).unwrap_or(TranslationPhase::ScanFetch);
             ProgressEntry {
                 binary: unit.binary().clone(),
                 function: unit.function().to_string(),

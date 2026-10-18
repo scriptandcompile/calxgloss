@@ -62,7 +62,7 @@ pub(crate) fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
 /// the snake-case and Win32-style spellings decompiled binaries most
 /// often use; a program that registers under a different name
 /// configures it through [`with_names`](Self::with_names). The
-/// detector holds no Ghidra client of its own and never writes back
+/// detector holds no scan source of its own and never writes back
 /// to the program; one detector serves an entire scan and can be
 /// shared by reference across concurrent per-function passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

@@ -17,13 +17,10 @@ pub struct FileConfig {
     /// repo live.
     pub workspace: Option<String>,
 
-    /// How to reach GhidraMCP.
-    pub ghidra: GhidraSection,
-
     /// How to reach the OpenAI-compatible LLM server.
     pub llm: LlmSection,
 
-    /// Which decompiler engine a run uses.
+    /// The `[analysis]` table: per-function Kuna budgets.
     pub analysis: AnalysisSection,
 }
 
@@ -31,11 +28,6 @@ pub struct FileConfig {
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct AnalysisSection {
-    /// The decompiler engine: `ghidra` (the default) or `kuna`. A run uses
-    /// exactly one engine; `kuna` is a skeleton in this release, so commands
-    /// it does not serve yet fail by name rather than falling back.
-    pub engine: Option<String>,
-
     /// Per-function instruction budget for the Kuna engine — the control-flow
     /// walk stops after this many instructions and the function fails by name.
     /// Kuna's own default applies when unset; `0` means "no limit".
@@ -48,56 +40,6 @@ pub struct AnalysisSection {
     /// Per-function resident-memory budget, in MiB, for the Kuna engine.
     /// Kuna's own default (no limit) applies when unset; `0` means "no limit".
     pub max_fn_memory_mib: Option<u64>,
-}
-
-/// The `[ghidra]` table.
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct GhidraSection {
-    /// Base URL of the GhidraMCP server.
-    pub url: Option<String>,
-
-    /// Bearer token, for a server behind a proxy.
-    pub api_key: Option<String>,
-
-    /// Where the Ghidra install lives. Empty or absent means discover it:
-    /// `$GHIDRA_INSTALL_DIR`, then this key, then a `*ghidra_*_PUBLIC` glob
-    /// in the home directory (highest version wins).
-    pub install_dir: Option<String>,
-
-    /// Whether calxgloss may start a headless Ghidra server when none is
-    /// running. `false` makes the preflight check-only: it fails fast naming
-    /// what is missing instead of spawning anything.
-    pub auto_start: Option<bool>,
-
-    /// GUI-vs-headless preference: `auto` attaches to a running server or
-    /// spawns a headless one, `always` spawns headless even when a GUI is
-    /// open, `never` only ever attaches (no spawn).
-    pub headless: Option<String>,
-
-    /// The Ghidra project (`.gpr`) a run uses, overriding the default
-    /// `<workspace>/ghidra/<target>.gpr`.
-    pub project: Option<String>,
-
-    /// The minimum acceptable Ghidra install version, e.g. `12.1`. A
-    /// discovered install below it fails the install check by name.
-    pub min_version: Option<String>,
-
-    /// How long a spawned headless server may take to boot, in seconds.
-    pub start_timeout_secs: Option<u64>,
-
-    /// Whether `doctor --fix` may download a Ghidra + GhidraMCP pair without
-    /// the explicit `--install-ghidra` flag. `false` (the default) keeps the
-    /// ~570 MB download behind consent.
-    pub auto_install: Option<bool>,
-
-    /// Pin the Ghidra version the bootstrap fetches, overriding the build the
-    /// plugin's `extension.properties` names.
-    pub pin_version: Option<String>,
-
-    /// The JDK the bootstrap's Java gate runs (`<java_home>/bin/java`).
-    /// Absent means `java` on PATH; calxgloss never installs a JDK itself.
-    pub java_home: Option<String>,
 }
 
 /// The `[llm]` table.
@@ -135,8 +77,9 @@ pub struct LlmSection {
 pub const EXAMPLE: &str = r#"# Calxgloss configuration.
 #
 # Every key is optional. Command-line flags and environment variables
-# (CALXGLOSS_GHIDRA_URL, CALXGLOSS_LLM_URL, CALXGLOSS_LLM_MODEL, ...) take
-# precedence over this file.
+# (CALXGLOSS_LLM_URL, CALXGLOSS_LLM_MODEL, ...) take precedence over this
+# file. Kuna is the only analysis engine: a [ghidra] block or an
+# analysis.engine key is refused by name — delete them.
 
 # Directory containing DLLs and EXEs (required).
 # target_dir = "/path/to/binaries"
@@ -145,22 +88,8 @@ pub const EXAMPLE: &str = r#"# Calxgloss configuration.
 # (defaults to CWD).
 # workspace = "/path/to/workspace"
 
-[ghidra]
-url = "http://127.0.0.1:8080"
-# api_key = "..."
-# install_dir = "/path/to/ghidra_12.1.2_PUBLIC"  # empty → discover
-# auto_start = true            # false → preflight checks only, never spawns
-# headless = "auto"            # auto | always | never
-# project = "/path/to/run.gpr" # default: <workspace>/ghidra/<target>.gpr
-# min_version = "12.1"         # gate the discovered install by version
-# start_timeout_secs = 90      # boot budget for a spawned server
-# auto_install = false         # doctor --fix may download without --install-ghidra
-# pin_version = "12.1.2"       # pin the Ghidra build the bootstrap fetches
-# java_home = "/usr/lib/jvm/java-21"  # JDK for the bootstrap's Java gate
-
 [analysis]
-# engine = "ghidra"          # ghidra | kuna — a run uses exactly one engine
-# Per-function budgets for the kuna engine (0 = no limit, unset = engine default)
+# Per-function budgets for the Kuna engine (0 = no limit, unset = engine default)
 # max_fn_instructions = 100000
 # max_fn_seconds = 0
 # max_fn_memory_mib = 0

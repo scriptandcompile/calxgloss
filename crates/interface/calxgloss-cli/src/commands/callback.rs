@@ -1,8 +1,8 @@
-//! The `callback` command — detect callback tables for the open binary.
+//! The `callback` command — detect callback tables for a binary.
 //!
 //! Runs the callback-table detectors — function-pointer arrays, explicit
 //! registration calls, and switch/jump dispatch tables — against the
-//! program currently open in Ghidra and saves the result to
+//! loaded program and saves the result to
 //! `re/analysis/callback/{binary}.json` in the workspace, the same file
 //! batch translation will read as prompt context. Batch translation runs
 //! the same scan before its first batch when no result is cached; this
@@ -18,7 +18,6 @@ use anyhow::{Context, Result};
 use calxgloss_callback::engine::CallbackEngine;
 use calxgloss_callback::persist::CallbackPersistor;
 use calxgloss_callback::types::CallbackResult;
-use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use chrono::DateTime;
 use tracing::info;
 
@@ -52,21 +51,14 @@ pub async fn handle_callback(
 
     info!(binary, workspace = %workspace.display(), "Detecting callback tables");
 
-    let ghidra_url = &settings.ghidra_url.value;
-    let mut config = GhidraConfig::new(ghidra_url)
-        .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
-    if let Some(key) = &settings.ghidra_api_key {
-        config = config.with_api_key(key.value.clone());
-    }
-    let ghidra = GhidraClient::from_config(config)
-        .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))?;
+    let kuna = load_kuna_source(settings, binary)?;
 
     // The type-inference scan's cached document, when the workspace
     // has one, composes into a signature map the engine injects —
     // no extra flags, and no document just means today's open
     // suggestions (issue #173).
     let signatures = callback_signature_map(workspace, binary);
-    let engine = CallbackEngine::new(&ghidra).with_signatures(signatures);
+    let engine = CallbackEngine::new(&kuna).with_signatures(signatures);
     let result = engine
         .scan(binary)
         .await

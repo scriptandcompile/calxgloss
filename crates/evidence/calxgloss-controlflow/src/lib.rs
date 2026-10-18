@@ -54,7 +54,7 @@
 //!   per call cycle of two or more functions, attached to the cycle's
 //!   earliest member in listing order.
 //! - [`engine`] - Scan orchestration: `ControlFlowEngine` runs the
-//!   five detectors over one open Ghidra program through a
+//!   five detectors over one loaded program through a
 //!   `ScanSource` (function listing + decompile-by-name), one
 //!   sequential pass that decompiles each function exactly once,
 //!   keeps the bodies for the cross-function pass, and keeps the

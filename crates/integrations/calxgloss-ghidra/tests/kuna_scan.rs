@@ -4,12 +4,12 @@
 //! These tests drive the seam itself — `ScanSource` through
 //! `PipelineSource::Kuna` — over the checked-in fixture DLL: every read the
 //! trait carries answers from the one in-process program, misses arrive in
-//! the Ghidra path's error vocabulary, and a scan assembled purely from
+//! the seam's error vocabulary, and a scan assembled purely from
 //! seam reads persists `FunctionInfo` and `DllInfo` records the web's
 //! artifact layout reads back. The engine-native API is pinned in
 //! `calxgloss-kuna/tests/kuna_scan.rs`.
 
-use calxgloss_ghidra::{GhidraClient, GhidraError, PipelineSource, ScanSource, Xref};
+use calxgloss_ghidra::{EngineError, PipelineSource, ScanSource, Xref};
 use calxgloss_kuna::{KUNA_PIN_REV, KUNA_RELEASE, KunaSource};
 use calxgloss_testfixtures::{
     EXPORT_NAMES, IMPORT_DLL_NAMES, IMPORT_FUNCTIONS, STRING_LITERALS, TARGET_FILE_NAME,
@@ -101,11 +101,11 @@ async fn an_unknown_function_name_is_a_named_miss_at_the_seam() {
         .await
         .expect_err("an unknown name is a named miss");
     match &error {
-        GhidraError::NotFound { kind, query } => {
+        EngineError::NotFound { kind, query } => {
             assert_eq!(*kind, "function");
             assert_eq!(query, "no_such_function_anywhere");
         }
-        other => panic!("expected the same NotFound the Ghidra path reports, got {other:?}"),
+        other => panic!("expected the seam's named NotFound, got {other:?}"),
     }
 }
 
@@ -125,7 +125,7 @@ async fn the_kuna_source_answers_every_read_the_seam_carries_over_the_fixture() 
 
     // Raw memory answers from the program's own load image: the PE header
     // is the first thing mapped, and an unmapped range is a named miss in
-    // the Ghidra path's vocabulary, never a zero-filled answer.
+    // the seam's vocabulary, never a zero-filled answer.
     let base = source.image_base().await.expect("image base read");
     let header = source
         .read_memory(base, 2)
@@ -137,12 +137,12 @@ async fn the_kuna_source_answers_every_read_the_seam_carries_over_the_fixture() 
         .await
         .expect_err("an unmapped range is a miss");
     assert!(
-        matches!(&unmapped, GhidraError::NotFound { kind, .. } if *kind == "memory"),
-        "expected the Ghidra path's NotFound, got {unmapped:?}"
+        matches!(&unmapped, EngineError::NotFound { kind, .. } if *kind == "memory"),
+        "expected the seam's NotFound, got {unmapped:?}"
     );
 
     // Xrefs and callers: some fixture literal is referenced by code, and
-    // the xref shape is the Ghidra client's — a site address, an optional
+    // the xref shape is the seam's own — a site address, an optional
     // referring function, and an optional kind.
     let mut referenced: Option<(u64, Vec<Xref>)> = None;
     for string in &strings {
@@ -170,7 +170,7 @@ async fn the_kuna_source_answers_every_read_the_seam_carries_over_the_fixture() 
     );
 
     // callers dedups the xref listing's function names in first-reference
-    // order — the exact shape the Ghidra client answers with, which is why
+    // order — the exact shape the seam's read answers with, which is why
     // the call-graph builder needs no engine special case.
     let callers = source.callers(address).await.expect("callers read");
     let mut expected: Vec<String> = Vec::new();
@@ -242,7 +242,7 @@ async fn the_kuna_source_answers_every_read_the_seam_carries_over_the_fixture() 
     assert!(
         matches!(
             &missing,
-            GhidraError::NotFound { kind, query }
+            EngineError::NotFound { kind, query }
                 if *kind == "type" && query == "no_such_type_anywhere"
         ),
         "expected the bridge's NotFound, got {missing:?}"
@@ -252,7 +252,7 @@ async fn the_kuna_source_answers_every_read_the_seam_carries_over_the_fixture() 
         .await
         .expect_err("a builtin is not a structure");
     assert!(
-        matches!(&kind_miss, GhidraError::Malformed { kind, .. } if *kind == "structure layout"),
+        matches!(&kind_miss, EngineError::Malformed { kind, .. } if *kind == "structure layout"),
         "expected the bridge's Malformed, got {kind_miss:?}"
     );
     let enum_miss = source
@@ -260,7 +260,7 @@ async fn the_kuna_source_answers_every_read_the_seam_carries_over_the_fixture() 
         .await
         .expect_err("a builtin is not an enumeration");
     assert!(
-        matches!(&enum_miss, GhidraError::Malformed { kind, .. } if *kind == "enumeration"),
+        matches!(&enum_miss, EngineError::Malformed { kind, .. } if *kind == "enumeration"),
         "expected the bridge's Malformed, got {enum_miss:?}"
     );
 
@@ -332,9 +332,9 @@ async fn a_kuna_scan_persists_function_and_dll_records_the_web_reads_back() {
     assert_eq!(persisted, EXPORT_NAMES.len());
 
     // The DllInfo record, assembled from the seam's export and import
-    // listings. The seam reports bare import names (as the Ghidra path
-    // does); the owning DLL is the mapping the scan applies, exactly as
-    // the API-detection mapping database does on the Ghidra path.
+    // listings. The seam reports bare import names; the owning DLL
+    // is the mapping the scan applies, exactly as the API-detection
+    // mapping database applies it.
     let dll_exports = exports
         .iter()
         .filter(|e| {
@@ -391,10 +391,10 @@ async fn a_kuna_scan_persists_function_and_dll_records_the_web_reads_back() {
 
 /// The seam's own provenance read (issue #208): a Kuna-powered pipeline
 /// names its engine, release, and pinned source, so a scan record built
-/// over it can carry them; the Ghidra arms name nothing, so their records
-/// stay exactly as they were on disk.
+/// over it can carry them — and the read cache forwards what the engine it
+/// wraps names.
 #[test]
-fn the_seam_names_its_engine_only_under_kuna() {
+fn the_seam_names_its_engine() {
     let provenance = fixture_pipeline_source()
         .engine_provenance()
         .expect("the Kuna arm names its engine");
@@ -406,13 +406,6 @@ fn the_seam_names_its_engine_only_under_kuna() {
             && KUNA_PIN_REV.len() == 7
             && KUNA_PIN_REV.chars().all(|c| c.is_ascii_hexdigit()),
         "the pin names a short git commit: {KUNA_RELEASE} @ {KUNA_PIN_REV}"
-    );
-
-    let client =
-        GhidraClient::new("http://127.0.0.1:1").expect("a client needs no server to build");
-    assert!(
-        PipelineSource::from(client).engine_provenance().is_none(),
-        "the Ghidra path names no engine, so its scan records stay byte-for-byte as they were",
     );
 }
 

@@ -23,7 +23,7 @@
 //! # Graceful degradation
 //!
 //! If decompilation fails for a single function the graph still completes
-//! with an empty callee list for that function.  A total `list_functions`
+//! with an empty callee list for that function.  A total `functions()`
 //! failure aborts the build.
 
 use anyhow::Result;
@@ -33,11 +33,11 @@ use tracing::{info, warn};
 
 use crate::{CallGraph, CallGraphEdge, CallType, FunctionCallGraph, NodeCategory};
 
-/// Fetches function metadata from Ghidra and constructs a call graph.
+/// Fetches function metadata from the engine and constructs a call graph.
 ///
 /// The builder reads through the shared [`ScanSource`] seam, so the same
-/// graph build runs against a live [`calxgloss_ghidra::GhidraClient`] or
-/// through the batch's [`calxgloss_ghidra::CachedGhidraSource`] without any
+/// graph build runs against a loaded [`calxgloss_kuna::KunaSource`] or
+/// through the batch's [`calxgloss_ghidra::CachedScanSource`] without any
 /// change of behaviour — a warm cache makes the whole build cost no live
 /// reads.
 ///
@@ -47,24 +47,24 @@ use crate::{CallGraph, CallGraphEdge, CallType, FunctionCallGraph, NodeCategory}
 /// use calxgloss_callgraph::CallGraphBuilder;
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// let ghidra = calxgloss_ghidra::GhidraClient::new("http://localhost:8080")?;
-/// let builder = CallGraphBuilder::new(ghidra, "eqmain.dll");
+/// let source = calxgloss_ghidra::PipelineSource::from(
+///     calxgloss_kuna::KunaSource::load("eqmain.dll".as_ref())?,
+/// );
+/// let builder = CallGraphBuilder::new(source, "eqmain.dll");
 /// let graph = builder.build().await?;
 /// # Ok(())
 /// # }
 /// ```
-pub struct CallGraphBuilder<S = calxgloss_ghidra::GhidraClient> {
+pub struct CallGraphBuilder<S = calxgloss_ghidra::PipelineSource> {
     source: S,
     dll_name: String,
 }
 
-impl CallGraphBuilder<calxgloss_ghidra::GhidraClient> {
-    /// Creates a new builder for the given DLL, reading live from `ghidra`.
-    pub fn new(ghidra: calxgloss_ghidra::GhidraClient, dll_name: impl Into<String>) -> Self {
-        Self {
-            source: ghidra,
-            dll_name: dll_name.into(),
-        }
+impl CallGraphBuilder<calxgloss_ghidra::PipelineSource> {
+    /// Creates a new builder for the given DLL over the pipeline's scan
+    /// source (the Kuna engine, usually behind the read cache).
+    pub fn new(source: calxgloss_ghidra::PipelineSource, dll_name: impl Into<String>) -> Self {
+        Self::with_source(source, dll_name)
     }
 }
 

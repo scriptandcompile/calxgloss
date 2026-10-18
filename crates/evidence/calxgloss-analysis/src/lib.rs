@@ -1,8 +1,8 @@
 //! DLL classification, call graph analysis, and Windows API tagging.
 //!
 //! This crate provides the [`Analyzer`] struct, which orchestrates the analysis
-//! of target DLLs by combining data from a GhidraMCP server with the PAL mapping
-//! table from `calxgloss-pal`.
+//! of target DLLs by combining engine scan data with the PAL mapping table
+//! from `calxgloss-pal`.
 //!
 //! # Main Capabilities
 //!
@@ -22,9 +22,9 @@
 //! use calxgloss_pal::ApiMappings;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let ghidra = calxgloss_ghidra::GhidraClient::new("http://localhost:8080")?;
+//! let kuna = calxgloss_kuna::KunaSource::load(std::path::Path::new("/path/to/targets/eqmain.dll"))?;
 //! let api_mappings = ApiMappings::default();
-//! let analyzer = Analyzer::new(ghidra, api_mappings);
+//! let analyzer = Analyzer::new(calxgloss_ghidra::PipelineSource::from(kuna), api_mappings);
 //!
 //! // Classify the DLLs you care about
 //! let names = vec!["eqmain.dll".to_string()];

@@ -1,6 +1,6 @@
 # ADR-0001: Switch the Ghidra bridge to bethington/ghidra-mcp v6.0.0
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0041 (2026-10-18, issue #214 — the bridge and its client are deleted; Kuna is the only engine)
 - **Date:** 2026-10-03
 - **Deciders:** Arthur (solo project)
 

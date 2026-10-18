@@ -2,13 +2,14 @@
 name = "calxgloss-translator"
 version.workspace = true
 edition.workspace = true
-description = "Translation pipeline — GhidraMCP + LLM + prompt orchestration"
+description = "Translation pipeline — engine scan + LLM + prompt orchestration"
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
 calxgloss-types = { path = "../../shared/calxgloss-types" }
 calxgloss-ghidra = { path = "../../integrations/calxgloss-ghidra" }
+calxgloss-kuna = { path = "../../integrations/calxgloss-kuna" }
 calxgloss-llm = { path = "../../integrations/calxgloss-llm" }
 calxgloss-prompts = { path = "../../integrations/calxgloss-prompts" }
 calxgloss-pal = { path = "../../integrations/calxgloss-pal" }
@@ -35,4 +36,5 @@ serde_json = { workspace = true }
 askama = { workspace = true }
 
 [dev-dependencies]
+calxgloss-testfixtures = { path = "../../integrations/calxgloss-testfixtures" }
 tempfile = "3"

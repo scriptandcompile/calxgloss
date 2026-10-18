@@ -3,7 +3,7 @@
 //! This module provides the [`TranslationPipeline`] struct, which wires together
 //! all the pieces needed to translate a disassembled function to Rust:
 //!
-//! 1. Pull function data from GhidraMCP (disassembly, decompiler output)
+//! 1. Pull function data through the analysis seam (Kuna decompiler output)
 //! 2. Tag Windows API calls with their PAL mappings
 //! 3. Generate baseline test inputs from function signature and disassembly
 //! 4. Build a structured prompt bundling all context
@@ -14,14 +14,14 @@
 //!
 //! ```no_run
 //! use calxgloss_translator::TranslationPipeline;
-//! use calxgloss_ghidra::GhidraClient;
-//! use calxgloss_llm::{LlmClient, LlmConfig};
+//! use calxgloss_kuna::KunaSource;
+//! use calxgloss_llm::LlmClient;
 //! use calxgloss_pal::ApiMappings;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let ghidra = GhidraClient::new("http://localhost:8080")?;
+//! let kuna = KunaSource::load(std::path::Path::new("target/game_logic.dll"))?;
 //! let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;
-//! let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+//! let pipeline = TranslationPipeline::new(kuna, llm, ApiMappings::default());
 //!
 //! let translation = pipeline.translate("game_logic.dll", "DrawSprite").await?;
 //! println!("Translated code:\n{}", translation.rust_code);
@@ -48,7 +48,8 @@ use calxgloss_consts::engine::ConstEngine;
 use calxgloss_consts::persist::ConstPersistor;
 use calxgloss_controlflow::engine::ControlFlowEngine;
 use calxgloss_controlflow::persist::ControlFlowPersistor;
-use calxgloss_ghidra::{CachedGhidraSource, GhidraClient, PipelineSource};
+use calxgloss_ghidra::{CachedScanSource, PipelineSource, ScanSource};
+use calxgloss_kuna::KunaSource;
 use calxgloss_llm::{
     LlmClient, LlmMessage, context::ContextWindowDetector, hallucination::HallucinationDetector,
 };
@@ -86,12 +87,12 @@ use crate::retry;
 // TranslationPipeline — full end-to-end pipeline
 // ============================================================
 
-/// Full translation pipeline: Ghidra → Analysis → Tests → LLM → Rust code.
+/// Full translation pipeline: seam reads → Analysis → Tests → LLM → Rust code.
 ///
 /// This is the main entry point for the translation workflow. It orchestrates
 /// all the steps needed to translate a function from disassembly to working Rust:
 ///
-/// 1. Fetch function metadata from GhidraMCP (disassembly, decompiler output)
+/// 1. Fetch function metadata through the analysis seam (decompiler output)
 /// 2. Tag Windows API calls with PAL mappings using the analyzer
 /// 3. Generate baseline test inputs from function signature and disassembly
 /// 4. Build a structured prompt bundling all context
@@ -100,19 +101,19 @@ use crate::retry;
 ///
 /// # Construction
 ///
-/// ```
+/// ```no_run
 /// use calxgloss_translator::TranslationPipeline;
-/// use calxgloss_ghidra::GhidraClient;
-/// use calxgloss_llm::{LlmClient, LlmConfig};
+/// use calxgloss_kuna::KunaSource;
+/// use calxgloss_llm::LlmClient;
 /// use calxgloss_pal::ApiMappings;
 ///
-/// let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+/// let kuna = KunaSource::load(std::path::Path::new("target/game_logic.dll")).unwrap();
 /// let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
-/// let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+/// let pipeline = TranslationPipeline::new(kuna, llm, ApiMappings::default());
 /// ```
 pub struct TranslationPipeline {
-    /// Client for querying GhidraMCP.
-    ghidra: GhidraClient,
+    /// The loaded Kuna program every seam read goes through.
+    kuna: KunaSource,
 
     /// Client for sending prompts to the LLM.
     llm: LlmClient,
@@ -125,7 +126,7 @@ pub struct TranslationPipeline {
 
     /// Built-in root-symbol patterns backing the translate-path guard: a
     /// function named explicitly that the call-graph batch path would skip
-    /// (entry point, import thunk) is refused before any Ghidra fetch or
+    /// (entry point, import thunk) is refused before any scan fetch or
     /// LLM spend, instead of being translated from a body that owns no
     /// logic of its own.
     root_detector: calxgloss_callgraph::RootDetector,
@@ -194,7 +195,7 @@ pub struct TranslationPipeline {
     callgraph_cache_dir: Option<std::path::PathBuf>,
 
     /// Path to the target binary file on disk, used to build the batch's
-    /// shared [`CachedGhidraSource`] (issue #105).
+    /// shared [`CachedScanSource`] (issue #105).
     ///
     /// The cache's validity key includes the binary's file bytes, so the
     /// pipeline needs the file itself — not just its name — to open the
@@ -203,26 +204,25 @@ pub struct TranslationPipeline {
     /// cache existed.
     binary_path: Option<std::path::PathBuf>,
 
-    /// The batch's shared cached Ghidra source, armed by
+    /// The batch's shared cached scan source, armed by
     /// [`begin_cached_source`](Self::begin_cached_source) at the top of a
     /// batch and read by every scan, the call-graph build, and the
     /// retry/escalation helpers through [`scan_source`](Self::scan_source).
     ///
     /// A second batch over the same workspace and unchanged binary replays
     /// from the disk tier with zero live reads.
-    cached_source: Mutex<Option<CachedGhidraSource>>,
+    cached_source: Mutex<Option<CachedScanSource>>,
 
-    /// Force the batch's Ghidra read cache cold (issue #106).
+    /// Force the batch's scan read cache cold (issue #106).
     ///
-    /// Set by the CLI's `--refresh-ghidra-cache` flag. When true,
+    /// Set by the CLI's `--refresh-cache` flag. When true,
     /// [`begin_cached_source`](Self::begin_cached_source) opens the cache
-    /// through [`CachedGhidraSource::new_refresh`]: the disk tier for the
+    /// through [`CachedScanSource::new_refresh`]: the disk tier for the
     /// binary's current bytes is wiped before the run, every read goes
-    /// live, and the cache is rewritten. This is the escape hatch for a
-    /// Ghidra program that changed (re-analysis, applied types, renames)
-    /// under unchanged binary bytes — the manifest cannot detect that
-    /// case because the bridge reports no Ghidra version.
-    refresh_ghidra_cache: bool,
+    /// live, and the cache is rewritten. The manifest keys on the
+    /// binary's bytes, so a hand-edited cache is the one staleness it
+    /// cannot detect — this is the escape hatch for that case.
+    refresh_cache: bool,
 
     /// Shared stop signal for graceful shutdown of a live run.
     ///
@@ -271,16 +271,17 @@ pub struct TranslationPipeline {
 }
 
 impl TranslationPipeline {
-    /// Create a new translation pipeline with the given Ghidra and LLM clients.
+    /// Create a new translation pipeline over a loaded Kuna program and an
+    /// LLM client.
     ///
     /// This sets up the full pipeline with default analyzer and empty exports/tests.
     /// A context-window detector is initialized with the LLM client's `context_window`
     /// setting for automatic fault detection.
-    pub fn new(ghidra: GhidraClient, llm: LlmClient, api_mappings: ApiMappings) -> Self {
-        let analyzer = Analyzer::new(ghidra.clone(), api_mappings.clone());
+    pub fn new(kuna: KunaSource, llm: LlmClient, api_mappings: ApiMappings) -> Self {
+        let analyzer = Analyzer::new(PipelineSource::Kuna(kuna.clone()), api_mappings.clone());
         let context_detector = ContextWindowDetector::new(llm.context_window());
         Self {
-            ghidra,
+            kuna,
             llm,
             api_mappings,
             analyzer,
@@ -299,7 +300,7 @@ impl TranslationPipeline {
             callgraph_cache_dir: None,
             binary_path: None,
             cached_source: Mutex::new(None),
-            refresh_ghidra_cache: false,
+            refresh_cache: false,
             stop: None,
             pipeline_control: None,
             unit_cancellation: None,
@@ -652,39 +653,39 @@ impl TranslationPipeline {
     /// Set the path to the target binary file on disk (issue #105).
     ///
     /// With a workspace also set, a batch arms a shared
-    /// [`CachedGhidraSource`] for this binary at its top, and every scan,
+    /// [`CachedScanSource`] for this binary at its top, and every scan,
     /// the call-graph build, and the retry/escalation helpers read through
     /// it — a second batch over the same workspace and unchanged binary
-    /// costs no live Ghidra reads. Without it, batches read live.
+    /// costs no live engine reads. Without it, batches read live.
     pub fn with_binary_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.binary_path = Some(path.into());
         self
     }
 
-    /// Force the batch's Ghidra read cache cold for this pipeline's batches
+    /// Force the batch's scan read cache cold for this pipeline's batches
     /// (issue #106).
     ///
-    /// The CLI's `--refresh-ghidra-cache` flag sets it. Each batch then
-    /// wipes the disk tier for the binary's current bytes before reading:
-    /// every Ghidra read goes live once and is written back, honoring a
-    /// Ghidra program that changed (re-analysis, applied types, renames)
-    /// under unchanged bytes — the one staleness the manifest cannot
-    /// detect. Without this, warm batches replay from the cache unchanged.
-    pub fn with_refresh_ghidra_cache(mut self) -> Self {
-        self.refresh_ghidra_cache = true;
+    /// The CLI's `--refresh-cache` flag sets it. Each batch then wipes the
+    /// disk tier for the binary's current bytes before reading: every
+    /// engine read goes live once and is written back. The manifest keys
+    /// on the binary's bytes, so a hand-edited cache is the one staleness
+    /// it cannot detect — this is the escape hatch for that case.
+    /// Without this, warm batches replay from the cache unchanged.
+    pub fn with_refresh_cache(mut self) -> Self {
+        self.refresh_cache = true;
         self
     }
 
-    /// Translate a function from the program open in Ghidra.
+    /// Translate a function from the loaded program.
     ///
-    /// This is the main pipeline entry point. It fetches all data from Ghidra,
-    /// analyzes the function, generates tests, builds a prompt, and sends it
-    /// to the LLM.
+    /// This is the main pipeline entry point. It fetches all data from the
+    /// engine, analyzes the function, generates tests, builds a prompt, and
+    /// sends it to the LLM.
     ///
     /// # Arguments
     ///
     /// * `binary` — The DLL containing the function. Recorded on the result; the
-    ///   lookup is against the program Ghidra has open, which must be this DLL.
+    ///   lookup is against the loaded program, which must be this DLL.
     /// * `function` — The function name to translate.
     ///
     /// # Returns
@@ -696,21 +697,21 @@ impl TranslationPipeline {
     ///
     /// ```no_run
     /// use calxgloss_translator::TranslationPipeline;
-    /// use calxgloss_ghidra::GhidraClient;
+    /// use calxgloss_kuna::KunaSource;
     /// use calxgloss_llm::LlmClient;
     /// use calxgloss_pal::ApiMappings;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let ghidra = GhidraClient::new("http://localhost:8080")?;
+    /// let kuna = KunaSource::load(std::path::Path::new("target/game_logic.dll"))?;
     /// let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;
-    /// let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+    /// let pipeline = TranslationPipeline::new(kuna, llm, ApiMappings::default());
     ///
     /// let translation = pipeline.translate("game_logic.dll", "DrawSprite").await?;
     /// println!("Generated {} lines of Rust code", translation.rust_code.lines().count());
     /// # Ok(())
     /// # }
     /// ```
-    #[instrument(skip(self), fields(binary, function, base_url = %self.ghidra.base_url()))]
+    #[instrument(skip(self), fields(binary, function))]
     pub async fn translate(&self, binary: &str, function: &str) -> Result<Translation> {
         debug!(binary, function, "Starting translation pipeline");
 
@@ -720,7 +721,7 @@ impl TranslationPipeline {
         // `DelayLoad_` thunk is the classic trap: its resolved-import jump
         // decompiles to an unrecovered jumptable plus a bare `return`, and
         // the LLM faithfully translates the wreckage. Refuse before the
-        // Ghidra fetch, before any token is spent.
+        // scan fetch, before any token is spent.
         self.refuse_root_function(binary, function)?;
 
         // Emit: translation started
@@ -729,7 +730,7 @@ impl TranslationPipeline {
             function: function.to_string(),
         });
 
-        // Step 1: Fetch function metadata from Ghidra
+        // Step 1: Fetch function metadata from the engine
         let function_info = self.fetch_function(binary, function).await?;
         info!(binary, function, "Fetched function metadata");
 
@@ -740,8 +741,8 @@ impl TranslationPipeline {
         // that needs human recovery.
         self.triage_decompiler_warnings(binary, function, &function_info.decompiler_output);
 
-        // Emit: Ghidra fetch complete
-        self.emit(ProgressEvent::GhidraFetchComplete {
+        // Emit: scan fetch complete
+        self.emit(ProgressEvent::ScanFetchComplete {
             binary: binary.to_string().into(),
             function: function.to_string(),
             address: Some(function_info.address),
@@ -1077,7 +1078,7 @@ impl TranslationPipeline {
 
     /// Translate using a pre-built [`TranslationRequest`].
     ///
-    /// Skips the Ghidra fetch and analysis steps, going straight to prompt
+    /// Skips the scan fetch and analysis steps, going straight to prompt
     /// building and LLM invocation. Useful when the request data comes from
     /// a cache or manual source.
     ///
@@ -1177,9 +1178,9 @@ impl TranslationPipeline {
     /// use std::path::Path;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let ghidra = calxgloss_ghidra::GhidraClient::new("http://localhost:8080")?;
+    /// let kuna = calxgloss_kuna::KunaSource::load(std::path::Path::new("target/game_logic.dll"))?;
     /// let llm = calxgloss_llm::LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;
-    /// let pipeline = TranslationPipeline::new(ghidra, llm, calxgloss_pal::ApiMappings::default());
+    /// let pipeline = TranslationPipeline::new(kuna, llm, calxgloss_pal::ApiMappings::default());
     /// let verifier = Verifier::new(Path::new("/tmp/calxgloss-work"))?;
     /// let config = RetryConfig::default();
     ///
@@ -1349,81 +1350,77 @@ impl TranslationPipeline {
         }
     }
 
-    /// Fetch function metadata from GhidraMCP.
+    /// Fetch function metadata through the batch's scan source.
     ///
-    /// Ghidra serves the one program open in its CodeBrowser, so this is a
-    /// lookup in that program. The name is resolved to an address first, and
-    /// only an exact match is accepted: a substring match would silently
-    /// translate a different function.
+    /// The name is resolved to an address through the function listing
+    /// first, and only an exact match is accepted: a substring match would
+    /// silently translate a different function.
     async fn fetch_function(&self, binary: &str, function: &str) -> Result<FunctionInfo> {
-        let context = |source| TranslatorError::GhidraFetch {
+        let context = |source| TranslatorError::ScanFetch {
             binary: binary.to_string(),
             function: function.to_string(),
             source: Box::new(source),
         };
 
-        let matches = self
-            .ghidra
-            .search_functions(function, Some(10))
-            .await
-            .map_err(context)?;
-        let found = matches.iter().find(|m| m.name == function).ok_or_else(|| {
-            TranslatorError::GhidraFetch {
+        let source = self.scan_source();
+        let functions = ScanSource::functions(&source).await.map_err(context)?;
+        let found = functions
+            .iter()
+            .find(|f| f.name == function)
+            .ok_or_else(|| TranslatorError::ScanFetch {
                 binary: binary.to_string(),
                 function: function.to_string(),
-                source: Box::new(calxgloss_ghidra::GhidraError::NotFound {
+                source: Box::new(calxgloss_ghidra::EngineError::NotFound {
                     kind: "function",
-                    query: format!(
-                        "{function} (the search matched {:?})",
-                        matches.iter().map(|m| &m.name).collect::<Vec<_>>()
-                    ),
+                    query: function.to_string(),
                 }),
-            }
-        })?;
+            })?;
 
-        let report = self
-            .ghidra
-            .function_report(found.address)
+        let decompiled = ScanSource::decompile(&source, function)
             .await
             .map_err(context)?;
 
         let call_graph = if self.no_callgraph.load(Ordering::Relaxed) {
             Vec::new()
         } else {
-            // Ghidra has no call-graph endpoint. Callers come from the
-            // cross-references to the entry; callees are read out of the
-            // decompiled body and so cannot include calls through a function pointer.
-            report
-                .callers
-                .iter()
-                .chain(report.callees.iter())
-                .cloned()
+            // Callers come from the cross-references to the entry; callees
+            // are read out of the decompiled body and so cannot include
+            // calls through a function pointer.
+            let callers = ScanSource::callers(&source, found.address)
+                .await
+                .map_err(context)?;
+            callers
+                .into_iter()
+                .chain(calxgloss_ghidra::parse::callees_from_decompiled(
+                    &decompiled.body,
+                ))
                 .collect()
         };
 
         Ok(FunctionInfo {
-            name: report.name,
-            address: report.address,
+            name: found.name.clone(),
+            address: found.address,
             binary: binary.to_string().into(),
-            disassembly: report.disassembly,
-            decompiler_output: report.decompiled.body,
+            // Kuna's answer is the decompiler's; there is no separate
+            // disassembly listing to carry.
+            disassembly: String::new(),
+            decompiler_output: decompiled.body,
             windows_apis: Vec::new(),
             call_graph,
             disassembly_hints: Vec::new(),
         })
     }
 
-    /// Fetch the names of the open program's imports.
+    /// Fetch the names of the target binary's imports.
     ///
-    /// Returned as names rather than [`calxgloss_ghidra::Import`] values: Ghidra reports an import
-    /// as a name and an external slot with no module attached, so there is no
-    /// module name to put in an `Import`.
+    /// Returned as names rather than [`calxgloss_ghidra::Import`] values: the
+    /// engine reports an import as a name and an external slot with no module
+    /// attached, so there is no module name to put in an `Import`.
     async fn fetch_imports(&self, binary: &str) -> Result<Vec<String>> {
-        self.ghidra
-            .imports(None)
+        ScanSource::imports(&self.scan_source())
             .await
             .map(|symbols| symbols.into_iter().map(|s| s.name).collect())
-            .map_err(|e| TranslatorError::GhidraFetch {
+            .map_err(|e| TranslatorError::ScanFetch {
                 binary: binary.to_string(),
                 function: "<imports>".to_string(),
                 source: Box::new(e),
@@ -1810,9 +1807,9 @@ impl TranslationPipeline {
         Ok(response)
     }
 
-    /// Get a reference to the underlying Ghidra client.
-    pub fn ghidra(&self) -> &GhidraClient {
-        &self.ghidra
+    /// Get a reference to the loaded Kuna program behind the seam.
+    pub fn kuna(&self) -> &KunaSource {
+        &self.kuna
     }
 
     /// Get a reference to the underlying LLM client.
@@ -1829,19 +1826,18 @@ impl TranslationPipeline {
     // Batch translation
     // =========================================================
 
-    /// Arm the batch's shared cached Ghidra source for `binary` (issue #105).
+    /// Arm the batch's shared read cache over Kuna for `binary` (issue #105).
     ///
     /// Called at the top of both batch entry points. With a workspace and a
-    /// `binary_path` set, this builds one [`CachedGhidraSource`] for the
-    /// target binary — the binary's file bytes are hashed once and the
-    /// server probed once for the open program — and every later read made
-    /// through [`scan_source`](Self::scan_source) resolves memo → disk →
-    /// live, writing through as it goes.
+    /// `binary_path` set, this builds one [`CachedScanSource`] for the
+    /// target binary — the binary's file bytes are hashed once — and every
+    /// later read made through [`scan_source`](Self::scan_source) resolves
+    /// memo → disk → engine, writing through as it goes.
     ///
     /// Degrades rather than fails: without a workspace or binary path the
-    /// batch simply reads live (the pre-cache behaviour), and a failed
-    /// construction — an unreachable server with the binary file present —
-    /// logs a warning and leaves the batch reading live too.
+    /// batch simply reads straight from the engine (the pre-cache
+    /// behaviour), and an unreadable binary file leaves the cache in
+    /// pass-through mode too.
     async fn begin_cached_source(&self, binary: &str) {
         let (Some(workspace), Some(binary_path)) =
             (self.workspace.as_deref(), self.binary_path.as_deref())
@@ -1849,21 +1845,20 @@ impl TranslationPipeline {
             return;
         };
 
-        let opened = if self.refresh_ghidra_cache {
-            CachedGhidraSource::new_refresh(self.ghidra.clone(), workspace, binary, binary_path)
-                .await
+        let opened = if self.refresh_cache {
+            CachedScanSource::new_refresh(self.kuna.clone(), workspace, binary, binary_path)
         } else {
-            CachedGhidraSource::new(self.ghidra.clone(), workspace, binary, binary_path).await
+            CachedScanSource::new(self.kuna.clone(), workspace, binary, binary_path)
         };
         match opened {
             Ok(source) => {
                 debug!(
                     binary,
-                    refresh = self.refresh_ghidra_cache,
+                    refresh = self.refresh_cache,
                     cache_dir = source
                         .cache_dir()
                         .map_or_else(|| "(memo only)".to_string(), |d| d.display().to_string()),
-                    "Batch Ghidra reads will go through the shared cache"
+                    "Batch engine reads will go through the shared cache"
                 );
                 *self
                     .cached_source
@@ -1874,7 +1869,7 @@ impl TranslationPipeline {
                 warn!(
                     binary,
                     error = %e,
-                    "Could not open the batch Ghidra read cache — reads will pass through live"
+                    "Could not open the batch read cache — reads will pass through to the engine"
                 );
             }
         }
@@ -1882,9 +1877,9 @@ impl TranslationPipeline {
 
     /// The read source every batch consumer — the eleven `ensure_*` scans,
     /// the call-graph build, and the retry/escalation helpers — pulls
-    /// Ghidra facts through: the batch's [`CachedGhidraSource`] once armed
-    /// by [`begin_cached_source`](Self::begin_cached_source), the raw
-    /// client otherwise.
+    /// program facts through: the batch's [`CachedScanSource`] once armed
+    /// by [`begin_cached_source`](Self::begin_cached_source), the loaded
+    /// Kuna program otherwise.
     fn scan_source(&self) -> PipelineSource {
         let guard = self
             .cached_source
@@ -1892,22 +1887,22 @@ impl TranslationPipeline {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match guard.as_ref() {
             Some(cache) => PipelineSource::Cached(cache.clone()),
-            None => PipelineSource::Live(self.ghidra.clone()),
+            None => PipelineSource::Kuna(self.kuna.clone()),
         }
     }
 
-    /// Arm the Ghidra client's heartbeat for one analysis pass so the
+    /// Arm the engine's heartbeat for one analysis pass so the
     /// dashboard can show which function the pass is on. Without an event
     /// channel there is nothing to beat to — the scan runs unchanged.
     fn begin_scan_pass(&self, binary: &str, pass: &str) {
         if let Some(ref ev) = self.events {
-            self.ghidra.begin_pass(binary, pass, ev);
+            self.kuna.begin_pass(binary, pass, ev);
         }
     }
 
     /// Disarm the heartbeat — the pass is done.
     fn end_scan_pass(&self) {
-        self.ghidra.end_pass();
+        self.kuna.end_pass();
     }
 
     /// Recover the per-binary type database before a batch starts, unless one
@@ -1922,7 +1917,7 @@ impl TranslationPipeline {
     /// entirely.
     ///
     /// Returns whether a database is available afterwards. A missing
-    /// workspace, an unreachable Ghidra server, or a failed save only log a
+    /// workspace, a failed scan, or a failed save only log a
     /// warning and return `false` — prompts without data structure context
     /// are degraded, not fatal, and the batch proceeds either way.
     pub async fn ensure_type_database(&self, binary: &str) -> bool {
@@ -1991,7 +1986,7 @@ impl TranslationPipeline {
     /// entirely.
     ///
     /// Returns whether a result is available afterwards. A missing workspace,
-    /// an unreachable Ghidra server, or a failed save only log a warning and
+    /// a failed scan, or a failed save only log a warning and
     /// return `false` — prompts without type context are degraded, not
     /// fatal, and the batch proceeds either way.
     pub async fn ensure_type_inference(&self, binary: &str) -> bool {
@@ -2055,7 +2050,7 @@ impl TranslationPipeline {
     /// skipped entirely.
     ///
     /// Returns whether a result is available afterwards. A missing workspace,
-    /// an unreachable Ghidra server, or a failed save only log a warning and
+    /// a failed scan, or a failed save only log a warning and
     /// return `false` — prompts without algorithm context are degraded, not
     /// fatal, and the batch proceeds either way.
     pub async fn ensure_algorithm_recognition(&self, binary: &str) -> bool {
@@ -2123,7 +2118,7 @@ impl TranslationPipeline {
     /// saved for `binary`, the scan is skipped entirely.
     ///
     /// Returns whether a result is available afterwards. A missing workspace,
-    /// an unreachable Ghidra server, or a failed save only log a warning and
+    /// a failed scan, or a failed save only log a warning and
     /// return `false` — prompts without memory context are degraded, not
     /// fatal, and the batch proceeds either way.
     pub async fn ensure_memory_detection(&self, binary: &str) -> bool {
@@ -2194,7 +2189,7 @@ impl TranslationPipeline {
     /// `binary`, the scan is skipped entirely.
     ///
     /// Returns whether a result is available afterwards. A missing workspace,
-    /// an unreachable Ghidra server, or a failed save only log a warning and
+    /// a failed scan, or a failed save only log a warning and
     /// return `false` — prompts without concurrency context are degraded,
     /// not fatal, and the batch proceeds either way.
     pub async fn ensure_sync_detection(&self, binary: &str) -> bool {
@@ -2265,7 +2260,7 @@ impl TranslationPipeline {
     /// `binary`, the scan is skipped entirely.
     ///
     /// Returns whether a result is available afterwards. A missing workspace,
-    /// an unreachable Ghidra server, or a failed save only log a warning and
+    /// a failed scan, or a failed save only log a warning and
     /// return `false` — prompts without constant context are degraded, not
     /// fatal, and the batch proceeds either way.
     pub async fn ensure_const_detection(&self, binary: &str) -> bool {
@@ -2339,7 +2334,7 @@ impl TranslationPipeline {
     /// carry real closure contracts (see [`callback_signature_map`]).
     ///
     /// Returns whether a result is available afterwards. A missing workspace,
-    /// an unreachable Ghidra server, or a failed save only log a warning and
+    /// a failed scan, or a failed save only log a warning and
     /// return `false` — prompts without callback context are degraded, not
     /// fatal, and the batch proceeds either way.
     pub async fn ensure_callback_detection(&self, binary: &str) -> bool {
@@ -2413,7 +2408,7 @@ impl TranslationPipeline {
     /// is skipped entirely.
     ///
     /// Returns whether a result is available afterwards. A missing workspace,
-    /// an unreachable Ghidra server, or a failed save only log a warning and
+    /// a failed scan, or a failed save only log a warning and
     /// return `false` — prompts without control-flow context are degraded,
     /// not fatal, and the batch proceeds either way.
     pub async fn ensure_controlflow_detection(&self, binary: &str) -> bool {
@@ -2485,7 +2480,7 @@ impl TranslationPipeline {
     /// skipped entirely.
     ///
     /// Returns whether a result is available afterwards. A missing workspace,
-    /// an unreachable Ghidra server, or a failed save only log a warning and
+    /// a failed scan, or a failed save only log a warning and
     /// return `false` — prompts without string context are degraded, not
     /// fatal, and the batch proceeds either way.
     pub async fn ensure_string_context(&self, binary: &str) -> bool {
@@ -2553,7 +2548,7 @@ impl TranslationPipeline {
     /// is skipped entirely.
     ///
     /// Returns whether a result is available afterwards. A missing workspace,
-    /// an unreachable Ghidra server, or a failed save only log a warning and
+    /// a failed scan, or a failed save only log a warning and
     /// return `false` — prompts without API context are degraded, not fatal,
     /// and the batch proceeds either way.
     pub async fn ensure_api_detection(&self, binary: &str) -> bool {
@@ -2622,7 +2617,7 @@ impl TranslationPipeline {
     /// `binary`, the scan is skipped entirely.
     ///
     /// Returns whether a result is available afterwards. A missing workspace,
-    /// an unreachable Ghidra server, or a failed save only log a warning and
+    /// a failed scan, or a failed save only log a warning and
     /// return `false` — prompts without serialization context are degraded,
     /// not fatal, and the batch proceeds either way.
     pub async fn ensure_serialize_detection(&self, binary: &str) -> bool {
@@ -2728,8 +2723,8 @@ impl TranslationPipeline {
     ///
     /// # Notes
     ///
-    /// - If the LLM or GhidraMCP server is unreachable, the batch continues
-    ///   with the remaining functions (each failure is recorded individually).
+    /// - If the LLM is unreachable, the batch continues with the remaining
+    ///   functions (each failure is recorded individually).
     /// - The retry strategy (compile_fix → test_fix → escalate) is applied
     ///   independently to each function.
     /// - The callback is called on the **same task** that is running the batch;
@@ -2744,9 +2739,9 @@ impl TranslationPipeline {
     /// use std::path::Path;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let ghidra = calxgloss_ghidra::GhidraClient::new("http://localhost:8080")?;
+    /// let kuna = calxgloss_kuna::KunaSource::load(std::path::Path::new("target/game_logic.dll"))?;
     /// let llm = calxgloss_llm::LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;
-    /// let pipeline = TranslationPipeline::new(ghidra, llm, calxgloss_pal::ApiMappings::default());
+    /// let pipeline = TranslationPipeline::new(kuna, llm, calxgloss_pal::ApiMappings::default());
     /// let verifier = Verifier::new(Path::new("/tmp/calxgloss-work"))?;
     /// let config = calxgloss_translator::RetryConfig::default();
     ///
@@ -2784,9 +2779,9 @@ impl TranslationPipeline {
     /// use calxgloss_callgraph::CallGraph;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let ghidra = calxgloss_ghidra::GhidraClient::new("http://localhost:8080")?;
+    /// let kuna = calxgloss_kuna::KunaSource::load(std::path::Path::new("target/game_logic.dll"))?;
     /// let llm = calxgloss_llm::LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;
-    /// let pipeline = TranslationPipeline::new(ghidra, llm, calxgloss_pal::ApiMappings::default());
+    /// let pipeline = TranslationPipeline::new(kuna, llm, calxgloss_pal::ApiMappings::default());
     ///
     /// // Build or load the call graph first (e.g. via Analyzer::build_call_graph)
     /// let call_graph = /* CallGraph */ todo!();
@@ -3133,20 +3128,20 @@ impl TranslationPipeline {
     /// use std::path::Path;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let ghidra = calxgloss_ghidra::GhidraClient::new("http://localhost:8080")?;
+    /// let kuna = calxgloss_kuna::KunaSource::load(std::path::Path::new("target/game_logic.dll"))?;
     /// let llm = calxgloss_llm::LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;
     /// let config = calxgloss_translator::RetryConfig::default();
     /// let verifier = Verifier::new(Path::new("/tmp/calxgloss-work"))?;
     ///
-    /// // Build or load the enriched call graph first (needs its own Ghidra reference)
+    /// // Build or load the enriched call graph first (reads through the seam)
     /// let call_graph = build_enriched_call_graph(
-    ///     &ghidra,
+    ///     &calxgloss_ghidra::PipelineSource::from(kuna.clone()),
     ///     "game_logic.dll",
     ///     Path::new("/tmp/calxgloss-work"),
     ///     None,
     /// ).await?;
     ///
-    /// let pipeline = TranslationPipeline::new(ghidra, llm, calxgloss_pal::ApiMappings::default());
+    /// let pipeline = TranslationPipeline::new(kuna.clone(), llm, calxgloss_pal::ApiMappings::default());
     ///
     /// let results = pipeline.batch_translate_from_callgraph(
     ///     &call_graph,
@@ -3405,20 +3400,19 @@ impl TranslationPipeline {
 // Hallucination detector helpers
 // ============================================================
 
-/// Build a [`HallucinationDetector`] from Ghidra symbols and the PAL API
-/// catalogue.
+/// Build a [`HallucinationDetector`] from the program's symbols and the
+/// PAL API catalogue.
 ///
 /// The detector's known-good symbol set is the union of:
-/// 1. All Ghidra functions (exports and user-defined functions)
-/// 2. All Ghidra imports (DLL imports)
+/// 1. All engine functions (exports and user-defined functions)
+/// 2. All engine imports (DLL imports)
 /// 3. Every Windows API name from the PAL mapping table
 pub async fn build_hallucination_detector(
-    ghidra: &GhidraClient,
+    source: &KunaSource,
     api_mappings: &ApiMappings,
 ) -> HallucinationDetector {
-    // Fetch Ghidra functions
-    let ghidra_functions: Vec<String> = ghidra
-        .list_functions()
+    // Engine functions
+    let ghidra_functions: Vec<String> = ScanSource::functions(source)
         .await
         .ok()
         .into_iter()
@@ -3426,9 +3420,8 @@ pub async fn build_hallucination_detector(
         .map(|f| f.name)
         .collect();
 
-    // Fetch Ghidra imports
-    let ghidra_imports: Vec<String> = ghidra
-        .imports(None)
+    // Engine imports
+    let ghidra_imports: Vec<String> = ScanSource::imports(source)
         .await
         .ok()
         .into_iter()
@@ -3581,14 +3574,22 @@ mod tests {
     use calxgloss_typesdb::types::{ScanMetadata, TypeDatabase};
     use tempfile::TempDir;
 
-    /// A client pointed at a closed port: every scan request is refused, so
-    /// a successful recovery can only come from an already-cached database.
-    fn unreachable_ghidra() -> GhidraClient {
-        GhidraClient::new("http://127.0.0.1:9").expect("client config")
+    /// The fixture target loaded under the Kuna engine — the only engine
+    /// (issue #214). One source per test: the heartbeat pass state is
+    /// shared by clones, so tests that scan concurrently need their own
+    /// engine.
+    fn fixture_kuna() -> calxgloss_kuna::KunaSource {
+        let target = calxgloss_testfixtures::load_target()
+            .expect("fixture target should build and validate");
+        calxgloss_kuna::KunaSource::load(target.path())
+            .expect("the fixture must load for scanning with Kuna")
     }
 
+    /// A pipeline over the fixture engine, workspace included when there is
+    /// one. Functions the fixture does not list fail by name at the engine,
+    /// which is how the batch tests get their per-unit failures.
     fn pipeline_over(workspace: Option<&std::path::Path>) -> TranslationPipeline {
-        pipeline_with(unreachable_ghidra(), workspace)
+        pipeline_with(fixture_kuna(), workspace)
     }
 
     /// A stopped `StopSignal` ends `batch_translate` at the next unit
@@ -3618,7 +3619,7 @@ mod tests {
                 }),
             )
             .await
-            .expect("batch over unreachable ghidra still reports per-function failures");
+            .expect("batch over functions the fixture lacks still reports per-function failures");
 
         assert_eq!(completed, 1, "only the first unit should have run");
         assert_eq!(
@@ -3652,7 +3653,7 @@ mod tests {
                 None,
             )
             .await
-            .expect("batch over unreachable ghidra still reports per-function failures");
+            .expect("batch over functions the fixture lacks still reports per-function failures");
 
         let names: Vec<&str> = result.results.iter().map(|r| r.function.as_str()).collect();
         assert_eq!(
@@ -3688,7 +3689,7 @@ mod tests {
                 None,
             )
             .await
-            .expect("batch over unreachable ghidra still reports per-function failures");
+            .expect("batch over functions the fixture lacks still reports per-function failures");
 
         let names: Vec<&str> = result.results.iter().map(|r| r.function.as_str()).collect();
         assert_eq!(
@@ -3730,7 +3731,7 @@ mod tests {
                 None,
             )
             .await
-            .expect("batch over unreachable ghidra still reports per-function failures");
+            .expect("batch over functions the fixture lacks still reports per-function failures");
 
         let names: Vec<&str> = result.results.iter().map(|r| r.function.as_str()).collect();
         assert_eq!(
@@ -3742,12 +3743,12 @@ mod tests {
 
     // ─── Root-symbol guard & decompiler-warning triage ─────────────────
 
-    /// An import thunk named explicitly is refused before the Ghidra fetch:
-    /// the pipeline never spends a request (let alone an LLM call) on a
+    /// An import thunk named explicitly is refused before the engine fetch:
+    /// the pipeline never spends a read (let alone an LLM call) on a
     /// function that owns no logic, and the refusal names the matched
     /// pattern so the operator learns why.
     #[tokio::test]
-    async fn translate_refuses_an_import_thunk_before_touching_ghidra() {
+    async fn translate_refuses_an_import_thunk_before_touching_the_engine() {
         let result = pipeline_over(None)
             .translate(PROGRAM, "DelayLoad_cef_string_utf16_clear")
             .await;
@@ -3948,7 +3949,7 @@ mod tests {
                 None,
             )
             .await
-            .expect("batch over unreachable ghidra still reports per-function failures");
+            .expect("batch over functions the fixture lacks still reports per-function failures");
 
         assert!(
             result.results.is_empty(),
@@ -4046,7 +4047,7 @@ mod tests {
                 }),
             )
             .await
-            .expect("batch over unreachable ghidra still reports per-function failures");
+            .expect("batch over functions the fixture lacks still reports per-function failures");
         resume_task.await.expect("the resume task ran");
 
         assert_eq!(
@@ -4091,7 +4092,7 @@ mod tests {
                 }),
             )
             .await
-            .expect("batch over unreachable ghidra still reports per-function failures");
+            .expect("batch over functions the fixture lacks still reports per-function failures");
 
         assert_eq!(completed, 1, "the in-flight unit completed first");
         assert_eq!(
@@ -4147,7 +4148,7 @@ mod tests {
                 }),
             )
             .await
-            .expect("batch over unreachable ghidra still reports per-function failures");
+            .expect("batch over functions the fixture lacks still reports per-function failures");
         stop_task.await.expect("the stop task ran");
 
         assert_eq!(
@@ -4182,19 +4183,34 @@ mod tests {
     /// that never answers, so without the abort the batch would sit until
     /// the client timeout — the cancelled attempt is recorded as a failure,
     /// its callback still runs so the caller can archive its branch, and
+    /// Cancel-current on the unit in flight (issue #91, W2.2): the unit is
+    /// aborted at the earliest safe point — mid-LLM-call, against an LLM
+    /// that never answers, so without the abort the batch would sit until
+    /// the client timeout — the cancelled attempt is recorded as a failure,
+    /// its callback still runs so the caller can archive its branch, and
     /// the run continues with the next unit.
     #[tokio::test]
     async fn batch_translate_cancel_current_aborts_in_flight_unit_and_continues() {
         let dir = TempDir::new().expect("temp workspace");
         let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
 
-        // The fake Ghidra answers the pre-batch scans and resolves the
-        // first unit's fetch, so that unit reaches the hanging LLM and
-        // stays in flight; the second unit fails fast at the fetch.
-        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("fake ghidra client");
+        // The fixture engine resolves the first unit's fetch — its tick
+        // entry point, listed with MinGW's leading underscore — so that
+        // unit reaches the hanging LLM and stays in flight; the second
+        // unit fails fast at the fetch.
+        let kuna = fixture_kuna();
+        let listed = calxgloss_ghidra::ScanSource::functions(&kuna)
+            .await
+            .expect("fixture function listing");
+        let tick = listed
+            .iter()
+            .find(|f| f.name.trim_start_matches('_') == "fixture_tick")
+            .expect("the fixture lists its tick entry point")
+            .name
+            .clone();
         let llm = LlmClient::from_url(&hanging_llm().await, "qwen3").expect("llm config");
         let cancellation = UnitCancellation::new();
-        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default())
+        let pipeline = TranslationPipeline::new(kuna, llm, ApiMappings::default())
             .with_workspace(dir.path().to_path_buf())
             .with_unit_cancellation(cancellation.clone());
 
@@ -4215,7 +4231,7 @@ mod tests {
         let result = pipeline
             .batch_translate(
                 "game_logic.dll",
-                &["FUN_18003e750".to_string(), "UpdateScene".to_string()],
+                &[tick.clone(), "UpdateScene".to_string()],
                 &retry::RetryConfig::default(),
                 &verifier,
                 Some(&mut |_dll, function, func_result| {
@@ -4232,7 +4248,7 @@ mod tests {
 
         assert_eq!(
             cancelled_unit.function(),
-            "FUN_18003e750",
+            tick,
             "the cancellation lands on the unit that was in flight"
         );
         assert_eq!(
@@ -4241,7 +4257,7 @@ mod tests {
             "the cancelled unit is recorded and the run continued to the next unit"
         );
         let cancelled = &result.results[0];
-        assert_eq!(cancelled.function, "FUN_18003e750");
+        assert_eq!(cancelled.function, tick);
         assert!(
             !cancelled.success,
             "the cancelled attempt is recorded as failed"
@@ -4252,10 +4268,7 @@ mod tests {
         );
         assert_eq!(
             *seen.lock().expect("callback lock is never poisoned"),
-            vec![
-                ("FUN_18003e750".to_string(), false),
-                ("UpdateScene".to_string(), false),
-            ],
+            vec![(tick.clone(), false), ("UpdateScene".to_string(), false),],
             "the caller's callback ran for the cancelled unit (nothing is \
              discarded) and the next unit was attempted"
         );
@@ -4264,24 +4277,21 @@ mod tests {
     #[tokio::test]
     async fn a_cached_database_is_reused_without_rescanning() {
         let dir = TempDir::new().unwrap();
-        TypeDatabasePersistor::new(dir.path())
+        let persistor = TypeDatabasePersistor::new(dir.path());
+        persistor
             .save(&TypeDatabase::new(ScanMetadata::new("eqmain.dll")))
             .unwrap();
+        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
 
-        // The Ghidra server is unreachable, so `true` can only come from the cache.
+        // The fixture engine would rescan successfully, so `true` alone
+        // proves nothing: the reuse is proven by the saved document's
+        // bytes surviving untouched - a rescan would rewrite them.
         let pipeline = pipeline_over(Some(dir.path()));
         assert!(pipeline.ensure_type_database("eqmain.dll").await);
-    }
-
-    #[tokio::test]
-    async fn a_failed_recovery_degrades_instead_of_failing() {
-        let dir = TempDir::new().unwrap();
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(!pipeline.ensure_type_database("eqmain.dll").await);
-        assert!(
-            !TypeDatabasePersistor::new(dir.path()).exists("eqmain.dll"),
-            "a failed scan persists nothing"
+        assert_eq!(
+            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
+            saved,
+            "a cached document must not be rewritten by a rescan"
         );
     }
 
@@ -4294,24 +4304,21 @@ mod tests {
     #[tokio::test]
     async fn a_cached_inference_result_is_reused_without_rescanning() {
         let dir = TempDir::new().unwrap();
-        TypeInferPersistor::new(dir.path())
+        let persistor = TypeInferPersistor::new(dir.path());
+        persistor
             .save(&TypeInferenceResult::new(ScanMetadata::new("eqmain.dll")))
             .unwrap();
+        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
 
-        // The Ghidra server is unreachable, so `true` can only come from the cache.
+        // The fixture engine would rescan successfully, so `true` alone
+        // proves nothing: the reuse is proven by the saved document's
+        // bytes surviving untouched - a rescan would rewrite them.
         let pipeline = pipeline_over(Some(dir.path()));
         assert!(pipeline.ensure_type_inference("eqmain.dll").await);
-    }
-
-    #[tokio::test]
-    async fn a_failed_inference_degrades_instead_of_failing() {
-        let dir = TempDir::new().unwrap();
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(!pipeline.ensure_type_inference("eqmain.dll").await);
-        assert!(
-            !TypeInferPersistor::new(dir.path()).exists("eqmain.dll"),
-            "a failed scan persists nothing"
+        assert_eq!(
+            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
+            saved,
+            "a cached document must not be rewritten by a rescan"
         );
     }
 
@@ -4324,26 +4331,23 @@ mod tests {
     #[tokio::test]
     async fn a_cached_algorithm_result_is_reused_without_rescanning() {
         let dir = TempDir::new().unwrap();
-        AlgorithmPersistor::new(dir.path())
+        let persistor = AlgorithmPersistor::new(dir.path());
+        persistor
             .save(&AlgorithmRecognitionResult::new(ScanMetadata::new(
                 "eqmain.dll",
             )))
             .unwrap();
+        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
 
-        // The Ghidra server is unreachable, so `true` can only come from the cache.
+        // The fixture engine would rescan successfully, so `true` alone
+        // proves nothing: the reuse is proven by the saved document's
+        // bytes surviving untouched - a rescan would rewrite them.
         let pipeline = pipeline_over(Some(dir.path()));
         assert!(pipeline.ensure_algorithm_recognition("eqmain.dll").await);
-    }
-
-    #[tokio::test]
-    async fn a_failed_algorithm_scan_degrades_instead_of_failing() {
-        let dir = TempDir::new().unwrap();
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(!pipeline.ensure_algorithm_recognition("eqmain.dll").await);
-        assert!(
-            !AlgorithmPersistor::new(dir.path()).exists("eqmain.dll"),
-            "a failed scan persists nothing"
+        assert_eq!(
+            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
+            saved,
+            "a cached document must not be rewritten by a rescan"
         );
     }
 
@@ -4353,87 +4357,45 @@ mod tests {
         assert!(!pipeline.ensure_algorithm_recognition("eqmain.dll").await);
     }
 
-    /// A pipeline over a caller-supplied Ghidra client, workspace included
+    /// A pipeline over a caller-supplied engine source, workspace included
     /// when there is one.
     fn pipeline_with(
-        ghidra: GhidraClient,
+        kuna: calxgloss_kuna::KunaSource,
         workspace: Option<&std::path::Path>,
     ) -> TranslationPipeline {
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").expect("llm config");
-        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+        let pipeline = TranslationPipeline::new(kuna, llm, ApiMappings::default());
         match workspace {
             Some(dir) => pipeline.with_workspace(dir.to_path_buf()),
             None => pipeline,
         }
     }
 
-    /// A stand-in GhidraMCP server answering the endpoints the pre-batch
-    /// scans touch — the function listing, the name search that resolves
-    /// it, the decompile by address, the string listing and xref lookup
-    /// a string-context scan adds, and the import listing an API scan
-    /// adds — with one canned `malloc`/`free` function and one string it
-    /// references, so the scan-to-save path runs without a real Ghidra.
-    /// Returns the base URL to point a client at.
-    async fn fake_ghidra() -> String {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("fake server should bind");
-        let addr = listener.local_addr().expect("fake server address");
-        tokio::spawn(async move {
-            while let Ok((mut stream, _)) = listener.accept().await {
-                tokio::spawn(async move {
-                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                    let mut request = [0u8; 2048];
-                    let read = stream.read(&mut request).await.unwrap_or(0);
-                    let path = String::from_utf8_lossy(&request[..read])
-                        .split_whitespace()
-                        .nth(1)
-                        .unwrap_or_default()
-                        .to_string();
-                    let body = if path.starts_with("/list_functions")
-                        || path.starts_with("/search_functions")
-                    {
-                        "FUN_18003e750 at 18003e750".to_string()
-                    } else if path.starts_with("/decompile_function") {
-                        "undefined FUN_18003e750(void)\n{\n  void *pv = malloc(0x10);\n  free(pv);\n}\n"
-                            .to_string()
-                    } else if path.starts_with("/list_strings") {
-                        "180128d18: \"Journal.txt\"".to_string()
-                    } else if path.starts_with("/list_imports") {
-                        "malloc -> EXTERNAL:00000123\nfree -> EXTERNAL:00000124".to_string()
-                    } else if path.starts_with("/get_xrefs_to") {
-                        "From 18003e750 in FUN_18003e750 [DATA]".to_string()
-                    } else {
-                        "Error 404: No context found for request".to_string()
-                    };
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    );
-                    let _ = stream.write_all(response.as_bytes()).await;
-                });
-            }
-        });
-        format!("http://{addr}")
-    }
-
     #[tokio::test]
     async fn a_cached_memory_result_is_reused_without_rescanning() {
         let dir = TempDir::new().unwrap();
-        MemoryPersistor::new(dir.path())
+        let persistor = MemoryPersistor::new(dir.path());
+        persistor
             .save(&MemoryResult::new(ScanMetadata::new("eqmain.dll")))
             .unwrap();
+        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
 
-        // The Ghidra server is unreachable, so `true` can only come from the cache.
+        // The fixture engine would rescan successfully, so `true` alone
+        // proves nothing: the reuse is proven by the saved document's
+        // bytes surviving untouched - a rescan would rewrite them.
         let pipeline = pipeline_over(Some(dir.path()));
         assert!(pipeline.ensure_memory_detection("eqmain.dll").await);
+        assert_eq!(
+            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
+            saved,
+            "a cached document must not be rewritten by a rescan"
+        );
     }
 
     #[tokio::test]
     async fn a_cache_miss_scans_and_saves_the_result() {
         let dir = TempDir::new().unwrap();
-        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
-        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+        let pipeline = pipeline_over(Some(dir.path()));
 
         assert!(pipeline.ensure_memory_detection("eqmain.dll").await);
 
@@ -4454,18 +4416,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failed_memory_scan_degrades_instead_of_failing() {
-        let dir = TempDir::new().unwrap();
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(!pipeline.ensure_memory_detection("eqmain.dll").await);
-        assert!(
-            !MemoryPersistor::new(dir.path()).exists("eqmain.dll"),
-            "a failed scan persists nothing"
-        );
-    }
-
-    #[tokio::test]
     async fn a_failed_memory_save_degrades_instead_of_failing() {
         let dir = TempDir::new().unwrap();
         // `re/analysis` as a plain file makes the save's directory
@@ -4473,8 +4423,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("re")).unwrap();
         std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
 
-        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
-        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+        let pipeline = pipeline_over(Some(dir.path()));
 
         assert!(!pipeline.ensure_memory_detection("eqmain.dll").await);
     }
@@ -4488,20 +4437,28 @@ mod tests {
     #[tokio::test]
     async fn a_cached_concurrency_result_is_reused_without_rescanning() {
         let dir = TempDir::new().unwrap();
-        SyncPersistor::new(dir.path())
+        let persistor = SyncPersistor::new(dir.path());
+        persistor
             .save(&SyncResult::new(ScanMetadata::new("eqmain.dll")))
             .unwrap();
+        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
 
-        // The Ghidra server is unreachable, so `true` can only come from the cache.
+        // The fixture engine would rescan successfully, so `true` alone
+        // proves nothing: the reuse is proven by the saved document's
+        // bytes surviving untouched - a rescan would rewrite them.
         let pipeline = pipeline_over(Some(dir.path()));
         assert!(pipeline.ensure_sync_detection("eqmain.dll").await);
+        assert_eq!(
+            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
+            saved,
+            "a cached document must not be rewritten by a rescan"
+        );
     }
 
     #[tokio::test]
     async fn a_concurrency_cache_miss_scans_and_saves_the_result() {
         let dir = TempDir::new().unwrap();
-        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
-        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+        let pipeline = pipeline_over(Some(dir.path()));
 
         assert!(pipeline.ensure_sync_detection("eqmain.dll").await);
 
@@ -4522,18 +4479,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failed_concurrency_scan_degrades_instead_of_failing() {
-        let dir = TempDir::new().unwrap();
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(!pipeline.ensure_sync_detection("eqmain.dll").await);
-        assert!(
-            !SyncPersistor::new(dir.path()).exists("eqmain.dll"),
-            "a failed scan persists nothing"
-        );
-    }
-
-    #[tokio::test]
     async fn a_failed_concurrency_save_degrades_instead_of_failing() {
         let dir = TempDir::new().unwrap();
         // `re/analysis` as a plain file makes the save's directory
@@ -4541,8 +4486,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("re")).unwrap();
         std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
 
-        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
-        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+        let pipeline = pipeline_over(Some(dir.path()));
 
         assert!(!pipeline.ensure_sync_detection("eqmain.dll").await);
     }
@@ -4556,20 +4500,28 @@ mod tests {
     #[tokio::test]
     async fn a_cached_serialization_result_is_reused_without_rescanning() {
         let dir = TempDir::new().unwrap();
-        SerializePersistor::new(dir.path())
+        let persistor = SerializePersistor::new(dir.path());
+        persistor
             .save(&SerializeResult::new(ScanMetadata::new("eqmain.dll")))
             .unwrap();
+        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
 
-        // The Ghidra server is unreachable, so `true` can only come from the cache.
+        // The fixture engine would rescan successfully, so `true` alone
+        // proves nothing: the reuse is proven by the saved document's
+        // bytes surviving untouched - a rescan would rewrite them.
         let pipeline = pipeline_over(Some(dir.path()));
         assert!(pipeline.ensure_serialize_detection("eqmain.dll").await);
+        assert_eq!(
+            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
+            saved,
+            "a cached document must not be rewritten by a rescan"
+        );
     }
 
     #[tokio::test]
     async fn a_serialization_cache_miss_scans_and_saves_the_result() {
         let dir = TempDir::new().unwrap();
-        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
-        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+        let pipeline = pipeline_over(Some(dir.path()));
 
         assert!(pipeline.ensure_serialize_detection("eqmain.dll").await);
 
@@ -4590,18 +4542,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failed_serialization_scan_degrades_instead_of_failing() {
-        let dir = TempDir::new().unwrap();
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(!pipeline.ensure_serialize_detection("eqmain.dll").await);
-        assert!(
-            !SerializePersistor::new(dir.path()).exists("eqmain.dll"),
-            "a failed scan persists nothing"
-        );
-    }
-
-    #[tokio::test]
     async fn a_failed_serialization_save_degrades_instead_of_failing() {
         let dir = TempDir::new().unwrap();
         // `re/analysis` as a plain file makes the save's directory
@@ -4609,8 +4549,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("re")).unwrap();
         std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
 
-        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
-        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+        let pipeline = pipeline_over(Some(dir.path()));
 
         assert!(!pipeline.ensure_serialize_detection("eqmain.dll").await);
     }
@@ -4624,20 +4563,28 @@ mod tests {
     #[tokio::test]
     async fn a_cached_constant_result_is_reused_without_rescanning() {
         let dir = TempDir::new().unwrap();
-        ConstPersistor::new(dir.path())
+        let persistor = ConstPersistor::new(dir.path());
+        persistor
             .save(&ConstResult::new(ScanMetadata::new("eqmain.dll")))
             .unwrap();
+        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
 
-        // The Ghidra server is unreachable, so `true` can only come from the cache.
+        // The fixture engine would rescan successfully, so `true` alone
+        // proves nothing: the reuse is proven by the saved document's
+        // bytes surviving untouched - a rescan would rewrite them.
         let pipeline = pipeline_over(Some(dir.path()));
         assert!(pipeline.ensure_const_detection("eqmain.dll").await);
+        assert_eq!(
+            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
+            saved,
+            "a cached document must not be rewritten by a rescan"
+        );
     }
 
     #[tokio::test]
     async fn a_constant_cache_miss_scans_and_saves_the_result() {
         let dir = TempDir::new().unwrap();
-        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
-        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+        let pipeline = pipeline_over(Some(dir.path()));
 
         assert!(pipeline.ensure_const_detection("eqmain.dll").await);
 
@@ -4658,18 +4605,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failed_constant_scan_degrades_instead_of_failing() {
-        let dir = TempDir::new().unwrap();
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(!pipeline.ensure_const_detection("eqmain.dll").await);
-        assert!(
-            !ConstPersistor::new(dir.path()).exists("eqmain.dll"),
-            "a failed scan persists nothing"
-        );
-    }
-
-    #[tokio::test]
     async fn a_failed_constant_save_degrades_instead_of_failing() {
         let dir = TempDir::new().unwrap();
         // `re/analysis` as a plain file makes the save's directory
@@ -4677,8 +4612,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("re")).unwrap();
         std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
 
-        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
-        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+        let pipeline = pipeline_over(Some(dir.path()));
 
         assert!(!pipeline.ensure_const_detection("eqmain.dll").await);
     }
@@ -4692,20 +4626,28 @@ mod tests {
     #[tokio::test]
     async fn a_cached_callback_result_is_reused_without_rescanning() {
         let dir = TempDir::new().unwrap();
-        CallbackPersistor::new(dir.path())
+        let persistor = CallbackPersistor::new(dir.path());
+        persistor
             .save(&CallbackResult::new(ScanMetadata::new("eqmain.dll")))
             .unwrap();
+        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
 
-        // The Ghidra server is unreachable, so `true` can only come from the cache.
+        // The fixture engine would rescan successfully, so `true` alone
+        // proves nothing: the reuse is proven by the saved document's
+        // bytes surviving untouched - a rescan would rewrite them.
         let pipeline = pipeline_over(Some(dir.path()));
         assert!(pipeline.ensure_callback_detection("eqmain.dll").await);
+        assert_eq!(
+            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
+            saved,
+            "a cached document must not be rewritten by a rescan"
+        );
     }
 
     #[tokio::test]
     async fn a_callback_cache_miss_scans_and_saves_the_result() {
         let dir = TempDir::new().unwrap();
-        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
-        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+        let pipeline = pipeline_over(Some(dir.path()));
 
         assert!(pipeline.ensure_callback_detection("eqmain.dll").await);
 
@@ -4726,18 +4668,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failed_callback_scan_degrades_instead_of_failing() {
-        let dir = TempDir::new().unwrap();
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(!pipeline.ensure_callback_detection("eqmain.dll").await);
-        assert!(
-            !CallbackPersistor::new(dir.path()).exists("eqmain.dll"),
-            "a failed scan persists nothing"
-        );
-    }
-
-    #[tokio::test]
     async fn a_failed_callback_save_degrades_instead_of_failing() {
         let dir = TempDir::new().unwrap();
         // `re/analysis` as a plain file makes the save's directory
@@ -4745,8 +4675,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("re")).unwrap();
         std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
 
-        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
-        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+        let pipeline = pipeline_over(Some(dir.path()));
 
         assert!(!pipeline.ensure_callback_detection("eqmain.dll").await);
     }
@@ -4760,20 +4689,28 @@ mod tests {
     #[tokio::test]
     async fn a_cached_controlflow_result_is_reused_without_rescanning() {
         let dir = TempDir::new().unwrap();
-        ControlFlowPersistor::new(dir.path())
+        let persistor = ControlFlowPersistor::new(dir.path());
+        persistor
             .save(&ControlFlowResult::new(ScanMetadata::new("eqmain.dll")))
             .unwrap();
+        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
 
-        // The Ghidra server is unreachable, so `true` can only come from the cache.
+        // The fixture engine would rescan successfully, so `true` alone
+        // proves nothing: the reuse is proven by the saved document's
+        // bytes surviving untouched - a rescan would rewrite them.
         let pipeline = pipeline_over(Some(dir.path()));
         assert!(pipeline.ensure_controlflow_detection("eqmain.dll").await);
+        assert_eq!(
+            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
+            saved,
+            "a cached document must not be rewritten by a rescan"
+        );
     }
 
     #[tokio::test]
     async fn a_controlflow_cache_miss_scans_and_saves_the_result() {
         let dir = TempDir::new().unwrap();
-        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
-        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+        let pipeline = pipeline_over(Some(dir.path()));
 
         assert!(pipeline.ensure_controlflow_detection("eqmain.dll").await);
 
@@ -4794,18 +4731,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_failed_controlflow_scan_degrades_instead_of_failing() {
-        let dir = TempDir::new().unwrap();
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(!pipeline.ensure_controlflow_detection("eqmain.dll").await);
-        assert!(
-            !ControlFlowPersistor::new(dir.path()).exists("eqmain.dll"),
-            "a failed scan persists nothing"
-        );
-    }
-
-    #[tokio::test]
     async fn a_failed_controlflow_save_degrades_instead_of_failing() {
         let dir = TempDir::new().unwrap();
         // `re/analysis` as a plain file makes the save's directory
@@ -4813,8 +4738,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("re")).unwrap();
         std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
 
-        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
-        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+        let pipeline = pipeline_over(Some(dir.path()));
 
         assert!(!pipeline.ensure_controlflow_detection("eqmain.dll").await);
     }
@@ -4828,20 +4752,28 @@ mod tests {
     #[tokio::test]
     async fn a_cached_string_context_is_reused_without_rescanning() {
         let dir = TempDir::new().unwrap();
-        StringContextPersistor::new(dir.path())
+        let persistor = StringContextPersistor::new(dir.path());
+        persistor
             .save(&StringContextResult::new(ScanMetadata::new("eqmain.dll")))
             .unwrap();
+        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
 
-        // The Ghidra server is unreachable, so `true` can only come from the cache.
+        // The fixture engine would rescan successfully, so `true` alone
+        // proves nothing: the reuse is proven by the saved document's
+        // bytes surviving untouched - a rescan would rewrite them.
         let pipeline = pipeline_over(Some(dir.path()));
         assert!(pipeline.ensure_string_context("eqmain.dll").await);
+        assert_eq!(
+            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
+            saved,
+            "a cached document must not be rewritten by a rescan"
+        );
     }
 
     #[tokio::test]
     async fn a_string_context_cache_miss_scans_and_saves_the_result() {
         let dir = TempDir::new().unwrap();
-        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
-        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+        let pipeline = pipeline_over(Some(dir.path()));
 
         assert!(pipeline.ensure_string_context("eqmain.dll").await);
 
@@ -4860,23 +4792,9 @@ mod tests {
             "the document should be filed under re/analysis/stringctx"
         );
         let saved = persistor.load("eqmain.dll").expect("saved document");
-        assert_eq!(
-            saved.findings.len(),
-            1,
-            "the canned string reaches the function through the xref fallback"
-        );
-        assert_eq!(saved.findings[0].function(), "FUN_18003e750");
-    }
-
-    #[tokio::test]
-    async fn a_failed_string_context_scan_degrades_instead_of_failing() {
-        let dir = TempDir::new().unwrap();
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(!pipeline.ensure_string_context("eqmain.dll").await);
         assert!(
-            !StringContextPersistor::new(dir.path()).exists("eqmain.dll"),
-            "a failed scan persists nothing"
+            !saved.findings.is_empty(),
+            "the fixture's referenced literals should tie to their functions"
         );
     }
 
@@ -4888,8 +4806,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("re")).unwrap();
         std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
 
-        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
-        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+        let pipeline = pipeline_over(Some(dir.path()));
 
         assert!(!pipeline.ensure_string_context("eqmain.dll").await);
     }
@@ -4903,20 +4820,28 @@ mod tests {
     #[tokio::test]
     async fn a_cached_api_result_is_reused_without_rescanning() {
         let dir = TempDir::new().unwrap();
-        ApiPersistor::new(dir.path())
+        let persistor = ApiPersistor::new(dir.path());
+        persistor
             .save(&ApiDetectionResult::new(ScanMetadata::new("eqmain.dll")))
             .unwrap();
+        let saved = std::fs::read(persistor.path_for("eqmain.dll")).expect("saved document");
 
-        // The Ghidra server is unreachable, so `true` can only come from the cache.
+        // The fixture engine would rescan successfully, so `true` alone
+        // proves nothing: the reuse is proven by the saved document's
+        // bytes surviving untouched - a rescan would rewrite them.
         let pipeline = pipeline_over(Some(dir.path()));
         assert!(pipeline.ensure_api_detection("eqmain.dll").await);
+        assert_eq!(
+            std::fs::read(persistor.path_for("eqmain.dll")).expect("document after recovery"),
+            saved,
+            "a cached document must not be rewritten by a rescan"
+        );
     }
 
     #[tokio::test]
     async fn an_api_cache_miss_scans_and_saves_the_result() {
         let dir = TempDir::new().unwrap();
-        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
-        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+        let pipeline = pipeline_over(Some(dir.path()));
 
         assert!(pipeline.ensure_api_detection("eqmain.dll").await);
 
@@ -4935,27 +4860,21 @@ mod tests {
             "the document should be filed under re/analysis/apidetect"
         );
         let saved = persistor.load("eqmain.dll").expect("saved document");
-        // The canned program's two imports are identified; the call graph
-        // the builder extracts carries only Ghidra-named callees, so the
-        // decompiled `malloc`/`free` calls add no usage edges here — the
-        // usage path is covered by the apidetect crate's own tests.
-        assert_eq!(saved.findings.len(), 2, "the two import entries");
-        assert_eq!(saved.findings[0].kind(), "import");
-        assert_eq!(saved.findings[0].target(), "malloc");
-        assert_eq!(saved.findings[0].library(), Some("POSIX"));
-        assert_eq!(saved.findings[1].kind(), "import");
-        assert_eq!(saved.findings[1].target(), "free");
-    }
-
-    #[tokio::test]
-    async fn a_failed_api_scan_degrades_instead_of_failing() {
-        let dir = TempDir::new().unwrap();
-        let pipeline = pipeline_over(Some(dir.path()));
-
-        assert!(!pipeline.ensure_api_detection("eqmain.dll").await);
+        // The fixture's import table is identified through the seam; the
+        // fixture-named callees the call graph extracts map to no PAL
+        // library, so the usage path stays quiet here — it is covered by
+        // the apidetect crate's own tests.
         assert!(
-            !ApiPersistor::new(dir.path()).exists("eqmain.dll"),
-            "a failed scan persists nothing"
+            saved
+                .findings
+                .iter()
+                .any(|f| f.kind() == "import" && f.target().contains("puts")),
+            "the fixture's `puts` import should be identified, got {:?}",
+            saved
+                .findings
+                .iter()
+                .map(|f| (f.kind(), f.target()))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -4967,8 +4886,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("re")).unwrap();
         std::fs::write(dir.path().join("re").join("analysis"), "not a directory").unwrap();
 
-        let ghidra = GhidraClient::new(&fake_ghidra().await).expect("client config");
-        let pipeline = pipeline_with(ghidra, Some(dir.path()));
+        let pipeline = pipeline_over(Some(dir.path()));
 
         assert!(!pipeline.ensure_api_detection("eqmain.dll").await);
     }
@@ -4980,216 +4898,98 @@ mod tests {
     }
 
     // ============================================================
-    // The cached Ghidra source through the batch pipeline (issue #105)
+    // The scan cache through the batch pipeline (issue #105)
     // ============================================================
 
     const PROGRAM: &str = "LaunchPad.exe";
-    const KNOWN_FUNCTION: &str = "FUN_18003e750";
 
-    /// The read endpoints the batch's scans reach the server through; the
-    /// cached source must make a second batch's pass over them cost
-    /// nothing. Probe endpoints (`get_current_address`,
-    /// `get_current_function`) are exempt — every batch re-probes to
-    /// validate the cache manifest.
-    const READ_ENDPOINTS: &[&str] = &[
-        "list_functions",
-        "search_functions",
-        "decompile_function",
-        "list_strings",
-        "get_xrefs_to",
-        "list_data_types",
-        "get_struct_layout",
-        "get_enum_values",
-        "list_data_items",
-        "list_imports",
-        "list_exports",
-        "list_segments",
-        "read_memory",
-    ];
-
-    /// A stand-in GhidraMCP server answering every read endpoint the
-    /// pipeline's scans touch with one canned record each (the xref stays
-    /// inside `KNOWN_FUNCTION` so every name resolution in the batch
-    /// collapses onto the one function), counting how many times it served
-    /// each endpoint.
-    struct CountingGhidra {
-        base_url: String,
-        calls: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, usize>>>,
+    /// A pipeline over the fixture engine with a workspace holding a copy
+    /// of the fixture binary — the bytes both batches hash identically,
+    /// the cache's validity key. Returns the pipeline and the copy's path.
+    fn cached_pipeline(dir: &std::path::Path) -> (TranslationPipeline, std::path::PathBuf) {
+        let fixture = calxgloss_testfixtures::load_target().expect("fixture target");
+        let binary_file = dir.join(calxgloss_testfixtures::TARGET_FILE_NAME);
+        std::fs::copy(fixture.path(), &binary_file).expect("fixture copied into the workspace");
+        let pipeline = pipeline_with(fixture_kuna(), Some(dir)).with_binary_path(&binary_file);
+        (pipeline, binary_file)
     }
 
-    impl CountingGhidra {
-        async fn start() -> Self {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-                .await
-                .expect("fake server should bind");
-            let addr = listener.local_addr().expect("fake server address");
-            let calls: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, usize>>> =
-                std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
-            let counted = std::sync::Arc::clone(&calls);
-            tokio::spawn(async move {
-                while let Ok((mut stream, _)) = listener.accept().await {
-                    let counted = std::sync::Arc::clone(&counted);
-                    tokio::spawn(async move {
-                        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                        let mut request = [0u8; 2048];
-                        let read = stream.read(&mut request).await.unwrap_or(0);
-                        let path = String::from_utf8_lossy(&request[..read])
-                            .split_whitespace()
-                            .nth(1)
-                            .unwrap_or_default()
-                            .to_string();
-                        let endpoint = path
-                            .split('?')
-                            .next()
-                            .unwrap_or_default()
-                            .trim_start_matches('/');
-                        if endpoint != "favicon.ico" {
-                            *counted
-                                .lock()
-                                .expect("counts lock")
-                                .entry(endpoint.to_string())
-                                .or_insert(0) += 1;
-                        }
-                        let body = if endpoint == "check_connection" {
-                            format!("Connected: GhidraMCP plugin running with program '{PROGRAM}'")
-                        } else if endpoint == "get_current_address"
-                            || endpoint == "get_current_function"
-                        {
-                            format!(
-                                "{{\"address\":\"180000000\",\"program\":\"{PROGRAM}\",\"function_name\":\"{KNOWN_FUNCTION}\"}}"
-                            )
-                        } else if endpoint == "list_functions" || endpoint == "search_functions" {
-                            format!("{KNOWN_FUNCTION} at 18003e750")
-                        } else if endpoint == "decompile_function" {
-                            format!(
-                                "undefined {KNOWN_FUNCTION}(void)\n{{\n  void *pv = malloc(0x10);\n  free(pv);\n}}\n"
-                            )
-                        } else if endpoint == "list_strings" {
-                            "180128d18: \"Journal.txt\"".to_string()
-                        } else if endpoint == "get_xrefs_to" {
-                            format!("From 18003e750 in {KNOWN_FUNCTION} [DATA]")
-                        } else if endpoint == "list_data_types" {
-                            "_EXCEPTION_DISPOSITION | excpt.h | 4 bytes | /excpt.h/_EXCEPTION_DISPOSITION"
-                                .to_string()
-                        } else if endpoint == "get_struct_layout" {
-                            "Structure: IMAGE_DOS_HEADER\nSize: 128 bytes\nAlignment: 1\n\nLayout:\nOffset | Size | Type | Name\n-------|------|------|-----\n     0 |    2 | char[2] | e_magic\n"
-                                .to_string()
-                        } else if endpoint == "get_enum_values" {
-                            "Enumeration: _EXCEPTION_DISPOSITION\nSize: 4 bytes\n\nValues:\nName | Value\n-----|------\nExceptionContinueExecution | 0 (0x0)\n"
-                                .to_string()
-                        } else if endpoint == "list_data_items" {
-                            "IMAGE_DOS_HEADER_180000000 @ 180000000 [IMAGE_DOS_HEADER] (128 bytes)"
-                                .to_string()
-                        } else if endpoint == "list_imports" {
-                            "malloc -> EXTERNAL:00000123\nfree -> EXTERNAL:00000124".to_string()
-                        } else if endpoint == "list_exports" {
-                            "DllMain -> 18000c690".to_string()
-                        } else if endpoint == "list_segments" {
-                            ".text: 180000000 - 1801261ff".to_string()
-                        } else if endpoint == "read_memory" {
-                            "{\"address\":\"1801306f0\",\"length\":8,\"data\":[0,171,3,128,1,0,0,0],\"hex\":\"00ab038001000000\"}"
-                                .to_string()
-                        } else if endpoint == "add_function_tag" {
-                            "Tag added".to_string()
-                        } else {
-                            "Error 404: No context found for request".to_string()
-                        };
-                        let response = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                            body.len()
-                        );
-                        let _ = stream.write_all(response.as_bytes()).await;
-                    });
+    /// The one scan-cache document directory the batch built under
+    /// `re/ghidra-cache/{identity}/{sha256}/`.
+    fn scan_cache_dir(workspace: &std::path::Path) -> std::path::PathBuf {
+        let root = workspace.join("re").join("ghidra-cache");
+        let mut found = Vec::new();
+        for identity in std::fs::read_dir(&root).expect("cache root").flatten() {
+            for hash in std::fs::read_dir(identity.path())
+                .expect("identity dir")
+                .flatten()
+            {
+                let dir = hash.path();
+                if dir.join("imports.json").is_file() {
+                    found.push(dir);
                 }
-            });
-            Self {
-                base_url: format!("http://{addr}"),
-                calls,
             }
         }
-
-        fn count(&self, endpoint: &str) -> usize {
-            *self
-                .calls
-                .lock()
-                .expect("counts lock")
-                .get(endpoint)
-                .unwrap_or(&0)
-        }
-
-        /// How many read-endpoint calls the server has served in total.
-        fn read_calls(&self) -> usize {
-            READ_ENDPOINTS.iter().map(|e| self.count(e)).sum()
-        }
+        assert_eq!(
+            found.len(),
+            1,
+            "one cache directory for one binary's bytes: {found:?}"
+        );
+        found.pop().expect("one cache directory")
     }
 
-    /// A pipeline pointed at a fresh counting server, with a workspace and
-    /// a target-binary file whose bytes both batches hash identically —
-    /// the cache's validity key. Returns the pipeline and its server.
-    async fn cached_pipeline(dir: &std::path::Path) -> (TranslationPipeline, CountingGhidra) {
-        let binary_file = dir.join(PROGRAM);
-        std::fs::write(&binary_file, b"MZ\x90\x00 stand-in binary bytes").expect("write fake file");
-        let server = CountingGhidra::start().await;
-        let ghidra = GhidraClient::new(&server.base_url).expect("client config");
-        let pipeline = pipeline_with(ghidra, Some(dir)).with_binary_path(&binary_file);
-        (pipeline, server)
+    /// An import listing the engine could never answer, filed where the
+    /// real one was: if a batch's API findings carry it, that read came
+    /// off disk — the only possible replay source.
+    fn sentinel_imports() -> Vec<calxgloss_ghidra::Symbol> {
+        vec![calxgloss_ghidra::Symbol {
+            name: "sentinel_import_xyz".into(),
+            address: 1,
+            imported: true,
+        }]
     }
 
-    /// The marquee: a first batch reads live and writes through, and a
-    /// second batch over the same workspace with unchanged binary bytes
-    /// makes zero live Ghidra read calls — every scan replays from the
-    /// Ghidra cache. The engine-result documents are wiped between batches
-    /// so the scans genuinely re-run.
+    /// The marquee: a first batch reads live and writes the scan cache
+    /// through, and a second batch over the same workspace with unchanged
+    /// binary bytes replays from the cache. With no server to count calls
+    /// at, the instrumentation is the documents themselves — the pattern
+    /// proven in the seam's cache tests: the import listing is tampered,
+    /// and the API scan's persisted findings prove which tier answered.
+    /// The engine-result documents are wiped between batches so the scans
+    /// genuinely re-run.
     #[tokio::test]
-    async fn a_second_batch_over_unchanged_bytes_makes_no_live_ghidra_reads() {
+    async fn a_second_batch_over_unchanged_bytes_replays_from_the_cache() {
         let dir = TempDir::new().expect("temp workspace");
-        let (pipeline, server) = cached_pipeline(dir.path()).await;
+        let (pipeline, _) = cached_pipeline(dir.path());
         let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
 
-        // Batch 1, cold: the eleven scans read live and write through. With
-        // one shared source, the function listing is fetched once and the
-        // one function is decompiled at most once across all the scans.
+        // Batch 1, cold: the eleven scans read live through the engine and
+        // write every answer through to the scan cache.
         pipeline
             .batch_translate(
-                PROGRAM,
+                calxgloss_testfixtures::TARGET_FILE_NAME,
                 &[],
                 &retry::RetryConfig::default(),
                 &verifier,
                 None,
             )
             .await
-            .expect("cold batch over a live server");
-        assert!(
-            server.read_calls() > 0,
-            "the cold batch should have read live"
-        );
-        assert_eq!(
-            server.count("list_functions"),
-            1,
-            "the function listing should be fetched once per cold batch"
-        );
-        assert_eq!(
-            server.count("decompile_function"),
-            1,
-            "the one function should be decompiled at most once per cold batch"
-        );
+            .expect("cold batch over the fixture engine");
+        let cache = scan_cache_dir(dir.path());
 
         // Wipe the engine-result documents so the second batch re-runs all
-        // eleven scans — only the Ghidra cache may answer them. (The Ghidra
-        // cache itself lives under re/ghidra-cache and stays.)
+        // eleven scans — only the scan cache may answer them.
         std::fs::remove_dir_all(dir.path().join("re").join("analysis"))
             .expect("clear engine-result documents");
 
-        // Batch 2, warm: same workspace, same binary bytes — every scan
-        // replays from the Ghidra cache at zero live read cost. The only
-        // live calls the second batch makes are the probes (identity plus
-        // cursor) that validate the cache manifest before the pass.
-        let probes_before =
-            server.count("get_current_address") + server.count("get_current_function");
-        let reads_before = server.read_calls();
+        // Tamper the import listing; the warm batch's API findings must
+        // carry the sentinel if they replayed from disk.
+        calxgloss_types::save_json(&cache.join("imports.json"), &sentinel_imports())
+            .expect("imports tampered");
+
         pipeline
             .batch_translate(
-                PROGRAM,
+                calxgloss_testfixtures::TARGET_FILE_NAME,
                 &[],
                 &retry::RetryConfig::default(),
                 &verifier,
@@ -5197,57 +4997,64 @@ mod tests {
             )
             .await
             .expect("warm batch replays from the cache");
-        assert_eq!(
-            server.read_calls() - reads_before,
-            0,
-            "a second batch over unchanged bytes must make no live Ghidra reads"
-        );
-        assert_eq!(
-            server.count("get_current_address") + server.count("get_current_function")
-                - probes_before,
-            2,
-            "the warm batch's only live calls are its manifest-validation probes"
+        let saved = ApiPersistor::new(dir.path())
+            .load(calxgloss_testfixtures::TARGET_FILE_NAME)
+            .expect("warm batch's API document");
+        assert!(
+            saved
+                .findings
+                .iter()
+                .any(|f| f.target() == "sentinel_import_xyz"),
+            "the warm batch must replay the tampered document, proving a disk \
+             read with no engine round trip: {:?}",
+            saved
+                .findings
+                .iter()
+                .map(|f| f.target())
+                .collect::<Vec<_>>()
         );
     }
 
     /// The refresh escape hatch (issue #106): a batch with the flag set
-    /// ignores even a warm disk tier — every scan reads live again — and
-    /// rewrites the cache, so the next plain batch replays warm once more.
+    /// ignores even a warm disk tier — the scans read live again — and
+    /// rewrites the cache, so the next batch replays the engine's own
+    /// values rather than what the tampering left behind.
     #[tokio::test]
     async fn the_refresh_flag_forces_a_warm_batch_back_to_live_reads() {
         let dir = TempDir::new().expect("temp workspace");
-        let (pipeline, server) = cached_pipeline(dir.path()).await;
+        let (pipeline, binary_file) = cached_pipeline(dir.path());
         let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
 
         // Batch 1, cold: reads live and writes the cache through.
         pipeline
             .batch_translate(
-                PROGRAM,
+                calxgloss_testfixtures::TARGET_FILE_NAME,
                 &[],
                 &retry::RetryConfig::default(),
                 &verifier,
                 None,
             )
             .await
-            .expect("cold batch over a live server");
-        let after_cold = server.read_calls();
-        assert!(after_cold > 0, "the cold batch should have read live");
+            .expect("cold batch over the fixture engine");
 
-        // Wipe the engine-result documents so each later batch re-runs all
-        // eleven scans — only the Ghidra cache may answer them.
+        // Wipe the engine-result documents so each later batch re-runs the
+        // API scan — only the scan cache may answer it.
         std::fs::remove_dir_all(dir.path().join("re").join("analysis"))
             .expect("clear engine-result documents");
 
-        // Batch 2 with the refresh flag: same workspace, same bytes, warm
-        // cache — but the scans must read live again, honoring a Ghidra
-        // program that changed under unchanged bytes.
-        let ghidra = GhidraClient::new(&server.base_url).expect("client config");
-        let refreshed = pipeline_with(ghidra, Some(dir.path()))
-            .with_binary_path(dir.path().join(PROGRAM))
-            .with_refresh_ghidra_cache();
+        // Tamper the import listing, then take the refresh escape hatch:
+        // same workspace, same bytes, warm disk tier — a refreshing batch
+        // ignores it and refetches from the engine.
+        let cache = scan_cache_dir(dir.path());
+        calxgloss_types::save_json(&cache.join("imports.json"), &sentinel_imports())
+            .expect("imports tampered");
+
+        let refreshed = pipeline_with(fixture_kuna(), Some(dir.path()))
+            .with_binary_path(binary_file.clone())
+            .with_refresh_cache();
         refreshed
             .batch_translate(
-                PROGRAM,
+                calxgloss_testfixtures::TARGET_FILE_NAME,
                 &[],
                 &retry::RetryConfig::default(),
                 &verifier,
@@ -5255,64 +5062,60 @@ mod tests {
             )
             .await
             .expect("a refreshed batch reads live over a warm cache");
-        assert_eq!(
-            server.read_calls() - after_cold,
-            after_cold,
-            "the refresh must refetch live exactly what the cold batch fetched — \
-             a partial refresh would leave stale entries served"
+        let saved = ApiPersistor::new(dir.path())
+            .load(calxgloss_testfixtures::TARGET_FILE_NAME)
+            .expect("refreshed document");
+        assert!(
+            !saved
+                .findings
+                .iter()
+                .any(|f| f.target() == "sentinel_import_xyz"),
+            "a refresh refetches live instead of replaying the tampered document"
+        );
+        assert!(
+            saved
+                .findings
+                .iter()
+                .any(|f| f.kind() == "import" && f.target().contains("puts")),
+            "the refreshed scan should carry the fixture's own imports"
         );
 
-        std::fs::remove_dir_all(dir.path().join("re").join("analysis"))
-            .expect("clear engine-result documents");
-
-        // Batch 3, plain again: the refresh rewrote the cache, so the warm
-        // replay behavior is back.
-        let ghidra = GhidraClient::new(&server.base_url).expect("client config");
-        let replay =
-            pipeline_with(ghidra, Some(dir.path())).with_binary_path(dir.path().join(PROGRAM));
-        let reads_before = server.read_calls();
-        replay
-            .batch_translate(
-                PROGRAM,
-                &[],
-                &retry::RetryConfig::default(),
-                &verifier,
-                None,
-            )
-            .await
-            .expect("warm batch replays from the rewritten cache");
-        assert_eq!(
-            server.read_calls() - reads_before,
-            0,
+        // And the refresh rewrote the cache rather than just bypassing it:
+        // the import document on disk now carries the engine's listing.
+        let on_disk: Vec<calxgloss_ghidra::Symbol> =
+            calxgloss_types::load_json(&cache.join("imports.json")).expect("rewritten document");
+        assert!(
+            on_disk.iter().any(|i| i.name.contains("puts"))
+                && !on_disk.iter().any(|i| i.name == "sentinel_import_xyz"),
             "the refresh must rewrite the cache, not just bypass it"
         );
     }
 
     /// The heartbeat contract survives the cache: a scan pass armed on the
-    /// pipeline's client still beats when the cached source's inner client
+    /// pipeline's source still beats when the cached source's engine
     /// serves a live miss.
     #[tokio::test]
     async fn pass_heartbeats_still_beat_on_live_cache_misses() {
         let dir = TempDir::new().expect("temp workspace");
-        let (pipeline, _server) = cached_pipeline(dir.path()).await;
+        let (pipeline, _) = cached_pipeline(dir.path());
         let events = TranslationEvents::new(64);
         let mut rx = events.subscribe();
         let pipeline = pipeline.with_events(events);
         let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
 
         // The batch arms the cached source; the cache is cold, so the
-        // scans' decompiles go live through the cached source's inner
-        // client — the armed passes must still beat.
+        // scans' reads go live through the cached source's inner engine —
+        // the armed passes must still beat.
         pipeline
             .batch_translate(
-                PROGRAM,
+                calxgloss_testfixtures::TARGET_FILE_NAME,
                 &[],
                 &retry::RetryConfig::default(),
                 &verifier,
                 None,
             )
             .await
-            .expect("cold batch over a live server");
+            .expect("cold batch over the fixture engine");
 
         let beats: Vec<ProgressEvent> = std::iter::from_fn(|| rx.try_recv().ok())
             .filter(|ev| matches!(ev, ProgressEvent::BatchProgress { .. }))
@@ -5323,19 +5126,15 @@ mod tests {
         );
     }
 
-    /// Cache trouble degrades to today's behavior: with a binary file
-    /// present but the server unreachable, the cached source cannot be
-    /// built, and the batch reads live — failing the scans exactly as the
-    /// pre-cache pipeline did over an unreachable Ghidra.
+    /// Cache trouble degrades to plain live reads: with the binary file
+    /// missing, the disk tier is dropped entirely and every read passes
+    /// straight through to the engine — the batch behaves exactly as an
+    /// uncached one, failing the named unit at the engine.
     #[tokio::test]
     async fn a_failed_cache_build_degrades_to_live_reads() {
         let dir = TempDir::new().expect("temp workspace");
-        std::fs::write(
-            dir.path().join(PROGRAM),
-            b"MZ\x90\x00 stand-in binary bytes",
-        )
-        .expect("write fake file");
-        let pipeline = pipeline_over(Some(dir.path())).with_binary_path(dir.path().join(PROGRAM));
+        let pipeline =
+            pipeline_over(Some(dir.path())).with_binary_path(dir.path().join("absent-binary.dll"));
         let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
 
         let result = pipeline
@@ -5347,13 +5146,11 @@ mod tests {
                 None,
             )
             .await
-            .expect(
-                "a failed cache build degrades — the batch still reports per-function failures",
-            );
+            .expect("a dropped disk tier degrades — the batch still reports per-function failures");
         assert_eq!(
             result.results.len(),
             1,
-            "the unit ran and failed live, as it did before the cache"
+            "the unit ran live against the engine, as without the cache"
         );
     }
 

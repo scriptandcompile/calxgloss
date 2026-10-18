@@ -96,7 +96,7 @@ impl HandleSignature {
 /// [`add_closer`](Self::add_closer) — and [`openers`](Self::openers)
 /// and [`closers`](Self::closers) report them in configuration order,
 /// so two detectors built the same way scan identically and results
-/// diff cleanly. The detector holds no Ghidra client of its own and
+/// diff cleanly. The detector holds no scan source of its own and
 /// never writes back to the program; one detector serves an entire
 /// scan and can be shared by reference across concurrent per-function
 /// passes.

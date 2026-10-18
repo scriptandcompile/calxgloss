@@ -12,11 +12,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// The decompiler engine that produced a scan, named by the source the
 /// scan read through.
 ///
-/// A `kuna` scan names its engine, its pinned release, and the source
-/// fingerprint of that pin, so a reviewer can tell what produced any
-/// decompilation in the record and re-create or blame it (issue #208).
-/// The Ghidra path names nothing: its records predate the field and stay
-/// byte-for-byte what they were.
+/// Kuna is the only engine (issue #214), and a scan names it, its pinned
+/// release, and the source fingerprint of that pin, so a reviewer can tell
+/// what produced any decompilation in the record and re-create or blame it
+/// (issue #208). Artifacts written before the field existed carry no
+/// provenance, so the field stays optional on read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EngineProvenance {
     /// The engine's name, e.g. `kuna`.
@@ -49,10 +49,10 @@ pub struct ScanMetadata {
     /// The engine that produced the scan, when its source names one.
     ///
     /// The engine stamps this from the scan source's `engine_provenance`
-    /// read on the `ScanSource` seam — a `kuna` scan names its engine,
+    /// read on the `ScanSource` seam — a Kuna scan names its engine,
     /// pinned release, and source fingerprint beside the timing (issue
-    /// #208). The Ghidra path names nothing, so the key stays absent from
-    /// its JSON and Ghidra records are byte-for-byte what they were.
+    /// #208). Documents written before the field shipped carry no key and
+    /// load with the engine absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine: Option<EngineProvenance>,
 }
@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn a_record_from_an_unnaming_source_omits_the_engine_key() {
-        // Ghidra scan records are unchanged: a metadata that names no
+        // Pre-#208 records stay readable: a metadata that names no
         // engine serializes exactly as it did before the field existed,
         // and a document written before it loads with the engine absent.
         let meta = ScanMetadata {

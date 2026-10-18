@@ -13,7 +13,7 @@ import { API } from "./api.js";
 import { escapeHtml } from "./utils.js";
 
 const PHASE_LABELS = {
-    ghidra_fetch: "Ghidra Fetch",
+    scan_fetch: "Scan Fetch",
     api_tagging: "API Tagging",
     test_gen: "Test Gen",
     context_tier: "Context Tier",

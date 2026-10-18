@@ -1,6 +1,6 @@
 //! Vtable detection.
 //!
-//! [`VtableDetector`] with `detect_vtables()` scans paged `list_data_items`
+//! [`VtableDetector`] with `detect_vtables()` scans the paged `data_items()`
 //! output for vtable-shaped data objects — `vftable`-named items preceded by
 //! `vftable_meta_ptr` entries (the MSVC RTTI pattern), keyed by address since
 //! `vftable` names are not unique. It reads each table's bytes through
@@ -13,15 +13,17 @@
 
 use crate::error::Result;
 use crate::types::{Vtable, VtableMethod};
-use calxgloss_ghidra::{DataItem, GhidraClient, GhidraError, ScanSource};
+use calxgloss_ghidra::{DataItem, EngineError, ScanSource};
+use calxgloss_kuna::KunaSource;
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, info, warn};
 
 /// The one write a vtable scan performs.
 ///
 /// Deliberately separate from [`ScanSource`]: the shared seam is read-only,
-/// and the planned read cache never answers a write. [`GhidraClient`]
-/// implements it directly; tests record the tags they are given.
+/// and the read cache never answers a write. Kuna has no tag write-back yet,
+/// so its implementation refuses by name; tests record the tags they are
+/// given.
 pub trait TagSink {
     /// Attach `tag` to the function at `address`.
     fn add_function_tag(
@@ -31,30 +33,29 @@ pub trait TagSink {
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 }
 
-impl TagSink for GhidraClient {
-    async fn add_function_tag(&self, address: u64, tag: &str) -> Result<()> {
-        Ok(self.add_function_tag(&format!("{address:x}"), tag).await?)
+impl TagSink for KunaSource {
+    async fn add_function_tag(&self, _address: u64, _tag: &str) -> Result<()> {
+        // The Kuna engine has no function-tag write-back; the refusal is
+        // named, never silent — tagging is enrichment, not detection.
+        Err(EngineError::Reported {
+            message: "the Kuna engine has no function-tag write-back; vtable tagging is \
+                      enrichment, not detection, and the scan continues without it"
+                .to_string(),
+        }
+        .into())
     }
 }
 
 impl TagSink for calxgloss_ghidra::PipelineSource {
-    async fn add_function_tag(&self, address: u64, tag: &str) -> Result<()> {
-        let address = format!("{address:x}");
-        match self {
-            Self::Live(client) => Ok(client.add_function_tag(&address, tag).await?),
-            // Writes are never cached — the cache passes them straight to
-            // the client it wraps.
-            Self::Cached(cache) => Ok(cache.add_function_tag(&address, tag).await?),
-            // The Kuna engine has no write-back seam yet (issue #209 wires
-            // it up); the refusal is named, never silent.
-            Self::Kuna(_) => Err(GhidraError::Reported {
-                status: None,
-                message: "the Kuna engine has no function-tag write-back yet (issue #209 wires \
-                          up engine write-back); re-run with --engine ghidra for the full pipeline"
-                    .to_string(),
-            }
-            .into()),
+    async fn add_function_tag(&self, _address: u64, _tag: &str) -> Result<()> {
+        // Both arms refuse by name: writes are never cached, and the
+        // wrapped engine has no tag write-back.
+        Err(EngineError::Reported {
+            message: "the Kuna engine has no function-tag write-back; vtable tagging is \
+                      enrichment, not detection, and the scan continues without it"
+                .to_string(),
         }
+        .into())
     }
 }
 
@@ -187,10 +188,10 @@ fn looks_like_com_interface(methods: &[VtableMethod]) -> bool {
 /// A bad RTTI pointer produces `NotFound`/`Malformed` refusals from
 /// `read_memory`, which degrade one vtable's class information. Anything
 /// else — transport, a reported server failure — is a broken scan.
-fn is_read_miss(error: &GhidraError) -> bool {
+fn is_read_miss(error: &EngineError) -> bool {
     matches!(
         error,
-        GhidraError::NotFound { .. } | GhidraError::Malformed { .. }
+        EngineError::NotFound { .. } | EngineError::Malformed { .. }
     )
 }
 
@@ -207,20 +208,20 @@ struct Rtti {
 
 /// Vtable detection over the program's defined data.
 ///
-/// The detector is generic over [`ScanSource`] and [`TagSink`] so tests can drive it with
-/// canned responses; [`new`](Self::new) builds one over a live
-/// [`GhidraClient`].
+/// The detector is generic over [`ScanSource`] and [`TagSink`] so tests can
+/// drive it with canned responses; [`new`](Self::new) builds one over a
+/// loaded [`KunaSource`].
 #[derive(Debug, Clone)]
-pub struct VtableDetector<S = GhidraClient> {
+pub struct VtableDetector<S = KunaSource> {
     source: S,
     pointer_size: usize,
     tag: Option<String>,
 }
 
-impl VtableDetector<GhidraClient> {
-    /// A detector over a live GhidraMCP client.
-    pub fn new(client: &GhidraClient) -> VtableDetector<GhidraClient> {
-        Self::with_source(client.clone())
+impl VtableDetector<KunaSource> {
+    /// A detector over a loaded Kuna program.
+    pub fn new(source: &KunaSource) -> VtableDetector<KunaSource> {
+        Self::with_source(source.clone())
     }
 }
 
@@ -568,7 +569,7 @@ mod tests {
         bytes
     }
 
-    /// The error a canned failure tag produces. `GhidraError` is not
+    /// The error a canned failure tag produces. `EngineError` is not
     /// `Clone`, so failures are stored as tags and built fresh at read time.
     #[derive(Clone, Copy)]
     enum Failure {
@@ -577,19 +578,18 @@ mod tests {
         Busy,
     }
 
-    fn failure(error: u64, kind: Failure) -> GhidraError {
+    fn failure(error: u64, kind: Failure) -> EngineError {
         match kind {
-            Failure::Unreadable => GhidraError::NotFound {
+            Failure::Unreadable => EngineError::NotFound {
                 kind: "memory",
                 query: format!("{error:x}"),
             },
-            Failure::Garbage => GhidraError::Malformed {
+            Failure::Garbage => EngineError::Malformed {
                 kind: "memory bytes",
                 detail: "not a byte list".into(),
             },
-            Failure::Busy => GhidraError::Reported {
-                status: Some(200),
-                message: "Ghidra is busy".into(),
+            Failure::Busy => EngineError::Reported {
+                message: "the engine is busy".into(),
             },
         }
     }
@@ -669,14 +669,14 @@ mod tests {
             self.memory
                 .get(&address)
                 .cloned()
-                .ok_or_else(|| GhidraError::NotFound {
+                .ok_or_else(|| EngineError::NotFound {
                     kind: "memory",
                     query: format!("{address:x}"),
                 })
         }
 
         async fn decompile(&self, name: &str) -> GhidraResult<DecompiledFunction> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "function",
                 query: name.to_string(),
             })
@@ -699,14 +699,14 @@ mod tests {
         }
 
         async fn struct_layout(&self, _name: &str) -> GhidraResult<StructLayout> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "structure",
                 query: _name.to_string(),
             })
         }
 
         async fn enum_values(&self, _name: &str) -> GhidraResult<EnumDefinition> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "enumeration",
                 query: _name.to_string(),
             })
@@ -1007,7 +1007,7 @@ mod tests {
         let result = detector_over(source).detect_vtables().await;
         assert!(matches!(
             result,
-            Err(TypesDbError::Ghidra(GhidraError::Reported { .. }))
+            Err(TypesDbError::Engine(EngineError::Reported { .. }))
         ));
     }
 

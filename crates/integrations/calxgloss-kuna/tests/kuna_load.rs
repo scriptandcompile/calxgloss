@@ -3,8 +3,8 @@
 //! The fixture DLL is the shape contract the whole epic asserts against;
 //! these tests pin that the pinned Kuna build can open it in-process, that
 //! the identity the later scan tickets will key on is reported, and that an
-//! unloadable target fails by name with the `--engine ghidra` fallback
-//! spelled out rather than as an upstream backtrace.
+//! unloadable target fails by name, naming the path and Kuna's own reason,
+//! rather than as an upstream backtrace.
 
 use calxgloss_kuna::KunaError;
 
@@ -29,7 +29,7 @@ fn the_fixture_target_loads_and_reports_its_identity() {
 }
 
 #[test]
-fn an_unloadable_target_fails_by_name_naming_the_ghidra_fallback() {
+fn an_unloadable_target_fails_by_name_naming_the_path_and_reason() {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("not-a-binary.dll");
     std::fs::write(&path, b"just text, not a PE").expect("write the junk file");
@@ -45,7 +45,7 @@ fn an_unloadable_target_fails_by_name_naming_the_ghidra_fallback() {
         "the failure should name the path: {message}"
     );
     assert!(
-        message.contains("--engine ghidra"),
-        "the failure should name the fallback: {message}"
+        message.contains("could not load"),
+        "the failure names the engine's load failure: {message}"
     );
 }

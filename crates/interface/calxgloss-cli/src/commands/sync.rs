@@ -1,9 +1,9 @@
-//! The `sync` command — detect concurrency constructs for the open binary.
+//! The `sync` command — detect concurrency constructs for a binary.
 //!
 //! Runs the four concurrency detectors — mutex/lock pair tracking,
 //! atomic operation detection, thread spawn detection, and
-//! thread-local storage detection — against the program currently open
-//! in Ghidra and saves the result to `re/analysis/sync/{binary}.json`
+//! thread-local storage detection — against the loaded program and
+//! saves the result to `re/analysis/sync/{binary}.json`
 //! in the workspace, the same file batch
 //! translation will read as prompt context. Batch translation runs the
 //! same scan before its first batch when no result is cached; this
@@ -13,7 +13,6 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use calxgloss_sync::engine::SyncEngine;
 use calxgloss_sync::persist::SyncPersistor;
 use calxgloss_sync::types::SyncResult;
@@ -49,16 +48,9 @@ pub async fn handle_sync(
 
     info!(binary, workspace = %workspace.display(), "Detecting concurrency constructs");
 
-    let ghidra_url = &settings.ghidra_url.value;
-    let mut config = GhidraConfig::new(ghidra_url)
-        .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
-    if let Some(key) = &settings.ghidra_api_key {
-        config = config.with_api_key(key.value.clone());
-    }
-    let ghidra = GhidraClient::from_config(config)
-        .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))?;
+    let kuna = load_kuna_source(settings, binary)?;
 
-    let engine = SyncEngine::new(&ghidra);
+    let engine = SyncEngine::new(&kuna);
     let result = engine
         .scan(binary)
         .await

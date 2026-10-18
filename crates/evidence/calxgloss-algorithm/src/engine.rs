@@ -35,7 +35,8 @@ use crate::cross_function::CrossFunctionDetector;
 use crate::error::Result;
 use crate::string_hints::StringHintEngine;
 use crate::types::{AlgorithmHint, AlgorithmRecognitionResult, ScanMetadata};
-use calxgloss_ghidra::{DecompiledFunction, GhidraClient};
+use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_kuna::KunaSource;
 use futures_util::stream::{self, StreamExt};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -126,7 +127,7 @@ impl SkipRateBreaker {
 ///
 /// The shared trait from the Ghidra integration crate, re-exported here
 /// so the engine's generic shape names it where it always has;
-/// [`GhidraClient`] implements it over the live HTTP API, and tests
+/// [`KunaSource`] implements it over the in-process engine, and tests
 /// implement it over canned bodies so the orchestration runs without a
 /// server. The futures are `Send` so a scan can be driven from an
 /// orchestrating task.
@@ -136,7 +137,7 @@ pub use calxgloss_ghidra::ScanSource;
 ///
 /// The engine is generic over its [`ScanSource`], so tests can run the
 /// whole orchestration over canned bodies; [`new`](Self::new) builds one
-/// over a live [`GhidraClient`]. Each detector carries no state and
+/// over a loaded [`KunaSource`]. Each detector carries no state and
 /// starts configured with its standard signature set —
 /// [`with_matcher`](Self::with_matcher), [`with_string_engine`](Self::with_string_engine),
 /// [`with_callback_db`](Self::with_callback_db), and
@@ -148,7 +149,7 @@ pub use calxgloss_ghidra::ScanSource;
 /// default; [`with_min_confidence`](Self::with_min_confidence) sets a
 /// floor below which hints never reach the persisted result.
 #[derive(Debug, Clone)]
-pub struct AlgorithmEngine<S = GhidraClient> {
+pub struct AlgorithmEngine<S = KunaSource> {
     source: S,
     cfg: CfgPatternMatcher,
     strings: StringHintEngine,
@@ -157,12 +158,12 @@ pub struct AlgorithmEngine<S = GhidraClient> {
     min_confidence: u8,
 }
 
-impl AlgorithmEngine<GhidraClient> {
-    /// An engine over a live GhidraMCP client, scanning with the
+impl AlgorithmEngine<KunaSource> {
+    /// An engine over a loaded Kuna program, scanning with the
     /// standard signature sets.
-    pub fn new(client: &GhidraClient) -> AlgorithmEngine<GhidraClient> {
+    pub fn new(source: &KunaSource) -> AlgorithmEngine<KunaSource> {
         AlgorithmEngine {
-            source: client.clone(),
+            source: source.clone(),
             cfg: CfgPatternMatcher::with_default_patterns(),
             strings: StringHintEngine::with_default_signatures(),
             callbacks: CallbackPatternDb::with_default_patterns(),
@@ -409,9 +410,7 @@ impl<S> AlgorithmEngine<S> {
         hints.extend(self.cross.detect_correlations(&bodies));
 
         let mut metadata = ScanMetadata::new(binary);
-        // The source names its engine and pin under `kuna`; the Ghidra
-        // path names nothing and the record stays exactly as it was
-        // (issue #208).
+        // The source names its engine and pin under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
         metadata.duration_secs = started.elapsed().as_secs();
         // Competing claims for one (function, algorithm) resolve to
@@ -448,7 +447,7 @@ mod tests {
         AlgorithmCategory, AlgorithmHint, AlgorithmPattern, Confidence, DetectionMethod,
     };
     use calxgloss_ghidra::{
-        DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
+        DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
         Result, StringLiteral, StructLayout, Symbol, Xref,
     };
     use std::collections::HashMap;
@@ -548,9 +547,8 @@ mod tests {
     impl ScanSource for FakeProgram {
         async fn functions(&self) -> Result<Vec<FunctionSummary>> {
             if self.fail_listing {
-                return Err(GhidraError::Reported {
-                    status: Some(200),
-                    message: "Ghidra is busy".into(),
+                return Err(EngineError::Reported {
+                    message: "the engine is busy".into(),
                 });
             }
             Ok(self.listing.clone())
@@ -567,7 +565,7 @@ mod tests {
             }
             self.stats.in_flight.fetch_sub(1, Ordering::SeqCst);
             if self.fail_decompiles.iter().any(|f| f == name) {
-                return Err(GhidraError::NotFound {
+                return Err(EngineError::NotFound {
                     kind: "function",
                     query: name.to_string(),
                 });
@@ -575,7 +573,7 @@ mod tests {
             self.bodies
                 .get(name)
                 .cloned()
-                .ok_or_else(|| GhidraError::NotFound {
+                .ok_or_else(|| EngineError::NotFound {
                     kind: "function",
                     query: name.to_string(),
                 })
@@ -584,9 +582,8 @@ mod tests {
         async fn strings(&self) -> Result<Vec<StringLiteral>> {
             self.stats.string_fetches.fetch_add(1, Ordering::SeqCst);
             if self.fail_strings {
-                return Err(GhidraError::Reported {
-                    status: Some(200),
-                    message: "Ghidra is busy".into(),
+                return Err(EngineError::Reported {
+                    message: "the engine is busy".into(),
                 });
             }
             Ok(self.literals.clone())
@@ -595,9 +592,8 @@ mod tests {
         async fn callers(&self, address: u64) -> Result<Vec<String>> {
             self.stats.caller_fetches.lock().unwrap().push(address);
             if self.fail_callers.contains(&address) {
-                return Err(GhidraError::Reported {
-                    status: Some(200),
-                    message: "Ghidra is busy".into(),
+                return Err(EngineError::Reported {
+                    message: "the engine is busy".into(),
                 });
             }
             Ok(self.callers.get(&address).cloned().unwrap_or_default())
@@ -614,14 +610,14 @@ mod tests {
         }
 
         async fn struct_layout(&self, name: &str) -> Result<StructLayout> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "struct",
                 query: name.to_string(),
             })
         }
 
         async fn enum_values(&self, name: &str) -> Result<EnumDefinition> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "enum",
                 query: name.to_string(),
             })
@@ -1114,7 +1110,7 @@ mod tests {
             .await;
         assert!(matches!(
             result,
-            Err(crate::AlgorithmError::Ghidra(GhidraError::Reported { .. }))
+            Err(crate::AlgorithmError::Engine(EngineError::Reported { .. }))
         ));
     }
 
@@ -1130,7 +1126,7 @@ mod tests {
             .await;
         assert!(matches!(
             result,
-            Err(crate::AlgorithmError::Ghidra(GhidraError::Reported { .. }))
+            Err(crate::AlgorithmError::Engine(EngineError::Reported { .. }))
         ));
     }
 

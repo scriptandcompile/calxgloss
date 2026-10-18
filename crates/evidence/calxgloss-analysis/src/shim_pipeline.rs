@@ -22,7 +22,6 @@
 //! use calxgloss_types::Export;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-//! let ghidra = calxgloss_ghidra::GhidraClient::new("http://localhost:8080")?;
 //! let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3")?;
 //! let verifier = calxgloss_verify::Verifier::new(std::path::Path::new("/tmp/calxgloss-work"))?;
 //! let exports = Vec::<Export>::new();
@@ -49,7 +48,8 @@
 
 use std::path::{Path, PathBuf};
 
-use calxgloss_ghidra::lifecycle::GhidraSession;
+use calxgloss_ghidra::ScanSource;
+use calxgloss_kuna::KunaSource;
 use calxgloss_llm::LlmClient;
 use calxgloss_types::{Export, ShimLayer, ShimVerificationResult};
 use tracing::{error, info, instrument, warn};
@@ -110,19 +110,6 @@ pub enum PipelineError {
 
     #[error("Persistence failed: {0}")]
     Persistence(#[source] std::io::Error),
-
-    /// The wrong-program guard (incident 2026-10-08) refused the DLL: the
-    /// server is not serving it, so every Ghidra read would describe some
-    /// other program — generating a shim from that is exactly the phantom
-    /// evidence the guard exists to prevent.
-    #[error("GhidraMCP is not serving {binary}: {source}")]
-    ProgramGuard {
-        /// The DLL the guard refused.
-        binary: String,
-        /// The guard's own reason, naming the programs that *are* open.
-        #[source]
-        source: calxgloss_ghidra::GhidraError,
-    },
 }
 
 /// Orchestrates the end-to-end shim generation flow for a single DLL.
@@ -423,7 +410,7 @@ fn persist_shim_artifacts(
 /// DLLs produce an error entry that can be retried individually.
 pub async fn generate_all_shims(
     classifications: &[crate::DllClassification],
-    session: &GhidraSession,
+    target_dir: &Path,
     llm: LlmClient,
     verifier: Verifier,
     base_dir: &Path,
@@ -452,28 +439,18 @@ pub async fn generate_all_shims(
 
         info!(binary = %dll_name, crate = crate_name, "Processing shim for DLL");
 
-        // The wrong-program guard (incident 2026-10-08): the exports fetched
-        // below describe this DLL only if the server is serving it. A guard
-        // failure fails this DLL's entry — a shim built from another
-        // program's exports is the phantom evidence the guard prevents.
-        if let Err(e) = session.ensure_current_program(dll_name).await {
-            warn!(binary = %dll_name, error = %e, "GhidraMCP is not serving this DLL; skipping its shim");
-            results.push(Err(PipelineError::ProgramGuard {
-                binary: dll_name.clone(),
-                source: e,
-            }));
-            continue;
-        }
-
-        // Fetch exports from Ghidra.
-        // GhidraMCP serves the currently open program, so we fetch all exports
-        // and let the LLM filter by context hints.
-        let symbols = session.client().exports(None).await;
-
-        let exports: Vec<Export> = match &symbols {
-            Ok(syms) => syms.iter().map(symbol_to_export).collect(),
+        // Read the DLL's exports through Kuna, loading it straight from the
+        // target directory — the reads describe this file, always.
+        let exports: Vec<Export> = match KunaSource::load(&target_dir.join(dll_name)) {
+            Ok(source) => match ScanSource::exports(&source).await {
+                Ok(syms) => syms.iter().map(symbol_to_export).collect(),
+                Err(e) => {
+                    warn!(binary = %dll_name, error = %e, "Failed to read exports from Kuna; using empty list");
+                    Vec::new()
+                }
+            },
             Err(e) => {
-                warn!(binary = %dll_name, error = %e, "Failed to fetch exports from Ghidra; using empty list");
+                warn!(binary = %dll_name, error = %e, "Failed to load this DLL from the target directory; using empty list");
                 Vec::new()
             }
         };

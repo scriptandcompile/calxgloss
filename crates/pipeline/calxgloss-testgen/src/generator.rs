@@ -36,9 +36,6 @@ pub struct TestGenerator {
     /// Base directory for storing baseline data.
     /// Baselines are written to `{target_dir}/re/baseline/{binary}/{function}.json`.
     target_dir: PathBuf,
-
-    /// Optional Ghidra client for exporting function signatures.
-    ghidra: Option<calxgloss_ghidra::GhidraClient>,
 }
 
 impl TestGenerator {
@@ -51,25 +48,7 @@ impl TestGenerator {
     pub fn new(target_dir: &Path) -> Self {
         Self {
             target_dir: target_dir.to_path_buf(),
-            ghidra: None,
         }
-    }
-
-    /// Create a new test generator with an optional Ghidra client.
-    ///
-    /// The Ghidra client is used to automatically extract function signatures
-    /// from the export table when available.
-    pub fn new_with_ghidra(target_dir: &Path, ghidra: calxgloss_ghidra::GhidraClient) -> Self {
-        Self {
-            target_dir: target_dir.to_path_buf(),
-            ghidra: Some(ghidra),
-        }
-    }
-
-    /// Set the Ghidra client for this generator.
-    pub fn with_ghidra(mut self, ghidra: calxgloss_ghidra::GhidraClient) -> Self {
-        self.ghidra = Some(ghidra);
-        self
     }
 
     /// Generate an FFI binding for a function.
@@ -487,14 +466,6 @@ mod tests {
     fn test_test_generator_creation() {
         let generator = TestGenerator::new(Path::new("/tmp/test_baseline"));
         assert_eq!(generator.target_dir, PathBuf::from("/tmp/test_baseline"));
-        assert!(generator.ghidra.is_none());
-    }
-
-    #[test]
-    fn test_test_generator_with_ghidra() {
-        let client = calxgloss_ghidra::GhidraClient::new("http://localhost:8080").unwrap();
-        let generator = TestGenerator::new_with_ghidra(Path::new("/tmp/test_baseline"), client);
-        assert!(generator.ghidra.is_some());
     }
 
     #[test]

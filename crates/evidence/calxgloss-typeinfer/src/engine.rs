@@ -3,7 +3,7 @@
 //! [`TypeInferEngine`] runs the inline detectors — this-pointer
 //! detection, parameter-size detection, known-type propagation, and the
 //! name-borne readings of the mangling detector — over every function of
-//! one open Ghidra program, then runs the post-inline passes over the
+//! one loaded program, then runs the post-inline passes over the
 //! same bodies: the assignment-chain pass types each
 //! function's locals from its surviving parameter readings and known
 //! contracts, the cross-function passes carry readings across function
@@ -34,7 +34,8 @@ use crate::param_size::ParameterSizeDetector;
 use crate::return_usage::{LocalReadings, ReturnUsageDetector};
 use crate::this_ptr::ThisPointerDetector;
 use crate::types::{InferredType, ScanMetadata, TypeInferenceResult};
-use calxgloss_ghidra::{DecompiledFunction, GhidraClient};
+use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_kuna::KunaSource;
 use std::time::Instant;
 use tracing::{info, warn};
 
@@ -42,7 +43,7 @@ use tracing::{info, warn};
 ///
 /// The shared trait from the Ghidra integration crate, re-exported here
 /// so the engine's generic shape names it where it always has;
-/// [`GhidraClient`] implements it over the live HTTP API, and tests
+/// [`KunaSource`] implements it over the in-process engine, and tests
 /// implement it over canned bodies so the orchestration runs without a
 /// server. The futures are `Send` so a scan can be driven from an
 /// orchestrating task.
@@ -53,10 +54,10 @@ pub use calxgloss_ghidra::ScanSource;
 ///
 /// The engine is generic over its [`ScanSource`], so tests can run the
 /// whole orchestration over canned bodies; [`new`](Self::new) builds one over
-/// a live [`GhidraClient`]. The detectors carry no state, so one instance of
+/// a loaded [`KunaSource`]. The detectors carry no state, so one instance of
 /// each serves the whole scan.
 #[derive(Debug, Clone)]
-pub struct TypeInferEngine<S = GhidraClient> {
+pub struct TypeInferEngine<S = KunaSource> {
     source: S,
     this_ptr: ThisPointerDetector,
     param_size: ParameterSizeDetector,
@@ -67,11 +68,11 @@ pub struct TypeInferEngine<S = GhidraClient> {
     mangling: ManglingDetector,
 }
 
-impl TypeInferEngine<GhidraClient> {
-    /// An engine over a live GhidraMCP client.
-    pub fn new(client: &GhidraClient) -> TypeInferEngine<GhidraClient> {
+impl TypeInferEngine<KunaSource> {
+    /// An engine over a loaded Kuna program.
+    pub fn new(source: &KunaSource) -> TypeInferEngine<KunaSource> {
         TypeInferEngine {
-            source: client.clone(),
+            source: source.clone(),
             this_ptr: ThisPointerDetector::new(),
             param_size: ParameterSizeDetector::new(),
             known: KnownTypePropagationEngine::new(),
@@ -178,8 +179,8 @@ impl<S> TypeInferEngine<S> {
                     skipped += 1;
                     decompile_failures += 1;
                     // Skip-rate breaker: once most of the listing has
-                    // failed to decompile, the scan is reading the
-                    // wrong program (or a half-broken server), and an
+                    // failed to decompile, the scan is reading a
+                    // program the engine cannot analyze, and an
                     // empty result would persist as a phantom-clean
                     // record. Abort with the counts instead of
                     // skipping on.
@@ -352,9 +353,7 @@ impl<S> TypeInferEngine<S> {
         );
 
         let mut metadata = ScanMetadata::new(binary);
-        // The source names its engine and pin under `kuna`; the Ghidra
-        // path names nothing and the record stays exactly as it was
-        // (issue #208).
+        // The source names its engine and pin under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
@@ -401,7 +400,7 @@ mod tests {
         Confidence, InferenceMethod, InferenceScope, InferredCallType, InferredLocalType,
     };
     use calxgloss_ghidra::{
-        DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
+        DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
         Result, StringLiteral, StructLayout, Symbol, Xref,
     };
     use std::collections::HashMap;
@@ -472,9 +471,8 @@ mod tests {
     impl ScanSource for FakeProgram {
         async fn functions(&self) -> Result<Vec<FunctionSummary>> {
             if self.fail_listing {
-                return Err(GhidraError::Reported {
-                    status: Some(200),
-                    message: "Ghidra is busy".into(),
+                return Err(EngineError::Reported {
+                    message: "the engine is busy".into(),
                 });
             }
             Ok(self.listing.clone())
@@ -483,7 +481,7 @@ mod tests {
         async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
             self.stats.decompiles.lock().unwrap().push(name.to_string());
             if self.fail_decompiles.iter().any(|f| f == name) {
-                return Err(GhidraError::NotFound {
+                return Err(EngineError::NotFound {
                     kind: "function",
                     query: name.to_string(),
                 });
@@ -491,7 +489,7 @@ mod tests {
             self.bodies
                 .get(name)
                 .cloned()
-                .ok_or_else(|| GhidraError::NotFound {
+                .ok_or_else(|| EngineError::NotFound {
                     kind: "function",
                     query: name.to_string(),
                 })
@@ -516,14 +514,14 @@ mod tests {
         }
 
         async fn struct_layout(&self, name: &str) -> Result<StructLayout> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "struct",
                 query: name.to_string(),
             })
         }
 
         async fn enum_values(&self, name: &str) -> Result<EnumDefinition> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "enum",
                 query: name.to_string(),
             })
@@ -1103,7 +1101,7 @@ mod tests {
             .await;
         assert!(matches!(
             result,
-            Err(crate::TypeInferError::Ghidra(GhidraError::Reported { .. }))
+            Err(crate::TypeInferError::Engine(EngineError::Reported { .. }))
         ));
     }
 

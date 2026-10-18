@@ -9,16 +9,16 @@ use crate::utils::{bold, green_bold, println_content};
 const PROJECT_FILE: &str = "calxgloss.toml";
 const EXAMPLE: &str = r#"# Calxgloss configuration
 #
-# This file controls the connection to GhidraMCP and the LLM.
-# Override any value with a --flag or CALXGLOSS_* env var.
+# This file controls the target directory, the analysis budgets, and the
+# LLM. Kuna is the only analysis engine — a [ghidra] block or an
+# analysis.engine key is refused by name. Override any value with a
+# --flag or CALXGLOSS_* env var.
 
-[ghidra]
-url = "http://127.0.0.1:8080"
-# api_key = "..."
+# Directory containing DLLs and EXEs (required).
+# target_dir = "/path/to/binaries"
 
 [analysis]
-# engine = "ghidra"          # ghidra | kuna — a run uses exactly one engine
-# Per-function budgets for the kuna engine (0 = no limit, unset = engine default)
+# Per-function budgets for the Kuna engine (0 = no limit, unset = engine default)
 # max_fn_instructions = 100000
 # max_fn_seconds = 0
 # max_fn_memory_mib = 0
@@ -45,10 +45,10 @@ pub fn handle_init() -> Result<()> {
         bold(&path.display().to_string())
     );
     println!();
-    println_content("Edit this file with your GhidraMCP and LLM server addresses.");
+    println_content("Edit this file with your LLM server address and target directory.");
     println_content("Then run `calxgloss auto` to start the pipeline.");
     println_content("");
-    println_content("  ghidra.url → GhidraMCP server endpoint");
+    println_content("  target_dir → directory holding the DLLs and EXEs to analyze");
     println_content("  llm.url    → OpenAI-compatible LLM server");
     println_content("  llm.model  → model identifier the server reports");
     println!();

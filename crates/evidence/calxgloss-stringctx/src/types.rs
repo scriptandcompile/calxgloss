@@ -95,7 +95,7 @@ calxgloss_types::display_serde_label!(StringClassification {
 pub enum StringSource {
     /// The string appeared in the function's decompiled body.
     BodyParse,
-    /// The string was tied to the function by a `get_xrefs_to` lookup.
+    /// The string was tied to the function by an `xrefs_to()` lookup.
     Xref,
 }
 

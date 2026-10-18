@@ -38,7 +38,7 @@
 //!   (a self-call plus a halving split) and a sort driven by a comparator
 //!   callback (a `qsort` call plus a comparator-shaped callee) — reading
 //!   a call map derived from the bodies the scan already decompiles, so
-//!   the pass costs no extra Ghidra round trips; hints name the partner
+//!   the pass costs no extra engine reads; hints name the partner
 //!   function in their evidence.
 //! - [`engine`] - Scan orchestration: `AlgorithmEngine` decompiles each
 //!   function of an open program exactly once — the per-function pass

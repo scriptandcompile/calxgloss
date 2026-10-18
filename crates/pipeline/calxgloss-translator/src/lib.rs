@@ -1,9 +1,9 @@
-//! Translation pipeline — GhidraMCP + LLM + prompt orchestration.
+//! Translation pipeline — engine scan + LLM + prompt orchestration.
 //!
 //! This crate provides the [`TranslationPipeline`] struct, which wires together
 //! all the pieces needed to translate a disassembled function to Rust:
 //!
-//! 1. Pull function data from GhidraMCP (disassembly, decompiler output)
+//! 1. Pull function data from the engine (disassembly, decompiler output)
 //! 2. Tag Windows API calls with their PAL mappings
 //! 3. Generate baseline test inputs from function signature and disassembly
 //! 4. Build a structured prompt bundling all context
@@ -40,12 +40,21 @@ pub use triage::{UnrecoveredJumpTable, scan_unrecovered_jump_tables};
 mod tests {
     use super::*;
     use calxgloss_callgraph::CallGraph;
-    use calxgloss_ghidra::GhidraClient;
     use calxgloss_llm::LlmClient;
     use calxgloss_pal::ApiMappings;
     use calxgloss_types::ContextTier;
     use calxgloss_types::Export;
     use calxgloss_types::FunctionInfo;
+
+    /// The fixture target loaded under the Kuna engine — the only engine
+    /// (issue #214). These tests never read through the source; it only
+    /// arms the pipeline.
+    fn fixture_kuna() -> calxgloss_kuna::KunaSource {
+        let target = calxgloss_testfixtures::load_target()
+            .expect("fixture target should build and validate");
+        calxgloss_kuna::KunaSource::load(target.path())
+            .expect("the fixture must load for scanning with Kuna")
+    }
 
     #[test]
     fn test_translator_creation() {
@@ -57,16 +66,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipeline_creation() {
-        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let kuna = fixture_kuna();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
-        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+        let pipeline = TranslationPipeline::new(kuna, llm, ApiMappings::default());
 
         assert!(!pipeline.api_mappings().is_empty());
     }
 
     #[tokio::test]
     async fn test_pipeline_with_exports() {
-        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let kuna = fixture_kuna();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
         let exports = vec![Export {
             name: "DrawSprite".to_string(),
@@ -76,7 +85,7 @@ mod tests {
         }];
 
         let pipeline =
-            TranslationPipeline::new(ghidra, llm, ApiMappings::default()).with_exports(exports);
+            TranslationPipeline::new(kuna, llm, ApiMappings::default()).with_exports(exports);
 
         assert!(!pipeline.api_mappings().is_empty());
     }
@@ -115,9 +124,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_signature_comes_from_the_decompiler() {
-        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let kuna = fixture_kuna();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
-        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+        let pipeline = TranslationPipeline::new(kuna, llm, ApiMappings::default());
 
         let func_info = FunctionInfo {
             name: "DrawSprite".to_string(),
@@ -139,9 +148,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_signature_takes_the_declarator_not_the_whole_body() {
-        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let kuna = fixture_kuna();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
-        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+        let pipeline = TranslationPipeline::new(kuna, llm, ApiMappings::default());
 
         // This is the verbatim decompilation of `FUN_18008ed50` in `eqmain.dll`.
         // Reading the parameter list as everything between the first `(` and the
@@ -174,9 +183,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_signature_falls_back_when_there_is_no_decompilation() {
-        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let kuna = fixture_kuna();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
-        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+        let pipeline = TranslationPipeline::new(kuna, llm, ApiMappings::default());
 
         let func_info = FunctionInfo {
             name: "SomeFunc".to_string(),
@@ -221,9 +230,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_build_translation_request() {
-        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let kuna = fixture_kuna();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
-        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+        let pipeline = TranslationPipeline::new(kuna, llm, ApiMappings::default());
 
         let func_info = FunctionInfo {
             name: "DrawSprite".to_string(),
@@ -269,9 +278,9 @@ mod tests {
 
     #[test]
     fn test_plan_from_callgraph_empty_graph() {
-        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let kuna = fixture_kuna();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
-        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+        let pipeline = TranslationPipeline::new(kuna, llm, ApiMappings::default());
 
         let graph = calxgloss_callgraph::CallGraph {
             binary: "empty.dll".to_string(),
@@ -284,9 +293,9 @@ mod tests {
 
     #[test]
     fn test_plan_from_callgraph_uses_translation_orderer() {
-        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let kuna = fixture_kuna();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
-        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+        let pipeline = TranslationPipeline::new(kuna, llm, ApiMappings::default());
 
         use calxgloss_callgraph::{CallGraphEdge, CallType, FunctionCallGraph};
 
@@ -387,9 +396,9 @@ mod tests {
 
     #[test]
     fn test_plan_from_callgraph_max_functions_limit() {
-        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let kuna = fixture_kuna();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
-        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+        let pipeline = TranslationPipeline::new(kuna, llm, ApiMappings::default());
 
         use calxgloss_callgraph::FunctionCallGraph;
 
@@ -412,9 +421,9 @@ mod tests {
 
     #[test]
     fn test_generate_stub_main() {
-        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let kuna = fixture_kuna();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
-        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+        let pipeline = TranslationPipeline::new(kuna, llm, ApiMappings::default());
 
         let stub = pipeline.generate_stub("mainCRTStartup", "int main()");
         assert!(stub.contains("mainCRTStartup"));
@@ -423,9 +432,9 @@ mod tests {
 
     #[test]
     fn test_generate_stub_dllmain() {
-        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let kuna = fixture_kuna();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
-        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+        let pipeline = TranslationPipeline::new(kuna, llm, ApiMappings::default());
 
         let stub = pipeline.generate_stub("DllMain", "int DllMain()");
         assert!(stub.contains("DllMain"));
@@ -434,9 +443,9 @@ mod tests {
 
     #[test]
     fn test_generate_stub_vb6() {
-        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let kuna = fixture_kuna();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
-        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+        let pipeline = TranslationPipeline::new(kuna, llm, ApiMappings::default());
 
         let stub = pipeline.generate_stub("__vbaInitialize", "int __vbaInitialize()");
         assert!(stub.contains("__vbaInitialize"));
@@ -445,9 +454,9 @@ mod tests {
 
     #[test]
     fn test_generate_stub_generic() {
-        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let kuna = fixture_kuna();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
-        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+        let pipeline = TranslationPipeline::new(kuna, llm, ApiMappings::default());
 
         let stub = pipeline.generate_stub("FUN_18001000", "int FUN_18001000()");
         assert!(stub.contains("FUN_18001000"));
@@ -456,9 +465,9 @@ mod tests {
 
     #[test]
     fn test_plan_from_callgraph_includes_category() {
-        let ghidra = GhidraClient::new("http://localhost:8080").unwrap();
+        let kuna = fixture_kuna();
         let llm = LlmClient::from_url("http://localhost:11434/v1", "qwen3").unwrap();
-        let pipeline = TranslationPipeline::new(ghidra, llm, ApiMappings::default());
+        let pipeline = TranslationPipeline::new(kuna, llm, ApiMappings::default());
 
         let graph = CallGraph {
             binary: "categories.dll".to_string(),

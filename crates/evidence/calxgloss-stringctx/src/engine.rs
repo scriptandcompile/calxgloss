@@ -4,7 +4,7 @@
 //! string-to-function mapper, the format-string engine, the
 //! localization detector, and — after the per-function walk, over the
 //! bodies it keeps — the cross-function correlation pass over one open
-//! Ghidra program and assembles their findings into a single
+//! program and assembles their findings into a single
 //! [`StringContextResult`] with its scan provenance.
 //!
 //! The scan is one sequential pass over the function listing: one
@@ -18,7 +18,8 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use calxgloss_ghidra::{DecompiledFunction, GhidraClient, Xref};
+use calxgloss_ghidra::{DecompiledFunction, Xref};
+use calxgloss_kuna::KunaSource;
 use tracing::{info, warn};
 
 use crate::classify::StringClassifyEngine;
@@ -36,7 +37,7 @@ use crate::types::{
 ///
 /// The shared trait from the Ghidra integration crate, re-exported here
 /// so the engine's generic shape names it where it always has;
-/// [`GhidraClient`] implements it over the live HTTP API, and tests
+/// [`KunaSource`] implements it over the in-process engine, and tests
 /// implement it over canned listings, bodies, strings, and xrefs so the
 /// orchestration runs without a server. The futures are `Send` so a
 /// scan can be driven from an orchestrating task.
@@ -48,14 +49,14 @@ pub use calxgloss_ghidra::ScanSource;
 ///
 /// The engine is generic over its [`ScanSource`], so tests can run the
 /// whole orchestration over canned program data; [`new`](Self::new)
-/// builds one over a live [`GhidraClient`]. Each sub-engine carries no
+/// builds one over a loaded [`KunaSource`]. Each sub-engine carries no
 /// per-scan state — [`with_classifier`](Self::with_classifier),
 /// [`with_mapper`](Self::with_mapper),
 /// [`with_format_engine`](Self::with_format_engine), and
 /// [`with_localization`](Self::with_localization) swap one whole — so
 /// one of each serves the whole scan.
 #[derive(Debug, Clone)]
-pub struct StringContextEngine<S = GhidraClient> {
+pub struct StringContextEngine<S = KunaSource> {
     source: S,
     classifier: StringClassifyEngine,
     mapper: HybridXrefMapper,
@@ -64,12 +65,12 @@ pub struct StringContextEngine<S = GhidraClient> {
     cross_function: CrossFunctionAnalyzer,
 }
 
-impl StringContextEngine<GhidraClient> {
-    /// An engine over a live GhidraMCP client, scanning with the
+impl StringContextEngine<KunaSource> {
+    /// An engine over a loaded Kuna program, scanning with the
     /// classifier's standard pattern sets.
-    pub fn new(client: &GhidraClient) -> StringContextEngine<GhidraClient> {
+    pub fn new(source: &KunaSource) -> StringContextEngine<KunaSource> {
         StringContextEngine {
-            source: client.clone(),
+            source: source.clone(),
             classifier: StringClassifyEngine::with_default_patterns(),
             mapper: HybridXrefMapper::new(),
             format_engine: FormatStringEngine::new(),
@@ -132,7 +133,7 @@ impl<S> StringContextEngine<S> {
     /// calls, then the localization reading — and after every function
     /// the cross-function pass adds its string-flow findings, in listing
     /// order, over the bodies this walk already decompiled: no extra
-    /// Ghidra round trips. So two scans of the same program diff
+    /// engine reads. So two scans of the same program diff
     /// cleanly.
     ///
     /// A function whose body Ghidra cannot produce (a thunk, a bad entry
@@ -215,8 +216,8 @@ impl<S> StringContextEngine<S> {
                     skipped += 1;
                     decompile_failures += 1;
                     // Skip-rate breaker: once most of the listing has
-                    // failed to decompile, the scan is reading the
-                    // wrong program (or a half-broken server), and an
+                    // failed to decompile, the scan is reading a
+                    // program the engine cannot analyze, and an
                     // empty result would persist as a phantom-clean
                     // record. Abort with the counts instead of
                     // skipping on.
@@ -366,9 +367,7 @@ impl<S> StringContextEngine<S> {
         );
 
         let mut metadata = ScanMetadata::new(binary);
-        // The source names its engine and pin under `kuna`; the Ghidra
-        // path names nothing and the record stays exactly as it was
-        // (issue #208).
+        // The source names its engine and pin under `kuna` (issue #208).
         metadata.engine = self.source.engine_provenance();
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
@@ -393,7 +392,7 @@ mod tests {
     use super::*;
     use crate::classify::CategoryPatterns;
     use calxgloss_ghidra::{
-        DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
+        DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
         Result, StringLiteral, StructLayout, Symbol, Xref,
     };
     use std::sync::Arc;
@@ -434,9 +433,8 @@ mod tests {
     impl ScanSource for FakeProgram {
         async fn functions(&self) -> Result<Vec<FunctionSummary>> {
             if self.fail_listing {
-                return Err(GhidraError::Reported {
-                    status: Some(200),
-                    message: "Ghidra is busy".into(),
+                return Err(EngineError::Reported {
+                    message: "the engine is busy".into(),
                 });
             }
             Ok(self.listing.clone())
@@ -445,7 +443,7 @@ mod tests {
         async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
             self.decompile_fetches.fetch_add(1, Ordering::SeqCst);
             if self.fail_decompile.iter().any(|f| f == name) {
-                return Err(GhidraError::NotFound {
+                return Err(EngineError::NotFound {
                     kind: "function",
                     query: name.to_string(),
                 });
@@ -453,7 +451,7 @@ mod tests {
             self.bodies
                 .get(name)
                 .cloned()
-                .ok_or_else(|| GhidraError::NotFound {
+                .ok_or_else(|| EngineError::NotFound {
                     kind: "function",
                     query: name.to_string(),
                 })
@@ -461,9 +459,8 @@ mod tests {
 
         async fn strings(&self) -> Result<Vec<StringLiteral>> {
             if self.fail_strings {
-                return Err(GhidraError::Reported {
-                    status: Some(200),
-                    message: "Ghidra is busy".into(),
+                return Err(EngineError::Reported {
+                    message: "the engine is busy".into(),
                 });
             }
             Ok(self.literals.clone())
@@ -472,9 +469,8 @@ mod tests {
         async fn xrefs_to(&self, address: u64) -> Result<Vec<Xref>> {
             self.xref_fetches.fetch_add(1, Ordering::SeqCst);
             if self.fail_xrefs {
-                return Err(GhidraError::Reported {
-                    status: Some(200),
-                    message: "Ghidra is busy".into(),
+                return Err(EngineError::Reported {
+                    message: "the engine is busy".into(),
                 });
             }
             Ok(self.xrefs.get(&address).cloned().unwrap_or_default())
@@ -491,14 +487,14 @@ mod tests {
         }
 
         async fn struct_layout(&self, name: &str) -> Result<StructLayout> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "struct",
                 query: name.to_string(),
             })
         }
 
         async fn enum_values(&self, name: &str) -> Result<EnumDefinition> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "enum",
                 query: name.to_string(),
             })

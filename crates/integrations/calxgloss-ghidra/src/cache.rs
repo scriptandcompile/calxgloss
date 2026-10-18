@@ -1,12 +1,12 @@
-//! The two-tier read-through cache for Ghidra reads (issue #103).
+//! The two-tier read-through cache for engine reads (issue #103).
 //!
-//! [`CachedGhidraSource`] wraps a [`GhidraClient`] and implements the shared
+//! [`CachedScanSource`] wraps a [`KunaSource`] and implements the shared
 //! [`ScanSource`] seam, so every evidence engine pulls its program facts
-//! through the cache without knowing it exists. Reads resolve in three tiers:
-//! an in-memory memo first, then JSON documents on disk under the record of
-//! effort, then the live client — and every live result is written through to
-//! disk immediately, so an interrupted run leaves a valid partial cache and a
-//! second run over the same bytes replays with zero live calls.
+//! through the cache without knowing it exists. Reads resolve in three
+//! tiers: an in-memory memo first, then JSON documents on disk under the
+//! record of effort, then the engine — and every engine result is written
+//! through to disk immediately, so an interrupted run leaves a valid partial
+//! cache and a second run over the same bytes replays with zero engine calls.
 //!
 //! **Validity is the key.** The disk tier lives at
 //! `re/ghidra-cache/{binary identity}/{sha256}/`, where the hash is SHA-256
@@ -14,41 +14,44 @@
 //! directory, so staleness needs no invalidation logic; old hash directories
 //! are kept (for switching back to a previous build) until pruned by hand.
 //! A `manifest.json` in the directory records the binary hash, the cache
-//! format version, and the Ghidra program name from the server's probe — a
-//! mismatch on any field (or a corrupt manifest) treats the directory as
-//! cold: it is wiped and rewritten, so a stale entry is never served.
+//! format version, and the program name as the engine named it — a mismatch
+//! on any field (or a corrupt manifest) treats the directory as cold: it is
+//! wiped and rewritten, so a stale entry is never served. The format version
+//! went to 2 when Kuna became the only engine (issue #214): documents
+//! written by the retired Ghidra bridge are never replayed under Kuna.
+//! (The directory keeps its historical name; the rename is recorded as a
+//! deferral in ADR-0041.)
 //!
-//! **Forcing a cold cache:** the `--refresh-ghidra-cache` CLI flag (on
+//! **Forcing a cold cache:** the `--refresh-cache` CLI flag (on
 //! `batch-translate`, `auto`, and `live`) routes the run through
-//! [`CachedGhidraSource::new_refresh`] — the directory is wiped and
-//! rewritten, so every read goes live once and the next run replays warm
-//! again. Deleting the cache directory (or the binary's whole identity
-//! directory) does the same by hand. The bridge reports no Ghidra version,
-//! so a re-analysis *inside* Ghidra over unchanged bytes cannot be
-//! detected — the flag and the deletion are the documented ways to honor
-//! one. Bumping [`CACHE_FORMAT_VERSION`] invalidates every cache at once
-//! when the record shape changes.
+//! [`CachedScanSource::new_refresh`] — the directory is wiped and
+//! rewritten, so every read goes to the engine once and the next run
+//! replays warm again. Deleting the cache directory (or the binary's whole
+//! identity directory) does the same by hand. Bumping
+//! [`CACHE_FORMAT_VERSION`] invalidates every cache at once when the record
+//! shape changes.
 //!
 //! **Degradation, never failure:** a missing or unreadable binary file drops
-//! the disk tier entirely and reads pass straight through to the client; a
-//! corrupt cache document is logged and refetched live; a failed cache write
-//! is logged and the read still succeeds. Only the live fetch's own errors
-//! reach the caller.
+//! the disk tier entirely and reads pass straight through to the engine; a
+//! corrupt cache document is logged and refetched from the engine; a failed
+//! cache write is logged and the read still succeeds. Only the engine
+//! fetch's own errors reach the caller.
 //!
 //! **What is never cached:** write-side calls (function tags, type
-//! write-back) delegate straight through, and `begin_pass`/`end_pass`
-//! heartbeat control passes through to the wrapped client. The heartbeat
-//! counts *work items consumed*, not live round trips: a cached decompile
-//! beats through the wrapped client just like a live one, so a warm run's
-//! progress line keeps moving (issue #121). Concurrent misses of one key
-//! share a single live request.
+//! write-back) never go through the cache, and `begin_pass`/`end_pass`
+//! heartbeat control passes through to the wrapped engine. The heartbeat
+//! counts *work items consumed*, not engine round trips: a cached decompile
+//! beats through the wrapped engine's heartbeat just like a live one, so a
+//! warm run's progress line keeps moving (issue #121). Concurrent misses of
+//! one key share a single engine request.
 
-use crate::client::{GhidraClient, GhidraError, Result};
+use crate::error::{EngineError, Result};
 use crate::model::{
     DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, StringLiteral,
     StructLayout, Symbol, Xref,
 };
 use crate::scan_source::ScanSource;
+use calxgloss_kuna::KunaSource;
 use calxgloss_types::BinaryIdentity;
 use calxgloss_types::TranslationEvents;
 use calxgloss_types::persist::{PersistError, load_json, save_json};
@@ -66,8 +69,10 @@ use tracing::warn;
 
 /// Cache-format version, recorded in every manifest. Bump when a cached
 /// document's shape changes: every existing directory then reads as cold
-/// instead of serving records the new readers cannot interpret.
-const CACHE_FORMAT_VERSION: u32 = 1;
+/// instead of serving records the new readers cannot interpret. Version 2
+/// marks the Kuna-only engine (issue #214): the Ghidra bridge's documents
+/// are never replayed under a different engine's decompiler.
+const CACHE_FORMAT_VERSION: u32 = 2;
 
 /// The `manifest.json` beside a directory's cached documents. All three
 /// fields must match this run's facts for the directory to be warm; the
@@ -79,11 +84,11 @@ struct CacheManifest {
     binary_sha256: String,
     /// The [`CACHE_FORMAT_VERSION`] this directory was written under.
     format_version: u32,
-    /// The Ghidra program name as the server's probe reported it.
+    /// The program name as the engine named it.
     program: String,
 }
 
-/// One cached read, identifying both its endpoint and its argument.
+/// One cached read, identifying both its read and its argument.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum CacheKey {
     Functions,
@@ -101,7 +106,7 @@ enum CacheKey {
     Memory(u64, usize),
 }
 
-/// A cached view of one Ghidra program, safe to clone and hand to every
+/// A cached view of one loaded program, safe to clone and hand to every
 /// engine in a batch.
 ///
 /// See the [module docs](crate::cache) for the tiers, the validity key, and
@@ -109,75 +114,70 @@ enum CacheKey {
 /// memo and the disk directory can never serve one program's data for
 /// another.
 #[derive(Debug, Clone)]
-pub struct CachedGhidraSource {
+pub struct CachedScanSource {
     inner: Arc<Inner>,
 }
 
 #[derive(Debug)]
 struct Inner {
-    client: GhidraClient,
+    source: KunaSource,
     /// `re/ghidra-cache/{identity}/{sha256}` — `None` when the binary file
     /// was missing or unreadable, which drops the disk tier and leaves
-    /// pass-through live reads.
+    /// pass-through engine reads.
     cache_dir: Option<PathBuf>,
     /// In-memory tier: one shared cell per key. The cell fills on the first
-    /// miss (disk or live), and concurrent misses of the same key await the
-    /// one in-flight fill instead of stampeding the server.
+    /// miss (disk or engine), and concurrent misses of the same key await
+    /// the one in-flight fill instead of stampeding the engine.
     memo: Mutex<HashMap<CacheKey, Arc<OnceCell<Value>>>>,
 }
 
-impl CachedGhidraSource {
-    /// Wrap `client` with a cache for the binary `binary_path`, filed under
+impl CachedScanSource {
+    /// Wrap `source` with a cache for the binary `binary_path`, filed under
     /// the workspace's record of effort.
     ///
-    /// The binary's file bytes are hashed once here, and the server is
-    /// probed once for the program name the manifest records. A missing or
-    /// unreadable `binary_path` is not an error: the source degrades to
-    /// pass-through live reads (in-memory memo only, no disk tier).
+    /// The binary's file bytes are hashed once here; the program name the
+    /// manifest records is the one the loaded engine already names, so
+    /// construction never touches the engine. A missing or unreadable
+    /// `binary_path` is not an error: the source degrades to pass-through
+    /// engine reads (in-memory memo only, no disk tier).
     ///
     /// # Errors
     ///
-    /// Returns the probe's [`GhidraError`] if the server is unreachable or
-    /// no program is open — the same failure a live read would hit.
-    pub async fn new(
-        client: GhidraClient,
+    /// Returns a [`Result`] only for shape reasons — construction reads no
+    /// engine, so nothing here fails on engine state.
+    pub fn new(
+        source: KunaSource,
         workspace: impl AsRef<Path>,
         binary: impl Into<BinaryIdentity>,
         binary_path: impl AsRef<Path>,
     ) -> Result<Self> {
-        Self::build(client, workspace, binary, binary_path, false).await
+        Ok(Self::build(source, workspace, binary, binary_path, false))
     }
 
     /// Like [`new`](Self::new), but forces the disk tier cold first: the
     /// directory for this binary's current bytes is wiped before the
-    /// manifest is opened, so every read goes live and the cache is
-    /// rewritten by write-through.
+    /// manifest is opened, so every read goes to the engine and the cache
+    /// is rewritten by write-through.
     ///
-    /// This is the escape hatch for the one stale case the manifest cannot
-    /// detect — the Ghidra *program* changed (re-analysis, applied types,
-    /// renames) while the binary's bytes stayed the same, and the bridge
-    /// reports no Ghidra version to notice it with. The CLI's
-    /// `--refresh-ghidra-cache` flag routes a run through here (issue #106).
-    ///
-    /// # Errors
-    ///
-    /// Same as [`new`](Self::new).
-    pub async fn new_refresh(
-        client: GhidraClient,
+    /// This is the operator's escape hatch (issue #106): deleting the
+    /// directory does the same by hand. The CLI's `--refresh-cache` flag
+    /// routes a run through here.
+    pub fn new_refresh(
+        source: KunaSource,
         workspace: impl AsRef<Path>,
         binary: impl Into<BinaryIdentity>,
         binary_path: impl AsRef<Path>,
     ) -> Result<Self> {
-        Self::build(client, workspace, binary, binary_path, true).await
+        Ok(Self::build(source, workspace, binary, binary_path, true))
     }
 
-    async fn build(
-        client: GhidraClient,
+    fn build(
+        source: KunaSource,
         workspace: impl AsRef<Path>,
         binary: impl Into<BinaryIdentity>,
         binary_path: impl AsRef<Path>,
         refresh: bool,
-    ) -> Result<Self> {
+    ) -> Self {
         let binary = binary.into();
         let binary_path = binary_path.as_ref();
         let cache_dir = match sha256_of_file(binary_path) {
@@ -185,12 +185,12 @@ impl CachedGhidraSource {
                 warn!(
                     binary = %binary,
                     path = %binary_path.display(),
-                    "target binary file is missing — Ghidra reads pass through uncached"
+                    "target binary file is missing — engine reads pass through uncached"
                 );
                 None
             }
             Ok(Some(hash)) => {
-                let program = client.probe().await?.program;
+                let program = source.identity().to_string();
                 let dir = cache_root(workspace).join(binary.as_str()).join(&hash);
                 let manifest = CacheManifest {
                     binary_sha256: hash,
@@ -202,7 +202,7 @@ impl CachedGhidraSource {
                     Err(err) => {
                         warn!(
                             %err,
-                            "Ghidra cache directory is unusable — reads pass through uncached"
+                            "scan cache directory is unusable — reads pass through uncached"
                         );
                         None
                     }
@@ -212,18 +212,18 @@ impl CachedGhidraSource {
                 warn!(
                     %err,
                     path = %binary_path.display(),
-                    "could not read the target binary — Ghidra reads pass through uncached"
+                    "could not read the target binary — engine reads pass through uncached"
                 );
                 None
             }
         };
-        Ok(Self {
+        Self {
             inner: Arc::new(Inner {
-                client,
+                source,
                 cache_dir,
                 memo: Mutex::new(HashMap::new()),
             }),
-        })
+        }
     }
 
     /// The directory this instance's documents are filed under, or `None`
@@ -236,35 +236,40 @@ impl CachedGhidraSource {
     // Write-side and heartbeat pass-throughs — never cached
     // =========================================================
 
-    /// Attach `tag` to a function, delegating straight to the client.
+    /// Attach `tag` to a function — refused by name.
     ///
-    /// Writes are facts about what the caller *did*, not read-only program
-    /// facts, so they are never served from or stored in the cache.
-    pub async fn add_function_tag(&self, function: &str, tag: &str) -> Result<()> {
-        self.inner.client.add_function_tag(function, tag).await
+    /// The Kuna engine has no function-tag write-back, and writes are never
+    /// cached anyway; the refusal is named so a vtable scan can tolerate it
+    /// (tagging is enrichment, not detection) rather than lose the scan.
+    pub async fn add_function_tag(&self, _function: &str, _tag: &str) -> Result<()> {
+        Err(EngineError::Reported {
+            message: "the Kuna engine has no function-tag write-back; vtable tagging is \
+                      enrichment, not detection, and the scan continues without it"
+                .to_string(),
+        })
     }
 
-    /// Arm the wrapped client's heartbeat for one analysis pass.
+    /// Arm the wrapped engine's heartbeat for one analysis pass.
     ///
-    /// Beats count work items consumed, not live round trips: a cached
-    /// decompile beats through the wrapped client's heartbeat just like a
+    /// Beats count work items consumed, not engine round trips: a cached
+    /// decompile beats through the wrapped engine's heartbeat just like a
     /// live one, so a warm run's progress stays visible (issue #121).
     pub fn begin_pass(&self, binary: &str, pass: &str, events: &TranslationEvents) {
-        self.inner.client.begin_pass(binary, pass, events);
+        self.inner.source.begin_pass(binary, pass, events);
     }
 
-    /// Disarm the wrapped client's heartbeat.
+    /// Disarm the wrapped engine's heartbeat.
     pub fn end_pass(&self) {
-        self.inner.client.end_pass();
+        self.inner.source.end_pass();
     }
 
     // =========================================================
-    // The read path: memo → disk → live, writing through
+    // The read path: memo → disk → engine, writing through
     // =========================================================
 
-    /// Resolve `key` through the three tiers, storing the live answer in
+    /// Resolve `key` through the three tiers, storing the engine answer in
     /// both. The memo cell is shared per key, so concurrent misses of one
-    /// key fire exactly one live request.
+    /// key fire exactly one engine request.
     async fn cached<T, Fut>(&self, key: CacheKey, live: impl FnOnce() -> Fut + Send) -> Result<T>
     where
         T: Serialize + DeserializeOwned,
@@ -274,10 +279,10 @@ impl CachedGhidraSource {
     }
 
     /// Like [`cached`](Self::cached), also reporting whether the value was
-    /// served without a live round trip — a memo or disk hit. Callers that
-    /// count consumed work items (the heartbeat) need the distinction: the
-    /// live path already beats inside the client, so only a hit must beat
-    /// here.
+    /// served without an engine round trip — a memo or disk hit. Callers
+    /// that count consumed work items (the heartbeat) need the distinction:
+    /// the engine path already beats inside the source, so only a hit must
+    /// beat here.
     async fn cached_hit<T, Fut>(
         &self,
         key: CacheKey,
@@ -294,23 +299,23 @@ impl CachedGhidraSource {
                     .or_insert_with(|| Arc::new(OnceCell::new())),
             )
         };
-        let went_live = AtomicBool::new(false);
+        let went_engine = AtomicBool::new(false);
         let value = cell
             .get_or_try_init(|| async {
                 if let Some(disk) = self.read_disk(&key) {
                     // A document that parses as JSON but not as this
-                    // endpoint's record is corrupt for our purposes.
+                    // read's record is corrupt for our purposes.
                     if serde_json::from_value::<T>(disk.clone()).is_ok() {
-                        return Ok::<Value, GhidraError>(disk);
+                        return Ok::<Value, EngineError>(disk);
                     }
                     warn!(
                         ?key,
-                        "Ghidra cache document does not match its endpoint — refetching live"
+                        "cache document does not match its read — refetching from the engine"
                     );
                 }
-                went_live.store(true, Ordering::Relaxed);
+                went_engine.store(true, Ordering::Relaxed);
                 let value =
-                    serde_json::to_value(live().await?).map_err(|err| GhidraError::Malformed {
+                    serde_json::to_value(live().await?).map_err(|err| EngineError::Malformed {
                         kind: "a cache document",
                         detail: err.to_string(),
                     })?;
@@ -319,11 +324,11 @@ impl CachedGhidraSource {
             })
             .await?;
         // A memo hit never runs the init closure, and a disk hit stops
-        // before the live fetch — either way `went_live` stays false.
-        let from_cache = !went_live.load(Ordering::Relaxed);
+        // before the engine fetch — either way `went_engine` stays false.
+        let from_cache = !went_engine.load(Ordering::Relaxed);
         serde_json::from_value(value.clone())
             .map(|parsed| (parsed, from_cache))
-            .map_err(|err| GhidraError::Malformed {
+            .map_err(|err| EngineError::Malformed {
                 kind: "a cached read",
                 detail: err.to_string(),
             })
@@ -341,7 +346,7 @@ impl CachedGhidraSource {
             Ok(value) => Some(value),
             Err(PersistError::NotFound { .. }) => None,
             Err(err) => {
-                warn!(%err, "corrupt Ghidra cache document — refetching live");
+                warn!(%err, "corrupt cache document — refetching from the engine");
                 None
             }
         }
@@ -353,22 +358,28 @@ impl CachedGhidraSource {
         if let Some(dir) = &self.inner.cache_dir {
             let path = doc_path(dir, key);
             if let Err(err) = save_json(&path, value) {
-                warn!(%err, "could not write Ghidra cache document — continuing without it");
+                warn!(%err, "could not write cache document — continuing without it");
             }
         }
     }
 }
 
-impl ScanSource for CachedGhidraSource {
+impl ScanSource for CachedScanSource {
+    // The live tier is the wrapped engine read through the seam, so the
+    // cached records are exactly the seam shapes every consumer expects.
+    // The calls are trait-qualified so the engine's inherent methods (which
+    // answer Kuna-native shapes) never shadow the seam's mapped reads.
     async fn functions(&self) -> Result<Vec<FunctionSummary>> {
         let (list, from_cache) = self
-            .cached_hit(CacheKey::Functions, || self.inner.client.list_functions())
+            .cached_hit(CacheKey::Functions, || {
+                ScanSource::functions(&self.inner.source)
+            })
             .await?;
         if from_cache {
-            // A warm listing never reaches the client, so an armed
+            // A warm listing never reaches the engine, so an armed
             // heartbeat would never learn the work list — forward it here
             // to keep the pass's "n of m" honest on a warm run.
-            self.inner.client.note_worklist(&list);
+            self.inner.source.note_worklist(list.len());
         }
         Ok(list)
     }
@@ -376,33 +387,35 @@ impl ScanSource for CachedGhidraSource {
     async fn decompile(&self, name: &str) -> Result<DecompiledFunction> {
         let (body, from_cache) = self
             .cached_hit(CacheKey::Decompile(name.to_string()), || {
-                self.inner.client.decompile_function_by_name(name)
+                ScanSource::decompile(&self.inner.source, name)
             })
             .await?;
         if from_cache {
-            // The live path beats inside the client's decompile; a cached
+            // The engine path beats inside the source's decompile; a cached
             // body never gets there, so count the consumed work item here
             // (issue #121 — the dashboard's per-binary activity line).
-            self.inner.client.tick_name(name);
+            self.inner.source.tick(name);
         }
         Ok(body)
     }
 
     async fn strings(&self) -> Result<Vec<StringLiteral>> {
-        self.cached(CacheKey::Strings, || self.inner.client.list_strings(None))
-            .await
+        self.cached(CacheKey::Strings, || {
+            ScanSource::strings(&self.inner.source)
+        })
+        .await
     }
 
     async fn callers(&self, address: u64) -> Result<Vec<String>> {
         self.cached(CacheKey::Callers(address), || {
-            self.inner.client.callers(address)
+            ScanSource::callers(&self.inner.source, address)
         })
         .await
     }
 
     async fn xrefs_to(&self, address: u64) -> Result<Vec<Xref>> {
         self.cached(CacheKey::XrefsTo(address), || {
-            self.inner.client.xrefs_to(address, None)
+            ScanSource::xrefs_to(&self.inner.source, address)
         })
         .await
     }
@@ -410,50 +423,65 @@ impl ScanSource for CachedGhidraSource {
     async fn data_types(&self, category: Option<&str>) -> Result<Vec<DataTypeEntry>> {
         let category = category.map(str::to_string);
         self.cached(CacheKey::DataTypes(category.clone()), || {
-            self.inner.client.list_data_types(category.as_deref())
+            ScanSource::data_types(&self.inner.source, category.as_deref())
         })
         .await
     }
 
     async fn struct_layout(&self, name: &str) -> Result<StructLayout> {
         self.cached(CacheKey::StructLayout(name.to_string()), || {
-            self.inner.client.get_struct_layout(name)
+            ScanSource::struct_layout(&self.inner.source, name)
         })
         .await
     }
 
     async fn enum_values(&self, name: &str) -> Result<EnumDefinition> {
         self.cached(CacheKey::EnumValues(name.to_string()), || {
-            self.inner.client.get_enum_values(name)
+            ScanSource::enum_values(&self.inner.source, name)
         })
         .await
     }
 
     async fn data_items(&self) -> Result<Vec<DataItem>> {
-        self.cached(CacheKey::DataItems, || self.inner.client.list_data_items())
-            .await
+        self.cached(CacheKey::DataItems, || {
+            ScanSource::data_items(&self.inner.source)
+        })
+        .await
     }
 
     async fn imports(&self) -> Result<Vec<Symbol>> {
-        self.cached(CacheKey::Imports, || self.inner.client.imports(None))
-            .await
+        self.cached(CacheKey::Imports, || {
+            ScanSource::imports(&self.inner.source)
+        })
+        .await
     }
 
     async fn exports(&self) -> Result<Vec<Symbol>> {
-        self.cached(CacheKey::Exports, || self.inner.client.exports(None))
-            .await
+        self.cached(CacheKey::Exports, || {
+            ScanSource::exports(&self.inner.source)
+        })
+        .await
     }
 
     async fn image_base(&self) -> Result<u64> {
-        self.cached(CacheKey::ImageBase, || self.inner.client.image_base())
-            .await
+        self.cached(CacheKey::ImageBase, || {
+            ScanSource::image_base(&self.inner.source)
+        })
+        .await
     }
 
     async fn read_memory(&self, address: u64, length: usize) -> Result<Vec<u8>> {
         self.cached(CacheKey::Memory(address, length), || {
-            self.inner.client.read_memory(address, length)
+            ScanSource::read_memory(&self.inner.source, address, length)
         })
         .await
+    }
+
+    fn engine_provenance(&self) -> Option<calxgloss_types::EngineProvenance> {
+        // The cache answers from the engine it wraps, so the record names
+        // that engine — a warm replay still says which engine and pin
+        // produced it (issue #208).
+        ScanSource::engine_provenance(&self.inner.source)
     }
 }
 
@@ -462,12 +490,15 @@ impl ScanSource for CachedGhidraSource {
 // ============================================================
 
 /// The cache convention: `{workspace}/re/ghidra-cache`.
+///
+/// The directory keeps its historical name after the Ghidra engine's
+/// retirement; the rename is recorded as a deferral in ADR-0041.
 fn cache_root(workspace: impl AsRef<Path>) -> PathBuf {
     workspace.as_ref().join("re").join("ghidra-cache")
 }
 
 /// Where one key's document is filed inside a hash directory: whole-program
-/// listings at the top level, per-item documents under per-endpoint
+/// listings at the top level, per-item documents under per-read
 /// subdirectories keyed by bare hex address or item name.
 fn doc_path(root: &Path, key: &CacheKey) -> PathBuf {
     fn item(sub: &str, name: &str) -> PathBuf {
@@ -496,9 +527,9 @@ fn doc_path(root: &Path, key: &CacheKey) -> PathBuf {
 }
 
 /// A file-name-safe rendering of an item name (function, type, or category).
-/// Names Ghidra generates are already safe and stay verbatim, so the
-/// documents stay hand-inspectable; anything else is sanitized with a hash
-/// suffix so two different names can never collide on one document.
+/// Engine-generated names like `FUN_…` are already safe and stay verbatim,
+/// so the documents stay hand-inspectable; anything else is sanitized with a
+/// hash suffix so two different names can never collide on one document.
 fn safe_key(name: &str) -> String {
     let safe = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-');
     if !name.is_empty() && name != "." && name != ".." && name.chars().all(&safe) {
@@ -542,10 +573,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// later) and rewritten with this run's facts, leaving a cold but writable
 /// directory.
 ///
-/// `refresh` is the operator's escape hatch (issue #106): the manifest can
-/// match while the Ghidra program behind the entries has changed —
-/// re-analysis, applied types, renames over unchanged bytes — so a refresh
-/// wipes and rewrites regardless of what the manifest says.
+/// `refresh` is the operator's escape hatch (issue #106): a refresh wipes
+/// and rewrites regardless of what the manifest says.
 fn open_manifest(
     dir: &Path,
     manifest: &CacheManifest,
@@ -554,8 +583,8 @@ fn open_manifest(
     let path = dir.join("manifest.json");
     if refresh {
         // A failed wipe must not leave warm entries behind: the refresh
-        // exists precisely to force live reads, so the directory is
-        // reported unusable and the run degrades to pass-through live
+        // exists precisely to force engine reads, so the directory is
+        // reported unusable and the run degrades to pass-through engine
         // reads rather than silently replaying stale ones.
         if let Err(err) = std::fs::remove_dir_all(dir) {
             return Err(PersistError::Io {
@@ -571,14 +600,14 @@ fn open_manifest(
             warn!(
                 expected = ?manifest,
                 found = ?existing,
-                "Ghidra cache manifest mismatch — treating the directory as cold"
+                "cache manifest mismatch — treating the directory as cold"
             );
             let _ = std::fs::remove_dir_all(dir);
             save_json(&path, manifest)
         }
         Err(PersistError::NotFound { .. }) => save_json(&path, manifest),
         Err(err) => {
-            warn!(%err, "Ghidra cache manifest is corrupt — treating the directory as cold");
+            warn!(%err, "cache manifest is corrupt — treating the directory as cold");
             let _ = std::fs::remove_dir_all(dir);
             save_json(&path, manifest)
         }
@@ -602,7 +631,7 @@ mod tests {
     }
 
     #[test]
-    fn documents_are_filed_per_endpoint_under_the_cache_directory() {
+    fn documents_are_filed_per_read_under_the_cache_directory() {
         let root = Path::new("root");
         assert_eq!(
             doc_path(root, &CacheKey::Functions),
@@ -615,7 +644,7 @@ mod tests {
         assert_eq!(
             doc_path(root, &CacheKey::Callers(0x18003e750)),
             root.join("callers").join("18003e750.json"),
-            "addresses key documents in bare hex, as the bridge itself writes them"
+            "addresses key documents in bare hex"
         );
         assert_eq!(
             doc_path(root, &CacheKey::Memory(0x1801306f0, 8)),
@@ -633,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    fn ghidra_names_stay_verbatim_but_unsafe_names_get_a_hash_suffix() {
+    fn engine_names_stay_verbatim_but_unsafe_names_get_a_hash_suffix() {
         assert_eq!(safe_key("FUN_18003e750"), "FUN_18003e750");
         assert_eq!(safe_key("IMAGE_DOS_HEADER"), "IMAGE_DOS_HEADER");
         assert_eq!(safe_key("excpt.h"), "excpt.h");
@@ -690,9 +719,8 @@ mod tests {
         open_manifest(&cache, &manifest, false).expect("first open writes the manifest");
         save_json(&cache.join("functions.json"), &vec![1u8]).expect("entry written");
 
-        // The refresh escape hatch (issue #106): the manifest can match while
-        // the Ghidra program behind the entries has been re-analyzed, so a
-        // refresh run must wipe and rewrite regardless.
+        // The refresh escape hatch (issue #106): a refresh run must wipe and
+        // rewrite regardless of what the manifest says.
         open_manifest(&cache, &manifest, true).expect("refresh rewrites the manifest");
         assert!(
             !cache.join("functions.json").is_file(),

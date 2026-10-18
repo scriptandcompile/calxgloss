@@ -31,15 +31,16 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| X5 | Kuna decompiler engine behind the `ScanSource` seam (`analysis.engine = ghidra \| kuna`) | integrations (new `calxgloss-kuna`) | — | ✅ done | #205–#212 shipped — close #203 when the parity comparison is reviewed | [#203](https://github.com/scriptandcompile/calxgloss/issues/203) |
+| X5 | Kuna decompiler engine behind the `ScanSource` seam — Kuna-only, Ghidra retired (#214) | integrations (`calxgloss-kuna`, seam `calxgloss-ghidra`) | — | ✅ done | #205–#214 shipped — close #203 | [#203](https://github.com/scriptandcompile/calxgloss/issues/203) |
 
 Legend: ✅ done · 🔶 in progress · ⬜ not started. Row X5 is done
 (engine skeleton + selection, #205, and the core scan reads, #206, shipped
 2026-10-16, the full read-seam coverage, #207, and record provenance,
 #208, shipped 2026-10-18, the write-back directive plane, #209, and the
 text-dialect consumers, #210, shipped 2026-10-18, the engine heartbeats and
-per-function budgets, #211, and the web harness's end-to-end engine=kuna
-scan, #212, shipped 2026-10-18);
+per-function budgets, #211, the web harness's end-to-end engine=kuna
+scan, #212, shipped 2026-10-18, and the Ghidra engine retirement, #214,
+shipped 2026-10-18);
 no effort estimate yet.
 X5's spec shipped early (2026-10-16, #203). P2.5 (typeinfer Phase 5) shipped through #150 and was
 pruned from this matrix when epic #142 closed (2026-10-14); P3.5 (algorithm
@@ -66,9 +67,8 @@ Ghidra's decompiler; crates `kuna-decomp`/`kuna-analysis`, git-pinned)
 behind the existing seams: a new `calxgloss-kuna` crate implements
 `ScanSource` (read) and `TypeWriteSource` (write-back via Kuna's
 `--assert` directive plane, persisted as a replayable directive file in
-`re/kuna/`), with `PipelineSource` gaining a `Kuna` variant and config/CLI
-choosing `analysis.engine = ghidra | kuna` (default `ghidra`). Under
-`kuna` the whole ADR-0007 lifecycle — Ghidra install, extension pairing,
-headless JVM supervision — disappears. Ghidra stays untouched; the known
-gaps (TypeManager-style type-library listing, output parity) are decided
-in the spec. Spec: #203 (ready-for-agent).
+`re/kuna/`), with `PipelineSource` gaining a `Kuna` variant. #214 then
+retired the Ghidra path outright (ADR-0041 supersedes ADR-0001/ADR-0007):
+the GhidraMCP client and the whole ADR-0007 lifecycle — Ghidra install,
+extension pairing, headless JVM supervision — are deleted, `PipelineSource`
+is `Cached | Kuna`, and config/CLI offer no engine choice. Spec: #203.

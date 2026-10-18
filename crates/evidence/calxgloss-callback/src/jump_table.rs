@@ -43,7 +43,7 @@ use calxgloss_types::skip_literal;
 /// [`prefixes`](Self::prefixes) reports it in configuration order. The
 /// standard set ([`default_table_prefixes`]) covers Ghidra's minted
 /// spellings; a binary whose tables carry project names configures
-/// those instead. The detector holds no Ghidra client of its own and
+/// those instead. The detector holds no scan source of its own and
 /// never writes back to the program; one detector serves an entire
 /// scan.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

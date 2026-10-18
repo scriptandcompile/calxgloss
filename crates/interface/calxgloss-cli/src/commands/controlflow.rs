@@ -1,8 +1,8 @@
-//! The `controlflow` command — detect control-flow patterns for the open binary.
+//! The `controlflow` command — detect control-flow patterns for a binary.
 //!
 //! Runs the control-flow detectors — switch-shaped if/else-if chains,
-//! self-recursion, and state-machine patterns — against the program
-//! currently open in Ghidra and saves the result to
+//! self-recursion, and state-machine patterns — against the loaded
+//! program and saves the result to
 //! `re/analysis/controlflow/{binary}.json` in the workspace, the same file
 //! batch translation will read as prompt context. Batch translation runs
 //! the same scan before its first batch when no result is cached; this
@@ -15,7 +15,6 @@ use anyhow::{Context, Result};
 use calxgloss_controlflow::engine::ControlFlowEngine;
 use calxgloss_controlflow::persist::ControlFlowPersistor;
 use calxgloss_controlflow::types::ControlFlowResult;
-use calxgloss_ghidra::{GhidraClient, GhidraConfig};
 use chrono::DateTime;
 use tracing::info;
 
@@ -48,16 +47,9 @@ pub async fn handle_controlflow(
 
     info!(binary, workspace = %workspace.display(), "Detecting control-flow patterns");
 
-    let ghidra_url = &settings.ghidra_url.value;
-    let mut config = GhidraConfig::new(ghidra_url)
-        .with_context(|| format!("Failed to parse GhidraMCP URL: {}", ghidra_url))?;
-    if let Some(key) = &settings.ghidra_api_key {
-        config = config.with_api_key(key.value.clone());
-    }
-    let ghidra = GhidraClient::from_config(config)
-        .with_context(|| format!("Failed to connect to GhidraMCP at {}", ghidra_url))?;
+    let kuna = load_kuna_source(settings, binary)?;
 
-    let engine = ControlFlowEngine::new(&ghidra);
+    let engine = ControlFlowEngine::new(&kuna);
     let result = engine
         .scan(binary)
         .await

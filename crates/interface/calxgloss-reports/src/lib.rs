@@ -15,7 +15,7 @@
 //! - [`print_classification_report`] — Display DLL classification results
 //! - [`print_batch_summary`] — Display batch translation results (pass/fail per function)
 //! - [`render_dashboard`] — Display the review dashboard as a text-based table
-//! - [`print_stack_report`] — Display the `calxgloss doctor` Ghidra stack report
+//! - [`print_kuna_report`] — Display the `calxgloss doctor` Kuna engine report
 
 pub mod dashboard;
 pub mod doctor;

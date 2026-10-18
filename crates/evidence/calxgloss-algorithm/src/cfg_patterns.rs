@@ -35,7 +35,7 @@ use regex::Regex;
 /// signature at a time with [`add_pattern`](Self::add_pattern) — and
 /// [`patterns`](Self::patterns) reports it in configuration order, so
 /// two matchers built the same way scan identically and results diff
-/// cleanly. The matcher holds no Ghidra client of its own and never
+/// cleanly. The matcher holds no scan source of its own and never
 /// writes back to the program; one matcher serves an entire scan and can
 /// be shared by reference across concurrent per-function passes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

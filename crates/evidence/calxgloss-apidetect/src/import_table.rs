@@ -95,7 +95,7 @@ mod tests {
     use super::*;
     use crate::lib_mapping::LibraryMapping;
     use calxgloss_ghidra::{
-        DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, GhidraError,
+        DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
         StringLiteral, StructLayout, Symbol, Xref,
     };
 
@@ -109,7 +109,7 @@ mod tests {
         }
 
         async fn decompile(&self, name: &str) -> calxgloss_ghidra::Result<DecompiledFunction> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "function",
                 query: name.to_string(),
             })
@@ -135,14 +135,14 @@ mod tests {
         }
 
         async fn struct_layout(&self, name: &str) -> calxgloss_ghidra::Result<StructLayout> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "struct",
                 query: name.to_string(),
             })
         }
 
         async fn enum_values(&self, name: &str) -> calxgloss_ghidra::Result<EnumDefinition> {
-            Err(GhidraError::NotFound {
+            Err(EngineError::NotFound {
                 kind: "enum",
                 query: name.to_string(),
             })

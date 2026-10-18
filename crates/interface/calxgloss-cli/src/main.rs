@@ -1,8 +1,8 @@
 //! Calxgloss CLI — Reverse Engineering Harness
 //!
 //! A command-line interface for the Calxgloss reverse engineering system.
-//! Wires together GhidraMCP analysis, LLM-assisted translation, test generation,
-//! verification, and Git automation into a unified workflow.
+//! Wires together in-process Kuna analysis, LLM-assisted translation, test
+//! generation, verification, and Git automation into a unified workflow.
 //!
 //! # Commands
 //!
@@ -11,16 +11,16 @@
 //! - `auto-shim` — Generate shim layers for crate-replacement DLLs
 //! - `translate` — Translate a single function from disassembly to Rust
 //! - `batch-translate` — Translate multiple functions from a single DLL
-//! - `typesdb` — Recover the type database (named types, vtables, inferred structs) for the binary open in Ghidra
-//! - `typeinfer` — Infer parameter types (this pointers, sizes, known signatures) for the binary open in Ghidra
-//! - `algorithm` — Recognize algorithms (control flow shapes, string markers, callback contracts) in the binary open in Ghidra
+//! - `typesdb` — Recover the type database (named types, vtables, inferred structs) for a binary
+//! - `typeinfer` — Infer parameter types (this pointers, sizes, known signatures) for a binary
+//! - `algorithm` — Recognize algorithms (control flow shapes, string markers, callback contracts) in a binary
 //! - `memory` — Detect memory lifecycles (allocation/release pairs, handle lifetimes, reference counting) for the open binary and cache the result
 //! - `sync` — Detect concurrency constructs (mutex pairings, atomic operations, thread spawns) for the open binary and cache the result
 //! - `stringctx` — Map program strings to functions (classification, format-string types) for the open binary and cache the result
 //! - `apidetect` — Identify the libraries and APIs of the open binary (import table, per-function API summaries) and cache the result
 //! - `verify` — Verify a previously translated function
 //! - `config` — Show the configuration in force and where each value came from
-//! - `doctor` — Report the whole Ghidra stack (install, extension, server) read-only
+//! - `doctor` — Report the analysis engine by loading a target in-process
 //! - `dashboard` — Show a structured terminal review dashboard
 //! - `gc` — Garbage-collect old translation branches (archive to refs/archive/)
 //! - `serve` — Start the web review UI HTTP server
@@ -46,7 +46,7 @@ mod utils;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use calxgloss_config::{AnalysisSection, FileConfig, GhidraSection, Layers, LlmSection, load};
+use calxgloss_config::{AnalysisSection, FileConfig, Layers, LlmSection, load};
 use calxgloss_web::LogLevelControl;
 use clap::Parser;
 use tracing::{debug, error, info};
@@ -121,23 +121,6 @@ fn main() -> Result<()> {
             .workspace
             .as_ref()
             .map(|p| p.to_string_lossy().to_string()),
-        ghidra: GhidraSection {
-            url: cli.ghidra_url.clone(),
-            api_key: cli.ghidra_api_key.clone(),
-            install_dir: None,
-            // The flag only turns autostart off; it cannot turn on a file's
-            // `auto_start = false` — that would need a tri-state flag.
-            auto_start: cli.no_ghidra_autostart.then_some(false),
-            headless: None,
-            project: None,
-            min_version: None,
-            start_timeout_secs: None,
-            // The bootstrap knobs are `doctor` flags, not global ones; they
-            // reach the bootstrap through `DoctorArgs` directly.
-            auto_install: None,
-            pin_version: None,
-            java_home: None,
-        },
         llm: LlmSection {
             url: cli.llm_url.clone(),
             model: cli.llm_model.clone(),
@@ -148,9 +131,8 @@ fn main() -> Result<()> {
             strategy: cli.strategy.clone(),
         },
         analysis: AnalysisSection {
-            engine: cli.engine.clone(),
-            // No flags for the budgets: they belong with the engine choice in
-            // the config file (issue #211), not on every command line.
+            // No flags for the budgets: they belong in the config file
+            // (issue #211), not on every command line.
             max_fn_instructions: None,
             max_fn_seconds: None,
             max_fn_memory_mib: None,
@@ -158,29 +140,16 @@ fn main() -> Result<()> {
     };
     let settings = Settings::resolve(&layers, flags, &loaded);
 
-    // target_dir is required for all commands that do real work.
-    // `config`, `gc`, `typesdb`, `typeinfer`, `algorithm`, `memory`, `sync`,
-    // `consts`, `callback`, `controlflow`, `stringctx`, `apidetect`, and
-    // `serialize` don't need it — the analysis
-    // commands read the program open
-    // in Ghidra and write to the workspace — so we check here and fail
+    // target_dir is required for all commands that do real work: the Kuna
+    // engine loads `target_dir/<binary>` in-process, so even the analysis
+    // scans (`typesdb`, `typeinfer`, `algorithm`, `memory`, `sync`,
+    // `consts`, `callback`, `controlflow`, `stringctx`, `apidetect`,
+    // `serialize`) need it. `config`, `doctor`, and `gc` don't — doctor
+    // takes its target as `--binary` directly — so we check here and fail
     // fast with a helpful message.
     if let Some(ref target) = cli.command {
         match target {
-            Command::Config
-            | Command::Doctor { .. }
-            | Command::Gc { .. }
-            | Command::Typesdb { .. }
-            | Command::Typeinfer { .. }
-            | Command::Algorithm { .. }
-            | Command::Memory { .. }
-            | Command::Sync { .. }
-            | Command::Consts { .. }
-            | Command::Callback { .. }
-            | Command::ControlFlow { .. }
-            | Command::StringCtx { .. }
-            | Command::ApiDetect { .. }
-            | Command::Serialize { .. } => {}
+            Command::Config | Command::Doctor { .. } | Command::Gc { .. } => {}
             _ if settings.target_dir.is_none() => {
                 anyhow::bail!(
                     "target_dir is required.\n\nSet it via:\n  --target-dir <path>\n  [target_dir] in calxgloss.toml\n  CALXGLOSS_TARGET_DIR env var"
@@ -201,23 +170,8 @@ fn main() -> Result<()> {
         no_callgraph: false,
         callgraph_cache: None,
         callgraph_verbose: false,
-        refresh_ghidra_cache: false,
+        refresh_cache: false,
     });
-    // A run uses exactly one engine (issue #205): until the Kuna scan path
-    // lands (#206–#213), every command that reads a decompiler engine is
-    // Ghidra-dependent, and under `kuna` it fails by name pointing at
-    // `--engine ghidra` instead of quietly driving the other engine.
-    // Engine-independent commands — `config`, `init`, `gc`, and `dashboard`
-    // with its review subcommands — run under either engine; `doctor`
-    // answers for itself, its kuna branch loading the target in-process.
-    match &command {
-        Command::Config
-        | Command::Init
-        | Command::Gc { .. }
-        | Command::Dashboard { .. }
-        | Command::Doctor { .. } => {}
-        _ => settings.require_ghidra_engine()?,
-    }
     let result = match command {
         Command::Config => {
             print!("{}", settings::render(&settings));
@@ -471,7 +425,7 @@ fn main() -> Result<()> {
             no_callgraph,
             callgraph_cache,
             callgraph_verbose,
-            refresh_ghidra_cache,
+            refresh_cache,
         } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
             tokio::runtime::Builder::new_current_thread()
@@ -491,7 +445,7 @@ fn main() -> Result<()> {
                     no_callgraph,
                     callgraph_cache,
                     callgraph_verbose,
-                    refresh_ghidra_cache,
+                    refresh_cache,
                     None, // no stop signal — plain auto runs to completion
                     None, // no pipeline control — plain auto has no web server
                     None, // no unit cancellation — plain auto has no web server
@@ -544,7 +498,7 @@ fn main() -> Result<()> {
             no_callgraph,
             callgraph_cache,
             callgraph_verbose,
-            refresh_ghidra_cache,
+            refresh_cache,
         } => {
             // live always uses CWD as the workspace — config / env overrides
             // are ignored because the workspace (where .git, src/, scratch/
@@ -566,7 +520,7 @@ fn main() -> Result<()> {
                     no_callgraph,
                     callgraph_cache,
                     callgraph_verbose,
-                    refresh_ghidra_cache,
+                    refresh_cache,
                     log_level,
                     log_filter,
                 ))
