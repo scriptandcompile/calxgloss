@@ -53,8 +53,10 @@ pub trait ScanSource {
     ///
     /// A listed name is a name [`Self::decompile`] can answer: an engine's
     /// import pointer slots and other bodyless entries belong to the
-    /// [`Self::imports`] read, not here, so a consumer that decompiles every
-    /// listed name spends no read that cannot succeed.
+    /// [`Self::imports`] read, and a name the engine cannot settle on one
+    /// entry — two of its own entries sharing a name, say — is listable by
+    /// nobody, so a consumer that decompiles every listed name spends no
+    /// read that cannot succeed.
     fn functions(&self) -> impl std::future::Future<Output = Result<Vec<FunctionSummary>>> + Send;
 
     /// The pseudo-C for one function, by name.

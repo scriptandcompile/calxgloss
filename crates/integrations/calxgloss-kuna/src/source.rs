@@ -994,8 +994,8 @@ fn panic_text(payload: &Box<dyn std::any::Any + Send>) -> String {
 
 /// The function listing, from the engine's own canonical entries.
 ///
-/// Two kinds of entry are excluded, because neither has a body the engine
-/// can render:
+/// Three kinds of entry are excluded, because none of them has a body the
+/// engine can render under the name the listing would report:
 ///
 /// * Kuna's synthetic import placeholders — addresses invented for call
 ///   naming on a relocatable load, reported as `UndefinedExternal`.
@@ -1010,6 +1010,13 @@ fn panic_text(payload: &Box<dyn std::any::Any + Send>) -> String {
 ///   listed names a `decompile` would fail on. A MinGW thunk veneer
 ///   (`jmp [__imp_puts]`) shares its import's name and stays listed: it is
 ///   code in `.text`, and it decompiles.
+/// * Entries whose name the engine's own name lookup will not settle on.
+///   `decompile` reaches a body through
+///   [`kuna_console::engine::ConsoleProgram::find_entry_by_name`], which
+///   answers `None` rather than pick when several entries share a name and
+///   more than one of them is executable — which is what an MSVC link does
+///   when it emits two thunk veneers for one import. Listing either name
+///   would only hand the caller a `FunctionNotFound`.
 ///
 /// The seam's `functions` listing therefore answers with functions defined
 /// in the image, and imports have their own read. Callers that resolve a
@@ -1018,16 +1025,70 @@ fn panic_text(payload: &Box<dyn std::any::Any + Send>) -> String {
 fn list_functions(program: &KunaProgram) -> Result<Vec<KunaFunction>> {
     use kuna_console::engine::EntryProvenance;
     let program = &program.program;
-    Ok(program
-        .function_entries_canonical()
-        .into_iter()
+    let canonical = program.function_entries_canonical();
+    let entries_at: BTreeMap<u64, &_> = canonical
+        .iter()
+        .map(|entry| (entry.addr.get_offset(), entry))
+        .collect();
+    let candidates: Vec<(&str, u64)> = canonical
+        .iter()
         .filter(|entry| entry.provenance != EntryProvenance::UndefinedExternal)
         .filter(|entry| program.is_body_entry(entry.addr.get_offset()))
-        .map(|entry| KunaFunction {
-            name: entry.name,
-            address: program.output_address_offset(&entry.addr),
+        .map(|entry| (entry.name.as_str(), entry.addr.get_offset()))
+        .collect();
+    Ok(listed_entries(
+        canonical.iter().map(|entry| entry.name.as_str()),
+        &candidates,
+        |name| {
+            program
+                .find_entry_by_name(name)
+                .map(|entry| entry.addr.get_offset())
+        },
+    )
+    .into_iter()
+    .map(|(name, offset)| KunaFunction {
+        name: name.to_string(),
+        // The listing reports the output address, which is what a
+        // caller reads a decompiled body's own addresses in.
+        address: program.output_address_offset(&entries_at[&offset].addr),
+    })
+    .collect())
+}
+
+/// Which candidate entries a name-keyed read can actually reach.
+///
+/// `spelled` is every name the engine's canonical enumeration reports,
+/// including the entries the listing has already dropped — they are still
+/// candidates the engine's lookup weighs. `candidates` are the entries the
+/// listing would otherwise keep, as `(name, offset)` pairs.
+///
+/// A name spelled once resolves to its one entry, so that candidate stays
+/// without asking the engine — which matters, because each lookup rebuilds
+/// the whole enumeration and a large image spells its 20 000 names once.
+/// A name spelled more than once is a name the lookup can refuse to
+/// settle, so the candidate stays only when the lookup lands on this very
+/// entry; the answer is memoised per name.
+fn listed_entries<'a>(
+    spelled: impl Iterator<Item = &'a str>,
+    candidates: &[(&'a str, u64)],
+    mut resolve: impl FnMut(&'a str) -> Option<u64>,
+) -> Vec<(&'a str, u64)> {
+    use std::collections::HashMap;
+    let mut spellings: HashMap<&str, usize> = HashMap::new();
+    for name in spelled {
+        *spellings.entry(name).or_default() += 1;
+    }
+    let mut settled: HashMap<&str, Option<u64>> = HashMap::new();
+    candidates
+        .iter()
+        .filter(|(name, offset)| {
+            if spellings.get(*name).copied().unwrap_or(0) < 2 {
+                return true;
+            }
+            *settled.entry(*name).or_insert_with(|| resolve(name)) == Some(*offset)
         })
-        .collect())
+        .copied()
+        .collect()
 }
 
 /// Decompile one named function, mirroring the Kuna CLI's single-target
@@ -2061,6 +2122,87 @@ mod tests {
             bodies.count(),
             "the listing is the canonical entries with a body"
         );
+    }
+
+    #[test]
+    fn an_ambiguous_entry_name_is_listed_only_when_the_engine_settles_on_it() {
+        // The listing's keep-rule, without an engine. An MSVC link can emit
+        // two thunk veneers for one import, Kuna's canonical enumeration then
+        // reports both under the import name, and its name lookup refuses to
+        // pick between two executable candidates — so neither is a name
+        // `decompile` can answer, and neither belongs in the listing. The
+        // MinGW pair shows the other half: the veneer and the IAT slot share
+        // a name, the lookup settles on the veneer, and only the veneer is
+        // listed. A name spelled once needs no lookup at all — each lookup
+        // rebuilds the whole enumeration, and a large image spells its
+        // 20 000 names once.
+        let candidates = [
+            ("ReleaseCapture", 0x40cd9b),
+            ("ReleaseCapture", 0x40cdcb),
+            ("SetCursor", 0x40c930),
+            ("Sleep", 0x468e00),
+        ];
+        let mut asked: Vec<&str> = Vec::new();
+        let kept = listed_entries(
+            [
+                "ReleaseCapture",
+                "ReleaseCapture",
+                // The slot is not a candidate — the listing dropped it for
+                // having no body — but it is still a spelling the engine
+                // weighs, which is why this name is asked about.
+                "SetCursor",
+                "SetCursor",
+                "Sleep",
+            ]
+            .into_iter(),
+            &candidates,
+            |name| {
+                asked.push(name);
+                (name == "SetCursor").then_some(0x40c930)
+            },
+        );
+        assert_eq!(
+            kept,
+            vec![("SetCursor", 0x40c930), ("Sleep", 0x468e00)],
+            "an unsettled name lists neither entry, a settled one lists the entry it settles on"
+        );
+        assert_eq!(
+            asked,
+            vec!["ReleaseCapture", "SetCursor"],
+            "only a name the enumeration spells more than once costs a lookup"
+        );
+    }
+
+    #[test]
+    fn every_listed_name_is_one_the_engine_settles_on_that_very_entry() {
+        // The listing's contract as a property over the fixture: `decompile`
+        // reaches a body through the engine's name lookup, so every listed
+        // name must be one that lookup answers with the listed entry. The
+        // fixture exercises the ambiguous path — each import name is spelled
+        // by both its thunk veneer and its IAT slot.
+        let program = fixture_program();
+        let listed = list_functions(&program).expect("the fixture listing");
+        assert!(
+            !listed.is_empty(),
+            "the fixture lists functions, or this test pins nothing"
+        );
+        for function in &listed {
+            let entry = program
+                .program
+                .find_entry_by_name(&function.name)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} is listed, but the engine's name lookup will not settle on it",
+                        function.name
+                    )
+                });
+            assert_eq!(
+                program.program.output_address_offset(&entry.addr),
+                function.address,
+                "{} resolves to the address it is listed at",
+                function.name
+            );
+        }
     }
 
     // The pass heartbeat and the decompile budgets (issue #211).
