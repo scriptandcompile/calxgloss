@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Kuna engine write-back: type writes compile to directives and replay from the record of effort (issue #209, epic X5/#203).**
+  Under `--engine kuna`, the type write-back seam now answers: setting a function's prototype,
+  setting the type of one of a function's variables, and creating structures, enumerations,
+  typedefs, and structure fields. Kuna never writes back into the image, so each write compiles
+  to one directive in a per-target directive file calxgloss owns — Kuna's own `--assert` line
+  syntax, held beside the scan record at `re/kuna/<binary>.kuna` — and every load replays that
+  file through the engine's assertion plane before the session opens. A prototype or type write
+  takes effect in the live session and shows in the next decompile; a structure field addition
+  regenerates the whole owning record rather than appending a patch, and takes effect on the next
+  load. The engine's own per-directive report is queryable, so a refused write names the
+  directive and the engine's reason instead of poisoning the replay file, and the read cache
+  still implements neither write trait (ADR-0020) — the Kuna source does.
 - **Kuna engine scan path: scan records name their engine, release, and pin (issue #208, epic X5/#203).**
   A scan record produced under `--engine kuna` now carries an `engine` provenance block naming the
   engine (`kuna`), its release tag (`v1.878`), and the pinned source commit it was built against —
