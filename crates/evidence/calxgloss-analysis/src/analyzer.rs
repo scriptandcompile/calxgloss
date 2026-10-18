@@ -417,10 +417,9 @@ impl Analyzer {
             .ok_or_else(|| Error::FunctionAnalysisFailed {
                 binary: binary.to_string(),
                 function: function.to_string(),
-                reason: format!(
-                    "no function by that exact name in the loaded program; if the name \
+                reason: "no function by that exact name in the loaded program; if the name \
                          is a substring of the real one, pass the full name."
-                ),
+                    .to_string(),
             })?;
         let decompiled = ScanSource::decompile(&self.source, &found.name).await?;
 
