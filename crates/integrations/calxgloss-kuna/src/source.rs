@@ -994,9 +994,27 @@ fn panic_text(payload: &Box<dyn std::any::Any + Send>) -> String {
 
 /// The function listing, from the engine's own canonical entries.
 ///
-/// Import entries (Kuna's synthetic addresses for call naming) are excluded:
-/// the seam's `functions` listing answers with functions defined in the
-/// image, and imports have their own read.
+/// Two kinds of entry are excluded, because neither has a body the engine
+/// can render:
+///
+/// * Kuna's synthetic import placeholders — addresses invented for call
+///   naming on a relocatable load, reported as `UndefinedExternal`.
+/// * PE import pointer slots. The PE loader registers each IAT slot as a
+///   named `FunctionSymbol` so a call through the slot binds to the import
+///   name, and a linked PE's slot address is a real mapped address, so
+///   provenance alone does not identify it. Kuna's own body predicate,
+///   [`kuna_console::engine::ConsoleProgram::is_body_entry`], is what its
+///   decompile surfaces consult before lifting, and refusing a slot is what
+///   produces "the IAT slot contains a loader-written pointer, not a
+///   function body" — so filtering on the same predicate drops exactly the
+///   listed names a `decompile` would fail on. A MinGW thunk veneer
+///   (`jmp [__imp_puts]`) shares its import's name and stays listed: it is
+///   code in `.text`, and it decompiles.
+///
+/// The seam's `functions` listing therefore answers with functions defined
+/// in the image, and imports have their own read. Callers that resolve a
+/// callee name to a listing address now answer `0` for an import — the
+/// shape the API-mapping lookup already reads as "external, match by name".
 fn list_functions(program: &KunaProgram) -> Result<Vec<KunaFunction>> {
     use kuna_console::engine::EntryProvenance;
     let program = &program.program;
@@ -1004,6 +1022,7 @@ fn list_functions(program: &KunaProgram) -> Result<Vec<KunaFunction>> {
         .function_entries_canonical()
         .into_iter()
         .filter(|entry| entry.provenance != EntryProvenance::UndefinedExternal)
+        .filter(|entry| program.is_body_entry(entry.addr.get_offset()))
         .map(|entry| KunaFunction {
             name: entry.name,
             address: program.output_address_offset(&entry.addr),
@@ -1996,6 +2015,52 @@ mod tests {
             );
             assert!(item.address >= base, "a global sits in the image: {item:?}");
         }
+    }
+
+    #[test]
+    fn the_listing_drops_pe_import_pointer_slots_and_keeps_their_thunks() {
+        // The PE loader names each IAT slot with its import name so a call
+        // through the slot binds to the import, and names the MinGW thunk
+        // veneer that jumps through it. Only the veneer has a body: the slot
+        // holds a pointer the run-time loader writes, which is why Kuna's
+        // decompile refuses one. A listing that carried the slot handed every
+        // consumer a read that cannot succeed — the call-graph build warned
+        // once per import over a 32-bit MSVC PE, whose imports carry no veneer
+        // at all, so the slot is the only entry the import name has.
+        let program = fixture_program();
+        let listed = list_functions(&program).expect("the fixture listing");
+        let canonical = program.program.function_entries_canonical();
+
+        // The fixture calls through the IAT, so the engine does name its
+        // slots and the filter has work to do.
+        let slots: Vec<_> = canonical
+            .iter()
+            .filter(|entry| !program.program.is_body_entry(entry.addr.get_offset()))
+            .collect();
+        assert!(
+            !slots.is_empty(),
+            "the fixture's canonical enumeration names IAT slots, or this test pins nothing"
+        );
+        for slot in &slots {
+            let address = program.program.output_address_offset(&slot.addr);
+            assert!(
+                !listed.iter().any(|function| function.address == address),
+                "the import slot {} at {address:#x} is not a listed function",
+                slot.name,
+            );
+        }
+
+        // And nothing else is dropped: the listing is exactly the canonical
+        // entries the engine will lift a body from.
+        let bodies = canonical.iter().filter(|entry| {
+            entry.provenance != kuna_console::engine::EntryProvenance::UndefinedExternal
+                && program.program.is_body_entry(entry.addr.get_offset())
+        });
+        assert_eq!(
+            listed.len(),
+            bodies.count(),
+            "the listing is the canonical entries with a body"
+        );
     }
 
     // The pass heartbeat and the decompile budgets (issue #211).

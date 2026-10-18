@@ -50,6 +50,11 @@ use calxgloss_types::EngineProvenance;
 /// are `Send` so a scan can be driven from an orchestrating task.
 pub trait ScanSource {
     /// Every function in the program, in listing order.
+    ///
+    /// A listed name is a name [`Self::decompile`] can answer: an engine's
+    /// import pointer slots and other bodyless entries belong to the
+    /// [`Self::imports`] read, not here, so a consumer that decompiles every
+    /// listed name spends no read that cannot succeed.
     fn functions(&self) -> impl std::future::Future<Output = Result<Vec<FunctionSummary>>> + Send;
 
     /// The pseudo-C for one function, by name.
