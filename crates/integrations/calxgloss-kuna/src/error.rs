@@ -128,6 +128,55 @@ pub enum KunaError {
         /// The length the read asked for.
         length: usize,
     },
+
+    /// A write-seam declaration the engine's own grammar refused to parse.
+    ///
+    /// The declaration never reached the directive plane: a write calxgloss
+    /// can name but Kuna cannot parse is refused at the seam, where the
+    /// caller still holds the text, rather than poisoning the replay file.
+    #[error("the Kuna engine could not parse `{directive}`: {reason}")]
+    DirectiveRejected {
+        /// The declaration or type text the seam was given.
+        directive: String,
+        /// Kuna's own explanation for the refusal.
+        reason: String,
+    },
+
+    /// A directive file on disk holds a line the directive grammar refuses.
+    ///
+    /// A half-understood directive file must never load as a quiet partial
+    /// replay; the offending line is named so the file can be repaired.
+    #[error("the directive file {path} is not readable at line {line}: {reason}")]
+    DirectiveFileInvalid {
+        /// The directive file that failed to parse.
+        path: String,
+        /// The 1-based line the grammar refused.
+        line: usize,
+        /// Why the line was refused.
+        reason: String,
+    },
+
+    /// A struct record the directive plane cannot honestly regenerate.
+    ///
+    /// `add_struct_field` re-bodies the owning `typedef struct` record from
+    /// its own text; a record carrying a shape that text cannot re-render —
+    /// a bitfield — is named here rather than rewritten lossy.
+    #[error("the directive plane cannot regenerate the record for type '{name}': {reason}")]
+    DirectiveRegenerationFailed {
+        /// The structure whose record could not be regenerated.
+        name: String,
+        /// Why the record could not be re-rendered.
+        reason: String,
+    },
+
+    /// A directive file could not be read or written.
+    #[error("the Kuna directive plane could not use {path}: {reason}")]
+    Io {
+        /// The path the file operation named.
+        path: String,
+        /// Why the operation failed.
+        reason: String,
+    },
 }
 
 /// The crate-wide result alias every Kuna entry point returns.

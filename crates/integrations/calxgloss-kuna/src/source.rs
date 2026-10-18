@@ -28,6 +28,16 @@
 //! other `ScanSource` implementation: the trait is defined there, and a
 //! kuna → ghidra dependency edge would be a cycle. This module answers in
 //! Kuna-native types; the seam maps them.
+//!
+//! The write-back plane (issue #209): Kuna never writes back into the
+//! image, so a type write compiles to a directive in the
+//! [`DirectivePlane`] the engine thread owns, persists to the record of
+//! effort, and replays through the engine's assertion plane on every load.
+//! A program-scoped write is applied live and reported by the engine's own
+//! per-directive outcome; a local-type write is installed for the decompile
+//! loop to apply; a struct-field addition regenerates the owning record,
+//! which takes effect on the next load — Kuna refuses to re-body a
+//! completed record.
 
 use object::read::Object;
 use std::collections::BTreeMap;
@@ -38,6 +48,7 @@ use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot};
 
+use crate::directives::{self, DirectiveOutcome, DirectivePlane, KunaNewField};
 use crate::engine::{self, KunaProgram};
 use crate::error::{KunaError, Result};
 
@@ -212,6 +223,41 @@ enum Command {
         length: usize,
         reply: oneshot::Sender<Result<Vec<u8>>>,
     },
+    SetPrototype {
+        address: u64,
+        prototype: String,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    SetLocalType {
+        address: u64,
+        variable: String,
+        type_name: String,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    CreateStruct {
+        name: String,
+        fields: Vec<(String, String)>,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    CreateEnum {
+        name: String,
+        values: Vec<(String, i64)>,
+        size: u32,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    CreateTypedef {
+        name: String,
+        base_type: String,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    AddStructField {
+        struct_name: String,
+        field_name: String,
+        field_type: String,
+        offset: Option<u32>,
+        reply: oneshot::Sender<Result<()>>,
+    },
+    DirectiveFates(oneshot::Sender<Result<Vec<DirectiveOutcome>>>),
 }
 
 /// A loaded, scan-ready Kuna program behind cloneable handles.
@@ -227,6 +273,7 @@ pub struct KunaSource {
 struct SourceInner {
     tx: mpsc::UnboundedSender<Command>,
     path: PathBuf,
+    directive_file: Option<PathBuf>,
     identity: String,
     entry: Option<u64>,
     num_symbols: usize,
@@ -246,6 +293,7 @@ impl std::fmt::Debug for KunaSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KunaSource")
             .field("path", &self.inner.path)
+            .field("directive_file", &self.inner.directive_file)
             .field("identity", &self.inner.identity)
             .field("entry", &self.inner.entry)
             .field("symbols", &self.inner.num_symbols)
@@ -263,12 +311,29 @@ impl KunaSource {
     /// [`KunaError::LoadFailed`] the plain loader reports, and the engine
     /// thread exits with it.
     pub fn load(path: &Path) -> Result<Self> {
+        Self::load_with_directives(path, None)
+    }
+
+    /// Load `path` with its write-back directive plane at `directive_file`.
+    ///
+    /// The plane file is Kuna's own `--assert` line syntax (see
+    /// [`crate::directives`]): a missing file is an empty plane that the
+    /// first write creates, and an existing file replays through the
+    /// engine's assertion plane before the handshake — directives the
+    /// engine refuses are not fatal to the load, and [`directive_fates`](Self::directive_fates)
+    /// reports them by name. A file the directive grammar cannot parse is a
+    /// named [`KunaError::DirectiveFileInvalid`] load failure: a
+    /// half-understood plane must never replay as a quiet partial.
+    /// `None` gives an in-memory plane that persists nowhere.
+    pub fn load_with_directives(path: &Path, directive_file: Option<&Path>) -> Result<Self> {
         let (tx, rx) = mpsc::unbounded_channel();
         // The handshake rides a plain std channel: its wait blocks the
         // calling thread wherever it is called, tokio runtime or not.
         let (handshake_tx, handshake_rx) = std::sync::mpsc::channel();
         let engine_path = path.to_path_buf();
-        std::thread::spawn(move || engine_thread(engine_path, rx, handshake_tx));
+        let plane_file = directive_file.map(Path::to_path_buf);
+        let plane_for_inner = plane_file.clone();
+        std::thread::spawn(move || engine_thread(engine_path, plane_file, rx, handshake_tx));
         let handshake = handshake_rx
             .recv()
             .map_err(|_| KunaError::EngineUnavailable)??;
@@ -276,6 +341,7 @@ impl KunaSource {
             inner: Arc::new(SourceInner {
                 tx,
                 path: path.to_path_buf(),
+                directive_file: plane_for_inner,
                 identity: handshake.identity,
                 entry: handshake.entry,
                 num_symbols: handshake.num_symbols,
@@ -400,6 +466,137 @@ impl KunaSource {
         answer.await.map_err(|_| KunaError::EngineUnavailable)?
     }
 
+    /// Set the prototype of the function at `address`, compiling it to a
+    /// `prototype 0x<addr> <declaration>` directive.
+    ///
+    /// The function must exist in the listing — a miss is a named
+    /// [`KunaError::FunctionNotFound`] before the plane is touched — and a
+    /// declaration the engine's own grammar refuses is a named
+    /// [`KunaError::DirectiveRejected`] that leaves the plane untouched. An
+    /// accepted prototype takes effect live and persists to the directive
+    /// file.
+    pub async fn set_function_prototype(&self, address: u64, prototype: &str) -> Result<()> {
+        let (reply, answer) = oneshot::channel();
+        self.send(Command::SetPrototype {
+            address,
+            prototype: prototype.to_string(),
+            reply,
+        })?;
+        answer.await.map_err(|_| KunaError::EngineUnavailable)?
+    }
+
+    /// Set the type of `variable` in the function at `address`, compiling
+    /// it to a `type <func>::<var> <C type>` directive.
+    ///
+    /// The engine applies the directive on the next decompile of that
+    /// function — the decompile loop's own symbol-scoped pass — so the new
+    /// type shows in the re-decompiled signature and body.
+    pub async fn set_local_variable_type(
+        &self,
+        address: u64,
+        variable: &str,
+        type_name: &str,
+    ) -> Result<()> {
+        let (reply, answer) = oneshot::channel();
+        self.send(Command::SetLocalType {
+            address,
+            variable: variable.to_string(),
+            type_name: type_name.to_string(),
+            reply,
+        })?;
+        answer.await.map_err(|_| KunaError::EngineUnavailable)?
+    }
+
+    /// Create the structure `name` with `fields`, compiling it to a
+    /// `typedef struct` declaration the engine interns live.
+    ///
+    /// Kuna's C grammar refuses an empty struct body, so a fieldless
+    /// create is a named refusal; a field naming an explicit offset is
+    /// refused too — the directive plane lays fields out in order.
+    pub async fn create_struct(&self, name: &str, fields: &[KunaNewField<'_>]) -> Result<()> {
+        if let Some(field) = fields.iter().find(|field| field.offset.is_some()) {
+            return Err(KunaError::DirectiveRejected {
+                directive: format!("{}: {}", field.name, field.type_name),
+                reason: "the directive plane lays fields out in order; an explicit offset has no rendering".to_string(),
+            });
+        }
+        let (reply, answer) = oneshot::channel();
+        self.send(Command::CreateStruct {
+            name: name.to_string(),
+            fields: fields
+                .iter()
+                .map(|field| (field.name.to_string(), field.type_name.to_string()))
+                .collect(),
+            reply,
+        })?;
+        answer.await.map_err(|_| KunaError::EngineUnavailable)?
+    }
+
+    /// Create the enumeration `name`, `size` bytes wide, with `values`
+    /// (member name → value), as a fixed-underlying-type C23 enum.
+    pub async fn create_enum(&self, name: &str, values: &[(&str, i64)], size: u32) -> Result<()> {
+        let (reply, answer) = oneshot::channel();
+        self.send(Command::CreateEnum {
+            name: name.to_string(),
+            values: values
+                .iter()
+                .map(|(member, value)| (member.to_string(), *value))
+                .collect(),
+            size,
+            reply,
+        })?;
+        answer.await.map_err(|_| KunaError::EngineUnavailable)?
+    }
+
+    /// Create the typedef `name` as an alias for `base_type`.
+    pub async fn create_typedef(&self, name: &str, base_type: &str) -> Result<()> {
+        let (reply, answer) = oneshot::channel();
+        self.send(Command::CreateTypedef {
+            name: name.to_string(),
+            base_type: base_type.to_string(),
+            reply,
+        })?;
+        answer.await.map_err(|_| KunaError::EngineUnavailable)?
+    }
+
+    /// Add one field to the structure `struct_name` by regenerating its
+    /// owning `typedef struct` record in the plane.
+    ///
+    /// Kuna refuses to re-body a completed record, so the regenerated
+    /// record takes effect on the next load; the live session keeps the
+    /// old body until then. A struct the plane holds no record for is a
+    /// named [`KunaError::DirectiveRegenerationFailed`], and so is a record
+    /// whose text carries a shape the regeneration cannot re-render.
+    pub async fn add_struct_field(
+        &self,
+        struct_name: &str,
+        field_name: &str,
+        field_type: &str,
+        offset: Option<u32>,
+    ) -> Result<()> {
+        let (reply, answer) = oneshot::channel();
+        self.send(Command::AddStructField {
+            struct_name: struct_name.to_string(),
+            field_name: field_name.to_string(),
+            field_type: field_type.to_string(),
+            offset,
+            reply,
+        })?;
+        answer.await.map_err(|_| KunaError::EngineUnavailable)?
+    }
+
+    /// What became of each directive the source carries — the engine's own
+    /// per-directive report: `applied` or `rejected`, where a directive not
+    /// yet reached reports as rejected with the detail
+    /// `not reached by this run` (a local-type directive waits on the
+    /// decompile of its function, and a regenerated struct record waits
+    /// for the next load).
+    pub async fn directive_fates(&self) -> Result<Vec<DirectiveOutcome>> {
+        let (reply, answer) = oneshot::channel();
+        self.send(Command::DirectiveFates(reply))?;
+        answer.await.map_err(|_| KunaError::EngineUnavailable)?
+    }
+
     fn send(&self, command: Command) -> Result<()> {
         self.inner
             .tx
@@ -412,6 +609,7 @@ impl KunaSource {
 /// handle drops and the channel closes.
 fn engine_thread(
     path: PathBuf,
+    directive_file: Option<PathBuf>,
     mut rx: mpsc::UnboundedReceiver<Command>,
     handshake: std::sync::mpsc::Sender<Result<Handshake>>,
 ) {
@@ -426,6 +624,24 @@ fn engine_thread(
             return;
         }
     };
+    // The write-back plane opens with the program: an existing file
+    // replays through the engine's assertion plane before the handshake,
+    // so the session the caller sees already carries its recorded writes.
+    // Refusals during that replay are not fatal — the fates report them.
+    let mut plane = match directive_file.as_deref() {
+        Some(file) => match DirectivePlane::open(file) {
+            Ok(plane) => plane,
+            Err(error) => {
+                let _ = handshake.send(Err(error));
+                return;
+            }
+        },
+        None => DirectivePlane::in_memory(),
+    };
+    if !plane.directives().is_empty() {
+        program.program.set_assertions(plane.directives().to_vec());
+        kuna_console::assertions::apply_program_scoped(&mut program.program);
+    }
     let info = Handshake {
         identity: program.identity().to_string(),
         entry: program.entry(),
@@ -514,6 +730,92 @@ fn engine_thread(
                 let _ = reply.send(
                     guard("read_memory", || read_memory(&program, address, length)).flatten(),
                 );
+            }
+            Command::SetPrototype {
+                address,
+                prototype,
+                reply,
+            } => {
+                let _ = reply.send(
+                    guard("set_function_prototype", || {
+                        write_prototype(&mut program, &mut plane, address, &prototype)
+                    })
+                    .flatten(),
+                );
+            }
+            Command::SetLocalType {
+                address,
+                variable,
+                type_name,
+                reply,
+            } => {
+                let _ = reply.send(
+                    guard("set_local_variable_type", || {
+                        write_local_type(&mut program, &mut plane, address, &variable, &type_name)
+                    })
+                    .flatten(),
+                );
+            }
+            Command::CreateStruct {
+                name,
+                fields,
+                reply,
+            } => {
+                let _ = reply.send(
+                    guard("create_struct", || {
+                        write_create_struct(&mut program, &mut plane, &name, &fields)
+                    })
+                    .flatten(),
+                );
+            }
+            Command::CreateEnum {
+                name,
+                values,
+                size,
+                reply,
+            } => {
+                let _ = reply.send(
+                    guard("create_enum", || {
+                        write_create_enum(&mut program, &mut plane, &name, &values, size)
+                    })
+                    .flatten(),
+                );
+            }
+            Command::CreateTypedef {
+                name,
+                base_type,
+                reply,
+            } => {
+                let _ = reply.send(
+                    guard("create_typedef", || {
+                        write_create_typedef(&mut program, &mut plane, &name, &base_type)
+                    })
+                    .flatten(),
+                );
+            }
+            Command::AddStructField {
+                struct_name,
+                field_name,
+                field_type,
+                offset,
+                reply,
+            } => {
+                let _ = reply.send(
+                    guard("add_struct_field", || {
+                        write_add_struct_field(
+                            &mut program,
+                            &mut plane,
+                            &struct_name,
+                            &field_name,
+                            &field_type,
+                            offset,
+                        )
+                    })
+                    .flatten(),
+                );
+            }
+            Command::DirectiveFates(reply) => {
+                let _ = reply.send(Ok(directive_fates(&program)));
             }
         }
     }
@@ -936,6 +1238,299 @@ fn read_memory(program: &KunaProgram, address: u64, length: usize) -> Result<Vec
         .program
         .read_bytes(address, length)
         .ok_or(KunaError::MemoryUnmapped { address, length })
+}
+
+// ============================================================
+// The write-back plane: one write-seam call, one directive
+// ============================================================
+
+/// The function at a user-facing address, or a named miss. Write commands
+/// address functions the way the seam does — by the address the listing
+/// reports — and the plane only ever records what the program can honor.
+fn entry_at(program: &KunaProgram, address: u64) -> Result<kuna_console::engine::FunctionEntry> {
+    use kuna_console::engine::EntrySelector;
+    program
+        .program
+        .resolve_entry(&EntrySelector::Numeric(address))
+        .map_err(|_| KunaError::FunctionNotFound {
+            name: format!("0x{address:x}"),
+        })
+}
+
+/// The data organization the C grammar reads — the same split the
+/// engine's own assertion apply uses.
+fn grammar_org(program: &KunaProgram) -> kuna_console::grammar::DataOrg {
+    let (addr_size, word_size) = program.program.arch().data_org();
+    kuna_console::grammar::DataOrg {
+        addr_size,
+        word_size,
+    }
+}
+
+/// A type text the engine's own C type grammar refuses, named as the
+/// declaration the caller handed the seam.
+fn reject_type_text(type_name: &str, error: &kuna_base::error::KunaError) -> KunaError {
+    KunaError::DirectiveRejected {
+        directive: type_name.to_string(),
+        reason: error.explain().to_string(),
+    }
+}
+
+/// Snapshot of the engine's installed directive set and its per-directive
+/// report, so a re-install can carry the fates across.
+type FateSnapshot = (
+    Vec<kuna_console::assertions::Directive>,
+    Vec<kuna_console::assertions::Outcome>,
+);
+
+fn snapshot_fates(program: &KunaProgram) -> FateSnapshot {
+    (
+        program.program.assertions().to_vec(),
+        program.program.assertion_outcomes(),
+    )
+}
+
+/// `set_assertions` replaces the whole set and resets every outcome slot,
+/// but a directive's effect outlives the write that installed it — so
+/// carry each unchanged directive's real fate onto its new slot. Only a
+/// directive that changed (or is new) waits unclaimed; the engine's own
+/// placeholder reports the wait as `rejected: not reached by this run`.
+fn carry_fates(program: &mut KunaProgram, snapshot: &FateSnapshot) {
+    use kuna_console::assertions::unclaimed;
+    let (old_directives, old_outcomes) = snapshot;
+    for (i, directive) in program
+        .program
+        .assertions()
+        .to_vec()
+        .into_iter()
+        .enumerate()
+    {
+        let (Some(old), Some(outcome)) = (old_directives.get(i), old_outcomes.get(i)) else {
+            continue;
+        };
+        if old == &directive && outcome != &unclaimed(old) {
+            program.program.set_assertion_outcome(i, outcome.clone());
+        }
+    }
+}
+
+/// Install the plane's current set on the engine, keeping the fates of the
+/// directives that did not change.
+fn install_plane(program: &mut KunaProgram, plane: &DirectivePlane) {
+    let snapshot = snapshot_fates(program);
+    program.program.set_assertions(plane.directives().to_vec());
+    carry_fates(program, &snapshot);
+}
+
+/// Apply the directive at `index` — and only it — through the engine's own
+/// program-scoped pass, then install the full plane set with the fates
+/// carried: applied persists to the directive file, rejected rolls the
+/// plane back and arrives as a named [`KunaError::DirectiveRejected`] —
+/// the engine's reason, not calxgloss's guess at one.
+fn apply_and_report(
+    program: &mut KunaProgram,
+    plane: &mut DirectivePlane,
+    index: usize,
+) -> Result<()> {
+    let snapshot = snapshot_fates(program);
+    let directive = plane.directives()[index].clone();
+    program.program.set_assertions(vec![directive]);
+    kuna_console::assertions::apply_program_scoped(&mut program.program);
+    let outcome = program
+        .program
+        .assertion_outcomes()
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| {
+            kuna_console::assertions::unclaimed(plane.directives().last().expect("just installed"))
+        });
+    if outcome.status != "applied" {
+        plane.pop();
+        program.program.set_assertions(snapshot.0.clone());
+        carry_fates(program, &snapshot);
+        return Err(KunaError::DirectiveRejected {
+            directive: outcome.directive,
+            reason: outcome
+                .detail
+                .unwrap_or_else(|| "the engine refused the directive".to_string()),
+        });
+    }
+    plane.save()?;
+    install_plane(program, plane);
+    program.program.set_assertion_outcome(index, outcome);
+    Ok(())
+}
+
+/// `set_function_prototype` → push, apply live, report.
+fn write_prototype(
+    program: &mut KunaProgram,
+    plane: &mut DirectivePlane,
+    address: u64,
+    prototype: &str,
+) -> Result<()> {
+    entry_at(program, address)?;
+    let directive = directives::prototype_directive(address, prototype);
+    let index = plane.push(directive);
+    apply_and_report(program, plane, index)
+}
+
+/// `set_local_variable_type` → validate, push, install for the decompile
+/// loop. The engine applies a `type` directive when it next decompiles
+/// the named function, so there is nothing to apply here — installing it
+/// is the whole live effect, and until that decompile the fates report the
+/// wait as `rejected: not reached by this run`.
+fn write_local_type(
+    program: &mut KunaProgram,
+    plane: &mut DirectivePlane,
+    address: u64,
+    variable: &str,
+    type_name: &str,
+) -> Result<()> {
+    let entry = entry_at(program, address)?;
+    if let Err(error) = kuna_console::grammar::parse_type(
+        type_name,
+        program.program.arch().types(),
+        grammar_org(program),
+    ) {
+        return Err(reject_type_text(type_name, &error));
+    }
+    let directive = directives::local_type_directive(&entry.name, variable, type_name);
+    plane.push(directive);
+    plane.save()?;
+    install_plane(program, plane);
+    Ok(())
+}
+
+/// `create_struct` → push, intern live, report. Kuna's C grammar refuses
+/// an empty struct body, and the plane lays fields out in order, so an
+/// explicit offset has no honest rendering — both are named refusals
+/// before the plane is touched.
+fn write_create_struct(
+    program: &mut KunaProgram,
+    plane: &mut DirectivePlane,
+    name: &str,
+    fields: &[(String, String)],
+) -> Result<()> {
+    if fields.is_empty() {
+        return Err(KunaError::DirectiveRejected {
+            directive: format!("typedef struct {name} {{ }};"),
+            reason: "Kuna's C grammar refuses an empty struct body; create the struct with its first field".to_string(),
+        });
+    }
+    let owned: Vec<KunaNewField<'_>> = fields
+        .iter()
+        .map(|(field_name, type_name)| KunaNewField::new(field_name, type_name))
+        .collect();
+    let directive = directives::struct_directive(name, &owned);
+    let index = plane.push(directive);
+    apply_and_report(program, plane, index)
+}
+
+/// `create_enum` → push, intern live, report.
+fn write_create_enum(
+    program: &mut KunaProgram,
+    plane: &mut DirectivePlane,
+    name: &str,
+    values: &[(String, i64)],
+    size: u32,
+) -> Result<()> {
+    let borrowed: Vec<(&str, i64)> = values.iter().map(|(m, v)| (m.as_str(), *v)).collect();
+    let directive = directives::enum_directive(name, &borrowed, size);
+    let index = plane.push(directive);
+    apply_and_report(program, plane, index)
+}
+
+/// `create_typedef` → push, intern live, report.
+fn write_create_typedef(
+    program: &mut KunaProgram,
+    plane: &mut DirectivePlane,
+    name: &str,
+    base_type: &str,
+) -> Result<()> {
+    let directive = directives::typedef_directive(name, base_type);
+    let index = plane.push(directive);
+    apply_and_report(program, plane, index)
+}
+
+/// `add_struct_field` → regenerate the owning record in place.
+///
+/// Kuna refuses to re-body a completed record, so the regenerated record
+/// is not applied to the live session — it takes effect on the next load,
+/// which is exactly where the replayed plane re-creates the struct whole.
+/// A struct the plane holds no record for cannot be re-bodied honestly:
+/// appending a second record would collide with the first on replay, so
+/// that is a named [`KunaError::DirectiveRegenerationFailed`], and so is a
+/// record whose text carries a shape the regeneration cannot re-render.
+fn write_add_struct_field(
+    program: &mut KunaProgram,
+    plane: &mut DirectivePlane,
+    struct_name: &str,
+    field_name: &str,
+    field_type: &str,
+    offset: Option<u32>,
+) -> Result<()> {
+    if offset.is_some() {
+        return Err(KunaError::DirectiveRejected {
+            directive: format!("{field_name}: {field_type} @{offset:?}"),
+            reason:
+                "the directive plane lays fields out in order; an explicit offset has no rendering"
+                    .to_string(),
+        });
+    }
+    if let Err(error) = kuna_console::grammar::parse_type(
+        field_type,
+        program.program.arch().types(),
+        grammar_org(program),
+    ) {
+        return Err(reject_type_text(field_type, &error));
+    }
+    let Some(index) = plane.struct_record_index(struct_name) else {
+        find_type(program, struct_name)?;
+        return Err(KunaError::DirectiveRegenerationFailed {
+            name: struct_name.to_string(),
+            reason: "the directive plane holds no record for this type; calxgloss can only re-body the records it wrote".to_string(),
+        });
+    };
+    let existing: Vec<(&str, &str)> = match plane.struct_record(struct_name) {
+        Some((_, fields)) => fields,
+        None => {
+            return Err(KunaError::DirectiveRegenerationFailed {
+                name: struct_name.to_string(),
+                reason: "the record carries a shape the plane cannot re-render (a bitfield)"
+                    .to_string(),
+            });
+        }
+    };
+    let mut fields: Vec<(String, String)> = existing
+        .into_iter()
+        .map(|(type_name, name)| (type_name.to_string(), name.to_string()))
+        .collect();
+    fields.push((field_type.to_string(), field_name.to_string()));
+    let rendered: Vec<(&str, &str)> = fields
+        .iter()
+        .map(|(type_name, name)| (type_name.as_str(), name.as_str()))
+        .collect();
+    plane.replace(
+        index,
+        directives::struct_record_directive(struct_name, &rendered),
+    );
+    plane.save()?;
+    install_plane(program, plane);
+    Ok(())
+}
+
+/// The engine's per-directive report, lifted to plain records.
+fn directive_fates(program: &KunaProgram) -> Vec<DirectiveOutcome> {
+    program
+        .program
+        .assertion_outcomes()
+        .into_iter()
+        .map(|outcome| DirectiveOutcome {
+            directive: outcome.directive,
+            status: outcome.status.to_string(),
+            detail: outcome.detail,
+        })
+        .collect()
 }
 
 fn table_error(path: &Path) -> impl FnOnce(object::read::Error) -> KunaError + use<'_> {

@@ -8,23 +8,30 @@
 //! reads, and since #207 every read the `ScanSource` seam carries — the
 //! string listing, xrefs and callers, the type-library reads, data items,
 //! and raw memory — comes from that one loaded program, so each evidence
-//! engine works unchanged under `engine = kuna`. Only the Ghidra-specific
-//! write-back and live-analysis commands still need the Ghidra engine.
+//! engine works unchanged under `engine = kuna`. Since #209 the type
+//! write-back seam answers too: Kuna never writes back into the image, so
+//! a write lands in a directive plane calxgloss owns and every load
+//! replays it (ADR-0039's state model). Only live-analysis commands —
+//! things that need a mutated saved program — still need the Ghidra engine.
 //!
 //! # Architecture
 //!
 //! - `error.rs` — `KunaError` and the crate-wide `Result` alias.
 //! - `engine.rs` — `load` and the loaded-program handle `KunaProgram`.
+//! - `directives.rs` — the write-seam-to-directive compilers and the
+//!   `DirectivePlane` that mirrors them on a file in the record of effort.
 //! - `source.rs` — `KunaSource`, the actor thread that owns one program and
 //!   answers every scan read with panic isolation at the seam.
 //! - `specs.rs` — the embedded compiled SLEIGH tree and its cache unpacker
 //!   (provisioned by `build.rs`).
 
+pub mod directives;
 pub mod engine;
 pub mod error;
 pub mod source;
 pub(crate) mod specs;
 
+pub use directives::{DirectiveOutcome, DirectivePlane, KunaNewField, directive_file_path};
 pub use engine::{KUNA_PIN_REV, KUNA_RELEASE, KunaProgram, load};
 pub use error::{KunaError, Result};
 pub use source::{

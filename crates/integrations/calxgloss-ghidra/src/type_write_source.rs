@@ -1,19 +1,30 @@
-//! The write-side seam for pushing types back into a Ghidra program.
+//! The write-side seam for pushing types back into a loaded program.
 //!
 //! [`ScanSource`](crate::ScanSource) is the read-only sibling: everything an
-//! evidence engine pulls *out* of Ghidra. This trait is what calxgloss puts
-//! *in* — the v6.0.0 bridge's type-writing endpoints, the capability
+//! evidence engine pulls *out* of a program. This trait is what calxgloss
+//! puts *in* — the v6.0.0 bridge's type-writing endpoints, the capability
 //! ADR-0001 chose that bridge for: setting a function's prototype, setting
 //! the type of one of a function's variables, and creating the named types
 //! an inferred type refers to but the Type Manager does not hold yet
 //! (structure, enumeration, typedef, structure field).
 //!
+//! Two implementations, one per engine (ADR-0020's rule: the read cache
+//! implements neither write trait):
+//!
+//! * [`GhidraClient`] writes through the live HTTP API into the open Ghidra
+//!   program — the write lands in the program the next read sees.
+//! * [`KunaSource`](calxgloss_kuna::KunaSource) has no persistent program
+//!   to mutate: each call compiles to a Kuna directive in the plane behind
+//!   the source (issue #209), which takes effect in the live session as far
+//!   as the engine allows and replays from the record of effort on every
+//!   load.
+//!
 //! Deliberately absent:
 //!
 //! * **A cached implementation.** The read cache never wraps writes —
 //!   writes are never cached, following the `add_function_tag` precedent —
-//!   so only [`GhidraClient`] implements this trait. A write-back pass is
-//!   handed the raw client, and every write reaches the server.
+//!   so a write-back pass is handed the raw source, and every write reaches
+//!   the engine.
 //! * **Renaming, comments, tags, globals** — the bridge has endpoints for
 //!   those too; this seam covers only what type write-back needs.
 //!
@@ -23,7 +34,10 @@
 //! by address — the bridge parses that parameter as an address and refuses
 //! a name.
 
-use crate::client::{GhidraClient, Result};
+use calxgloss_kuna::KunaSource;
+use calxgloss_kuna::directives::KunaNewField;
+
+use crate::client::{GhidraClient, GhidraError, Result};
 
 /// One field of a structure to be created, as `create_struct` takes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,11 +71,12 @@ impl<'a> NewStructField<'a> {
 /// The type-writing operations the v6.0.0 bridge offers, the write-side
 /// sibling of [`ScanSource`](crate::ScanSource).
 ///
-/// [`GhidraClient`] implements it over the live HTTP API — and it is the
-/// only implementer: the read cache deliberately never wraps writes, so a
-/// type-write pass is handed the raw client and every write reaches the
-/// server. The futures are `Send` so a write-back pass can be driven from
-/// an orchestrating task.
+/// [`GhidraClient`] implements it over the live HTTP API, and
+/// [`KunaSource`](calxgloss_kuna::KunaSource) implements it over the Kuna
+/// directive plane — and those are the only implementers: the read cache
+/// deliberately never wraps writes, so a type-write pass is handed the raw
+/// source and every write reaches the engine. The futures are `Send` so a
+/// write-back pass can be driven from an orchestrating task.
 pub trait TypeWriteSource {
     /// Set the full prototype — return type and parameter types — of the
     /// function at `function_address`.
@@ -174,6 +189,67 @@ impl TypeWriteSource for GhidraClient {
     }
 }
 
+impl TypeWriteSource for KunaSource {
+    // The Kuna source's inherent methods answer in Kuna-native shape; the
+    // seam only maps the field struct and folds a KunaError into the
+    // seam's vocabulary (ADR-0039's fold: a missing function or type is
+    // the same `NotFound`/`Malformed` a Ghidra miss becomes).
+    async fn set_function_prototype(&self, function_address: u64, prototype: &str) -> Result<()> {
+        self.set_function_prototype(function_address, prototype)
+            .await
+            .map_err(GhidraError::from)
+    }
+
+    async fn set_local_variable_type(
+        &self,
+        function_address: u64,
+        variable: &str,
+        type_name: &str,
+    ) -> Result<()> {
+        self.set_local_variable_type(function_address, variable, type_name)
+            .await
+            .map_err(GhidraError::from)
+    }
+
+    async fn create_struct(&self, name: &str, fields: &[NewStructField<'_>]) -> Result<()> {
+        let fields: Vec<KunaNewField<'_>> = fields
+            .iter()
+            .map(|field| KunaNewField {
+                name: field.name,
+                type_name: field.type_name,
+                offset: field.offset,
+            })
+            .collect();
+        self.create_struct(name, &fields)
+            .await
+            .map_err(GhidraError::from)
+    }
+
+    async fn create_enum(&self, name: &str, values: &[(&str, i64)], size: u32) -> Result<()> {
+        self.create_enum(name, values, size)
+            .await
+            .map_err(GhidraError::from)
+    }
+
+    async fn create_typedef(&self, name: &str, base_type: &str) -> Result<()> {
+        self.create_typedef(name, base_type)
+            .await
+            .map_err(GhidraError::from)
+    }
+
+    async fn add_struct_field(
+        &self,
+        struct_name: &str,
+        field_name: &str,
+        field_type: &str,
+        offset: Option<u32>,
+    ) -> Result<()> {
+        self.add_struct_field(struct_name, field_name, field_type, offset)
+            .await
+            .map_err(GhidraError::from)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,5 +277,14 @@ mod tests {
         // for whoever reads the compile failure.
         fn assert_probe<T: WriteSourceProbe>() {}
         assert_probe::<Probe<CachedGhidraSource>>();
+    }
+
+    #[test]
+    fn the_kuna_source_implements_the_write_trait() {
+        // ADR-0020's other half: the cache implements neither write trait,
+        // and the Kuna source does — this call only compiles because the
+        // blanket impl above covers `KunaSource: TypeWriteSource`.
+        fn assert_probe<T: WriteSourceProbe>() {}
+        assert_probe::<Probe<KunaSource>>();
     }
 }
