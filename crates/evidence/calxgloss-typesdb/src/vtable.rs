@@ -13,7 +13,7 @@
 
 use crate::error::Result;
 use crate::types::{Vtable, VtableMethod};
-use calxgloss_ghidra::{DataItem, EngineError, ScanSource};
+use calxgloss_decomp::{DataItem, EngineError, ScanSource};
 use calxgloss_kuna::KunaSource;
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, info, warn};
@@ -46,7 +46,7 @@ impl TagSink for KunaSource {
     }
 }
 
-impl TagSink for calxgloss_ghidra::PipelineSource {
+impl TagSink for calxgloss_decomp::PipelineSource {
     async fn add_function_tag(&self, _address: u64, _tag: &str) -> Result<()> {
         // Both arms refuse by name: writes are never cached, and the
         // wrapped engine has no tag write-back.
@@ -538,8 +538,8 @@ fn meta_pointer<'a>(
 mod tests {
     use super::*;
     use crate::error::TypesDbError;
-    use calxgloss_ghidra::{
-        DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, Result as GhidraResult,
+    use calxgloss_decomp::{
+        DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary, Result as EngineResult,
         StringLiteral, StructLayout, Xref,
     };
     use std::sync::Mutex;
@@ -646,22 +646,22 @@ mod tests {
     }
 
     impl ScanSource for MockSource {
-        async fn data_items(&self) -> GhidraResult<Vec<DataItem>> {
+        async fn data_items(&self) -> EngineResult<Vec<DataItem>> {
             match self.listing_failure {
                 Some(kind) => Err(failure(0, kind)),
                 None => Ok(self.items.clone()),
             }
         }
 
-        async fn functions(&self) -> GhidraResult<Vec<FunctionSummary>> {
+        async fn functions(&self) -> EngineResult<Vec<FunctionSummary>> {
             Ok(self.functions.clone())
         }
 
-        async fn image_base(&self) -> GhidraResult<u64> {
+        async fn image_base(&self) -> EngineResult<u64> {
             Ok(self.image_base)
         }
 
-        async fn read_memory(&self, address: u64, _length: usize) -> GhidraResult<Vec<u8>> {
+        async fn read_memory(&self, address: u64, _length: usize) -> EngineResult<Vec<u8>> {
             self.reads.lock().unwrap().push(address);
             if let Some(kind) = self.failures.get(&address) {
                 return Err(failure(address, *kind));
@@ -675,48 +675,48 @@ mod tests {
                 })
         }
 
-        async fn decompile(&self, name: &str) -> GhidraResult<DecompiledFunction> {
+        async fn decompile(&self, name: &str) -> EngineResult<DecompiledFunction> {
             Err(EngineError::NotFound {
                 kind: "function",
                 query: name.to_string(),
             })
         }
 
-        async fn strings(&self) -> GhidraResult<Vec<StringLiteral>> {
+        async fn strings(&self) -> EngineResult<Vec<StringLiteral>> {
             Ok(Vec::new())
         }
 
-        async fn callers(&self, _address: u64) -> GhidraResult<Vec<String>> {
+        async fn callers(&self, _address: u64) -> EngineResult<Vec<String>> {
             Ok(Vec::new())
         }
 
-        async fn xrefs_to(&self, _address: u64) -> GhidraResult<Vec<Xref>> {
+        async fn xrefs_to(&self, _address: u64) -> EngineResult<Vec<Xref>> {
             Ok(Vec::new())
         }
 
-        async fn data_types(&self, _category: Option<&str>) -> GhidraResult<Vec<DataTypeEntry>> {
+        async fn data_types(&self, _category: Option<&str>) -> EngineResult<Vec<DataTypeEntry>> {
             Ok(Vec::new())
         }
 
-        async fn struct_layout(&self, _name: &str) -> GhidraResult<StructLayout> {
+        async fn struct_layout(&self, _name: &str) -> EngineResult<StructLayout> {
             Err(EngineError::NotFound {
                 kind: "structure",
                 query: _name.to_string(),
             })
         }
 
-        async fn enum_values(&self, _name: &str) -> GhidraResult<EnumDefinition> {
+        async fn enum_values(&self, _name: &str) -> EngineResult<EnumDefinition> {
             Err(EngineError::NotFound {
                 kind: "enumeration",
                 query: _name.to_string(),
             })
         }
 
-        async fn imports(&self) -> GhidraResult<Vec<calxgloss_ghidra::Symbol>> {
+        async fn imports(&self) -> EngineResult<Vec<calxgloss_decomp::Symbol>> {
             Ok(Vec::new())
         }
 
-        async fn exports(&self) -> GhidraResult<Vec<calxgloss_ghidra::Symbol>> {
+        async fn exports(&self) -> EngineResult<Vec<calxgloss_decomp::Symbol>> {
             Ok(Vec::new())
         }
     }

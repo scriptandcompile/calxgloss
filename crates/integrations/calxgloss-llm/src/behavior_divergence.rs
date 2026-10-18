@@ -12,7 +12,7 @@
 //!
 //! 1. **Baseline tests** — the tests that originally captured the binary's
 //!    behavior. These were used for the initial verification pass.
-//! 2. **Edge-case tests** — additional inputs derived from Ghidra analysis
+//! 2. **Edge-case tests** — additional inputs derived from decompiler analysis
 //!    (boundary values from `cmp` instructions, null checks, overflow
 //!    conditions, etc.). These are NOT in the baseline set.
 //!
@@ -64,7 +64,7 @@ use std::collections::HashSet;
 /// An edge-case test used for divergence detection.
 ///
 /// Unlike baseline tests, edge-case tests target specific inputs that
-/// a Ghidra analysis might reveal: boundary values, null checks,
+/// a decompiler analysis might reveal: boundary values, null checks,
 /// overflow conditions, and other inputs not naturally covered by
 /// the original binary's test suite.
 #[derive(Debug, Clone)]
@@ -303,7 +303,7 @@ impl BehaviorDivergenceDetector {
         })
     }
 
-    /// Generate a Ghidra-derived edge-case test suite from disassembly hints.
+    /// Generate a decompiler-derived edge-case test suite from disassembly hints.
     ///
     /// This is a heuristic generator that produces edge-case inputs based
     /// on patterns commonly found in disassembled code. It is a starting
@@ -315,7 +315,7 @@ impl BehaviorDivergenceDetector {
     /// * `num_params` — The number of parameters the function takes.
     /// * `disassembly_hints` — A set of observed patterns in the
     ///   disassembly, such as `"zero_check"`, `"null_check"`,
-    ///   `"overflow"`, `"negative"` (derived from Ghidra analysis).
+    ///   `"overflow"`, `"negative"` (derived from decompiler analysis).
     ///
     /// # Returns
     ///

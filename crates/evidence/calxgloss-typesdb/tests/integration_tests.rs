@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 
-use calxgloss_ghidra::{
+use calxgloss_decomp::{
     DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
     StringLiteral, StructFieldLayout, StructLayout, Symbol, Xref,
 };
@@ -149,11 +149,11 @@ impl FakeProgram {
                 name: "_EXCEPTION_DISPOSITION".into(),
                 size: 4,
                 members: vec![
-                    calxgloss_ghidra::EnumMember {
+                    calxgloss_decomp::EnumMember {
                         name: "ExceptionContinueExecution".into(),
                         value: 0,
                     },
-                    calxgloss_ghidra::EnumMember {
+                    calxgloss_decomp::EnumMember {
                         name: "ExceptionContinueSearch".into(),
                         value: 1,
                     },
@@ -226,7 +226,7 @@ impl ScanSource for FakeProgram {
     async fn data_types(
         &self,
         category: Option<&str>,
-    ) -> calxgloss_ghidra::Result<Vec<DataTypeEntry>> {
+    ) -> calxgloss_decomp::Result<Vec<DataTypeEntry>> {
         match category {
             None => Ok(self.listing.clone()),
             Some(word) if self.buckets.contains_key(word) => Ok(self.buckets[word].clone()),
@@ -239,7 +239,7 @@ impl ScanSource for FakeProgram {
         }
     }
 
-    async fn struct_layout(&self, name: &str) -> calxgloss_ghidra::Result<StructLayout> {
+    async fn struct_layout(&self, name: &str) -> calxgloss_decomp::Result<StructLayout> {
         self.layouts
             .get(name)
             .cloned()
@@ -249,7 +249,7 @@ impl ScanSource for FakeProgram {
             })
     }
 
-    async fn enum_values(&self, name: &str) -> calxgloss_ghidra::Result<EnumDefinition> {
+    async fn enum_values(&self, name: &str) -> calxgloss_decomp::Result<EnumDefinition> {
         self.enums
             .get(name)
             .cloned()
@@ -259,19 +259,19 @@ impl ScanSource for FakeProgram {
             })
     }
 
-    async fn data_items(&self) -> calxgloss_ghidra::Result<Vec<DataItem>> {
+    async fn data_items(&self) -> calxgloss_decomp::Result<Vec<DataItem>> {
         Ok(self.items.clone())
     }
 
-    async fn functions(&self) -> calxgloss_ghidra::Result<Vec<FunctionSummary>> {
+    async fn functions(&self) -> calxgloss_decomp::Result<Vec<FunctionSummary>> {
         Ok(self.functions.clone())
     }
 
-    async fn image_base(&self) -> calxgloss_ghidra::Result<u64> {
+    async fn image_base(&self) -> calxgloss_decomp::Result<u64> {
         Ok(self.image_base)
     }
 
-    async fn read_memory(&self, address: u64, _length: usize) -> calxgloss_ghidra::Result<Vec<u8>> {
+    async fn read_memory(&self, address: u64, _length: usize) -> calxgloss_decomp::Result<Vec<u8>> {
         self.memory
             .get(&address)
             .cloned()
@@ -281,30 +281,30 @@ impl ScanSource for FakeProgram {
             })
     }
 
-    async fn strings(&self) -> calxgloss_ghidra::Result<Vec<StringLiteral>> {
+    async fn strings(&self) -> calxgloss_decomp::Result<Vec<StringLiteral>> {
         Ok(self.literals.clone())
     }
 
-    async fn xrefs_to(&self, address: u64) -> calxgloss_ghidra::Result<Vec<Xref>> {
+    async fn xrefs_to(&self, address: u64) -> calxgloss_decomp::Result<Vec<Xref>> {
         Ok(self.xrefs.get(&address).cloned().unwrap_or_default())
     }
 
-    async fn decompile(&self, name: &str) -> calxgloss_ghidra::Result<DecompiledFunction> {
+    async fn decompile(&self, name: &str) -> calxgloss_decomp::Result<DecompiledFunction> {
         Err(EngineError::NotFound {
             kind: "function",
             query: name.to_string(),
         })
     }
 
-    async fn callers(&self, _address: u64) -> calxgloss_ghidra::Result<Vec<String>> {
+    async fn callers(&self, _address: u64) -> calxgloss_decomp::Result<Vec<String>> {
         Ok(Vec::new())
     }
 
-    async fn imports(&self) -> calxgloss_ghidra::Result<Vec<Symbol>> {
+    async fn imports(&self) -> calxgloss_decomp::Result<Vec<Symbol>> {
         Ok(Vec::new())
     }
 
-    async fn exports(&self) -> calxgloss_ghidra::Result<Vec<Symbol>> {
+    async fn exports(&self) -> calxgloss_decomp::Result<Vec<Symbol>> {
         Ok(Vec::new())
     }
 }
@@ -816,7 +816,7 @@ fn program_with_nested_fields() -> FakeProgram {
         EnumDefinition {
             name: "MODES".into(),
             size: 4,
-            members: vec![calxgloss_ghidra::EnumMember {
+            members: vec![calxgloss_decomp::EnumMember {
                 name: "MODE_ON".into(),
                 value: 1,
             }],

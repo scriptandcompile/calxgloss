@@ -281,7 +281,7 @@ puts(\"do { } while (y);\");"
 
     #[test]
     fn a_truncated_body_still_counts_the_visible_head() {
-        // Ghidra cutting a decompile off mid-brace loses the back edge
+        // The decompiler cutting a decompile off mid-brace loses the back edge
         // but not the spelled-out header — the reading degrades, it does
         // not panic or invent a nesting level.
         let record = detect("while (x) {\n    f();").expect("the visible head still reads");

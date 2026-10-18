@@ -363,7 +363,7 @@ export async function showDetail(unitId) {
 
         // Load tab data
         loadDiffView(unitId);
-        loadGhidraView(unitId);
+        loadDecompView(unitId);
         loadUnitOverrides(unitId);
         loadAttemptsView(unitId);
 
@@ -406,7 +406,7 @@ export async function renderInlineDetail(unitId) {
 
         // Load tab data
         loadDiffView(unitId);
-        loadGhidraView(unitId);
+        loadDecompView(unitId);
         loadUnitOverrides(unitId);
         loadAttemptsView(unitId);
 
@@ -855,7 +855,7 @@ async function loadAttemptsView(unitId) {
     } catch (err) {
         const body = document.getElementById("unit-attempts-body");
         if (body) {
-            body.innerHTML = `<div class="ghidra-empty">Failed to load attempts: ${escapeHtml(err.message)}</div>`;
+            body.innerHTML = `<div class="decomp-empty">Failed to load attempts: ${escapeHtml(err.message)}</div>`;
         }
     }
 }
@@ -863,7 +863,7 @@ async function loadAttemptsView(unitId) {
 function renderAttemptsList(res) {
     const attempts = res.attempts || [];
     if (attempts.length === 0) {
-        return '<div class="ghidra-empty">No attempts recorded for this unit.</div>';
+        return '<div class="decomp-empty">No attempts recorded for this unit.</div>';
     }
 
     const rows = attempts.map(a => {
@@ -956,7 +956,7 @@ async function loadAttemptDiff(unitId, from, to) {
     } catch (err) {
         // A missing branch answers an honest error — show its reason,
         // never an empty diff pretending the branches matched.
-        body.innerHTML = `<div class="ghidra-empty">${escapeHtml(err.message)}</div>`;
+        body.innerHTML = `<div class="decomp-empty">${escapeHtml(err.message)}</div>`;
     }
 }
 
@@ -964,7 +964,7 @@ async function loadAttemptDiff(unitId, from, to) {
 /// theme's addition/deletion line styles — vanilla JS, no diff library.
 function renderUnifiedDiff(text) {
     if (!text || !text.trim()) {
-        return '<div class="ghidra-empty">No changes between these attempts.</div>';
+        return '<div class="decomp-empty">No changes between these attempts.</div>';
     }
 
     let html = "";
@@ -1037,17 +1037,17 @@ function renderDiffTab(u) {
         <div class="detail-section" id="diff-section">
             <div class="diff-tabs">
                 <button class="diff-tab active" data-diff-tab="diff">Diff (${u.diff_summary.insertions}+ ${u.diff_summary.deletions}-)</button>
-                <button class="diff-tab" data-diff-tab="ghidra">Ghidra Context</button>
+                <button class="diff-tab" data-diff-tab="decomp">Decompiler Context</button>
                 <button class="diff-tab" data-diff-tab="overrides">Overrides</button>
             </div>
             <div class="diff-content" id="diff-viewer">
                 ${hasDiff
                     ? '<div id="diff-body" class="diff-viewer"><div class="spinner"></div></div>'
-                    : '<div class="ghidra-empty">No diff available for this unit.</div>'
+                    : '<div class="decomp-empty">No diff available for this unit.</div>'
                 }
             </div>
-            <div class="diff-content" id="ghidra-viewer" style="display:none">
-                <div id="ghidra-body" class="ghidra-viewer">
+            <div class="diff-content" id="decomp-viewer" style="display:none">
+                <div id="decomp-body" class="decomp-viewer">
                     <div class="spinner"></div>
                 </div>
             </div>
@@ -1069,7 +1069,7 @@ async function loadDiffView(unitId) {
         if (!body) return;
 
         if (files.length === 0) {
-            body.innerHTML = '<div class="ghidra-empty">No changes vs. main.</div>';
+            body.innerHTML = '<div class="decomp-empty">No changes vs. main.</div>';
             return;
         }
 
@@ -1112,26 +1112,26 @@ async function loadDiffView(unitId) {
         body.innerHTML = html;
     } catch (err) {
         const body = document.getElementById("diff-body");
-        if (body) body.innerHTML = `<div class="ghidra-empty">Failed to load diff: ${escapeHtml(err.message)}</div>`;
+        if (body) body.innerHTML = `<div class="decomp-empty">Failed to load diff: ${escapeHtml(err.message)}</div>`;
     }
 }
 
-async function loadGhidraView(unitId) {
+async function loadDecompView(unitId) {
     try {
-        const res = await API.unitGhidra(unitId);
+        const res = await API.unitDecomp(unitId);
         const ctx = res.context;
 
-        const body = document.getElementById("ghidra-body");
+        const body = document.getElementById("decomp-body");
         if (!body) return;
 
         if (!ctx) {
-            body.innerHTML = `<div class="ghidra-empty">${escapeHtml(res.error || "No Ghidra context available.")}</div>`;
+            body.innerHTML = `<div class="decomp-empty">${escapeHtml(res.error || "No decompiler context available.")}</div>`;
             return;
         }
 
         let html = "";
 
-        // Ghidra metadata
+        // Decompiler metadata
         html += `<div style="padding:8px 12px;font-size:12px;color:var(--text-muted)">`;
         if (ctx.binary) html += `DLL: <strong style="color:var(--text-secondary)">${escapeHtml(ctx.binary)}</strong> &nbsp;`;
         if (ctx.function_name) html += `Function: <strong style="color:var(--text-secondary)">${escapeHtml(ctx.function_name)}</strong>`;
@@ -1140,24 +1140,24 @@ async function loadGhidraView(unitId) {
 
         // Windows API calls
         if (ctx.windows_apis && ctx.windows_apis.length > 0) {
-            html += `<div class="ghidra-label">Identified API Calls</div>`;
-            html += `<div class="ghidra-api-calls">`;
+            html += `<div class="decomp-label">Identified API Calls</div>`;
+            html += `<div class="decomp-api-calls">`;
             for (const api of ctx.windows_apis) {
-                html += `<span class="ghidra-api-tag">${escapeHtml(api.name)} \u2192 ${escapeHtml(api.pal_mapping)}</span>`;
+                html += `<span class="decomp-api-tag">${escapeHtml(api.name)} \u2192 ${escapeHtml(api.pal_mapping)}</span>`;
             }
             html += `</div>`;
         }
 
         // Decompiler output
         if (ctx.decompiler_output) {
-            html += `<div class="ghidra-label">Decompiler (Pseudo-C)</div>`;
-            html += `<div class="ghidra-decompiler">${escapeHtml(ctx.decompiler_output)}</div>`;
+            html += `<div class="decomp-label">Decompiler (Pseudo-C)</div>`;
+            html += `<div class="decomp-decompiler">${escapeHtml(ctx.decompiler_output)}</div>`;
         }
 
         // Disassembly
         if (ctx.disassembly && ctx.disassembly.length > 0) {
-            html += `<div class="ghidra-label">Disassembly</div>`;
-            html += `<div class="ghidra-disassembly">`;
+            html += `<div class="decomp-label">Disassembly</div>`;
+            html += `<div class="decomp-disassembly">`;
             for (const line of ctx.disassembly) {
                 html += `<div>${escapeHtml(line.address)}&nbsp;&nbsp;${escapeHtml(line.instruction)}</div>`;
             }
@@ -1166,16 +1166,16 @@ async function loadGhidraView(unitId) {
 
         body.innerHTML = html;
     } catch (err) {
-        const body = document.getElementById("ghidra-body");
-        if (body) body.innerHTML = `<div class="ghidra-empty">Failed to load Ghidra context: ${escapeHtml(err.message)}</div>`;
+        const body = document.getElementById("decomp-body");
+        if (body) body.innerHTML = `<div class="decomp-empty">Failed to load decompiler context: ${escapeHtml(err.message)}</div>`;
     }
 }
 
-// The tab bar switches between the diff, Ghidra-context, and overrides
+// The tab bar switches between the diff, decomp-context, and overrides
 // panes; each tab's `data-diff-tab` names its viewer element.
 const DIFF_PANES = {
     diff: "diff-viewer",
-    ghidra: "ghidra-viewer",
+    decomp: "decomp-viewer",
     overrides: "overrides-viewer",
 };
 

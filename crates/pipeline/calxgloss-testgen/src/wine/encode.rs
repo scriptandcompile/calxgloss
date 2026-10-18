@@ -13,7 +13,7 @@ const ALLOC_KEY: &str = "__alloc";
 
 /// Encode a test case's inputs into the wire format the harness reads.
 ///
-/// `inputs` is keyed by parameter name, matching the names Ghidra reports.
+/// `inputs` is keyed by parameter name, matching the names the decompiler reports.
 pub fn encode_test_case(spec: &HarnessSpec, test: &TestCase) -> Result<String> {
     let Value::Object(obj) = &test.inputs else {
         bail!("Test case inputs must be a JSON object of parameter name -> value");

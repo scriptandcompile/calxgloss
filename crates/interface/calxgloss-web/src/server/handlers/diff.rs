@@ -127,7 +127,7 @@ pub(crate) fn compute_line_diff(
     let mut files = Vec::new();
     for block in blocks {
         let full_block = format!("@@ -{block}");
-        if let Some(file) = super::ghidra::parse_diff_block(&full_block) {
+        if let Some(file) = super::decomp::parse_diff_block(&full_block) {
             files.push(file);
         }
     }

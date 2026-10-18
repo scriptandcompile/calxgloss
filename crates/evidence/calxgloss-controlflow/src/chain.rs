@@ -1,4 +1,4 @@
-//! Brace-depth-aware walker over Ghidra if/else-if chains.
+//! Brace-depth-aware walker over decompiler if/else-if chains.
 //!
 //! Ghidra renders switch-shaped code as `if (var == CONST) { ... }` followed
 //! by `else if (var == CONST) { ... }` arms (each `else` on its own line).

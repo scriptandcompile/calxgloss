@@ -5,13 +5,13 @@
 //! arm, loaded in-process with no Ghidra anywhere — and the scan record it
 //! persists into the record-of-effort layout names its engine provenance.
 //!
-//! The seam itself is pinned in `calxgloss-ghidra/tests/kuna_scan.rs`; this
+//! The seam itself is pinned in `calxgloss-decomp/tests/kuna_scan.rs`; this
 //! test pins the contract the web's pipeline consumes: one scan run through
 //! the seam, one persisted record, and the record naming the engine, its
 //! pinned release, and its pinned source fingerprint (issue #208's
 //! provenance) all the way to disk and back.
 
-use calxgloss_ghidra::PipelineSource;
+use calxgloss_decomp::PipelineSource;
 use calxgloss_kuna::{KUNA_PIN_REV, KUNA_RELEASE, KunaSource};
 use calxgloss_testfixtures::TARGET_FILE_NAME;
 use calxgloss_typesdb::engine::TypesDBEngine;
@@ -36,7 +36,7 @@ async fn a_kuna_scan_run_persists_a_record_naming_its_engine_provenance() {
     // One scan run: the same type-database recovery the live pipeline runs
     // before its first batch, over the seam. The Kuna arm refuses the
     // vtable-method tag write (issue #209's directive plane carries type
-    // writes, not Ghidra tags), and the scan tolerates that — tagging is
+    // writes, not Ghidra-era program tags), and the scan tolerates that — tagging is
     // enrichment, not detection — so the run completes on seam reads alone.
     let db = TypesDBEngine::with_source(source)
         .scan(TARGET_FILE_NAME)

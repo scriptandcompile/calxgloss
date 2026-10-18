@@ -3,7 +3,7 @@
 //! This module provides [`BitPackDetector`], which reads decompiled
 //! bodies for the two shapes a hand-rolled wire format leaves behind:
 //! shift-and-or pack chains — bytes shifted to their offsets and ORed
-//! into a word, the way Ghidra decompiles a hand-rolled big-endian
+//! into a word, the way the decompiler renders a hand-rolled big-endian
 //! read — and shift-then-mask unpack chains — a word shifted right and
 //! masked to pull one field back out.
 //!
@@ -16,7 +16,7 @@
 
 use crate::scan::literal_after_ws;
 use crate::types::{BitPackPattern, BitPackRecord};
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 
 // ============================================================
 // Detector

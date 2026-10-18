@@ -10,7 +10,7 @@
 //! The crate is organized into eight modules:
 //!
 //! - [`types`] - Core data types: `NamedType`, `TypeKind`, `StructField` for
-//!   named types from Ghidra's Type Manager; `Vtable`, `VtableMethod` for
+//!   named types from the engine's type listing; `Vtable`, `VtableMethod` for
 //!   detected vtables; `InferredStruct`, `InferredField`, `FieldType` for
 //!   string-inferred layouts; `TypeDatabase`, `ScanMetadata` for the
 //!   persisted per-DLL database.

@@ -1,6 +1,6 @@
 //! Call graph analysis for calxgloss.
 //!
-//! Extracts call graphs from Ghidra, detects root and leaf functions,
+//! Extracts call graphs from the decompiler, detects root and leaf functions,
 //! produces translation ordering, and persists results to JSON for
 //! consumption by the translation pipeline.
 //!
@@ -10,7 +10,7 @@
 //!
 //! - [`models`] - Core data types: [`CallGraph`], [`FunctionCallGraph`], [`CallGraphEdge`],
 //!   [`NodeCategory`], and [`CallType`].
-//! - [`builder`] - [`CallGraphBuilder`] fetches function metadata from Ghidra and
+//! - [`builder`] - [`CallGraphBuilder`] fetches function metadata from the engine and
 //!   constructs the call graph.
 //! - [`root_detector`] - [`RootDetector`] and [`ConfigurableRootDetector`] identify
 //!   entry-point and runtime functions that should be skipped or stubbed during
@@ -29,7 +29,7 @@
 //! use calxgloss_callgraph::{CallGraphBuilder, RootDetector, LeafDetector, CallGraphPersistor};
 //!
 //! # async fn example() -> anyhow::Result<()> {
-//! let source = calxgloss_ghidra::PipelineSource::from(
+//! let source = calxgloss_decomp::PipelineSource::from(
 //!     calxgloss_kuna::KunaSource::load("eqmain.dll".as_ref())?,
 //! );
 //!

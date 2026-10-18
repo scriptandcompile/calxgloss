@@ -308,7 +308,7 @@ puts(\"while (e) { f(); }\");"
 
     #[test]
     fn a_truncated_body_still_classifies_the_visible_graph() {
-        // Ghidra cutting a decompile off mid-arm loses the last arm's
+        // The decompiler cutting a decompile off mid-arm loses the last arm's
         // not-taken edge — the reading degrades, it does not panic.
         let record = detect(
             "\

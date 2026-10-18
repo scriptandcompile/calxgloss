@@ -29,7 +29,7 @@ use calxgloss_callback::engine::{CallbackEngine, ScanSource};
 use calxgloss_callback::persist::CallbackPersistor;
 use calxgloss_callback::signatures::{CallableSignature, SignatureMap};
 use calxgloss_callback::types::CallbackFinding;
-use calxgloss_ghidra::{
+use calxgloss_decomp::{
     DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
     Result, StringLiteral, StructLayout, Symbol, Xref,
 };

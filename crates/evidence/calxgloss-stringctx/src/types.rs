@@ -86,7 +86,7 @@ calxgloss_types::display_serde_label!(StringClassification {
 ///
 /// A body-parsed string was read directly out of the function's pseudo-C —
 /// a literal, a resolved `DAT_` reference, or a format-function call — while
-/// an xref-only string was found by asking Ghidra which functions reference
+/// an xref-only string was found by asking the engine which functions reference
 /// it, the fallback for functions whose body parse found nothing. The
 /// provenance is kept so a reviewer (or a confidence score) can weigh
 /// body-parsed evidence above xref-only evidence.

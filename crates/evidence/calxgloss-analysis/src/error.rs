@@ -10,7 +10,7 @@ use thiserror::Error;
 pub enum AnalysisError {
     /// An engine read through the analysis seam failed.
     #[error("engine error: {0}")]
-    Engine(#[from] calxgloss_ghidra::EngineError),
+    Engine(#[from] calxgloss_decomp::EngineError),
 
     /// An I/O or general error occurred.
     #[error("{0}")]

@@ -5,14 +5,14 @@
 //!
 //! The obvious way to call an original function is to generate an
 //! `extern "C"` block and link against the DLL. That only works for *exported*
-//! symbols. The interesting functions in a real binary are internal: Ghidra
+//! symbols. The interesting functions in a real binary are internal: the decompiler
 //! names them `FUN_18008ed50` and they appear in no export table. Reaching them
 //! means loading the module at runtime and calling `module_base + rva`, which is
 //! what this module generates.
 //!
 //! # Address arithmetic
 //!
-//! Ghidra reports addresses at the image's preferred base, so the RVA is
+//! The decompiler reports addresses at the image's preferred base, so the RVA is
 //! `va - image_base` (see [`crate::PeImage::rva_from_va`]). The image is
 //! normally *not* loaded at its preferred base — ASLR and Wine's allocator pick
 //! the address — so the runtime call target is `actual_base + rva`.

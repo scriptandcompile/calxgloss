@@ -6,7 +6,7 @@
 //!    summary of call graph data (function count, root/middle/leaf distribution,
 //!    call-type breakdown, external API count).
 //!
-//! 2. **Enrichment** — builds a call graph from Ghidra data, classifies each
+//! 2. **Enrichment** — builds a call graph from engine data, classifies each
 //!    function as [`Root`](calxgloss_types::NodeCategory::Root),
 //!    [`Leaf`](calxgloss_types::NodeCategory::Leaf), or
 //!    [`Middle`](calxgloss_types::NodeCategory::Middle), and persists it to
@@ -40,7 +40,7 @@
 use calxgloss_callgraph::{
     CallGraphBuilder, CallGraphPersistor, CallType, LeafDetector, RootDetector,
 };
-use calxgloss_ghidra::ScanSource;
+use calxgloss_decomp::ScanSource;
 use calxgloss_types::{
     DependencyEdge, DependencyGraph, DependencyNode, NodeCategory, ReviewStatus,
     dashboard::WorkLevel,
@@ -205,7 +205,7 @@ pub fn print_call_graph_stats(graph: &calxgloss_callgraph::CallGraph) {
 /// # Returns
 ///
 /// A fully classified [`calxgloss_callgraph::CallGraph`], or an error if
-/// Ghidra data cannot be fetched or the graph cannot be persisted.
+/// engine data cannot be fetched or the graph cannot be persisted.
 ///
 /// # Graceful degradation
 ///

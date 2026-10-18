@@ -18,7 +18,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use calxgloss_ghidra::{DecompiledFunction, Xref};
+use calxgloss_decomp::{DecompiledFunction, Xref};
 use calxgloss_kuna::KunaSource;
 use tracing::{info, warn};
 
@@ -35,13 +35,13 @@ use crate::types::{
 
 /// The program a string-context scan reads.
 ///
-/// The shared trait from the Ghidra integration crate, re-exported here
+/// The shared trait from the decompiler seam crate, re-exported here
 /// so the engine's generic shape names it where it always has;
 /// [`KunaSource`] implements it over the in-process engine, and tests
 /// implement it over canned listings, bodies, strings, and xrefs so the
 /// orchestration runs without a server. The futures are `Send` so a
 /// scan can be driven from an orchestrating task.
-pub use calxgloss_ghidra::ScanSource;
+pub use calxgloss_decomp::ScanSource;
 
 /// Orchestrates the classifier, hybrid mapper, format-string engine,
 /// localization detector, and cross-function analyzer into one
@@ -136,7 +136,7 @@ impl<S> StringContextEngine<S> {
     /// engine reads. So two scans of the same program diff
     /// cleanly.
     ///
-    /// A function whose body Ghidra cannot produce (a thunk, a bad entry
+    /// A function whose body the decompiler cannot produce (a thunk, a bad entry
     /// point) is skipped with a warning, as is a nameless listing entry;
     /// a failed xref lookup costs only that string's fallback coverage,
     /// and a failed string listing only the fallback and `DAT_`
@@ -391,7 +391,7 @@ impl<S> StringContextEngine<S> {
 mod tests {
     use super::*;
     use crate::classify::CategoryPatterns;
-    use calxgloss_ghidra::{
+    use calxgloss_decomp::{
         DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
         Result, StringLiteral, StructLayout, Symbol, Xref,
     };

@@ -49,13 +49,13 @@ use crate::types::{BitflagGroup, ConstFinding, ConstResult, ScanMetadata};
 
 /// The decompiler a constant scan reads.
 ///
-/// The shared trait from the Ghidra integration crate, re-exported here
+/// The shared trait from the decompiler seam crate, re-exported here
 /// so the engine's generic shape names it where it always has;
 /// [`KunaSource`] implements it over the in-process engine, and tests
 /// implement it over canned bodies so the orchestration runs without a
 /// server. The futures are `Send` so a scan can be driven from an
 /// orchestrating task.
-pub use calxgloss_ghidra::ScanSource;
+pub use calxgloss_decomp::ScanSource;
 
 /// Orchestrates the three detectors into one [`ConstResult`].
 ///
@@ -142,7 +142,7 @@ impl<S> ConstEngine<S> {
     /// lands only as its protocol finding: the frequency pass skips
     /// matched values, and so does the color reading.
     ///
-    /// A function whose body Ghidra cannot produce (a thunk, a bad
+    /// A function whose body the decompiler cannot produce (a thunk, a bad
     /// entry point) is skipped with a warning; only a failure of the
     /// listing itself — the server being down — aborts the run, since
     /// then nothing was scanned.
@@ -288,7 +288,7 @@ mod tests {
     use crate::bitmask::BitmaskDetector;
     use crate::sequential::SequentialDetector;
     use crate::types::Confidence;
-    use calxgloss_ghidra::{
+    use calxgloss_decomp::{
         DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
         Result, StringLiteral, StructLayout, Symbol, Xref,
     };
@@ -1072,7 +1072,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_function_that_will_not_decompile_is_skipped() {
-        // Ghidra cannot produce a body for every function; one bad
+        // The decompiler cannot produce a body for every function; one bad
         // entry point must not cost the whole program its scan.
         let mut program = program();
         program.fail_decompiles = vec!["FUN_18003ab00".into()];

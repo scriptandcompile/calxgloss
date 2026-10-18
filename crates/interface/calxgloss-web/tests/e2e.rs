@@ -7375,7 +7375,7 @@ async fn test_binaries_shim_status_honest_missing_and_corrupt_artifacts() {
 // ── Binaries PAL tracker API (issue #134, W4.4) ────────────────────────
 
 /// Seed the artifacts the PAL-tracker tests pin, on top of
-/// `write_binaries_list_fixtures`: per-function Ghidra artifacts under
+/// `write_binaries_list_fixtures`: per-function analysis artifacts under
 /// `re/analysis/d3d9.dll/` whose `windows_apis` carry categories
 /// (DirectX, DirectX11, Win32Core — one corrupt artifact contributing
 /// nothing), the generated shared PAL crate under `scratch/pal/src/`
@@ -7477,7 +7477,7 @@ async fn test_binaries_pal_status_registered_in_plain_and_live_routers() {
 }
 
 /// Issue #134 exact-JSON contract: needed traits come only from the
-/// persisted per-function Ghidra artifacts' API-call categories, mapped
+/// persisted per-function analysis artifacts' API-call categories, mapped
 /// category→trait with the translator's Tier-4 shape — DirectX and
 /// DirectX11 group into one GraphicsDevice, Win32Core into PlatformCore
 /// — sorted by trait name with verbatim sorted categories. Existence is
@@ -9659,7 +9659,7 @@ async fn test_headless_binaries_detail_pal_tracker_honest_empty_state() {
     }
     assert!(rows_rendered, "both classified binaries render as rows");
 
-    // The reverse-engineered binary has no per-function Ghidra artifacts.
+    // The reverse-engineered binary has no per-function analysis artifacts.
     tab.evaluate(
         "document.querySelector('#binaries-table-body tr.binaries-row[data-binary=\"game_logic.dll\"]').click() === undefined",
         false,
@@ -9908,10 +9908,10 @@ async fn test_unit_diff_endpoint() {
     }
 }
 
-/// Test the Ghidra context endpoint returns not-found for units without Ghidra artifacts.
-/// (Our fixture doesn't create Ghidra data, so this should return not-found gracefully.)
+/// Test the decompiler context endpoint returns not-found for units without analysis artifacts.
+/// (Our fixture doesn't create engine data, so this should return not-found gracefully.)
 #[tokio::test]
-async fn test_unit_ghidra_missing_artifacts() {
+async fn test_unit_decomp_missing_artifacts() {
     let fixture = TestFixture::new();
     let state = ServerState::new(fixture.repo_path());
     let router = build_router(state);
@@ -9922,16 +9922,16 @@ async fn test_unit_ghidra_missing_artifacts() {
     let unit_id = "game_logic.dll/DrawPrimitive/v2";
     let encoded_id = urlencoding::encode(unit_id);
     let resp = reqwest::get(format!(
-        "http://127.0.0.1:{}/api/units/{}/ghidra",
+        "http://127.0.0.1:{}/api/units/{}/decomp",
         fixture.port(),
         encoded_id
     ))
     .await
-    .expect("ghidra request succeeds");
+    .expect("decomp request succeeds");
 
-    // Returns success:true with an empty context when no Ghidra artifacts exist.
+    // Returns success:true with an empty context when no analysis artifacts exist.
     assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.expect("ghidra body is JSON");
+    let body: serde_json::Value = resp.json().await.expect("decomp body is JSON");
     assert_eq!(body["success"], true);
 }
 // ─────────────────────────────────────────────────────────────
@@ -9940,7 +9940,7 @@ async fn test_unit_ghidra_missing_artifacts() {
 
 /// Writes canned run-telemetry artifacts for game_logic.dll/DrawPrimitive:
 /// a token-usage log (2 attempts, escalated tiers), a fault log (2 faults),
-/// and a Ghidra analysis artifact (for the tier rationale).
+/// and an analysis artifact (for the tier rationale).
 fn write_canned_run_telemetry(fixture: &TestFixture) {
     let analysis_dir = fixture.repo_path().join("re").join("analysis");
     std::fs::create_dir_all(&analysis_dir).expect("create analysis dir");
@@ -10030,7 +10030,7 @@ fn write_canned_run_telemetry(fixture: &TestFixture) {
 
     let dll_dir = analysis_dir.join("game_logic.dll");
     std::fs::create_dir_all(&dll_dir).expect("create binary dir");
-    let ghidra_artifact = serde_json::json!({
+    let decomp_artifact = serde_json::json!({
         "name": "DrawPrimitive",
         "address": 4198400,
         "binary": "game_logic.dll",
@@ -10044,7 +10044,7 @@ fn write_canned_run_telemetry(fixture: &TestFixture) {
     });
     std::fs::write(
         dll_dir.join("DrawPrimitive.json"),
-        serde_json::to_string_pretty(&ghidra_artifact).expect("serialize ghidra artifact"),
+        serde_json::to_string_pretty(&decomp_artifact).expect("serialize decomp artifact"),
     )
     .expect("write DrawPrimitive.json");
 }
@@ -10090,7 +10090,7 @@ async fn test_unit_process_sections_from_canned_artifacts() {
         "tier should be flagged as escalated"
     );
 
-    // Rationale: recomputed from the Ghidra analysis artifact.
+    // Rationale: recomputed from the analysis artifact.
     let rationale = &tier["rationale"];
     assert_eq!(
         rationale["api_call_count"], 2,
@@ -10193,7 +10193,7 @@ async fn test_unit_process_corrupt_artifacts_degrade() {
     let dll_dir = analysis_dir.join("game_logic.dll");
     std::fs::create_dir_all(&dll_dir).expect("create binary dir");
     std::fs::write(dll_dir.join("DrawPrimitive.json"), "also not json")
-        .expect("write corrupt ghidra artifact");
+        .expect("write corrupt decomp artifact");
 
     let body = fetch_unit_detail(&fixture, "game_logic.dll/DrawPrimitive/v2").await;
 

@@ -10,7 +10,7 @@
 //! | Tier | Name | Context Sent |
 //! |------|------|-------------|
 //! | 0 | `Signature` | Function name, signature, call graph neighbors |
-//! | 1 | `Disassembly` | Full disassembly + Ghidra pseudo-C + type info |
+//! | 1 | `Disassembly` | Full disassembly + decompiler pseudo-C + type info |
 //! | 2 | `WithTests` | Tier 1 + baseline test results + failing test cases |
 //! | 3 | `ModuleContext` | Tier 2 + neighboring functions + shared data structures |
 //! | 4 | `FullModule` | Tier 3 + shim layer code + PAL trait definitions |
@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 ///   stub: in this codebase a stub is a mock that returns default values
 ///   without the real action (see the pipeline glossary).
 /// - **Disassembly** — Full disassembly, decompiler output, and type
-///   information. The LLM gets the raw instructions plus Ghidra's
+///   information. The LLM gets the raw instructions plus the decompiler's
 ///   type-inferred signature.
 /// - **WithTests** — Everything in `Disassembly`, plus baseline test inputs
 ///   (and failing test details if retrying). This gives the LLM concrete
@@ -107,7 +107,7 @@ impl ContextTier {
     pub fn description(&self) -> &'static str {
         match self {
             Self::Signature => "Function name, signature, call graph neighbors",
-            Self::Disassembly => "Full disassembly + Ghidra pseudo-C + type info",
+            Self::Disassembly => "Full disassembly + decompiler pseudo-C + type info",
             Self::WithTests => "Tier 1 + baseline test results + failing test cases",
             Self::ModuleContext => "Tier 2 + neighboring functions + shared data structures",
             Self::FullModule => "Tier 3 + shim layer code + PAL trait definitions",

@@ -25,7 +25,7 @@
 //! names the same variable — one [`MemoryHint`] per pair.
 
 use crate::types::{AllocationType, MemoryHint};
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 use serde::{Deserialize, Serialize};
 
 use calxgloss_types::{
@@ -494,7 +494,7 @@ fn nulls_variable(body: &str, at: usize, name_len: usize) -> bool {
         "0" | "0x0" | "NULL"
     )
 }
-/// The type words a Ghidra cast may spell, matching the decompiler's
+/// The type words a decompiler cast may spell, matching the decompiler's
 /// vocabulary the other detectors' scans strip.
 pub(crate) fn is_type_word(word: &str) -> bool {
     matches!(
@@ -840,7 +840,7 @@ undefined FUN_18003ab00(void) {
 
     #[test]
     fn an_underscore_spelled_name_inside_a_longer_name_matches_nothing() {
-        // Whole names still: a Ghidra body calling the new handler is
+        // Whole names still: a decompiler body calling the new handler is
         // not calling `operator_new`.
         assert!(
             pairs(

@@ -26,7 +26,7 @@
 //! body reads the handle value after the close.
 
 use crate::types::{HandleLifecycle, HandleType};
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 use serde::{Deserialize, Serialize};
 
 use calxgloss_types::{
@@ -565,7 +565,7 @@ fn named_type(ty: &str) -> Option<String> {
             .all(|word| crate::allocator::is_type_word(word));
     named.then(|| ty.to_string())
 }
-/// The type words a Ghidra cast may spell, the decompiler's
+/// The type words a decompiler cast may spell, the decompiler's
 /// vocabulary the other detectors' scans strip plus the handle
 /// typedefs this detector's casts carry: win32 analysis types a
 /// `CreateFile` result as `HANDLE` and a `fopen` result as `FILE *`,

@@ -383,9 +383,9 @@ impl FfiBindingBuilder {
     }
 }
 
-/// Map a Ghidra decompiler type name to a Rust FFI type.
+/// Map a decompiler type name to a Rust FFI type.
 ///
-/// Ghidra's decompiler emits a different vocabulary from a C SDK: it writes
+/// the decompiler emits a different vocabulary from a C SDK: it writes
 /// `longlong` and `ulonglong` without a space, `undefined4` instead of `int`,
 /// and `pointer`/`code` for types it could not resolve. None of those are in
 /// [`TYPE_MAP`], and falling through to the raw string would emit invalid Rust,
@@ -399,7 +399,7 @@ impl FfiBindingBuilder {
 ///
 /// Pointer depth is significant: `undefined **` becomes `*mut *mut u8`, not
 /// `*mut u8`, because a single level would silently drop a dereference.
-pub fn ghidra_type_to_rust(type_name: &str, type_map: &HashMap<String, String>) -> String {
+pub fn decompiler_type_to_rust(type_name: &str, type_map: &HashMap<String, String>) -> String {
     let trimmed = type_name.trim();
     if trimmed.is_empty() {
         return "()".to_string();
@@ -462,7 +462,7 @@ pub fn ghidra_type_to_rust(type_name: &str, type_map: &HashMap<String, String>) 
 
 /// Wrap a mapped scalar in the number of pointer levels it was written with.
 fn apply_pointer_depth(scalar: &str, depth: usize) -> String {
-    // The Ghidra spellings above already carry their own `*` where the type is
+    // The decompiler spellings above already carry their own `*` where the type is
     // itself a pointer (`pointer`, `void`), so don't double-wrap those.
     let base_pointer = scalar.starts_with('*');
     let mut out = scalar.to_string();

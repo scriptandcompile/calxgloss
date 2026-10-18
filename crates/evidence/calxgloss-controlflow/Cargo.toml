@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-calxgloss-ghidra = { path = "../../integrations/calxgloss-ghidra" }
+calxgloss-decomp = { path = "../../integrations/calxgloss-decomp" }
 calxgloss-kuna = { path = "../../integrations/calxgloss-kuna" }
 
 calxgloss-prompts = { path = "../../integrations/calxgloss-prompts" }
@@ -22,7 +22,7 @@ thiserror = { workspace = true }
 [dev-dependencies]
 tempfile = "3"
 
-# `calxgloss-ghidra` backs the decompiler fetches the control-flow detectors
+# `calxgloss-decomp` backs the decompiler fetches the control-flow detectors
 # scan; it is declared up front so the manifest stays stable as the detectors
 # land. Same allowance as `calxgloss-typesdb`, `calxgloss-typeinfer`,
 # `calxgloss-algorithm`, `calxgloss-memory`, `calxgloss-sync`, and

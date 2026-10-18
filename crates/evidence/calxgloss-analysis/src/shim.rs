@@ -10,7 +10,7 @@
 //! # Flow
 //!
 //! 1. DLL classification marks a DLL as [`CrateReplacement`] → exports are
-//!    collected from Ghidra.
+//!    collected from the engine.
 //! 2. [`generate_shim_mappings`] builds a prompt with the DLL name, target
 //!    crate, export signatures, and crate context.
 //! 3. The LLM returns structured JSON describing each mapping:
@@ -27,7 +27,7 @@
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let analyzer = Analyzer::new(
-//!     calxgloss_ghidra::PipelineSource::from(calxgloss_kuna::KunaSource::load(
+//!     calxgloss_decomp::PipelineSource::from(calxgloss_kuna::KunaSource::load(
 //!         std::path::Path::new("d3d9.dll"),
 //!     )?),
 //!     Default::default(),

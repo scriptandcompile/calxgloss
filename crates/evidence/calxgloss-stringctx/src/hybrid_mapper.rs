@@ -23,7 +23,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-use calxgloss_ghidra::{StringLiteral, Xref};
+use calxgloss_decomp::{StringLiteral, Xref};
 use regex::Regex;
 
 use crate::types::StringSource;

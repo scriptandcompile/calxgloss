@@ -21,10 +21,10 @@ pub struct TranslationRequest {
     /// The function name to translate.
     pub function: String,
 
-    /// Raw disassembly listing from Ghidra.
+    /// Raw disassembly listing from the decompiler.
     pub disassembly: String,
 
-    /// Pseudo-C decompiler output from Ghidra.
+    /// Pseudo-C decompiler output.
     pub decompiler_output: String,
 
     /// Windows API calls identified in the disassembly, with their PAL mappings.

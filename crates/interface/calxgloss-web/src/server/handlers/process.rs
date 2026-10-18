@@ -3,7 +3,7 @@
 //!
 //! All data is derived from artifacts the pipeline already writes under
 //! `re/analysis/` — the token-usage log, the fault log, and the per-function
-//! Ghidra analysis artifact. No new persistence is introduced. Missing or
+//! analysis artifact. No new persistence is introduced. Missing or
 //! corrupt artifacts degrade to empty sections rather than errors.
 
 use std::path::Path;
@@ -18,7 +18,7 @@ use super::super::types::{
 /// Builds the process-telemetry section for a unit of work.
 ///
 /// Reads `re/analysis/token_usage.json`, `re/analysis/fault_log.json`, and
-/// the Ghidra artifact at `re/analysis/{binary}/{function}.json`, filtering the
+/// the analysis artifact at `re/analysis/{binary}/{function}.json`, filtering the
 /// shared logs down to entries belonging to this unit. Every read failure
 /// (missing file, corrupt JSON) degrades that section to its empty value.
 pub(crate) fn build_unit_process(
@@ -56,7 +56,7 @@ pub(crate) fn build_unit_process(
 // ─── Tier section ────────────────────────────────────────────────────
 
 /// Builds the tier section: the tier the unit ended up at, whether the
-/// pipeline escalated, the rationale from the Ghidra artifact, and the
+/// pipeline escalated, the rationale from the analysis artifact, and the
 /// per-attempt tier/strategy history.
 fn build_tier_section(
     unit: &calxgloss_types::UnitOfWork,
@@ -117,7 +117,7 @@ fn build_tier_section(
     }
 }
 
-/// Recomputes the tier rationale from the Ghidra analysis artifact,
+/// Recomputes the tier rationale from the analysis artifact,
 /// mirroring the signals the pipeline feeds to `select_context_tier`
 /// (complexity and Windows API call-site count).
 /// Returns `None` when the artifact is missing or unreadable.
@@ -371,7 +371,7 @@ mod tests {
         assert_eq!(process.tokens.attempts, 2);
         assert_eq!(process.tokens.per_attempt.len(), 2);
         assert_eq!(process.tokens.total_tokens, 700);
-        // Missing fault and Ghidra artifacts degrade to empty sections, never errors.
+        // Missing fault and analysis artifacts degrade to empty sections, never errors.
         assert!(process.faults.is_empty());
     }
 

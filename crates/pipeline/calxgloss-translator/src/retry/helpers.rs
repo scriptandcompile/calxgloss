@@ -2,7 +2,7 @@
 
 use crate::Translation;
 use calxgloss_callgraph::FunctionContext;
-use calxgloss_ghidra::ScanSource;
+use calxgloss_decomp::ScanSource;
 use calxgloss_prompts::{
     CallGraphNeighbor, NeighborFunction, PalTraitDef, PalTraitMethod, ShimCode,
 };
@@ -14,7 +14,7 @@ use tracing::debug;
 /// This is a lightweight alternative to
 /// [`extract_call_graph_neighbors`](extract_call_graph_neighbors) that
 /// operates on already-enriched [`FunctionContext`] data instead of
-/// querying Ghidra for every neighbor.  When the enriched context
+/// querying the engine for every neighbor.  When the enriched context
 /// contains a matching entry for `target_address`, the function returns
 /// its caller/callee edges converted into [`CallGraphNeighbor`]
 /// instances.  When no matching entry exists (or the context list is
@@ -873,7 +873,7 @@ pub fn extract_pal_traits(windows_apis: &[WindowsApiCall]) -> Vec<PalTraitDef> {
 /// This function is called during the retry loop when a tier escalation
 /// is needed. It reconstructs the appropriate prompt data from the initial
 /// translation and, for higher tiers (≥3), fetches additional context from
-/// Ghidra or the workspace.
+/// The engine or the workspace.
 ///
 /// # Arguments
 ///

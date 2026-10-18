@@ -16,7 +16,7 @@
 //! back edge with its loop header. The line scan reuses the chain walker's
 //! brace-depth discipline ([`net_braces`]) and adds the same string-literal
 //! blindness, so braces, keywords, and names spelled inside string
-//! literals invent no blocks and no edges. A truncated body (Ghidra
+//! literals invent no blocks and no edges. A truncated body (the decompiler
 //! cutting a decompile off mid-brace) degrades to a partial graph instead
 //! of panicking.
 //!

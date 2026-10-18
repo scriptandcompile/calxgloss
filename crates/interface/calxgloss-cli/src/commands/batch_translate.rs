@@ -69,7 +69,7 @@ pub async fn handle_batch_translate(
     // Determine which functions to translate
     let function_list = if *all_functions {
         // List all functions from the engine
-        use calxgloss_ghidra::ScanSource;
+        use calxgloss_decomp::ScanSource;
         let summaries = ScanSource::functions(&kuna)
             .await
             .with_context(|| "Failed to list functions from the engine")?;

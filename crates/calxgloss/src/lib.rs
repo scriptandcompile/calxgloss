@@ -49,18 +49,18 @@ pub use calxgloss_types::{
 };
 
 // ============================================================
-// calxgloss-ghidra — the analysis seam, and calxgloss-kuna — the engine
+// calxgloss-decomp — the analysis seam, and calxgloss-kuna — the engine
 // ============================================================
 
-pub use calxgloss_ghidra::CachedScanSource;
-pub use calxgloss_ghidra::DecompiledFunction;
-pub use calxgloss_ghidra::EngineError;
-pub use calxgloss_ghidra::FunctionSummary;
-pub use calxgloss_ghidra::PipelineSource;
-pub use calxgloss_ghidra::StringLiteral;
-pub use calxgloss_ghidra::Symbol;
-pub use calxgloss_ghidra::Xref;
-pub use calxgloss_ghidra::rva_from_va;
+pub use calxgloss_decomp::CachedScanSource;
+pub use calxgloss_decomp::DecompiledFunction;
+pub use calxgloss_decomp::EngineError;
+pub use calxgloss_decomp::FunctionSummary;
+pub use calxgloss_decomp::PipelineSource;
+pub use calxgloss_decomp::StringLiteral;
+pub use calxgloss_decomp::Symbol;
+pub use calxgloss_decomp::Xref;
+pub use calxgloss_decomp::rva_from_va;
 pub use calxgloss_kuna::KunaSource;
 
 // ============================================================

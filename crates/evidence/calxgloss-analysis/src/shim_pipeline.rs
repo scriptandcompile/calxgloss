@@ -48,7 +48,7 @@
 
 use std::path::{Path, PathBuf};
 
-use calxgloss_ghidra::ScanSource;
+use calxgloss_decomp::ScanSource;
 use calxgloss_kuna::KunaSource;
 use calxgloss_llm::LlmClient;
 use calxgloss_types::{Export, ShimLayer, ShimVerificationResult};
@@ -60,13 +60,13 @@ use crate::shim_test_gen::generate_shim_tests;
 
 use calxgloss_verify::Verifier;
 
-/// Convert a Ghidra [`Symbol`] into a calxgloss [`Export`].
+/// Convert a seam [`Symbol`] into a calxgloss [`Export`].
 ///
-/// Ghidra symbols carry `(name, address, imported)` while the shim pipeline
+/// engine symbols carry `(name, address, imported)` while the shim pipeline
 /// needs `(name, address, signature)`. Since shim mappings are produced by the
 /// LLM (which can infer signatures from context), the signature is left empty
 /// and will be filled in by the LLM if needed.
-fn symbol_to_export(sym: &calxgloss_ghidra::Symbol) -> Export {
+fn symbol_to_export(sym: &calxgloss_decomp::Symbol) -> Export {
     Export {
         name: sym.name.clone(),
         address: sym.address,
@@ -389,14 +389,14 @@ fn persist_shim_artifacts(
 /// Run the shim pipeline for all crate-replacement DLLs in the given
 /// classification list.
 ///
-/// Fetches exports from Ghidra for each DLL, then runs the full
+/// Fetches exports from the engine for each DLL, then runs the full
 /// generation → verify → persist pipeline.
 ///
 /// # Arguments
 ///
 /// * `classifications` — DLL classifications to process (filtered to
 ///   `CrateReplacement` strategy).
-/// * `session` — the Ghidra session whose server answers the export queries;
+/// * `session` — the scan source that answers the export queries;
 ///   each DLL is verified against it with the wrong-program guard first.
 /// * `llm` — LLM client for mapping generation.
 /// * `verifier` — Verifier for compilation and test execution.

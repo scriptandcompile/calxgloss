@@ -20,7 +20,7 @@
 //! passes unrecorded.
 
 use crate::types::CallbackRegistration;
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 
 use calxgloss_types::{
     CallSite, NON_CALL_KEYWORDS, NameContinuation, ScanOptions, call_sites, closing_paren, line_at,

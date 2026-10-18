@@ -44,7 +44,7 @@
 
 use crate::confidence::CALLBACK_CONFIDENCE;
 use crate::types::{AlgorithmCategory, AlgorithmHint, DetectionMethod};
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 use calxgloss_types::Confidence;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -330,7 +330,7 @@ impl CallbackPatternDb {
     /// A contract fits when both halves agree. The signature half: the
     /// function takes exactly the contract's
     /// [`param_count`](CallbackPattern::param_count) parameters — the
-    /// arity Ghidra's inferred signature carries — and its body
+    /// arity the decompiler's inferred signature carries — and its body
     /// carries a match for every
     /// [`body_patterns`](CallbackPattern::body_patterns) shape, the
     /// behavior the contract demands of its callback; a contract

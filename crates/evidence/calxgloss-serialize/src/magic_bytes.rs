@@ -32,7 +32,7 @@
 //! comparison context is what makes the match a finding.
 
 use crate::types::MagicFormat;
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 use serde::{Deserialize, Serialize};
 
 // ============================================================

@@ -29,7 +29,7 @@
 
 use crate::recursion::count_ident_calls;
 use crate::types::{ControlFlowFinding, MutualRecursion};
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 
 /// Confidence of a mutual-recursion cycle read across kept bodies:
 /// every edge of the cycle is an explicit call in a body the scan

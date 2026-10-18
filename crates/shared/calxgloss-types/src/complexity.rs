@@ -7,7 +7,7 @@
 //!
 //! The classification drives prompt selection in the translation
 //! pipeline — simple functions get minimal prompts, complex
-//! functions get rich context from Ghidra.
+//! functions get rich context from the decompiler.
 //!
 //! # Complexity Tiers
 //!
@@ -16,7 +16,7 @@
 //! | `Minimal` | ≤30 | Minimal | Straightforward logic, few branches |
 //! | `Standard` | 31–100 | Standard | Typical function, moderate logic |
 //! | `Rich` | 101–300 | Rich with request | Complex control flow, multiple APIs |
-//! | `Detailed` | >300 | Detailed (with Ghidra context) | Very complex, needs extra context |
+//! | `Detailed` | >300 | Detailed (with decompiler context) | Very complex, needs extra context |
 
 use serde::{Deserialize, Serialize};
 
@@ -46,7 +46,7 @@ pub enum FunctionComplexity {
     Standard,
     /// Rich context — complex control flow or many APIs.
     Rich,
-    /// Detailed context — very complex, needs extra Ghidra data.
+    /// Detailed context — very complex, needs extra engine data.
     Detailed,
 }
 
@@ -106,7 +106,7 @@ impl std::fmt::Display for FunctionComplexity {
 ///
 /// # Arguments
 ///
-/// * `disassembly` — Raw disassembly text from Ghidra.
+/// * `disassembly` — Raw disassembly text from the decompiler.
 /// * `api_categories` — Distinct API categories used by this function.
 ///
 /// # Returns
@@ -325,7 +325,7 @@ impl PromptVariant {
         )
     }
 
-    /// Returns true if this variant needs detailed Ghidra context
+    /// Returns true if this variant needs detailed decompiler context
     /// (call graph, neighbors, data structures).
     pub fn needs_detailed_context(&self) -> bool {
         self.complexity == FunctionComplexity::Detailed

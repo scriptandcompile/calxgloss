@@ -44,7 +44,7 @@ pub async fn handle_classify(
     let overrides = classification_overrides
         .cloned()
         .unwrap_or_else(|| ClassificationOverrideControl::open(workspace));
-    let analyzer = Analyzer::new(calxgloss_ghidra::PipelineSource::from(kuna), api_mappings)
+    let analyzer = Analyzer::new(calxgloss_decomp::PipelineSource::from(kuna), api_mappings)
         .with_classification_overrides(overrides);
 
     // Symbol counts come from PE headers on disk — accurate per-DLL.

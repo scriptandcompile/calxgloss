@@ -9,7 +9,7 @@
 //!
 //! 1. Read the DLL's metadata with [`PeImage`]: image base, architecture, and
 //!    the export and import tables
-//! 2. Extract function signatures from Ghidra or the export table
+//! 2. Extract function signatures from the decompiler or the export table
 //! 3. Generate FFI bindings (`extern "system"` blocks) for the original DLL
 //! 4. Generate test inputs covering boundary values, typical values, and edge cases
 //! 5. Execute those inputs against the original binary under Wine to capture
@@ -48,8 +48,8 @@ mod run;
 mod wine;
 
 pub use ffi::{
-    FfiBinding, FfiBindingBuilder, ParameterTypeInfo, ParsedSignature, generate_ffi_binding,
-    ghidra_type_to_rust, parse_signature,
+    FfiBinding, FfiBindingBuilder, ParameterTypeInfo, ParsedSignature, decompiler_type_to_rust,
+    generate_ffi_binding, parse_signature,
 };
 pub use generator::TestGenerator;
 pub use inputs::{DisassemblyEdgeCases, EdgeCaseSource, generate_test_inputs};

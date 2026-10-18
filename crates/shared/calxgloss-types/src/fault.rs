@@ -48,10 +48,10 @@ pub enum FaultCategory {
     ContextWindowExceeded,
 
     /// LLM referenced a function, API, or symbol that does not exist in the
-    /// Ghidra symbol table or disassembly.
+    /// engine symbol table or disassembly.
     ///
     /// Recovery: branch off the last known good commit; prompt the LLM with
-    /// Ghidra's actual symbols and disassembly as ground truth.
+    /// the engine's actual symbols and disassembly as ground truth.
     Hallucination,
 
     /// The same bad output was produced three or more times in a row during
@@ -64,7 +64,7 @@ pub enum FaultCategory {
     /// Tests pass but the Rust implementation diverges on inputs not covered
     /// by the baseline test suite.
     ///
-    /// Recovery: enrich the test suite with Ghidra-derived edge cases; retry
+    /// Recovery: enrich the test suite with decompiler-derived edge cases; retry
     /// with expanded test coverage.
     BehaviorDivergence,
 
@@ -409,7 +409,7 @@ impl FaultEvent {
                 non_existent_apis.len(),
                 non_existent_apis.join(", ")
             ),
-            recovery: "Branch from last good commit; prompt with Ghidra symbols as ground truth"
+            recovery: "Branch from last good commit; prompt with engine symbols as ground truth"
                 .to_string(),
             timestamp: SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
@@ -455,7 +455,7 @@ impl FaultEvent {
             recovery:
                 "Escalate to manual intervention. The LLM is producing identical output despite \
                  changing prompts. Consider: splitting the function into smaller chunks, \
-                 injecting Ghidra data-flow hints, or using a different model."
+                 injecting engine data-flow hints, or using a different model."
                     .to_string(),
             timestamp: SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)

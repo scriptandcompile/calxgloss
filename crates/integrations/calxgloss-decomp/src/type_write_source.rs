@@ -35,15 +35,15 @@ use crate::error::{EngineError, Result};
 pub struct NewStructField<'a> {
     /// The field's name in the Type Manager.
     pub name: &'a str,
-    /// The field's type — any data type Ghidra can resolve, including a
+    /// The field's type — any data type the engine can resolve, including a
     /// named type created earlier in the same pass.
     pub type_name: &'a str,
-    /// The byte offset to place the field at; `None` lets Ghidra append it.
+    /// The byte offset to place the field at; `None` lets the engine append it.
     pub offset: Option<u32>,
 }
 
 impl<'a> NewStructField<'a> {
-    /// A field Ghidra appends at the end of the structure.
+    /// A field the engine appends at the end of the structure.
     pub fn new(name: &'a str, type_name: &'a str) -> Self {
         Self {
             name,
@@ -116,7 +116,7 @@ pub trait TypeWriteSource {
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 
     /// Create a typedef `name` as an alias for `base_type` — any type
-    /// Ghidra can resolve, pointer spellings (`char *`) included.
+    /// the engine can resolve, pointer spellings (`char *`) included.
     fn create_typedef(
         &self,
         name: &str,
@@ -140,7 +140,7 @@ impl TypeWriteSource for KunaSource {
     // The Kuna source's inherent methods answer in Kuna-native shape; the
     // seam only maps the field struct and folds a KunaError into the
     // seam's vocabulary (ADR-0039's fold: a missing function or type is
-    // the same `NotFound`/`Malformed` a Ghidra miss becomes).
+    // the same `NotFound`/`Malformed` an engine miss becomes).
     async fn set_function_prototype(&self, function_address: u64, prototype: &str) -> Result<()> {
         self.set_function_prototype(function_address, prototype)
             .await

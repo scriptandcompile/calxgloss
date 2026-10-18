@@ -24,7 +24,7 @@
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let kuna = calxgloss_kuna::KunaSource::load(std::path::Path::new("/path/to/targets/eqmain.dll"))?;
 //! let api_mappings = ApiMappings::default();
-//! let analyzer = Analyzer::new(calxgloss_ghidra::PipelineSource::from(kuna), api_mappings);
+//! let analyzer = Analyzer::new(calxgloss_decomp::PipelineSource::from(kuna), api_mappings);
 //!
 //! // Classify the DLLs you care about
 //! let names = vec!["eqmain.dll".to_string()];

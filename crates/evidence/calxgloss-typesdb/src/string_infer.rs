@@ -14,7 +14,7 @@
 
 use crate::error::Result;
 use crate::types::{Confidence, FieldType, InferredField, InferredStruct, NameOrigin};
-use calxgloss_ghidra::{EngineError, ScanSource, StringLiteral};
+use calxgloss_decomp::{EngineError, ScanSource, StringLiteral};
 use calxgloss_kuna::KunaSource;
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -48,7 +48,7 @@ const DEFAULT_MIN_FIELDS: usize = 2;
 /// Default confidence a candidate must reach to be reported.
 const DEFAULT_MIN_CONFIDENCE: u8 = 40;
 
-/// Ghidra's generated-name prefixes. A stem shared by generated names names
+/// the decompiler's generated-name prefixes. A stem shared by generated names names
 /// nothing.
 const AUTO_NAME_PREFIXES: [&str; 4] = ["FUN_", "DAT_", "LABEL_", "thunk_"];
 
@@ -243,7 +243,7 @@ fn function_stem(functions: &[String]) -> Option<String> {
         .then(|| stem.to_string())
 }
 
-/// Whether a name is one Ghidra generated, carrying no information.
+/// Whether a name is one the decompiler generated, carrying no information.
 fn is_auto_name(name: &str) -> bool {
     AUTO_NAME_PREFIXES
         .iter()
@@ -344,7 +344,7 @@ fn is_useful_literal(value: &str, shapes: &Shapes) -> bool {
     if !(MIN_LITERAL_LEN..=MAX_LITERAL_LEN).contains(&length) {
         return false;
     }
-    // Control characters and non-ASCII text come from encoded data Ghidra
+    // Control characters and non-ASCII text come from encoded data the decompiler
     // guessed a string boundary inside of, not from a name.
     if !value.chars().all(|c| c.is_ascii_graphic() || c == ' ') {
         return false;
@@ -654,9 +654,9 @@ impl<S> StringInferenceEngine<S> {
 mod tests {
     use super::*;
     use crate::error::TypesDbError;
-    use calxgloss_ghidra::{
+    use calxgloss_decomp::{
         DataItem, DataTypeEntry, DecompiledFunction, EnumDefinition, FunctionSummary,
-        Result as GhidraResult, StructLayout, Symbol, Xref,
+        Result as EngineResult, StructLayout, Symbol, Xref,
     };
     use std::sync::Mutex;
 
@@ -725,7 +725,7 @@ mod tests {
     }
 
     impl ScanSource for MockSource {
-        async fn strings(&self) -> GhidraResult<Vec<StringLiteral>> {
+        async fn strings(&self) -> EngineResult<Vec<StringLiteral>> {
             if self.listing_failure {
                 return Err(EngineError::Reported {
                     message: "the engine is busy".into(),
@@ -734,7 +734,7 @@ mod tests {
             Ok(self.literals.clone())
         }
 
-        async fn xrefs_to(&self, address: u64) -> GhidraResult<Vec<Xref>> {
+        async fn xrefs_to(&self, address: u64) -> EngineResult<Vec<Xref>> {
             self.reads.lock().unwrap().push(address);
             if self.busy.contains(&address) {
                 return Err(EngineError::Reported {
@@ -750,56 +750,56 @@ mod tests {
             Ok(self.xrefs.get(&address).cloned().unwrap_or_default())
         }
 
-        async fn functions(&self) -> GhidraResult<Vec<FunctionSummary>> {
+        async fn functions(&self) -> EngineResult<Vec<FunctionSummary>> {
             Ok(Vec::new())
         }
 
-        async fn decompile(&self, name: &str) -> GhidraResult<DecompiledFunction> {
+        async fn decompile(&self, name: &str) -> EngineResult<DecompiledFunction> {
             Err(EngineError::NotFound {
                 kind: "function",
                 query: name.to_string(),
             })
         }
 
-        async fn callers(&self, _address: u64) -> GhidraResult<Vec<String>> {
+        async fn callers(&self, _address: u64) -> EngineResult<Vec<String>> {
             Ok(Vec::new())
         }
 
-        async fn data_types(&self, _category: Option<&str>) -> GhidraResult<Vec<DataTypeEntry>> {
+        async fn data_types(&self, _category: Option<&str>) -> EngineResult<Vec<DataTypeEntry>> {
             Ok(Vec::new())
         }
 
-        async fn struct_layout(&self, name: &str) -> GhidraResult<StructLayout> {
+        async fn struct_layout(&self, name: &str) -> EngineResult<StructLayout> {
             Err(EngineError::NotFound {
                 kind: "structure",
                 query: name.to_string(),
             })
         }
 
-        async fn enum_values(&self, name: &str) -> GhidraResult<EnumDefinition> {
+        async fn enum_values(&self, name: &str) -> EngineResult<EnumDefinition> {
             Err(EngineError::NotFound {
                 kind: "enumeration",
                 query: name.to_string(),
             })
         }
 
-        async fn data_items(&self) -> GhidraResult<Vec<DataItem>> {
+        async fn data_items(&self) -> EngineResult<Vec<DataItem>> {
             Ok(Vec::new())
         }
 
-        async fn imports(&self) -> GhidraResult<Vec<Symbol>> {
+        async fn imports(&self) -> EngineResult<Vec<Symbol>> {
             Ok(Vec::new())
         }
 
-        async fn exports(&self) -> GhidraResult<Vec<Symbol>> {
+        async fn exports(&self) -> EngineResult<Vec<Symbol>> {
             Ok(Vec::new())
         }
 
-        async fn image_base(&self) -> GhidraResult<u64> {
+        async fn image_base(&self) -> EngineResult<u64> {
             Ok(0)
         }
 
-        async fn read_memory(&self, address: u64, _length: usize) -> GhidraResult<Vec<u8>> {
+        async fn read_memory(&self, address: u64, _length: usize) -> EngineResult<Vec<u8>> {
             Err(EngineError::NotFound {
                 kind: "memory",
                 query: format!("{address:x}"),
@@ -1161,7 +1161,7 @@ mod tests {
             .unwrap();
         assert_eq!(candidates.len(), 1);
         let candidate = &candidates[0];
-        // Ghidra named neither the struct nor its functions, so the candidate
+        // the engine named neither the struct nor its functions, so the candidate
         // is named after the literals it came from.
         assert_eq!(candidate.name, "strings_at_180129340");
         assert_eq!(candidate.fields.len(), 8);
@@ -1237,7 +1237,7 @@ mod tests {
             "Widget_getHeight".to_string(),
         ];
         assert_eq!(function_stem(&methods).as_deref(), Some("Widget"));
-        // Ghidra's generated names carry nothing to name a struct after.
+        // the decompiler's generated names carry nothing to name a struct after.
         let generated = vec!["FUN_18003ab00".to_string(), "FUN_18003e750".to_string()];
         assert_eq!(function_stem(&generated), None);
         // A stem that is the whole of one name is that name.

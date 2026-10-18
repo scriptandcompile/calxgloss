@@ -6,7 +6,7 @@
 //! fixture builds a graph from them.
 
 use calxgloss_callgraph::CallGraphBuilder;
-use calxgloss_ghidra::ScanSource;
+use calxgloss_decomp::ScanSource;
 use calxgloss_kuna::KunaSource;
 use calxgloss_testfixtures::{EXPORT_NAMES, TARGET_FILE_NAME};
 

@@ -15,7 +15,7 @@
 //! [`ComInterface`]: crate::types::InferenceMethod::ComInterface
 
 use crate::types::{InferenceMethod, InferenceScope, InferredParamType};
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 use regex::Regex;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -77,7 +77,7 @@ const IUNKNOWN_SLOTS: usize = 3;
 /// the x64 programs this pipeline analyzes.
 const POINTER_SIZE: u64 = 8;
 
-/// A Ghidra type cast inside an expression: `(code **)`, `(undefined8 *)`,
+/// A decompiler type cast inside an expression: `(code **)`, `(undefined8 *)`,
 /// `(longlong)`. Stripping casts from a callee expression leaves the bare
 /// dereference chain the call is built from.
 fn type_cast() -> &'static Regex {
@@ -492,7 +492,7 @@ fn class_name(callee: &str) -> Option<String> {
     named.then(|| segments.join("::"))
 }
 
-/// The class the analyzed function's own name names, when Ghidra carries a
+/// The class the analyzed function's own name names, when the decompiler carries a
 /// demangled member name: `Widget::paint(void)` says the function is a
 /// member of `Widget`, whose first parameter is the class's `this`
 /// pointer.
@@ -500,7 +500,7 @@ fn self_class_name(name: &str) -> Option<String> {
     class_name(name.split('(').next()?)
 }
 
-/// A call argument with Ghidra casts stripped: the decompiler writes
+/// A call argument with decompiler casts stripped: the decompiler writes
 /// `Widget::paint((Widget *)param_1, ...)` when the argument's applied
 /// type differs from the callee's parameter, and the object behind the
 /// cast is what the reading is about.
@@ -521,7 +521,7 @@ fn strip_casts(arg: &str) -> String {
 /// function and read by every detector — and it never writes back to the
 /// program, only reporting what the body's usage implies.
 ///
-/// [`DecompiledFunction`]: calxgloss_ghidra::DecompiledFunction
+/// [`DecompiledFunction`]: calxgloss_decomp::DecompiledFunction
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ThisPointerDetector;
 

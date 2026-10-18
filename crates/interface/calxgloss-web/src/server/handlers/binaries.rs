@@ -32,7 +32,7 @@
 //! a missing or corrupt log means no recorded spend, not a failure.
 //!
 //! The PAL tracker (issue #134, W4.4) derives a binary's *needed* traits
-//! on demand from the persisted per-function Ghidra artifacts — the
+//! on demand from the persisted per-function analysis artifacts — the
 //! `windows_apis` categories recorded under `re/analysis/{binary}/` —
 //! mapped category→trait with the translator's Tier-4 extraction shape
 //! (`PAL_TRAIT_CATEGORIES` below, a web-side mirror; the pipeline is
@@ -581,7 +581,7 @@ fn needed_pal_traits(categories: &[String]) -> Vec<PalTraitStatus> {
         .collect()
 }
 
-/// The workspace's per-function Ghidra artifact directory for one
+/// The workspace's per-function analysis artifact directory for one
 /// binary — the layout the analysis pipeline persists:
 /// `re/analysis/{binary}/` holding one `{function}.json` per analyzed
 /// function.
@@ -589,7 +589,7 @@ fn analysis_artifact_dir(repo_path: &Path, name: &str) -> Option<PathBuf> {
     binary_artifact_dir(repo_path, "analysis", name)
 }
 
-/// The API-call categories the binary's persisted per-function Ghidra
+/// The API-call categories the binary's persisted per-function analysis
 /// artifacts actually record — the honest input to the needed-trait
 /// derivation. A missing or unreadable directory is no categories; a
 /// corrupt function artifact is no artifact, contributing nothing while
@@ -688,7 +688,7 @@ fn defines_trait(source: &str, name: &str) -> bool {
 }
 
 /// Build the full PAL tracker payload for one binary from persisted
-/// artifacts only: needed traits derived from the per-function Ghidra
+/// artifacts only: needed traits derived from the per-function analysis
 /// artifacts' API-call categories, existence detected against the
 /// workspace's generated PAL/shim source artifacts. No classification
 /// or override fold is involved — the traits a binary needs are what

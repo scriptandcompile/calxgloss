@@ -1,7 +1,7 @@
-//! Call graph construction from Ghidra data.
+//! Call graph construction from engine data.
 //!
 //! The [`CallGraphBuilder`] fetches function summaries, callers, and callee
-//! information through the shared [`ScanSource`](calxgloss_ghidra::ScanSource)
+//! information through the shared [`ScanSource`](calxgloss_decomp::ScanSource)
 //! seam — a live client or the batch's read cache — then assembles them into a
 //! [`CallGraph`] with all functions initially categorized as
 //! `NodeCategory::Middle`.
@@ -15,7 +15,7 @@
 //!    the lookup map.
 //! 3. For callees, call `source.decompile(name)` and parse
 //!    call targets from the decompiled pseudo-C via
-//!    `calxgloss_ghidra::parse::callees_from_decompiled`.
+//!    `calxgloss_decomp::parse::callees_from_decompiled`.
 //! 4. Map callee names back to addresses using the lookup map.
 //! 5. All functions start as `NodeCategory::Middle` — root/leaf classification
 //!    happens in Tasks 4–5.
@@ -27,8 +27,8 @@
 //! failure aborts the build.
 
 use anyhow::Result;
-use calxgloss_ghidra::ScanSource;
-use calxgloss_ghidra::parse;
+use calxgloss_decomp::ScanSource;
+use calxgloss_decomp::parse;
 use tracing::{info, warn};
 
 use crate::{CallGraph, CallGraphEdge, CallType, FunctionCallGraph, NodeCategory};
@@ -37,7 +37,7 @@ use crate::{CallGraph, CallGraphEdge, CallType, FunctionCallGraph, NodeCategory}
 ///
 /// The builder reads through the shared [`ScanSource`] seam, so the same
 /// graph build runs against a loaded [`calxgloss_kuna::KunaSource`] or
-/// through the batch's [`calxgloss_ghidra::CachedScanSource`] without any
+/// through the batch's [`calxgloss_decomp::CachedScanSource`] without any
 /// change of behaviour — a warm cache makes the whole build cost no live
 /// reads.
 ///
@@ -47,7 +47,7 @@ use crate::{CallGraph, CallGraphEdge, CallType, FunctionCallGraph, NodeCategory}
 /// use calxgloss_callgraph::CallGraphBuilder;
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// let source = calxgloss_ghidra::PipelineSource::from(
+/// let source = calxgloss_decomp::PipelineSource::from(
 ///     calxgloss_kuna::KunaSource::load("eqmain.dll".as_ref())?,
 /// );
 /// let builder = CallGraphBuilder::new(source, "eqmain.dll");
@@ -55,15 +55,15 @@ use crate::{CallGraph, CallGraphEdge, CallType, FunctionCallGraph, NodeCategory}
 /// # Ok(())
 /// # }
 /// ```
-pub struct CallGraphBuilder<S = calxgloss_ghidra::PipelineSource> {
+pub struct CallGraphBuilder<S = calxgloss_decomp::PipelineSource> {
     source: S,
     dll_name: String,
 }
 
-impl CallGraphBuilder<calxgloss_ghidra::PipelineSource> {
+impl CallGraphBuilder<calxgloss_decomp::PipelineSource> {
     /// Creates a new builder for the given DLL over the pipeline's scan
     /// source (the Kuna engine, usually behind the read cache).
-    pub fn new(source: calxgloss_ghidra::PipelineSource, dll_name: impl Into<String>) -> Self {
+    pub fn new(source: calxgloss_decomp::PipelineSource, dll_name: impl Into<String>) -> Self {
         Self::with_source(source, dll_name)
     }
 }
@@ -79,7 +79,7 @@ impl<S> CallGraphBuilder<S> {
 }
 
 impl<S: ScanSource + Sync> CallGraphBuilder<S> {
-    /// Builds the complete call graph by querying Ghidra for all functions
+    /// Builds the complete call graph by querying the engine for all functions
     /// and their caller/callee relationships.
     ///
     /// Functions with decompilation failures are still included; the graph
@@ -90,7 +90,7 @@ impl<S: ScanSource + Sync> CallGraphBuilder<S> {
     /// ```text
     /// TODO: For indirect calls, scan disassembly for `call [reg]` and `call [rip + offset]`
     /// TODO: For virtual calls, detect `vtable->method()` patterns in decompiled output
-    /// TODO: Optimize: batch ghidra calls with tokio::join_all to reduce wall time
+    /// TODO: Optimize: batch engine calls with tokio::join_all to reduce wall time
     /// TODO: Add progress reporting (callback or async channel for large DLLs)
     /// TODO: Fallback: if decompile fails, use xrefs_from as callee source
     /// ```
@@ -165,9 +165,9 @@ impl<S: ScanSource + Sync> CallGraphBuilder<S> {
     }
 
     /// Processes a single function: fetches callers via
-    /// [`ScanSource::callers`](calxgloss_ghidra::ScanSource::callers),
+    /// [`ScanSource::callers`](calxgloss_decomp::ScanSource::callers),
     /// fetches callees via decompiled output parsed with
-    /// [`callees_from_decompiled`](calxgloss_ghidra::parse::callees_from_decompiled),
+    /// [`callees_from_decompiled`](calxgloss_decomp::parse::callees_from_decompiled),
     /// and returns a [`FunctionCallGraph`] with `NodeCategory::Middle`.
     ///
     /// Name→address resolution uses the `name_to_addr` lookup map built from
@@ -180,7 +180,7 @@ impl<S: ScanSource + Sync> CallGraphBuilder<S> {
     /// affected.
     async fn process_function(
         &self,
-        summary: &calxgloss_ghidra::FunctionSummary,
+        summary: &calxgloss_decomp::FunctionSummary,
         name_to_addr: &std::collections::HashMap<String, u64>,
     ) -> Result<FunctionCallGraph> {
         let address = summary.address;

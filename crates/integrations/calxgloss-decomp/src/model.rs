@@ -10,7 +10,7 @@ use std::fmt;
 /// A function found by a listing or search.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FunctionSummary {
-    /// The Ghidra function name, e.g. `FUN_18008ed50`.
+    /// The decompiler function name, e.g. `FUN_18008ed50`.
     pub name: String,
     /// Entry point virtual address.
     pub address: u64,
@@ -86,7 +86,7 @@ pub struct StringLiteral {
 /// arguments, so it cannot be used to recover one.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DecompiledFunction {
-    /// The function's Ghidra name.
+    /// The function's decompiler name.
     pub name: String,
     /// The inferred signature line, e.g.
     /// `longlong FUN_18008ed50(longlong param_1,int param_2)`.
@@ -135,7 +135,7 @@ impl DecompiledFunction {
 
 /// A named type in the Type Manager, as the `data_types()` answer renders it.
 ///
-/// The Type Manager holds every type Ghidra knows about — including types
+/// The Type Manager holds every type the engine knows about — including types
 /// never applied to a symbol — which is what makes this listing the source
 /// for named-type recovery.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -145,7 +145,7 @@ pub struct DataTypeEntry {
     pub name: String,
     /// The category the type sits in, e.g. `excpt.h`.
     pub category: String,
-    /// Size in bytes. `None` when Ghidra reports the size as `variable`.
+    /// Size in bytes. `None` when the engine reports the size as `variable`.
     pub size: Option<u64>,
     /// Full path through the Type Manager, e.g. `/excpt.h/_EXCEPTION_DISPOSITION`.
     pub path: String,
@@ -154,7 +154,7 @@ pub struct DataTypeEntry {
 /// A defined data object in the listing, as the `data_items()` answer does.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DataItem {
-    /// The label Ghidra shows, e.g. `IMAGE_DOS_HEADER_180000000`, or a
+    /// The label the engine shows, e.g. `IMAGE_DOS_HEADER_180000000`, or a
     /// generated `DAT_...` name when the object carries no label.
     pub label: String,
     /// Address of the object.
@@ -215,7 +215,7 @@ pub struct StructLayout {
 pub struct EnumMember {
     /// Member name, e.g. `ExceptionContinueExecution`.
     pub name: String,
-    /// Member value; signed because Ghidra enums may hold negative values.
+    /// Member value; signed because the engine's enums may hold negative values.
     pub value: i64,
 }
 

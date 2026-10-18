@@ -1,50 +1,50 @@
-//! Ghidra context helpers: loading analysis artifacts, parsing diff blocks,
-//! computing revision counts, and the `/api/units/:id/ghidra` endpoint.
+//! decompiler context helpers: loading analysis artifacts, parsing diff blocks,
+//! computing revision counts, and the `/api/units/:id/decomp` endpoint.
 
-use super::super::{GhidraApiCall, GhidraContext, GhidraContextResponse, ServerError, ServerState};
+use super::super::{DecompApiCall, DecompContext, DecompContextResponse, ServerError, ServerState};
 use axum::{
     Json,
     extract::{Path, State},
 };
 
-// ─── GET /api/units/:id/ghidra ───────────────────────────────────────
+// ─── GET /api/units/:id/decomp ───────────────────────────────────────
 
-/// Returns Ghidra context (decompiler output, disassembly, API tags) for a unit's function.
-pub async fn api_get_unit_ghidra(
+/// Returns decompiler context (decompiler output, disassembly, API tags) for a unit's function.
+pub async fn api_get_unit_decomp(
     state: State<ServerState>,
     Path(unit_id): Path<String>,
-) -> Result<Json<GhidraContextResponse>, ServerError> {
+) -> Result<Json<DecompContextResponse>, ServerError> {
     let unit = super::queue::find_unit(&state, &unit_id)?;
 
     let func_name = match unit.function {
         Some(ref f) if !f.is_empty() => f.clone(),
-        _ => return Ok(Json(GhidraContextResponse::not_found(&unit_id))),
+        _ => return Ok(Json(DecompContextResponse::not_found(&unit_id))),
     };
 
     let binary = unit.binary.clone();
 
-    // Try to read Ghidra data from analysis artifacts on disk
-    if let Ok(ctx) = load_ghidra_artifacts(state.repo_path(), &binary, &func_name) {
-        return Ok(Json(GhidraContextResponse::ok(ctx)));
+    // Try to read engine data from analysis artifacts on disk
+    if let Ok(ctx) = load_decomp_artifacts(state.repo_path(), &binary, &func_name) {
+        return Ok(Json(DecompContextResponse::ok(ctx)));
     }
 
-    Ok(Json(GhidraContextResponse::not_found(&func_name)))
+    Ok(Json(DecompContextResponse::not_found(&func_name)))
 }
 
-// ─── Ghidra Context Helpers ──────────────────────────────────────────
+// ─── Decompiler Context Helpers ──────────────────────────────────────────
 
-/// Load Ghidra artifacts from the analysis directory on disk.
-pub(crate) fn load_ghidra_artifacts(
+/// Load analysis artifacts from the analysis directory on disk.
+pub(crate) fn load_decomp_artifacts(
     repo_path: &std::path::Path,
     binary: &str,
     function: &str,
-) -> Result<GhidraContext, anyhow::Error> {
+) -> Result<DecompContext, anyhow::Error> {
     let analysis_dir = repo_path.join("re").join("analysis").join(binary);
     let func_file = analysis_dir.join(format!("{function}.json"));
 
     if !func_file.exists() {
         return Err(anyhow::anyhow!(
-            "Ghidra analysis file not found: {}",
+            "Analysis file not found: {}",
             func_file.display()
         ));
     }
@@ -53,18 +53,18 @@ pub(crate) fn load_ghidra_artifacts(
 
     // Try to deserialize as a FunctionInfo from calxgloss-types
     #[derive(serde::Deserialize)]
-    struct GhidraArtifact {
+    struct DecompArtifact {
         #[serde(skip_serializing_if = "Option::is_none")]
         decompiler_output: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        windows_apis: Option<Vec<GhidraApiCall>>,
+        windows_apis: Option<Vec<DecompApiCall>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         function_name: Option<String>,
     }
 
-    let artifact: GhidraArtifact = serde_json::from_str(&content)?;
+    let artifact: DecompArtifact = serde_json::from_str(&content)?;
 
-    Ok(GhidraContext {
+    Ok(DecompContext {
         function_name: artifact
             .function_name
             .unwrap_or_else(|| function.to_string()),

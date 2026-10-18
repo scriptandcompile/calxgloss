@@ -19,7 +19,7 @@
 //! call is a whole finding.
 
 use crate::types::AtomicOperation;
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 use serde::{Deserialize, Serialize};
 
 use calxgloss_types::{
@@ -93,7 +93,7 @@ impl AtomicSignature {
 /// `LONG`, but the GCC builtins are width-polymorphic, and the 64-bit
 /// default for them is a convention a per-scan override through
 /// [`with_names`](Self::with_names) can restate for a program whose
-/// counters are known to be narrower. The detector holds no Ghidra
+/// counters are known to be narrower. The detector holds no engine
 /// client of its own and never writes back to the program; one
 /// detector serves an entire scan and can be shared by reference
 /// across concurrent per-function passes.

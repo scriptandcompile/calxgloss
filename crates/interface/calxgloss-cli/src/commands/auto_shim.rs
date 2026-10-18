@@ -48,7 +48,7 @@ pub async fn handle_auto_shim(
             let source = calxgloss_kuna::KunaSource::load(&target_dir.join(binary))
                 .with_context(|| format!("Failed to load {binary} with Kuna"))?;
             let analyzer = Analyzer::new(
-                calxgloss_ghidra::PipelineSource::from(source),
+                calxgloss_decomp::PipelineSource::from(source),
                 ApiMappings::default(),
             );
             let classification = analyzer.classify_dll(binary).await?;

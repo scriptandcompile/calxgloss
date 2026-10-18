@@ -64,7 +64,7 @@ tempfile = "3"
 calxgloss-testfixtures = { path = "../../integrations/calxgloss-testfixtures" }
 # The engine=kuna e2e scan (issue #212): the seam, the Kuna engine behind
 # it, and the type-database scan whose record the run persists.
-calxgloss-ghidra = { path = "../../integrations/calxgloss-ghidra" }
+calxgloss-decomp = { path = "../../integrations/calxgloss-decomp" }
 calxgloss-kuna = { path = "../../integrations/calxgloss-kuna" }
 calxgloss-typesdb = { path = "../../evidence/calxgloss-typesdb" }
 reqwest = { workspace = true, features = ["json", "stream"] }

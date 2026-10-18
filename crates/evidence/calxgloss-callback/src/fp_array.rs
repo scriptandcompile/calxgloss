@@ -6,7 +6,7 @@
 //! `callback_table` and their kin — and reads each indexed indirect
 //! call as a call through an array of function pointers.
 //!
-//! Ghidra decompiles a call through a function-pointer array element
+//! The decompiler renders a call through a function-pointer array element
 //! into one of three shapes: the bare indexed call `handlers[i](args)`
 //! when the array's element type is known, the dereference
 //! `(*handlers[i])(args)` when it is not, and the cast dereference
@@ -20,7 +20,7 @@
 //! picture, so one call is a whole finding.
 
 use crate::types::FpArrayCall;
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 
 use calxgloss_types::{closing_paren, is_ident_byte, line_at, skip_string, skip_ws};
 

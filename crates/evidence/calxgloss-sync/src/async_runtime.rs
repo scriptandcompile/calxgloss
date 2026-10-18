@@ -13,7 +13,7 @@
 //! scan through the same engine builder the other detectors enjoy.
 
 use crate::types::AsyncRuntime;
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 use calxgloss_types::{
     CallSite, NON_CALL_KEYWORDS, NameContinuation, ScanOptions, call_sites, line_at,
 };
@@ -76,7 +76,7 @@ const ASYNC_CONFIDENCE: u8 = 70;
 /// supply them whole through [`with_names`](Self::with_names) or grow
 /// them one name at a time — and accessors report them in
 /// configuration order, so two detectors built the same way scan
-/// identically and results diff cleanly. The detector holds no Ghidra
+/// identically and results diff cleanly. The detector holds no engine
 /// client of its own and never writes back to the program; one
 /// detector serves an entire scan and can be shared by reference
 /// across concurrent per-function passes.
@@ -212,7 +212,7 @@ pub fn default_async_runtime_names() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calxgloss_ghidra::DecompiledFunction;
+    use calxgloss_decomp::DecompiledFunction;
 
     fn function(body: &str) -> DecompiledFunction {
         DecompiledFunction {

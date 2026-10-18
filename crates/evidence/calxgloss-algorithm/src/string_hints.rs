@@ -28,7 +28,7 @@
 use crate::cfg_patterns::line_at;
 use crate::confidence::{BODY_CONFIDENCE, LISTING_CONFIDENCE};
 use crate::types::{AlgorithmCategory, AlgorithmHint, DetectionMethod};
-use calxgloss_ghidra::{DecompiledFunction, StringLiteral};
+use calxgloss_decomp::{DecompiledFunction, StringLiteral};
 use calxgloss_types::Confidence;
 use serde::{Deserialize, Serialize};
 

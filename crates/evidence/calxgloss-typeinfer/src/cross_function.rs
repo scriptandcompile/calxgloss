@@ -32,7 +32,7 @@ use crate::known_type::{CHAR_STRING, KnownTypePropagationEngine, WIDE_STRING};
 use crate::types::{
     InferenceMethod, InferenceScope, InferredCallType, InferredParamType, InferredType,
 };
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 
 use calxgloss_types::{
     CallSite, NON_CALL_KEYWORDS, NameContinuation, ScanOptions, call_sites, line_at,
@@ -95,7 +95,7 @@ pub type CalleeParams<'a> = HashMap<&'a str, Vec<&'a InferredParamType>>;
 /// [`DecompiledFunction`] the inline detectors already read, keeping the
 /// scan at one decompile per function.
 ///
-/// [`DecompiledFunction`]: calxgloss_ghidra::DecompiledFunction
+/// [`DecompiledFunction`]: calxgloss_decomp::DecompiledFunction
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CrossFunctionPropagator;
 
@@ -209,7 +209,7 @@ impl CrossFunctionPropagator {
     /// call at 85, or any inline reading on a tie — still wins. A position
     /// only gets a record when the callee's signature actually has a
     /// parameter there; a caller passing more arguments than the callee
-    /// declares (a Ghidra prototype gap) types nothing.
+    /// declares (a decompiler prototype gap) types nothing.
     ///
     /// [`KnownTypePropagationEngine::return_type`]: crate::known_type::KnownTypePropagationEngine::return_type
     pub fn propagate_to_callee(
@@ -692,7 +692,7 @@ mod tests {
     #[test]
     fn a_position_the_callee_does_not_declare_types_nothing() {
         // The callee declares one parameter; a caller passing two
-        // arguments (a Ghidra prototype gap) types only the first.
+        // arguments (a decompiler prototype gap) types only the first.
         let records = from_callers(
             "undefined FUN_18004b210(undefined8 param_1)",
             "  FUN_18004b210(param_1, \"name\");",

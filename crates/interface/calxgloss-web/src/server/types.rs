@@ -216,7 +216,7 @@ pub struct CallGraphContext {
 // ─── Unit process telemetry types (issue #62) ────────────────────────
 
 /// Run-process telemetry for a single unit, derived from the token-usage
-/// log, fault log, and Ghidra analysis artifacts already stored under
+/// log, fault log, and analysis artifacts already stored under
 /// `re/analysis/`. Missing or corrupt artifacts degrade to empty sections.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnitProcess {
@@ -242,19 +242,19 @@ pub struct TierSection {
     /// Whether the pipeline escalated through more than one tier.
     pub escalated: bool,
     /// Why this tier was selected (complexity, API call count), if the
-    /// Ghidra analysis artifact is available.
+    /// analysis artifact is available.
     pub rationale: Option<TierRationale>,
     /// Per-attempt tier/strategy history from the token-usage log.
     pub attempts: Vec<TierAttemptRecord>,
 }
 
 /// Why a function's context tier was selected, recomputed from the
-/// Ghidra analysis artifact.
+/// analysis artifact.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TierRationale {
     /// Detected function complexity label (e.g., "standard").
     pub complexity: String,
-    /// Number of Windows API call sites identified by Ghidra.
+    /// Number of Windows API call sites identified by the decompiler.
     pub api_call_count: usize,
 }
 
@@ -1275,7 +1275,7 @@ pub struct ShimBranchInfo {
 
 /// `GET /api/binaries/{name}/pal-status` response: the PAL-trait tracker
 /// the Binaries detail panel renders for one binary. The *needed* traits
-/// are derived on demand from the persisted per-function Ghidra
+/// are derived on demand from the persisted per-function analysis
 /// artifacts — the `windows_apis` categories recorded under
 /// `re/analysis/{binary}/` — mapped category→trait with the same shape
 /// the translator's Tier-4 PAL extraction uses. *Existence* is detected
@@ -1407,11 +1407,11 @@ pub struct AttemptDiffResponse {
     pub diff: String,
 }
 
-// ─── Ghidra context types ──────────────────────────────────────────────
+// ─── decompiler context types ──────────────────────────────────────────────
 
-/// Ghidra disassembly listing line.
+/// Decompiler disassembly listing line.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GhidraDisasmLine {
+pub struct DecompDisasmLine {
     /// Address in hex.
     pub address: String,
     /// Raw instruction bytes as hex.
@@ -1419,14 +1419,14 @@ pub struct GhidraDisasmLine {
     pub bytes: Option<String>,
     /// Disassembled instruction text.
     pub instruction: String,
-    /// Ghidra comment or annotation (if any).
+    /// Decompiler comment or annotation (if any).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
 }
 
-/// Ghidra context for a function — decompiler output, disassembly, and metadata.
+/// decompiler context for a function — decompiler output, disassembly, and metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GhidraContext {
+pub struct DecompContext {
     /// Function name.
     pub function_name: String,
     /// Function address.
@@ -1435,23 +1435,23 @@ pub struct GhidraContext {
     /// DLL this function belongs to.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub binary: Option<String>,
-    /// Ghidra decompiler (pseudo-C) output.
+    /// Decompiler (pseudo-C) output.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decompiler_output: Option<String>,
     /// Disassembly listing.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub disassembly: Option<Vec<GhidraDisasmLine>>,
+    pub disassembly: Option<Vec<DecompDisasmLine>>,
     /// Windows API calls identified in the function.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub windows_apis: Option<Vec<GhidraApiCall>>,
-    /// Note from Ghidra analysis.
+    pub windows_apis: Option<Vec<DecompApiCall>>,
+    /// Note from the analysis.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
 
-/// A Windows API call identified in Ghidra analysis.
+/// A Windows API call identified in the analysis.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GhidraApiCall {
+pub struct DecompApiCall {
     /// API name (e.g., "CreateFileA").
     pub name: String,
     /// API category (e.g., "win32_file", "directx9").
@@ -1476,18 +1476,18 @@ impl DiffResponse {
     }
 }
 
-/// Wrapper for successful Ghidra context responses.
+/// Wrapper for successful decompiler context responses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GhidraContextResponse {
+pub struct DecompContextResponse {
     pub success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub context: Option<GhidraContext>,
+    pub context: Option<DecompContext>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
-impl GhidraContextResponse {
-    pub fn ok(ctx: GhidraContext) -> Self {
+impl DecompContextResponse {
+    pub fn ok(ctx: DecompContext) -> Self {
         Self {
             success: true,
             context: Some(ctx),
@@ -1499,7 +1499,9 @@ impl GhidraContextResponse {
         Self {
             success: true,
             context: None,
-            error: Some(format!("Ghidra context not available for function: {func}")),
+            error: Some(format!(
+                "decompiler context not available for function: {func}"
+            )),
         }
     }
 }

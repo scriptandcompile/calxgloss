@@ -83,7 +83,7 @@ pub async fn run_translation_for_dll(
     let kuna = load_kuna_at(settings, binary_path)?;
 
     // List functions from the engine
-    use calxgloss_ghidra::ScanSource;
+    use calxgloss_decomp::ScanSource;
     let summaries = ScanSource::functions(&kuna)
         .await
         .with_context(|| "Failed to list functions from the engine")?;

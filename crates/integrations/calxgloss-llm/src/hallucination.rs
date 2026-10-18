@@ -2,9 +2,9 @@
 //!
 //! This module provides [`HallucinationDetector`] which scans the LLM's
 //! generated Rust source code for function and API calls that are not present
-//! in Ghidra's symbol table or the known Windows API catalogue.  When a
+//! in the engine's symbol table or the known Windows API catalogue.  When a
 //! hallucination is detected the caller is notified so it can branch from the
-//! last known good commit and prompt the LLM with Ghidra's actual symbols as
+//! last known good commit and prompt the LLM with the engine's actual symbols as
 //! ground truth.
 //!
 //! # How it works
@@ -12,9 +12,9 @@
 //! The detector maintains a set of *known-good* symbols, built from three
 //! sources:
 //!
-//! 1. **Ghidra function names** — every function Ghidra has catalogued in the
+//! 1. **engine function names** — every function the engine has catalogued in the
 //!    open program.
-//! 2. **Ghidra imports** — every symbol the program imports from external DLLs.
+//! 2. **engine imports** — every symbol the program imports from external DLLs.
 //! 3. **Windows API catalogue** — the full PAL mapping table (every Windows API
 //!    the harness knows about).
 //!
@@ -74,7 +74,7 @@ pub struct HallucinatedCall {
 /// A detector that identifies non-existent API references and hallucinated
 /// function calls in LLM-generated Rust code.
 ///
-/// The detector is created with a list of known-good symbols (Ghidra function
+/// The detector is created with a list of known-good symbols (engine function
 /// names, imports, and Windows APIs).  When [`Self::detect`] is called with
 /// the LLM's generated code, it returns a list of hallucinated calls.
 ///
@@ -83,7 +83,7 @@ pub struct HallucinatedCall {
 /// ```
 /// use calxgloss_llm::hallucination::HallucinationDetector;
 ///
-/// // Typically built from Ghidra's symbol tables.
+/// // Typically built from the engine's symbol tables.
 /// let detector = HallucinationDetector::new(
 ///     vec!["DrawSprite".to_string(), "FUN_18008ed50".to_string()],
 ///     vec!["CreateFileA".to_string(), "WriteFile".to_string()],
@@ -91,10 +91,10 @@ pub struct HallucinatedCall {
 /// ```
 #[derive(Debug, Clone)]
 pub struct HallucinationDetector {
-    /// Function names from Ghidra (exports, user-defined functions).
+    /// Function names from the engine (exports, user-defined functions).
     functions: HashSet<String>,
 
-    /// Import names from Ghidra (DLL imports).
+    /// Import names from the engine (DLL imports).
     /// Stored separately for potential close-match filtering by category.
     #[allow(dead_code)]
     imports: HashSet<String>,
@@ -112,9 +112,9 @@ impl HallucinationDetector {
     ///
     /// # Arguments
     ///
-    /// * `functions` — Ghidra function names (exports, user-defined functions
+    /// * `functions` — engine function names (exports, user-defined functions
     ///   like `DrawSprite` or `FUN_18008ed50`).
-    /// * `imports` — Import names from Ghidra (DLL imports like
+    /// * `imports` — Import names from the engine (DLL imports like
     ///   `CreateFileA`, `WriteFile`).
     ///
     /// The detector builds a combined set of valid symbols and also uses the
@@ -132,7 +132,7 @@ impl HallucinationDetector {
     /// Create a new detector that accepts *only* the given symbols.
     ///
     /// Use this when you have a pre-built set of valid symbols (e.g., from a
-    /// catalogued Windows API list) rather than Ghidra symbol tables.
+    /// catalogued Windows API list) rather than engine symbol tables.
     pub fn from_symbols(symbols: Vec<String>) -> Self {
         let all_valid: HashSet<String> = symbols.clone().into_iter().collect();
         Self {

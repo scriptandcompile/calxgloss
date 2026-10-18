@@ -4,7 +4,7 @@
 //! a deliberate operator run turns selected ones into program facts through
 //! the [`TypeWriteSource`] seam (ADR-0020). [`WriteBack`] drives the pass in
 //! the order the program needs: create the named types the records reference
-//! first, so no write names a type Ghidra cannot resolve; then function
+//! first, so no write names a type the engine cannot resolve; then function
 //! prototypes, merging the inferred parameter and return readings into each
 //! function's *existing* prototype text; then local-variable types.
 //!
@@ -12,7 +12,7 @@
 //!
 //! - A confidence floor gates which records apply at all; everything below
 //!   it is skipped with the reason recorded.
-//! - A slot Ghidra already types concretely is never overwritten — only the
+//! - A slot the engine already types concretely is never overwritten — only the
 //!   `undefined` family (`undefined`, `undefined1`..`undefined8`, and their
 //!   pointer spellings) is narrowed.
 //! - A missing named type becomes a one-byte typedef placeholder
@@ -25,25 +25,25 @@
 //!   the run ends with an applied / skipped / failed report.
 //!
 //! The record's own type text is normalized only at this seam: the persisted
-//! `u32`/`u64` spellings the detectors emit are not what Ghidra's C parser
+//! `u32`/`u64` spellings the detectors emit are not what the engine's C parser
 //! resolves, so the write carries the built-in spellings instead.
 
 use std::collections::{HashMap, HashSet};
 
-use calxgloss_ghidra::{ScanSource, TypeWriteSource};
+use calxgloss_decomp::{ScanSource, TypeWriteSource};
 use tracing::{info, warn};
 
 use crate::error::Result;
 use crate::types::{Confidence, InferredType, TypeInferenceResult};
 
-/// The base type a placeholder typedef aliases — Ghidra's smallest concrete
+/// The base type a placeholder typedef aliases — the engine's smallest concrete
 /// type, so the placeholder is 1 byte and the bridge's `replace_placeholder`
 /// flow can swap in a real layout later.
 const PLACEHOLDER_BASE: &str = "undefined";
 
-/// Type names Ghidra's own resolver already answers for — a record naming
+/// Type names the engine's own resolver already answers for — a record naming
 /// one of these needs no type created for it.
-const GHIDRA_BASE_TYPES: &[&str] = &[
+const ENGINE_BASE_TYPES: &[&str] = &[
     "void",
     "char",
     "uchar",
@@ -89,7 +89,7 @@ const GHIDRA_BASE_TYPES: &[&str] = &[
 pub enum SkipReason {
     /// The record's confidence is under the floor the run was given.
     BelowFloor { confidence: u8, floor: u8 },
-    /// Ghidra already types the slot concretely — only undefined slots are
+    /// the engine already types the slot concretely — only undefined slots are
     /// narrowed, so a hand-typed slot survives the pass.
     ConcreteSlot,
     /// The record's function is not in the loaded program's listing.
@@ -108,7 +108,7 @@ impl std::fmt::Display for SkipReason {
             Self::BelowFloor { confidence, floor } => {
                 write!(f, "confidence {confidence} below floor {floor}")
             }
-            Self::ConcreteSlot => write!(f, "Ghidra already types it concretely"),
+            Self::ConcreteSlot => write!(f, "The engine already types it concretely"),
             Self::FunctionNotFound => write!(f, "function not in the program"),
             Self::SlotNotFound => write!(f, "slot not in the current body"),
             Self::CallSiteArgument => write!(f, "call-site reading, not a program slot"),
@@ -273,7 +273,7 @@ impl<'a, S: ScanSource, W: TypeWriteSource> WriteBack<'a, S, W> {
 
         // Bodies fetched for the prototype pass are reused by the locals
         // pass — one decompile per function per run.
-        let mut bodies: HashMap<String, calxgloss_ghidra::DecompiledFunction> = HashMap::new();
+        let mut bodies: HashMap<String, calxgloss_decomp::DecompiledFunction> = HashMap::new();
 
         // Phase 2 — function prototypes: merge the inferred parameter and
         // return readings into each function's existing prototype text.
@@ -329,7 +329,7 @@ impl<'a, S: ScanSource, W: TypeWriteSource> WriteBack<'a, S, W> {
                         }
                         Some(parameter) => {
                             parameter.type_text =
-                                ghidra_type_text(&record.inferred_type).to_string();
+                                engine_type_text(&record.inferred_type).to_string();
                             merged.push(param_target(record));
                         }
                     },
@@ -341,7 +341,7 @@ impl<'a, S: ScanSource, W: TypeWriteSource> WriteBack<'a, S, W> {
                                 reason: SkipReason::ConcreteSlot,
                             });
                         } else {
-                            return_type = ghidra_type_text(&record.inferred_type).to_string();
+                            return_type = engine_type_text(&record.inferred_type).to_string();
                             merged.push(target);
                         }
                     }
@@ -409,7 +409,7 @@ impl<'a, S: ScanSource, W: TypeWriteSource> WriteBack<'a, S, W> {
                         });
                     }
                     Some(_) => {
-                        let new_type = ghidra_type_text(&record.inferred_type);
+                        let new_type = engine_type_text(&record.inferred_type);
                         match self
                             .writer
                             .set_local_variable_type(*address, &record.variable_name, new_type)
@@ -444,8 +444,8 @@ impl<'a, S: ScanSource, W: TypeWriteSource> WriteBack<'a, S, W> {
     async fn body(
         &self,
         function: &str,
-        bodies: &mut HashMap<String, calxgloss_ghidra::DecompiledFunction>,
-    ) -> Result<calxgloss_ghidra::DecompiledFunction> {
+        bodies: &mut HashMap<String, calxgloss_decomp::DecompiledFunction>,
+    ) -> Result<calxgloss_decomp::DecompiledFunction> {
         if let Some(body) = bodies.get(function) {
             return Ok(body.clone());
         }
@@ -459,15 +459,15 @@ impl<'a, S: ScanSource, W: TypeWriteSource> WriteBack<'a, S, W> {
 // Type-text rules
 // ============================================================
 
-/// The named type a record's type text references and Ghidra may not hold
+/// The named type a record's type text references and the engine may not hold
 /// yet — the base of a pointer or a by-value named type, when it is a plain
-/// identifier and not one of Ghidra's own base types. Qualified spellings
+/// identifier and not one of the engine's own base types. Qualified spellings
 /// (`Namespace::Type`) name no creatable single type through this seam, and
 /// multi-word C spellings (`unsigned int`) resolve on their own.
 fn named_type_needed(type_text: &str) -> Option<&str> {
     // Normalize the Rust-flavored widths first: `u32` is the detector's
-    // spelling of Ghidra's own `uint`, not a name to create.
-    let base = ghidra_type_text(type_text)
+    // spelling of the engine's own `uint`, not a name to create.
+    let base = engine_type_text(type_text)
         .trim()
         .trim_end_matches('*')
         .trim();
@@ -476,18 +476,18 @@ fn named_type_needed(type_text: &str) -> Option<&str> {
         && base
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
-    if is_identifier && !GHIDRA_BASE_TYPES.contains(&base.to_ascii_lowercase().as_str()) {
+    if is_identifier && !ENGINE_BASE_TYPES.contains(&base.to_ascii_lowercase().as_str()) {
         Some(base)
     } else {
         None
     }
 }
 
-/// The Ghidra-resolvable spelling of a record's type text. The detectors
-/// persist Rust-flavored widths (`u32`, `u64`) for the prompts; Ghidra's C
+/// The engine-resolvable spelling of a record's type text. The detectors
+/// persist Rust-flavored widths (`u32`, `u64`) for the prompts; the engine's C
 /// parser resolves the built-in spellings instead. Everything else rides
 /// verbatim.
-fn ghidra_type_text(type_text: &str) -> &str {
+fn engine_type_text(type_text: &str) -> &str {
     match type_text {
         "u8" => "uchar",
         "u16" => "ushort",
@@ -721,7 +721,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
 
-    use calxgloss_ghidra::{
+    use calxgloss_decomp::{
         DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, NewStructField,
         StringLiteral, StructLayout, Symbol, Xref,
     };
@@ -772,17 +772,17 @@ mod tests {
     impl ScanSource for FakeProgram {
         async fn functions(
             &self,
-        ) -> calxgloss_ghidra::Result<Vec<calxgloss_ghidra::FunctionSummary>> {
+        ) -> calxgloss_decomp::Result<Vec<calxgloss_decomp::FunctionSummary>> {
             Ok(self
                 .listing
                 .iter()
-                .map(|(name, address)| calxgloss_ghidra::FunctionSummary {
+                .map(|(name, address)| calxgloss_decomp::FunctionSummary {
                     name: name.clone(),
                     address: *address,
                 })
                 .collect())
         }
-        async fn decompile(&self, name: &str) -> calxgloss_ghidra::Result<DecompiledFunction> {
+        async fn decompile(&self, name: &str) -> calxgloss_decomp::Result<DecompiledFunction> {
             self.bodies.get(name).cloned().ok_or(EngineError::NotFound {
                 kind: "function",
                 query: name.to_string(),
@@ -791,7 +791,7 @@ mod tests {
         async fn data_types(
             &self,
             _category: Option<&str>,
-        ) -> calxgloss_ghidra::Result<Vec<DataTypeEntry>> {
+        ) -> calxgloss_decomp::Result<Vec<DataTypeEntry>> {
             Ok(self
                 .type_names
                 .iter()
@@ -803,44 +803,44 @@ mod tests {
                 })
                 .collect())
         }
-        async fn strings(&self) -> calxgloss_ghidra::Result<Vec<StringLiteral>> {
+        async fn strings(&self) -> calxgloss_decomp::Result<Vec<StringLiteral>> {
             Ok(Vec::new())
         }
-        async fn callers(&self, _address: u64) -> calxgloss_ghidra::Result<Vec<String>> {
+        async fn callers(&self, _address: u64) -> calxgloss_decomp::Result<Vec<String>> {
             Ok(Vec::new())
         }
-        async fn xrefs_to(&self, _address: u64) -> calxgloss_ghidra::Result<Vec<Xref>> {
+        async fn xrefs_to(&self, _address: u64) -> calxgloss_decomp::Result<Vec<Xref>> {
             Ok(Vec::new())
         }
-        async fn struct_layout(&self, _name: &str) -> calxgloss_ghidra::Result<StructLayout> {
+        async fn struct_layout(&self, _name: &str) -> calxgloss_decomp::Result<StructLayout> {
             Err(EngineError::NotFound {
                 kind: "structure",
                 query: String::new(),
             })
         }
-        async fn enum_values(&self, _name: &str) -> calxgloss_ghidra::Result<EnumDefinition> {
+        async fn enum_values(&self, _name: &str) -> calxgloss_decomp::Result<EnumDefinition> {
             Err(EngineError::NotFound {
                 kind: "enum",
                 query: String::new(),
             })
         }
-        async fn data_items(&self) -> calxgloss_ghidra::Result<Vec<DataItem>> {
+        async fn data_items(&self) -> calxgloss_decomp::Result<Vec<DataItem>> {
             Ok(Vec::new())
         }
-        async fn imports(&self) -> calxgloss_ghidra::Result<Vec<Symbol>> {
+        async fn imports(&self) -> calxgloss_decomp::Result<Vec<Symbol>> {
             Ok(Vec::new())
         }
-        async fn exports(&self) -> calxgloss_ghidra::Result<Vec<Symbol>> {
+        async fn exports(&self) -> calxgloss_decomp::Result<Vec<Symbol>> {
             Ok(Vec::new())
         }
-        async fn image_base(&self) -> calxgloss_ghidra::Result<u64> {
+        async fn image_base(&self) -> calxgloss_decomp::Result<u64> {
             Ok(0x180000000)
         }
         async fn read_memory(
             &self,
             _address: u64,
             _length: usize,
-        ) -> calxgloss_ghidra::Result<Vec<u8>> {
+        ) -> calxgloss_decomp::Result<Vec<u8>> {
             Ok(Vec::new())
         }
     }
@@ -857,7 +857,7 @@ mod tests {
     }
 
     impl RecordingWriter {
-        fn record(&self, line: &str) -> calxgloss_ghidra::Result<()> {
+        fn record(&self, line: &str) -> calxgloss_decomp::Result<()> {
             self.calls.lock().expect("lock").push(line.to_string());
             if self.fail_containing.iter().any(|bad| line.contains(bad)) {
                 return Err(EngineError::Reported {
@@ -877,7 +877,7 @@ mod tests {
             &self,
             function_address: u64,
             prototype: &str,
-        ) -> calxgloss_ghidra::Result<()> {
+        ) -> calxgloss_decomp::Result<()> {
             self.record(&format!(
                 "set_function_prototype {function_address:#x} {prototype}"
             ))
@@ -887,7 +887,7 @@ mod tests {
             function_address: u64,
             variable: &str,
             type_name: &str,
-        ) -> calxgloss_ghidra::Result<()> {
+        ) -> calxgloss_decomp::Result<()> {
             self.record(&format!(
                 "set_local_variable_type {function_address:#x} {variable} {type_name}"
             ))
@@ -896,7 +896,7 @@ mod tests {
             &self,
             name: &str,
             _fields: &[NewStructField<'_>],
-        ) -> calxgloss_ghidra::Result<()> {
+        ) -> calxgloss_decomp::Result<()> {
             self.record(&format!("create_struct {name}"))
         }
         async fn create_enum(
@@ -904,14 +904,14 @@ mod tests {
             name: &str,
             _values: &[(&str, i64)],
             _size: u32,
-        ) -> calxgloss_ghidra::Result<()> {
+        ) -> calxgloss_decomp::Result<()> {
             self.record(&format!("create_enum {name}"))
         }
         async fn create_typedef(
             &self,
             name: &str,
             base_type: &str,
-        ) -> calxgloss_ghidra::Result<()> {
+        ) -> calxgloss_decomp::Result<()> {
             self.record(&format!("create_typedef {name} {base_type}"))
         }
         async fn add_struct_field(
@@ -920,7 +920,7 @@ mod tests {
             field_name: &str,
             field_type: &str,
             _offset: Option<u32>,
-        ) -> calxgloss_ghidra::Result<()> {
+        ) -> calxgloss_decomp::Result<()> {
             self.record(&format!(
                 "add_struct_field {struct_name} {field_name} {field_type}"
             ))

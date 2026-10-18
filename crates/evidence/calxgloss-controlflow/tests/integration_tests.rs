@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use calxgloss_controlflow::engine::{ControlFlowEngine, ScanSource};
 use calxgloss_controlflow::persist::ControlFlowPersistor;
 use calxgloss_controlflow::types::ControlFlowFinding;
-use calxgloss_ghidra::{
+use calxgloss_decomp::{
     DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
     Result, StringLiteral, StructLayout, Symbol, Xref,
 };

@@ -10,7 +10,7 @@
 //!
 //! The format and protocol-message compositions ride at the end of
 //! each function's findings: they read the records the pass already
-//! made, so they cost no extra body pass and no extra Ghidra round
+//! made, so they cost no extra body pass and no extra decompiler round
 //! trips. The endianness profile is the one binary-level finding: the
 //! profiler aggregates the whole scan's byte-swap findings by width
 //! after the loop, so the map appends after every per-function finding.
@@ -42,13 +42,13 @@ use tracing::{info, warn};
 
 /// The decompiler a serialization scan reads.
 ///
-/// The shared trait from the Ghidra integration crate, re-exported here
+/// The shared trait from the decompiler seam crate, re-exported here
 /// so the engine's generic shape names it where it always has;
 /// [`KunaSource`] implements it over the in-process engine, and tests
 /// implement it over canned bodies so the orchestration runs without a
 /// server. The futures are `Send` so a scan can be driven from an
 /// orchestrating task.
-pub use calxgloss_ghidra::ScanSource;
+pub use calxgloss_decomp::ScanSource;
 
 /// Orchestrates the serialization detectors into one [`SerializeResult`].
 ///
@@ -135,7 +135,7 @@ impl<S> SerializeEngine<S> {
     /// map appends after every per-function finding — so two
     /// scans of the same program diff cleanly.
     ///
-    /// A function whose body Ghidra cannot produce (a thunk, a bad
+    /// A function whose body the decompiler cannot produce (a thunk, a bad
     /// entry point) is skipped with a warning; only a failure of the
     /// listing itself — the server being down — aborts the run, since
     /// then nothing was scanned.
@@ -267,7 +267,7 @@ impl<S> SerializeEngine<S> {
 mod tests {
     use super::*;
     use crate::byteswap::ByteSwapSignature;
-    use calxgloss_ghidra::{
+    use calxgloss_decomp::{
         DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
         Result, StringLiteral, StructLayout, Symbol, Xref,
     };
@@ -1049,7 +1049,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_function_that_will_not_decompile_is_skipped() {
-        // Ghidra cannot produce a body for every function; one bad
+        // The decompiler cannot produce a body for every function; one bad
         // entry point must not cost the whole program its scan.
         let mut program = program();
         program.fail_decompiles = vec!["FUN_18003ab00".into()];

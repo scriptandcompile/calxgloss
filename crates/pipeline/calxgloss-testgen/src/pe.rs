@@ -5,7 +5,7 @@
 //! calling them requires three conversions:
 //!
 //! ```text
-//!   Ghidra VA  --(subtract image_base)-->  RVA  --(add runtime base)-->  callable address
+//!   Decompiler VA  --(subtract image_base)-->  RVA  --(add runtime base)-->  callable address
 //! ```
 //!
 //! [`PeImage`] supplies the first conversion, plus enough of the import/export
@@ -243,7 +243,7 @@ impl PeImage {
 
     /// The preferred load address declared in the optional header.
     ///
-    /// This is the base Ghidra reports addresses against, which may differ from
+    /// This is the base the decompiler reports addresses against, which may differ from
     /// the address the module is actually loaded at once relocations apply.
     pub fn image_base(&self) -> u64 {
         self.image_base
@@ -288,14 +288,14 @@ impl PeImage {
         out
     }
 
-    /// Convert a Ghidra virtual address to an RVA.
+    /// Convert a decompiler virtual address to an RVA.
     ///
-    /// Ghidra reports addresses at the image's preferred base, so the RVA is the
+    /// the decompiler reports addresses at the image's preferred base, so the RVA is the
     /// offset from [`image_base`](Self::image_base).
     pub fn rva_from_va(&self, va: u64) -> Result<u32> {
         if va < self.image_base {
             bail!(
-                "VA 0x{va:x} is below the image base 0x{:x} — is this a Ghidra address for this DLL?",
+                "VA 0x{va:x} is below the image base 0x{:x} — is this a decompiler address for this DLL?",
                 self.image_base
             );
         }
@@ -310,7 +310,7 @@ impl PeImage {
         Ok(rva as u32)
     }
 
-    /// Convert an RVA back to the Ghidra virtual address.
+    /// Convert an RVA back to the decompiler virtual address.
     pub fn va_from_rva(&self, rva: u32) -> u64 {
         self.image_base + rva as u64
     }
@@ -418,7 +418,7 @@ mod tests {
     #[test]
     fn test_resolve_symbol_rejects_internal_function() {
         let Some(img) = synthetic() else { return };
-        // Ghidra's name for an internal function is never an export.
+        // The decompiler's name for an internal function is never an export.
         assert!(img.resolve_symbol("FUN_18008ed50").is_err());
     }
 
@@ -450,7 +450,7 @@ mod tests {
     }
 
     /// Cross-checks the parser against a real DLL, confirming it agrees with what
-    /// `objdump -p` and Ghidra report. Ignored by default because it needs a real
+    /// `objdump -p` and the decompiler report. Ignored by default because it needs a real
     /// file; eqmain.dll expectations are asserted below.
     ///
     /// ```text
@@ -496,7 +496,7 @@ mod tests {
         assert_eq!(img.image_base(), 0x1_8000_0000);
         assert!(img.is_dll());
 
-        // Ghidra addresses of the functions exercised during baseline probing.
+        // decompiler addresses of the functions exercised during baseline probing.
         assert_eq!(img.rva_from_va(0x1_8008_ed50).unwrap(), 0x8ed50);
         assert_eq!(img.rva_from_va(0x1_8004_70a0).unwrap(), 0x470a0);
         assert_eq!(img.rva_from_va(0x1_8008_1be0).unwrap(), 0x81be0);

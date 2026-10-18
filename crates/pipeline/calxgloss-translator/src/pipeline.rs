@@ -48,7 +48,7 @@ use calxgloss_consts::engine::ConstEngine;
 use calxgloss_consts::persist::ConstPersistor;
 use calxgloss_controlflow::engine::ControlFlowEngine;
 use calxgloss_controlflow::persist::ControlFlowPersistor;
-use calxgloss_ghidra::{CachedScanSource, PipelineSource, ScanSource};
+use calxgloss_decomp::{CachedScanSource, PipelineSource, ScanSource};
 use calxgloss_kuna::KunaSource;
 use calxgloss_llm::{
     LlmClient, LlmMessage, context::ContextWindowDetector, hallucination::HallucinationDetector,
@@ -154,8 +154,8 @@ pub struct TranslationPipeline {
     context_detector: ContextWindowDetector,
 
     /// Hallucination detector for validating LLM-generated code.
-    /// Created from Ghidra symbols and PAL API catalogue; `None` when
-    /// no Ghidra session is available.
+    /// Created from engine symbols and PAL API catalogue; `None` when
+    /// no engine source is available.
     hallucination_detector: Option<HallucinationDetector>,
 
     /// Persistent fault event logger.  When present, every detected fault
@@ -184,7 +184,7 @@ pub struct TranslationPipeline {
     ///
     /// When set, [`translate`](Self::translate) reuses this graph for
     /// all enrichment and neighbor extraction instead of rebuilding it
-    /// from Ghidra for every function.
+    /// from the engine for every function.
     call_graph: Option<calxgloss_callgraph::CallGraph>,
 
     /// Explicit cache directory for call graph JSON files.
@@ -629,7 +629,7 @@ impl TranslationPipeline {
     /// Attach a pre-built call graph for reuse across multiple translations.
     ///
     /// When set, [`translate`](Self::translate) reuses this graph instead of
-    /// building one from Ghidra for every function call. This avoids
+    /// building one from the engine for every function call. This avoids
     /// redundant analysis and guarantees that all prompt enrichment data
     /// comes from the same graph snapshot.
     ///
@@ -845,7 +845,7 @@ impl TranslationPipeline {
         // Enrich the prompt data with call graph context when available.
         //
         // If a pre-built graph was attached via `with_call_graph`, reuse it.
-        // Otherwise, build and enrich from Ghidra.
+        // Otherwise, build and enrich from the engine.
         let enriched_context: Vec<FunctionContext> = if self.no_callgraph.load(Ordering::Relaxed) {
             Vec::new()
         } else if let Some(ref graph) = self.call_graph {
@@ -1331,7 +1331,7 @@ impl TranslationPipeline {
     /// unrecovered jump table means the body's dispatch is missing, and the
     /// generated Rust will be hollow exactly there. Logging the address
     /// turns "the Rust is just a `return`" into a pointer at the jump to
-    /// recover in Ghidra (or reconstruct from the disassembly's table).
+    /// recover in the decompiler (or reconstruct from the disassembly's table).
     /// Kuna's inline slug comment names no address, so the jump is logged
     /// as an unknown site.
     fn triage_decompiler_warnings(&self, binary: &str, function: &str, decompiler_output: &str) {
@@ -1370,7 +1370,7 @@ impl TranslationPipeline {
             .ok_or_else(|| TranslatorError::ScanFetch {
                 binary: binary.to_string(),
                 function: function.to_string(),
-                source: Box::new(calxgloss_ghidra::EngineError::NotFound {
+                source: Box::new(calxgloss_decomp::EngineError::NotFound {
                     kind: "function",
                     query: function.to_string(),
                 }),
@@ -1391,7 +1391,7 @@ impl TranslationPipeline {
                 .map_err(context)?;
             callers
                 .into_iter()
-                .chain(calxgloss_ghidra::parse::callees_from_decompiled(
+                .chain(calxgloss_decomp::parse::callees_from_decompiled(
                     &decompiled.body,
                 ))
                 .collect()
@@ -1413,7 +1413,7 @@ impl TranslationPipeline {
 
     /// Fetch the names of the target binary's imports.
     ///
-    /// Returned as names rather than [`calxgloss_ghidra::Import`] values: the
+    /// Returned as names rather than [`calxgloss_decomp::Import`] values: the
     /// engine reports an import as a name and an external slot with no module
     /// attached, so there is no module name to put in an `Import`.
     async fn fetch_imports(&self, binary: &str) -> Result<Vec<String>> {
@@ -1450,7 +1450,7 @@ impl TranslationPipeline {
         function_info: &FunctionInfo,
         _imports: &[String],
     ) -> Result<Vec<TestCase>> {
-        // The signature Ghidra's decompiler inferred, used to derive the
+        // The signature the decompiler inferred, used to derive the
         // parameters the test cases feed in.
         let signature = self.signature_for(function_info);
 
@@ -1461,7 +1461,7 @@ impl TranslationPipeline {
         Ok(tests)
     }
 
-    /// The function's C signature, as Ghidra inferred it.
+    /// The function's C signature, as the decompiler inferred it.
     ///
     /// The reviewer's override record for a unit, if any (issue #96, W2.7).
     fn unit_override(
@@ -1525,7 +1525,7 @@ impl TranslationPipeline {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn signature_for(&self, function_info: &FunctionInfo) -> String {
         if let Some(parsed) =
-            calxgloss_ghidra::parse::parse_decompiled(&function_info.decompiler_output)
+            calxgloss_decomp::parse::parse_decompiled(&function_info.decompiler_output)
         {
             return parsed.signature;
         }
@@ -1567,7 +1567,7 @@ impl TranslationPipeline {
     /// # Arguments
     ///
     /// * `name` — The function name (e.g., `mainCRTStartup`, `WinMain`).
-    /// * `signature` — The inferred C signature from Ghidra's decompiler.
+    /// * `signature` — The inferred C signature from the decompiler.
     ///
     /// # Returns
     ///
@@ -3135,7 +3135,7 @@ impl TranslationPipeline {
     ///
     /// // Build or load the enriched call graph first (reads through the seam)
     /// let call_graph = build_enriched_call_graph(
-    ///     &calxgloss_ghidra::PipelineSource::from(kuna.clone()),
+    ///     &calxgloss_decomp::PipelineSource::from(kuna.clone()),
     ///     "game_logic.dll",
     ///     Path::new("/tmp/calxgloss-work"),
     ///     None,
@@ -3412,7 +3412,7 @@ pub async fn build_hallucination_detector(
     api_mappings: &ApiMappings,
 ) -> HallucinationDetector {
     // Engine functions
-    let ghidra_functions: Vec<String> = ScanSource::functions(source)
+    let engine_functions: Vec<String> = ScanSource::functions(source)
         .await
         .ok()
         .into_iter()
@@ -3421,7 +3421,7 @@ pub async fn build_hallucination_detector(
         .collect();
 
     // Engine imports
-    let ghidra_imports: Vec<String> = ScanSource::imports(source)
+    let engine_imports: Vec<String> = ScanSource::imports(source)
         .await
         .ok()
         .into_iter()
@@ -3435,7 +3435,7 @@ pub async fn build_hallucination_detector(
         .map(|m| m.windows_api.to_string())
         .collect();
 
-    HallucinationDetector::new(ghidra_functions, ghidra_imports)
+    HallucinationDetector::new(engine_functions, engine_imports)
 }
 
 /// Compose the callback scan's signature map from the type-inference
@@ -4199,7 +4199,7 @@ mod tests {
         // unit reaches the hanging LLM and stays in flight; the second
         // unit fails fast at the fetch.
         let kuna = fixture_kuna();
-        let listed = calxgloss_ghidra::ScanSource::functions(&kuna)
+        let listed = calxgloss_decomp::ScanSource::functions(&kuna)
             .await
             .expect("fixture function listing");
         let tick = listed
@@ -4915,9 +4915,9 @@ mod tests {
     }
 
     /// The one scan-cache document directory the batch built under
-    /// `re/ghidra-cache/{identity}/{sha256}/`.
+    /// `re/decomp-cache/{identity}/{sha256}/`.
     fn scan_cache_dir(workspace: &std::path::Path) -> std::path::PathBuf {
-        let root = workspace.join("re").join("ghidra-cache");
+        let root = workspace.join("re").join("decomp-cache");
         let mut found = Vec::new();
         for identity in std::fs::read_dir(&root).expect("cache root").flatten() {
             for hash in std::fs::read_dir(identity.path())
@@ -4941,8 +4941,8 @@ mod tests {
     /// An import listing the engine could never answer, filed where the
     /// real one was: if a batch's API findings carry it, that read came
     /// off disk — the only possible replay source.
-    fn sentinel_imports() -> Vec<calxgloss_ghidra::Symbol> {
-        vec![calxgloss_ghidra::Symbol {
+    fn sentinel_imports() -> Vec<calxgloss_decomp::Symbol> {
+        vec![calxgloss_decomp::Symbol {
             name: "sentinel_import_xyz".into(),
             address: 1,
             imported: true,
@@ -5082,7 +5082,7 @@ mod tests {
 
         // And the refresh rewrote the cache rather than just bypassing it:
         // the import document on disk now carries the engine's listing.
-        let on_disk: Vec<calxgloss_ghidra::Symbol> =
+        let on_disk: Vec<calxgloss_decomp::Symbol> =
             calxgloss_types::load_json(&cache.join("imports.json")).expect("rewritten document");
         assert!(
             on_disk.iter().any(|i| i.name.contains("puts"))

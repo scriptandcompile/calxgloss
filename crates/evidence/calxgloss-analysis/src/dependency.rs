@@ -7,7 +7,7 @@
 //!    [`CrateReplacement`](calxgloss_analysis::Strategy::CrateReplacement). Each
 //!    shim layer becomes a node that depends on its DLL classification.
 //!
-//! 2. **Ghidra call graphs** — for every function whose call graph includes
+//! 2. **Engine call graphs** — for every function whose call graph includes
 //!    other functions, a dependency edge is added from the function to those
 //!    callers and callees. When a function depends on a crate-replacement shim,
 //!    it gets an edge to that shim as well.
@@ -299,7 +299,7 @@ impl ShimLayerDeclaration {
 // Dependency tracker
 // ============================================================
 
-/// Builds a [`DependencyGraph`] from DLL classifications and Ghidra call graph data.
+/// Builds a [`DependencyGraph`] from DLL classifications and engine call graph data.
 ///
 /// The tracker produces a DAG where nodes represent pieces of work (DLL classifications,
 /// shim layers, function translations) and edges represent dependency relationships.

@@ -28,7 +28,7 @@
 
 use std::collections::HashMap;
 
-use calxgloss_ghidra::{
+use calxgloss_decomp::{
     DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
     Result, StringLiteral, StructLayout, Symbol, Xref,
 };

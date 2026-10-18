@@ -63,7 +63,7 @@ impl FunctionRef {
     /// case-insensitively — Windows binary names are case-insensitive, and
     /// the operator may spell the same DLL differently across panel and
     /// record — while the function name matches exactly: PE export names
-    /// and Ghidra symbols are case-sensitive, so `DrawPrimitive` and
+    /// and engine symbols are case-sensitive, so `DrawPrimitive` and
     /// `drawprimitive` are different functions.
     pub fn matches(&self, binary: &str, function: &str) -> bool {
         self.binary.as_str().eq_ignore_ascii_case(binary) && self.function == function
@@ -400,7 +400,7 @@ mod tests {
         assert!(!scope.is_priority("eqmain.dll", "UpdateScene"));
         // The match rule's case policy (issue #107): binary names are
         // Windows filenames — case-insensitive. Function names are PE
-        // exports / Ghidra symbols — case-sensitive.
+        // exports / engine symbols — case-sensitive.
         assert!(
             scope.is_skipped("GAME_LOGIC.dll", "DllMain"),
             "a differently-cased binary spelling still matches the skip"

@@ -1,6 +1,6 @@
 //! A small pseudo-C tokenizer shared by the three detectors.
 //!
-//! The detectors read Ghidra's decompiled pseudo-C, and every one of
+//! The detectors read the decompiled pseudo-C, and every one of
 //! them needs the same thing: integer literals as numbers rather than
 //! text, the operators around them as single tokens, and everything
 //! that is *not* a literal — the digits inside `local_20`, the text

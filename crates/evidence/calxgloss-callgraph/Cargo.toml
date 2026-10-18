@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-calxgloss-ghidra = { path = "../../integrations/calxgloss-ghidra" }
+calxgloss-decomp = { path = "../../integrations/calxgloss-decomp" }
 calxgloss-types = { path = "../../shared/calxgloss-types" }
 
 serde = { workspace = true }

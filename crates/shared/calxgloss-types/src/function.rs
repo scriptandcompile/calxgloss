@@ -1,4 +1,4 @@
-//! Function-level analysis types extracted from Ghidra disassembly.
+//! Function-level analysis types extracted from the decompiler's disassembly.
 //!
 //! This module defines types for representing individual functions found
 //! within a DLL, including their disassembly, decompiler output, Windows API
@@ -93,7 +93,7 @@ impl fmt::Display for ApiCategory {
 
 /// A single Windows API call identified within a function's disassembly.
 ///
-/// When Ghidra analysis finds a call to a known Windows API, this struct
+/// When the scan finds a call to a known Windows API, this struct
 /// records the API name, its category, and the PAL mapping target.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowsApiCall {
@@ -142,10 +142,10 @@ pub struct FunctionInfo {
     /// The DLL this function belongs to.
     pub binary: BinaryIdentity,
 
-    /// Raw disassembly listing from Ghidra.
+    /// Raw disassembly listing from the decompiler.
     pub disassembly: String,
 
-    /// Pseudo-C decompiler output from Ghidra.
+    /// Pseudo-C decompiler output.
     pub decompiler_output: String,
 
     /// Windows API calls identified within this function, with their PAL mappings.

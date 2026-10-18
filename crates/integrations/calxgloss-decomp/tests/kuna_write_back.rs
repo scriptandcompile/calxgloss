@@ -14,7 +14,7 @@
 //! also forces the seam's mapping rather than the source's inherent
 //! method of the same name.
 
-use calxgloss_ghidra::{EngineError, NewStructField, ScanSource, TypeWriteSource};
+use calxgloss_decomp::{EngineError, NewStructField, ScanSource, TypeWriteSource};
 use calxgloss_kuna::KunaSource;
 use calxgloss_kuna::directives::directive_file_path;
 use calxgloss_testfixtures::TARGET_FILE_NAME;
@@ -38,7 +38,7 @@ fn source_with_plane(workspace: &std::path::Path) -> KunaSource {
 }
 
 /// The fixture export named `name`, through the seam's own listing.
-async fn exported(source: &KunaSource, name: &str) -> calxgloss_ghidra::FunctionSummary {
+async fn exported(source: &KunaSource, name: &str) -> calxgloss_decomp::FunctionSummary {
     let listing = ScanSource::functions(source)
         .await
         .expect("the function listing should be readable");

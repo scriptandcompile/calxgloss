@@ -35,7 +35,7 @@ use crate::cross_function::CrossFunctionDetector;
 use crate::error::Result;
 use crate::string_hints::StringHintEngine;
 use crate::types::{AlgorithmHint, AlgorithmRecognitionResult, ScanMetadata};
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 use calxgloss_kuna::KunaSource;
 use futures_util::stream::{self, StreamExt};
 use std::sync::Arc;
@@ -125,13 +125,13 @@ impl SkipRateBreaker {
 
 /// The program reads a recognition scan performs.
 ///
-/// The shared trait from the Ghidra integration crate, re-exported here
+/// The shared trait from the decompiler seam crate, re-exported here
 /// so the engine's generic shape names it where it always has;
 /// [`KunaSource`] implements it over the in-process engine, and tests
 /// implement it over canned bodies so the orchestration runs without a
 /// server. The futures are `Send` so a scan can be driven from an
 /// orchestrating task.
-pub use calxgloss_ghidra::ScanSource;
+pub use calxgloss_decomp::ScanSource;
 
 /// Orchestrates the detectors into one [`AlgorithmRecognitionResult`].
 ///
@@ -273,7 +273,7 @@ impl<S> AlgorithmEngine<S> {
     /// hints below the threshold — after resolution, so the floor judges
     /// each algorithm's surviving strongest claim.
     ///
-    /// A function whose body Ghidra cannot produce (a thunk, a bad entry
+    /// A function whose body the decompiler cannot produce (a thunk, a bad entry
     /// point) is skipped with a warning, and a function whose callers
     /// cannot be read keeps its other hints with only its callback
     /// readings dropped. Only a failure of the program listing or the
@@ -446,7 +446,7 @@ mod tests {
     use crate::types::{
         AlgorithmCategory, AlgorithmHint, AlgorithmPattern, Confidence, DetectionMethod,
     };
-    use calxgloss_ghidra::{
+    use calxgloss_decomp::{
         DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
         Result, StringLiteral, StructLayout, Symbol, Xref,
     };
@@ -969,7 +969,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_function_that_will_not_decompile_is_skipped() {
-        // Ghidra cannot produce a body for every function; one bad entry
+        // The decompiler cannot produce a body for every function; one bad entry
         // point must not cost the whole program its scan.
         let mut program = program();
         program.fail_decompiles = vec!["FUN_18003ab00".into()];

@@ -18,7 +18,7 @@
 
 use crate::confidence::CFG_CONFIDENCE;
 use crate::types::{AlgorithmCategory, AlgorithmHint, AlgorithmPattern, DetectionMethod};
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 use calxgloss_types::Confidence;
 use regex::Regex;
 
@@ -174,7 +174,7 @@ impl CfgPatternMatcher {
 /// search, hash table lookup, state machine, recursion, and linked
 /// list traversal.
 ///
-/// Each signature reads the shapes Ghidra's decompiler actually emits
+/// Each signature reads the shapes the decompiler actually emits
 /// for its algorithm: the nested loop and temporary-mediated swap of a
 /// sort, the halved range of a binary search, the equality test and
 /// early exit of a linear scan, the modulo-folded bucket probe of a

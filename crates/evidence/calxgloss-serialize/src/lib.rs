@@ -3,7 +3,7 @@
 //! Analyzes byte-swap calls, manual bit-packing, format sniffing,
 //! cross-field validation, the composed serialization layout, and
 //! corroborated protocol message handlers within
-//! each function of an open Ghidra
+//! each function of a loaded
 //! program, and maps the program-wide endianness the byte-swap calls
 //! add up to. Results are injected as structured SERIALIZATION sections
 //! that name the Rust

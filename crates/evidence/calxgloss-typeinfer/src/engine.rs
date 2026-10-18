@@ -34,20 +34,20 @@ use crate::param_size::ParameterSizeDetector;
 use crate::return_usage::{LocalReadings, ReturnUsageDetector};
 use crate::this_ptr::ThisPointerDetector;
 use crate::types::{InferredType, ScanMetadata, TypeInferenceResult};
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 use calxgloss_kuna::KunaSource;
 use std::time::Instant;
 use tracing::{info, warn};
 
 /// The decompiler reads a type-inference scan performs.
 ///
-/// The shared trait from the Ghidra integration crate, re-exported here
+/// The shared trait from the decompiler seam crate, re-exported here
 /// so the engine's generic shape names it where it always has;
 /// [`KunaSource`] implements it over the in-process engine, and tests
 /// implement it over canned bodies so the orchestration runs without a
 /// server. The futures are `Send` so a scan can be driven from an
 /// orchestrating task.
-pub use calxgloss_ghidra::ScanSource;
+pub use calxgloss_decomp::ScanSource;
 
 /// Orchestrates the inline detectors and the cross-function pass into one
 /// [`TypeInferenceResult`].
@@ -122,7 +122,7 @@ impl<S> TypeInferEngine<S> {
     /// a caller uses the returned value types the callee's return — so
     /// one caller lookup per function serves both passes.
     ///
-    /// A function whose body Ghidra cannot produce (a thunk, a bad entry
+    /// A function whose body the decompiler cannot produce (a thunk, a bad entry
     /// point) is skipped with a warning; only a failure of the listing
     /// itself — the server being down — aborts the run, since then nothing
     /// was scanned.
@@ -399,7 +399,7 @@ mod tests {
     use crate::types::{
         Confidence, InferenceMethod, InferenceScope, InferredCallType, InferredLocalType,
     };
-    use calxgloss_ghidra::{
+    use calxgloss_decomp::{
         DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
         Result, StringLiteral, StructLayout, Symbol, Xref,
     };
@@ -1010,7 +1010,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_function_that_will_not_decompile_is_skipped() {
-        // Ghidra cannot produce a body for every function; one bad entry
+        // The decompiler cannot produce a body for every function; one bad entry
         // point must not cost the whole program its scan.
         let mut program = program();
         program.fail_decompiles = vec!["FUN_18003ab00".into()];

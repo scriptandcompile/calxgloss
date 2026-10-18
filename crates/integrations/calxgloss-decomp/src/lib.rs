@@ -23,10 +23,10 @@
 //!   dialect, the scraper over it, and the shapes the persisted records
 //!   carry.
 //!
-//! The crate is still named `calxgloss-ghidra` and the cache still files
-//! under `re/ghidra-cache`; ADR-0041 records those names as deferrals —
-//! renaming them moves on-disk paths and every import in the workspace for
-//! no behavioural change.
+//! The crate was named `calxgloss-ghidra` and the cache filed under
+//! `re/ghidra-cache` until ADR-0042 took up ADR-0041's deferred renames;
+//! the on-disk rename resets old caches, which the cache-format version
+//! marker would have forced anyway once the engine changed.
 
 mod cache;
 mod error;

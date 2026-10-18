@@ -11,7 +11,7 @@ use thiserror::Error;
 pub enum ApiError {
     /// An engine read through the analysis seam failed.
     #[error("engine error: {0}")]
-    Engine(#[from] calxgloss_ghidra::EngineError),
+    Engine(#[from] calxgloss_decomp::EngineError),
 
     /// The call graph the per-function summary traverses could not be built.
     #[error("call graph build failed: {reason}")]

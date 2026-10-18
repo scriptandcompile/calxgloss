@@ -417,7 +417,7 @@ mod tests {
             2,
         );
         detector.record_attempt(
-            "prompt: escalate with Ghidra context for Foo",
+            "prompt: escalate with decompiler context for Foo",
             "fn foo() -> i32 { 42 }",
             false,
             "escalate",

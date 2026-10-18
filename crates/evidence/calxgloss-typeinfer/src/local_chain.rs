@@ -33,7 +33,7 @@ use std::collections::{HashMap, HashSet};
 use crate::cross_function::{call_callee, is_bare_identifier};
 use crate::known_type::{KnownTypePropagationEngine, is_type_word};
 use crate::types::{InferenceMethod, InferenceScope, InferredLocalType, InferredParamType};
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 
 use calxgloss_types::strip_casts;
 

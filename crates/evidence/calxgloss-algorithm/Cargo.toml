@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-calxgloss-ghidra = { path = "../../integrations/calxgloss-ghidra" }
+calxgloss-decomp = { path = "../../integrations/calxgloss-decomp" }
 calxgloss-kuna = { path = "../../integrations/calxgloss-kuna" }
 
 calxgloss-prompts = { path = "../../integrations/calxgloss-prompts" }
@@ -24,7 +24,7 @@ regex = { workspace = true }
 [dev-dependencies]
 tempfile = "3"
 
-# `calxgloss-ghidra` and `regex` back the decompiler and string fetches and
+# `calxgloss-decomp` and `regex` back the decompiler and string fetches and
 # the pattern matching the recognition detectors run on; they are declared
 # now so the manifest stays stable as the detectors land. Same allowance as
 # `calxgloss-typesdb` and `calxgloss-typeinfer`.

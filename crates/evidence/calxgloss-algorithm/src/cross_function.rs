@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::confidence::CROSS_FUNCTION_CONFIDENCE;
 use crate::types::{AlgorithmCategory, AlgorithmHint, DetectionMethod};
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 use calxgloss_types::Confidence;
 use regex::Regex;
 
@@ -200,7 +200,7 @@ impl CrossFunctionDetector {
     /// The call map is derived here, from these bodies alone: a program
     /// function counts as called by another when its name appears in
     /// that body — as the callee of a call or as a callback handed to a
-    /// host — so the pass reads nothing from Ghidra and costs no extra
+    /// host — so the pass reads nothing from the engine and costs no extra
     /// round trips. A relationship fits a function when the function's
     /// body spans at least its [`min_lines`](CorrelationRelationship::min_lines)
     /// and carries every [`body_patterns`](CorrelationRelationship::body_patterns)

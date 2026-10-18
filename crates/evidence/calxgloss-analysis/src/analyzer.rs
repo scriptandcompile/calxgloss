@@ -4,7 +4,7 @@
 use crate::classify::{classification_reason, classify_dll_name, crate_replacement_for};
 use crate::error::AnalysisError as Error;
 use crate::error::Result;
-use calxgloss_ghidra::{PipelineSource, ScanSource};
+use calxgloss_decomp::{PipelineSource, ScanSource};
 use calxgloss_pal::ApiMappings;
 use calxgloss_types::{
     ClassificationOverrideControl, DllCategory, DllInfo, FunctionInfo, WindowsApiCall,
@@ -97,7 +97,7 @@ pub struct DllClassification {
 
 /// Complete analysis result for a single function.
 ///
-/// Produced by [`Analyzer::analyze_function`]. Aggregates Ghidra function data
+/// Produced by [`Analyzer::analyze_function`]. Aggregates decompiler function data
 /// with tagged Windows API calls and call graph information.
 #[derive(Debug, Clone)]
 pub struct FunctionAnalysis {
@@ -109,7 +109,7 @@ pub struct FunctionAnalysis {
     /// the PAL mapping table.
     pub tagged_apis: Vec<WindowsApiCall>,
 
-    /// Call graph neighbors from Ghidra analysis.
+    /// Call graph neighbors from the scan.
     pub call_graph: Vec<String>,
 }
 
@@ -131,7 +131,7 @@ pub struct FunctionAnalysis {
 /// use calxgloss_pal::ApiMappings;
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// let source = calxgloss_ghidra::PipelineSource::from(
+/// let source = calxgloss_decomp::PipelineSource::from(
 ///     calxgloss_kuna::KunaSource::load("eqmain.dll".as_ref())?,
 /// );
 /// let mappings = ApiMappings::default();
@@ -204,7 +204,7 @@ impl Analyzer {
     /// use calxgloss_pal::ApiMappings;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let source = calxgloss_ghidra::PipelineSource::from(
+    /// let source = calxgloss_decomp::PipelineSource::from(
     ///     calxgloss_kuna::KunaSource::load("game_logic.dll".as_ref())?,
     /// );
     /// let analyzer = Analyzer::new(source, ApiMappings::default());
@@ -305,10 +305,10 @@ impl Analyzer {
     ///
     /// Symbol counts are read from the PE header on disk (via `goblin`), which
     /// gives accurate per-DLL export/import counts. If a DLL file is missing
-    /// from `target_dir` the call falls back to the currently-open Ghidra
+    /// from `target_dir` the call falls back to the currently-loaded
     /// program.
     ///
-    /// The DLL names are supplied by the caller because Ghidra has no way to
+    /// The DLL names are supplied by the caller because the engine has no way to
     /// enumerate them: it serves a single open program and exposes no listing of
     /// what else a target links against. Where the list comes from — a
     /// directory scan, a manifest, a hand-written list — is the caller's
@@ -321,7 +321,7 @@ impl Analyzer {
     /// use calxgloss_pal::ApiMappings;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let source = calxgloss_ghidra::PipelineSource::from(
+    /// let source = calxgloss_decomp::PipelineSource::from(
     ///     calxgloss_kuna::KunaSource::load("eqmain.dll".as_ref())?,
     /// );
     /// let analyzer = Analyzer::new(source, ApiMappings::default());
@@ -391,7 +391,7 @@ impl Analyzer {
     /// use calxgloss_pal::ApiMappings;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let source = calxgloss_ghidra::PipelineSource::from(
+    /// let source = calxgloss_decomp::PipelineSource::from(
     ///     calxgloss_kuna::KunaSource::load("game_logic.dll".as_ref())?,
     /// );
     /// let analyzer = Analyzer::new(source, ApiMappings::default());
@@ -437,7 +437,7 @@ impl Analyzer {
         // Tag Windows API calls among the names the decompiled body calls,
         // intersected with the program's imports — the calls the engine can
         // see are the ones worth tagging.
-        let callees = calxgloss_ghidra::parse::callees_from_decompiled(&decompiled.body);
+        let callees = calxgloss_decomp::parse::callees_from_decompiled(&decompiled.body);
         let called_imports: Vec<String> = callees
             .iter()
             .filter(|callee| import_names.iter().any(|i| i == *callee))
@@ -504,7 +504,7 @@ impl Analyzer {
     /// use calxgloss_pal::ApiMappings;
     ///
     /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let source = calxgloss_ghidra::PipelineSource::from(
+    /// let source = calxgloss_decomp::PipelineSource::from(
     ///     calxgloss_kuna::KunaSource::load("game_logic.dll".as_ref())?,
     /// );
     /// let analyzer = Analyzer::new(source, ApiMappings::default());
@@ -573,7 +573,7 @@ impl Analyzer {
         Ok(tagged)
     }
 
-    /// Classifies a `DllInfo` struct directly, without needing Ghidra network calls.
+    /// Classifies a `DllInfo` struct directly, without needing engine reads.
     ///
     /// Useful when you already have DLL metadata (e.g., from a cached analysis
     /// or manual inspection) and just need to determine the classification
@@ -615,7 +615,7 @@ impl Analyzer {
     /// This is the primary integration point between the call graph analysis
     /// pipeline and the rest of the system. It:
     ///
-    /// 1. Fetches all function metadata from Ghidra.
+    /// 1. Fetches all function metadata from the engine.
     /// 2. Classifies each function as [`Root`](calxgloss_types::NodeCategory::Root),
     ///    [`Leaf`](calxgloss_types::NodeCategory::Leaf), or
     ///    [`Middle`](calxgloss_types::NodeCategory::Middle).
@@ -628,7 +628,7 @@ impl Analyzer {
     ///
     /// # Returns
     ///
-    /// A fully classified call graph, or an error if Ghidra data cannot
+    /// A fully classified call graph, or an error if engine data cannot
     /// be fetched or the graph cannot be persisted.
     ///
     /// # Example
@@ -639,7 +639,7 @@ impl Analyzer {
     /// use std::path::Path;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let source = calxgloss_ghidra::PipelineSource::from(
+    /// let source = calxgloss_decomp::PipelineSource::from(
     ///     calxgloss_kuna::KunaSource::load("eqmain.dll".as_ref())?,
     /// );
     /// let analyzer = Analyzer::new(source, ApiMappings::default());
@@ -710,7 +710,7 @@ impl Analyzer {
     ///
     /// # Arguments
     ///
-    /// * `disassembly` — The raw disassembly text from Ghidra.
+    /// * `disassembly` — The raw disassembly text from the engine.
     /// * `tagged_apis` — The Windows API calls identified in the function,
     ///   used to determine API-category diversity.
     ///
@@ -837,7 +837,7 @@ mod tests {
 
     fn test_analyzer() -> Analyzer {
         let fixture = calxgloss_testfixtures::load_target().expect("fixture target");
-        let source = calxgloss_ghidra::PipelineSource::from(
+        let source = calxgloss_decomp::PipelineSource::from(
             calxgloss_kuna::KunaSource::load(fixture.path()).expect("fixture loads"),
         );
         let api_mappings = ApiMappings::default();

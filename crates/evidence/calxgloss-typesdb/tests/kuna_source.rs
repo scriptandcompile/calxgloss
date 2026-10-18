@@ -8,7 +8,7 @@
 //! Ghidra bridge uses, so the scanner branches on one fact whichever engine
 //! answers.
 
-use calxgloss_ghidra::{EngineError, ScanSource};
+use calxgloss_decomp::{EngineError, ScanSource};
 use calxgloss_kuna::KunaSource;
 use calxgloss_typesdb::scanner::TypeLibraryScanner;
 use calxgloss_typesdb::types::TypeKind;
@@ -58,7 +58,7 @@ async fn the_recovery_pass_recovers_probe_confirmed_types_under_kuna() {
 }
 
 #[tokio::test]
-async fn probe_misses_arrive_in_the_ghidra_vocabulary_under_kuna() {
+async fn probe_misses_arrive_in_the_engine_vocabulary_under_kuna() {
     let source = fixture_source();
 
     // An unknown name is a NotFound, the same fact the bridge reports for a

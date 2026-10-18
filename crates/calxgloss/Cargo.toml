@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 calxgloss-types = { path = "../shared/calxgloss-types" }
-calxgloss-ghidra = { path = "../integrations/calxgloss-ghidra" }
+calxgloss-decomp = { path = "../integrations/calxgloss-decomp" }
 calxgloss-kuna = { path = "../integrations/calxgloss-kuna" }
 calxgloss-llm = { path = "../integrations/calxgloss-llm" }
 calxgloss-prompts = { path = "../integrations/calxgloss-prompts" }

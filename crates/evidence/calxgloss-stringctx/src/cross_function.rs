@@ -36,7 +36,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 use calxgloss_types::{NON_CALL_KEYWORDS, NameContinuation, ScanOptions, call_sites, line_at};
 
 use crate::hybrid_mapper::{HybridXrefMapper, index_by_value, read_string_arg};

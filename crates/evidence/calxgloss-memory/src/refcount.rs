@@ -32,7 +32,7 @@
 //! spawn names the narrowing reads against.
 
 use crate::types::{CountStyle, ReferenceCount};
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 
 use calxgloss_types::{
     CallSite, NON_CALL_KEYWORDS, NameContinuation, ScanOptions, call_sites, is_ident_byte, line_at,
@@ -471,7 +471,7 @@ fn bump_operator(bytes: &[u8], name_end: usize) -> Option<bool> {
         _ => None,
     }
 }
-/// The type words a Ghidra cast may spell, the decompiler's
+/// The type words a decompiler cast may spell, the decompiler's
 /// vocabulary the other detectors' scans strip plus the interface
 /// typedefs this detector's casts carry: COM analysis types an
 /// `AddRef` or `Release` argument as `IUnknown *` or `IDispatch *`,

@@ -26,7 +26,7 @@
 //! dispatch, and passes unrecorded.
 
 use crate::types::JumpTable;
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 use calxgloss_types::skip_literal;
 
 // ============================================================

@@ -7,7 +7,7 @@
 //! engine's assertion plane (ADR-0039's state model). The file is the
 //! durable form; the in-memory [`DirectivePlane`] is its ordered mirror.
 //!
-//! Each [`TypeWriteSource`](calxgloss_ghidra::TypeWriteSource) call compiles
+//! Each [`TypeWriteSource`](calxgloss_decomp::TypeWriteSource) call compiles
 //! to exactly one directive through the pure `*_directive` compilers here —
 //! golden-testable without a loaded program:
 //!

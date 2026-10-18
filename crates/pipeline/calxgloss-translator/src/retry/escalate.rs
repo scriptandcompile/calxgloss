@@ -15,7 +15,7 @@ pub struct EscalatePromptCtx {
     pub failure_description: String,
     /// Scan source for fetching neighbors and symbols — the batch's shared
     /// source (live client or read cache), never a second live path.
-    pub source: calxgloss_ghidra::PipelineSource,
+    pub source: calxgloss_decomp::PipelineSource,
     /// Virtual address of the function.
     pub address: u64,
     /// Call graph neighbors (callers and callees).
@@ -30,7 +30,7 @@ pub struct EscalatePromptCtx {
     pub workspace: Option<std::path::PathBuf>,
 }
 
-/// Build an escalated fix prompt that injects additional Ghidra context.
+/// Build an escalated fix prompt that injects additional decompiler context.
 ///
 /// This prompt is used when previous `compile_fix` or `test_fix` attempts have
 /// failed. It adds call graph neighbors, neighboring function code, data
@@ -141,7 +141,7 @@ async fn build_escalate_prompt_inner(
 ///
 /// When `history` contains prior failures, the prompt includes a
 /// "PREVIOUS ATTEMPT HISTORY" section so the LLM can learn from
-/// specific past mistakes, in addition to the standard Ghidra context.
+/// specific past mistakes, in addition to the standard decompiler context.
 pub async fn build_failure_informed_escalate_prompt(mut ctx: EscalatePromptCtx) -> String {
     let history = std::mem::take(&mut ctx.history);
     build_escalate_prompt_inner(ctx, history).await

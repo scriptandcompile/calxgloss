@@ -338,7 +338,7 @@ dependencies = [
  "calxgloss-config",
  "calxgloss-consts",
  "calxgloss-controlflow",
- "calxgloss-ghidra",
+ "calxgloss-decomp",
  "calxgloss-git",
  "calxgloss-kuna",
  "calxgloss-llm",
@@ -361,7 +361,7 @@ dependencies = [
 name = "calxgloss-algorithm"
 version = "0.3.0"
 dependencies = [
- "calxgloss-ghidra",
+ "calxgloss-decomp",
  "calxgloss-kuna",
  "calxgloss-prompts",
  "calxgloss-types",
@@ -381,7 +381,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "calxgloss-callgraph",
- "calxgloss-ghidra",
+ "calxgloss-decomp",
  "calxgloss-git",
  "calxgloss-kuna",
  "calxgloss-llm",
@@ -402,7 +402,7 @@ name = "calxgloss-apidetect"
 version = "0.3.0"
 dependencies = [
  "calxgloss-callgraph",
- "calxgloss-ghidra",
+ "calxgloss-decomp",
  "calxgloss-kuna",
  "calxgloss-prompts",
  "calxgloss-types",
@@ -418,7 +418,7 @@ dependencies = [
 name = "calxgloss-callback"
 version = "0.3.0"
 dependencies = [
- "calxgloss-ghidra",
+ "calxgloss-decomp",
  "calxgloss-kuna",
  "calxgloss-prompts",
  "calxgloss-types",
@@ -436,7 +436,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "calxgloss-analysis",
- "calxgloss-ghidra",
+ "calxgloss-decomp",
  "calxgloss-kuna",
  "calxgloss-testfixtures",
  "calxgloss-types",
@@ -460,7 +460,7 @@ dependencies = [
  "calxgloss-config",
  "calxgloss-consts",
  "calxgloss-controlflow",
- "calxgloss-ghidra",
+ "calxgloss-decomp",
  "calxgloss-git",
  "calxgloss-kuna",
  "calxgloss-llm",
@@ -505,7 +505,7 @@ dependencies = [
 name = "calxgloss-consts"
 version = "0.3.0"
 dependencies = [
- "calxgloss-ghidra",
+ "calxgloss-decomp",
  "calxgloss-kuna",
  "calxgloss-prompts",
  "calxgloss-types",
@@ -521,7 +521,7 @@ dependencies = [
 name = "calxgloss-controlflow"
 version = "0.3.0"
 dependencies = [
- "calxgloss-ghidra",
+ "calxgloss-decomp",
  "calxgloss-kuna",
  "calxgloss-prompts",
  "calxgloss-types",
@@ -534,7 +534,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "calxgloss-ghidra"
+name = "calxgloss-decomp"
 version = "0.3.0"
 dependencies = [
  "calxgloss-kuna",
@@ -598,7 +598,7 @@ dependencies = [
 name = "calxgloss-memory"
 version = "0.3.0"
 dependencies = [
- "calxgloss-ghidra",
+ "calxgloss-decomp",
  "calxgloss-kuna",
  "calxgloss-prompts",
  "calxgloss-types",
@@ -639,7 +639,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "calxgloss-analysis",
- "calxgloss-ghidra",
+ "calxgloss-decomp",
  "calxgloss-git",
  "calxgloss-translator",
  "calxgloss-types",
@@ -654,7 +654,7 @@ dependencies = [
 name = "calxgloss-serialize"
 version = "0.3.0"
 dependencies = [
- "calxgloss-ghidra",
+ "calxgloss-decomp",
  "calxgloss-kuna",
  "calxgloss-prompts",
  "calxgloss-types",
@@ -670,7 +670,7 @@ dependencies = [
 name = "calxgloss-stringctx"
 version = "0.3.0"
 dependencies = [
- "calxgloss-ghidra",
+ "calxgloss-decomp",
  "calxgloss-kuna",
  "calxgloss-prompts",
  "calxgloss-types",
@@ -687,7 +687,7 @@ dependencies = [
 name = "calxgloss-sync"
 version = "0.3.0"
 dependencies = [
- "calxgloss-ghidra",
+ "calxgloss-decomp",
  "calxgloss-kuna",
  "calxgloss-prompts",
  "calxgloss-types",
@@ -736,7 +736,7 @@ dependencies = [
  "calxgloss-callgraph",
  "calxgloss-consts",
  "calxgloss-controlflow",
- "calxgloss-ghidra",
+ "calxgloss-decomp",
  "calxgloss-kuna",
  "calxgloss-llm",
  "calxgloss-memory",
@@ -762,7 +762,7 @@ dependencies = [
 name = "calxgloss-typeinfer"
 version = "0.3.0"
 dependencies = [
- "calxgloss-ghidra",
+ "calxgloss-decomp",
  "calxgloss-kuna",
  "calxgloss-prompts",
  "calxgloss-types",
@@ -791,7 +791,7 @@ dependencies = [
 name = "calxgloss-typesdb"
 version = "0.3.0"
 dependencies = [
- "calxgloss-ghidra",
+ "calxgloss-decomp",
  "calxgloss-kuna",
  "calxgloss-prompts",
  "calxgloss-testfixtures",
@@ -823,7 +823,7 @@ dependencies = [
  "anyhow",
  "axum",
  "axum-extra",
- "calxgloss-ghidra",
+ "calxgloss-decomp",
  "calxgloss-git",
  "calxgloss-kuna",
  "calxgloss-llm",

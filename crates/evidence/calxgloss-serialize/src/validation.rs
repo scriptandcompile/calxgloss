@@ -23,7 +23,7 @@ use std::collections::HashSet;
 
 use crate::scan;
 use crate::types::{CrossFieldValidation, MagicFormat, ValidationShape};
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 
 // ============================================================
 // Detector

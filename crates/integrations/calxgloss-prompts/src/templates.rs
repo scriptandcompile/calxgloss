@@ -6,7 +6,7 @@
 //! - [`MinimalTemplate`] — Tier 0: function name, signature, call graph
 //! - [`TranslateTemplate`] — Standard translation (disassembly + decompiler + tests)
 //! - [`FixTemplate`] — Retry after verification failure
-//! - [`EscalateTemplate`] — Retry with additional Ghidra context
+//! - [`EscalateTemplate`] — Retry with additional decompiler context
 //! - [`EdgeCaseTemplate`] — Boundary-value test failure fix
 //! - [`RichTemplate`] — Complex functions (101-300 instructions)
 //! - [`DetailedTemplate`] — Very complex functions (>300 instructions)
@@ -49,7 +49,7 @@ pub struct EdgeCaseTest {
     pub actual: serde_json::Value,
     /// Error message from the test harness.
     pub error: String,
-    /// Disassembly hints from Ghidra that explain this branch.
+    /// Disassembly hints from the decompiler that explain this branch.
     pub disassembly_hints: String,
 }
 
@@ -71,7 +71,7 @@ pub struct CallGraphNeighbor {
     pub name: String,
     /// Virtual address of the neighbor.
     pub address: u64,
-    /// Signature as seen by Ghidra.
+    /// Signature as the decompiler reports it.
     pub signature: String,
     /// Whether this neighbor calls or is called by the target.
     pub role: String,
@@ -108,13 +108,13 @@ pub struct StructuredData {
 pub struct StructField {
     /// Field name.
     pub name: String,
-    /// Field type as inferred by Ghidra.
+    /// Field type as inferred by the decompiler.
     pub type_: String,
     /// Byte offset from struct start, or -1 if unknown.
     pub offset: i64,
 }
 
-/// Type information inferred by Ghidra's type database.
+/// Type information inferred by the decompiler's type database.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TypeInfo {
     /// Type name or signature.
@@ -410,9 +410,9 @@ pub struct MinimalTemplate {
     pub dll_name: String,
     /// The virtual address of the function entry point.
     pub address: u64,
-    /// Raw disassembly listing from Ghidra.
+    /// Raw disassembly listing from the decompiler.
     pub disassembly: String,
-    /// Pseudo-C decompiler output from Ghidra.
+    /// Pseudo-C decompiler output.
     pub decompiler_output: String,
     /// Windows API calls identified in the disassembly.
     pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
@@ -470,9 +470,9 @@ pub struct TranslateTemplate {
     pub dll_name: String,
     /// The virtual address of the function entry point.
     pub address: u64,
-    /// Raw disassembly listing from Ghidra.
+    /// Raw disassembly listing from the decompiler.
     pub disassembly: String,
-    /// Pseudo-C decompiler output from Ghidra.
+    /// Pseudo-C decompiler output.
     pub decompiler_output: String,
     /// Windows API calls identified in the disassembly.
     pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
@@ -572,7 +572,7 @@ impl FixTemplate {
 }
 
 // ============================================================
-// Escalate template — for retrying with additional Ghidra context
+// Escalate template — for retrying with additional decompiler context
 // ============================================================
 
 /// Template for "add more context and retry" prompts.
@@ -595,7 +595,7 @@ pub struct EscalateTemplate {
     pub neighboring_functions: Vec<NeighborFunction>,
     /// Data structures referenced near this function.
     pub data_structures: Vec<StructuredData>,
-    /// Type information inferred by Ghidra.
+    /// Type information inferred by the decompiler.
     pub type_info: Vec<TypeInfo>,
     /// Algorithms recognized in this function by the analysis pipeline.
     pub recognized_algorithms: Vec<AlgorithmInfo>,
@@ -846,9 +846,9 @@ pub struct RichTemplate {
     pub dll_name: String,
     /// The virtual address of the function entry point.
     pub address: u64,
-    /// Raw disassembly listing from Ghidra.
+    /// Raw disassembly listing from the decompiler.
     pub disassembly: String,
-    /// Pseudo-C decompiler output from Ghidra.
+    /// Pseudo-C decompiler output.
     pub decompiler_output: String,
     /// Windows API calls identified in the disassembly.
     pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
@@ -910,9 +910,9 @@ pub struct DetailedTemplate {
     pub dll_name: String,
     /// The virtual address of the function entry point.
     pub address: u64,
-    /// Raw disassembly listing from Ghidra.
+    /// Raw disassembly listing from the decompiler.
     pub disassembly: String,
-    /// Pseudo-C decompiler output from Ghidra.
+    /// Pseudo-C decompiler output.
     pub decompiler_output: String,
     /// Windows API calls identified in the disassembly.
     pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
@@ -928,7 +928,7 @@ pub struct DetailedTemplate {
     pub neighboring_functions: Vec<NeighborFunction>,
     /// Data structures referenced near this function.
     pub data_structures: Vec<StructuredData>,
-    /// Type information inferred by Ghidra.
+    /// Type information inferred by the decompiler.
     pub type_info: Vec<TypeInfo>,
     /// Control-flow findings about this function made by the analysis
     /// pipeline.
@@ -986,7 +986,7 @@ pub struct SignatureTemplate {
     pub dll_name: String,
     /// Virtual address as a hex string.
     pub address_hex: String,
-    /// The inferred C signature from Ghidra's decompiler.
+    /// The inferred C signature from the decompiler.
     pub signature: String,
     /// Functions directly called by or calling this function.
     pub call_graph_neighbors: Vec<CallGraphNeighbor>,
@@ -1011,7 +1011,7 @@ impl SignatureTemplate {
 
 /// Template for Tier 2 translation prompts (disassembly + decompiler + baseline tests).
 ///
-/// Contains full disassembly, Ghidra pseudo-C, tagged Windows API calls,
+/// Contains full disassembly, decompiler pseudo-C, tagged Windows API calls,
 /// call graph neighbors, and baseline test results with pass/fail status.
 #[derive(Template)]
 #[template(path = "with_tests_translate.j2")]
@@ -1022,9 +1022,9 @@ pub struct WithTestsTemplate {
     pub dll_name: String,
     /// Virtual address of the function entry point.
     pub address: u64,
-    /// Raw disassembly listing from Ghidra.
+    /// Raw disassembly listing from the decompiler.
     pub disassembly: String,
-    /// Pseudo-C decompiler output from Ghidra.
+    /// Pseudo-C decompiler output.
     pub decompiler_output: String,
     /// Windows API calls identified in the disassembly.
     pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
@@ -1063,7 +1063,7 @@ impl WithTestsTemplate {
 /// Template for Tier 3 translation prompts (disassembly + decompiler + tests
 /// + neighboring function context + shared data structures).
 ///
-/// Contains full disassembly, Ghidra pseudo-C, tagged Windows API calls,
+/// Contains full disassembly, decompiler pseudo-C, tagged Windows API calls,
 /// call graph neighbors, baseline test results, neighboring function code
 /// and decompiler output, and shared data structure definitions.
 #[derive(Template)]
@@ -1075,9 +1075,9 @@ pub struct ModuleContextTemplate {
     pub dll_name: String,
     /// Virtual address of the function entry point.
     pub address: u64,
-    /// Raw disassembly listing from Ghidra.
+    /// Raw disassembly listing from the decompiler.
     pub disassembly: String,
-    /// Pseudo-C decompiler output from Ghidra.
+    /// Pseudo-C decompiler output.
     pub decompiler_output: String,
     /// Windows API calls identified in the disassembly.
     pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,
@@ -1188,9 +1188,9 @@ pub struct FullModuleTemplate {
     pub dll_name: String,
     /// Virtual address of the function entry point.
     pub address: u64,
-    /// Raw disassembly listing from Ghidra.
+    /// Raw disassembly listing from the decompiler.
     pub disassembly: String,
-    /// Pseudo-C decompiler output from Ghidra.
+    /// Pseudo-C decompiler output.
     pub decompiler_output: String,
     /// Windows API calls identified in the disassembly.
     pub windows_apis: Vec<calxgloss_types::WindowsApiCall>,

@@ -9,7 +9,7 @@
 //! artifact layout reads back. The engine-native API is pinned in
 //! `calxgloss-kuna/tests/kuna_scan.rs`.
 
-use calxgloss_ghidra::{EngineError, PipelineSource, ScanSource, Xref};
+use calxgloss_decomp::{EngineError, PipelineSource, ScanSource, Xref};
 use calxgloss_kuna::{KUNA_PIN_REV, KUNA_RELEASE, KunaSource};
 use calxgloss_testfixtures::{
     EXPORT_NAMES, IMPORT_DLL_NAMES, IMPORT_FUNCTIONS, STRING_LITERALS, TARGET_FILE_NAME,
@@ -305,8 +305,8 @@ async fn a_kuna_scan_persists_function_and_dll_records_the_web_reads_back() {
             name: listed.name.clone(),
             address: listed.address,
             binary: binary.clone(),
-            // The seam carries no disassembly read at all — disassembly
-            // is a Ghidra-client read outside the seam — so the record
+            // The seam carries no disassembly read at all — nothing in
+            // the engine path produces one — so the record
             // carries what the seam answers.
             disassembly: String::new(),
             decompiler_output: decompiled.body,

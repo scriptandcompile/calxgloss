@@ -9,7 +9,7 @@
 //! cache and a second run over the same bytes replays with zero engine calls.
 //!
 //! **Validity is the key.** The disk tier lives at
-//! `re/ghidra-cache/{binary identity}/{sha256}/`, where the hash is SHA-256
+//! `re/decomp-cache/{binary identity}/{sha256}/`, where the hash is SHA-256
 //! over the target binary's file bytes. Changed bytes mean a different
 //! directory, so staleness needs no invalidation logic; old hash directories
 //! are kept (for switching back to a previous build) until pruned by hand.
@@ -121,7 +121,7 @@ pub struct CachedScanSource {
 #[derive(Debug)]
 struct Inner {
     source: KunaSource,
-    /// `re/ghidra-cache/{identity}/{sha256}` — `None` when the binary file
+    /// `re/decomp-cache/{identity}/{sha256}` — `None` when the binary file
     /// was missing or unreadable, which drops the disk tier and leaves
     /// pass-through engine reads.
     cache_dir: Option<PathBuf>,
@@ -489,12 +489,12 @@ impl ScanSource for CachedScanSource {
 // Disk layout
 // ============================================================
 
-/// The cache convention: `{workspace}/re/ghidra-cache`.
+/// The cache convention: `{workspace}/re/decomp-cache`.
 ///
-/// The directory keeps its historical name after the Ghidra engine's
-/// retirement; the rename is recorded as a deferral in ADR-0041.
+/// The directory was `re/ghidra-cache` until ADR-0042 renamed it; the cache
+///-format version marker inside it invalidates anything the old name held.
 fn cache_root(workspace: impl AsRef<Path>) -> PathBuf {
-    workspace.as_ref().join("re").join("ghidra-cache")
+    workspace.as_ref().join("re").join("decomp-cache")
 }
 
 /// Where one key's document is filed inside a hash directory: whole-program

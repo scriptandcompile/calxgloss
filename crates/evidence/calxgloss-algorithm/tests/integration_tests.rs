@@ -24,7 +24,7 @@ use calxgloss_algorithm::engine::{AlgorithmEngine, ScanSource};
 use calxgloss_algorithm::pattern_db::PatternDatabase;
 use calxgloss_algorithm::persist::AlgorithmPersistor;
 use calxgloss_algorithm::types::{AlgorithmCategory, DetectionMethod};
-use calxgloss_ghidra::{
+use calxgloss_decomp::{
     DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
     Result, StringLiteral, StructLayout, Symbol, Xref,
 };

@@ -10,7 +10,7 @@ repository.workspace = true
 calxgloss-types = { path = "../../shared/calxgloss-types" }
 calxgloss-translator = { path = "../../pipeline/calxgloss-translator" }
 calxgloss-analysis = { path = "../../evidence/calxgloss-analysis" }
-calxgloss-ghidra = { path = "../../integrations/calxgloss-ghidra" }
+calxgloss-decomp = { path = "../../integrations/calxgloss-decomp" }
 calxgloss-git = { path = "../../pipeline/calxgloss-git" }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

@@ -788,8 +788,8 @@ impl ProgressState {
         self.activity.read().await.clone()
     }
 
-    /// Startup ingestion state (issue #124) — whether the Ghidra preflight
-    /// has begun, and which binaries' auto-analysis has landed.
+    /// Startup ingestion state (issue #124) — whether the startup preflight
+    /// scan has begun, and which binaries' auto-analysis has landed.
     pub async fn ingestion(&self) -> IngestionState {
         self.ingestion.read().await.clone()
     }
@@ -857,7 +857,7 @@ fn shared_routes() -> Router<CombinedState> {
             "/api/units/{id}/attempts/diff",
             get(handlers::api_get_unit_attempts_diff),
         )
-        .route("/api/units/{id}/ghidra", get(handlers::api_get_unit_ghidra))
+        .route("/api/units/{id}/decomp", get(handlers::api_get_unit_decomp))
         .route("/api/units/{id}/accept", post(handlers::api_accept_unit))
         .route(
             "/api/units/{id}/send-back",
@@ -985,7 +985,7 @@ fn shared_routes() -> Router<CombinedState> {
             get(handlers::api_get_binary_shim_status),
         )
         // The PAL tracker read (issue #134, W4.4) is derived on demand
-        // from persisted artifacts too — the per-function Ghidra
+        // from persisted artifacts too — the per-function analysis
         // artifacts' API-call categories for the needed traits, the
         // workspace's generated PAL/shim sources for existence — so
         // every router answers it; missing or corrupt artifacts on

@@ -29,7 +29,7 @@ use crate::types::{
     CrossFunctionLifecycle, LeakResource, MemoryFinding, OwnershipTransfer, ResourceLeak,
     TransferDirection,
 };
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 
 use calxgloss_types::{
     NON_CALL_KEYWORDS, NameContinuation, ScanOptions, call_sites, is_ident_byte, line_at,

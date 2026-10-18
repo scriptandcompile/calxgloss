@@ -189,7 +189,7 @@ impl ModuleContextPromptData {
     /// Only the request's core fields are populated. Neighboring functions,
     /// data structures, and call graph neighbors are left empty — call
     /// [`from_request_with_context`] instead when that extra context is
-    /// available from Ghidra.
+    /// available from the engine.
     pub fn from_request(req: &TranslationRequest) -> Self {
         let test_results: Vec<FormattedTestResult> = req
             .baseline_tests
@@ -218,10 +218,10 @@ impl ModuleContextPromptData {
     }
 
     /// Build module context prompt data from a [`TranslationRequest`] with
-    /// additional Ghidra-derived context.
+    /// additional decompiler-derived context.
     ///
     /// Use this constructor when neighboring function code and data structure
-    /// information have been fetched from Ghidra.
+    /// information have been fetched from the engine.
     #[allow(clippy::too_many_arguments)]
     pub fn from_request_with_context(
         req: &TranslationRequest,
@@ -370,7 +370,7 @@ impl FullModulePromptData {
     /// Only the request's core fields are populated. Shim layers, PAL
     /// traits, and other Tier 3+ fields are left empty — call
     /// [`from_request_with_full_context`] instead when that extra context
-    /// is available from Ghidra and the workspace.
+    /// is available from the engine and the workspace.
     pub fn from_request(req: &TranslationRequest) -> Self {
         let test_results: Vec<FormattedTestResult> = req
             .baseline_tests
@@ -401,7 +401,7 @@ impl FullModulePromptData {
     }
 
     /// Build full module prompt data from a [`TranslationRequest`] with
-    /// complete Ghidra-derived context and workspace shim/PAL data.
+    /// complete decompiler-derived context and workspace shim/PAL data.
     ///
     /// Use this constructor when all context — call graph neighbors,
     /// neighboring function code, data structures, shim layer code,

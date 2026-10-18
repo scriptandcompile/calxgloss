@@ -1,5 +1,5 @@
 [package]
-name = "calxgloss-ghidra"
+name = "calxgloss-decomp"
 version.workspace = true
 edition.workspace = true
 description = "Analysis-engine seam: the ScanSource/TypeWriteSource vocabulary, the read cache, and the Kuna-backed implementations"
@@ -9,8 +9,8 @@ repository.workspace = true
 [dependencies]
 calxgloss-types = { path = "../../shared/calxgloss-types" }
 # The Kuna engine sits behind the ScanSource seam (issue #206). The dependency
-# direction is ghidra → kuna, never the reverse: the seam trait lives here, so
-# a kuna → ghidra edge would be a cycle.
+# direction is decomp → kuna, never the reverse: the seam trait lives here, so
+# a kuna → decomp edge would be a cycle.
 calxgloss-kuna = { path = "../calxgloss-kuna" }
 sha2 = { workspace = true }
 serde = { workspace = true }

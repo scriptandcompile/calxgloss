@@ -27,8 +27,8 @@ pub enum ReviewActionKind {
     },
     /// View all LLM attempts for this unit.
     ViewAttempts,
-    /// View the original Ghidra context.
-    ViewGhidraContext,
+    /// View the original decompiler context.
+    ViewDecompContext,
 }
 
 /// Persisted skip state for review units (issue #75).

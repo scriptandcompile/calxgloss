@@ -38,7 +38,7 @@
 use crate::types::{
     InferenceMethod, InferenceScope, InferredParamType, InferredReturnType, InferredType,
 };
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 
 use calxgloss_types::{closing_paren, is_ident_byte, line_at, skip_string, skip_ws};
 
@@ -1028,7 +1028,7 @@ mod tests {
 
     #[test]
     fn the_analyzed_function_s_own_demangled_name_types_its_parameters() {
-        // Ghidra carries the demangled name with the spelled list; the
+        // the decompiler carries the demangled name with the spelled list; the
         // decompiled signature places it — one more body parameter than
         // the name lists means the member's implicit this sits first.
         let func = DecompiledFunction {

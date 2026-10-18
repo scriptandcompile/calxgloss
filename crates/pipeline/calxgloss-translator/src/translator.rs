@@ -45,7 +45,7 @@ pub struct Translation {
     /// These are used by the verifier to check behavioral equivalence.
     pub baseline_tests: Vec<TestCase>,
 
-    /// Call graph neighbors (callers and callees) from Ghidra analysis.
+    /// Call graph neighbors (callers and callees) from the scan.
     /// Used for context extraction during escalate retries.
     pub call_graph: Vec<String>,
 
@@ -77,7 +77,7 @@ pub struct Translation {
 /// Direct translation using pre-collected function data.
 ///
 /// Use this when you already have the function's disassembly and decompiler
-/// output from another source (e.g., cached Ghidra data, manual extraction).
+/// output from another source (e.g., cached engine data, manual extraction).
 /// It skips the analysis step and sends the data directly to the LLM.
 ///
 /// # Example

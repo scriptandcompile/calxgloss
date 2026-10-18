@@ -33,7 +33,7 @@ use calxgloss_consts::codegen::render_codegen;
 use calxgloss_consts::engine::{ConstEngine, ScanSource};
 use calxgloss_consts::persist::ConstPersistor;
 use calxgloss_consts::types::ConstFinding;
-use calxgloss_ghidra::{
+use calxgloss_decomp::{
     DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
     Result, StringLiteral, StructLayout, Symbol, Xref,
 };

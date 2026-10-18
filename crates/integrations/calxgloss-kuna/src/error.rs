@@ -119,7 +119,7 @@ pub enum KunaError {
 
     /// No type in the engine's type manager carries the requested name.
     ///
-    /// The seam maps this to the same `NotFound` a Ghidra miss becomes, so
+    /// The seam maps this to the same `NotFound` an engine miss becomes, so
     /// layout probes branch on one fact whichever engine answers.
     #[error("the Kuna engine's type manager has no type named '{name}'")]
     TypeNotFound {

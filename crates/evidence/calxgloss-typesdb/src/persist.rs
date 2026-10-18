@@ -174,7 +174,7 @@ mod tests {
         Confidence, FieldType, InferredField, InferredStruct, NameOrigin, NamedType, ScanMetadata,
         TypeKind, Vtable,
     };
-    use calxgloss_ghidra::DataTypeEntry;
+    use calxgloss_decomp::DataTypeEntry;
     use tempfile::TempDir;
 
     /// A database with one record in every section, so a round trip proves

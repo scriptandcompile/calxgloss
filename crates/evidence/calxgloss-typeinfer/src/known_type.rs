@@ -9,7 +9,7 @@
 
 use crate::reading::Reading;
 use crate::types::{InferenceMethod, InferenceScope, InferredParamType};
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 
 use calxgloss_types::{
     CallSite, NON_CALL_KEYWORDS, NameContinuation, ScanOptions, call_sites, line_at, strip_casts,
@@ -245,7 +245,7 @@ pub const KNOWN_SIGNATURES: &[KnownSignature] = &[
         confidence: WIN32_CONFIDENCE,
     },
 ];
-/// The type words a Ghidra cast may spell, matching the decompiler's
+/// The type words a decompiler cast may spell, matching the decompiler's
 /// vocabulary the this-pointer scan already strips.
 pub(crate) fn is_type_word(word: &str) -> bool {
     matches!(
@@ -401,7 +401,7 @@ pub struct ExtractedCall {
 /// function and read by every detector — and it never writes back to the
 /// program, only reporting what the body's call sites imply.
 ///
-/// [`DecompiledFunction`]: calxgloss_ghidra::DecompiledFunction
+/// [`DecompiledFunction`]: calxgloss_decomp::DecompiledFunction
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct KnownTypePropagationEngine;
 

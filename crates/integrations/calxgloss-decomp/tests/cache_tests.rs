@@ -10,7 +10,7 @@
 //! proves a disk replay, and a corrupt document whose real value comes back
 //! proves a live refetch. No cache internals are inspected.
 
-use calxgloss_ghidra::{CachedScanSource, EngineError, FunctionSummary, ScanSource};
+use calxgloss_decomp::{CachedScanSource, EngineError, FunctionSummary, ScanSource};
 use calxgloss_kuna::KunaSource;
 use calxgloss_testfixtures::{EXPORT_NAMES, STRING_LITERALS, TARGET_FILE_NAME};
 use std::path::{Path, PathBuf};

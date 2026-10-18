@@ -44,7 +44,7 @@ use crate::callback_reg::{CallbackRegDetector, RegistrationSite, direct_calls};
 use crate::fp_array::FpArrayDetector;
 use crate::jump_table::JumpTableDetector;
 use crate::types::{CallbackChain, CallbackFinding, EventSystem};
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 use calxgloss_types::line_at;
 
 /// Confidence of a chain read across two bodies: both ends are

@@ -24,9 +24,9 @@
 //! thread, so every later read pays only the query.
 //!
 //! The seam itself (`impl ScanSource for KunaSource`, and the
-//! `PipelineSource::Kuna` arm) lives in `calxgloss-ghidra`, beside every
+//! `PipelineSource::Kuna` arm) lives in `calxgloss-decomp`, beside every
 //! other `ScanSource` implementation: the trait is defined there, and a
-//! kuna → ghidra dependency edge would be a cycle. This module answers in
+//! kuna → decomp dependency edge would be a cycle. This module answers in
 //! Kuna-native types; the seam maps them.
 //!
 //! The write-back plane (issue #209): Kuna never writes back into the
@@ -562,7 +562,7 @@ impl KunaSource {
     }
 
     /// Every named type the engine's type factory interns; `category`
-    /// filters as the Ghidra bridge's does, a case-insensitive substring of
+    /// filters as the retired Ghidra bridge's did, a case-insensitive substring of
     /// the synthesized category.
     pub async fn data_types(&self, category: Option<&str>) -> Result<Vec<KunaDataType>> {
         let (reply, answer) = oneshot::channel();
@@ -1243,7 +1243,7 @@ fn xrefs_to(
 /// Every named type the engine's type factory interns, in
 /// definition-before-use order. The engine has no Type Manager categories,
 /// so the category is synthesized from the type's kind and the path from
-/// the category; `category` filters the way the Ghidra bridge's does, a
+/// the category; `category` filters the way the retired Ghidra bridge's did, a
 /// case-insensitive substring of the category.
 fn data_types(program: &KunaProgram, category: Option<&str>) -> Result<Vec<KunaDataType>> {
     let mut listing: Vec<KunaDataType> = Vec::new();

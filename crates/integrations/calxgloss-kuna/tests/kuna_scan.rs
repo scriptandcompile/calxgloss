@@ -5,7 +5,7 @@
 //! the seam maps — over the fixture DLL: the function listing, decompile by
 //! name, the import and export tables, and the image base. The seam itself
 //! (`impl ScanSource for KunaSource`) is exercised in
-//! `calxgloss-ghidra/tests/kuna_scan.rs`, beside every other seam test.
+//! `calxgloss-decomp/tests/kuna_scan.rs`, beside every other seam test.
 
 use calxgloss_kuna::KunaError;
 use calxgloss_kuna::source::KunaSource;

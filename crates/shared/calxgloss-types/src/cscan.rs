@@ -1,4 +1,4 @@
-//! Shared scanner for Ghidra pseudo-C function bodies.
+//! Shared scanner for decompiler pseudo-C function bodies.
 //!
 //! Every evidence crate that reads decompiler output needs the same
 //! primitives: find direct calls, split their arguments, and walk the

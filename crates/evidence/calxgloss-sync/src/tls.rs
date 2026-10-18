@@ -25,7 +25,7 @@
 //! site, paired or a lone-access fragment.
 
 use crate::types::TlsUsage;
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 use serde::{Deserialize, Serialize};
 
 use calxgloss_types::{
@@ -121,7 +121,7 @@ impl TlsKeySignature {
 /// and [`add_access`](Self::add_access) — and [`creations`](Self::
 /// creations) and [`accesses`](Self::accesses) report them in
 /// configuration order, so two detectors built the same way scan
-/// identically and results diff cleanly. The detector holds no Ghidra
+/// identically and results diff cleanly. The detector holds no engine
 /// client of its own and never writes back to the program; one
 /// detector serves an entire scan and can be shared by reference
 /// across concurrent per-function passes.
@@ -401,7 +401,7 @@ fn plain_variable(arg: &str) -> Option<&str> {
     Some(trimmed)
 }
 
-/// The type words a Ghidra cast may spell, matching the decompiler's
+/// The type words a decompiler cast may spell, matching the decompiler's
 /// vocabulary the other detectors' scans strip, plus the thread-key
 /// type the decompiler writes when the program carries pthread debug
 /// info.

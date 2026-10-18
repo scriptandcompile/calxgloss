@@ -12,10 +12,9 @@
 //! write-back seam answers too: Kuna never writes back into the image, so
 //! a write lands in a directive plane calxgloss owns and every load
 //! replays it (ADR-0039's state model). Since #211 a Kuna pass beats the
-//! same progress heartbeats a Ghidra pass does, and per-function
-//! decompile budgets from config bound one obfuscated function instead of
-//! the box. Only live-analysis commands —
-//! things that need a mutated saved program — still need the Ghidra engine.
+//! same progress heartbeats the retired Ghidra path used to, and
+//! per-function decompile budgets from config bound one obfuscated
+//! function instead of the box.
 //!
 //! # Architecture
 //!

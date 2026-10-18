@@ -103,7 +103,7 @@ pub fn build_translate_prompt(req: &TranslationRequest) -> Result<String, Prompt
 // Escalation prompt builder
 // ============================================================
 
-/// Builds an escalation prompt with additional Ghidra context.
+/// Builds an escalation prompt with additional decompiler context.
 ///
 /// Used when previous attempts failed with compile_fix or test_fix strategies.
 /// Adds call graph neighbors, neighboring functions, data structures,
@@ -143,7 +143,7 @@ pub fn build_escalate_prompt(
     )
 }
 
-/// Builds an escalation prompt with additional Ghidra context and enriched
+/// Builds an escalation prompt with additional decompiler context and enriched
 /// call graph data.
 ///
 /// Used when previous attempts failed with compile_fix or test_fix strategies.
@@ -436,7 +436,7 @@ fn build_std_request(data: &ComplexityPromptData) -> TranslationRequest {
 // Signature extraction helpers
 // ============================================================
 
-/// Extracts the function signature from Ghidra's decompiler output.
+/// Extracts the function signature from the decompiler output.
 ///
 /// The decompiler's first line is a real signature carrying real parameter
 /// types, so it is preferred. Returns an empty string if the output is

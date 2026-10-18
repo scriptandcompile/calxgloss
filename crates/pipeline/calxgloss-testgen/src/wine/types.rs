@@ -3,7 +3,7 @@
 use crate::Machine;
 use anyhow::{Context, Result};
 
-use crate::ffi::{ParsedSignature, ghidra_type_to_rust};
+use crate::ffi::{ParsedSignature, decompiler_type_to_rust};
 
 /// How the DLL should be loaded before calling into it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,7 +173,7 @@ impl HarnessSpec {
     ) -> Result<Self> {
         let mut params = Vec::with_capacity(signature.parameters.len());
         for (i, p) in signature.parameters.iter().enumerate() {
-            let rust_type = ghidra_type_to_rust(&p.r#type, &signature.type_map);
+            let rust_type = decompiler_type_to_rust(&p.r#type, &signature.type_map);
             let kind = ScalarKind::from_rust_type(&rust_type, machine).with_context(|| {
                 format!(
                     "parameter {} ({}) has type '{}', which cannot be marshalled across the FFI; \
@@ -192,7 +192,7 @@ impl HarnessSpec {
             });
         }
 
-        let return_rust = ghidra_type_to_rust(&signature.return_type, &signature.type_map);
+        let return_rust = decompiler_type_to_rust(&signature.return_type, &signature.type_map);
         let return_kind = ScalarKind::from_rust_type(&return_rust, machine).with_context(|| {
             format!(
                 "return type '{}' cannot be marshalled across the FFI; \
@@ -299,7 +299,7 @@ pub fn locator_for_function(image: &crate::pe::PeImage, function: &str) -> Optio
 
 /// Locate a function by its virtual address.
 ///
-/// Takes the VA from Ghidra and returns a [`FunctionLocator::Rva`].
+/// Takes the VA from the decompiler and returns a [`FunctionLocator::Rva`].
 pub fn locator_for_va(image: &crate::pe::PeImage, va: u64) -> Option<FunctionLocator> {
     let rva = va - image.image_base();
     Some(FunctionLocator::Rva(rva as u32))

@@ -31,7 +31,7 @@
 
 use crate::mutex::{MutexDetector, lock_object};
 use crate::types::{DataRace, LockOrder, SyncFinding};
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 
 use calxgloss_types::{
     NON_CALL_KEYWORDS, NameContinuation, ScanOptions, call_sites, closing_paren, is_ident_byte,

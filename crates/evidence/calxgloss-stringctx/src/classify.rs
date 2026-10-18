@@ -59,7 +59,7 @@ pub struct CategoryPatterns {
 impl CategoryPatterns {
     /// The standard pattern sets every scan runs with unless swapped.
     ///
-    /// The patterns are heuristics over the spellings Ghidra-decompiled
+    /// The patterns are heuristics over the spellings decompiler-decompiled
     /// binaries actually carry — Windows paths and extensions, registry
     /// keys, `printf` specifiers, error and log vocabulary, dialog words,
     /// identifier shapes — ordered by the engine's fixed priority, not by

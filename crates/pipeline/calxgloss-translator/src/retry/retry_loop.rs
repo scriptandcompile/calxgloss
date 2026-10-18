@@ -35,7 +35,7 @@ pub struct RetryLoopCtx<'a> {
     pub llm: &'a LlmClient,
     /// Scan source, used for context extraction during escalation — the
     /// batch's shared source (live client or read cache).
-    pub source: &'a calxgloss_ghidra::PipelineSource,
+    pub source: &'a calxgloss_decomp::PipelineSource,
     /// Retry configuration.
     pub config: &'a RetryConfig,
     /// Optional workspace path for experiment logging.
@@ -256,7 +256,7 @@ pub async fn try_translate_with_retry(
         let attempt_start = std::time::Instant::now();
 
         // If the tier was escalated in the previous iteration, build an
-        // escalated prompt with additional Ghidra/workspace context for
+        // escalated prompt with additional decompiler/workspace context for
         // the next attempt.  Otherwise fall through to the strategy-based
         // prompt below.
         if tier_escalated {
@@ -782,7 +782,7 @@ pub async fn try_translate_with_retry(
                 (prompt, "test_fix".to_string())
             }
             RetryStrategy::Escalate => {
-                // Build an escalated prompt with additional Ghidra context.
+                // Build an escalated prompt with additional decompiler context.
                 // The initial translation carries the function address and call graph.
                 let failure_desc = if !initial_errors.is_empty() {
                     format!(
@@ -1319,7 +1319,7 @@ pub async fn try_translate_with_retry(
                 RetryStrategy::Default => RetryStrategy::CompileFix,
             };
 
-            // Escalate context tier to include more Ghidra/workspace context.
+            // Escalate context tier to include more decompiler/workspace context.
             // On the next loop iteration the tier-escalated prompt path will
             // be taken (tier_escalated stays false here; it's set when the
             // prompt is actually rebuilt at the top of the next iteration).
@@ -1721,7 +1721,7 @@ mod tests {
         let target = calxgloss_testfixtures::load_target().expect("fixture target");
         let kuna = calxgloss_kuna::KunaSource::load(target.path())
             .expect("the fixture must load for scanning with Kuna");
-        let source = calxgloss_ghidra::PipelineSource::Kuna(kuna);
+        let source = calxgloss_decomp::PipelineSource::Kuna(kuna);
         let verifier = Verifier::new(&ws.path().join("verify")).expect("verifier");
         let config = RetryConfig {
             max_attempts: 2,

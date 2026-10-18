@@ -44,13 +44,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 use tracing::info;
 
-/// The shared trait from the Ghidra integration crate, re-exported here
+/// The shared trait from the decompiler seam crate, re-exported here
 /// so the engine's generic shape names it where it always has;
 /// [`KunaSource`] implements it over the in-process engine, and tests
 /// implement it over canned listings so the orchestration runs without
 /// a server. The futures are `Send` so a scan can be driven from an
 /// orchestrating task.
-pub use calxgloss_ghidra::ScanSource;
+pub use calxgloss_decomp::ScanSource;
 
 /// Orchestrates the three recovery engines into one [`TypeDatabase`].
 ///
@@ -538,9 +538,9 @@ mod tests {
     use crate::error::TypesDbError;
     use crate::stl::StlKind;
     use crate::types::{FieldType, StructField, VtableMethod};
-    use calxgloss_ghidra::{
+    use calxgloss_decomp::{
         DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
-        Result as GhidraResult, StringLiteral, StructFieldLayout, StructLayout, Symbol, Xref,
+        Result as EngineResult, StringLiteral, StructFieldLayout, StructLayout, Symbol, Xref,
     };
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -686,7 +686,7 @@ mod tests {
             EnumDefinition {
                 name: "_EXCEPTION_DISPOSITION".into(),
                 size: 4,
-                members: vec![calxgloss_ghidra::EnumMember {
+                members: vec![calxgloss_decomp::EnumMember {
                     name: "ExceptionContinueExecution".into(),
                     value: 0,
                 }],
@@ -896,7 +896,7 @@ mod tests {
             EnumDefinition {
                 name: "MODES".into(),
                 size: 4,
-                members: vec![calxgloss_ghidra::EnumMember {
+                members: vec![calxgloss_decomp::EnumMember {
                     name: "MODE_ON".into(),
                     value: 1,
                 }],
@@ -906,7 +906,7 @@ mod tests {
     }
 
     impl ScanSource for FakeProgram {
-        async fn data_types(&self, category: Option<&str>) -> GhidraResult<Vec<DataTypeEntry>> {
+        async fn data_types(&self, category: Option<&str>) -> EngineResult<Vec<DataTypeEntry>> {
             self.enter();
             yield_now().await;
             self.exit();
@@ -922,7 +922,7 @@ mod tests {
             }
         }
 
-        async fn struct_layout(&self, name: &str) -> GhidraResult<StructLayout> {
+        async fn struct_layout(&self, name: &str) -> EngineResult<StructLayout> {
             self.enter();
             yield_now().await;
             self.exit();
@@ -935,7 +935,7 @@ mod tests {
                 })
         }
 
-        async fn enum_values(&self, name: &str) -> GhidraResult<EnumDefinition> {
+        async fn enum_values(&self, name: &str) -> EngineResult<EnumDefinition> {
             self.enter();
             yield_now().await;
             self.exit();
@@ -948,7 +948,7 @@ mod tests {
                 })
         }
 
-        async fn data_items(&self) -> GhidraResult<Vec<DataItem>> {
+        async fn data_items(&self) -> EngineResult<Vec<DataItem>> {
             self.enter();
             yield_now().await;
             self.exit();
@@ -960,21 +960,21 @@ mod tests {
             Ok(self.items.clone())
         }
 
-        async fn functions(&self) -> GhidraResult<Vec<FunctionSummary>> {
+        async fn functions(&self) -> EngineResult<Vec<FunctionSummary>> {
             self.enter();
             yield_now().await;
             self.exit();
             Ok(self.functions.clone())
         }
 
-        async fn image_base(&self) -> GhidraResult<u64> {
+        async fn image_base(&self) -> EngineResult<u64> {
             self.enter();
             yield_now().await;
             self.exit();
             Ok(self.image_base)
         }
 
-        async fn read_memory(&self, address: u64, _length: usize) -> GhidraResult<Vec<u8>> {
+        async fn read_memory(&self, address: u64, _length: usize) -> EngineResult<Vec<u8>> {
             self.enter();
             yield_now().await;
             self.exit();
@@ -987,36 +987,36 @@ mod tests {
                 })
         }
 
-        async fn strings(&self) -> GhidraResult<Vec<StringLiteral>> {
+        async fn strings(&self) -> EngineResult<Vec<StringLiteral>> {
             self.enter();
             yield_now().await;
             self.exit();
             Ok(self.literals.clone())
         }
 
-        async fn xrefs_to(&self, address: u64) -> GhidraResult<Vec<Xref>> {
+        async fn xrefs_to(&self, address: u64) -> EngineResult<Vec<Xref>> {
             self.enter();
             yield_now().await;
             self.exit();
             Ok(self.xrefs.get(&address).cloned().unwrap_or_default())
         }
 
-        async fn decompile(&self, name: &str) -> GhidraResult<DecompiledFunction> {
+        async fn decompile(&self, name: &str) -> EngineResult<DecompiledFunction> {
             Err(EngineError::NotFound {
                 kind: "function",
                 query: name.to_string(),
             })
         }
 
-        async fn callers(&self, _address: u64) -> GhidraResult<Vec<String>> {
+        async fn callers(&self, _address: u64) -> EngineResult<Vec<String>> {
             Ok(Vec::new())
         }
 
-        async fn imports(&self) -> GhidraResult<Vec<Symbol>> {
+        async fn imports(&self) -> EngineResult<Vec<Symbol>> {
             Ok(Vec::new())
         }
 
-        async fn exports(&self) -> GhidraResult<Vec<Symbol>> {
+        async fn exports(&self) -> EngineResult<Vec<Symbol>> {
             Ok(Vec::new())
         }
     }

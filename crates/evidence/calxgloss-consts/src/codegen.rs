@@ -6,7 +6,7 @@
 //! family with its bits named by position, an `enum` block per enum
 //! candidate with its variants named by value, and `const` items for
 //! the named, protocol, and color constants using each record's name.
-//! The renderer is pure — data in, string out, no Ghidra and no clock —
+//! The renderer is pure — data in, string out, no engine and no clock —
 //! and deterministic: it stamps no timestamp and sorts every section,
 //! so two renders of the same document are byte-identical and a rescan
 //! produces a reviewable diff, not churn.

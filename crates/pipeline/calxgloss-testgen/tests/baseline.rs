@@ -31,7 +31,7 @@ use serde_json::{Value, json};
 /// `return param_1 + ((longlong)param_2 + 4) * 8;`.
 const TARGET_RVA: u32 = 0x8ed50;
 
-/// The signature Ghidra reports for that function.
+/// The signature the decompiler reports for that function.
 const TARGET_SIGNATURE: &str = "longlong FUN_18008ed50(longlong param_1,int param_2)";
 
 /// RVA of `FUN_1800470a0`, which reads a `u32` at `[param_1 + 0x120]`.
@@ -299,13 +299,13 @@ fn baseline_resolves_a_va_through_the_image_base() {
     };
     let image = PeImage::parse(&binary).expect("PE should parse");
 
-    // This is the step the whole design rests on: a Ghidra virtual address
+    // This is the step the whole design rests on: a decompiler virtual address
     // becomes a call target via the image base.
-    let ghidra_va = image.va_from_rva(TARGET_RVA);
-    let locator = calxgloss_testgen::locator_for_va(&image, ghidra_va).expect("locator");
+    let decomp_va = image.va_from_rva(TARGET_RVA);
+    let locator = calxgloss_testgen::locator_for_va(&image, decomp_va).expect("locator");
     assert_eq!(locator, FunctionLocator::Rva(TARGET_RVA));
 
-    // And the same thing driven by Ghidra's function naming.
+    // And the same thing driven by the decompiler's function naming.
     let by_name =
         calxgloss_testgen::locator_for_function(&image, "FUN_18008ed50").expect("locator");
     assert_eq!(by_name, FunctionLocator::Rva(TARGET_RVA));
@@ -370,7 +370,7 @@ fn generated_harness_has_no_dependencies() {
     );
 }
 
-/// The public entry point end to end: a DLL path, a Ghidra function name, a
+/// The public entry point end to end: a DLL path, a decompiler function name, a
 /// signature, and test cases in — ground truth out.
 ///
 /// This is the path the rest of the pipeline actually calls, so it is the one

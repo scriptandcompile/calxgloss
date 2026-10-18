@@ -20,7 +20,7 @@ use calxgloss_callgraph::{
 /// ---------------------------------------------------------------------------
 /// Helpers
 /// ---------------------------------------------------------------------------
-/// Build a small synthetic call graph (no Ghidra required).
+/// Build a small synthetic call graph (no live engine required).
 ///
 /// ```text
 /// main (Root) ──► helper (Middle) ──► Direct3DCreate9 (Leaf)

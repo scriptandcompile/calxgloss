@@ -32,7 +32,7 @@
 
 use crate::callback_reg::{direct_calls, is_decompiler_minted, strip_to_identifier};
 use crate::types::PluginArchitecture;
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 
 use calxgloss_types::{CallSite, line_at};
 
@@ -57,7 +57,7 @@ use calxgloss_types::{CallSite, line_at};
 /// Win32 and POSIX loader spellings and the entry-point conventions
 /// binaries most often use; a program that loads or exports under
 /// different names configures those through
-/// [`with_names`](Self::with_names). The detector holds no Ghidra
+/// [`with_names`](Self::with_names). The detector holds no engine
 /// client of its own and never writes back to the program; one
 /// detector serves an entire scan and can be shared by reference
 /// across concurrent per-function passes.

@@ -60,7 +60,7 @@ impl TestGenerator {
     ///
     /// * `binary` - The DLL filename this function belongs to.
     /// * `function` - The function name.
-    /// * `signature` - The function signature as provided by Ghidra.
+    /// * `signature` - The function signature as provided by the decompiler.
     ///
     /// # Returns
     ///
@@ -195,7 +195,7 @@ impl TestGenerator {
             .await
     }
 
-    /// Run baseline tests from a [`FunctionInfo`] using Ghidra exports.
+    /// Run baseline tests from a [`FunctionInfo`] using the decompiler's exports.
     pub async fn run_baseline_from_function(
         &self,
         function_info: &FunctionInfo,

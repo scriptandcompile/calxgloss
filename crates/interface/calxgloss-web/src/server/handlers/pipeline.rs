@@ -195,7 +195,7 @@ pub async fn api_get_pipeline(
     // The run's queue plan names every binary it will process — the
     // table shows the whole plan, not just what has started.
     dll_names.extend(queue.iter().map(|q| BinaryIdentity::new(q.as_str())));
-    // A binary whose Ghidra auto-analysis landed is being ingested —
+    // A binary whose engine auto-analysis landed is being ingested —
     // the table shows it before any unit, classification, or plan event
     // names it (issue #124).
     dll_names.extend(ingestion.analyzed.iter().cloned());
@@ -460,9 +460,9 @@ fn dll_done_count(
 /// when at least one of its functions reached that phase (or its batch
 /// summary landed) — the counts are per binary, matching `total_dlls`.
 ///
-/// `ingestion_started` and `analyzed` come from the Ghidra preflight
-/// (issue #124): they light up `project_ingestion` while the run is still
-/// bootstrapping the Ghidra project, before any classification exists.
+/// `ingestion_started` and `analyzed` come from the startup preflight
+/// scan (issue #124): they light up `project_ingestion` while the run is
+/// still ingesting binaries, before any classification exists.
 fn derive_phases(
     total_dlls: usize,
     classifications: &HashMap<BinaryIdentity, ClassificationInfo>,
@@ -487,8 +487,8 @@ fn derive_phases(
             PipelinePhase::ProjectIngestion => {
                 let completed = classifications.len();
                 if completed == 0 && !analyzed.is_empty() {
-                    // Binaries are already ingested into the Ghidra project
-                    // but none classified yet — ingestion is underway, and
+                    // Binaries are already ingested but none classified
+                    // yet — ingestion is underway, and
                     // the analyzed binaries give an honest denominator.
                     PhaseProgress {
                         phase,

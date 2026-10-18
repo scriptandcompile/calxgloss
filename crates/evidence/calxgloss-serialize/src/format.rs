@@ -28,7 +28,7 @@ use crate::types::{
     BitPackRecord, ByteSwapOperation, FormatDirection, FormatField, SerializationFormat,
     WireEndianness,
 };
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 
 // ============================================================
 // Combiner

@@ -8,7 +8,7 @@
 //! fresh load, and a struct field addition regenerates the owning typedef
 //! record rather than appending a patch. The seam itself
 //! (`impl TypeWriteSource for KunaSource`) is exercised in
-//! `calxgloss-ghidra/tests/kuna_write_back.rs`, beside every other seam test.
+//! `calxgloss-decomp/tests/kuna_write_back.rs`, beside every other seam test.
 
 use calxgloss_kuna::KunaError;
 use calxgloss_kuna::KunaNewField;

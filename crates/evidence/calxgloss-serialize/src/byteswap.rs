@@ -19,7 +19,7 @@
 //! finding, the swap needs no second half to complete the picture.
 
 use crate::types::ByteSwapOperation;
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 use serde::{Deserialize, Serialize};
 
 use calxgloss_types::{

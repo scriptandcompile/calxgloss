@@ -13,7 +13,7 @@
 //! enjoy.
 
 use crate::types::Futex;
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 
 use calxgloss_types::{
     CallSite, NON_CALL_KEYWORDS, NameContinuation, ScanOptions, call_sites, is_ident_byte, line_at,
@@ -221,7 +221,7 @@ pub fn default_sys_futex_names() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use calxgloss_ghidra::DecompiledFunction;
+    use calxgloss_decomp::DecompiledFunction;
 
     fn function(body: &str) -> DecompiledFunction {
         DecompiledFunction {

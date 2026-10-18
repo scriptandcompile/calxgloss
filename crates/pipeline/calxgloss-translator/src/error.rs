@@ -14,7 +14,7 @@ pub enum TranslatorError {
     ScanFetch {
         binary: String,
         function: String,
-        source: Box<calxgloss_ghidra::EngineError>,
+        source: Box<calxgloss_decomp::EngineError>,
     },
 
     /// Failed to call the LLM.

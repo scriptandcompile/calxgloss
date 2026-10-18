@@ -20,7 +20,7 @@
 
 use crate::reading::Reading;
 use crate::types::{InferenceMethod, InferenceScope, InferredParamType};
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 use calxgloss_types::{
     CallSite, NameContinuation, ScanOptions, call_sites, cast_group, is_ident_byte, line_at,
     skip_string, skip_ws, strip_casts,
@@ -207,7 +207,7 @@ fn direct_calls(body: &str) -> Vec<CallSite<'_>> {
     call_sites(body, &CALL_SCAN)
 }
 
-/// The type words a Ghidra cast may spell, matching the decompiler's
+/// The type words a decompiler cast may spell, matching the decompiler's
 /// vocabulary the this-pointer scan already strips.
 fn is_type_word(word: &str) -> bool {
     matches!(
@@ -724,12 +724,12 @@ fn matching_open(bytes: &[u8], close: usize) -> Option<usize> {
 ///
 /// The detector is stateless: every reading comes from the decompiled
 /// function it is handed, so one detector serves an entire scan and can
-/// be shared across concurrent per-function passes. It holds no Ghidra
+/// be shared across concurrent per-function passes. It holds no engine
 /// client of its own — the [`DecompiledFunction`] text is fetched once
 /// per function and read by every detector — and it never writes back to
 /// the program, only reporting what the body's usage implies.
 ///
-/// [`DecompiledFunction`]: calxgloss_ghidra::DecompiledFunction
+/// [`DecompiledFunction`]: calxgloss_decomp::DecompiledFunction
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ParameterSizeDetector;
 

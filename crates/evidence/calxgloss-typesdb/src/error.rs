@@ -1,7 +1,7 @@
 //! Error types for the calxgloss-typesdb crate.
 //!
 //! This module defines `TypesDbError`, the unified error type used throughout
-//! the type database crate for Ghidra type-library scanning, vtable detection,
+//! the type database crate for decompiler type-library scanning, vtable detection,
 //! string-guided inference, and JSON persistence.
 
 use thiserror::Error;
@@ -11,7 +11,7 @@ use thiserror::Error;
 pub enum TypesDbError {
     /// An engine read through the analysis seam failed.
     #[error("engine error: {0}")]
-    Engine(#[from] calxgloss_ghidra::EngineError),
+    Engine(#[from] calxgloss_decomp::EngineError),
 
     /// An I/O error occurred while reading or writing the type database.
     #[error("I/O error: {0}")]

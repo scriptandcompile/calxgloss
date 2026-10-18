@@ -22,7 +22,7 @@
 //! lock object — one [`ConcurrencyHint`] per pair.
 
 use crate::types::{ConcurrencyHint, SyncType};
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 use serde::{Deserialize, Serialize};
 
 use calxgloss_types::{
@@ -282,7 +282,7 @@ fn plain_variable(arg: &str) -> Option<&str> {
     }
     Some(trimmed)
 }
-/// The type words a Ghidra cast may spell, matching the decompiler's
+/// The type words a decompiler cast may spell, matching the decompiler's
 /// vocabulary the other detectors' scans strip, plus the lock struct
 /// names the decompiler writes when the program carries pthread debug
 /// info.

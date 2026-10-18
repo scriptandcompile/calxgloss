@@ -2,9 +2,8 @@
 //!
 //! Analyzes switch-shaped if/else-if chains, self-recursion,
 //! state-machine patterns, loop structure, and branch density within
-//! each function of
-//! an open Ghidra
-//! program, and reads mutual-recursion call cycles across the bodies
+//! each function of a
+//! loaded program, and reads mutual-recursion call cycles across the bodies
 //! one scan keeps. Results are injected as structured CONTROL FLOW sections
 //! that name the Rust pattern — `match`, a dispatch table, `loop`,
 //! `enum State` — the translation should aim at, so a binary's

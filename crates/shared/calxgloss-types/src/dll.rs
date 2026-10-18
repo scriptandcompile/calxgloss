@@ -43,7 +43,7 @@ pub enum DllCategory {
 /// An exported symbol from a DLL.
 ///
 /// Represents a function or data item that a DLL exposes to its consumers.
-/// During Ghidra analysis, the address and signature are extracted from
+/// During decompiler analysis, the address and signature are extracted from
 /// the import/export table and disassembly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Export {
@@ -53,14 +53,14 @@ pub struct Export {
     /// The virtual address of the export within the DLL.
     pub address: u64,
 
-    /// The function signature as inferred by Ghidra (e.g., `int __stdcall DrawPrimitive(...)`).
+    /// The function signature as inferred by the decompiler (e.g., `int __stdcall DrawPrimitive(...)`).
     pub signature: String,
 }
 
 /// An import dependency — a DLL and function this binary calls.
 ///
 /// Represents a cross-DLL call captured from the PE import table or
-/// Ghidra's analysis of imported symbols.
+/// The decompiler's analysis of imported symbols.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Import {
     /// The name of the DLL being imported (e.g., `gdi32.dll`).

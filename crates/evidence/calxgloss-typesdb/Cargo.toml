@@ -2,12 +2,12 @@
 name = "calxgloss-typesdb"
 version.workspace = true
 edition.workspace = true
-description = "Data structure recovery: Ghidra type library scanning, vtable detection, string-guided struct inference"
+description = "Data structure recovery: decompiler type library scanning, vtable detection, string-guided struct inference"
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
-calxgloss-ghidra = { path = "../../integrations/calxgloss-ghidra" }
+calxgloss-decomp = { path = "../../integrations/calxgloss-decomp" }
 # The Kuna engine: the recovery engines' default source (issue #214).
 calxgloss-kuna = { path = "../../integrations/calxgloss-kuna" }
 calxgloss-prompts = { path = "../../integrations/calxgloss-prompts" }

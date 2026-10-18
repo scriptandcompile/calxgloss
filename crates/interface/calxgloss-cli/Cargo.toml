@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 calxgloss = { path = "../../calxgloss" }
-calxgloss-ghidra = { path = "../../integrations/calxgloss-ghidra" }
+calxgloss-decomp = { path = "../../integrations/calxgloss-decomp" }
 calxgloss-analysis = { path = "../../evidence/calxgloss-analysis" }
 calxgloss-testgen = { path = "../../pipeline/calxgloss-testgen" }
 calxgloss-translator = { path = "../../pipeline/calxgloss-translator" }

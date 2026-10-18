@@ -516,7 +516,6 @@ mod tests {
                 max_fn_instructions: Some(5000),
                 max_fn_seconds: Some(30),
                 max_fn_memory_mib: Some(512),
-                ..Default::default()
             },
             ..Default::default()
         };

@@ -4,7 +4,7 @@
 //! produce:
 //!
 //! - [`NamedType`], [`TypeKind`], [`StructField`]: named types pulled from
-//!   Ghidra's Type Manager (struct, class, union, enum) with field layouts.
+//!   the engine's type listing (struct, class, union, enum) with field layouts.
 //! - `Vtable`, `VtableMethod`: detected vtables with resolved method pointers
 //!   and base-class inheritance.
 //! - `InferredStruct`, `InferredField`, `FieldType`: struct layouts inferred
@@ -12,15 +12,15 @@
 //! - `TypeDatabase`, `ScanMetadata`: the persisted per-DLL database and its
 //!   scan provenance.
 //!
-//! All types derive `Serialize`/`Deserialize`. Ghidra wire records convert into
-//! recovered records via `From<&StructFieldLayout>` and `From<&calxgloss_ghidra::EnumMember>`
-//! — the wire and persisted shapes stay deliberately split, and these impls are
+//! All types derive `Serialize`/`Deserialize`. Engine scan records convert into
+//! recovered records via `From<&StructFieldLayout>` and `From<&calxgloss_decomp::EnumMember>`
+//! — the engine and persisted shapes stay deliberately split, and these impls are
 //! the only mapping between them. Recovered records also convert into prompt
 //! data: `From<&NamedType>` and `From<&InferredStruct>` render a
 //! [`calxgloss_prompts::StructuredData`] for the translation prompts.
 
 use crate::stl::StlKind;
-use calxgloss_ghidra::{DataTypeEntry, EnumDefinition, StructFieldLayout, StructLayout};
+use calxgloss_decomp::{DataTypeEntry, EnumDefinition, StructFieldLayout, StructLayout};
 use calxgloss_prompts::StructuredData;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -35,17 +35,17 @@ pub use calxgloss_types::{Confidence, ScanMetadata};
 // Type kind
 // ============================================================
 
-/// The kind of a named type in Ghidra's Type Manager.
+/// The kind of a named type in the engine's type listing.
 ///
 /// The bridge classifies every Type Manager entry as struct, union, enum,
-/// typedef, pointer, array, function, or primitive. Ghidra models C++ classes
+/// typedef, pointer, array, function, or primitive. The engine models C++ classes
 /// as structures, so a recovered class arrives as [`TypeKind::Struct`];
 /// [`TypeKind::Class`] is reserved for kinds confirmed by other signals
 /// (RTTI, vtable linkage).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TypeKind {
-    /// A structure (or a C++ class, which Ghidra stores as a structure).
+    /// A structure (or a C++ class, which the engine stores as a structure).
     Struct,
     /// A class confirmed by a signal beyond its structure layout.
     Class,
@@ -77,13 +77,13 @@ calxgloss_types::display_serde_label!(TypeKind {
 
 /// One field of a recovered structure layout.
 ///
-/// The persisted counterpart of the wire shape `calxgloss_ghidra::StructFieldLayout`.
+/// The persisted counterpart of the wire shape `calxgloss_decomp::StructFieldLayout`.
 /// The two stay deliberately split — that one is the parsed `struct_layout()`
 /// answer owned by the seam, this one the serde'd recovered record —
 /// and [`From<&StructFieldLayout>`] is the only mapping between them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StructField {
-    /// Field name as Ghidra labels it; `(unnamed)` for anonymous fields.
+    /// Field name as the engine labels it; `(unnamed)` for anonymous fields.
     pub name: String,
     /// Byte offset of the field from the start of the structure.
     pub offset: u64,
@@ -116,21 +116,21 @@ impl StructField {
 
 /// One member of a recovered enumeration.
 ///
-/// The persisted counterpart of the wire shape `calxgloss_ghidra::EnumMember`.
+/// The persisted counterpart of the wire shape `calxgloss_decomp::EnumMember`.
 /// The two records are identical today but stay split on purpose, for the same
-/// reason as [`StructField`], and [`From<&calxgloss_ghidra::EnumMember>`] is
+/// reason as [`StructField`], and [`From<&calxgloss_decomp::EnumMember>`] is
 /// the only mapping between them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnumMember {
     /// Member name, e.g. `ExceptionContinueExecution`.
     pub name: String,
-    /// Member value; signed because Ghidra enums may hold negative values.
+    /// Member value; signed because the engine's enums may hold negative values.
     pub value: i64,
 }
 
 /// Wire → recovered conversions for the layout leaves.
 ///
-/// These impls are the single place the Ghidra wire shapes and the persisted
+/// These impls are the single place the seam record shapes and the persisted
 /// recovered shapes meet; keeping the field copies here rather than inline in
 /// [`NamedType::from_struct`] / [`NamedType::from_enum`] means a wire-shape
 /// change breaks exactly one compile.
@@ -148,8 +148,8 @@ impl From<&StructFieldLayout> for StructField {
     }
 }
 
-impl From<&calxgloss_ghidra::EnumMember> for EnumMember {
-    fn from(member: &calxgloss_ghidra::EnumMember) -> Self {
+impl From<&calxgloss_decomp::EnumMember> for EnumMember {
+    fn from(member: &calxgloss_decomp::EnumMember) -> Self {
         Self {
             name: member.name.clone(),
             value: member.value,
@@ -161,7 +161,7 @@ impl From<&calxgloss_ghidra::EnumMember> for EnumMember {
 // Named types
 // ============================================================
 
-/// A named type recovered from Ghidra's Type Manager.
+/// A named type recovered from the engine's type listing.
 ///
 /// The Type Manager holds every type the program knows about, including types
 /// never applied to a symbol, so a `NamedType` may describe a type that
@@ -184,7 +184,7 @@ pub struct NamedType {
     pub category: String,
     /// Full path through the Type Manager, e.g. `/pe/IMAGE_DOS_HEADER`.
     pub path: String,
-    /// Size in bytes. `None` when Ghidra reports the size as `variable`.
+    /// Size in bytes. `None` when the engine reports the size as `variable`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
     /// Alignment in bytes, when a layout probe reported one.
@@ -285,7 +285,7 @@ pub struct VtableMethod {
     pub slot: usize,
     /// The address the slot's pointer points at.
     pub address: u64,
-    /// The function Ghidra has at that address. `None` when the pointer lands
+    /// The function the engine has at that address. `None` when the pointer lands
     /// outside any known function body.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -303,7 +303,7 @@ pub struct VtableMethod {
 pub struct Vtable {
     /// Address of the table itself.
     pub address: u64,
-    /// The label Ghidra shows, e.g. `vftable`.
+    /// The label the engine shows, e.g. `vftable`.
     pub label: String,
     /// Size of the table in bytes.
     pub size: u64,
@@ -629,7 +629,7 @@ impl From<&InferredStruct> for StructuredData {
 pub struct TypeDatabase {
     /// Provenance of the scan that produced this database.
     pub metadata: ScanMetadata,
-    /// Named types from Ghidra's Type Manager, in Type Manager path
+    /// Named types from the engine's type listing, in Type Manager path
     /// order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub named_types: Vec<NamedType>,
@@ -883,13 +883,13 @@ mod tests {
             size: 128,
             alignment: 1,
             fields: vec![
-                calxgloss_ghidra::StructFieldLayout {
+                calxgloss_decomp::StructFieldLayout {
                     offset: 0,
                     size: 2,
                     type_name: "char[2]".into(),
                     field_name: "e_magic".into(),
                 },
-                calxgloss_ghidra::StructFieldLayout {
+                calxgloss_decomp::StructFieldLayout {
                     offset: 60,
                     size: 4,
                     type_name: "dword".into(),
@@ -914,11 +914,11 @@ mod tests {
             name: "_EXCEPTION_DISPOSITION".into(),
             size: 4,
             members: vec![
-                calxgloss_ghidra::EnumMember {
+                calxgloss_decomp::EnumMember {
                     name: "ExceptionContinueExecution".into(),
                     value: 0,
                 },
-                calxgloss_ghidra::EnumMember {
+                calxgloss_decomp::EnumMember {
                     name: "ExceptionContinueSearch".into(),
                     value: 1,
                 },

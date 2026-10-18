@@ -33,7 +33,7 @@ use calxgloss_apidetect::ffi_bindings::{render_dependency_manifest, render_ffi_b
 use calxgloss_apidetect::persist::ApiPersistor;
 use calxgloss_apidetect::types::ApiFinding;
 use calxgloss_callgraph::{CallGraphEdge, CallType, FunctionCallGraph};
-use calxgloss_ghidra::{
+use calxgloss_decomp::{
     DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
     StringLiteral, StructLayout, Symbol, Xref,
 };
@@ -87,63 +87,63 @@ struct FakeProgram {
 }
 
 impl ScanSource for FakeProgram {
-    async fn functions(&self) -> calxgloss_ghidra::Result<Vec<FunctionSummary>> {
+    async fn functions(&self) -> calxgloss_decomp::Result<Vec<FunctionSummary>> {
         Ok(Vec::new())
     }
 
-    async fn decompile(&self, name: &str) -> calxgloss_ghidra::Result<DecompiledFunction> {
+    async fn decompile(&self, name: &str) -> calxgloss_decomp::Result<DecompiledFunction> {
         Err(EngineError::NotFound {
             kind: "function",
             query: name.to_string(),
         })
     }
 
-    async fn strings(&self) -> calxgloss_ghidra::Result<Vec<StringLiteral>> {
+    async fn strings(&self) -> calxgloss_decomp::Result<Vec<StringLiteral>> {
         Ok(Vec::new())
     }
 
-    async fn callers(&self, _address: u64) -> calxgloss_ghidra::Result<Vec<String>> {
+    async fn callers(&self, _address: u64) -> calxgloss_decomp::Result<Vec<String>> {
         Ok(Vec::new())
     }
 
-    async fn xrefs_to(&self, _address: u64) -> calxgloss_ghidra::Result<Vec<Xref>> {
+    async fn xrefs_to(&self, _address: u64) -> calxgloss_decomp::Result<Vec<Xref>> {
         Ok(Vec::new())
     }
 
     async fn data_types(
         &self,
         _category: Option<&str>,
-    ) -> calxgloss_ghidra::Result<Vec<DataTypeEntry>> {
+    ) -> calxgloss_decomp::Result<Vec<DataTypeEntry>> {
         Ok(Vec::new())
     }
 
-    async fn struct_layout(&self, name: &str) -> calxgloss_ghidra::Result<StructLayout> {
+    async fn struct_layout(&self, name: &str) -> calxgloss_decomp::Result<StructLayout> {
         Err(EngineError::NotFound {
             kind: "struct",
             query: name.to_string(),
         })
     }
 
-    async fn enum_values(&self, name: &str) -> calxgloss_ghidra::Result<EnumDefinition> {
+    async fn enum_values(&self, name: &str) -> calxgloss_decomp::Result<EnumDefinition> {
         Err(EngineError::NotFound {
             kind: "enum",
             query: name.to_string(),
         })
     }
 
-    async fn data_items(&self) -> calxgloss_ghidra::Result<Vec<DataItem>> {
+    async fn data_items(&self) -> calxgloss_decomp::Result<Vec<DataItem>> {
         Ok(Vec::new())
     }
 
-    async fn imports(&self) -> calxgloss_ghidra::Result<Vec<Symbol>> {
+    async fn imports(&self) -> calxgloss_decomp::Result<Vec<Symbol>> {
         Ok(self.imports.clone())
     }
 
-    async fn exports(&self) -> calxgloss_ghidra::Result<Vec<Symbol>> {
+    async fn exports(&self) -> calxgloss_decomp::Result<Vec<Symbol>> {
         Ok(Vec::new())
     }
 
-    async fn image_base(&self) -> calxgloss_ghidra::Result<u64> {
+    async fn image_base(&self) -> calxgloss_decomp::Result<u64> {
         Ok(0)
     }
 
@@ -151,7 +151,7 @@ impl ScanSource for FakeProgram {
         &self,
         _address: u64,
         _length: usize,
-    ) -> calxgloss_ghidra::Result<Vec<u8>> {
+    ) -> calxgloss_decomp::Result<Vec<u8>> {
         Ok(Vec::new())
     }
 }

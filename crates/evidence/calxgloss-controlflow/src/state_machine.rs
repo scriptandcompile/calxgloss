@@ -1,6 +1,6 @@
 //! State-machine pattern detection.
 //!
-//! A state machine in Ghidra output looks like a switch-shaped chain on a
+//! A state machine in decompiler output looks like a switch-shaped chain on a
 //! state variable (`if (state == STATE_IDLE) ... else if (state ==
 //! STATE_RUN) ...`) whose case bodies assign new values to that same
 //! variable (transitions). The detector requires at least `min_states` arms

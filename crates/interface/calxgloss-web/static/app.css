@@ -2016,19 +2016,19 @@ svg {
     color: var(--accent-blue);
 }
 
-/* ─── Ghidra Context Viewer ───────────────────────────────────────────── */
+/* ─── Decompiler Context Viewer ───────────────────────────────────────────── */
 
-.ghidra-viewer {
+.decomp-viewer {
     display: none;
     flex-direction: column;
     gap: 0;
 }
 
-.ghidra-viewer.active {
+.decomp-viewer.active {
     display: flex;
 }
 
-.ghidra-decompiler {
+.decomp-decompiler {
     padding: 12px;
     font-family: var(--font-mono);
     font-size: 12px;
@@ -2044,7 +2044,7 @@ svg {
     margin-bottom: 12px;
 }
 
-.ghidra-disassembly {
+.decomp-disassembly {
     padding: 12px;
     font-family: var(--font-mono);
     font-size: 12px;
@@ -2058,7 +2058,7 @@ svg {
     overflow-y: auto;
 }
 
-.ghidra-label {
+.decomp-label {
     font-size: 11px;
     font-weight: 600;
     text-transform: uppercase;
@@ -2067,14 +2067,14 @@ svg {
     margin-bottom: 6px;
 }
 
-.ghidra-api-calls {
+.decomp-api-calls {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
     margin-bottom: 12px;
 }
 
-.ghidra-api-tag {
+.decomp-api-tag {
     padding: 3px 10px;
     border-radius: 12px;
     background: var(--accent-purple-dim);
@@ -2083,7 +2083,7 @@ svg {
     font-family: var(--font-mono);
 }
 
-.ghidra-empty {
+.decomp-empty {
     padding: 20px;
     text-align: center;
     color: var(--text-muted);

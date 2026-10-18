@@ -31,7 +31,7 @@ use std::collections::HashMap;
 use crate::cross_function::is_bare_identifier;
 use crate::known_type::{BYTE_BUFFER, KnownTypePropagationEngine};
 use crate::types::{InferenceMethod, InferenceScope, InferredReturnType, InferredType};
-use calxgloss_ghidra::DecompiledFunction;
+use calxgloss_decomp::DecompiledFunction;
 
 use calxgloss_types::{
     CallSite, NON_CALL_KEYWORDS, NameContinuation, ScanOptions, call_sites, line_at, skip_char,

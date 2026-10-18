@@ -53,7 +53,7 @@
 //!   reports two functions acquiring the same two locks in opposite
 //!   orders as a `lock_order` conflict, then reads the same bodies for
 //!   one function writing a program global another reads with no lock
-//!   both sides respect, as a `data_race` claim — no extra Ghidra
+//!   both sides respect, as a `data_race` claim — no extra decompiler reads
 //!   round trips.
 //! - [`engine`] - Scan orchestration: `SyncEngine` runs the per-body
 //!   detectors over one loaded program through a `ScanSource`

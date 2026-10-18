@@ -41,7 +41,7 @@ const RUST_KEYWORDS: &[&str] = &[
     "virtual", "where", "while", "yield",
 ];
 
-/// Ghidra builtin type names mapped to their Rust scalar shapes.
+/// Decompiler builtin type names mapped to their Rust scalar shapes.
 ///
 /// Sizes follow the 64-bit Windows programs this pipeline targets (Ghidra's
 /// `long` is the Windows 4-byte `long`). Widths that have no Rust scalar —
@@ -294,7 +294,7 @@ fn push_padding(out: &mut String, offset: u64, gap: u64) {
     out.push_str(&format!("    _pad_{offset}: [u8; {gap}],\n"));
 }
 
-/// Map a Ghidra/C type name to its Rust shape: primitives through the
+/// Map a decompiler/C type name to its Rust shape: primitives through the
 /// table, `T[N]` to an array, `T *` to a raw pointer; anything else is a
 /// type reference kept as a sanitized identifier.
 fn map_c_type(name: &str) -> String {

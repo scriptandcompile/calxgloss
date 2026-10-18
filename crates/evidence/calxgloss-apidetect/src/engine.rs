@@ -26,17 +26,17 @@ use crate::types::{ApiDetectionResult, ScanMetadata};
 
 /// The program facts an API scan reads.
 ///
-/// The shared trait from the Ghidra integration crate, re-exported here
+/// The shared trait from the decompiler seam crate, re-exported here
 /// so the engine's generic shape names it where it always has;
 /// [`KunaSource`] implements it over the in-process engine, and tests
 /// implement it over canned listings so the orchestration runs without
 /// a server. The futures are `Send` so a scan can be driven from an
 /// orchestrating task.
-pub use calxgloss_ghidra::ScanSource;
+pub use calxgloss_decomp::ScanSource;
 
 /// The built call graph an API scan reads.
 ///
-/// Deliberately outside [`ScanSource`]: the graph is not a single Ghidra
+/// Deliberately outside [`ScanSource`]: the graph is not a single seam
 /// read but a composite of them, assembled by the call-graph builder —
 /// which reads through the shared seam itself — so the shared trait
 /// stays a listing of raw program facts and this small trait carries
@@ -52,7 +52,7 @@ pub trait CallGraphSource {
 impl CallGraphSource for KunaSource {
     async fn call_graph(&self, binary: &str) -> Result<Vec<FunctionCallGraph>> {
         let graph =
-            CallGraphBuilder::new(calxgloss_ghidra::PipelineSource::from(self.clone()), binary)
+            CallGraphBuilder::new(calxgloss_decomp::PipelineSource::from(self.clone()), binary)
                 .build()
                 .await
                 .map_err(|error| ApiError::CallGraph {
@@ -62,7 +62,7 @@ impl CallGraphSource for KunaSource {
     }
 }
 
-impl CallGraphSource for calxgloss_ghidra::PipelineSource {
+impl CallGraphSource for calxgloss_decomp::PipelineSource {
     async fn call_graph(&self, binary: &str) -> Result<Vec<FunctionCallGraph>> {
         // The builder reads through the shared seam itself, so a cached
         // pipeline source assembles the graph from cached reads.
@@ -212,7 +212,7 @@ mod tests {
     use crate::lib_mapping::{LibraryMapping, MappingDatabase};
     use crate::types::Confidence;
     use calxgloss_callgraph::CallGraphEdge;
-    use calxgloss_ghidra::{
+    use calxgloss_decomp::{
         DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
         StringLiteral, StructLayout, Symbol, Xref,
     };
@@ -246,55 +246,55 @@ mod tests {
     }
 
     impl ScanSource for FakeProgram {
-        async fn functions(&self) -> calxgloss_ghidra::Result<Vec<FunctionSummary>> {
+        async fn functions(&self) -> calxgloss_decomp::Result<Vec<FunctionSummary>> {
             Ok(Vec::new())
         }
 
-        async fn decompile(&self, name: &str) -> calxgloss_ghidra::Result<DecompiledFunction> {
+        async fn decompile(&self, name: &str) -> calxgloss_decomp::Result<DecompiledFunction> {
             Err(EngineError::NotFound {
                 kind: "function",
                 query: name.to_string(),
             })
         }
 
-        async fn strings(&self) -> calxgloss_ghidra::Result<Vec<StringLiteral>> {
+        async fn strings(&self) -> calxgloss_decomp::Result<Vec<StringLiteral>> {
             Ok(Vec::new())
         }
 
-        async fn callers(&self, _address: u64) -> calxgloss_ghidra::Result<Vec<String>> {
+        async fn callers(&self, _address: u64) -> calxgloss_decomp::Result<Vec<String>> {
             Ok(Vec::new())
         }
 
-        async fn xrefs_to(&self, _address: u64) -> calxgloss_ghidra::Result<Vec<Xref>> {
+        async fn xrefs_to(&self, _address: u64) -> calxgloss_decomp::Result<Vec<Xref>> {
             Ok(Vec::new())
         }
 
         async fn data_types(
             &self,
             _category: Option<&str>,
-        ) -> calxgloss_ghidra::Result<Vec<DataTypeEntry>> {
+        ) -> calxgloss_decomp::Result<Vec<DataTypeEntry>> {
             Ok(Vec::new())
         }
 
-        async fn struct_layout(&self, name: &str) -> calxgloss_ghidra::Result<StructLayout> {
+        async fn struct_layout(&self, name: &str) -> calxgloss_decomp::Result<StructLayout> {
             Err(EngineError::NotFound {
                 kind: "struct",
                 query: name.to_string(),
             })
         }
 
-        async fn enum_values(&self, name: &str) -> calxgloss_ghidra::Result<EnumDefinition> {
+        async fn enum_values(&self, name: &str) -> calxgloss_decomp::Result<EnumDefinition> {
             Err(EngineError::NotFound {
                 kind: "enum",
                 query: name.to_string(),
             })
         }
 
-        async fn data_items(&self) -> calxgloss_ghidra::Result<Vec<DataItem>> {
+        async fn data_items(&self) -> calxgloss_decomp::Result<Vec<DataItem>> {
             Ok(Vec::new())
         }
 
-        async fn imports(&self) -> calxgloss_ghidra::Result<Vec<Symbol>> {
+        async fn imports(&self) -> calxgloss_decomp::Result<Vec<Symbol>> {
             if self.fail_imports {
                 return Err(EngineError::Reported {
                     message: "the engine is busy".into(),
@@ -303,11 +303,11 @@ mod tests {
             Ok(self.imports.clone())
         }
 
-        async fn exports(&self) -> calxgloss_ghidra::Result<Vec<Symbol>> {
+        async fn exports(&self) -> calxgloss_decomp::Result<Vec<Symbol>> {
             Ok(Vec::new())
         }
 
-        async fn image_base(&self) -> calxgloss_ghidra::Result<u64> {
+        async fn image_base(&self) -> calxgloss_decomp::Result<u64> {
             Ok(0)
         }
 
@@ -315,7 +315,7 @@ mod tests {
             &self,
             _address: u64,
             _length: usize,
-        ) -> calxgloss_ghidra::Result<Vec<u8>> {
+        ) -> calxgloss_decomp::Result<Vec<u8>> {
             Ok(Vec::new())
         }
         // Story 9 (#203): the fake source names itself, so the tests can pin
