@@ -155,6 +155,11 @@ impl<S> TypesDBEngine<S> {
         let stl_flagged = flag_stl_types(&mut named_types, &mut vtables, &mut inferred_structs);
 
         let mut metadata = ScanMetadata::new(binary);
+        // The source names its engine and pin under `kuna`; the Ghidra
+        // path names nothing and the record stays exactly as it was
+        // (issue #208). The three scanners share one source, so any of
+        // them can answer for it.
+        metadata.engine = self.scanner.source().engine_provenance();
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
             binary = %metadata.binary,

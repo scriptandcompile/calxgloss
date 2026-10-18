@@ -25,7 +25,7 @@ pub mod error;
 pub mod source;
 pub(crate) mod specs;
 
-pub use engine::{KUNA_RELEASE, KunaProgram, load};
+pub use engine::{KUNA_PIN_REV, KUNA_RELEASE, KunaProgram, load};
 pub use error::{KunaError, Result};
 pub use source::{
     KunaDataItem, KunaDataType, KunaDecompiled, KunaEnumDefinition, KunaEnumMember, KunaFunction,

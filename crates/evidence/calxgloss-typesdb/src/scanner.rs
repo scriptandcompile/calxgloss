@@ -173,6 +173,12 @@ impl<S> TypeLibraryScanner<S> {
         }
     }
 
+    /// The source this scanner reads the Type Manager through. The
+    /// engine's scan asks it what engine produced the reads (issue #208).
+    pub(crate) fn source(&self) -> &S {
+        &self.source
+    }
+
     /// Restrict the scan to a Type Manager category or name fragment.
     pub fn with_category(mut self, category: impl Into<String>) -> Self {
         self.category = Some(category.into());

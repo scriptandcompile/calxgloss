@@ -299,6 +299,10 @@ impl<S> SyncEngine<S> {
         findings.extend(self.cross_function.analyze(&bodies, &self.mutex));
 
         let mut metadata = ScanMetadata::new(binary);
+        // The source names its engine and pin under `kuna`; the Ghidra
+        // path names nothing and the record stays exactly as it was
+        // (issue #208).
+        metadata.engine = self.source.engine_provenance();
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
             binary = %metadata.binary,
@@ -459,6 +463,15 @@ mod tests {
 
         async fn read_memory(&self, _address: u64, _length: usize) -> Result<Vec<u8>> {
             Ok(Vec::new())
+        }
+        // Story 9 (#203): the fake source names itself, so the tests can pin
+        // that scan() stamps the source's provenance onto the record (#208).
+        fn engine_provenance(&self) -> Option<calxgloss_types::EngineProvenance> {
+            Some(calxgloss_types::EngineProvenance {
+                name: "fake-engine".into(),
+                version: Some("9.9".into()),
+                fingerprint: Some("0123456".into()),
+            })
         }
     }
 
@@ -1207,6 +1220,15 @@ mod tests {
         assert_eq!(result.metadata.binary, "eqmain.dll");
         assert!(result.metadata.scanned_at > 0);
         assert!(result.metadata.duration_secs < 60);
+        // Story 9 (#203): the record also names the engine that produced it —
+        // scan() copies the source's provenance through (#208).
+        let engine = result
+            .metadata
+            .engine
+            .expect("scan record names its engine");
+        assert_eq!(engine.name, "fake-engine");
+        assert_eq!(engine.version.as_deref(), Some("9.9"));
+        assert_eq!(engine.fingerprint.as_deref(), Some("0123456"));
     }
 
     #[tokio::test]

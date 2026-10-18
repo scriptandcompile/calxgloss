@@ -35,6 +35,7 @@ use crate::model::{
     StringLiteral, StructFieldLayout, StructLayout, Symbol, Xref,
 };
 use calxgloss_kuna::KunaSource;
+use calxgloss_types::EngineProvenance;
 
 /// The read-only program facts every evidence engine pulls from Ghidra.
 ///
@@ -104,6 +105,19 @@ pub trait ScanSource {
         address: u64,
         length: usize,
     ) -> impl std::future::Future<Output = Result<Vec<u8>>> + Send;
+
+    /// The decompiler engine answering these reads, when the source names one.
+    ///
+    /// Engine identity, not a program read: a scan record stamps this
+    /// beside its timing so a reviewer can tell what produced any
+    /// decompilation inside the record and re-create or blame it
+    /// (issue #208). The default names nothing — the Ghidra client and
+    /// the read cache leave scan records byte-for-byte what they were —
+    /// while the Kuna source names its engine, pinned release, and
+    /// source fingerprint.
+    fn engine_provenance(&self) -> Option<EngineProvenance> {
+        None
+    }
 }
 
 impl ScanSource for GhidraClient {
@@ -368,6 +382,19 @@ impl ScanSource for KunaSource {
             .await
             .map_err(GhidraError::from)
     }
+
+    fn engine_provenance(&self) -> Option<EngineProvenance> {
+        // The pin is the build: the release tag and the short commit of
+        // the checkout the engine and its embedded specs came from are
+        // the same facts `build.rs` read out of the lock file, so a scan
+        // record names exactly the engine source that produced it
+        // (issue #208).
+        Some(EngineProvenance {
+            name: "kuna".to_string(),
+            version: Some(calxgloss_kuna::KUNA_RELEASE.to_string()),
+            fingerprint: Some(calxgloss_kuna::KUNA_PIN_REV.to_string()),
+        })
+    }
 }
 
 /// The one concrete read source a translation batch hands to every consumer.
@@ -512,6 +539,18 @@ impl ScanSource for PipelineSource {
             Self::Live(client) => ScanSource::read_memory(client, address, length).await,
             Self::Cached(cache) => ScanSource::read_memory(cache, address, length).await,
             Self::Kuna(source) => ScanSource::read_memory(source, address, length).await,
+        }
+    }
+
+    fn engine_provenance(&self) -> Option<EngineProvenance> {
+        // Identity forwards like the reads: only the Kuna arm names an
+        // engine, so a scan record built over this source says which of
+        // the three paths produced it — and a Ghidra-path record stays
+        // unnamed, exactly as before (issue #208).
+        match self {
+            Self::Live(client) => ScanSource::engine_provenance(client),
+            Self::Cached(cache) => ScanSource::engine_provenance(cache),
+            Self::Kuna(source) => ScanSource::engine_provenance(source),
         }
     }
 }

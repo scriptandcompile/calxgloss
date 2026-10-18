@@ -352,6 +352,10 @@ impl<S> TypeInferEngine<S> {
         );
 
         let mut metadata = ScanMetadata::new(binary);
+        // The source names its engine and pin under `kuna`; the Ghidra
+        // path names nothing and the record stays exactly as it was
+        // (issue #208).
+        metadata.engine = self.source.engine_provenance();
         metadata.duration_secs = started.elapsed().as_secs();
         info!(
             binary = %metadata.binary,

@@ -1,5 +1,5 @@
-//! The Kuna engine behind the `ScanSource` seam, end to end (issues #206
-//! and #207, part of epic #203).
+//! The Kuna engine behind the `ScanSource` seam, end to end (issues #206,
+//! #207, and #208, part of epic #203).
 //!
 //! These tests drive the seam itself — `ScanSource` through
 //! `PipelineSource::Kuna` — over the checked-in fixture DLL: every read the
@@ -9,8 +9,8 @@
 //! artifact layout reads back. The engine-native API is pinned in
 //! `calxgloss-kuna/tests/kuna_scan.rs`.
 
-use calxgloss_ghidra::{GhidraError, PipelineSource, ScanSource, Xref};
-use calxgloss_kuna::KunaSource;
+use calxgloss_ghidra::{GhidraClient, GhidraError, PipelineSource, ScanSource, Xref};
+use calxgloss_kuna::{KUNA_PIN_REV, KUNA_RELEASE, KunaSource};
 use calxgloss_testfixtures::{
     EXPORT_NAMES, IMPORT_DLL_NAMES, IMPORT_FUNCTIONS, STRING_LITERALS, TARGET_FILE_NAME,
 };
@@ -387,6 +387,33 @@ async fn a_kuna_scan_persists_function_and_dll_records_the_web_reads_back() {
     for export in &back.exports {
         assert!(export.address >= base, "recorded exports keep their VAs");
     }
+}
+
+/// The seam's own provenance read (issue #208): a Kuna-powered pipeline
+/// names its engine, release, and pinned source, so a scan record built
+/// over it can carry them; the Ghidra arms name nothing, so their records
+/// stay exactly as they were on disk.
+#[test]
+fn the_seam_names_its_engine_only_under_kuna() {
+    let provenance = fixture_pipeline_source()
+        .engine_provenance()
+        .expect("the Kuna arm names its engine");
+    assert_eq!(provenance.name, "kuna");
+    assert_eq!(provenance.version.as_deref(), Some(KUNA_RELEASE));
+    assert_eq!(provenance.fingerprint.as_deref(), Some(KUNA_PIN_REV));
+    assert!(
+        !KUNA_RELEASE.is_empty()
+            && KUNA_PIN_REV.len() == 7
+            && KUNA_PIN_REV.chars().all(|c| c.is_ascii_hexdigit()),
+        "the pin names a short git commit: {KUNA_RELEASE} @ {KUNA_PIN_REV}"
+    );
+
+    let client =
+        GhidraClient::new("http://127.0.0.1:1").expect("a client needs no server to build");
+    assert!(
+        PipelineSource::from(client).engine_provenance().is_none(),
+        "the Ghidra path names no engine, so its scan records stay byte-for-byte as they were",
+    );
 }
 
 /// The DLL a fixture import comes from — the mapping the scan applies over

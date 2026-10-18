@@ -23,8 +23,9 @@ const SKIPPED_EXTENSIONS: &[&str] = &["slaspec", "sinc", "lock"];
 
 /// The Kuna pin, read from `Cargo.lock` — the one place the pin is
 /// authoritative. The tag is what `src/engine.rs` reports as
-/// `KUNA_RELEASE`, and the short rev names the git-checkout directory whose
-/// specs get embedded, so neither can drift from the manifest pin.
+/// `KUNA_RELEASE`, the short rev names the git-checkout directory whose
+/// specs get embedded and the source fingerprint `KUNA_PIN_REV` reports,
+/// so none of them can drift from the manifest pin.
 struct Pin {
     tag: String,
     rev: String,
@@ -201,11 +202,13 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
 
-    // The pin comes out of the lock file, and the tag rides into the crate's
-    // environment so the reported release and the embedded specs can never
+    // The pin comes out of the lock file, and the tag and short rev ride
+    // into the crate's environment so the reported release, the embedded
+    // specs, and the source fingerprint a scan record names can never
     // drift apart from the pin.
     let pin = read_pin();
     println!("cargo:rustc-env=CALXGLOSS_KUNA_RELEASE={}", pin.tag);
+    println!("cargo:rustc-env=CALXGLOSS_KUNA_PIN_REV={}", pin.rev);
 
     let specs = locate_specs(&pin);
     println!("cargo:rerun-if-changed={}", specs.display());

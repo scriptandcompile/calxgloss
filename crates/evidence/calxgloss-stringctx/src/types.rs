@@ -725,6 +725,7 @@ mod tests {
                 binary: "eqmain.dll".into(),
                 scanned_at: 1_759_488_000,
                 duration_secs: 12,
+                engine: None,
             },
             findings: vec![
                 StringFinding::Classified(classified_record()),

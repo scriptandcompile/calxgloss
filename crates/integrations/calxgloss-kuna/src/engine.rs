@@ -20,6 +20,13 @@ use crate::specs;
 /// the embedded specs always name the same checkout.
 pub const KUNA_RELEASE: &str = env!("CALXGLOSS_KUNA_RELEASE");
 
+/// The pinned Kuna source fingerprint — the short commit of the checkout
+/// this build's engine and embedded specs came from. Beside
+/// [`KUNA_RELEASE`] it names the exact engine source a scan record was
+/// produced by, so the record can be re-created or blamed (issue #208);
+/// `build.rs` derives it from the same lock-file pin.
+pub const KUNA_PIN_REV: &str = env!("CALXGLOSS_KUNA_PIN_REV");
+
 /// A program loaded by the Kuna engine.
 ///
 /// The loaded program stays inside: the scan reads
