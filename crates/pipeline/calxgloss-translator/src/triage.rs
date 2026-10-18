@@ -1,60 +1,91 @@
-//! Triage of Ghidra decompiler warnings.
+//! Triage of decompiler warnings, in either engine's dialect.
 //!
-//! Ghidra writes its analysis failures into the pseudo-C itself as
-//! `/* WARNING: ... */` comments. Left unread they are cheap to miss and
-//! expensive to ignore: an unrecovered jump table decompiles to an
-//! `UNRECOVERED_JUMPTABLE` local called through a code pointer followed by
-//! a bare `return`, and the LLM translates that wreckage faithfully into
-//! plausible, hollow Rust. This module reads the warnings out of the
+//! The decompiler writes its analysis failures into the pseudo-C itself —
+//! Ghidra as `/* WARNING: ... */` banners, Kuna as terse `// slug` end-of-line
+//! comments. Left unread they are cheap to miss and expensive to ignore: an
+//! unrecovered jump table decompiles to an `UNRECOVERED_JUMPTABLE` local
+//! called through a code pointer followed by a bare `return` (Ghidra), or a
+//! truncated dispatch (Kuna), and the LLM translates that wreckage faithfully
+//! into plausible, hollow Rust. This module reads the warnings out of the
 //! decompiler body before a prompt is built, so the pipeline can name the
-//! address a human needs to look at instead of quietly translating around
-//! it.
+//! jump a human needs to look at instead of quietly translating around it.
 
-/// An indirect jump Ghidra could not resolve into a switch: it gave up on
-/// the jump table at `address` ("Could not recover jumptable"), emitted an
-/// `UNRECOVERED_JUMPTABLE` local, and treats the jump as a call.
+/// An indirect jump the decompiler could not resolve into a switch: it gave
+/// up on the jump table and treats the jump as a call. Ghidra says so with a
+/// `Could not recover jumptable at 0x…` banner; Kuna truncates the function
+/// and marks the line with a `jump-as-call` comment slug.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnrecoveredJumpTable {
-    /// Virtual address of the indirect jump Ghidra gave up on.
-    pub address: u64,
+    /// Virtual address of the indirect jump, when the warning names one.
+    /// Ghidra's marker carries it; Kuna's inline slug comment does not.
+    pub address: Option<u64>,
 
-    /// Ghidra's stated reason, e.g. "Too many branches". Empty when the
-    /// warning carries none.
+    /// The decompiler's stated reason, e.g. "Too many branches". Empty when
+    /// the warning carries none.
     pub reason: String,
 }
 
 /// Find every unrecovered-jumptable warning in a decompiler body, in order
-/// of appearance.
+/// of appearance, in either engine's spelling.
 ///
 /// The reading is deliberately string-level: the decompiler text is opaque
-/// input, and the warning's own wording — `Could not recover jumptable at
-/// 0x<hex>. <reason>` — is the evidence. One warning per line is assumed,
-/// as Ghidra emits them. A warning whose address does not parse as
-/// hexadecimal is dropped rather than failing the scan: this is triage,
-/// not a gate, and a miss costs only the log line it would have produced.
+/// input, and the warning's own wording is the evidence — Ghidra's
+/// `Could not recover jumptable at 0x<hex>. <reason>` marker, or Kuna's
+/// `jump-as-call` slug inside a `//` comment (the slug carries no address).
+/// One warning per line is assumed, as both engines emit them. A Ghidra
+/// warning whose address does not parse as hexadecimal is dropped rather
+/// than failing the scan: this is triage, not a gate, and a miss costs only
+/// the log line it would have produced.
 pub fn scan_unrecovered_jump_tables(decompiler_output: &str) -> Vec<UnrecoveredJumpTable> {
     const MARKER: &str = "Could not recover jumptable at ";
+    // Kuna's inline warning slug for the jump table it truncates
+    // (`// jt: jump-as-call`; the `jt: ` category prefix is only attached to
+    // jumptable-tagged warnings, so the bare slug is accepted too).
+    const KUNA_SLUG: &str = "jump-as-call";
+    // Kuna's fallback slug form keeps unrecognized warnings in full behind a
+    // `warn:` marker; match the warning's own stem so that form reads too.
+    const KUNA_WARNING: &str = "Treating indirect jump as call";
 
     let mut found = Vec::new();
     for line in decompiler_output.lines() {
-        let Some(rest) = line.split(MARKER).nth(1) else {
+        if let Some(rest) = line.split(MARKER).nth(1) {
+            // `rest` reads like "0x004712d7. Too many branches */": the address
+            // token ends at whitespace (with a trailing period), the reason runs
+            // to the comment closer.
+            let mut tokens = rest.splitn(2, char::is_whitespace);
+            let address_hex = tokens.next().unwrap_or("").trim_end_matches('.');
+            let Ok(address) = u64::from_str_radix(address_hex.trim_start_matches("0x"), 16) else {
+                continue;
+            };
+            let reason = tokens
+                .next()
+                .unwrap_or("")
+                .trim_end_matches("*/")
+                .trim()
+                .to_string();
+            found.push(UnrecoveredJumpTable {
+                address: Some(address),
+                reason,
+            });
+            continue;
+        }
+        // Kuna dialect: the signal is a slug inside a `//` comment, never a
+        // marker. Several slugs share one comment, comma-separated.
+        let Some(comment) = line.split_once("//").map(|(_, comment)| comment) else {
             continue;
         };
-        // `rest` reads like "0x004712d7. Too many branches */": the address
-        // token ends at whitespace (with a trailing period), the reason runs
-        // to the comment closer.
-        let mut tokens = rest.splitn(2, char::is_whitespace);
-        let address_hex = tokens.next().unwrap_or("").trim_end_matches('.');
-        let Ok(address) = u64::from_str_radix(address_hex.trim_start_matches("0x"), 16) else {
-            continue;
-        };
-        let reason = tokens
-            .next()
-            .unwrap_or("")
-            .trim_end_matches("*/")
-            .trim()
-            .to_string();
-        found.push(UnrecoveredJumpTable { address, reason });
+        let flagged = comment.split(',').any(|slug| {
+            let slug = slug.trim();
+            // A slug may carry a `category:` (or `warn:`) prefix.
+            let bare = slug.rsplit(':').next().unwrap_or(slug).trim();
+            bare == KUNA_SLUG || slug.contains(KUNA_WARNING)
+        });
+        if flagged {
+            found.push(UnrecoveredJumpTable {
+                address: None,
+                reason: String::new(),
+            });
+        }
     }
     found
 }
@@ -93,9 +124,11 @@ void __fastcall DelayLoad_cef_string_utf16_clear(undefined4 param_1,undefined4 p
         assert_eq!(
             found,
             vec![UnrecoveredJumpTable {
-                address: 0x004712d7,
+                address: Some(0x004712d7),
                 reason: "Too many branches".to_string(),
-            }]
+            }],
+            "the Ghidra banner reports once even though the body also carries \
+             the 'Treating indirect jump as call' banner"
         );
     }
 
@@ -106,8 +139,8 @@ void __fastcall DelayLoad_cef_string_utf16_clear(undefined4 param_1,undefined4 p
 /* WARNING: Could not recover jumptable at 0x0040ff1f. Bad jumptable */";
         let found = scan_unrecovered_jump_tables(body);
         assert_eq!(found.len(), 2);
-        assert_eq!(found[0].address, 0x004010a0);
-        assert_eq!(found[1].address, 0x0040ff1f);
+        assert_eq!(found[0].address, Some(0x004010a0));
+        assert_eq!(found[1].address, Some(0x0040ff1f));
         assert_eq!(found[1].reason, "Bad jumptable");
     }
 
@@ -116,7 +149,7 @@ void __fastcall DelayLoad_cef_string_utf16_clear(undefined4 param_1,undefined4 p
         let body = "/* WARNING: Could not recover jumptable at 0x180001234. */";
         let found = scan_unrecovered_jump_tables(body);
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].address, 0x180001234);
+        assert_eq!(found[0].address, Some(0x180001234));
         assert_eq!(found[0].reason, "");
     }
 
@@ -127,13 +160,75 @@ void __fastcall DelayLoad_cef_string_utf16_clear(undefined4 param_1,undefined4 p
 /* WARNING: Could not recover jumptable at 0x4010a0. Too many branches */";
         let found = scan_unrecovered_jump_tables(body);
         assert_eq!(found.len(), 1, "only the parseable warning reports");
-        assert_eq!(found[0].address, 0x4010a0);
+        assert_eq!(found[0].address, Some(0x4010a0));
     }
 
     #[test]
     fn a_clean_body_finds_nothing() {
         let body = "\
 undefined8 FUN_18003e750(undefined8 param_1)
+{
+  switch(param_1) {
+  case 1:
+    break;
+  }
+  return 0;
+}";
+        assert!(scan_unrecovered_jump_tables(body).is_empty());
+    }
+
+    // --- Kuna dialect ----------------------------------------------------
+
+    /// The same unrecovered jump table as Kuna renders it (default
+    /// `warnstyle inline`): the truncated dispatch carries a `// jt:
+    /// jump-as-call` end-of-line comment instead of a Ghidra banner.
+    #[test]
+    fn a_kuna_slug_comment_reads_without_an_address() {
+        let body = "\
+undefined8 sub_140002490(undefined8 param_1)
+
+{
+  long lVar1;
+  (*puVar4)(); // jt: jump-as-call
+  return 0;
+}";
+        let found = scan_unrecovered_jump_tables(body);
+        assert_eq!(
+            found,
+            vec![UnrecoveredJumpTable {
+                address: None,
+                reason: String::new()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_kuna_slug_without_the_category_prefix_reads() {
+        let body = "  (*code)(); // jump-as-call";
+        let found = scan_unrecovered_jump_tables(body);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].address, None);
+    }
+
+    #[test]
+    fn a_kuna_line_with_several_slugs_reports_once() {
+        let body = "  switch(lVar3) { // jt: jump-as-call, no-return";
+        let found = scan_unrecovered_jump_tables(body);
+        assert_eq!(found.len(), 1, "one warning per line, as Kuna emits them");
+    }
+
+    #[test]
+    fn a_kuna_warn_fallback_slug_reads() {
+        // Unrecognized warning text keeps its full text behind `warn:`.
+        let body = "  (*code)(); // warn: WARNING (jumptable): Treating indirect jump as call";
+        let found = scan_unrecovered_jump_tables(body);
+        assert_eq!(found.len(), 1);
+    }
+
+    #[test]
+    fn a_kuna_body_without_the_slug_finds_nothing() {
+        let body = "\
+undefined8 sub_140002490(undefined8 param_1)
 {
   switch(param_1) {
   case 1:

@@ -647,12 +647,17 @@ pub fn callees_from_decompiled(text: &str) -> Vec<String> {
     found
 }
 
-/// Ghidra's prefixes for a function it has no real name for.
-fn is_ghidra_name(ident: &str) -> bool {
-    ident.starts_with("FUN_") || ident.starts_with("LAB_") || ident.starts_with("SUB_")
+/// A decompiler's prefixes for a function it has no real name for, in either
+/// engine's spelling: Ghidra's uppercase `FUN_`/`LAB_`/`SUB_`, or Kuna's
+/// lowercase `sub_` (its unnamed functions are `sub_<addr>`).
+fn is_decompiler_default_name(ident: &str) -> bool {
+    ident.starts_with("FUN_")
+        || ident.starts_with("LAB_")
+        || ident.starts_with("SUB_")
+        || ident.starts_with("sub_")
 }
 
-/// Ghidra-named identifiers on `line` that are applied to an argument list.
+/// Default-named identifiers on `line` that are applied to an argument list.
 ///
 /// The test is that the identifier is *immediately* followed by `(`, not that a
 /// `(` appears somewhere on the line: a cast such as `(int **)FUN_1800861f0(x)`
@@ -677,7 +682,7 @@ fn call_targets(line: &str) -> Vec<&str> {
         }
         if after < bytes.len() && bytes[after] == b'(' {
             let ident = &line[start..i];
-            if is_ghidra_name(ident) {
+            if is_decompiler_default_name(ident) {
                 out.push(ident);
             }
         }
@@ -1086,6 +1091,17 @@ mod tests {
     fn test_deduplicates_repeated_callees() {
         let body = "void f(void)\n{\n  FUN_1();\n  FUN_1();\n  FUN_2();\n}\n";
         assert_eq!(callees_from_decompiled(body), vec!["FUN_1", "FUN_2"]);
+    }
+
+    #[test]
+    fn test_scrapes_kuna_default_names_from_a_kuna_body() {
+        // Kuna names its unnamed functions `sub_<addr>`, lowercase; the
+        // scraper has to read that spelling too.
+        let body = "undefined8 sub_140002490(undefined8 param_1)\n{\n  sub_1400025a0(param_1);\n  uVar2 = sub_1400026b0(local_10);\n  sub_1400025a0(param_1);\n}\n";
+        assert_eq!(
+            callees_from_decompiled(body),
+            vec!["sub_1400025a0", "sub_1400026b0"]
+        );
     }
 
     #[test]

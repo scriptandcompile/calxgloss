@@ -1331,14 +1331,20 @@ impl TranslationPipeline {
     /// generated Rust will be hollow exactly there. Logging the address
     /// turns "the Rust is just a `return`" into a pointer at the jump to
     /// recover in Ghidra (or reconstruct from the disassembly's table).
+    /// Kuna's inline slug comment names no address, so the jump is logged
+    /// as an unknown site.
     fn triage_decompiler_warnings(&self, binary: &str, function: &str, decompiler_output: &str) {
         for table in crate::triage::scan_unrecovered_jump_tables(decompiler_output) {
+            let address = table.address.map_or_else(
+                || "unknown".to_string(),
+                |address| format!("{address:#010x}"),
+            );
             warn!(
                 binary,
                 function,
-                address = format!("{:#010x}", table.address),
+                address = %address,
                 reason = %table.reason,
-                "Ghidra could not recover this jump table — the indirect jump decompiles as a call; the dispatch needs human recovery before the translation can be trusted"
+                "the decompiler could not recover this jump table — the indirect jump decompiles as a call; the dispatch needs human recovery before the translation can be trusted"
             );
         }
     }

@@ -263,4 +263,23 @@ mod tests {
             assert_eq!(detect(name), None, "{name}");
         }
     }
+
+    #[test]
+    fn decompiler_default_names_are_not_flagged() {
+        // The unnamed-function placeholders both engines mint — Ghidra's
+        // `FUN_…`/`LAB_…`/`SUB_…` and Kuna's lowercase `sub_…`/`dat_…`/
+        // `label_…` — are address spellings, not types: no shape token
+        // can whole-word match inside the bare hex tail, so the detector
+        // stays silent on either dialect's names.
+        for name in [
+            "FUN_1800861f0",
+            "LAB_1800010b7",
+            "SUB_140002490",
+            "sub_140002490",
+            "dat_140003e8c",
+            "label_1400010b7",
+        ] {
+            assert_eq!(detect(name), None, "{name}");
+        }
+    }
 }

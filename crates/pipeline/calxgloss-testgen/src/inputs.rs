@@ -99,6 +99,10 @@ impl DisassemblyEdgeCases {
     /// - `cmp reg, -1` — negative one checks
     /// - `cmp reg, 256` / `cmp reg, 65536` — common boundary values
     ///
+    /// Both spellings read: the lowercase objdump-style text GhidraMCP
+    /// serves (`cmp eax, 256`) and Kuna's uppercase SLEIGH listing with
+    /// `0x` hex immediates (`CMP EAX,0x64`).
+    ///
     /// # Arguments
     ///
     /// * `disassembly` — Raw disassembly text to analyze.
@@ -138,12 +142,14 @@ impl DisassemblyEdgeCases {
 
     /// Extract values from `cmp` instructions.
     fn extract_cmp_values(line: &str, cases: &mut Self) {
-        // Match patterns like "cmp eax, 256" or "cmp ecx, -1"
-        if let Some(cap) = regex::Regex::new(r"cmp\s+\w+,\s*(-?\d+)")
+        // Match patterns like "cmp eax, 256" or "cmp ecx, -1", and Kuna's
+        // SLEIGH-style spelling "CMP EAX,0x64": the mnemonic case and the
+        // `0x` hex immediate are dialect, the compared value is the signal.
+        if let Some(cap) = regex::Regex::new(r"(?i)cmp\s+\w+,\s*(0x[0-9a-f]+|-?\d+)")
             .ok()
             .and_then(|r| r.captures(line))
             && let Some(val_str) = cap.get(1)
-            && let Ok(val) = val_str.as_str().parse::<i64>()
+            && let Some(val) = parse_immediate(val_str.as_str())
         {
             match val {
                 0 => {
@@ -171,13 +177,14 @@ impl DisassemblyEdgeCases {
     }
 
     fn extract_test_values(line: &str, cases: &mut Self) {
-        // Match patterns like "test eax, eax" or "test ecx, 0FFh"
-        if let Some(cap) = regex::Regex::new(r"test\s+(\w+),\s*(\w+)")
+        // Match patterns like "test eax, eax" or "test ecx, 0FFh", and
+        // Kuna's SLEIGH-style "TEST EAX,0x0F".
+        if let Some(cap) = regex::Regex::new(r"(?i)test\s+(\w+),\s*(\w+)")
             .ok()
             .and_then(|r| r.captures(line))
         {
             let operand2 = cap.get(2).map(|m| m.as_str()).unwrap_or("");
-            if operand2 == "0" || operand2 == "0h" || operand2 == "0H" {
+            if operand2 == "0" || operand2 == "0h" || operand2 == "0H" || operand2 == "0x0" {
                 cases.zero_checks.insert("test_zero".to_string());
             } else if operand2.ends_with('h') || operand2.ends_with('H') {
                 // Hexadecimal value
@@ -187,6 +194,11 @@ impl DisassemblyEdgeCases {
                     } else if val > 0 && val <= 1000 && !cases.boundary_checks.contains(&val) {
                         cases.boundary_checks.push(val);
                     }
+                }
+            } else if let Some(val) = parse_immediate(operand2) {
+                // `0x`-prefixed hex immediate (Kuna's spelling).
+                if val > 0 && val <= 1000 && !cases.boundary_checks.contains(&val) {
+                    cases.boundary_checks.push(val);
                 }
             }
         }
@@ -223,6 +235,22 @@ impl DisassemblyEdgeCases {
         values.sort();
         values.dedup();
         values
+    }
+}
+
+/// Parse an immediate operand in either dialect: `0x`-prefixed hex (Kuna's
+/// SLEIGH spelling, e.g. `0x64`) or plain decimal (e.g. `256`, `-1`).
+fn parse_immediate(text: &str) -> Option<i64> {
+    let (sign, digits) = match text.strip_prefix('-') {
+        Some(rest) => (-1i64, rest),
+        None => (1, text),
+    };
+    match digits
+        .strip_prefix("0x")
+        .or_else(|| digits.strip_prefix("0X"))
+    {
+        Some(hex) => i64::from_str_radix(hex, 16).ok().map(|v| sign * v),
+        None => text.parse::<i64>().ok(),
     }
 }
 
@@ -682,4 +710,47 @@ fn deduplicate_tests(tests: Vec<TestCase>) -> Vec<TestCase> {
             seen.insert(key)
         })
         .collect()
+}
+
+// ============================================================
+// Tests
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ghidra_mcp_style_lowercase_text_still_reads() {
+        // The lowercase objdump-style spelling GhidraMCP serves — the
+        // Kuna additions must not change what this yields.
+        let cases = DisassemblyEdgeCases::from_disassembly(
+            "cmp eax, 0\nje zero_handler\ncmp ecx, 256\nja out_of_bounds\ncmp edx, -1\ntest eax, eax",
+        );
+        assert_eq!(cases.boundary_checks, vec![256]);
+        assert_eq!(cases.negative_checks, vec![-1]);
+        assert!(cases.zero_checks.contains("cmp_zero"));
+    }
+
+    #[test]
+    fn kuna_disassembly_text_yields_boundary_values() {
+        // Kuna's disassembly listing is SLEIGH-style: uppercase mnemonics
+        // and `0x`-prefixed hex immediates, one space between mnemonic and
+        // operands.
+        let cases = DisassemblyEdgeCases::from_disassembly(
+            "0x1800010a0  83 f8 64  CMP EAX,0x64\n\
+             0x1800010a3  85 c0     TEST EAX,EAX\n\
+             0x1800010a5  74 0c     JE 0x1800010b3\n\
+             0x1800010aa  3c 0a     CMP AL,0x0A",
+        );
+        assert_eq!(cases.boundary_checks, vec![100, 10]);
+        assert_eq!(cases.get_boundary_values(), vec![10, 100]);
+    }
+
+    #[test]
+    fn a_kuna_hex_zero_check_reads_as_zero() {
+        let cases = DisassemblyEdgeCases::from_disassembly("CMP EAX,0x0\nTEST ECX,0x0");
+        assert!(cases.zero_checks.contains("cmp_zero"));
+        assert!(cases.zero_checks.contains("test_zero"));
+    }
 }
