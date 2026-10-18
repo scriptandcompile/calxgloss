@@ -144,7 +144,9 @@ Batch runs (`batch-translate`, `auto`, `live`) cache every engine read under
 bytes, the loaded program name, and the cache format version. A second batch
 over unchanged bytes replays from the cache with zero engine reads; changed
 bytes hash to a different directory, so stale entries never need
-invalidating.
+invalidating. Opening the cache also ensures `re/cache/` is listed in the
+workspace's `.gitignore` — the cache is regenerable and large, and it should
+never ride the workspace repo's commits.
 
 One case the cache cannot detect: the *analysis state* changed — re-analysis,
 applied types, renames — while the binary's bytes stayed the same. Two ways

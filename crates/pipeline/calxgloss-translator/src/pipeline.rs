@@ -4977,6 +4977,15 @@ mod tests {
             .expect("cold batch over the fixture engine");
         let cache = scan_cache_dir(dir.path());
 
+        // The cold batch also files the rule that keeps the cache out of
+        // the workspace repo's commits.
+        let gitignore = std::fs::read_to_string(dir.path().join(".gitignore"))
+            .expect("the batch run ensures a workspace .gitignore");
+        assert!(
+            gitignore.lines().any(|line| line.trim() == "re/cache/"),
+            "the run leaves re/cache/ ignored in the workspace: {gitignore}"
+        );
+
         // Wipe the engine-result documents so the second batch re-runs all
         // eleven scans — only the scan cache may answer them.
         std::fs::remove_dir_all(dir.path().join("re").join("analysis"))

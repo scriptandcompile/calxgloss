@@ -31,6 +31,11 @@
 //! is a silent reset — a directory under an old name is never opened again,
 //! so it stays in the workspace as dead weight for its owner to delete.
 //!
+//! **Kept out of the workspace repo:** opening the disk tier ensures
+//! `re/cache/` is listed in the workspace's `.gitignore` — the cache is
+//! tens of thousands of regenerable documents, and a workspace repo that
+//! commits them carries that weight through every clone and checkout.
+//!
 //! **Forcing a cold cache:** the `--refresh-cache` CLI flag (on
 //! `batch-translate`, `auto`, and `live`) routes the run through
 //! [`CachedScanSource::new_refresh`] — the directory is wiped and
@@ -202,14 +207,19 @@ impl CachedScanSource {
             }
             Ok(Some(hash)) => {
                 let program = source.identity().to_string();
-                let dir = cache_root(workspace).join(binary.as_str()).join(&hash);
+                let dir = cache_root(&workspace).join(binary.as_str()).join(&hash);
                 let manifest = CacheManifest {
                     binary_sha256: hash,
                     format_version: CACHE_FORMAT_VERSION,
                     program,
                 };
                 match open_manifest(&dir, &manifest, refresh) {
-                    Ok(()) => Some(dir),
+                    Ok(()) => {
+                        // The disk tier is live, so the workspace repo gets
+                        // the rule that keeps the cache out of its commits.
+                        ensure_gitignore(workspace.as_ref());
+                        Some(dir)
+                    }
                     Err(err) => {
                         warn!(
                             %err,
@@ -511,6 +521,51 @@ fn cache_root(workspace: impl AsRef<Path>) -> PathBuf {
     workspace.as_ref().join("re").join("cache")
 }
 
+/// The rules the cache ensures in every workspace `.gitignore`. The read
+/// cache is tens of thousands of regenerable JSON documents (22 MB on the
+/// EverQuest workspace) that a rerun or `--refresh-cache` rebuilds, and a
+/// workspace repo that commits them carries that dead weight through every
+/// clone and every checkout.
+const ENSURED_IGNORES: &[&str] = &["re/cache/"];
+
+/// Ensure the workspace `.gitignore` carries [`ENSURED_IGNORES`], creating
+/// the file or appending the missing rules as needed. The check runs on
+/// every disk-tier open, so a workspace that predates the rule, renamed it
+/// away, or deleted the file gets it back.
+///
+/// Failure is logged, never raised: a missing ignore rule is an
+/// inconvenience to the workspace repo, not a broken run.
+fn ensure_gitignore(workspace: &Path) {
+    let path = workspace.join(".gitignore");
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(body) => body,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => {
+            warn!(path = %path.display(), error = %err, "Could not read the workspace .gitignore");
+            return;
+        }
+    };
+    let missing: Vec<&str> = ENSURED_IGNORES
+        .iter()
+        .copied()
+        .filter(|rule| !existing.lines().any(|line| line.trim() == *rule))
+        .collect();
+    if missing.is_empty() {
+        return;
+    }
+    let mut updated = existing;
+    if !updated.is_empty() && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    for rule in missing {
+        updated.push_str(rule);
+        updated.push('\n');
+    }
+    if let Err(err) = std::fs::write(&path, updated) {
+        warn!(path = %path.display(), error = %err, "Could not update the workspace .gitignore");
+    }
+}
+
 /// Where one key's document is filed inside a hash directory: whole-program
 /// listings at the top level, per-item documents under per-read
 /// subdirectories keyed by bare hex address or item name.
@@ -672,6 +727,46 @@ mod tests {
         assert_eq!(
             doc_path(root, &CacheKey::DataTypes(Some("excpt.h".into()))),
             root.join("data_types").join("excpt.h.json")
+        );
+    }
+
+    #[test]
+    fn the_cache_open_creates_the_ignore_rule_where_no_gitignore_existed() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        ensure_gitignore(workspace.path());
+        let body = std::fs::read_to_string(workspace.path().join(".gitignore"))
+            .expect("the cache creates the .gitignore");
+        assert_eq!(
+            body, "re/cache/\n",
+            "the file carries the rule and nothing else"
+        );
+    }
+
+    #[test]
+    fn the_ignore_rule_is_appended_once_and_never_duplicated() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let path = workspace.path().join(".gitignore");
+        // The workspace's own rules, with no trailing newline to inherit.
+        std::fs::write(&path, "src/generated/").expect("existing gitignore");
+        ensure_gitignore(workspace.path());
+        ensure_gitignore(workspace.path());
+        let body = std::fs::read_to_string(&path).expect("the gitignore reads back");
+        assert_eq!(
+            body, "src/generated/\nre/cache/\n",
+            "the first pass appends the missing rule, the second changes nothing"
+        );
+    }
+
+    #[test]
+    fn a_rule_for_a_superseded_cache_name_does_not_stand_in_for_the_current_one() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let path = workspace.path().join(".gitignore");
+        std::fs::write(&path, "ghidra/\nre/ghidra-cache/\n").expect("bridge-era gitignore");
+        ensure_gitignore(workspace.path());
+        let body = std::fs::read_to_string(&path).expect("the gitignore reads back");
+        assert_eq!(
+            body, "ghidra/\nre/ghidra-cache/\nre/cache/\n",
+            "the workspace's own rules stay as it wrote them, and the current path is added"
         );
     }
 
