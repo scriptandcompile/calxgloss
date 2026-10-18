@@ -2113,7 +2113,11 @@ mod tests {
         let error = decompile(&mut program, "fixture_tick")
             .expect_err("a spent deadline must cap the function");
         match &error {
-            KunaError::DecompileBudgetExceeded { name, budget, reason } => {
+            KunaError::DecompileBudgetExceeded {
+                name,
+                budget,
+                reason,
+            } => {
                 assert_eq!(name, "fixture_tick");
                 assert_eq!(budget, &"time", "the deadline tripped: {reason}");
                 assert!(

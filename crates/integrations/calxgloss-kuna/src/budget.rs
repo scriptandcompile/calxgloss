@@ -104,8 +104,14 @@ mod tests {
         let defaults = KunaBudget::default();
         defaults.apply(&mut program);
         let arch = program.program.arch();
-        assert_eq!(arch.max_instructions, 100_000, "Kuna's maxinstruction default");
-        assert_eq!(arch.kuna_fn_budget, None, "Kuna arms no time budget by default");
+        assert_eq!(
+            arch.max_instructions, 100_000,
+            "Kuna's maxinstruction default"
+        );
+        assert_eq!(
+            arch.kuna_fn_budget, None,
+            "Kuna arms no time budget by default"
+        );
         assert_eq!(
             kuna_decomp::kuna_fnmemory::limit_mib(),
             0,
@@ -135,7 +141,10 @@ mod tests {
         };
         zeros.apply(&mut program);
         let arch = program.program.arch();
-        assert_eq!(arch.max_instructions, 5_000, "0 leaves the armed bound alone");
+        assert_eq!(
+            arch.max_instructions, 5_000,
+            "0 leaves the armed bound alone"
+        );
         assert_eq!(arch.kuna_fn_budget, Some(Duration::from_secs(30)));
         assert_eq!(kuna_decomp::kuna_fnmemory::limit_mib(), 1_000_000);
 

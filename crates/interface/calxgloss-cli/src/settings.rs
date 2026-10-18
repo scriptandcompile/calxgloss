@@ -528,7 +528,11 @@ pub fn render(s: &Settings) -> String {
 
     out.push_str("\nanalysis\n");
     row(&mut out, "engine", Some(&s.engine), false);
-    opt_num(&mut out, "max_fn_instructions", s.max_fn_instructions.as_ref());
+    opt_num(
+        &mut out,
+        "max_fn_instructions",
+        s.max_fn_instructions.as_ref(),
+    );
     opt_num(&mut out, "max_fn_seconds", s.max_fn_seconds.as_ref());
     opt_num(&mut out, "max_fn_memory_mib", s.max_fn_memory_mib.as_ref());
 
@@ -939,12 +943,18 @@ mod tests {
             ..Default::default()
         };
         let s = settings_from(FileConfig::default(), file);
-        assert_eq!(s.max_fn_instructions.as_ref().expect("set").source, Source::File);
+        assert_eq!(
+            s.max_fn_instructions.as_ref().expect("set").source,
+            Source::File
+        );
         let budget = s.kuna_budget();
         assert_eq!(budget.max_instructions, Some(5000));
         assert_eq!(budget.max_fn_seconds, Some(30));
         assert_eq!(budget.max_fn_memory_mib, Some(512));
         let out = render(&s);
-        assert!(out.contains("max_fn_seconds") && out.contains("30"), "{out}");
+        assert!(
+            out.contains("max_fn_seconds") && out.contains("30"),
+            "{out}"
+        );
     }
 }

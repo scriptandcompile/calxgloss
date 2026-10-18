@@ -442,7 +442,11 @@ java_home = "/usr/lib/jvm/java-21"
     #[test]
     fn test_a_wrongly_typed_decompile_budget_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write(dir.path(), "c.toml", "[analysis]\nmax_fn_seconds = \"30\"\n");
+        let path = write(
+            dir.path(),
+            "c.toml",
+            "[analysis]\nmax_fn_seconds = \"30\"\n",
+        );
         assert!(matches!(
             load(Some(&path)),
             Err(ConfigError::Invalid { .. })
