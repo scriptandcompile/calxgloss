@@ -30,6 +30,14 @@
 //! high; any other plain identifier is a shape-only sighting — global
 //! position, unproven name — and scores lower. Nothing upgrades
 //! itself: repeated sightings of one name each keep their own band.
+//!
+//! The rule is also exposed as a pure reading — [`global_sites`] names every
+//! access site with its byte position and kind, and [`statement_at`] quotes
+//! the statement that carried one — so a consumer that keys on where an
+//! access sits reads the same rule directly instead of re-deriving it: the
+//! sync crate's data-race pairing annotates these sites with its lock-span
+//! attribution, and a race finding and a persisted record can then never
+//! name different accesses for the same identifier.
 
 use crate::types::{AccessKind, GlobalAccess, GlobalStateFinding};
 use calxgloss_decomp::DecompiledFunction;
@@ -92,31 +100,67 @@ impl GlobalStateDetector {
     /// body of nothing but rejected names yields nothing.
     pub fn detect(&self, func: &DecompiledFunction) -> Vec<GlobalStateFinding> {
         let mut findings = Vec::new();
-        for (offset, name) in global_name_sites(&func.body) {
-            let kind = access_kind(&func.body, offset, offset + name.len());
-            let confidence = if is_exact_spelling(name) {
+        for site in global_sites(&func.body) {
+            let confidence = if is_exact_spelling(&site.name) {
                 EXACT_SPELLING_CONFIDENCE
             } else {
                 SHAPE_ONLY_CONFIDENCE
             };
             let record = GlobalAccess {
                 function: func.name.clone(),
-                global: name.to_string(),
-                evidence: statement_at(&func.body, offset),
+                global: site.name.clone(),
+                evidence: statement_at(&func.body, site.offset),
                 confidence: confidence.into(),
-                suggestion: match kind {
+                suggestion: match site.kind {
                     AccessKind::Read => READ_SUGGESTION,
                     AccessKind::Write => WRITE_SUGGESTION,
                 }
                 .to_string(),
             };
-            findings.push(match kind {
+            findings.push(match site.kind {
                 AccessKind::Read => GlobalStateFinding::GlobalRead(record),
                 AccessKind::Write => GlobalStateFinding::GlobalWrite(record),
             });
         }
         findings
     }
+}
+
+/// One global access site in a body: the global's name, the byte
+/// offset where the name starts, and the access kind the body spells
+/// at it.
+///
+/// The site is the pure reading's atom — position included — for
+/// consumers that key on where an access sits: the sync crate's
+/// data-race pairing annotates each site with the lock spans that
+/// cover it and quotes its statement as evidence, so a race finding
+/// and a persisted record name the same accesses by construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobalSite {
+    /// The global accessed, spelled exactly as the body spells it.
+    pub name: String,
+    /// Where the name starts in the body, in bytes.
+    pub offset: usize,
+    /// Whether the body stores through the global or reads it here.
+    pub kind: AccessKind,
+}
+
+/// The pure global-identification reading over one body: every global
+/// access site, in body order, by the crate's shared rule — the one
+/// rule every consumer reads by, so two crates can never disagree
+/// about the same identifier. [`GlobalStateDetector::detect`] is this
+/// reading turned into findings; a consumer that needs the access
+/// positions reads the sites directly and keeps its own attribution
+/// on top.
+pub fn global_sites(body: &str) -> Vec<GlobalSite> {
+    global_name_sites(body)
+        .into_iter()
+        .map(|(offset, name)| GlobalSite {
+            kind: access_kind(body, offset, offset + name.len()),
+            name: name.to_string(),
+            offset,
+        })
+        .collect()
 }
 
 /// Whether the decompiler named this global with its own program-data
@@ -344,8 +388,9 @@ fn access_kind(body: &str, offset: usize, name_end: usize) -> AccessKind {
 /// its closing `;`: from the terminator that opens it (a `;`, `{`, or
 /// `}`) to the `;` that closes it, or the end of the line if the
 /// decompiler left the statement open. The statement, not the whole
-/// line: the claim is the access itself.
-fn statement_at(body: &str, offset: usize) -> String {
+/// line: the claim is the access itself. A consumer quoting a site's
+/// evidence passes the site's own offset.
+pub fn statement_at(body: &str, offset: usize) -> String {
     let bytes = body.as_bytes();
     let start = (0..offset)
         .rev()
@@ -628,5 +673,55 @@ mod tests {
             Vec::new(),
             "a body of locals and type words records nothing"
         );
+    }
+
+    #[test]
+    fn a_decompiler_local_named_in_two_bodies_is_not_a_global() {
+        // The contract the sync pairing's consumption rests on: the
+        // rule reads every body the same way, so a stack slot named
+        // in two bodies is still just a stack slot — never shared
+        // program data one function hands the other.
+        let writer =
+            GlobalStateDetector::new().detect(&function("FUN_18003ab00", "  local_20 = 5;\n"));
+        let reader =
+            GlobalStateDetector::new().detect(&function("FUN_18003e750", "  iVar1 = local_20;\n"));
+        assert!(
+            writer.is_empty() && reader.is_empty(),
+            "a stack slot named in two bodies is not a global"
+        );
+    }
+
+    #[test]
+    fn sites_carry_the_position_and_kind_a_consumer_keys_on() {
+        // The pure reading is position-inclusive: a consumer that
+        // attributes each site to its own spans needs the name,
+        // where the name sits, and the kind the body spells.
+        let body = "  DAT_counter = 1;\n  uVar1 = DAT_counter;\n";
+        let sites = global_sites(body);
+        assert_eq!(sites.len(), 2, "one store and one load, in body order");
+        assert_eq!(sites[0].name, "DAT_counter");
+        assert_eq!(sites[0].kind, AccessKind::Write);
+        assert_eq!(
+            &body[sites[0].offset..sites[0].offset + sites[0].name.len()],
+            "DAT_counter"
+        );
+        assert_eq!(sites[1].name, "DAT_counter");
+        assert_eq!(sites[1].kind, AccessKind::Read);
+        assert_eq!(
+            &body[sites[1].offset..sites[1].offset + sites[1].name.len()],
+            "DAT_counter"
+        );
+    }
+
+    #[test]
+    fn the_statement_a_consumer_quotes_is_the_access_itself() {
+        // A locked body writes its acquire and release around the
+        // access; the evidence seam quotes the access statement, not
+        // the calls beside it.
+        let body =
+            "  EnterCriticalSection(&guard); DAT_counter = 5; LeaveCriticalSection(&guard);\n";
+        let sites = global_sites(body);
+        assert_eq!(sites.len(), 1, "the calls name no access, the store does");
+        assert_eq!(statement_at(body, sites[0].offset), "DAT_counter = 5");
     }
 }

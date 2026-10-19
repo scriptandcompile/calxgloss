@@ -14,7 +14,11 @@
 //!
 //! * [`detector`] — the reading: [`GlobalStateDetector`] walks one function
 //!   body and produces [`GlobalAccess`] records plus a [`FunctionPurity`]
-//!   summary. Global identification is lexical: a plain identifier that is
+//!   summary. The same rule is exposed as a pure reading — [`global_sites`]
+//!   with [`GlobalSite`] positions and kinds, and [`statement_at`] for the
+//!   evidence — which the sync crate's data-race pairing consumes directly
+//!   instead of re-deriving the sets itself. Global identification is
+//!   lexical: a plain identifier that is
 //!   not a decompiler local (`param_*`, `local_*`, `uVar1`, `iVar_2`, …),
 //!   not a type word, and not a declaration target, accessed outside call
 //!   arguments, string literals, qualified names and casts, is a global.
@@ -41,7 +45,10 @@ pub mod persist;
 pub mod rollup;
 pub mod types;
 
-pub use detector::{EXACT_SPELLING_CONFIDENCE, GlobalStateDetector, SHAPE_ONLY_CONFIDENCE};
+pub use detector::{
+    EXACT_SPELLING_CONFIDENCE, GlobalSite, GlobalStateDetector, SHAPE_ONLY_CONFIDENCE,
+    global_sites, statement_at,
+};
 pub use engine::GlobalStateEngine;
 pub use error::{GlobalStateError, Result};
 pub use persist::GlobalStatePersistor;
