@@ -84,6 +84,11 @@ async fn build_escalate_prompt_inner(
         &ctx.dll_name,
         &ctx.function_name,
     );
+    let convention_findings = super::helpers::extract_convention_hints(
+        ctx.workspace.as_deref(),
+        &ctx.dll_name,
+        &ctx.function_name,
+    );
     let string_findings = super::helpers::extract_string_context(
         ctx.workspace.as_deref(),
         &ctx.dll_name,
@@ -122,6 +127,7 @@ async fn build_escalate_prompt_inner(
         concurrency_findings,
         callback_findings,
         control_flow_findings,
+        convention_findings,
         string_findings,
         api_findings,
         const_findings,

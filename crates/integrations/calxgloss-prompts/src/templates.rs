@@ -322,6 +322,38 @@ pub struct ConstInfo {
     pub evidence: String,
 }
 
+/// A calling-convention reading about one function, made by the
+/// `calxgloss-typeinfer` convention detector.
+///
+/// The module-context and escalate prompts show these so the LLM spells
+/// extern declarations and any stack cleanup with the detected convention
+/// instead of assuming `__stdcall`. The method names the evidence channel
+/// behind the claim — `mangled_convention`, `import_decoration`,
+/// `callee_epilogue`, `caller_cleanup`, `x64_shape`,
+/// `corroborated_convention`, `call_site_convention` — and a call-site
+/// record names its callee in `callee`, the caller's view of the function
+/// it calls rather than the caller's own convention.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ConventionInfo {
+    /// The function the record is about, e.g. `FUN_18003ab00`. For a
+    /// call-site record this is the caller holding the site.
+    pub function: String,
+    /// The callee whose convention the record reads, when the record is
+    /// a call-site view rather than the function's own reading.
+    pub callee: Option<String>,
+    /// The detected convention, e.g. `cdecl`, `stdcall`, `fastcall`,
+    /// `thiscall`, `microsoft_x64`.
+    pub convention: String,
+    /// The evidence channel that produced the reading, e.g.
+    /// `callee_epilogue`, `import_decoration`.
+    pub method: String,
+    /// Confidence that the reading is right, 0–100.
+    pub confidence: u8,
+    /// The listing or name line that supports the reading, e.g.
+    /// `00401007  RET 0xC`.
+    pub evidence: String,
+}
+
 /// A formatted test result for template rendering.
 ///
 /// Carries the test case data alongside the pass/fail outcome observed
@@ -611,6 +643,9 @@ pub struct EscalateTemplate {
     /// Control-flow findings about this function made by the analysis
     /// pipeline.
     pub control_flow_findings: Vec<ControlFlowInfo>,
+    /// Calling-convention readings about this function and its callees
+    /// made by the type-inference engine.
+    pub convention_findings: Vec<ConventionInfo>,
     /// String-context findings about this function made by the analysis
     /// pipeline.
     pub string_findings: Vec<StringContextInfo>,
@@ -646,6 +681,7 @@ impl EscalateTemplate {
         concurrency_findings: Vec<ConcurrencyInfo>,
         callback_findings: Vec<CallbackInfo>,
         control_flow_findings: Vec<ControlFlowInfo>,
+        convention_findings: Vec<ConventionInfo>,
         string_findings: Vec<StringContextInfo>,
         api_findings: Vec<ApiInfo>,
         const_findings: Vec<ConstInfo>,
@@ -665,6 +701,7 @@ impl EscalateTemplate {
             concurrency_findings,
             callback_findings,
             control_flow_findings,
+            convention_findings,
             string_findings,
             api_findings,
             const_findings,
@@ -690,6 +727,7 @@ impl EscalateTemplate {
         concurrency_findings: Vec<ConcurrencyInfo>,
         callback_findings: Vec<CallbackInfo>,
         control_flow_findings: Vec<ControlFlowInfo>,
+        convention_findings: Vec<ConventionInfo>,
         string_findings: Vec<StringContextInfo>,
         api_findings: Vec<ApiInfo>,
         const_findings: Vec<ConstInfo>,
@@ -710,6 +748,7 @@ impl EscalateTemplate {
             concurrency_findings,
             callback_findings,
             control_flow_findings,
+            convention_findings,
             string_findings,
             api_findings,
             const_findings,
@@ -735,6 +774,7 @@ impl EscalateTemplate {
         concurrency_findings: Vec<ConcurrencyInfo>,
         callback_findings: Vec<CallbackInfo>,
         control_flow_findings: Vec<ControlFlowInfo>,
+        convention_findings: Vec<ConventionInfo>,
         string_findings: Vec<StringContextInfo>,
         api_findings: Vec<ApiInfo>,
         const_findings: Vec<ConstInfo>,
@@ -756,6 +796,7 @@ impl EscalateTemplate {
             concurrency_findings,
             callback_findings,
             control_flow_findings,
+            convention_findings,
             string_findings,
             api_findings,
             const_findings,
@@ -1096,6 +1137,9 @@ pub struct ModuleContextTemplate {
     /// Control-flow findings about this function made by the analysis
     /// pipeline.
     pub control_flow_findings: Vec<ControlFlowInfo>,
+    /// Calling-convention readings about this function and its callees
+    /// made by the type-inference engine.
+    pub convention_findings: Vec<ConventionInfo>,
 }
 
 impl ModuleContextTemplate {
@@ -1115,6 +1159,7 @@ impl ModuleContextTemplate {
             data_structures: data.data_structures.clone(),
             call_graph_context: data.call_graph_context.clone(),
             control_flow_findings: data.control_flow_findings.clone(),
+            convention_findings: data.convention_findings.clone(),
         }
     }
 }

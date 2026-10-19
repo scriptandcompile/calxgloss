@@ -504,6 +504,24 @@ impl From<&InferredType> for calxgloss_prompts::TypeInfo {
     }
 }
 
+/// Render a convention record as the CALLING CONVENTION findings section's
+/// prompt data. The convention is spelled the way the persisted JSON
+/// spells it, the method names the evidence channel that read it, and a
+/// call-site record keeps its callee so the caller's view of its callee
+/// reads as such in the prompt.
+impl From<&InferredConvention> for calxgloss_prompts::ConventionInfo {
+    fn from(record: &InferredConvention) -> Self {
+        Self {
+            function: record.function.clone(),
+            callee: record.callee.clone(),
+            convention: record.convention.label().to_string(),
+            method: record.method.to_string(),
+            confidence: record.confidence.value(),
+            evidence: record.evidence.clone(),
+        }
+    }
+}
+
 // ============================================================
 // Persisted result
 // ============================================================
@@ -964,6 +982,23 @@ mod tests {
                 ..convention_record()
             }));
         assert_eq!(info.name, "FUN_1800412a0 convention");
+    }
+
+    #[test]
+    fn a_convention_record_renders_as_calling_convention_prompt_data() {
+        let info = calxgloss_prompts::ConventionInfo::from(&convention_record());
+        assert_eq!(info.function, "?paint@Widget@@QAEXXZ");
+        assert_eq!(info.callee, None);
+        assert_eq!(info.convention, "thiscall");
+        assert_eq!(info.method, "mangled_convention");
+        assert_eq!(info.confidence, 90);
+        assert_eq!(info.evidence, "?paint@Widget@@QAEXXZ");
+
+        let call_site = calxgloss_prompts::ConventionInfo::from(&InferredConvention {
+            callee: Some("FUN_1800412a0".into()),
+            ..convention_record()
+        });
+        assert_eq!(call_site.callee.as_deref(), Some("FUN_1800412a0"));
     }
 
     #[test]

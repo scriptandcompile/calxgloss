@@ -568,6 +568,52 @@ pub fn extract_control_flow_hints(
         .collect()
 }
 
+/// Extract calling-convention findings for a function from the persisted
+/// type-inference result.
+///
+/// Reads the per-binary result produced by the `calxgloss-typeinfer`
+/// engine from `re/analysis/typeinfer/{binary}.json` and keeps the
+/// convention records made for the target function — the function's own
+/// detected convention and the call-site views its listings hold of the
+/// callees it calls.
+///
+/// Returns an empty vector when no workspace is configured, no result
+/// is persisted for `binary` (the scan has not run), or the document is
+/// corrupt: missing convention context degrades the prompt, it never
+/// fails it.
+pub fn extract_convention_hints(
+    workspace: Option<&std::path::Path>,
+    binary: &str,
+    function: &str,
+) -> Vec<calxgloss_prompts::ConventionInfo> {
+    let Some(workspace) = workspace else {
+        return Vec::new();
+    };
+
+    let persistor = calxgloss_typeinfer::persist::TypeInferPersistor::new(workspace);
+    let result = match persistor.load(binary) {
+        Ok(result) => result,
+        Err(e) => {
+            debug!(
+                binary,
+                error = %e,
+                "No usable type inference result; continuing without calling-convention context"
+            );
+            return Vec::new();
+        }
+    };
+
+    result
+        .for_function(function)
+        .filter_map(|inference| match inference {
+            calxgloss_typeinfer::types::InferredType::Convention(record) => {
+                Some(calxgloss_prompts::ConventionInfo::from(record))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// Extract string-context findings for a function from the persisted
 /// scan result.
 ///
@@ -998,6 +1044,7 @@ pub async fn build_escalated_prompt<S: ScanSource>(
             let data_structures = extract_data_structures(workspace, binary, function);
 
             let control_flow_findings = extract_control_flow_hints(workspace, binary, function);
+            let convention_findings = extract_convention_hints(workspace, binary, function);
 
             let data = calxgloss_prompts::ModuleContextPromptData::from_request_with_context(
                 &request,
@@ -1006,6 +1053,7 @@ pub async fn build_escalated_prompt<S: ScanSource>(
                 data_structures,
                 translation.call_graph_context.clone(),
                 control_flow_findings,
+                convention_findings,
             );
             calxgloss_prompts::build_module_context_prompt(&data).map_err(|e| e.to_string())
         }
@@ -1069,8 +1117,8 @@ mod tests {
     use super::*;
     use calxgloss_typeinfer::persist::TypeInferPersistor;
     use calxgloss_typeinfer::types::{
-        Confidence, InferenceMethod, InferenceScope, InferredCallType, InferredLocalType,
-        InferredParamType, InferredType, TypeInferenceResult,
+        Confidence, InferenceMethod, InferenceScope, InferredCallType, InferredConvention,
+        InferredLocalType, InferredParamType, InferredType, TypeInferenceResult,
     };
     use calxgloss_typesdb::persist::TypeDatabasePersistor;
     use calxgloss_typesdb::types::{
@@ -2448,5 +2496,136 @@ mod tests {
             found[2].suggestion,
             "enum State + match state { /* 3 states */ }"
         );
+    }
+
+    fn convention_inference(
+        function: &str,
+        callee: Option<&str>,
+        convention: calxgloss_typeinfer::types::CallingConvention,
+        method: InferenceMethod,
+        confidence: u8,
+        evidence: &str,
+    ) -> InferredType {
+        InferredType::Convention(InferredConvention {
+            function: function.to_string(),
+            callee: callee.map(str::to_string),
+            convention,
+            method,
+            confidence: Confidence::new(confidence),
+            evidence: evidence.to_string(),
+        })
+    }
+
+    #[test]
+    fn no_workspace_configured_yields_no_convention_findings() {
+        assert!(
+            extract_convention_hints(None, "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "no workspace means no calling-convention context"
+        );
+    }
+
+    #[test]
+    fn a_missing_cache_yields_no_convention_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        assert!(
+            extract_convention_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "a scan that has not run yet just means no calling-convention context"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_cache_degrades_to_no_convention_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        let path = dir
+            .path()
+            .join("re")
+            .join("analysis")
+            .join("typeinfer")
+            .join("eqmain.dll.json");
+        std::fs::create_dir_all(
+            path.parent()
+                .expect("the document path should have a parent"),
+        )
+        .expect("the cache directory should be creatable");
+        std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
+
+        assert!(
+            extract_convention_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "a corrupt document degrades the prompt, it never fails it"
+        );
+    }
+
+    #[test]
+    fn convention_records_of_other_functions_are_dropped() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_inferences(
+            &dir,
+            vec![
+                convention_inference(
+                    "FUN_18003ab00",
+                    None,
+                    calxgloss_typeinfer::types::CallingConvention::Stdcall,
+                    InferenceMethod::CalleeEpilogue,
+                    80,
+                    "00401007  RET 0xC",
+                ),
+                convention_inference(
+                    "FUN_zzz",
+                    None,
+                    calxgloss_typeinfer::types::CallingConvention::Cdecl,
+                    InferenceMethod::MangledConvention,
+                    90,
+                    "?draw@Canvas@@IAXXZ",
+                ),
+            ],
+        );
+
+        let found = extract_convention_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        assert_eq!(found.len(), 1, "only the target function's record");
+        assert_eq!(found[0].function, "FUN_18003ab00");
+        assert_eq!(found[0].callee, None);
+        assert_eq!(found[0].convention, "stdcall");
+        assert_eq!(found[0].method, "callee_epilogue");
+        assert_eq!(found[0].confidence, 80);
+        assert_eq!(found[0].evidence, "00401007  RET 0xC");
+    }
+
+    #[test]
+    fn every_convention_record_of_the_function_lands_and_other_kinds_stay_out() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_inferences(
+            &dir,
+            vec![
+                param_inference("FUN_18003ab00", 0, "Widget *"),
+                convention_inference(
+                    "FUN_18003ab00",
+                    None,
+                    calxgloss_typeinfer::types::CallingConvention::Thiscall,
+                    InferenceMethod::MangledConvention,
+                    90,
+                    "?paint@Widget@@QAEXXZ",
+                ),
+                convention_inference(
+                    "FUN_18003ab00",
+                    Some("FUN_1800412a0"),
+                    calxgloss_typeinfer::types::CallingConvention::Stdcall,
+                    InferenceMethod::CallSiteConvention,
+                    80,
+                    "00401103  CALL FUN_1800412a0",
+                ),
+            ],
+        );
+
+        let found = extract_convention_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        assert_eq!(found.len(), 2, "only the convention records");
+        assert_eq!(found[0].convention, "thiscall");
+        assert_eq!(found[0].method, "mangled_convention");
+        assert_eq!(found[0].confidence, 90);
+        assert_eq!(found[1].convention, "stdcall");
+        assert_eq!(found[1].callee.as_deref(), Some("FUN_1800412a0"));
+        assert_eq!(found[1].method, "call_site_convention");
+        assert_eq!(found[1].evidence, "00401103  CALL FUN_1800412a0");
     }
 }

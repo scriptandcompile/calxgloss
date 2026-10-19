@@ -348,6 +348,7 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
         Vec::new(),
         Vec::new(),
         Vec::new(),
+        Vec::new(),
     )
     .expect("the escalate prompt should render");
 
@@ -536,6 +537,7 @@ async fn chain_findings_survive_the_scan_persist_and_prompt_walk() {
         Vec::new(),
         Vec::new(),
         Vec::new(),
+        Vec::new(),
     )
     .expect("the escalate prompt should render");
 
@@ -663,6 +665,7 @@ async fn event_system_findings_survive_the_scan_persist_and_prompt_walk() {
         Vec::new(),
         Vec::new(),
         Vec::new(),
+        Vec::new(),
     )
     .expect("the escalate prompt should render");
 
@@ -760,6 +763,7 @@ async fn enriched_suggestions_survive_the_scan_persist_and_prompt_walk() {
         Vec::new(),
         Vec::new(),
         findings,
+        Vec::new(),
         Vec::new(),
         Vec::new(),
         Vec::new(),

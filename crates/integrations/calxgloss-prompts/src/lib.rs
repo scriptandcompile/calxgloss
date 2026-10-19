@@ -55,11 +55,11 @@ pub use context::{
 pub use error::PromptError;
 pub use templates::{
     AlgorithmInfo, ApiInfo, BoundaryValue, CallGraphNeighbor, CallbackInfo, ConcurrencyInfo,
-    ConstInfo, ControlFlowInfo, EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate, FixTemplate,
-    FormattedTestResult, FullModuleTemplate, MemoryInfo, MinimalTemplate, ModuleContextTemplate,
-    NeighborFunction, PalTraitDef, PalTraitMethod, SerializationInfo, ShimCode, SignatureTemplate,
-    StringContextInfo, StructField, StructuredData, TestCaseFormatted, TranslateTemplate, TypeInfo,
-    WithTestsTemplate,
+    ConstInfo, ControlFlowInfo, ConventionInfo, EdgeCaseTemplate, EdgeCaseTest, EscalateTemplate,
+    FixTemplate, FormattedTestResult, FullModuleTemplate, MemoryInfo, MinimalTemplate,
+    ModuleContextTemplate, NeighborFunction, PalTraitDef, PalTraitMethod, SerializationInfo,
+    ShimCode, SignatureTemplate, StringContextInfo, StructField, StructuredData, TestCaseFormatted,
+    TranslateTemplate, TypeInfo, WithTestsTemplate,
 };
 
 // Re-export types used by template constructors
@@ -648,6 +648,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -698,6 +699,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             findings,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -764,6 +766,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -804,6 +807,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
         )
         .expect("the escalate prompt should render");
 
@@ -833,6 +837,79 @@ mod tests {
     }
 
     #[test]
+    fn test_escalate_template_with_calling_convention_findings() {
+        let findings = vec![
+            ConventionInfo {
+                function: "FUN_18003ab00".to_string(),
+                callee: None,
+                convention: "stdcall".to_string(),
+                method: "callee_epilogue".to_string(),
+                confidence: 80,
+                evidence: "00401007  RET 0xC".to_string(),
+            },
+            ConventionInfo {
+                function: "FUN_18003ab00".to_string(),
+                callee: Some("FUN_1800412a0".to_string()),
+                convention: "cdecl".to_string(),
+                method: "caller_cleanup".to_string(),
+                confidence: 70,
+                evidence: "00401103  ADD ESP, 0x10".to_string(),
+            },
+        ];
+
+        let prompt = build_escalate_prompt_with_context(
+            "FUN_18003ab00".to_string(),
+            "eqmain.dll".to_string(),
+            "fn fun_18003ab00() { /* __stdcall extern */ }".to_string(),
+            "Stack corruption".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            findings,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(prompt.contains("CALLING CONVENTION"));
+        assert!(prompt.contains("stdcall"));
+        assert!(prompt.contains("callee_epilogue"));
+        assert!(prompt.contains("confidence 80"));
+        assert!(prompt.contains("00401007  RET 0xC"));
+        assert!(prompt.contains("cdecl"));
+        assert!(prompt.contains("for `FUN_1800412a0`"));
+        assert!(prompt.contains("00401103  ADD ESP, 0x10"));
+    }
+
+    #[test]
+    fn test_escalate_template_without_calling_convention_findings_omits_the_section() {
+        let prompt = build_escalate_prompt(
+            "DrawSprite".to_string(),
+            "game_logic.dll".to_string(),
+            "fn draw_sprite(x: i32) -> i32 { x }".to_string(),
+            "Wrong result".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("the escalate prompt should render");
+
+        assert!(!prompt.contains("CALLING CONVENTION"));
+    }
+
+    #[test]
     fn test_escalate_template_with_string_findings() {
         let findings = vec![
             StringContextInfo {
@@ -856,6 +933,7 @@ mod tests {
             "eqmain.dll".to_string(),
             "fn fun_18003ab00() { /* raw literals */ }".to_string(),
             "Wrong result".to_string(),
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -911,6 +989,7 @@ mod tests {
             "eqmain.dll".to_string(),
             "fn fun_18003ab00() { /* raw imports */ }".to_string(),
             "Wrong result".to_string(),
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -999,6 +1078,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Vec::new(),
             findings,
             Vec::new(),
             Vec::new(),
@@ -1074,6 +1154,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             vec![control_flow_fixture()],
+            Vec::new(),
         );
 
         let prompt = build_module_context_prompt(&data).expect("the prompt should render");
@@ -1093,6 +1174,74 @@ mod tests {
         let prompt = build_module_context_prompt(&data).expect("the prompt should render");
 
         assert!(!prompt.contains("CONTROL FLOW PATTERNS"));
+    }
+
+    fn convention_fixture() -> ConventionInfo {
+        ConventionInfo {
+            function: "FUN_18003ab00".to_string(),
+            callee: None,
+            convention: "stdcall".to_string(),
+            method: "callee_epilogue".to_string(),
+            confidence: 80,
+            evidence: "00401007  RET 0xC".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_module_context_template_renders_calling_convention_section() {
+        let req = sample_request();
+        let data = ModuleContextPromptData::from_request_with_context(
+            &req,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![convention_fixture()],
+        );
+
+        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+
+        assert!(prompt.contains("CALLING CONVENTION"));
+        assert!(prompt.contains("stdcall"));
+        assert!(prompt.contains("callee_epilogue"));
+        assert!(prompt.contains("confidence 80"));
+        assert!(prompt.contains("00401007  RET 0xC"));
+    }
+
+    #[test]
+    fn test_module_context_template_renders_call_site_convention_naming_its_callee() {
+        let req = sample_request();
+        let mut finding = convention_fixture();
+        finding.callee = Some("FUN_1800412a0".to_string());
+        finding.convention = "microsoft_x64".to_string();
+        finding.method = "call_site_convention".to_string();
+        let data = ModuleContextPromptData::from_request_with_context(
+            &req,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![finding],
+        );
+
+        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+
+        assert!(prompt.contains("CALLING CONVENTION"));
+        assert!(prompt.contains("microsoft_x64"));
+        assert!(prompt.contains("for `FUN_1800412a0`"));
+        assert!(prompt.contains("call_site_convention"));
+    }
+
+    #[test]
+    fn test_module_context_template_without_convention_findings_omits_the_section() {
+        let req = sample_request();
+        let data = ModuleContextPromptData::from_request(&req);
+
+        let prompt = build_module_context_prompt(&data).expect("the prompt should render");
+
+        assert!(!prompt.contains("CALLING CONVENTION"));
     }
 
     #[test]

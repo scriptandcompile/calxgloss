@@ -12,8 +12,8 @@
 //! - [`FullModulePromptData`] — Tier 4: full module with shim layer + PAL traits
 
 use super::templates::{
-    CallGraphNeighbor, ControlFlowInfo, FormattedTestResult, NeighborFunction, PalTraitDef,
-    ShimCode, StructuredData,
+    CallGraphNeighbor, ControlFlowInfo, ConventionInfo, FormattedTestResult, NeighborFunction,
+    PalTraitDef, ShimCode, StructuredData,
 };
 use calxgloss_callgraph::FunctionContext;
 use calxgloss_types::{ApiCategory, TestCase, TranslationRequest};
@@ -181,6 +181,9 @@ pub struct ModuleContextPromptData {
     /// Control-flow findings about the target function made by the
     /// `calxgloss-controlflow` detectors.
     pub control_flow_findings: Vec<ControlFlowInfo>,
+    /// Calling-convention readings about the target function and its
+    /// callees made by the `calxgloss-typeinfer` convention detector.
+    pub convention_findings: Vec<ConventionInfo>,
 }
 
 impl ModuleContextPromptData {
@@ -214,6 +217,7 @@ impl ModuleContextPromptData {
             data_structures: Vec::new(),
             call_graph_context: Vec::new(),
             control_flow_findings: Vec::new(),
+            convention_findings: Vec::new(),
         }
     }
 
@@ -230,6 +234,7 @@ impl ModuleContextPromptData {
         data_structures: Vec<StructuredData>,
         call_graph_context: Vec<FunctionContext>,
         control_flow_findings: Vec<ControlFlowInfo>,
+        convention_findings: Vec<ConventionInfo>,
     ) -> Self {
         let test_results: Vec<FormattedTestResult> = req
             .baseline_tests
@@ -254,6 +259,7 @@ impl ModuleContextPromptData {
             data_structures,
             call_graph_context,
             control_flow_findings,
+            convention_findings,
         }
     }
 }

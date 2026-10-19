@@ -417,6 +417,7 @@ async fn the_loaded_findings_render_into_the_escalate_prompt() {
         Vec::new(),
         Vec::new(),
         Vec::new(),
+        Vec::new(),
         findings,
         Vec::new(),
         Vec::new(),

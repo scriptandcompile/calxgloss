@@ -162,7 +162,7 @@ by the caller and naming the callee so the caller's extern spelling
 matches the callee's record; disagreement leaves the higher-confidence
 reading standing, and a function keeps exactly one convention record.
 Spec: #226. Tickets: #245–#251
-(native blocking links; frontier: #250).
+(native blocking links; frontier: #251).
 
 ## P13 — Global-state reference sets (evidence + pipeline + shared + interface)
 

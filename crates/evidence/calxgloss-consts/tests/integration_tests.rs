@@ -353,6 +353,7 @@ async fn a_loaded_result_renders_into_the_escalate_prompt() {
         Vec::new(),
         Vec::new(),
         Vec::new(),
+        Vec::new(),
         findings,
         Vec::new(),
         Vec::new(),
@@ -413,6 +414,7 @@ async fn a_decomposed_composite_group_survives_the_round_trip_and_the_prompt() {
         "eqmain.dll".into(),
         "fn fun_18003ab00() { /* bare integer literals everywhere */ }".into(),
         "Wrong result".into(),
+        Vec::new(),
         Vec::new(),
         Vec::new(),
         Vec::new(),
@@ -525,6 +527,7 @@ async fn a_merged_flag_family_survives_the_round_trip_and_the_prompt() {
         Vec::new(),
         Vec::new(),
         Vec::new(),
+        Vec::new(),
         loaded
             .for_function("FUN_18003ab00")
             .map(calxgloss_prompts::ConstInfo::from)
@@ -602,6 +605,7 @@ async fn a_protocol_constant_survives_the_round_trip_and_the_prompt() {
         "eqmain.dll".into(),
         "fn fun_18003ab00() { /* bare integer literals everywhere */ }".into(),
         "Wrong result".into(),
+        Vec::new(),
         Vec::new(),
         Vec::new(),
         Vec::new(),
@@ -711,6 +715,7 @@ async fn a_color_constant_survives_the_round_trip_and_the_prompt() {
         "eqmain.dll".into(),
         "fn fun_18003ab00() { /* bare integer literals everywhere */ }".into(),
         "Wrong result".into(),
+        Vec::new(),
         Vec::new(),
         Vec::new(),
         Vec::new(),
