@@ -18,6 +18,7 @@
 pub mod error;
 mod pipeline;
 pub mod retry;
+mod scan_job;
 mod translator;
 pub mod triage;
 

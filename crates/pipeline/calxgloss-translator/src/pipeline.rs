@@ -34,37 +34,18 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use calxgloss_algorithm::engine::AlgorithmEngine;
-use calxgloss_algorithm::persist::AlgorithmPersistor;
 use calxgloss_analysis::Analyzer;
 use calxgloss_analysis::FaultLogger;
-use calxgloss_apidetect::engine::ApiEngine;
-use calxgloss_apidetect::persist::ApiPersistor;
-use calxgloss_callback::engine::CallbackEngine;
-use calxgloss_callback::persist::CallbackPersistor;
 use calxgloss_callback::signatures::{CallableSignature, SignatureMap};
 use calxgloss_callgraph::{ContextEnricher, FunctionContext, NodeCategory};
-use calxgloss_consts::engine::ConstEngine;
-use calxgloss_consts::persist::ConstPersistor;
-use calxgloss_controlflow::engine::ControlFlowEngine;
-use calxgloss_controlflow::persist::ControlFlowPersistor;
 use calxgloss_decomp::{CachedScanSource, PipelineSource, ScanSource};
 use calxgloss_kuna::KunaSource;
 use calxgloss_llm::{
     LlmClient, LlmMessage, context::ContextWindowDetector, hallucination::HallucinationDetector,
 };
-use calxgloss_memory::engine::MemoryEngine;
-use calxgloss_memory::persist::MemoryPersistor;
 use calxgloss_pal::ApiMappings;
 use calxgloss_prompts::build_translate_prompt;
-use calxgloss_serialize::engine::SerializeEngine;
-use calxgloss_serialize::persist::SerializePersistor;
-use calxgloss_stringctx::engine::StringContextEngine;
-use calxgloss_stringctx::persist::StringContextPersistor;
-use calxgloss_sync::engine::SyncEngine;
-use calxgloss_sync::persist::SyncPersistor;
 use calxgloss_testgen::TestGenerator;
-use calxgloss_typeinfer::engine::TypeInferEngine;
 use calxgloss_typeinfer::error::TypeInferError;
 use calxgloss_typeinfer::persist::TypeInferPersistor;
 use calxgloss_typeinfer::types::{InferredType, TypeInferenceResult};
@@ -73,8 +54,6 @@ use calxgloss_types::{
     ProgressEvent, ScopeControl, StopSignal, TestCase, TranslationEvents, TranslationRequest,
     UnitCancellation,
 };
-use calxgloss_typesdb::engine::TypesDBEngine;
-use calxgloss_typesdb::persist::TypeDatabasePersistor;
 use calxgloss_verify::Verifier;
 use tracing::{debug, info, instrument, warn};
 
@@ -82,6 +61,7 @@ use crate::Translation;
 use crate::batch;
 use crate::error::{Result, TranslatorError};
 use crate::retry;
+use crate::scan_job::ScanJob;
 
 // ============================================================
 // TranslationPipeline — full end-to-end pipeline
@@ -1893,10 +1873,11 @@ impl TranslationPipeline {
         }
     }
 
-    /// The read source every batch consumer — the eleven `ensure_*` scans,
-    /// the call-graph build, and the retry/escalation helpers — pulls
-    /// program facts through: the batch's [`CachedScanSource`] once armed
-    /// by [`begin_cached_source`](Self::begin_cached_source), the loaded
+    /// The read source every batch consumer — the [`ScanJob`]s the eleven
+    /// `ensure_*` scans build, the call-graph build, and the
+    /// retry/escalation helpers — pulls program facts through: the batch's
+    /// [`CachedScanSource`] once armed by
+    /// [`begin_cached_source`](Self::begin_cached_source), the loaded
     /// Kuna program otherwise.
     fn scan_source(&self) -> PipelineSource {
         let guard = self
@@ -1921,6 +1902,24 @@ impl TranslationPipeline {
     /// Disarm the heartbeat — the pass is done.
     fn end_scan_pass(&self) {
         self.kuna.end_pass();
+    }
+
+    /// Build the owned handle one evidence scan runs as (issue #237):
+    /// clones of everything the scan reads — the workspace, the batch's
+    /// shared read source as currently armed, the engine source the pass
+    /// heartbeat arms on, and the progress-event channel — so the scan
+    /// borrows nothing from the batch and a caller can move the job onto a
+    /// task. `None` when no workspace is configured, which is every scan's
+    /// skip condition.
+    fn scan_job(&self, binary: &str) -> Option<ScanJob> {
+        let workspace = self.workspace.as_deref()?;
+        Some(ScanJob::new(
+            binary,
+            workspace,
+            self.scan_source(),
+            self.kuna.clone(),
+            self.events.clone(),
+        ))
     }
 
     /// Run the eleven pre-batch evidence scans, the shared scan-phase
@@ -1974,58 +1973,20 @@ impl TranslationPipeline {
     /// workspace, a failed scan, or a failed save only log a
     /// warning and return `false` — prompts without data structure context
     /// are degraded, not fatal, and the batch proceeds either way.
+    ///
+    /// The scan itself — cached-document short-circuit, engine call under
+    /// the pass heartbeat, persist, and warn-and-continue degradation —
+    /// runs on the owned [`ScanJob`] this builds, so the same scan can be
+    /// handed to a task (issue #237).
     pub async fn ensure_type_database(&self, binary: &str) -> bool {
-        let Some(workspace) = self.workspace.as_deref() else {
+        let Some(job) = self.scan_job(binary) else {
             debug!(
                 binary,
                 "No workspace configured; skipping type database recovery"
             );
             return false;
         };
-
-        let persistor = TypeDatabasePersistor::new(workspace);
-        if persistor.exists(binary) {
-            debug!(
-                binary,
-                path = %persistor.path_for(binary).display(),
-                "Type database already cached; skipping recovery"
-            );
-            return true;
-        }
-
-        info!(binary, "Recovering type database before batch translation");
-        let engine = TypesDBEngine::with_source(self.scan_source());
-        self.begin_scan_pass(binary, "type database");
-        let scan = engine.scan(binary).await;
-        self.end_scan_pass();
-        match scan {
-            Ok(db) => {
-                if let Err(e) = persistor.save(&db) {
-                    warn!(
-                        binary,
-                        error = %e,
-                        "Failed to persist recovered type database; continuing without data structure context"
-                    );
-                    return false;
-                }
-                info!(
-                    binary,
-                    named_types = db.named_types.len(),
-                    vtables = db.vtables.len(),
-                    inferred_structs = db.inferred_structs.len(),
-                    "Type database recovered"
-                );
-                true
-            }
-            Err(e) => {
-                warn!(
-                    binary,
-                    error = %e,
-                    "Type database recovery failed; continuing without data structure context"
-                );
-                false
-            }
-        }
+        job.type_database().await
     }
 
     /// Infer parameter types across the binary before a batch starts, unless
@@ -2043,53 +2004,14 @@ impl TranslationPipeline {
     /// a failed scan, or a failed save only log a warning and
     /// return `false` — prompts without type context are degraded, not
     /// fatal, and the batch proceeds either way.
+    ///
+    /// The scan itself runs on the owned [`ScanJob`] this builds (issue #237).
     pub async fn ensure_type_inference(&self, binary: &str) -> bool {
-        let Some(workspace) = self.workspace.as_deref() else {
+        let Some(job) = self.scan_job(binary) else {
             debug!(binary, "No workspace configured; skipping type inference");
             return false;
         };
-
-        let persistor = TypeInferPersistor::new(workspace);
-        if persistor.exists(binary) {
-            debug!(
-                binary,
-                path = %persistor.path_for(binary).display(),
-                "Type inference result already cached; skipping scan"
-            );
-            return true;
-        }
-
-        info!(binary, "Inferring parameter types before batch translation");
-        let engine = TypeInferEngine::with_source(self.scan_source());
-        self.begin_scan_pass(binary, "type inference");
-        let scan = engine.scan(binary).await;
-        self.end_scan_pass();
-        match scan {
-            Ok(result) => {
-                if let Err(e) = persistor.save(&result) {
-                    warn!(
-                        binary,
-                        error = %e,
-                        "Failed to persist type inference result; continuing without type context"
-                    );
-                    return false;
-                }
-                info!(
-                    binary,
-                    inferences = result.inferences.len(),
-                    "Type inference complete"
-                );
-                true
-            }
-            Err(e) => {
-                warn!(
-                    binary,
-                    error = %e,
-                    "Type inference failed; continuing without type context"
-                );
-                false
-            }
-        }
+        job.type_inference().await
     }
 
     /// Recognize algorithms across the binary before a batch starts, unless a
@@ -2107,56 +2029,17 @@ impl TranslationPipeline {
     /// a failed scan, or a failed save only log a warning and
     /// return `false` — prompts without algorithm context are degraded, not
     /// fatal, and the batch proceeds either way.
+    ///
+    /// The scan itself runs on the owned [`ScanJob`] this builds (issue #237).
     pub async fn ensure_algorithm_recognition(&self, binary: &str) -> bool {
-        let Some(workspace) = self.workspace.as_deref() else {
+        let Some(job) = self.scan_job(binary) else {
             debug!(
                 binary,
                 "No workspace configured; skipping algorithm recognition"
             );
             return false;
         };
-
-        let persistor = AlgorithmPersistor::new(workspace);
-        if persistor.exists(binary) {
-            debug!(
-                binary,
-                path = %persistor.path_for(binary).display(),
-                "Algorithm recognition result already cached; skipping scan"
-            );
-            return true;
-        }
-
-        info!(binary, "Recognizing algorithms before batch translation");
-        let engine = AlgorithmEngine::with_source(self.scan_source());
-        self.begin_scan_pass(binary, "algorithm recognition");
-        let scan = engine.scan(binary).await;
-        self.end_scan_pass();
-        match scan {
-            Ok(result) => {
-                if let Err(e) = persistor.save(&result) {
-                    warn!(
-                        binary,
-                        error = %e,
-                        "Failed to persist algorithm recognition result; continuing without algorithm context"
-                    );
-                    return false;
-                }
-                info!(
-                    binary,
-                    hints = result.hints.len(),
-                    "Algorithm recognition complete"
-                );
-                true
-            }
-            Err(e) => {
-                warn!(
-                    binary,
-                    error = %e,
-                    "Algorithm recognition failed; continuing without algorithm context"
-                );
-                false
-            }
-        }
+        job.algorithm_recognition().await
     }
 
     /// Detect memory lifecycles across the binary before a batch starts,
@@ -2175,59 +2058,17 @@ impl TranslationPipeline {
     /// a failed scan, or a failed save only log a warning and
     /// return `false` — prompts without memory context are degraded, not
     /// fatal, and the batch proceeds either way.
+    ///
+    /// The scan itself runs on the owned [`ScanJob`] this builds (issue #237).
     pub async fn ensure_memory_detection(&self, binary: &str) -> bool {
-        let Some(workspace) = self.workspace.as_deref() else {
+        let Some(job) = self.scan_job(binary) else {
             debug!(
                 binary,
                 "No workspace configured; skipping memory lifecycle detection"
             );
             return false;
         };
-
-        let persistor = MemoryPersistor::new(workspace);
-        if persistor.exists(binary) {
-            debug!(
-                binary,
-                path = %persistor.path_for(binary).display(),
-                "Memory lifecycle result already cached; skipping scan"
-            );
-            return true;
-        }
-
-        info!(
-            binary,
-            "Detecting memory lifecycles before batch translation"
-        );
-        let engine = MemoryEngine::with_source(self.scan_source());
-        self.begin_scan_pass(binary, "memory detection");
-        let scan = engine.scan(binary).await;
-        self.end_scan_pass();
-        match scan {
-            Ok(result) => {
-                if let Err(e) = persistor.save(&result) {
-                    warn!(
-                        binary,
-                        error = %e,
-                        "Failed to persist memory lifecycle result; continuing without memory context"
-                    );
-                    return false;
-                }
-                info!(
-                    binary,
-                    findings = result.findings.len(),
-                    "Memory lifecycle detection complete"
-                );
-                true
-            }
-            Err(e) => {
-                warn!(
-                    binary,
-                    error = %e,
-                    "Memory lifecycle detection failed; continuing without memory context"
-                );
-                false
-            }
-        }
+        job.memory_detection().await
     }
 
     /// Detect concurrency constructs across the binary before a batch
@@ -2246,59 +2087,17 @@ impl TranslationPipeline {
     /// a failed scan, or a failed save only log a warning and
     /// return `false` — prompts without concurrency context are degraded,
     /// not fatal, and the batch proceeds either way.
+    ///
+    /// The scan itself runs on the owned [`ScanJob`] this builds (issue #237).
     pub async fn ensure_sync_detection(&self, binary: &str) -> bool {
-        let Some(workspace) = self.workspace.as_deref() else {
+        let Some(job) = self.scan_job(binary) else {
             debug!(
                 binary,
                 "No workspace configured; skipping concurrency detection"
             );
             return false;
         };
-
-        let persistor = SyncPersistor::new(workspace);
-        if persistor.exists(binary) {
-            debug!(
-                binary,
-                path = %persistor.path_for(binary).display(),
-                "Concurrency result already cached; skipping scan"
-            );
-            return true;
-        }
-
-        info!(
-            binary,
-            "Detecting concurrency constructs before batch translation"
-        );
-        let engine = SyncEngine::with_source(self.scan_source());
-        self.begin_scan_pass(binary, "sync detection");
-        let scan = engine.scan(binary).await;
-        self.end_scan_pass();
-        match scan {
-            Ok(result) => {
-                if let Err(e) = persistor.save(&result) {
-                    warn!(
-                        binary,
-                        error = %e,
-                        "Failed to persist concurrency result; continuing without concurrency context"
-                    );
-                    return false;
-                }
-                info!(
-                    binary,
-                    findings = result.findings.len(),
-                    "Concurrency detection complete"
-                );
-                true
-            }
-            Err(e) => {
-                warn!(
-                    binary,
-                    error = %e,
-                    "Concurrency detection failed; continuing without concurrency context"
-                );
-                false
-            }
-        }
+        job.sync_detection().await
     }
 
     /// Detect constant structures across the binary before a batch
@@ -2317,59 +2116,17 @@ impl TranslationPipeline {
     /// a failed scan, or a failed save only log a warning and
     /// return `false` — prompts without constant context are degraded, not
     /// fatal, and the batch proceeds either way.
+    ///
+    /// The scan itself runs on the owned [`ScanJob`] this builds (issue #237).
     pub async fn ensure_const_detection(&self, binary: &str) -> bool {
-        let Some(workspace) = self.workspace.as_deref() else {
+        let Some(job) = self.scan_job(binary) else {
             debug!(
                 binary,
                 "No workspace configured; skipping constant detection"
             );
             return false;
         };
-
-        let persistor = ConstPersistor::new(workspace);
-        if persistor.exists(binary) {
-            debug!(
-                binary,
-                path = %persistor.path_for(binary).display(),
-                "Constant result already cached; skipping scan"
-            );
-            return true;
-        }
-
-        info!(
-            binary,
-            "Detecting constant structures before batch translation"
-        );
-        let engine = ConstEngine::with_source(self.scan_source());
-        self.begin_scan_pass(binary, "constant detection");
-        let scan = engine.scan(binary).await;
-        self.end_scan_pass();
-        match scan {
-            Ok(result) => {
-                if let Err(e) = persistor.save(&result) {
-                    warn!(
-                        binary,
-                        error = %e,
-                        "Failed to persist constant result; continuing without constant context"
-                    );
-                    return false;
-                }
-                info!(
-                    binary,
-                    findings = result.findings.len(),
-                    "Constant detection complete"
-                );
-                true
-            }
-            Err(e) => {
-                warn!(
-                    binary,
-                    error = %e,
-                    "Constant detection failed; continuing without constant context"
-                );
-                false
-            }
-        }
+        job.const_detection().await
     }
 
     /// Detect callback and function-pointer tables across the binary
@@ -2391,62 +2148,18 @@ impl TranslationPipeline {
     /// a failed scan, or a failed save only log a warning and
     /// return `false` — prompts without callback context are degraded, not
     /// fatal, and the batch proceeds either way.
+    ///
+    /// The scan itself — including the type-inference enrichment — runs on
+    /// the owned [`ScanJob`] this builds (issue #237).
     pub async fn ensure_callback_detection(&self, binary: &str) -> bool {
-        let Some(workspace) = self.workspace.as_deref() else {
+        let Some(job) = self.scan_job(binary) else {
             debug!(
                 binary,
                 "No workspace configured; skipping callback detection"
             );
             return false;
         };
-
-        let persistor = CallbackPersistor::new(workspace);
-        if persistor.exists(binary) {
-            debug!(
-                binary,
-                path = %persistor.path_for(binary).display(),
-                "Callback result already cached; skipping scan"
-            );
-            return true;
-        }
-
-        info!(binary, "Detecting callback tables before batch translation");
-        // The type-inference scan runs before this one in the batch
-        // pre-analysis, so its cached document is usually in place:
-        // its records deepen the registration and chain suggestions
-        // into real closure contracts. No document, no enrichment —
-        // the scan degrades silently (issue #173).
-        let signatures = callback_signature_map(workspace, binary);
-        let engine = CallbackEngine::with_source(self.scan_source()).with_signatures(signatures);
-        self.begin_scan_pass(binary, "callback detection");
-        let scan = engine.scan(binary).await;
-        self.end_scan_pass();
-        match scan {
-            Ok(result) => {
-                if let Err(e) = persistor.save(&result) {
-                    warn!(
-                        binary,
-                        error = %e,
-                        "Failed to persist callback result; continuing without callback context"
-                    );
-                    return false;
-                }
-                info!(
-                    binary,
-                    findings = result.findings.len(),
-                    "Callback detection complete"
-                );
-                true
-            }
-            Err(e) => {
-                warn!(
-                    binary,
-                    error = %e,
-                    "Callback detection failed; continuing without callback context"
-                );
-                false
-            }
-        }
+        job.callback_detection().await
     }
 
     /// Detect control-flow patterns across the binary before a batch
@@ -2465,59 +2178,17 @@ impl TranslationPipeline {
     /// a failed scan, or a failed save only log a warning and
     /// return `false` — prompts without control-flow context are degraded,
     /// not fatal, and the batch proceeds either way.
+    ///
+    /// The scan itself runs on the owned [`ScanJob`] this builds (issue #237).
     pub async fn ensure_controlflow_detection(&self, binary: &str) -> bool {
-        let Some(workspace) = self.workspace.as_deref() else {
+        let Some(job) = self.scan_job(binary) else {
             debug!(
                 binary,
                 "No workspace configured; skipping control-flow detection"
             );
             return false;
         };
-
-        let persistor = ControlFlowPersistor::new(workspace);
-        if persistor.exists(binary) {
-            debug!(
-                binary,
-                path = %persistor.path_for(binary).display(),
-                "Control-flow result already cached; skipping scan"
-            );
-            return true;
-        }
-
-        info!(
-            binary,
-            "Detecting control-flow patterns before batch translation"
-        );
-        let engine = ControlFlowEngine::with_source(self.scan_source());
-        self.begin_scan_pass(binary, "control flow detection");
-        let scan = engine.scan(binary).await;
-        self.end_scan_pass();
-        match scan {
-            Ok(result) => {
-                if let Err(e) = persistor.save(&result) {
-                    warn!(
-                        binary,
-                        error = %e,
-                        "Failed to persist control-flow result; continuing without control-flow context"
-                    );
-                    return false;
-                }
-                info!(
-                    binary,
-                    findings = result.findings.len(),
-                    "Control-flow detection complete"
-                );
-                true
-            }
-            Err(e) => {
-                warn!(
-                    binary,
-                    error = %e,
-                    "Control-flow detection failed; continuing without control-flow context"
-                );
-                false
-            }
-        }
+        job.controlflow_detection().await
     }
 
     /// Map the binary's strings to its functions before a batch starts,
@@ -2537,56 +2208,17 @@ impl TranslationPipeline {
     /// a failed scan, or a failed save only log a warning and
     /// return `false` — prompts without string context are degraded, not
     /// fatal, and the batch proceeds either way.
+    ///
+    /// The scan itself runs on the owned [`ScanJob`] this builds (issue #237).
     pub async fn ensure_string_context(&self, binary: &str) -> bool {
-        let Some(workspace) = self.workspace.as_deref() else {
+        let Some(job) = self.scan_job(binary) else {
             debug!(
                 binary,
                 "No workspace configured; skipping string context scan"
             );
             return false;
         };
-
-        let persistor = StringContextPersistor::new(workspace);
-        if persistor.exists(binary) {
-            debug!(
-                binary,
-                path = %persistor.path_for(binary).display(),
-                "String context result already cached; skipping scan"
-            );
-            return true;
-        }
-
-        info!(binary, "Mapping program strings before batch translation");
-        let engine = StringContextEngine::with_source(self.scan_source());
-        self.begin_scan_pass(binary, "string context");
-        let scan = engine.scan(binary).await;
-        self.end_scan_pass();
-        match scan {
-            Ok(result) => {
-                if let Err(e) = persistor.save(&result) {
-                    warn!(
-                        binary,
-                        error = %e,
-                        "Failed to persist string context result; continuing without string context"
-                    );
-                    return false;
-                }
-                info!(
-                    binary,
-                    findings = result.findings.len(),
-                    "String context scan complete"
-                );
-                true
-            }
-            Err(e) => {
-                warn!(
-                    binary,
-                    error = %e,
-                    "String context scan failed; continuing without string context"
-                );
-                false
-            }
-        }
+        job.string_context().await
     }
 
     /// Identify the libraries and APIs of the binary before a batch
@@ -2605,56 +2237,14 @@ impl TranslationPipeline {
     /// a failed scan, or a failed save only log a warning and
     /// return `false` — prompts without API context are degraded, not fatal,
     /// and the batch proceeds either way.
+    ///
+    /// The scan itself runs on the owned [`ScanJob`] this builds (issue #237).
     pub async fn ensure_api_detection(&self, binary: &str) -> bool {
-        let Some(workspace) = self.workspace.as_deref() else {
+        let Some(job) = self.scan_job(binary) else {
             debug!(binary, "No workspace configured; skipping API detection");
             return false;
         };
-
-        let persistor = ApiPersistor::new(workspace);
-        if persistor.exists(binary) {
-            debug!(
-                binary,
-                path = %persistor.path_for(binary).display(),
-                "API result already cached; skipping scan"
-            );
-            return true;
-        }
-
-        info!(
-            binary,
-            "Identifying libraries and APIs before batch translation"
-        );
-        let engine = ApiEngine::with_source(self.scan_source());
-        self.begin_scan_pass(binary, "API detection");
-        let scan = engine.scan(binary).await;
-        self.end_scan_pass();
-        match scan {
-            Ok(result) => {
-                if let Err(e) = persistor.save(&result) {
-                    warn!(
-                        binary,
-                        error = %e,
-                        "Failed to persist API result; continuing without API context"
-                    );
-                    return false;
-                }
-                info!(
-                    binary,
-                    findings = result.findings.len(),
-                    "API detection complete"
-                );
-                true
-            }
-            Err(e) => {
-                warn!(
-                    binary,
-                    error = %e,
-                    "API detection failed; continuing without API context"
-                );
-                false
-            }
-        }
+        job.api_detection().await
     }
 
     /// Detect endianness and serialization patterns across the binary
@@ -2674,59 +2264,17 @@ impl TranslationPipeline {
     /// a failed scan, or a failed save only log a warning and
     /// return `false` — prompts without serialization context are degraded,
     /// not fatal, and the batch proceeds either way.
+    ///
+    /// The scan itself runs on the owned [`ScanJob`] this builds (issue #237).
     pub async fn ensure_serialize_detection(&self, binary: &str) -> bool {
-        let Some(workspace) = self.workspace.as_deref() else {
+        let Some(job) = self.scan_job(binary) else {
             debug!(
                 binary,
                 "No workspace configured; skipping serialization detection"
             );
             return false;
         };
-
-        let persistor = SerializePersistor::new(workspace);
-        if persistor.exists(binary) {
-            debug!(
-                binary,
-                path = %persistor.path_for(binary).display(),
-                "Serialization result already cached; skipping scan"
-            );
-            return true;
-        }
-
-        info!(
-            binary,
-            "Detecting serialization patterns before batch translation"
-        );
-        let engine = SerializeEngine::with_source(self.scan_source());
-        self.begin_scan_pass(binary, "serialization detection");
-        let scan = engine.scan(binary).await;
-        self.end_scan_pass();
-        match scan {
-            Ok(result) => {
-                if let Err(e) = persistor.save(&result) {
-                    warn!(
-                        binary,
-                        error = %e,
-                        "Failed to persist serialization result; continuing without serialization context"
-                    );
-                    return false;
-                }
-                info!(
-                    binary,
-                    findings = result.findings.len(),
-                    "Serialization detection complete"
-                );
-                true
-            }
-            Err(e) => {
-                warn!(
-                    binary,
-                    error = %e,
-                    "Serialization detection failed; continuing without serialization context"
-                );
-                false
-            }
-        }
+        job.serialize_detection().await
     }
 
     /// Translate multiple functions from a single DLL, one at a time.
@@ -3607,6 +3155,7 @@ mod tests {
     };
     use calxgloss_types::Confidence;
     use calxgloss_types::TranslationConstraints;
+    use calxgloss_typesdb::persist::TypeDatabasePersistor;
     use calxgloss_typesdb::types::{ScanMetadata, TypeDatabase};
     use tempfile::TempDir;
 
@@ -5284,6 +4833,60 @@ mod tests {
             result.results.len(),
             1,
             "the unit ran live against the engine, as without the cache"
+        );
+    }
+
+    // ============================================================
+    // The owned scan job (issue #237)
+    // ============================================================
+
+    /// The fan-out's unit of work: the handle owns every read a scan makes,
+    /// is cheap to clone, and is safe to move onto a task (issue #237).
+    #[test]
+    fn a_scan_job_is_cheap_to_clone_and_safe_to_share_across_tasks() {
+        fn assert_handle<T: Send + Sync + Clone>() {}
+        assert_handle::<ScanJob>();
+    }
+
+    /// The prefactor the fan-out needs: a scan handed to a spawned task
+    /// answers exactly like the inline call — same verdict, and the same
+    /// persisted document once the wall-clock scan stamp is set aside
+    /// (issue #237).
+    #[tokio::test]
+    async fn a_scan_job_handed_to_a_spawned_task_matches_the_inline_call() {
+        let inline_dir = TempDir::new().expect("temp workspace");
+        let inline = pipeline_over(Some(inline_dir.path()))
+            .ensure_type_database("eqmain.dll")
+            .await;
+        assert!(inline, "the inline scan succeeds over the fixture");
+
+        let job_dir = TempDir::new().expect("temp workspace");
+        let job = pipeline_over(Some(job_dir.path()))
+            .scan_job("eqmain.dll")
+            .expect("the workspace is configured, so the job exists");
+        let spawned = tokio::spawn(async move { job.type_database().await })
+            .await
+            .expect("the scan task runs to completion");
+        assert_eq!(
+            spawned, inline,
+            "the job on a task answers like the inline call"
+        );
+
+        let mut from_task = TypeDatabasePersistor::new(job_dir.path())
+            .load("eqmain.dll")
+            .expect("the task's document");
+        let mut from_inline = TypeDatabasePersistor::new(inline_dir.path())
+            .load("eqmain.dll")
+            .expect("the inline call's document");
+        // The scan stamp is wall-clock, not a finding: zero it so the
+        // comparison is over what the scan actually recovered.
+        for doc in [&mut from_task, &mut from_inline] {
+            doc.metadata.scanned_at = 0;
+            doc.metadata.duration_secs = 0;
+        }
+        assert_eq!(
+            from_task, from_inline,
+            "the task's persisted document must match the inline call's"
         );
     }
 
