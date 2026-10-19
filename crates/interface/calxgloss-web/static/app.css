@@ -2386,6 +2386,14 @@ svg {
     color: var(--bg-primary);
 }
 
+/* Held out of the queue by the operator (issue #222) — amber, the same
+   "waiting on you" register as the blocked status, never the pulsing
+   in-flight cyan. */
+.pipeline-binary-status.paused {
+    background: var(--accent-yellow-dim);
+    color: var(--status-pending);
+}
+
 .pipeline-binary-counts {
     display: grid;
     grid-template-columns: repeat(5, 1fr);

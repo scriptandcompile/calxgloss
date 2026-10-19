@@ -342,6 +342,20 @@ function handleWSMessage(event) {
         );
     }
 
+    // Per-binary pause (issue #222) — the row follows the steering change in
+    // real time, including pauses made in another tab or through the scope
+    // endpoints: re-render the rows from the server's honest row data, no
+    // page reload.
+    if (event.event === "binary_pause_changed") {
+        showToast(
+            event.paused
+                ? `Paused ${event.binary} — held out of the queue`
+                : `Resumed ${event.binary} — admitted to the queue again`,
+            event.paused ? "warning" : "info"
+        );
+        loadPipelineProgress();
+    }
+
     // Handle translation start — show a toast notification
     if (event.event === "translation_started") {
         showToast(

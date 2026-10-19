@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-binary pause: the dashboard rows get real per-binary Pause/Resume (issue #222, part of #217).**
+  The pipeline row's Pause button now steers just that binary: the row's delegated click handler calls
+  `POST /api/pipeline/binaries/{binary}/pause` instead of the run-wide `POST /api/pipeline/pause` —
+  the defect the spec names — and a paused row renders a **Paused** status badge ahead of *Working* /
+  *Batch done* with its button reading **Resume**, driving `…/resume`; the label follows the row's
+  `paused` flag, so the state is visible without hovering or reading counts. A `binary_pause_changed`
+  WS event re-renders the rows without a page reload — including pauses made in another tab or through
+  the scope endpoints — with a toast naming the binary the run just held out or re-admitted. The
+  header's global Pause / Resume / Stop controls are untouched: pausing the whole run stays a
+  different verb from pausing one binary. A headless JS test mirrors the restart-dialog endpoint test:
+  the row's click reaches the per-binary endpoint (the run-level machine provably never moves), the
+  row re-renders as Paused with a Resume button, and the resume click flips it back.
 - **Per-binary pause: the web server's pause and resume endpoints, and the event that carries them (issue #221, part of #217).**
   `POST /api/pipeline/binaries/{binary}/pause` and `.../resume` drive the scope handle attached by
   `calxgloss live` — bodyless, answering the same shape as the run-level lifecycle controls and

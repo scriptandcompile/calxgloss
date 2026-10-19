@@ -9,9 +9,11 @@
    tokens, queued counts, and rates render as "—", never as fabricated
    zeros.
 
-   The quick-action buttons (Start Translation, Pause, Configure, Classify)
-   are real controls (issue #94): the first two drive the pipeline lifecycle
-   endpoints, Configure opens the restart dialog with this binary pre-
+   The quick-action buttons (Start Translation, Pause/Resume, Configure,
+   Classify) are real controls (issue #94): Start drives the run-level
+   lifecycle endpoint, Pause/Resume steer just this binary through the
+   per-binary pause endpoints (issue #222) — the label follows the row's
+   paused flag — Configure opens the restart dialog with this binary pre-
    selected as the target, Classify opens the classification-override panel
    (issue #97). The server's own reason surfaces on rejection —
    a stale click is never a silent no-op.
@@ -25,13 +27,15 @@ import { openClassificationPanel } from "./classification-override.js";
 const ACTION_LABELS = {
     start: "Start Translation",
     pause: "Pause",
+    resume: "Resume",
     configure: "Configure",
     classify: "Classify",
 };
 
 const ACTION_TITLES = {
     start: "Start a pipeline run (POST /api/pipeline/start)",
-    pause: "Pause the live run at the current unit boundary (POST /api/pipeline/pause)",
+    pause: "Hold this binary out of the queue until resumed (POST /api/pipeline/binaries/{name}/pause)",
+    resume: "Re-admit this binary to the queue (POST /api/pipeline/binaries/{name}/resume)",
     configure: "Open restart options with this binary pre-selected",
     classify: "Review and override this binary's classification (POST /api/binaries/{name}/classification)",
 };
@@ -77,7 +81,10 @@ function shimStatus(b) {
 // column already says whether the binary is classified. "Working"
 // means the live pipeline's batch pass for this binary is in flight
 // (enumeration, testgen, translation) — no unit events needed.
+// "Paused" is the operator's own steering (issue #222) and leads the
+// sequence — a held-out binary reads as held, whatever its pass did.
 function statusBadge(b) {
+    if (b.paused) return { cls: "paused", text: "Paused" };
     if ((b.functions_in_progress || 0) > 0) return { cls: "translating", text: "Translating" };
     if (b.processing) return { cls: "translating", text: "Working" };
     if (b.functions_total != null) return { cls: "complete", text: "Batch done" };
@@ -142,6 +149,11 @@ function renderRow(b) {
     const queued = queuedCount(b);
     const rate = successRate(b);
     const dll = escapeHtml(b.binary || "unknown");
+    // The pause slot follows the row's paused flag (issue #222): an unpaused
+    // row offers Pause, a paused one offers Resume — never both.
+    const actions = Object.entries(ACTION_LABELS).filter(([action]) =>
+        action === "pause" ? !b.paused : action === "resume" ? b.paused : true
+    );
 
     return `
         <div class="pipeline-binary-row" data-binary="${dll}" data-status="${status.cls}">
@@ -165,7 +177,7 @@ function renderRow(b) {
             </div>
             <div class="pipeline-binary-state" data-shim="${shim.kind}" title="Classification state — PAL trait / shim layer / full RE / unclassified">${escapeHtml(shim.text)}</div>
             <div class="pipeline-binary-actions">
-                ${Object.entries(ACTION_LABELS)
+                ${actions
                     .map(
                         ([action, label]) => `<button class="pipeline-action-btn" data-action="${action}" data-binary="${dll}" title="${ACTION_TITLES[action] || ""}">${label}</button>`
                     )
@@ -185,8 +197,9 @@ export function renderPipelineBinaryRows(binaries) {
     if (!container) return;
 
     // One delegated listener survives innerHTML re-renders. Real controls:
-    // start/pause drive the lifecycle endpoints, configure opens the
-    // restart dialog for this binary.
+    // start drives the run-level lifecycle endpoint, pause/resume steer just
+    // this binary through the per-binary endpoints (issue #222), configure
+    // opens the restart dialog for this binary.
     if (!container.dataset.actionsWired) {
         container.dataset.actionsWired = "1";
         container.addEventListener("click", async (e) => {
@@ -201,8 +214,14 @@ export function renderPipelineBinaryRows(binaries) {
                 openClassificationPanel(binary);
                 return;
             }
+            // Pausing one binary is steering, not lifecycle (issue #217):
+            // the row's button never touches the run-wide pause endpoint.
             const call =
-                action === "start" ? () => API.startPipeline() : () => API.pausePipeline();
+                action === "start"
+                    ? () => API.startPipeline()
+                    : action === "pause"
+                      ? () => API.pauseBinary(binary)
+                      : () => API.resumeBinary(binary);
             // Same driver as the header buttons: success adopts the server's
             // state, rejection surfaces the server's own reason.
             await runControl(action, call);

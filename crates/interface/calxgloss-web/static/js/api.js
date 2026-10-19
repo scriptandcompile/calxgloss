@@ -130,6 +130,11 @@ export const API = {
     async stopPipeline() { return API.post("/api/pipeline/stop"); },
     async restartPipeline(options) { return API.post("/api/pipeline/restart", options); },
     async cancelCurrentUnit() { return API.post("/api/pipeline/cancel-current"); },
+    // Per-binary pause (issue #221/#222, X6) — steers one target binary in or
+    // out of the run's queue without touching the run-level machine; live
+    // router only, like the lifecycle controls.
+    async pauseBinary(name) { return API.post(`/api/pipeline/binaries/${encodeURIComponent(name)}/pause`); },
+    async resumeBinary(name) { return API.post(`/api/pipeline/binaries/${encodeURIComponent(name)}/resume`); },
     // Translation scope controls (issue #93, driven by the panel in issue
     // #95) — live router only; plain serve has no pipeline to steer.
     async scopeStatus() { return API.get("/api/scope"); },

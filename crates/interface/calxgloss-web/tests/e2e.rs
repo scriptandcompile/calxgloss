@@ -860,8 +860,8 @@ async fn test_pipeline_binary_pause_resume_endpoints() {
 
 /// A pause and a resume reach WS clients as raw `binary_pause_changed`
 /// events on the shared broadcast (issue #221) — the dashboard re-renders
-/// the row from the pushed event, not a refetch, following the
-/// state-changed and unit-cancelled event precedents.
+/// the rows when the event arrives, without a page reload (issue #222),
+/// following the batch-summary event precedent.
 #[tokio::test]
 async fn test_binary_pause_changed_reaches_ws_clients() {
     use futures_util::StreamExt;
@@ -11727,6 +11727,192 @@ async fn test_headless_restart_dialog_drives_endpoint() {
             &tab,
             "[...document.querySelectorAll('#toast-container .toast')].map(t => t.textContent).join(' | ')"
         )
+    );
+
+    tab.close_target().ok();
+    drop(browser);
+}
+
+/// Headless-browser test for the per-binary Pause/Resume button on a
+/// pipeline row (issue #222, X6): clicking Pause drives the per-binary
+/// pause endpoint — not the run-wide POST /api/pipeline/pause — the row
+/// re-renders as Paused with a Resume button, and the WS
+/// binary_pause_changed event drives that re-render without a reload.
+/// Mirrors the restart-dialog endpoint test.
+///
+/// Run with: `cargo test --features server --test e2e headless -- --ignored`
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires Chromium/Chrome installed; run with --ignored"]
+async fn test_headless_binary_pause_button_drives_endpoint() {
+    let fixture = TestFixture::new();
+    let events = TranslationEvents::new(128);
+    let scope =
+        calxgloss_types::ScopeControl::open(fixture.repo_path()).with_events(events.clone());
+    // A running run: if the row's button drove the run-wide pause endpoint,
+    // the machine would move to paused — it must stay running.
+    let control = PipelineControl::new().with_events(events.clone());
+    control.start().expect("idle -> running");
+    let state = ServerState::new(fixture.repo_path())
+        .with_scope_control(scope)
+        .with_pipeline_control(control.clone());
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // One planned binary — the row exists before anything starts on it.
+    events.emit(ProgressEvent::QueuePlanned {
+        binaries: vec!["game_logic.dll".to_string()],
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let browser = launch_headless_browser();
+    let tab = open_dashboard_tab(&browser, fixture.port());
+
+    // Rows render asynchronously once the pipeline fetch settles; poll
+    // until the row and its Pause button appear (up to ~5 seconds).
+    let mut rendered = false;
+    for _ in 0..25 {
+        if eval_bool(
+            &tab,
+            "!!document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"pause\"]')",
+        ) {
+            rendered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(rendered, "the row must render with a Pause button");
+    assert_eq!(
+        eval_text(
+            &tab,
+            "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"pause\"]')?.textContent || ''"
+        ),
+        "Pause",
+        "an unpaused row's button reads Pause"
+    );
+
+    // Click Pause on the row.
+    tab.evaluate(
+        "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"pause\"]').click() === undefined",
+        false,
+    )
+    .expect("click the row's Pause button");
+
+    // The row re-renders as Paused with a Resume button — over the WS
+    // binary_pause_changed event, with no reload.
+    let mut paused = false;
+    for _ in 0..25 {
+        if eval_bool(
+            &tab,
+            "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"]')?.dataset.status === 'paused' \
+                 && !!document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"resume\"]')"
+        ) {
+            paused = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        paused,
+        "the row must re-render as Paused with a Resume button, got: {}",
+        eval_text(
+            &tab,
+            "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"]')?.outerHTML || ''"
+        )
+    );
+    // The badge reads Paused ahead of Working / Batch done, and the button
+    // label follows the row's paused flag.
+    assert!(
+        eval_text(
+            &tab,
+            "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-metric=\"success-rate\"]')?.textContent || ''"
+        )
+        .contains("Paused"),
+        "the paused row's status badge reads Paused"
+    );
+    assert_eq!(
+        eval_text(
+            &tab,
+            "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"resume\"]')?.textContent || ''"
+        ),
+        "Resume",
+        "the button label follows the row's paused flag"
+    );
+
+    // The success toast carries the server's own reason.
+    assert!(
+        eval_bool(
+            &tab,
+            "[...document.querySelectorAll('#toast-container .toast')].some(t => t.textContent.includes('held out of the queue'))"
+        ),
+        "the toast reports the pause the server made, got: {}",
+        eval_text(
+            &tab,
+            "[...document.querySelectorAll('#toast-container .toast')].map(t => t.textContent).join(' | ')"
+        )
+    );
+
+    // The per-binary endpoint was driven, not the run-wide one: the
+    // lifecycle machine never moved, in the server's truth and in the
+    // header's badge.
+    assert_eq!(
+        control.state(),
+        PipelineState::Running,
+        "a row pause must not touch the run-level lifecycle machine"
+    );
+    assert_eq!(
+        eval_text(
+            &tab,
+            "document.getElementById('pipeline-state')?.dataset.state || ''"
+        ),
+        "running",
+        "the header badge never moved"
+    );
+    // The click reached the endpoint — the pause rode the persisted scope
+    // record, matched on the #107 case-insensitive rule.
+    assert!(
+        calxgloss_types::ScopeControl::open(fixture.repo_path()).is_paused("GAME_LOGIC.DLL"),
+        "the click drove POST /api/pipeline/binaries/game_logic.dll/pause"
+    );
+
+    // Click Resume — the same slot, relabeled.
+    tab.evaluate(
+        "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"resume\"]').click() === undefined",
+        false,
+    )
+    .expect("click the row's Resume button");
+
+    let mut resumed = false;
+    for _ in 0..25 {
+        if eval_bool(
+            &tab,
+            "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"]')?.dataset.status !== 'paused' \
+                 && !!document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"pause\"]')"
+        ) {
+            resumed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        resumed,
+        "the row must re-render unpaused with a Pause button, got: {}",
+        eval_text(
+            &tab,
+            "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"]')?.outerHTML || ''"
+        )
+    );
+    assert!(
+        !calxgloss_types::ScopeControl::open(fixture.repo_path()).is_paused("game_logic.dll"),
+        "the resume click drove POST /api/pipeline/binaries/game_logic.dll/resume"
+    );
+    assert_eq!(
+        control.state(),
+        PipelineState::Running,
+        "a row resume must not touch the run-level lifecycle machine either"
     );
 
     tab.close_target().ok();
