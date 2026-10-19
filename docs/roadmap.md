@@ -32,7 +32,7 @@ Test counts in the archive are indicative targets, not exact requirements.
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
 | P12.5 | Branch-targeted baseline tests — Verification must pin every branch the CFG reveals, not just the happy path | evidence (`calxgloss-controlflow`) + pipeline (`calxgloss-testgen`, `calxgloss-translator`) | — | ⬜ not started | `/to-tickets` from #224 | [#224](https://github.com/scriptandcompile/calxgloss/issues/224) |
-| P13 | Global-state reference sets — per-function global read/write sets, produced once and consumed by prompt, sync gate, DAG order, and side-effect kinds | evidence (`calxgloss-globalstate` (new), `calxgloss-sync`, `calxgloss-callgraph`) + pipeline (`calxgloss-translator`) + shared (`calxgloss-types`) + interface (`calxgloss-cli`) | — | 🔶 in progress | Work frontier: #256 (#252–#255 done; #256–#257 remain) | [#225](https://github.com/scriptandcompile/calxgloss/issues/225) |
+| P13 | Global-state reference sets — per-function global read/write sets, produced once and consumed by prompt, sync gate, DAG order, and side-effect kinds | evidence (`calxgloss-globalstate` (new), `calxgloss-sync`, `calxgloss-callgraph`) + pipeline (`calxgloss-translator`) + shared (`calxgloss-types`) + interface (`calxgloss-cli`) | — | 🔶 in progress | Work frontier: #257 (#252–#256 done; #257 remains) | [#225](https://github.com/scriptandcompile/calxgloss/issues/225) |
 | P13.5 | Float/SIMD usage flagging — flag which functions do float/SIMD math and name the shape, so the LLM stops mistranslating mangled vector pseudo-C | evidence (`calxgloss-floatsimd` (new)) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #229 | [#229](https://github.com/scriptandcompile/calxgloss/issues/229) |
 | P14 | Known-library function identification — body-signature matching against statically-linked CRT/STL code so those functions become Skip nodes, not translation units | evidence (`calxgloss-libmatch` (new), `calxgloss-analysis`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #227 | [#227](https://github.com/scriptandcompile/calxgloss/issues/227) |
 | P12.7 | Parameter direction analysis — read each pointer parameter as in/out/inout from the body so the Rust signature shape stops guessing and out-param capture becomes possible | evidence (`calxgloss-typeinfer`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #228 | [#228](https://github.com/scriptandcompile/calxgloss/issues/228) |
@@ -96,13 +96,16 @@ shared-globals index lands as a typed artifact for reviewers and later
 analyses. Spec: #225. Tickets: [#252](https://github.com/scriptandcompile/calxgloss/issues/252),
 [#253](https://github.com/scriptandcompile/calxgloss/issues/253),
 [#254](https://github.com/scriptandcompile/calxgloss/issues/254), and
-[#255](https://github.com/scriptandcompile/calxgloss/issues/255) done — the producer
+[#255](https://github.com/scriptandcompile/calxgloss/issues/255),
+[#256](https://github.com/scriptandcompile/calxgloss/issues/256) done — the producer
 crate shipped (detector, engine, shared-globals index rollup, persistence, pipeline
 scan, CLI command), the GLOBAL STATE prompt section renders the target function's
-records into the module-context and escalate prompts, and the sync crate's
+records into the module-context and escalate prompts, the sync crate's
 data-race pairing consumes the crate's shared access-site reading instead of
-re-deriving the sets itself — and #256–#257 remain
-(frontier: #256).
+re-deriving the sets itself, and the translation orderer now queues a global's
+first definer ahead of the units that reuse it, reading state-sharing edges from
+the persisted index — and #257 remains
+(frontier: #257).
 
 ## P13.5 — Float/SIMD usage flagging (evidence + integrations + pipeline + interface)
 
