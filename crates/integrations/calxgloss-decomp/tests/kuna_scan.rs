@@ -110,6 +110,59 @@ async fn an_unknown_function_name_is_a_named_miss_at_the_seam() {
 }
 
 #[tokio::test]
+async fn the_seam_answers_the_disassembly_read_with_listing_text() {
+    // Issue #245: the seam's new per-function disassembly-text read,
+    // answered by the Kuna arm with the engine's own listing — an address
+    // column, then uppercase SLEIGH mnemonics with `0x` hex operands —
+    // and a miss in the seam's error vocabulary.
+    let source = fixture_pipeline_source();
+    let functions = source.functions().await.expect("functions read");
+    let tick = functions
+        .iter()
+        .find(|f| loader_name(&f.name) == "fixture_tick")
+        .expect("fixture_tick is listed");
+
+    let text = source
+        .disassembly(&tick.name)
+        .await
+        .expect("the listed name disassembles through the seam");
+    assert!(
+        !text.trim().is_empty(),
+        "a listed function body lists instructions"
+    );
+    for line in text.lines() {
+        let (address, instruction) = line
+            .split_once("  ")
+            .unwrap_or_else(|| panic!("rows carry an address column: {line}"));
+        assert!(
+            !address.is_empty() && address.chars().all(|c| c.is_ascii_hexdigit()),
+            "the address column is the vma in hex: {line}"
+        );
+        let mnemonic = instruction.split_whitespace().next().unwrap_or(instruction);
+        assert!(
+            !mnemonic.is_empty() && mnemonic.to_uppercase() == *mnemonic,
+            "the mnemonic is the lifter's uppercase spelling: {line}"
+        );
+    }
+    assert!(
+        text.contains("RSP") && text.contains("0x"),
+        "the x64 fixture lists RSP and 0x hex: {text}"
+    );
+
+    let error = source
+        .disassembly("no_such_function_anywhere")
+        .await
+        .expect_err("an unknown name is a named miss at the seam");
+    match &error {
+        EngineError::NotFound { kind, query } => {
+            assert_eq!(*kind, "function");
+            assert_eq!(query, "no_such_function_anywhere");
+        }
+        other => panic!("expected the seam's named NotFound, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn the_kuna_source_answers_every_read_the_seam_carries_over_the_fixture() {
     let source = fixture_pipeline_source();
 

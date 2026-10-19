@@ -213,6 +213,10 @@ enum Command {
         name: String,
         reply: oneshot::Sender<Result<KunaDecompiled>>,
     },
+    Disassemble {
+        name: String,
+        reply: oneshot::Sender<Result<String>>,
+    },
     Imports(oneshot::Sender<Result<Vec<KunaSymbol>>>),
     Exports(oneshot::Sender<Result<Vec<KunaSymbol>>>),
     ImageBase(oneshot::Sender<Result<u64>>),
@@ -580,6 +584,24 @@ impl KunaSource {
             .clone()
     }
 
+    /// The machine-instruction listing for one function, by name, as text
+    /// (issue #245).
+    ///
+    /// One row per instruction in address order, spelled by the engine's
+    /// own walker — uppercase SLEIGH mnemonics, `0x` hex operands. A name
+    /// the engine does not settle on is the same named
+    /// [`KunaError::FunctionNotFound`] a decompile of it answers with.
+    /// The read is pure disassembly: no decompilation runs, and the
+    /// program's recovered state never moves.
+    pub async fn disassemble_function(&self, name: &str) -> Result<String> {
+        let (reply, answer) = oneshot::channel();
+        self.send(Command::Disassemble {
+            name: name.to_string(),
+            reply,
+        })?;
+        answer.await.map_err(|_| KunaError::EngineUnavailable)?
+    }
+
     /// Every import in the container's import table.
     pub async fn list_imports(&self) -> Result<Vec<KunaSymbol>> {
         let (reply, answer) = oneshot::channel();
@@ -873,6 +895,10 @@ fn engine_thread(
             }
             Command::Decompile { name, reply } => {
                 let _ = reply.send(guard("decompile", || decompile(&mut program, &name)).flatten());
+            }
+            Command::Disassemble { name, reply } => {
+                let _ = reply
+                    .send(guard("disassemble", || disassemble_listing(&program, &name)).flatten());
             }
             Command::Imports(reply) => {
                 let _ = reply.send(
@@ -1205,6 +1231,51 @@ fn decompile(program: &mut KunaProgram, name: &str) -> Result<KunaDecompiled> {
         signature,
         body,
     })
+}
+
+/// The machine-instruction listing for one function body, as text: one
+/// `<vma>  <MNEMONIC operands>` row per instruction — the spelling the
+/// engine's own `kuna disassemble` prints for a function body, produced
+/// by the same walker (`kuna_console::disasm::walk`), so the mnemonics
+/// are the lifter's uppercase SLEIGH spellings and constants carry their
+/// `0x` hex (issue #245).
+///
+/// The extent walked is the entry's inventory extent — the same clip
+/// `kuna functions` reports as `size` — so the listing covers the body
+/// without the caller naming both ends, and an extent wider than the
+/// walker's derived cap lists up to that cap, as the CLI's function
+/// listing does. Bytes the translator will not decode are `.byte` rows
+/// in place, not the end of the listing. A name the engine does not
+/// settle on is the same [`KunaError::FunctionNotFound`] a decompile of
+/// it answers with; an entry with no measurable extent honestly lists
+/// nothing.
+fn disassemble_listing(program: &KunaProgram, name: &str) -> Result<String> {
+    let Some(entry) = program.program.find_entry_by_name(name) else {
+        return Err(KunaError::FunctionNotFound {
+            name: name.to_string(),
+        });
+    };
+    let start = entry.addr.get_offset();
+    let extent = program.program.function_extent_at(start);
+    if extent == 0 {
+        return Ok(String::new());
+    }
+    // The mapped-run bound, exactly as the CLI bounds its own walk: a
+    // listing never lists a byte the image does not hold.
+    let window = kuna_console::disasm::Window {
+        start,
+        end: Some(start.saturating_add(extent)),
+        derived: true,
+        mapped_end: kuna_console::disasm::mapped_run_end(&program.program, start)
+            .map(|(end, _)| end),
+    };
+    let listing = kuna_console::disasm::walk(&program.program, &window, None, false);
+    use std::fmt::Write as _;
+    let mut text = String::new();
+    for row in &listing.rows {
+        let _ = writeln!(text, "{:08x}  {}", row.addr, row.text());
+    }
+    Ok(text.trim_end().to_string())
 }
 
 /// Which per-function budget a Kuna refusal names, if it is a watchdog
@@ -2130,6 +2201,52 @@ mod tests {
             );
             assert!(item.address >= base, "a global sits in the image: {item:?}");
         }
+    }
+
+    #[test]
+    fn the_disassembly_listing_answers_sleigh_style_text_for_a_fixture_function() {
+        // Issue #245: the seam's new per-function disassembly read, at the
+        // handler level. The rows are the engine's own walker's spelling —
+        // an address column, then uppercase SLEIGH mnemonics with `0x`
+        // hex operands — over the entry's inventory extent.
+        let program = fixture_program();
+        let listed = list_functions(&program).expect("the fixture listing");
+        let tick = listed
+            .iter()
+            .find(|function| function.name.trim_start_matches('_') == "fixture_tick")
+            .expect("fixture_tick is listed");
+
+        let text = disassemble_listing(&program, &tick.name).expect("the listing answers");
+        let mut rows = text.lines();
+        let first = rows.next().expect("a listed function body has rows");
+        let (address, instruction) = first
+            .split_once("  ")
+            .unwrap_or_else(|| panic!("rows carry an address column: {first}"));
+        assert!(
+            !address.is_empty() && address.chars().all(|c| c.is_ascii_hexdigit()),
+            "the address column is the vma in hex: {first}"
+        );
+        let mnemonic = instruction.split_whitespace().next().unwrap_or(instruction);
+        assert!(
+            !mnemonic.is_empty() && mnemonic.to_uppercase() == *mnemonic,
+            "the mnemonics are the lifter's uppercase spelling: {first}"
+        );
+        // The fixture is an x64 PE: the listing spells its registers the
+        // 64-bit way, which is what the x86/x64 evidence families key on.
+        assert!(
+            text.contains("RSP"),
+            "an x64 body spells its stack register RSP: {text}"
+        );
+        assert!(text.contains("0x"), "constants carry 0x hex: {text}");
+
+        // A name the engine does not settle on is the same named miss a
+        // decompile answers with.
+        let miss = disassemble_listing(&program, "no_such_function_anywhere")
+            .expect_err("an unknown name is a named miss");
+        assert!(
+            matches!(&miss, KunaError::FunctionNotFound { name } if name == "no_such_function_anywhere"),
+            "expected the named miss, got {miss:?}"
+        );
     }
 
     #[test]

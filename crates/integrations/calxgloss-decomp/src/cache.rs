@@ -119,6 +119,7 @@ enum CacheKey {
     DataItems,
     DataTypes(Option<String>),
     Decompile(String),
+    Disassembly(String),
     Callers(u64),
     XrefsTo(u64),
     StructLayout(String),
@@ -424,6 +425,17 @@ impl ScanSource for CachedScanSource {
         Ok(body)
     }
 
+    async fn disassembly(&self, name: &str) -> Result<String> {
+        // The listing text is cached like every other read: a warm scan
+        // never re-disassembles (issue #245). No heartbeat beat — the
+        // read is not a decompile work item, and the scan's breaker-
+        // gated window counts it beside the body it pairs with.
+        self.cached(CacheKey::Disassembly(name.to_string()), || {
+            ScanSource::disassembly(&self.inner.source, name)
+        })
+        .await
+    }
+
     async fn strings(&self) -> Result<Vec<StringLiteral>> {
         self.cached(CacheKey::Strings, || {
             ScanSource::strings(&self.inner.source)
@@ -589,6 +601,7 @@ fn doc_path(root: &Path, key: &CacheKey) -> PathBuf {
             &safe_key(category.as_deref().unwrap_or("all")),
         )),
         CacheKey::Decompile(name) => root.join(item("decompile", &safe_key(name))),
+        CacheKey::Disassembly(name) => root.join(item("disassembly", &safe_key(name))),
         CacheKey::Callers(address) => root.join(item("callers", &format!("{address:x}"))),
         CacheKey::XrefsTo(address) => root.join(item("xrefs_to", &format!("{address:x}"))),
         CacheKey::StructLayout(name) => root.join(item("struct_layout", &safe_key(name))),

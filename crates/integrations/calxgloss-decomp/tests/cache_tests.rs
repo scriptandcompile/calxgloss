@@ -70,6 +70,14 @@ async fn drive_reads<S: ScanSource>(source: &S) {
         body.body.contains("fixture_tick"),
         "the decompiled body should name its own function: {body:?}"
     );
+    let listing = source
+        .disassembly(&tick.name)
+        .await
+        .expect("disassembly by listed name");
+    assert!(
+        !listing.trim().is_empty(),
+        "the disassembly read lists instructions: {listing:?}"
+    );
     let strings = source.strings().await.expect("strings");
     for want in STRING_LITERALS {
         assert!(
@@ -157,6 +165,7 @@ async fn a_first_instance_fetches_live_and_writes_each_item_through() {
         "data_types/all.json",
         "struct_layout/_iobuf.json",
         &format!("decompile/{}.json", tick.name),
+        &format!("disassembly/{}.json", tick.name),
     ] {
         assert!(
             dir.join(entry).is_file(),
@@ -208,6 +217,43 @@ async fn a_second_instance_over_the_same_workspace_replays_from_disk() {
             "the intact string document should replay {want:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn a_warm_disassembly_replays_from_disk_without_an_engine_round_trip() {
+    // Issue #245: the listing text is cached like every other scan read.
+    // A cold read files it under the scan-cache convention, and a warm
+    // instance replays it with no engine round trip at all — a warm scan
+    // never re-disassembles.
+    let (workspace, binary) = workspace_with_fixture();
+    let first = cached_source(workspace.path(), &binary);
+    drive_reads(&first).await;
+    let dir = first
+        .cache_dir()
+        .expect("the disk tier is on")
+        .to_path_buf();
+    let functions = first.functions().await.expect("function listing");
+    let tick = fixture_export(&functions, "fixture_tick");
+
+    // The cold read wrote its document beside the decompile documents.
+    let document = dir.join(format!("disassembly/{}.json", tick.name));
+    assert!(
+        document.is_file(),
+        "the cold listing is filed under disassembly/"
+    );
+
+    // Tamper it with a value the engine could never answer. A fresh
+    // instance returning it proves the warm read came off disk.
+    calxgloss_types::save_json(&document, &"sentinel listing text").expect("tampered");
+    let second = cached_source(workspace.path(), &binary);
+    let replayed = second
+        .disassembly(&tick.name)
+        .await
+        .expect("disassembly replay");
+    assert_eq!(
+        replayed, "sentinel listing text",
+        "the warm read must replay the tampered document, proving a disk read"
+    );
 }
 
 #[tokio::test]

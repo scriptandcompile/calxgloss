@@ -110,6 +110,56 @@ async fn an_unknown_function_name_fails_by_name() {
 }
 
 #[tokio::test]
+async fn the_disassembly_listing_answers_real_listing_text_for_a_fixture_function() {
+    // Issue #245: the engine-native disassembly read over the fixture DLL.
+    // The rows are the engine's own listing — an address column, then the
+    // lifter's uppercase SLEIGH mnemonics with `0x` hex operands — and a
+    // miss is the same named failure a decompile answers with.
+    let source = fixture_source();
+    let functions = source.list_functions().await.expect("functions read");
+    let tick = listed(&functions, "fixture_tick").expect("fixture_tick is listed");
+
+    let text = source
+        .disassemble_function(&tick.name)
+        .await
+        .expect("the listed name must disassemble");
+    assert!(
+        !text.trim().is_empty(),
+        "a listed function body lists instructions"
+    );
+    for line in text.lines() {
+        let (address, instruction) = line
+            .split_once("  ")
+            .unwrap_or_else(|| panic!("rows carry an address column: {line}"));
+        assert!(
+            !address.is_empty() && address.chars().all(|c| c.is_ascii_hexdigit()),
+            "the address column is the vma in hex: {line}"
+        );
+        let mnemonic = instruction.split_whitespace().next().unwrap_or(instruction);
+        assert!(
+            !mnemonic.is_empty() && mnemonic.to_uppercase() == *mnemonic,
+            "the mnemonic is the lifter's uppercase spelling: {line}"
+        );
+    }
+    // The fixture is an x64 PE: the listing spells its registers the
+    // 64-bit way and its constants in 0x hex.
+    assert!(
+        text.contains("RSP"),
+        "an x64 body spells its stack register RSP: {text}"
+    );
+    assert!(text.contains("0x"), "constants carry 0x hex: {text}");
+
+    let error = source
+        .disassemble_function("no_such_function_anywhere")
+        .await
+        .expect_err("an unknown name is a named miss, not an empty listing");
+    assert!(
+        matches!(error, KunaError::FunctionNotFound { .. }),
+        "expected a named miss, got {error:?}"
+    );
+}
+
+#[tokio::test]
 async fn the_import_and_export_tables_and_the_image_base_answer_from_the_fixture() {
     let source = fixture_source();
 

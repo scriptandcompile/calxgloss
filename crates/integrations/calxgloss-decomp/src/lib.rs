@@ -8,8 +8,8 @@
 //! the evidence engines were built against:
 //!
 //! * [`ScanSource`] is the shared read-only seam — functions, decompilations,
-//!   strings, xrefs, type listings, memory. [`PipelineSource`] is the seam's
-//!   dispatch enum: `Cached | Kuna`.
+//!   disassembly listings, strings, xrefs, type listings, memory.
+//!   [`PipelineSource`] is the seam's dispatch enum: `Cached | Kuna`.
 //! * [`TypeWriteSource`] is the write-side seam — setting prototypes and
 //!   variable types, creating the named types an inferred type refers to.
 //!   Kuna answers these through its directive plane (issue #209).

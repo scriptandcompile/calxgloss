@@ -3,7 +3,8 @@
 //!
 //! Every evidence-engine crate once carried its own `ScanSource`-shaped
 //! trait, and the copies had grown near-identical. This is their union — the
-//! function listing, decompile-by-name, the string listing, callers,
+//! function listing, decompile-by-name, the per-function disassembly-text
+//! read, the string listing, callers,
 //! xrefs-to, the Type Manager reads (data types, struct layouts, enum values,
 //! data items), the import and export listings, and the raw reads the vtable
 //! scan makes (image base, memory bytes) — defined once so the read cache
@@ -64,6 +65,22 @@ pub trait ScanSource {
         &self,
         name: &str,
     ) -> impl std::future::Future<Output = Result<DecompiledFunction>> + Send;
+
+    /// The machine-instruction listing for one function, by name, as text.
+    ///
+    /// One row per instruction in address order, spelled by the engine's
+    /// own listing — uppercase SLEIGH mnemonics, `0x` hex operands — the
+    /// evidence a calling-convention detector reads epilogues (`ret N`)
+    /// and caller stack cleanup from (issue #245). The default answers
+    /// empty — the `engine_provenance` precedent: a source that has not
+    /// opted in lists nothing, so every existing implementor, offline
+    /// fake program, and scan keeps compiling and behaving byte-for-byte
+    /// as it did — while the Kuna source answers from the engine's own
+    /// instruction walker and the read cache files the text under the
+    /// scan-cache convention.
+    fn disassembly(&self, _name: &str) -> impl std::future::Future<Output = Result<String>> + Send {
+        async { Ok(String::new()) }
+    }
 
     /// Every string literal defined in the program.
     fn strings(&self) -> impl std::future::Future<Output = Result<Vec<StringLiteral>>> + Send;
@@ -164,6 +181,12 @@ impl ScanSource for KunaSource {
                 signature: function.signature,
                 body: function.body,
             })
+            .map_err(EngineError::from)
+    }
+
+    async fn disassembly(&self, name: &str) -> Result<String> {
+        KunaSource::disassemble_function(self, name)
+            .await
             .map_err(EngineError::from)
     }
 
@@ -395,6 +418,13 @@ impl ScanSource for PipelineSource {
         match self {
             Self::Cached(cache) => ScanSource::decompile(cache, name).await,
             Self::Kuna(source) => ScanSource::decompile(source, name).await,
+        }
+    }
+
+    async fn disassembly(&self, name: &str) -> Result<String> {
+        match self {
+            Self::Cached(cache) => ScanSource::disassembly(cache, name).await,
+            Self::Kuna(source) => ScanSource::disassembly(source, name).await,
         }
     }
 
