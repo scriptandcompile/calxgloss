@@ -614,6 +614,49 @@ pub fn extract_convention_hints(
         .collect()
 }
 
+/// Extract global-state access records for a function from the persisted
+/// global-state scan result.
+///
+/// Reads the per-binary result produced by the `calxgloss-globalstate`
+/// engine from `re/analysis/globalstate/{binary}.json` and keeps the
+/// access records made for the target function — the program globals
+/// whose value the function reads and through which it stores, each
+/// with the statement that carried the access and the confidence band
+/// the reading scored on. The shared-globals index records name no
+/// single function, so they never answer a by-function lookup.
+///
+/// Returns an empty vector when no workspace is configured, no result
+/// is persisted for `binary` (the scan has not run), or the document is
+/// corrupt: missing global-state context degrades the prompt, it never
+/// fails it.
+pub fn extract_global_state_hints(
+    workspace: Option<&std::path::Path>,
+    binary: &str,
+    function: &str,
+) -> Vec<calxgloss_prompts::GlobalStateInfo> {
+    let Some(workspace) = workspace else {
+        return Vec::new();
+    };
+
+    let persistor = calxgloss_globalstate::persist::GlobalStatePersistor::new(workspace);
+    let result = match persistor.load(binary) {
+        Ok(result) => result,
+        Err(e) => {
+            debug!(
+                binary,
+                error = %e,
+                "No usable global-state result; continuing without global-state context"
+            );
+            return Vec::new();
+        }
+    };
+
+    result
+        .for_function(function)
+        .map(calxgloss_prompts::GlobalStateInfo::from)
+        .collect()
+}
+
 /// Extract string-context findings for a function from the persisted
 /// scan result.
 ///
@@ -2496,6 +2539,158 @@ mod tests {
         assert_eq!(
             found[2].suggestion,
             "enum State + match state { /* 3 states */ }"
+        );
+    }
+
+    // ---- global-state hint extraction ---------------------------------
+
+    fn global_read(
+        function: &str,
+        global: &str,
+    ) -> calxgloss_globalstate::types::GlobalStateFinding {
+        calxgloss_globalstate::types::GlobalStateFinding::GlobalRead(
+            calxgloss_globalstate::types::GlobalAccess {
+                function: function.into(),
+                global: global.into(),
+                evidence: format!("uVar1 = {global};"),
+                confidence: calxgloss_types::Confidence::new(85),
+                suggestion:
+                    "read the program global through shared state, not an invented local".into(),
+            },
+        )
+    }
+
+    fn global_write(
+        function: &str,
+        global: &str,
+    ) -> calxgloss_globalstate::types::GlobalStateFinding {
+        calxgloss_globalstate::types::GlobalStateFinding::GlobalWrite(
+            calxgloss_globalstate::types::GlobalAccess {
+                function: function.into(),
+                global: global.into(),
+                evidence: format!("{global} = param_1;"),
+                confidence: calxgloss_types::Confidence::new(85),
+                suggestion: "model the program global as shared struct state, not a Rust static"
+                    .into(),
+            },
+        )
+    }
+
+    fn shared_index(
+        global: &str,
+        readers: &[&str],
+        writers: &[&str],
+    ) -> calxgloss_globalstate::types::GlobalStateFinding {
+        calxgloss_globalstate::types::GlobalStateFinding::SharedGlobal(
+            calxgloss_globalstate::types::SharedGlobalRecord {
+                global: global.into(),
+                readers: readers.iter().map(|f| f.to_string()).collect(),
+                writers: writers.iter().map(|f| f.to_string()).collect(),
+                confidence: calxgloss_types::Confidence::new(85),
+            },
+        )
+    }
+
+    fn persist_globalstate_findings(
+        dir: &TempDir,
+        findings: Vec<calxgloss_globalstate::types::GlobalStateFinding>,
+    ) {
+        let mut result =
+            calxgloss_globalstate::types::GlobalStateResult::new(ScanMetadata::new("eqmain.dll"));
+        result.findings = findings;
+        calxgloss_globalstate::persist::GlobalStatePersistor::new(dir.path())
+            .save(&result)
+            .expect("the global-state result should be saved");
+    }
+
+    #[test]
+    fn no_workspace_configured_yields_no_global_state_findings() {
+        assert!(
+            extract_global_state_hints(None, "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "no workspace means no global-state context"
+        );
+    }
+
+    #[test]
+    fn a_missing_cache_yields_no_global_state_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        assert!(
+            extract_global_state_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty(),
+            "a scan that has not run yet just means no global-state context"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_cache_degrades_to_no_global_state_findings() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        let path = dir
+            .path()
+            .join("re")
+            .join("analysis")
+            .join("globalstate")
+            .join("eqmain.dll.json");
+        std::fs::create_dir_all(
+            path.parent()
+                .expect("the document path should have a parent"),
+        )
+        .expect("the cache directory should be creatable");
+        std::fs::write(&path, "{ not json").expect("the corrupt document should be writable");
+
+        assert!(
+            extract_global_state_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00").is_empty()
+        );
+    }
+
+    #[test]
+    fn global_state_findings_of_other_functions_are_dropped() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_globalstate_findings(
+            &dir,
+            vec![
+                global_write("FUN_18003ab00", "DAT_180064e80"),
+                global_read("FUN_zzz", "DAT_180064e80"),
+            ],
+        );
+
+        let found = extract_global_state_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        assert_eq!(found.len(), 1, "only the target function's record");
+        assert_eq!(found[0].function, "FUN_18003ab00");
+        assert_eq!(found[0].kind, "global_write");
+        assert_eq!(found[0].global, "DAT_180064e80");
+        assert_eq!(
+            found[0].suggestion,
+            "model the program global as shared struct state, not a Rust static"
+        );
+        assert_eq!(found[0].confidence, 85);
+        assert_eq!(found[0].evidence, "DAT_180064e80 = param_1;");
+    }
+
+    #[test]
+    fn every_global_state_finding_of_the_function_lands_in_the_prompt() {
+        let dir = TempDir::new().expect("temp dir should be created");
+        persist_globalstate_findings(
+            &dir,
+            vec![
+                global_write("FUN_18003ab00", "DAT_180064e80"),
+                global_read("FUN_18003ab00", "g_counter"),
+                global_read("FUN_zzz", "DAT_180064e80"),
+                // The rollup entry names the target function among its
+                // readers and writers, but it is about a global, not a
+                // function — so it stays out of the by-function lookup.
+                shared_index("DAT_180064e80", &["FUN_zzz"], &["FUN_18003ab00"]),
+            ],
+        );
+
+        let found = extract_global_state_hints(Some(dir.path()), "eqmain.dll", "FUN_18003ab00");
+
+        let kinds: Vec<&str> = found.iter().map(|f| f.kind.as_str()).collect();
+        assert_eq!(kinds, vec!["global_write", "global_read"]);
+        assert_eq!(found[0].global, "DAT_180064e80");
+        assert_eq!(found[1].global, "g_counter");
+        assert_eq!(
+            found[1].suggestion,
+            "read the program global through shared state, not an invented local"
         );
     }
 
