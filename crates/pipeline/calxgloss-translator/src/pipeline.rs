@@ -33,8 +33,9 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use calxgloss_analysis::Analyzer;
 use calxgloss_analysis::FaultLogger;
@@ -81,8 +82,17 @@ const SCAN_PHASE: &str = "evidence scans";
 /// cap exists to bound peak memory, since each running scan keeps its own
 /// bodies while the shared memo holds every body only once, and to keep
 /// the scan phase's single dashboard row meaningful. Four is one named
-/// decision: widening it is a one-line change with the phase's tests
-/// behind it.
+/// decision, measured (issue #241): on eqmain.dll (4,076 functions)
+/// widening the window from four to eleven bought the scan phase nothing
+/// (parse-only wall 56.6 s → 57.3 s) and cost it on the cold path
+/// (113.9 s → 153.8 s — the extra in-flight jobs pile waiting bodies onto
+/// the same listing region the engine is already chewing through), all
+/// while adding a seventh of the kept decompilation copies, so four
+/// stands. Widening it further stays a one-line change with the phase's
+/// tests behind it —
+/// `the_scan_phase_window_never_runs_more_than_the_named_cap_at_a_time`
+/// pins that the phase never exceeds this constant and never degenerates
+/// to one scan at a time.
 const MAX_CONCURRENT_EVIDENCE_SCANS: usize = 4;
 
 /// One evidence scan as the fan-out's unit of work: takes its owned
@@ -127,6 +137,23 @@ async fn scan_const_detection(job: ScanJob) {
 }
 async fn scan_serialize_detection(job: ScanJob) {
     job.serialize_detection().await;
+}
+
+/// One evidence scan as it crosses the fan-out window: it announces itself
+/// to the phase's in-flight tracker, runs, and leaves. The phase keeps the
+/// high-water mark of that tracker, so the window's cap is a tested
+/// contract rather than only a comment (issue #241). A named async fn
+/// again, so the spawned future is `'static` (issue #240).
+async fn run_scan_in_window(
+    scan: EvidenceScanTask,
+    job: ScanJob,
+    in_flight: Arc<AtomicUsize>,
+    high_water: Arc<AtomicUsize>,
+) {
+    let entered = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+    high_water.fetch_max(entered, Ordering::SeqCst);
+    scan(job).await;
+    in_flight.fetch_sub(1, Ordering::SeqCst);
 }
 
 /// The eleven evidence scans in today's spawn order — type database, type
@@ -294,6 +321,17 @@ pub struct TranslationPipeline {
     /// has no phase to order within.
     type_inference_latch: Mutex<Option<TypeInferenceLatch>>,
 
+    /// The scan phase's fan-out window high-water mark: the most evidence
+    /// scans that ran at once during the latest
+    /// [`run_prebatch_scans`](Self::run_prebatch_scans), recorded as each
+    /// scan enters the window (issue #241).
+    ///
+    /// The window is one named decision ([`MAX_CONCURRENT_EVIDENCE_SCANS`])
+    /// and this is the test behind it: the phase reports its own high-water
+    /// mark, so a test can pin that the scans never exceed the cap and never
+    /// degenerate to one at a time. Reset at the start of every phase.
+    scan_window_high_water: Arc<AtomicUsize>,
+
     /// Force the batch's scan read cache cold (issue #106).
     ///
     /// Set by the CLI's `--refresh-cache` flag. When true,
@@ -382,6 +420,7 @@ impl TranslationPipeline {
             binary_path: None,
             cached_source: Mutex::new(None),
             type_inference_latch: Mutex::new(None),
+            scan_window_high_water: Arc::new(AtomicUsize::new(0)),
             refresh_cache: false,
             stop: None,
             pipeline_control: None,
@@ -2094,8 +2133,16 @@ impl TranslationPipeline {
         };
         let mut scans = evidence_scan_tasks().into_iter();
         let mut set = JoinSet::new();
+        self.scan_window_high_water.store(0, Ordering::SeqCst);
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let high_water = Arc::clone(&self.scan_window_high_water);
         for scan in scans.by_ref().take(MAX_CONCURRENT_EVIDENCE_SCANS) {
-            set.spawn(scan(job.clone()));
+            set.spawn(run_scan_in_window(
+                scan,
+                job.clone(),
+                Arc::clone(&in_flight),
+                Arc::clone(&high_water),
+            ));
         }
         // Sliding window: every completion frees a permit for the next
         // scan, and the group joins all eleven — a failing or panicking
@@ -2109,10 +2156,23 @@ impl TranslationPipeline {
                 );
             }
             if let Some(scan) = scans.next() {
-                set.spawn(scan(job.clone()));
+                set.spawn(run_scan_in_window(
+                    scan,
+                    job.clone(),
+                    Arc::clone(&in_flight),
+                    Arc::clone(&high_water),
+                ));
             }
         }
         self.end_scan_pass();
+    }
+
+    /// The most evidence scans that ran at once during the latest scan
+    /// phase (issue #241) — the fan-out window's high-water mark, recorded
+    /// by [`run_scan_in_window`] as each scan enters the window. Zero when
+    /// no phase has run, or when the phase skipped for want of a workspace.
+    pub fn scan_window_high_water(&self) -> usize {
+        self.scan_window_high_water.load(Ordering::SeqCst)
     }
 
     /// Recover the per-binary type database before a batch starts, unless one
@@ -5489,6 +5549,134 @@ mod tests {
                 "the {name} scan persisted its document despite the memory failure"
             );
         }
+    }
+
+    /// The test behind the one named window: the scan phase never runs more
+    /// than [`MAX_CONCURRENT_EVIDENCE_SCANS`] scans at a time, and it
+    /// genuinely overlaps them — never degenerating to one at a time
+    /// (issue #241). Widen the constant and the ceiling assertion follows
+    /// the one-line change; break the window in either direction and one of
+    /// the two assertions fires.
+    #[tokio::test]
+    async fn the_scan_phase_window_never_runs_more_than_the_named_cap_at_a_time() {
+        let dir = TempDir::new().expect("temp workspace");
+        let (pipeline, _) = cached_pipeline(dir.path());
+        pipeline.begin_cached_source(PROGRAM).await;
+        pipeline.run_prebatch_scans(PROGRAM).await;
+
+        let high_water = pipeline.scan_window_high_water();
+        assert!(
+            high_water >= 2,
+            "{high_water} scan(s) at a time means the fan-out degenerated to \
+             one at a time — the window must overlap scans"
+        );
+        assert!(
+            high_water <= MAX_CONCURRENT_EVIDENCE_SCANS,
+            "at most {MAX_CONCURRENT_EVIDENCE_SCANS} scans may hold a window \
+             permit at once; the phase peaked at {high_water}"
+        );
+    }
+
+    // ============================================================
+    // The scan-phase measurement rig (issue #241)
+    // ============================================================
+
+    /// The process's peak resident set in MiB — `VmHWM` from
+    /// `/proc/self/status`, the same number `/usr/bin/time -v` reports, so
+    /// an operator can cross-check the rig's memory figures from outside.
+    fn peak_rss_mib() -> u64 {
+        let status =
+            std::fs::read_to_string("/proc/self/status").expect("/proc/self/status is readable");
+        status
+            .lines()
+            .find(|line| line.starts_with("VmHWM:"))
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|kb| kb.parse::<u64>().ok())
+            .map(|kb| kb / 1024)
+            .expect("VmHWM in /proc/self/status")
+    }
+
+    /// Issue #241's measurement rig: time the scan phase over a real target
+    /// binary and print the numbers the spec thread records — wall time, the
+    /// engine round trips the phase paid (the source's ledger), the window's
+    /// high-water mark, the documents filed, and the process's peak resident
+    /// set across the phase. The engine is the real one and the binary is a
+    /// real one; only the workspace is a scratch directory.
+    ///
+    /// Cold run: point the workspace at an empty directory — every body
+    /// crosses the engine exactly once, which the printed ledger proves.
+    /// Parse-only run: keep the workspace's `re/cache` and delete
+    /// `re/analysis` — every scan re-runs, every read replays off disk, and
+    /// the ledger prints zero engine round trips, so the wall time is the
+    /// scans' parse time alone. The sequential baseline (the pre-#240 build)
+    /// runs the same rig with the same environment, so the only difference
+    /// between the two numbers is the schedule.
+    ///
+    /// ```text
+    /// CALXGLOSS_SCAN_BENCH_BINARY=/path/to/eqmain.dll \
+    /// CALXGLOSS_SCAN_BENCH_WORKSPACE=/tmp/scanbench \
+    ///   cargo test -p calxgloss-translator --release --lib -- \
+    ///   --ignored measure_the_scan_phase -- --nocapture
+    /// ```
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "measures the scan phase over a real target binary; needs CALXGLOSS_SCAN_BENCH_BINARY"]
+    async fn measure_the_scan_phase_wall_time_on_a_real_target_binary() {
+        let binary_path = std::path::PathBuf::from(
+            std::env::var("CALXGLOSS_SCAN_BENCH_BINARY")
+                .expect("CALXGLOSS_SCAN_BENCH_BINARY: the real target binary to scan"),
+        );
+        let workspace = std::path::PathBuf::from(
+            std::env::var("CALXGLOSS_SCAN_BENCH_WORKSPACE")
+                .expect("CALXGLOSS_SCAN_BENCH_WORKSPACE: the workspace to run the phase in"),
+        );
+        std::fs::create_dir_all(&workspace).expect("bench workspace");
+        let binary = binary_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("the binary path has a file name")
+            .to_string();
+
+        let kuna = KunaSource::load(&binary_path).expect("the real target must load");
+        let listing = kuna
+            .list_functions()
+            .await
+            .expect("the real target must list");
+        let pipeline = pipeline_with(kuna.clone(), Some(&workspace)).with_binary_path(&binary_path);
+        pipeline.begin_cached_source(&binary).await;
+
+        let rss_before = peak_rss_mib();
+        let started = std::time::Instant::now();
+        pipeline.run_prebatch_scans(&binary).await;
+        let wall = started.elapsed();
+        let rss_after = peak_rss_mib();
+
+        let filed = [
+            TypeDatabasePersistor::new(&workspace).exists(&binary),
+            TypeInferPersistor::new(&workspace).exists(&binary),
+            AlgorithmPersistor::new(&workspace).exists(&binary),
+            MemoryPersistor::new(&workspace).exists(&binary),
+            SyncPersistor::new(&workspace).exists(&binary),
+            CallbackPersistor::new(&workspace).exists(&binary),
+            ControlFlowPersistor::new(&workspace).exists(&binary),
+            StringContextPersistor::new(&workspace).exists(&binary),
+            ApiPersistor::new(&workspace).exists(&binary),
+            ConstPersistor::new(&workspace).exists(&binary),
+            SerializePersistor::new(&workspace).exists(&binary),
+        ]
+        .into_iter()
+        .filter(|exists| *exists)
+        .count();
+
+        println!(
+            "scan phase over {binary} ({} listed functions, window cap {MAX_CONCURRENT_EVIDENCE_SCANS}):",
+            listing.len()
+        );
+        println!("  wall time:          {wall:?}");
+        println!("  engine round trips: {}", kuna.decompile_calls().len());
+        println!("  documents filed:    {filed} of 11");
+        println!("  window high water:  {}", pipeline.scan_window_high_water());
+        println!("  peak RSS before:    {rss_before} MiB");
+        println!("  peak RSS across:    {rss_after} MiB");
     }
 
     // ============================================================

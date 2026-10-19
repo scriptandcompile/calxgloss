@@ -31,7 +31,7 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| X7 | Parallel pre-batch evidence scans — run the eleven scan passes concurrently over the shared read cache so a cold scan phase costs roughly the engine's time, not engine + Σ parse | pipeline (`calxgloss-translator`) + integrations (`calxgloss-kuna`, `calxgloss-decomp`) | — | 🔶 in progress | #241 next | [#234](https://github.com/scriptandcompile/calxgloss/issues/234) |
+| X7 | Parallel pre-batch evidence scans — run the eleven scan passes concurrently over the shared read cache so a cold scan phase costs roughly the engine's time, not engine + Σ parse | pipeline (`calxgloss-translator`) + integrations (`calxgloss-kuna`, `calxgloss-decomp`) | — | ✅ done | — | [#234](https://github.com/scriptandcompile/calxgloss/issues/234) |
 | P12.5 | Branch-targeted baseline tests — Verification must pin every branch the CFG reveals, not just the happy path | evidence (`calxgloss-controlflow`) + pipeline (`calxgloss-testgen`, `calxgloss-translator`) | — | ⬜ not started | `/to-tickets` from #224 | [#224](https://github.com/scriptandcompile/calxgloss/issues/224) |
 | P12.6 | Calling-convention detection — classify cdecl/stdcall/fastcall/thiscall/x64 per function so the FFI binding and the ground truth behind it are right | evidence (`calxgloss-typeinfer`) + integrations (`calxgloss-decomp`, `calxgloss-kuna`, `calxgloss-prompts`) + pipeline (`calxgloss-translator`, `calxgloss-testgen`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #226 | [#226](https://github.com/scriptandcompile/calxgloss/issues/226) |
 | P13 | Global-state reference sets — per-function global read/write sets, produced once and consumed by prompt, sync gate, DAG order, and side-effect kinds | evidence (`calxgloss-globalstate` (new), `calxgloss-sync`, `calxgloss-callgraph`) + pipeline (`calxgloss-translator`) + shared (`calxgloss-types`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #225 | [#225](https://github.com/scriptandcompile/calxgloss/issues/225) |
@@ -61,7 +61,23 @@ byte-identical to a sequential run. Spec: #234. Tickets: #236 (one shared
 preamble for both batch entry points — landed), #237 (each scan becomes an
 owned job — landed), #238 (the completion latch — landed), #239 (the
 phase-scoped heartbeat — landed), #240 (four scans at a time — landed), and #241
-(measure on a real target and close the track).
+(measure on a real target and close the track — landed).
+
+**Closed (issue #241).** Measured on eqmain.dll (4,076 functions, 16 cores):
+the cold scan phase went **142.7 s sequential → 113.9 s fan-out** (1.25×), and
+a parse-only decomposition (warm cache, zero engine round trips) went
+**99.5 s → 56.6 s** — the engine's ~43 s overlaps the parse as the spec's
+`max(engine, Σ parse) + tail` claim predicts, with a ~14 s tail. The gap the
+claim understates: cold fan-out (113.9 s) sits well above `max(E, Σ parse)`,
+because concurrent cold scans bunch on the same listing region and advance in
+lockstep behind shared per-key cells — the engine is busy only ~38% of the
+phase. That triggers the spec's out-of-scope note (revisit standalone prefetch
+if measurement shows engine idling); recorded on #234, not implemented. The
+window stays at **four**, now measured: widening to eleven cost both paths
+(parse-only 57.3 s, cold 153.8 s) while adding kept-body copies, and a test
+pins the cap (`the_scan_phase_window_never_runs_more_than_the_named_cap_at_a_time`).
+Peak RSS across the phase is ~12.6 GiB either way — dominated by the
+once-per-binary engine and memo cost, not the window, which adds ~60 MiB.
 
 ## P12.5 — Branch-targeted baseline tests (evidence + pipeline)
 
