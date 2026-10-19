@@ -61,7 +61,7 @@ use crate::Translation;
 use crate::batch;
 use crate::error::{Result, TranslatorError};
 use crate::retry;
-use crate::scan_job::ScanJob;
+use crate::scan_job::{ScanJob, TypeInferenceLatch};
 
 // ============================================================
 // TranslationPipeline — full end-to-end pipeline
@@ -193,6 +193,18 @@ pub struct TranslationPipeline {
     /// from the disk tier with zero live reads.
     cached_source: Mutex<Option<CachedScanSource>>,
 
+    /// The scan phase's type-inference completion latch, armed by
+    /// [`run_prebatch_scans`](Self::run_prebatch_scans) and carried by
+    /// the [`ScanJob`]s [`scan_job`](Self::scan_job) builds (issue #238).
+    ///
+    /// The type-inference scan publishes it whether the scan succeeds
+    /// or fails; callback detection awaits it before composing its
+    /// closure contracts from the type-inference document, so the one
+    /// real ordering edge between the scans survives the fan-out
+    /// (#240). `None` outside a scan phase — a scan asked for directly
+    /// has no phase to order within.
+    type_inference_latch: Mutex<Option<TypeInferenceLatch>>,
+
     /// Force the batch's scan read cache cold (issue #106).
     ///
     /// Set by the CLI's `--refresh-cache` flag. When true,
@@ -280,6 +292,7 @@ impl TranslationPipeline {
             callgraph_cache_dir: None,
             binary_path: None,
             cached_source: Mutex::new(None),
+            type_inference_latch: Mutex::new(None),
             refresh_cache: false,
             stop: None,
             pipeline_control: None,
@@ -1907,19 +1920,39 @@ impl TranslationPipeline {
     /// Build the owned handle one evidence scan runs as (issue #237):
     /// clones of everything the scan reads — the workspace, the batch's
     /// shared read source as currently armed, the engine source the pass
-    /// heartbeat arms on, and the progress-event channel — so the scan
-    /// borrows nothing from the batch and a caller can move the job onto a
-    /// task. `None` when no workspace is configured, which is every scan's
-    /// skip condition.
+    /// heartbeat arms on, the progress-event channel, and the scan
+    /// phase's type-inference completion latch when one is armed (issue
+    /// #238) — so the scan borrows nothing from the batch and a caller
+    /// can move the job onto a task. `None` when no workspace is
+    /// configured, which is every scan's skip condition.
     fn scan_job(&self, binary: &str) -> Option<ScanJob> {
         let workspace = self.workspace.as_deref()?;
+        let type_inference = self
+            .type_inference_latch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         Some(ScanJob::new(
             binary,
             workspace,
             self.scan_source(),
             self.kuna.clone(),
             self.events.clone(),
+            type_inference,
         ))
+    }
+
+    /// Arm a fresh type-inference completion latch for one scan phase
+    /// (issue #238). The type-inference scan publishes it on every
+    /// exit, success or failure; callback detection awaits it before
+    /// composing its closure contracts. A new phase replaces a stale
+    /// latch, exactly as [`begin_cached_source`](Self::begin_cached_source)
+    /// re-arms the read cache per batch.
+    fn arm_type_inference_latch(&self) {
+        *self
+            .type_inference_latch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(TypeInferenceLatch::new());
     }
 
     /// Run the eleven pre-batch evidence scans, the shared scan-phase
@@ -1944,7 +1977,14 @@ impl TranslationPipeline {
     /// Each scan keeps its own shape: a cached document short-circuits it
     /// before any engine read, and a failed scan or save only warns and
     /// continues — one detector's failure never takes down the batch.
+    ///
+    /// The phase arms a fresh type-inference completion latch first:
+    /// the inference scan publishes it on every exit and callback
+    /// detection awaits it before composing its closure contracts, so
+    /// the one real ordering edge between the scans is explicit data
+    /// rather than this sequence's call order (issue #238).
     async fn run_prebatch_scans(&self, binary: &str) {
+        self.arm_type_inference_latch();
         self.ensure_type_database(binary).await;
         self.ensure_type_inference(binary).await;
         self.ensure_algorithm_recognition(binary).await;
@@ -2005,7 +2045,10 @@ impl TranslationPipeline {
     /// return `false` — prompts without type context are degraded, not
     /// fatal, and the batch proceeds either way.
     ///
-    /// The scan itself runs on the owned [`ScanJob`] this builds (issue #237).
+    /// The scan itself runs on the owned [`ScanJob`] this builds (issue #237),
+    /// which publishes the scan phase's completion latch on every exit —
+    /// cached hit, success, or failure — so callback detection waiting on
+    /// it is released either way (issue #238).
     pub async fn ensure_type_inference(&self, binary: &str) -> bool {
         let Some(job) = self.scan_job(binary) else {
             debug!(binary, "No workspace configured; skipping type inference");
@@ -2140,7 +2183,8 @@ impl TranslationPipeline {
     /// the batch can see callback context instead of none. The persisted
     /// file is the cache: when a result is already saved for `binary`, the
     /// scan is skipped entirely. When a type-inference result is cached
-    /// too — the batch runs that scan first — its records are composed
+    /// too — inside a scan phase the job waits on inference's completion
+    /// latch before reading — its records are composed
     /// into a signature map and injected, so the persisted suggestions
     /// carry real closure contracts (see [`callback_signature_map`]).
     ///
@@ -2150,7 +2194,10 @@ impl TranslationPipeline {
     /// fatal, and the batch proceeds either way.
     ///
     /// The scan itself — including the type-inference enrichment — runs on
-    /// the owned [`ScanJob`] this builds (issue #237).
+    /// the owned [`ScanJob`] this builds (issue #237). Inside an armed scan
+    /// phase the job first awaits the type-inference completion latch, so
+    /// the enrichment rides the explicit edge, not the preamble's call
+    /// order (issue #238).
     pub async fn ensure_callback_detection(&self, binary: &str) -> bool {
         let Some(job) = self.scan_job(binary) else {
             debug!(
@@ -4357,6 +4404,190 @@ mod tests {
     async fn no_workspace_skips_the_callback_scan() {
         let pipeline = pipeline_over(None);
         assert!(!pipeline.ensure_callback_detection("eqmain.dll").await);
+    }
+
+    // ─── Type-inference completion latch (issue #238) ────────────────
+
+    /// The latch is a shared one-shot: a waiter that arrived before the
+    /// publish is released by it, a waiter that arrives after answers
+    /// immediately, and publishing again changes nothing.
+    #[tokio::test]
+    async fn the_type_inference_latch_is_a_shared_one_shot() {
+        let latch = TypeInferenceLatch::new();
+        assert!(!latch.is_set(), "a fresh latch has not completed");
+
+        let early = latch.clone();
+        let waiting = tokio::spawn(async move {
+            tokio::time::timeout(std::time::Duration::from_secs(10), early.wait()).await
+        });
+        // Park the spawned waiter on the unset latch before publishing.
+        tokio::task::yield_now().await;
+        assert!(
+            !waiting.is_finished(),
+            "an unpublished latch holds the waiter that arrived first"
+        );
+
+        let late = latch.clone();
+        latch.publish();
+        assert!(latch.is_set(), "the publish is the completion");
+        latch.publish();
+
+        waiting
+            .await
+            .expect("the waiting task runs")
+            .expect("the publish releases the waiter that arrived first");
+        tokio::time::timeout(std::time::Duration::from_secs(1), late.wait())
+            .await
+            .expect("a waiter that arrives after the publish never blocks");
+    }
+
+    /// The edge survives a reversed call order — the shape the fan-out
+    /// (#240) gives it: callback detection starts first and waits on
+    /// the latch, the inference scan then runs and publishes, and the
+    /// callback job composes its contracts from the document inference
+    /// just filed. Without the wait the callback scan would have read
+    /// an empty workspace and its findings would have lost the
+    /// enrichment (issue #173).
+    #[tokio::test]
+    async fn callback_detection_waits_for_inference_across_a_reversed_call_order() {
+        let dir = TempDir::new().unwrap();
+        let pipeline = pipeline_over(Some(dir.path()));
+        pipeline.arm_type_inference_latch();
+
+        let job = pipeline
+            .scan_job("eqmain.dll")
+            .expect("the workspace is configured, so the job exists");
+        let callback = tokio::spawn(async move { job.callback_detection().await });
+        tokio::task::yield_now().await;
+        assert!(
+            !callback.is_finished(),
+            "the callback job waits on the unpublished latch"
+        );
+
+        assert!(
+            pipeline.ensure_type_inference("eqmain.dll").await,
+            "the inference scan succeeds over the fixture"
+        );
+
+        let scanned = tokio::time::timeout(std::time::Duration::from_secs(120), callback)
+            .await
+            .expect("the published latch releases the callback job — inference never strands it")
+            .expect("the callback task runs");
+        assert!(scanned, "the callback scan succeeds over the fixture");
+
+        // The enrichment the wait protects: inference's document is in
+        // place when the callback job reads it, and it composes real
+        // contracts — the fixture's inference records yield fully-read
+        // callables.
+        assert!(
+            TypeInferPersistor::new(dir.path()).exists("eqmain.dll"),
+            "the inference document is filed before the callback job reads it"
+        );
+        assert!(
+            !callback_signature_map(dir.path(), "eqmain.dll").is_empty(),
+            "the callback scan's closure contracts compose from the inference document"
+        );
+    }
+
+    /// The wait is real, not incidental: a callback job holding an
+    /// unpublished latch is still parked well past the time the same
+    /// scan takes over the fixture when it does not wait — and the
+    /// publish releases it to a normal successful scan (issue #238).
+    #[tokio::test]
+    async fn callback_detection_holds_until_the_latch_publishes() {
+        let dir = TempDir::new().unwrap();
+        let pipeline = pipeline_over(Some(dir.path()));
+        pipeline.arm_type_inference_latch();
+
+        let job = pipeline
+            .scan_job("eqmain.dll")
+            .expect("the workspace is configured, so the job exists");
+        let callback = tokio::spawn(async move { job.callback_detection().await });
+
+        // The fixture callback scan finishes in seconds; a job that
+        // skipped the latch would have answered inside this window.
+        // The generous margin is what turns a missing wait into a
+        // failure rather than a race.
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        assert!(
+            !callback.is_finished(),
+            "an unpublished latch holds the callback job past the scan's own runtime"
+        );
+
+        // The latch lives on the pipeline for the phase; publish through
+        // the armed handle, the way the inference scan would.
+        pipeline
+            .type_inference_latch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .expect("the phase armed a latch")
+            .publish();
+
+        let scanned = tokio::time::timeout(std::time::Duration::from_secs(120), callback)
+            .await
+            .expect("the publish releases the held job")
+            .expect("the callback task runs");
+        assert!(
+            scanned,
+            "the released job scans the fixture normally and files its document"
+        );
+        assert!(
+            CallbackPersistor::new(dir.path()).exists("eqmain.dll"),
+            "the released scan persists like any other"
+        );
+    }
+
+    /// A failing type-inference scan leaves callback detection degraded
+    /// — no document, no enrichment — never blocked: the latch is
+    /// published on the failure path too, exactly as on success
+    /// (issue #238).
+    #[tokio::test]
+    async fn a_failing_type_inference_scan_degrades_callback_detection_never_blocks_it() {
+        let dir = TempDir::new().unwrap();
+        // `re/analysis/typeinfer` as a plain file makes the inference
+        // save fail even though the scan itself succeeds — the same
+        // warn-and-continue failure any scan can hit.
+        std::fs::create_dir_all(dir.path().join("re").join("analysis")).unwrap();
+        std::fs::write(
+            dir.path().join("re").join("analysis").join("typeinfer"),
+            "not a directory",
+        )
+        .unwrap();
+
+        let pipeline = pipeline_over(Some(dir.path()));
+        pipeline.arm_type_inference_latch();
+
+        let inference = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            pipeline.ensure_type_inference("eqmain.dll"),
+        )
+        .await
+        .expect("a failing inference scan still returns");
+        assert!(!inference, "the failed save degrades the inference scan");
+
+        // The failure path published the latch, so the callback job's
+        // wait releases even though no document was ever filed.
+        let callback = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            pipeline.ensure_callback_detection("eqmain.dll"),
+        )
+        .await
+        .expect("a failed inference scan never blocks callback detection");
+        assert!(callback, "the callback scan itself still succeeds");
+
+        assert!(
+            !TypeInferPersistor::new(dir.path()).exists("eqmain.dll"),
+            "the failed save filed no document"
+        );
+        assert!(
+            callback_signature_map(dir.path(), "eqmain.dll").is_empty(),
+            "no document, no enrichment — degraded exactly as today"
+        );
+        assert!(
+            CallbackPersistor::new(dir.path()).exists("eqmain.dll"),
+            "callback detection still files its own document, degraded"
+        );
     }
 
     #[tokio::test]

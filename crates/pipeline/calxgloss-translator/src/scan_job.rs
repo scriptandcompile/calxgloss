@@ -8,6 +8,11 @@
 //! prefactor for the parallel scan-phase fan-out (spec #234): the runtime
 //! cannot spawn a scan that borrows the batch, so each scan has to own what
 //! it reads before any of them can move onto a task.
+//!
+//! The one real ordering edge between the scans rides the handle too:
+//! [`TypeInferenceLatch`] is the completion latch the type-inference scan
+//! publishes and callback detection awaits before composing its closure
+//! contracts from the type-inference document (issue #238).
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -37,9 +42,71 @@ use calxgloss_typeinfer::persist::TypeInferPersistor;
 use calxgloss_types::TranslationEvents;
 use calxgloss_typesdb::engine::TypesDBEngine;
 use calxgloss_typesdb::persist::TypeDatabasePersistor;
+use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
 use crate::pipeline::callback_signature_map;
+
+/// The type-inference scan's completion latch (issue #238).
+///
+/// The scan phase arms one latch; the type-inference job publishes it
+/// whether its scan succeeds or fails, and the callback job awaits it
+/// before composing its closure contracts from the type-inference
+/// document (issue #173). What made callback detection read inference's
+/// output only after inference had run — today a positional accident of
+/// the preamble's call order — becomes explicit data, so the edge
+/// survives the scan-phase fan-out (#240) where the scans no longer run
+/// in a fixed order.
+///
+/// A shared one-shot: every clone of the handle sees the same
+/// completion flag. `wait` answers immediately once the flag is set, so
+/// a waiter that arrives after the publish never blocks and one that
+/// arrived before is released by it. Because the publish happens on
+/// failure too, a failing inference scan can never strand the callback
+/// job — it just finds no document and degrades exactly as today.
+#[derive(Clone)]
+pub(crate) struct TypeInferenceLatch {
+    /// The completion flag, kept alive across clones of the handle by
+    /// the same `Arc<watch::Sender>` shape the progress bus uses.
+    completed: std::sync::Arc<watch::Sender<bool>>,
+
+    /// The half a reader waits on; cheap to clone along with the handle.
+    waiter: watch::Receiver<bool>,
+}
+
+impl TypeInferenceLatch {
+    /// A fresh, unpublished latch.
+    pub(crate) fn new() -> Self {
+        let (completed, waiter) = watch::channel(false);
+        Self {
+            completed: std::sync::Arc::new(completed),
+            waiter,
+        }
+    }
+
+    /// Publish completion — the inference scan is done, succeeded or
+    /// failed. Idempotent: a second publish changes nothing.
+    pub(crate) fn publish(&self) {
+        self.completed.send_replace(true);
+    }
+
+    /// Whether the inference scan has published its completion.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn is_set(&self) -> bool {
+        *self.waiter.borrow()
+    }
+
+    /// Wait for the inference scan to finish. Returns immediately when
+    /// the latch is already published; a channel closed with no
+    /// publisher left also releases, so the reader is never stranded —
+    /// only degraded.
+    pub(crate) async fn wait(&self) {
+        let mut waiter = self.waiter.clone();
+        // `wait_for` re-checks the current value before each poll, so a
+        // publish landing between the check and the wait is never missed.
+        let _ = waiter.wait_for(|completed| *completed).await;
+    }
+}
 
 /// Everything one pre-batch evidence scan reads, owned by the scan itself.
 ///
@@ -47,8 +114,9 @@ use crate::pipeline::callback_signature_map;
 /// document is filed under, the batch's shared read source as armed by
 /// [`begin_cached_source`](crate::TranslationPipeline::begin_cached_source),
 /// the engine source the pass heartbeat is armed on, and the progress-event
-/// channel — so it borrows nothing from the batch. Cloning is cheap (every
-/// read is an `Arc`-backed handle or a small path) and the handle is
+/// channel — so it borrows nothing from the batch, plus the scan phase's
+/// [`TypeInferenceLatch`] when one is armed (issue #238). Cloning is cheap
+/// (every read is an `Arc`-backed handle or a small path) and the handle is
 /// `Send + Sync`, so a caller can move a job onto a task — exactly what the
 /// scan-phase fan-out (#240) needs.
 ///
@@ -76,18 +144,28 @@ pub(crate) struct ScanJob {
     /// The progress-event channel the heartbeat beats into; `None` means
     /// there is nothing to beat to and the scan runs unchanged.
     events: Option<TranslationEvents>,
+
+    /// The scan phase's type-inference completion latch, present when
+    /// the job was built inside an armed scan phase (issue #238): the
+    /// [`type_inference`](Self::type_inference) job publishes it, the
+    /// [`callback_detection`](Self::callback_detection) job awaits it.
+    /// `None` for a job built outside a scan phase — a single scan
+    /// asked for directly has no phase to order within.
+    type_inference: Option<TypeInferenceLatch>,
 }
 
 impl ScanJob {
     /// Assemble the job for one scan of `binary` in `workspace`, reading
     /// through `source` and beating the pass heartbeat on `kuna` into
-    /// `events` when there is a channel.
+    /// `events` when there is a channel, and carrying the scan phase's
+    /// `type_inference` completion latch when the phase armed one.
     pub(crate) fn new(
         binary: &str,
         workspace: &Path,
         source: PipelineSource,
         kuna: KunaSource,
         events: Option<TranslationEvents>,
+        type_inference: Option<TypeInferenceLatch>,
     ) -> Self {
         Self {
             binary: binary.to_string(),
@@ -95,6 +173,7 @@ impl ScanJob {
             source,
             kuna,
             events,
+            type_inference,
         }
     }
 
@@ -175,6 +254,10 @@ impl ScanJob {
     }
 
     /// The parameter-type inference scan, unless its document is already filed.
+    ///
+    /// Publishes the scan phase's completion latch on every exit —
+    /// cached hit, successful scan, or failure (issue #238) — so the
+    /// callback job waiting on it is released either way.
     pub(crate) async fn type_inference(&self) -> bool {
         let persistor = TypeInferPersistor::new(&self.workspace);
         if persistor.exists(&self.binary) {
@@ -183,26 +266,40 @@ impl ScanJob {
                 path = %persistor.path_for(&self.binary).display(),
                 "Type inference result already cached; skipping scan"
             );
+            self.publish_type_inference();
             return true;
         }
 
         info!(binary = %self.binary, "Inferring parameter types before batch translation");
         let engine = TypeInferEngine::with_source(self.source.clone());
-        self.run_scan(
-            "type inference",
-            engine.scan(self.binary.as_str()),
-            |result| persistor.save(result),
-            "Type inference failed; continuing without type context",
-            "Failed to persist type inference result; continuing without type context",
-            |result| {
-                info!(
-                    binary = %self.binary,
-                    inferences = result.inferences.len(),
-                    "Type inference complete"
-                );
-            },
-        )
-        .await
+        let scanned = self
+            .run_scan(
+                "type inference",
+                engine.scan(self.binary.as_str()),
+                |result| persistor.save(result),
+                "Type inference failed; continuing without type context",
+                "Failed to persist type inference result; continuing without type context",
+                |result| {
+                    info!(
+                        binary = %self.binary,
+                        inferences = result.inferences.len(),
+                        "Type inference complete"
+                    );
+                },
+            )
+            .await;
+        self.publish_type_inference();
+        scanned
+    }
+
+    /// Publish the scan phase's completion latch, when this job carries
+    /// one — called on every exit of [`type_inference`](Self::type_inference)
+    /// so a failing inference scan can never strand the callback job
+    /// (issue #238).
+    fn publish_type_inference(&self) {
+        if let Some(ref latch) = self.type_inference {
+            latch.publish();
+        }
     }
 
     /// The algorithm recognition scan, unless its document is already filed.
@@ -346,11 +443,17 @@ impl ScanJob {
         }
 
         info!(binary = %self.binary, "Detecting callback tables before batch translation");
-        // The type-inference scan runs before this one in the batch
-        // pre-analysis, so its cached document is usually in place:
-        // its records deepen the registration and chain suggestions
-        // into real closure contracts. No document, no enrichment —
-        // the scan degrades silently (issue #173).
+        // The one real ordering edge between the scans: this scan's
+        // closure contracts are composed from the type-inference
+        // document (issue #173), so the job awaits inference's
+        // completion latch instead of trusting the preamble's call
+        // order (issue #238). The latch is published whether inference
+        // succeeded or failed, so the wait releases either way —
+        // enrichment when the document is in place, degraded silence
+        // when it is not.
+        if let Some(ref latch) = self.type_inference {
+            latch.wait().await;
+        }
         let signatures = callback_signature_map(&self.workspace, &self.binary);
         let engine = CallbackEngine::with_source(self.source.clone()).with_signatures(signatures);
         self.run_scan(
