@@ -31,8 +31,10 @@
 //!   file per binary under `re/analysis/globalstate/`.
 //! * [`error`] — [`GlobalStateError`], the crate's error type.
 
+pub mod detector;
 pub mod error;
 pub mod types;
 
+pub use detector::{EXACT_SPELLING_CONFIDENCE, GlobalStateDetector, SHAPE_ONLY_CONFIDENCE};
 pub use error::{GlobalStateError, Result};
 pub use types::{AccessKind, FunctionPurity, GlobalAccess, GlobalStateFinding, GlobalStateResult};
