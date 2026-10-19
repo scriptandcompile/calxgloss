@@ -35,7 +35,7 @@ use crate::cross_function::CrossFunctionDetector;
 use crate::error::Result;
 use crate::string_hints::StringHintEngine;
 use crate::types::{AlgorithmHint, AlgorithmRecognitionResult, ScanMetadata};
-use calxgloss_decomp::DecompiledFunction;
+use calxgloss_decomp::{DecompiledFunction, StringLiteral};
 use calxgloss_kuna::KunaSource;
 use futures_util::stream::{self, StreamExt};
 use std::sync::Arc;
@@ -132,6 +132,22 @@ impl SkipRateBreaker {
 /// server. The futures are `Send` so a scan can be driven from an
 /// orchestrating task.
 pub use calxgloss_decomp::ScanSource;
+
+/// The reads and detectors the concurrent per-function pass shares.
+///
+/// The pass holds this behind one [`Arc`] — every in-flight function
+/// read owns its handle — so no in-flight future borrows the scan's
+/// frame, and the scan future stays provably `Send + 'static` for the
+/// translator's scan-phase fan-out (issue #240, rust#100013). The
+/// literals are program-wide evidence read by every function: one
+/// fetch, shared across the pass.
+struct SharedPass<S> {
+    source: S,
+    cfg: CfgPatternMatcher,
+    strings: StringHintEngine,
+    callbacks: CallbackPatternDb,
+    literals: Vec<StringLiteral>,
+}
 
 /// Orchestrates the detectors into one [`AlgorithmRecognitionResult`].
 ///
@@ -288,11 +304,10 @@ impl<S> AlgorithmEngine<S> {
     /// new decompile is issued (issue #156).
     pub async fn scan(&self, binary: impl Into<String>) -> Result<AlgorithmRecognitionResult>
     where
-        S: ScanSource,
+        S: ScanSource + Clone,
     {
         let started = Instant::now();
         let functions = self.source.functions().await?;
-        let literals = self.source.strings().await?;
         let total = functions.len();
 
         // The skip-rate breaker lives beside the concurrent pass, not
@@ -302,11 +317,25 @@ impl<S> AlgorithmEngine<S> {
         // lost most of the listing, no new decompile is issued.
         let breaker = Arc::new(SkipRateBreaker::new(total));
 
-        let mut pass = stream::iter(functions.iter().map(|function| {
-            let breaker = Arc::clone(&breaker);
-            // The literals are program-wide evidence read by every
-            // function: one fetch, shared by reference across the pass.
-            let literals = &literals;
+        // The concurrent pass owns its reads: one clone of the source
+        // and the three per-function detectors, plus the one literals
+        // fetch, shared behind one `Arc`. Every in-flight function read
+        // holds its own handle, so the pass borrows nothing from this
+        // frame — the scan future stays provably `Send + 'static`,
+        // which the translator's scan-phase fan-out needs to move the
+        // scan onto a task (issue #240, rust#100013).
+        let shared = Arc::new(SharedPass {
+            source: self.source.clone(),
+            cfg: self.cfg.clone(),
+            strings: self.strings.clone(),
+            callbacks: self.callbacks.clone(),
+            literals: self.source.strings().await?,
+        });
+        let pass_breaker = Arc::clone(&breaker);
+
+        let mut pass = stream::iter(functions.into_iter().map(move |function| {
+            let shared = Arc::clone(&shared);
+            let breaker = Arc::clone(&pass_breaker);
             async move {
                 if function.name.is_empty() {
                     // A nameless listing entry would send the name lookup
@@ -323,7 +352,7 @@ impl<S> AlgorithmEngine<S> {
                     // decompile is never issued.
                     return PassOutcome::Halted;
                 }
-                let decompiled = match self.source.decompile(&function.name).await {
+                let decompiled = match shared.source.decompile(&function.name).await {
                     Ok(decompiled) => decompiled,
                     Err(error) => {
                         warn!(
@@ -337,20 +366,24 @@ impl<S> AlgorithmEngine<S> {
                 };
 
                 let mut hints = Vec::new();
-                hints.extend(self.cfg.match_patterns(&decompiled));
-                hints.extend(self.strings.detect_string_hints(&decompiled, literals));
+                hints.extend(shared.cfg.match_patterns(&decompiled));
+                hints.extend(
+                    shared
+                        .strings
+                        .detect_string_hints(&decompiled, &shared.literals),
+                );
 
                 // A contract fits only a function of exactly its arity, so
                 // the caller fetch — the scan's only call-graph read — runs
                 // just where some contract could still fit.
                 let arity = decompiled.parameter_names().len();
-                if self
+                if shared
                     .callbacks
                     .patterns()
                     .iter()
                     .any(|p| p.param_count == arity)
                 {
-                    let callers = match self.source.callers(function.address).await {
+                    let callers = match shared.source.callers(function.address).await {
                         Ok(callers) => callers,
                         Err(error) => {
                             warn!(
@@ -362,7 +395,8 @@ impl<S> AlgorithmEngine<S> {
                         }
                     };
                     hints.extend(
-                        self.callbacks
+                        shared
+                            .callbacks
                             .detect_callback_patterns(&decompiled, callers)
                             .into_iter()
                             .map(|detection| detection.hint),
@@ -424,7 +458,7 @@ impl<S> AlgorithmEngine<S> {
             .collect();
         info!(
             binary = %metadata.binary,
-            functions = functions.len(),
+            functions = total,
             hints = hints.len(),
             skipped,
             duration_secs = metadata.duration_secs,

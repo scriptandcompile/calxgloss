@@ -297,6 +297,13 @@ struct SourceInner {
     /// clones share it so every handle to one source beats as one
     /// (issue #211).
     heartbeat: Mutex<Option<Arc<Heartbeat>>>,
+    /// The names of every decompile round trip the engine thread has
+    /// answered, in call order — the engine-call accounting that proves
+    /// the read cache collapses concurrent scans of one body into one
+    /// engine request (issue #240). One entry per completed round trip,
+    /// repeats included: collapsing repeats is the read cache's job, not
+    /// the source's.
+    decompile_calls: Mutex<Vec<String>>,
 }
 
 /// Minimum gap between heartbeat beats for one pass — a 20k-function scan
@@ -414,6 +421,7 @@ impl KunaSource {
                 entry: handshake.entry,
                 num_symbols: handshake.num_symbols,
                 heartbeat: Mutex::new(None),
+                decompile_calls: Mutex::new(Vec::new()),
             }),
         })
     }
@@ -545,7 +553,31 @@ impl KunaSource {
         // tripped a budget or refused still consumed its slot, so the
         // pass's progress must move (issue #211).
         self.tick(name);
+        // Engine-call accounting (issue #240): one entry per completed
+        // round trip, same rule as the tick — a function that tripped a
+        // budget still paid the engine and still shows in the log.
+        self.inner
+            .decompile_calls
+            .lock()
+            .expect("decompile accounting lock")
+            .push(name.to_string());
         outcome
+    }
+
+    /// The names of every decompile round trip this source has answered,
+    /// in call order (issue #240).
+    ///
+    /// The Kuna engine is the scan phase's serial resource, and the read
+    /// cache's per-key cell guarantees concurrent readers of one body
+    /// produce exactly one entry here per function; a repeat in the log
+    /// means a reader reached the engine twice for one name. Clones share
+    /// the log — it belongs to the engine thread, not the handle.
+    pub fn decompile_calls(&self) -> Vec<String> {
+        self.inner
+            .decompile_calls
+            .lock()
+            .expect("decompile accounting lock")
+            .clone()
     }
 
     /// Every import in the container's import table.
@@ -2301,6 +2333,45 @@ mod tests {
             }
             other => panic!("expected BatchProgress, got {other:?}"),
         }
+    }
+
+    /// The engine-call accounting (issue #240): the log carries one entry
+    /// per completed decompile round trip, in call order, repeats
+    /// included — collapsing repeats is the read cache's job, not the
+    /// source's, and the scan phase's exactly-once proof reads the log
+    /// through the cache.
+    #[tokio::test]
+    async fn the_source_records_every_engine_decompile_round_trip() {
+        let (path, _) = fixture_bytes();
+        let source = KunaSource::load(&path).expect("the fixture must load");
+        assert!(
+            source.decompile_calls().is_empty(),
+            "a fresh source has answered no decompiles"
+        );
+
+        let names = calxgloss_testfixtures::EXPORT_NAMES;
+        source
+            .decompile_function(names[0])
+            .await
+            .expect("the first fixture export decompiles");
+        source
+            .decompile_function(names[0])
+            .await
+            .expect("the same export decompiles again with no cache in between");
+        source
+            .decompile_function(names[1])
+            .await
+            .expect("the second fixture export decompiles");
+
+        assert_eq!(
+            source.decompile_calls(),
+            vec![
+                names[0].to_string(),
+                names[0].to_string(),
+                names[1].to_string()
+            ],
+            "one entry per completed round trip, in call order"
+        );
     }
 
     #[tokio::test]

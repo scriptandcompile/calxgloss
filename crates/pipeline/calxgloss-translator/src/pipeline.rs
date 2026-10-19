@@ -30,7 +30,9 @@
 //! ```
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -55,6 +57,7 @@ use calxgloss_types::{
     UnitCancellation,
 };
 use calxgloss_verify::Verifier;
+use tokio::task::JoinSet;
 use tracing::{debug, info, instrument, warn};
 
 use crate::Translation;
@@ -68,6 +71,86 @@ use crate::scan_job::{ScanJob, TypeInferenceLatch};
 /// pre-batch evidence scans, instead of one row per scan that restarts
 /// with each scan (issue #239).
 const SCAN_PHASE: &str = "evidence scans";
+
+/// The scan phase's fan-out window: at most four evidence scans run at a
+/// time (issue #240).
+///
+/// The window is not there to protect the Kuna engine — the engine stays
+/// the serial resource either way, the read cache's per-key cell already
+/// collapsing concurrent misses of one body into one engine request. The
+/// cap exists to bound peak memory, since each running scan keeps its own
+/// bodies while the shared memo holds every body only once, and to keep
+/// the scan phase's single dashboard row meaningful. Four is one named
+/// decision: widening it is a one-line change with the phase's tests
+/// behind it.
+const MAX_CONCURRENT_EVIDENCE_SCANS: usize = 4;
+
+/// One evidence scan as the fan-out's unit of work: takes its owned
+/// [`ScanJob`] and hands back the boxed scan future. The eleven scans'
+/// futures are eleven distinct types, so the window boxes them to move
+/// them onto tasks (issue #240).
+type EvidenceScanTask = fn(ScanJob) -> Pin<Box<dyn Future<Output = ()> + Send>>;
+
+// The eleven scans as task-ready async fns. Their futures are boxed at
+// spawn time rather than in closure position — the compiler cannot prove
+// a boxed `async` block inside a closure is `'static` (rust#100013),
+// while a named async fn's future is `'static` by signature.
+async fn scan_type_database(job: ScanJob) {
+    job.type_database().await;
+}
+async fn scan_type_inference(job: ScanJob) {
+    job.type_inference().await;
+}
+async fn scan_algorithm_recognition(job: ScanJob) {
+    job.algorithm_recognition().await;
+}
+async fn scan_memory_detection(job: ScanJob) {
+    job.memory_detection().await;
+}
+async fn scan_sync_detection(job: ScanJob) {
+    job.sync_detection().await;
+}
+async fn scan_callback_detection(job: ScanJob) {
+    job.callback_detection().await;
+}
+async fn scan_controlflow_detection(job: ScanJob) {
+    job.controlflow_detection().await;
+}
+async fn scan_string_context(job: ScanJob) {
+    job.string_context().await;
+}
+async fn scan_api_detection(job: ScanJob) {
+    job.api_detection().await;
+}
+async fn scan_const_detection(job: ScanJob) {
+    job.const_detection().await;
+}
+async fn scan_serialize_detection(job: ScanJob) {
+    job.serialize_detection().await;
+}
+
+/// The eleven evidence scans in today's spawn order — type database, type
+/// inference, algorithm recognition, memory, sync, callback, control
+/// flow, string context, api, const, serialize. The order is only the
+/// order they enter the window: the scans no longer run in a fixed order,
+/// and the one real ordering edge — callback detection awaiting type
+/// inference's completion latch — rides the latch itself, not this list
+/// (issue #238, fan-out issue #240).
+fn evidence_scan_tasks() -> Vec<EvidenceScanTask> {
+    vec![
+        |job| Box::pin(scan_type_database(job)),
+        |job| Box::pin(scan_type_inference(job)),
+        |job| Box::pin(scan_algorithm_recognition(job)),
+        |job| Box::pin(scan_memory_detection(job)),
+        |job| Box::pin(scan_sync_detection(job)),
+        |job| Box::pin(scan_callback_detection(job)),
+        |job| Box::pin(scan_controlflow_detection(job)),
+        |job| Box::pin(scan_string_context(job)),
+        |job| Box::pin(scan_api_detection(job)),
+        |job| Box::pin(scan_const_detection(job)),
+        |job| Box::pin(scan_serialize_detection(job)),
+    ]
+}
 
 // ============================================================
 // TranslationPipeline — full end-to-end pipeline
@@ -1966,27 +2049,29 @@ impl TranslationPipeline {
     /// — so neither keeps its own copy of the sequence and the CLI and web
     /// paths cannot drift apart (issue #234).
     ///
-    /// The order is today's order, kept fixed:
-    /// [`ensure_type_database`](Self::ensure_type_database),
-    /// [`ensure_type_inference`](Self::ensure_type_inference),
-    /// [`ensure_algorithm_recognition`](Self::ensure_algorithm_recognition),
-    /// [`ensure_memory_detection`](Self::ensure_memory_detection),
-    /// [`ensure_sync_detection`](Self::ensure_sync_detection),
-    /// [`ensure_callback_detection`](Self::ensure_callback_detection),
-    /// [`ensure_controlflow_detection`](Self::ensure_controlflow_detection),
-    /// [`ensure_string_context`](Self::ensure_string_context),
-    /// [`ensure_api_detection`](Self::ensure_api_detection),
-    /// [`ensure_const_detection`](Self::ensure_const_detection), then
-    /// [`ensure_serialize_detection`](Self::ensure_serialize_detection).
+    /// The scans run concurrently on a [`JoinSet`] with a window of
+    /// [`MAX_CONCURRENT_EVIDENCE_SCANS`] at a time, each on its own owned
+    /// [`ScanJob`] (issues #237, #240): the engine thread is handed the
+    /// next body the moment it frees the last, so parse work overlaps
+    /// engine work and a cold scan phase costs roughly the engine's own
+    /// decompile time rather than that plus every scan's parse time. The
+    /// spawn order is today's order — [`evidence_scan_tasks`] — but that
+    /// order is only the order the scans enter the window. Exactly-once
+    /// decompilation is preserved by construction, not by new locking:
+    /// the read cache's per-key cell collapses concurrent misses of one
+    /// body into one engine request, so the engine stays the serial
+    /// resource the racing scans share safely.
+    ///
     /// Each scan keeps its own shape: a cached document short-circuits it
     /// before any engine read, and a failed scan or save only warns and
-    /// continues — one detector's failure never takes down the batch.
+    /// continues — one detector's failure never takes down the batch. The
+    /// group joins all eleven and never cancels its siblings.
     ///
     /// The phase arms a fresh type-inference completion latch first:
     /// the inference scan publishes it on every exit and callback
     /// detection awaits it before composing its closure contracts, so
     /// the one real ordering edge between the scans is explicit data
-    /// rather than this sequence's call order (issue #238).
+    /// rather than any call order (issue #238).
     ///
     /// The phase also arms the engine heartbeat once around the whole
     /// group, under the phase name, and disarms it when the group ends:
@@ -1994,21 +2079,39 @@ impl TranslationPipeline {
     /// for the scan phase instead of eleven that restart with each
     /// scan. Beats count unique functions consumed — a body pulled cold
     /// from the engine and replayed warm by the read cache counts once —
-    /// so a warm run still shows life (issue #239, preserving #121).
+    /// so a warm run still shows life and the row stays honest while the
+    /// scans interleave (issue #239, preserving #121).
     async fn run_prebatch_scans(&self, binary: &str) {
         self.begin_scan_pass(binary, SCAN_PHASE);
         self.arm_type_inference_latch();
-        self.ensure_type_database(binary).await;
-        self.ensure_type_inference(binary).await;
-        self.ensure_algorithm_recognition(binary).await;
-        self.ensure_memory_detection(binary).await;
-        self.ensure_sync_detection(binary).await;
-        self.ensure_callback_detection(binary).await;
-        self.ensure_controlflow_detection(binary).await;
-        self.ensure_string_context(binary).await;
-        self.ensure_api_detection(binary).await;
-        self.ensure_const_detection(binary).await;
-        self.ensure_serialize_detection(binary).await;
+        let Some(job) = self.scan_job(binary) else {
+            debug!(
+                binary,
+                "No workspace configured; skipping the pre-batch evidence scans"
+            );
+            self.end_scan_pass();
+            return;
+        };
+        let mut scans = evidence_scan_tasks().into_iter();
+        let mut set = JoinSet::new();
+        for scan in scans.by_ref().take(MAX_CONCURRENT_EVIDENCE_SCANS) {
+            set.spawn(scan(job.clone()));
+        }
+        // Sliding window: every completion frees a permit for the next
+        // scan, and the group joins all eleven — a failing or panicking
+        // scan never cancels its siblings (issue #240).
+        while let Some(outcome) = set.join_next().await {
+            if let Err(e) = outcome {
+                warn!(
+                    binary,
+                    error = %e,
+                    "An evidence scan task did not complete; continuing without its context"
+                );
+            }
+            if let Some(scan) = scans.next() {
+                set.spawn(scan(job.clone()));
+            }
+        }
         self.end_scan_pass();
     }
 
@@ -5134,6 +5237,258 @@ mod tests {
             1,
             "the unit ran live against the engine, as without the cache"
         );
+    }
+
+    // ============================================================
+    // The scan-phase fan-out (issue #240)
+    // ============================================================
+
+    /// Zero the run-varying scan stamps wherever they sit in a
+    /// document's JSON form, so two runs of one scan compare over what
+    /// the scan actually recovered (the #237 precedent, generalized to
+    /// whole documents).
+    fn zero_scan_stamps(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(entries) => {
+                for (key, inner) in entries {
+                    if key == "scanned_at" || key == "duration_secs" {
+                        *inner = serde_json::Value::from(0);
+                    } else {
+                        zero_scan_stamps(inner);
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    zero_scan_stamps(item);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A persisted document as JSON with the stamps zeroed — the
+    /// comparison form for one scan run twice.
+    fn stamped_document(document: serde_json::Value) -> serde_json::Value {
+        let mut document = document;
+        zero_scan_stamps(&mut document);
+        document
+    }
+
+    /// The fan-out keeps the engine the serial resource it has always
+    /// been: across a cold phase's eleven concurrent scans the engine
+    /// call log shows every function of the listing exactly once — the
+    /// read cache's per-key cell collapses concurrent misses of one
+    /// body into a single round trip (issue #240).
+    #[tokio::test]
+    async fn the_fanned_scan_phase_decompiles_each_function_exactly_once() {
+        let dir = TempDir::new().expect("temp workspace");
+        let (pipeline, _) = cached_pipeline(dir.path());
+        pipeline.begin_cached_source(PROGRAM).await;
+        pipeline.run_prebatch_scans(PROGRAM).await;
+
+        let calls = pipeline.kuna().decompile_calls();
+        assert!(
+            !calls.is_empty(),
+            "a cold scan phase must take the engine through the listing"
+        );
+        let mut sorted = calls.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            calls.len(),
+            "no function reached the engine twice across the eleven scans: {calls:?}"
+        );
+    }
+
+    /// The fan-out's marquee: given the same cached reads, the
+    /// concurrent phase and the sequential preamble persist the same
+    /// eleven documents — findings, order, and callback enrichment
+    /// alike (issue #240).
+    ///
+    /// Both compared runs replay one read cache, warmed by a cold
+    /// phase first: the Kuna engine folds each decompile's recovered
+    /// types into its program listing, so two cold runs over the same
+    /// bytes legitimately see different listings depending on what
+    /// decompiled when. With every read pinned by the cache, the only
+    /// thing that differs between the compared runs is the schedule —
+    /// exactly what the fan-out must not let matter.
+    #[tokio::test]
+    async fn the_fanned_scan_phase_persists_what_the_sequential_preamble_persisted() {
+        let dir = TempDir::new().expect("temp workspace");
+        let (pipeline, _) = cached_pipeline(dir.path());
+        pipeline.begin_cached_source(PROGRAM).await;
+
+        // Warm the read cache with one cold phase, then clear its
+        // documents: the compared runs must re-run their scans,
+        // replaying the cache rather than short-circuiting on them.
+        pipeline.run_prebatch_scans(PROGRAM).await;
+        std::fs::remove_dir_all(dir.path().join("re").join("analysis"))
+            .expect("cold phase documents cleared");
+
+        // The fanned run: the same phase, warm.
+        pipeline.run_prebatch_scans(PROGRAM).await;
+        macro_rules! filed {
+            ($persistor:ty) => {{
+                let loaded = <$persistor>::new(dir.path())
+                    .load(PROGRAM)
+                    .expect("the scan filed its document");
+                serde_json::to_value(loaded).expect("the document serializes for comparison")
+            }};
+        }
+        let fanned = [
+            filed!(TypeDatabasePersistor),
+            filed!(TypeInferPersistor),
+            filed!(AlgorithmPersistor),
+            filed!(MemoryPersistor),
+            filed!(SyncPersistor),
+            filed!(CallbackPersistor),
+            filed!(ControlFlowPersistor),
+            filed!(StringContextPersistor),
+            filed!(ApiPersistor),
+            filed!(ConstPersistor),
+            filed!(SerializePersistor),
+        ];
+
+        // The sequential preamble: the same eleven scans one after the
+        // other, in the order they used to run — the inference scan
+        // before callback detection, so the enrichment rides in on the
+        // workspace document exactly as it did when the scans shared a
+        // call order.
+        std::fs::remove_dir_all(dir.path().join("re").join("analysis"))
+            .expect("fanned documents cleared");
+        assert!(pipeline.ensure_type_database(PROGRAM).await);
+        assert!(pipeline.ensure_type_inference(PROGRAM).await);
+        assert!(pipeline.ensure_algorithm_recognition(PROGRAM).await);
+        assert!(pipeline.ensure_memory_detection(PROGRAM).await);
+        assert!(pipeline.ensure_sync_detection(PROGRAM).await);
+        assert!(pipeline.ensure_callback_detection(PROGRAM).await);
+        assert!(pipeline.ensure_controlflow_detection(PROGRAM).await);
+        assert!(pipeline.ensure_string_context(PROGRAM).await);
+        assert!(pipeline.ensure_api_detection(PROGRAM).await);
+        assert!(pipeline.ensure_const_detection(PROGRAM).await);
+        assert!(pipeline.ensure_serialize_detection(PROGRAM).await);
+        let in_sequence = [
+            filed!(TypeDatabasePersistor),
+            filed!(TypeInferPersistor),
+            filed!(AlgorithmPersistor),
+            filed!(MemoryPersistor),
+            filed!(SyncPersistor),
+            filed!(CallbackPersistor),
+            filed!(ControlFlowPersistor),
+            filed!(StringContextPersistor),
+            filed!(ApiPersistor),
+            filed!(ConstPersistor),
+            filed!(SerializePersistor),
+        ];
+
+        let names = [
+            "type database",
+            "type inference",
+            "algorithm recognition",
+            "memory lifecycle",
+            "sync detection",
+            "callback detection",
+            "control flow",
+            "string context",
+            "api detection",
+            "const detection",
+            "serialize detection",
+        ];
+        for ((name, fanned), in_sequence) in names.into_iter().zip(fanned).zip(in_sequence) {
+            assert_eq!(
+                stamped_document(fanned),
+                stamped_document(in_sequence),
+                "the fanned {name} document must equal the sequential preamble's"
+            );
+        }
+
+        // The equality above only means something if the callback scan
+        // was enriched on both sides: the fixture's inference records
+        // compose real contracts (the #238 precedent), so the callback
+        // documents match as enriched documents, not as two degraded ones.
+        assert!(
+            !callback_signature_map(dir.path(), PROGRAM).is_empty(),
+            "the inference document composes real contracts — the callback scan \
+             had the enrichment to read, fanned and in sequence alike"
+        );
+    }
+
+    /// One scan's failure stays its own: with the memory document's
+    /// directory sabotaged, the memory scan degrades at its save while
+    /// the other ten documents are still filed and the phase still
+    /// ends — the group joins all eleven and never cancels a sibling
+    /// (issue #240).
+    #[tokio::test]
+    async fn one_failing_scan_leaves_the_other_ten_persisted() {
+        let dir = TempDir::new().expect("temp workspace");
+        let (pipeline, _) = cached_pipeline(dir.path());
+        // `re/analysis/memory` as a plain file makes the memory
+        // persistor's directory creation fail even though its scan
+        // succeeds — the existing save-sabotage pattern.
+        std::fs::create_dir_all(dir.path().join("re").join("analysis")).expect("analysis dir");
+        std::fs::write(
+            dir.path().join("re").join("analysis").join("memory"),
+            "not a directory",
+        )
+        .expect("sabotage filed");
+
+        pipeline.begin_cached_source(PROGRAM).await;
+        pipeline.run_prebatch_scans(PROGRAM).await;
+
+        let workspace = dir.path();
+        assert!(
+            !MemoryPersistor::new(workspace).exists(PROGRAM),
+            "the sabotaged save left no memory document"
+        );
+        for (name, filed) in [
+            (
+                "type database",
+                TypeDatabasePersistor::new(workspace).exists(PROGRAM),
+            ),
+            (
+                "type inference",
+                TypeInferPersistor::new(workspace).exists(PROGRAM),
+            ),
+            (
+                "algorithm recognition",
+                AlgorithmPersistor::new(workspace).exists(PROGRAM),
+            ),
+            (
+                "sync detection",
+                SyncPersistor::new(workspace).exists(PROGRAM),
+            ),
+            (
+                "callback detection",
+                CallbackPersistor::new(workspace).exists(PROGRAM),
+            ),
+            (
+                "control flow",
+                ControlFlowPersistor::new(workspace).exists(PROGRAM),
+            ),
+            (
+                "string context",
+                StringContextPersistor::new(workspace).exists(PROGRAM),
+            ),
+            (
+                "api detection",
+                ApiPersistor::new(workspace).exists(PROGRAM),
+            ),
+            (
+                "const detection",
+                ConstPersistor::new(workspace).exists(PROGRAM),
+            ),
+            (
+                "serialize detection",
+                SerializePersistor::new(workspace).exists(PROGRAM),
+            ),
+        ] {
+            assert!(
+                filed,
+                "the {name} scan persisted its document despite the memory failure"
+            );
+        }
     }
 
     // ============================================================

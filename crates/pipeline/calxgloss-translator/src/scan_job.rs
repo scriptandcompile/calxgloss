@@ -298,9 +298,16 @@ impl ScanJob {
         }
 
         info!(binary = %self.binary, "Recognizing algorithms before batch translation");
+        // The scan future owns the engine and the binary name rather than
+        // borrowing them from this frame: the algorithm scan's future is
+        // deeply nested (its own concurrent pass inside), and rustc cannot
+        // prove a borrowed nested future `'static` (rust#100013) — which
+        // the scan-phase fan-out needs to move this scan onto a task
+        // (issue #240).
         let engine = AlgorithmEngine::with_source(self.source.clone());
+        let binary = self.binary.clone();
         self.run_scan(
-            engine.scan(self.binary.as_str()),
+            async move { engine.scan(binary).await },
             |result| persistor.save(result),
             "Algorithm recognition failed; continuing without algorithm context",
             "Failed to persist algorithm recognition result; continuing without algorithm context",

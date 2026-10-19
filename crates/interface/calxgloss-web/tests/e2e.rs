@@ -11810,7 +11810,7 @@ async fn test_headless_binary_pause_button_drives_endpoint() {
         if eval_bool(
             &tab,
             "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"]')?.dataset.status === 'paused' \
-                 && !!document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"resume\"]')"
+                 && !!document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"resume\"]')",
         ) {
             paused = true;
             break;
@@ -11892,7 +11892,7 @@ async fn test_headless_binary_pause_button_drives_endpoint() {
         if eval_bool(
             &tab,
             "document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"]')?.dataset.status !== 'paused' \
-                 && !!document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"pause\"]')"
+                 && !!document.querySelector('#pipeline-binaries [data-binary=\"game_logic.dll\"] [data-action=\"pause\"]')",
         ) {
             resumed = true;
             break;
