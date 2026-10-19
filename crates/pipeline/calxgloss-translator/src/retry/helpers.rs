@@ -2555,8 +2555,8 @@ mod tests {
                 global: global.into(),
                 evidence: format!("uVar1 = {global};"),
                 confidence: calxgloss_types::Confidence::new(85),
-                suggestion:
-                    "read the program global through shared state, not an invented local".into(),
+                suggestion: "read the program global through shared state, not an invented local"
+                    .into(),
             },
         )
     }
