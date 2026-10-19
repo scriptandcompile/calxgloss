@@ -493,13 +493,13 @@ async fn heartbeats_pass_straight_through_and_beat_for_live_and_warm_work() {
 
     let events = calxgloss_types::TranslationEvents::new(64);
     let mut rx = events.subscribe();
-    source.begin_pass(TARGET_FILE_NAME, "call graph", &events);
+    source.begin_pass(TARGET_FILE_NAME, "evidence scans", &events);
     let functions = source.functions().await.expect("live listing");
     let tick = fixture_export(&functions, "fixture_tick");
     source.decompile(&tick.name).await.expect("live decompile");
     let beat = rx.try_recv().expect("the live decompile beat");
     assert!(
-        matches!(&beat, calxgloss_types::ProgressEvent::BatchProgress { pass, .. } if pass == "call graph"),
+        matches!(&beat, calxgloss_types::ProgressEvent::BatchProgress { pass, .. } if pass == "evidence scans"),
         "expected a BatchProgress beat, got {beat:?}"
     );
     source.end_pass();
@@ -525,7 +525,7 @@ async fn a_warm_replay_still_beats_the_heartbeat_per_decompile() {
     let second = cached_source(workspace.path(), &binary);
     let events = calxgloss_types::TranslationEvents::new(64);
     let mut rx = events.subscribe();
-    second.begin_pass(TARGET_FILE_NAME, "type inference", &events);
+    second.begin_pass(TARGET_FILE_NAME, "evidence scans", &events);
     let listed = second.functions().await.expect("warm function listing");
     let tick = fixture_export(&listed, "fixture_tick");
     second
@@ -542,7 +542,7 @@ async fn a_warm_replay_still_beats_the_heartbeat_per_decompile() {
             total,
         } => {
             assert_eq!(binary, TARGET_FILE_NAME);
-            assert_eq!(pass, "type inference");
+            assert_eq!(pass, "evidence scans", "the beat names the scan phase");
             assert_eq!(function, &tick.name, "the warm worklist names the item");
             assert_eq!(*index, 1);
             assert_eq!(*total, listed.len(), "the warm worklist carries the total");
@@ -550,8 +550,9 @@ async fn a_warm_replay_still_beats_the_heartbeat_per_decompile() {
         other => panic!("expected BatchProgress, got {other:?}"),
     }
 
-    // Re-armed, the next decompile is a memo hit — it beats too.
-    second.begin_pass(TARGET_FILE_NAME, "call graph", &events);
+    // Re-armed, the next decompile is a memo hit — it beats too: a fresh
+    // phase counts its consumed functions fresh.
+    second.begin_pass(TARGET_FILE_NAME, "evidence scans", &events);
     second
         .decompile(&tick.name)
         .await
@@ -559,7 +560,7 @@ async fn a_warm_replay_still_beats_the_heartbeat_per_decompile() {
     let memo_beat = rx.try_recv().expect("a memo-hit decompile beats");
     assert!(
         matches!(&memo_beat, calxgloss_types::ProgressEvent::BatchProgress { pass, function, .. }
-            if pass == "call graph" && function == &tick.name),
+            if pass == "evidence scans" && function == &tick.name),
         "the memo hit beats by name: {memo_beat:?}"
     );
     second.end_pass();

@@ -191,11 +191,13 @@ Each `ensure_*` follows the same rule: **the persisted JSON is the cache** —
 if a result is already saved for the binary, the scan is skipped entirely;
 otherwise the engine runs over the batch's `ScanSource` (live or cached), and
 its result is saved. A failed scan or failed save only logs a warning: missing
-analysis context degrades the prompts, it never fails the batch. While a pass
-walks the program, the engine's heartbeat is armed (`begin_pass` /
-`end_pass`) and beats a `BatchProgress { binary, pass, function, index, total }`
-event, throttled to 500 ms, so the dashboard shows which function a minutes-long
-scan is on.
+analysis context degrades the prompts, it never fails the batch. While the
+scan phase runs, the engine's heartbeat is armed once around the whole
+group (`begin_pass` / `end_pass`) under the phase name *evidence scans*
+and beats a `BatchProgress { binary, pass, function, index, total }`
+event, throttled to 500 ms, counting unique functions consumed — so the
+dashboard shows one honest "n of m functions consumed" row for the phase
+instead of one per scan (issue #239).
 
 Every methodology also has a manual CLI entry point (§4) that runs the same
 scan and can print a cached result with `--show`.

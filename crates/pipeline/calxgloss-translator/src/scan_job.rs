@@ -2,12 +2,15 @@
 //!
 //! The eleven `ensure_*` entry points on [`TranslationPipeline`](crate::TranslationPipeline)
 //! keep their signatures and their cached-document short-circuits, but the
-//! scan itself — the engine call under the pass heartbeat, the document
+//! scan itself — the engine call, the document
 //! persist, and the warn-and-continue degradation — runs through [`ScanJob`],
 //! a handle that owns clones of everything a scan reads. The handle is the
 //! prefactor for the parallel scan-phase fan-out (spec #234): the runtime
 //! cannot spawn a scan that borrows the batch, so each scan has to own what
-//! it reads before any of them can move onto a task.
+//! it reads before any of them can move onto a task. The pass heartbeat is
+//! the scan phase's — armed once around the whole group by
+//! [`run_prebatch_scans`](crate::TranslationPipeline::run_prebatch_scans),
+//! not per scan (issue #239) — so no scan method arms or disarms it.
 //!
 //! The one real ordering edge between the scans rides the handle too:
 //! [`TypeInferenceLatch`] is the completion latch the type-inference scan
@@ -28,7 +31,6 @@ use calxgloss_consts::persist::ConstPersistor;
 use calxgloss_controlflow::engine::ControlFlowEngine;
 use calxgloss_controlflow::persist::ControlFlowPersistor;
 use calxgloss_decomp::PipelineSource;
-use calxgloss_kuna::KunaSource;
 use calxgloss_memory::engine::MemoryEngine;
 use calxgloss_memory::persist::MemoryPersistor;
 use calxgloss_serialize::engine::SerializeEngine;
@@ -39,7 +41,6 @@ use calxgloss_sync::engine::SyncEngine;
 use calxgloss_sync::persist::SyncPersistor;
 use calxgloss_typeinfer::engine::TypeInferEngine;
 use calxgloss_typeinfer::persist::TypeInferPersistor;
-use calxgloss_types::TranslationEvents;
 use calxgloss_typesdb::engine::TypesDBEngine;
 use calxgloss_typesdb::persist::TypeDatabasePersistor;
 use tokio::sync::watch;
@@ -110,20 +111,22 @@ impl TypeInferenceLatch {
 
 /// Everything one pre-batch evidence scan reads, owned by the scan itself.
 ///
-/// The job holds clones of the four reads a scan makes — the workspace the
-/// document is filed under, the batch's shared read source as armed by
-/// [`begin_cached_source`](crate::TranslationPipeline::begin_cached_source),
-/// the engine source the pass heartbeat is armed on, and the progress-event
-/// channel — so it borrows nothing from the batch, plus the scan phase's
+/// The job holds clones of the two reads a scan makes — the workspace the
+/// document is filed under and the batch's shared read source as armed by
+/// [`begin_cached_source`](crate::TranslationPipeline::begin_cached_source)
+/// — so it borrows nothing from the batch, plus the scan phase's
 /// [`TypeInferenceLatch`] when one is armed (issue #238). Cloning is cheap
 /// (every read is an `Arc`-backed handle or a small path) and the handle is
 /// `Send + Sync`, so a caller can move a job onto a task — exactly what the
 /// scan-phase fan-out (#240) needs.
 ///
 /// Each scan method is today's scan shape end to end: the cached-document
-/// short-circuit first, then the engine call wrapped by the per-scan
-/// heartbeat arm/disarm, then the persist; a failed scan or save only warns
-/// and reports `false`.
+/// short-circuit first, then the engine call, then the persist; a failed
+/// scan or save only warns and reports `false`. The pass heartbeat belongs
+/// to the scan phase, armed once around the whole group by
+/// [`run_prebatch_scans`](crate::TranslationPipeline::run_prebatch_scans)
+/// and disarmed when the group ends — no scan method arms or disarms it
+/// (issue #239).
 #[derive(Clone)]
 pub(crate) struct ScanJob {
     /// The binary the scan reads and the document is named after.
@@ -137,14 +140,6 @@ pub(crate) struct ScanJob {
     /// loaded engine. Every engine read goes through this clone.
     source: PipelineSource,
 
-    /// The loaded engine behind the reads — the handle the pass heartbeat
-    /// arms and disarms (the heartbeat state is shared by clones).
-    kuna: KunaSource,
-
-    /// The progress-event channel the heartbeat beats into; `None` means
-    /// there is nothing to beat to and the scan runs unchanged.
-    events: Option<TranslationEvents>,
-
     /// The scan phase's type-inference completion latch, present when
     /// the job was built inside an armed scan phase (issue #238): the
     /// [`type_inference`](Self::type_inference) job publishes it, the
@@ -156,37 +151,31 @@ pub(crate) struct ScanJob {
 
 impl ScanJob {
     /// Assemble the job for one scan of `binary` in `workspace`, reading
-    /// through `source` and beating the pass heartbeat on `kuna` into
-    /// `events` when there is a channel, and carrying the scan phase's
-    /// `type_inference` completion latch when the phase armed one.
+    /// through `source` and carrying the scan phase's `type_inference`
+    /// completion latch when the phase armed one.
     pub(crate) fn new(
         binary: &str,
         workspace: &Path,
         source: PipelineSource,
-        kuna: KunaSource,
-        events: Option<TranslationEvents>,
         type_inference: Option<TypeInferenceLatch>,
     ) -> Self {
         Self {
             binary: binary.to_string(),
             workspace: workspace.to_path_buf(),
             source,
-            kuna,
-            events,
             type_inference,
         }
     }
 
-    /// Run one scan's engine call under the pass heartbeat, persist its
-    /// document, and degrade to a warning when either step fails — the
-    /// shape every evidence scan shares. Returns whether the document is
-    /// in place afterwards.
+    /// Run one scan's engine call, persist its document, and degrade to a
+    /// warning when either step fails — the shape every evidence scan
+    /// shares. Returns whether the document is in place afterwards.
     ///
-    /// The heartbeat arm/disarm stays per scan at this stage; the
-    /// phase-scoped heartbeat is a separate ticket (#239).
+    /// The heartbeat is the scan phase's — armed once around the group by
+    /// [`run_prebatch_scans`](crate::TranslationPipeline::run_prebatch_scans)
+    /// (issue #239) — so the scan itself neither arms nor disarms it.
     async fn run_scan<T, ScanError, SaveError>(
         &self,
-        pass: &str,
         scan: impl Future<Output = std::result::Result<T, ScanError>>,
         persist: impl FnOnce(&T) -> std::result::Result<(), SaveError>,
         scan_failed: &str,
@@ -197,11 +186,7 @@ impl ScanJob {
         ScanError: std::fmt::Display,
         SaveError: std::fmt::Display,
     {
-        if let Some(ref ev) = self.events {
-            self.kuna.begin_pass(&self.binary, pass, ev);
-        }
         let outcome = scan.await;
-        self.kuna.end_pass();
         match outcome {
             Ok(result) => match persist(&result) {
                 Ok(()) => {
@@ -235,7 +220,6 @@ impl ScanJob {
         info!(binary = %self.binary, "Recovering type database before batch translation");
         let engine = TypesDBEngine::with_source(self.source.clone());
         self.run_scan(
-            "type database",
             engine.scan(self.binary.as_str()),
             |db| persistor.save(db),
             "Type database recovery failed; continuing without data structure context",
@@ -274,7 +258,6 @@ impl ScanJob {
         let engine = TypeInferEngine::with_source(self.source.clone());
         let scanned = self
             .run_scan(
-                "type inference",
                 engine.scan(self.binary.as_str()),
                 |result| persistor.save(result),
                 "Type inference failed; continuing without type context",
@@ -317,7 +300,6 @@ impl ScanJob {
         info!(binary = %self.binary, "Recognizing algorithms before batch translation");
         let engine = AlgorithmEngine::with_source(self.source.clone());
         self.run_scan(
-            "algorithm recognition",
             engine.scan(self.binary.as_str()),
             |result| persistor.save(result),
             "Algorithm recognition failed; continuing without algorithm context",
@@ -348,7 +330,6 @@ impl ScanJob {
         info!(binary = %self.binary, "Detecting memory lifecycles before batch translation");
         let engine = MemoryEngine::with_source(self.source.clone());
         self.run_scan(
-            "memory detection",
             engine.scan(self.binary.as_str()),
             |result| persistor.save(result),
             "Memory lifecycle detection failed; continuing without memory context",
@@ -379,7 +360,6 @@ impl ScanJob {
         info!(binary = %self.binary, "Detecting concurrency constructs before batch translation");
         let engine = SyncEngine::with_source(self.source.clone());
         self.run_scan(
-            "sync detection",
             engine.scan(self.binary.as_str()),
             |result| persistor.save(result),
             "Concurrency detection failed; continuing without concurrency context",
@@ -410,7 +390,6 @@ impl ScanJob {
         info!(binary = %self.binary, "Detecting constant structures before batch translation");
         let engine = ConstEngine::with_source(self.source.clone());
         self.run_scan(
-            "constant detection",
             engine.scan(self.binary.as_str()),
             |result| persistor.save(result),
             "Constant detection failed; continuing without constant context",
@@ -457,7 +436,6 @@ impl ScanJob {
         let signatures = callback_signature_map(&self.workspace, &self.binary);
         let engine = CallbackEngine::with_source(self.source.clone()).with_signatures(signatures);
         self.run_scan(
-            "callback detection",
             engine.scan(self.binary.as_str()),
             |result| persistor.save(result),
             "Callback detection failed; continuing without callback context",
@@ -489,7 +467,6 @@ impl ScanJob {
         info!(binary = %self.binary, "Detecting control-flow patterns before batch translation");
         let engine = ControlFlowEngine::with_source(self.source.clone());
         self.run_scan(
-            "control flow detection",
             engine.scan(self.binary.as_str()),
             |result| persistor.save(result),
             "Control-flow detection failed; continuing without control-flow context",
@@ -520,7 +497,6 @@ impl ScanJob {
         info!(binary = %self.binary, "Mapping program strings before batch translation");
         let engine = StringContextEngine::with_source(self.source.clone());
         self.run_scan(
-            "string context",
             engine.scan(self.binary.as_str()),
             |result| persistor.save(result),
             "String context scan failed; continuing without string context",
@@ -551,7 +527,6 @@ impl ScanJob {
         info!(binary = %self.binary, "Identifying libraries and APIs before batch translation");
         let engine = ApiEngine::with_source(self.source.clone());
         self.run_scan(
-            "API detection",
             engine.scan(self.binary.as_str()),
             |result| persistor.save(result),
             "API detection failed; continuing without API context",
@@ -583,7 +558,6 @@ impl ScanJob {
         info!(binary = %self.binary, "Detecting serialization patterns before batch translation");
         let engine = SerializeEngine::with_source(self.source.clone());
         self.run_scan(
-            "serialization detection",
             engine.scan(self.binary.as_str()),
             |result| persistor.save(result),
             "Serialization detection failed; continuing without serialization context",

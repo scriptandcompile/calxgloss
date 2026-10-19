@@ -54,10 +54,11 @@
 //! **What is never cached:** write-side calls (function tags, type
 //! write-back) never go through the cache, and `begin_pass`/`end_pass`
 //! heartbeat control passes through to the wrapped engine. The heartbeat
-//! counts *work items consumed*, not engine round trips: a cached decompile
-//! beats through the wrapped engine's heartbeat just like a live one, so a
-//! warm run's progress line keeps moving (issue #121). Concurrent misses of
-//! one key share a single engine request.
+//! counts *unique work items consumed*, not engine round trips: a cached
+//! decompile beats through the wrapped engine's heartbeat just like a
+//! live one, so a warm run's progress line keeps moving (issue #121),
+//! and a function already counted cold is not counted again warm (issue
+//! #239). Concurrent misses of one key share a single engine request.
 
 use crate::error::{EngineError, Result};
 use crate::model::{

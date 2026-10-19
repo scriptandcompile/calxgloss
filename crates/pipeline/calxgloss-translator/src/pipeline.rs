@@ -63,6 +63,12 @@ use crate::error::{Result, TranslatorError};
 use crate::retry;
 use crate::scan_job::{ScanJob, TypeInferenceLatch};
 
+/// The pass name the scan phase's heartbeat carries: one honest
+/// "n of m functions consumed" row for the whole group of eleven
+/// pre-batch evidence scans, instead of one row per scan that restarts
+/// with each scan (issue #239).
+const SCAN_PHASE: &str = "evidence scans";
+
 // ============================================================
 // TranslationPipeline — full end-to-end pipeline
 // ============================================================
@@ -1919,12 +1925,12 @@ impl TranslationPipeline {
 
     /// Build the owned handle one evidence scan runs as (issue #237):
     /// clones of everything the scan reads — the workspace, the batch's
-    /// shared read source as currently armed, the engine source the pass
-    /// heartbeat arms on, the progress-event channel, and the scan
-    /// phase's type-inference completion latch when one is armed (issue
+    /// shared read source as currently armed, and the scan phase's
+    /// type-inference completion latch when one is armed (issue
     /// #238) — so the scan borrows nothing from the batch and a caller
     /// can move the job onto a task. `None` when no workspace is
-    /// configured, which is every scan's skip condition.
+    /// configured, which is every scan's skip condition. The pass
+    /// heartbeat is the phase's, not the job's (issue #239).
     fn scan_job(&self, binary: &str) -> Option<ScanJob> {
         let workspace = self.workspace.as_deref()?;
         let type_inference = self
@@ -1936,8 +1942,6 @@ impl TranslationPipeline {
             binary,
             workspace,
             self.scan_source(),
-            self.kuna.clone(),
-            self.events.clone(),
             type_inference,
         ))
     }
@@ -1983,7 +1987,16 @@ impl TranslationPipeline {
     /// detection awaits it before composing its closure contracts, so
     /// the one real ordering edge between the scans is explicit data
     /// rather than this sequence's call order (issue #238).
+    ///
+    /// The phase also arms the engine heartbeat once around the whole
+    /// group, under the phase name, and disarms it when the group ends:
+    /// the dashboard shows one honest "n of m functions consumed" row
+    /// for the scan phase instead of eleven that restart with each
+    /// scan. Beats count unique functions consumed — a body pulled cold
+    /// from the engine and replayed warm by the read cache counts once —
+    /// so a warm run still shows life (issue #239, preserving #121).
     async fn run_prebatch_scans(&self, binary: &str) {
+        self.begin_scan_pass(binary, SCAN_PHASE);
         self.arm_type_inference_latch();
         self.ensure_type_database(binary).await;
         self.ensure_type_inference(binary).await;
@@ -1996,6 +2009,7 @@ impl TranslationPipeline {
         self.ensure_api_detection(binary).await;
         self.ensure_const_detection(binary).await;
         self.ensure_serialize_detection(binary).await;
+        self.end_scan_pass();
     }
 
     /// Recover the per-binary type database before a batch starts, unless one
@@ -2014,10 +2028,11 @@ impl TranslationPipeline {
     /// warning and return `false` — prompts without data structure context
     /// are degraded, not fatal, and the batch proceeds either way.
     ///
-    /// The scan itself — cached-document short-circuit, engine call under
-    /// the pass heartbeat, persist, and warn-and-continue degradation —
+    /// The scan itself — cached-document short-circuit, engine call,
+    /// persist, and warn-and-continue degradation —
     /// runs on the owned [`ScanJob`] this builds, so the same scan can be
-    /// handed to a task (issue #237).
+    /// handed to a task (issue #237). The pass heartbeat belongs to the
+    /// scan phase, not to this scan (issue #239).
     pub async fn ensure_type_database(&self, binary: &str) -> bool {
         let Some(job) = self.scan_job(binary) else {
             debug!(
@@ -5004,11 +5019,45 @@ mod tests {
         );
     }
 
-    /// The heartbeat contract survives the cache: a scan pass armed on the
-    /// pipeline's source still beats when the cached source's engine
-    /// serves a live miss.
+    /// Drain every `BatchProgress` beat seen since the last drain.
+    fn drain_beats(rx: &mut tokio::sync::broadcast::Receiver<ProgressEvent>) -> Vec<ProgressEvent> {
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .filter(|ev| matches!(ev, ProgressEvent::BatchProgress { .. }))
+            .collect()
+    }
+
+    /// Every beat must name the scan phase, not the scan that happened
+    /// to be running, and its index must sit inside the listing the
+    /// phase is consuming (issue #239).
+    fn assert_phase_beats(beats: &[ProgressEvent]) {
+        for beat in beats {
+            match beat {
+                ProgressEvent::BatchProgress {
+                    pass, index, total, ..
+                } => {
+                    assert_eq!(
+                        pass, "evidence scans",
+                        "the beat names the scan phase, not the scan: {beat}"
+                    );
+                    assert!(
+                        *total > 0 && index <= total,
+                        "the index never exceeds the listing size: {beat}"
+                    );
+                }
+                other => unreachable!("drain_beats keeps only beats, got {other:?}"),
+            }
+        }
+    }
+
+    /// The scan phase arms one heartbeat once around the whole group
+    /// under the phase name (issue #239): a cold batch's beats name
+    /// "evidence scans" and count unique functions consumed — later
+    /// scans replaying a body warm from the read cache never push the
+    /// index past the listing — and a warm batch replaying every body
+    /// from the cache still beats, so a cached binary shows life
+    /// (issue #121 preserved).
     #[tokio::test]
-    async fn pass_heartbeats_still_beat_on_live_cache_misses() {
+    async fn the_scan_phase_beats_under_the_phase_name_cold_and_warm() {
         let dir = TempDir::new().expect("temp workspace");
         let (pipeline, _) = cached_pipeline(dir.path());
         let events = TranslationEvents::new(64);
@@ -5016,9 +5065,8 @@ mod tests {
         let pipeline = pipeline.with_events(events);
         let verifier = calxgloss_verify::Verifier::new(dir.path()).expect("verifier over temp dir");
 
-        // The batch arms the cached source; the cache is cold, so the
-        // scans' reads go live through the cached source's inner engine —
-        // the armed passes must still beat.
+        // Cold batch: the first scan pays the engine and the rest replay
+        // warm through the cached source — one phase row either way.
         pipeline
             .batch_translate(
                 calxgloss_testfixtures::TARGET_FILE_NAME,
@@ -5029,14 +5077,35 @@ mod tests {
             )
             .await
             .expect("cold batch over the fixture engine");
-
-        let beats: Vec<ProgressEvent> = std::iter::from_fn(|| rx.try_recv().ok())
-            .filter(|ev| matches!(ev, ProgressEvent::BatchProgress { .. }))
-            .collect();
+        let cold = drain_beats(&mut rx);
         assert!(
-            !beats.is_empty(),
-            "a live miss through the cached source must still beat the pass heartbeat"
+            !cold.is_empty(),
+            "the cold scan phase must beat under the phase name"
         );
+        assert_phase_beats(&cold);
+
+        // Wipe the engine-result documents so the second batch re-runs
+        // all eleven scans — every body now arrives warm from the read
+        // cache, and a warm replay of an already-counted function counts
+        // once in the fresh phase's count.
+        std::fs::remove_dir_all(dir.path().join("re").join("analysis"))
+            .expect("clear engine-result documents");
+        pipeline
+            .batch_translate(
+                calxgloss_testfixtures::TARGET_FILE_NAME,
+                &[],
+                &retry::RetryConfig::default(),
+                &verifier,
+                None,
+            )
+            .await
+            .expect("warm batch replays from the cache");
+        let warm = drain_beats(&mut rx);
+        assert!(
+            !warm.is_empty(),
+            "a warm replay must still beat the phase heartbeat (issue #121)"
+        );
+        assert_phase_beats(&warm);
     }
 
     /// Cache trouble degrades to plain live reads: with the binary file

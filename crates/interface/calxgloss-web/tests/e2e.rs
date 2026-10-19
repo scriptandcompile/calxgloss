@@ -4103,10 +4103,11 @@ async fn test_pipeline_restart_hydrates_rows_without_live_classification_events(
     );
 }
 
-/// The pre-translation passes (call-graph extraction, evidence scans) beat
-/// per function while they walk their work list; `/api/pipeline` surfaces
-/// the latest beat as `activity` on the processing binary's row — and a
-/// pass with no per-item granularity beats with just its name.
+/// The pre-batch scan phase beats once around its whole group under the
+/// phase name (issue #239), and the call-graph pass beats per function
+/// while it walks its work list; `/api/pipeline` surfaces the latest
+/// beat as `activity` on the processing binary's row — and a phase beat
+/// with no per-item granularity beats with just its name.
 #[tokio::test]
 async fn test_pipeline_batch_progress_heartbeat_surfaces_on_row() {
     let fixture = TestFixture::new();
@@ -4124,7 +4125,7 @@ async fn test_pipeline_batch_progress_heartbeat_surfaces_on_row() {
     });
     events.emit(ProgressEvent::BatchProgress {
         binary: "LaunchPad.exe".into(),
-        pass: "type inference".into(),
+        pass: "evidence scans".into(),
         function: "FUN_1929282".into(),
         index: 1,
         total: 22143,
@@ -4148,15 +4149,16 @@ async fn test_pipeline_batch_progress_heartbeat_surfaces_on_row() {
         .iter()
         .find(|b| b["binary"].as_str().unwrap_or("") == "LaunchPad.exe")
         .expect("LaunchPad.exe row present");
-    assert_eq!(b["activity"]["pass"], "type inference");
+    assert_eq!(b["activity"]["pass"], "evidence scans");
     assert_eq!(b["activity"]["function"], "FUN_1929282");
     assert_eq!(b["activity"]["index"], 1);
     assert_eq!(b["activity"]["total"], 22143);
 
-    // A pass with no per-item granularity: only the name is honest.
+    // A phase beat before its first listing has no per-item
+    // granularity: only the name is honest.
     events.emit(ProgressEvent::BatchProgress {
         binary: "LaunchPad.exe".into(),
-        pass: "type database".into(),
+        pass: "evidence scans".into(),
         function: String::new(),
         index: 0,
         total: 0,
@@ -4170,7 +4172,7 @@ async fn test_pipeline_batch_progress_heartbeat_surfaces_on_row() {
         .iter()
         .find(|b| b["binary"].as_str().unwrap_or("") == "LaunchPad.exe")
         .expect("LaunchPad.exe row present");
-    assert_eq!(b["activity"]["pass"], "type database", "latest beat wins");
+    assert_eq!(b["activity"]["pass"], "evidence scans", "latest beat wins");
     assert!(
         b["activity"].get("function").is_none() && b["activity"].get("total").is_none(),
         "unknown position is omitted, never fabricated: {}",

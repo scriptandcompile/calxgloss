@@ -227,10 +227,12 @@ pub enum ProgressEvent {
     /// of the pre-translation passes (call-graph extraction, the evidence
     /// scans) that grind function-by-function before any unit event exists.
     ///
-    /// `pass` names the work ("type inference", "call graph", …) — a free
-    /// string, so a new evidence pass needs no new event variant. `index`
-    /// and `total` are the pass's own work list; `total` 0 means the pass
-    /// has no per-item granularity, and `function`/`index` stay empty.
+    /// `pass` names the work ("evidence scans", "call graph", …) — a free
+    /// string, so a new evidence pass needs no new event variant; the
+    /// pre-batch scan phase names the phase, not the scan in flight
+    /// (issue #239). `index` and `total` are the pass's own work list;
+    /// `total` 0 means the pass has no per-item granularity, and
+    /// `function`/`index` stay empty.
     BatchProgress {
         binary: BinaryIdentity,
         pass: String,

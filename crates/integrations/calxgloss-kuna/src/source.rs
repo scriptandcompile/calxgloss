@@ -39,17 +39,20 @@
 //! which takes effect on the next load — Kuna refuses to re-body a
 //! completed record.
 //!
-//! The pass heartbeat and the decompile budgets (issue #211): a scan pass
-//! arms the source with [`begin_pass`](KunaSource::begin_pass), and while
-//! armed every completed decompile beats a throttled
+//! The pass heartbeat and the decompile budgets (issue #211): a scan phase
+//! arms the source once around its whole group with
+//! [`begin_pass`](KunaSource::begin_pass), and while armed every *unique*
+//! function the phase consumes beats a throttled
 //! [`ProgressEvent::BatchProgress`] in a shape the web UI and logs already
-//! render, so progress semantics are identical whichever scan runs. Per-function instruction/time/memory budgets
+//! render — a body pulled cold from the engine and replayed warm by the
+//! read cache counts once, so the phase's "n of m" row never outruns the
+//! listing (issue #239). Per-function instruction/time/memory budgets
 //! ([`KunaBudget`]) are armed at load; a function that trips one fails with
 //! the named [`KunaError::DecompileBudgetExceeded`] instead of hanging or
 //! exhausting the box.
 
 use object::read::Object;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -302,10 +305,13 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Shared state for one analysis pass's progress heartbeat.
 ///
-/// A pass (`begin_pass`) arms the source: while armed, every completed
-/// decompile counts as one work item and beats a `BatchProgress` event,
-/// throttled to [`HEARTBEAT_INTERVAL`]. `list_functions` during the pass
-/// records the work list — its size is the total. Kuna decompiles by name,
+/// A pass (`begin_pass`) arms the source: while armed, every *unique*
+/// function the pass consumes counts as one work item and beats a
+/// `BatchProgress` event, throttled to [`HEARTBEAT_INTERVAL`] — a body
+/// pulled cold from the engine and replayed warm by the read cache
+/// counts once, so the index never exceeds the listing size (issue
+/// #239). `list_functions` during the pass records the work list — the
+/// first listing the pass sees is the total. Kuna decompiles by name,
 /// so the beat names the function the caller asked for directly —
 /// no address-to-name resolution is needed.
 #[derive(Debug)]
@@ -316,6 +322,9 @@ struct Heartbeat {
     total: AtomicUsize,
     index: AtomicUsize,
     last_beat: Mutex<Option<Instant>>,
+    /// Functions already counted this pass — the dedup set behind the
+    /// cold-and-warm count-once rule (issue #239).
+    seen: Mutex<HashSet<String>>,
 }
 
 impl Clone for KunaSource {
@@ -430,11 +439,12 @@ impl KunaSource {
 
     /// Arm the heartbeat for one analysis pass over the loaded program.
     ///
-    /// While armed, every completed decompile beats a
+    /// While armed, every unique function the pass consumes beats a
     /// [`ProgressEvent::BatchProgress`] naming the pass and the function it
     /// just pulled, in a shape the web UI and logs
     /// already render — progress semantics are identical whichever scan
-    /// runs.
+    /// runs. The pre-batch scan phase arms once around its whole group
+    /// under the phase name, not once per scan (issue #239).
     /// One pass at a time: a new `begin_pass` replaces any pass left armed
     /// by an error path that skipped [`end_pass`](Self::end_pass).
     pub fn begin_pass(&self, binary: &str, pass: &str, events: &TranslationEvents) {
@@ -445,6 +455,7 @@ impl KunaSource {
             total: AtomicUsize::new(0),
             index: AtomicUsize::new(0),
             last_beat: Mutex::new(None),
+            seen: Mutex::new(HashSet::new()),
         }));
     }
 
@@ -454,25 +465,36 @@ impl KunaSource {
     }
 
     /// Record the pass's work list: its size is the total the beats count
-    /// against. `list_functions` notes it automatically during an armed
+    /// against. The first listing the pass sees sets it — later scans
+    /// re-list the same program and must not move the denominator (issue
+    /// #239). `list_functions` notes it automatically during an armed
     /// pass; the read cache also notes the listing it served warm, so a
     /// cached run's "n of m" keeps moving (issue #121).
     pub fn note_worklist(&self, total: usize) {
         if let Some(hb) = self.active_heartbeat() {
-            hb.total.store(total, Ordering::Relaxed);
+            let _ = hb
+                .total
+                .compare_exchange(0, total, Ordering::Relaxed, Ordering::Relaxed);
         }
     }
 
-    /// Count one completed decompile and beat if due: always for the first
-    /// and last item, otherwise at most once per [`HEARTBEAT_INTERVAL`].
+    /// Count one unique function consumed by the pass and beat if due:
+    /// always for the first and last item, otherwise at most once per
+    /// [`HEARTBEAT_INTERVAL`].
     ///
     /// `decompile_function` ticks itself; the read cache calls this for a
     /// body served warm, which never reaches the engine but is still a work
-    /// item the pass consumed (issue #121).
+    /// item the pass consumed (issue #121). A name already counted this
+    /// pass — cold first and replayed warm, or the other way round —
+    /// counts once, so the index never exceeds the listing size (issue
+    /// #239).
     pub fn tick(&self, name: &str) {
         let Some(hb) = self.active_heartbeat() else {
             return;
         };
+        if !hb.seen.lock().expect("seen lock").insert(name.to_string()) {
+            return; // this function already consumed its slot this pass
+        }
         let index = hb.index.fetch_add(1, Ordering::Relaxed) + 1;
         let total = hb.total.load(Ordering::Relaxed);
         let now = Instant::now();
@@ -2207,22 +2229,30 @@ mod tests {
 
     // The pass heartbeat and the decompile budgets (issue #211).
 
+    /// The scan-phase heartbeat counts unique functions consumed, cold
+    /// and warm (issue #239): a body pulled from the engine beats once,
+    /// the same body replayed warm — what the read cache ticks — counts
+    /// nothing new, the first listing the phase sees sets the total, and
+    /// nothing beats outside the phase.
     #[tokio::test]
-    async fn heartbeat_beats_per_decompile_only_while_a_kuna_pass_is_active() {
-        // One beat per completed decompile inside the pass,
-        // resolved names, and nothing outside it.
+    async fn the_phase_heartbeat_beats_once_per_unique_function_cold_and_warm() {
         let (path, _) = fixture_bytes();
         let source = KunaSource::load(&path).expect("the fixture must load");
         let events = TranslationEvents::new(64);
         let mut rx = events.subscribe();
         let names = calxgloss_testfixtures::EXPORT_NAMES;
 
-        source.begin_pass("fixture_target.dll", "type inference", &events);
+        source.begin_pass("fixture_target.dll", "evidence scans", &events);
         source.note_worklist(2);
+        // A later scan re-lists the same program: the denominator stays.
+        source.note_worklist(9);
         source
             .decompile_function(names[0])
             .await
             .expect("the first fixture export decompiles");
+        // The read cache replays the same body warm — the phase must not
+        // count it twice (issue #121's warm beat dedups into the cold one).
+        source.tick(names[0]);
         source
             .decompile_function(names[1])
             .await
@@ -2234,7 +2264,11 @@ mod tests {
             .expect("the third fixture export decompiles");
 
         let beats: Vec<ProgressEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
-        assert_eq!(beats.len(), 2, "one beat per decompile inside the pass");
+        assert_eq!(
+            beats.len(),
+            2,
+            "one beat per unique function consumed inside the phase"
+        );
         match &beats[0] {
             ProgressEvent::BatchProgress {
                 binary,
@@ -2244,10 +2278,10 @@ mod tests {
                 total,
             } => {
                 assert_eq!(binary.as_str(), "fixture_target.dll");
-                assert_eq!(pass, "type inference");
+                assert_eq!(pass, "evidence scans", "the beat names the scan phase");
                 assert_eq!(function, names[0]);
                 assert_eq!(*index, 1);
-                assert_eq!(*total, 2);
+                assert_eq!(*total, 2, "the first listing the phase sees is the total");
             }
             other => panic!("expected BatchProgress, got {other:?}"),
         }
@@ -2259,7 +2293,10 @@ mod tests {
                 ..
             } => {
                 assert_eq!(function, names[1]);
-                assert_eq!(*index, 2);
+                assert_eq!(
+                    *index, 2,
+                    "the warm replay of the first body did not advance the index"
+                );
                 assert_eq!(*total, 2);
             }
             other => panic!("expected BatchProgress, got {other:?}"),
