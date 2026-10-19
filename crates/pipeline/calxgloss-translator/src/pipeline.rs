@@ -1923,6 +1923,42 @@ impl TranslationPipeline {
         self.kuna.end_pass();
     }
 
+    /// Run the eleven pre-batch evidence scans, the shared scan-phase
+    /// preamble both batch entry points drive — the function-list path
+    /// ([`batch_translate`](Self::batch_translate)) and the call-graph path
+    /// ([`batch_translate_from_callgraph`](Self::batch_translate_from_callgraph))
+    /// — so neither keeps its own copy of the sequence and the CLI and web
+    /// paths cannot drift apart (issue #234).
+    ///
+    /// The order is today's order, kept fixed:
+    /// [`ensure_type_database`](Self::ensure_type_database),
+    /// [`ensure_type_inference`](Self::ensure_type_inference),
+    /// [`ensure_algorithm_recognition`](Self::ensure_algorithm_recognition),
+    /// [`ensure_memory_detection`](Self::ensure_memory_detection),
+    /// [`ensure_sync_detection`](Self::ensure_sync_detection),
+    /// [`ensure_callback_detection`](Self::ensure_callback_detection),
+    /// [`ensure_controlflow_detection`](Self::ensure_controlflow_detection),
+    /// [`ensure_string_context`](Self::ensure_string_context),
+    /// [`ensure_api_detection`](Self::ensure_api_detection),
+    /// [`ensure_const_detection`](Self::ensure_const_detection), then
+    /// [`ensure_serialize_detection`](Self::ensure_serialize_detection).
+    /// Each scan keeps its own shape: a cached document short-circuits it
+    /// before any engine read, and a failed scan or save only warns and
+    /// continues — one detector's failure never takes down the batch.
+    async fn run_prebatch_scans(&self, binary: &str) {
+        self.ensure_type_database(binary).await;
+        self.ensure_type_inference(binary).await;
+        self.ensure_algorithm_recognition(binary).await;
+        self.ensure_memory_detection(binary).await;
+        self.ensure_sync_detection(binary).await;
+        self.ensure_callback_detection(binary).await;
+        self.ensure_controlflow_detection(binary).await;
+        self.ensure_string_context(binary).await;
+        self.ensure_api_detection(binary).await;
+        self.ensure_const_detection(binary).await;
+        self.ensure_serialize_detection(binary).await;
+    }
+
     /// Recover the per-binary type database before a batch starts, unless one
     /// is already cached.
     ///
@@ -2704,18 +2740,8 @@ impl TranslationPipeline {
     /// result, algorithm recognition result, memory lifecycle result, and
     /// concurrency result are recovered (or loaded from their caches) so
     /// higher context tiers have data structure, parameter type, algorithm,
-    /// memory, and concurrency context — see
-    /// [`ensure_type_database`](Self::ensure_type_database),
-    /// [`ensure_type_inference`](Self::ensure_type_inference),
-    /// [`ensure_algorithm_recognition`](Self::ensure_algorithm_recognition),
-    /// [`ensure_memory_detection`](Self::ensure_memory_detection), and
-    /// [`ensure_sync_detection`](Self::ensure_sync_detection),
-    /// [`ensure_callback_detection`](Self::ensure_callback_detection),
-    /// [`ensure_controlflow_detection`](Self::ensure_controlflow_detection),
-    /// and [`ensure_string_context`](Self::ensure_string_context),
-    /// and [`ensure_api_detection`](Self::ensure_api_detection),
-    /// and [`ensure_const_detection`](Self::ensure_const_detection),
-    /// and [`ensure_serialize_detection`](Self::ensure_serialize_detection).
+    /// memory, and concurrency context — the eleven evidence scans run through
+    /// one shared preamble, [`run_prebatch_scans`](Self::run_prebatch_scans).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
     /// invoked **immediately after each function completes** (before moving on
@@ -2849,17 +2875,7 @@ impl TranslationPipeline {
 
         self.begin_cached_source(binary).await;
 
-        self.ensure_type_database(binary).await;
-        self.ensure_type_inference(binary).await;
-        self.ensure_algorithm_recognition(binary).await;
-        self.ensure_memory_detection(binary).await;
-        self.ensure_sync_detection(binary).await;
-        self.ensure_callback_detection(binary).await;
-        self.ensure_controlflow_detection(binary).await;
-        self.ensure_string_context(binary).await;
-        self.ensure_api_detection(binary).await;
-        self.ensure_const_detection(binary).await;
-        self.ensure_serialize_detection(binary).await;
+        self.run_prebatch_scans(binary).await;
 
         // W2.5: operator scope — skipped functions never enter the queue,
         // priority functions sort to the front.
@@ -3106,18 +3122,8 @@ impl TranslationPipeline {
     /// result, algorithm recognition result, memory lifecycle result, and
     /// concurrency result are recovered (or loaded from their caches) so
     /// higher context tiers have data structure, parameter type, algorithm,
-    /// memory, and concurrency context — see
-    /// [`ensure_type_database`](Self::ensure_type_database),
-    /// [`ensure_type_inference`](Self::ensure_type_inference),
-    /// [`ensure_algorithm_recognition`](Self::ensure_algorithm_recognition),
-    /// [`ensure_memory_detection`](Self::ensure_memory_detection), and
-    /// [`ensure_sync_detection`](Self::ensure_sync_detection),
-    /// [`ensure_callback_detection`](Self::ensure_callback_detection),
-    /// [`ensure_controlflow_detection`](Self::ensure_controlflow_detection),
-    /// and [`ensure_string_context`](Self::ensure_string_context),
-    /// and [`ensure_api_detection`](Self::ensure_api_detection),
-    /// and [`ensure_const_detection`](Self::ensure_const_detection),
-    /// and [`ensure_serialize_detection`](Self::ensure_serialize_detection).
+    /// memory, and concurrency context — the eleven evidence scans run through
+    /// one shared preamble, [`run_prebatch_scans`](Self::run_prebatch_scans).
     ///
     /// The caller can provide a callback (`on_function_completed`) that is
     /// invoked **immediately after each function completes** (before moving on
@@ -3203,17 +3209,7 @@ impl TranslationPipeline {
 
         self.begin_cached_source(&graph.binary).await;
 
-        self.ensure_type_database(&graph.binary).await;
-        self.ensure_type_inference(&graph.binary).await;
-        self.ensure_algorithm_recognition(&graph.binary).await;
-        self.ensure_memory_detection(&graph.binary).await;
-        self.ensure_sync_detection(&graph.binary).await;
-        self.ensure_callback_detection(&graph.binary).await;
-        self.ensure_controlflow_detection(&graph.binary).await;
-        self.ensure_string_context(&graph.binary).await;
-        self.ensure_api_detection(&graph.binary).await;
-        self.ensure_const_detection(&graph.binary).await;
-        self.ensure_serialize_detection(&graph.binary).await;
+        self.run_prebatch_scans(&graph.binary).await;
 
         // Build a priority-ordered plan
         let orderer = calxgloss_callgraph::TranslationOrderer::new();

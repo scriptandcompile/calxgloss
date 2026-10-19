@@ -32,6 +32,7 @@ Test counts in the archive are indicative targets, not exact requirements.
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
 | X6 | Per-binary pause — hold one target binary out of the queue and move on to the next | shared (`calxgloss-types` scope) + pipeline + interface (`calxgloss-cli`, `calxgloss-web`) | — | ✅ done | — | [#217](https://github.com/scriptandcompile/calxgloss/issues/217) |
+| X7 | Parallel pre-batch evidence scans — run the eleven scan passes concurrently over the shared read cache so a cold scan phase costs roughly the engine's time, not engine + Σ parse | pipeline (`calxgloss-translator`) + integrations (`calxgloss-kuna`, `calxgloss-decomp`) | — | 🔶 in progress | #237 next | [#234](https://github.com/scriptandcompile/calxgloss/issues/234) |
 | P12.5 | Branch-targeted baseline tests — Verification must pin every branch the CFG reveals, not just the happy path | evidence (`calxgloss-controlflow`) + pipeline (`calxgloss-testgen`, `calxgloss-translator`) | — | ⬜ not started | `/to-tickets` from #224 | [#224](https://github.com/scriptandcompile/calxgloss/issues/224) |
 | P12.6 | Calling-convention detection — classify cdecl/stdcall/fastcall/thiscall/x64 per function so the FFI binding and the ground truth behind it are right | evidence (`calxgloss-typeinfer`) + integrations (`calxgloss-decomp`, `calxgloss-kuna`, `calxgloss-prompts`) + pipeline (`calxgloss-translator`, `calxgloss-testgen`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #226 | [#226](https://github.com/scriptandcompile/calxgloss/issues/226) |
 | P13 | Global-state reference sets — per-function global read/write sets, produced once and consumed by prompt, sync gate, DAG order, and side-effect kinds | evidence (`calxgloss-globalstate` (new), `calxgloss-sync`, `calxgloss-callgraph`) + pipeline (`calxgloss-translator`) + shared (`calxgloss-types`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #225 | [#225](https://github.com/scriptandcompile/calxgloss/issues/225) |
@@ -61,6 +62,24 @@ pause-changed progress event, `paused` on the row data, and real Pause/Resume
 buttons on the dashboard rows. Spec: #217. Tickets: #218 (scope record),
 #219 (batch unit boundary), #220 (auto-run worklist), #221 (endpoints,
 event, row data), and #222 (dashboard rows) — all landed; the spec closed.
+
+## X7 — Parallel pre-batch evidence scans (pipeline + integrations)
+
+**Cold scan-phase wall time is full decompile time plus every scan's parse
+time, because the eleven pre-batch scans run strictly one after another and
+the engine thread idles while each later scan parses.** The scan read cache
+(ADR-0043) already makes the engine cost once-per-binary via its per-key
+`OnceCell` dedup, so the scans can run concurrently — a bounded window of
+four at a time — and engine time and parse CPU overlap for free. One
+ordering edge survives the fan-out: callback detection awaits type
+inference's completion latch before deepening its findings. The per-pass
+heartbeat becomes one phase-level heartbeat so the dashboard's "n of m" row
+stays honest while passes interleave. Persisted documents stay
+byte-identical to a sequential run. Spec: #234. Tickets: #236 (one shared
+preamble for both batch entry points — landed), #237 (each scan becomes an
+owned job), #238 (the completion latch), #239 (phase-scoped heartbeat),
+#240 (four scans at a time), and #241 (measure on a real target and close
+the track).
 
 ## P12.5 — Branch-targeted baseline tests (evidence + pipeline)
 
