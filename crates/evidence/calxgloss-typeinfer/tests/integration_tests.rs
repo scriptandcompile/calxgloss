@@ -24,7 +24,10 @@ use calxgloss_decomp::{
 use calxgloss_prompts::TypeInfo;
 use calxgloss_typeinfer::engine::{ScanSource, TypeInferEngine};
 use calxgloss_typeinfer::persist::TypeInferPersistor;
-use calxgloss_typeinfer::types::{Confidence, InferenceMethod, InferenceScope, InferredType};
+use calxgloss_typeinfer::types::{
+    CallingConvention, Confidence, InferenceMethod, InferenceScope, InferredConvention,
+    InferredType,
+};
 use calxgloss_typeinfer::write_back::WriteBack;
 use tempfile::TempDir;
 
@@ -67,6 +70,9 @@ struct FakeProgram {
     /// Which functions call which, keyed by the callee's address —
     /// what the caller→callee pass reads.
     callers: HashMap<u64, Vec<String>>,
+    /// The import names the program answers with — what the `@N`
+    /// convention reading runs over.
+    imports: Vec<Symbol>,
 }
 
 impl FakeProgram {
@@ -127,7 +133,7 @@ impl ScanSource for FakeProgram {
     }
 
     async fn imports(&self) -> Result<Vec<Symbol>> {
-        Ok(Vec::new())
+        Ok(self.imports.clone())
     }
 
     async fn exports(&self) -> Result<Vec<Symbol>> {
@@ -450,6 +456,85 @@ async fn mangling_records_survive_the_persistence_round_trip() {
     let rendered = TypeInfo::from(params[1]);
     assert_eq!(rendered.name, "param_2");
     assert_eq!(rendered.description, "int (via mangling, confidence 80)");
+}
+
+#[tokio::test]
+async fn convention_records_survive_the_persistence_round_trip() {
+    // Both name-borne convention channels — the mangled letter on a
+    // listing symbol and the `@N` decoration on an import — must reach
+    // disk under the new `convention` tag and read back like any other
+    // record, beside the mangling readings of the same symbol.
+    let mut program = FakeProgram::empty();
+    program.listing = vec![summary("?setup@Widget@@QAEXH@Z")];
+    program.bodies.insert(
+        "?setup@Widget@@QAEXH@Z".into(),
+        function(
+            "?setup@Widget@@QAEXH@Z",
+            "undefined ?setup@Widget@@QAEXH@Z(undefined8 param_1,undefined8 param_2)",
+            "  return;\n",
+        ),
+    );
+    program.imports = vec![Symbol {
+        name: "CreateFileA@28".into(),
+        address: 0x1800_0100,
+        imported: true,
+    }];
+
+    let workspace = TempDir::new().unwrap();
+    let result = TypeInferEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = TypeInferPersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let member = loaded
+        .for_function("?setup@Widget@@QAEXH@Z")
+        .find(|inference| matches!(inference, InferredType::Convention(_)))
+        .expect("the member's convention reading");
+    let InferredType::Convention(record) = member else {
+        unreachable!("the convention reading is a convention record");
+    };
+    assert_eq!(record.convention, CallingConvention::Thiscall);
+    assert_eq!(record.method, InferenceMethod::MangledConvention);
+    assert_eq!(record.confidence, Confidence::new(90));
+    assert_eq!(record.evidence, "?setup@Widget@@QAEXH@Z");
+
+    // The this-pointer reading for the same symbol rode along: the
+    // pair together says the function is a method.
+    assert!(
+        loaded
+            .for_function("?setup@Widget@@QAEXH@Z")
+            .any(|inference| matches!(inference, InferredType::Param(_)))
+    );
+
+    let import = loaded
+        .inferences
+        .iter()
+        .find(|inference| inference.function() == "CreateFileA@28")
+        .expect("the import's decoration reading");
+    let InferredType::Convention(record) = import else {
+        unreachable!("the decoration reading is a convention record");
+    };
+    assert_eq!(
+        record,
+        &InferredConvention {
+            function: "CreateFileA@28".into(),
+            convention: CallingConvention::Stdcall,
+            method: InferenceMethod::ImportDecoration,
+            confidence: Confidence::new(85),
+            evidence: "CreateFileA@28".into(),
+        }
+    );
+
+    // And renders into the prompt type-info section like any reading.
+    let rendered = TypeInfo::from(import);
+    assert_eq!(rendered.name, "convention");
+    assert_eq!(
+        rendered.description,
+        "stdcall (via import_decoration, confidence 85)"
+    );
 }
 
 #[tokio::test]

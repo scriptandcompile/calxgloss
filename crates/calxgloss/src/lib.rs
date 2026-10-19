@@ -272,8 +272,8 @@ pub use calxgloss_typeinfer::param_size::ParameterSizeDetector;
 pub use calxgloss_typeinfer::persist::TypeInferPersistor;
 pub use calxgloss_typeinfer::this_ptr::ThisPointerDetector;
 pub use calxgloss_typeinfer::types::{
-    InferenceMethod, InferenceScope, InferredCallType, InferredLocalType, InferredParamType,
-    InferredType, TypeInferenceResult,
+    CallingConvention, InferenceMethod, InferenceScope, InferredCallType, InferredConvention,
+    InferredLocalType, InferredParamType, InferredType, TypeInferenceResult,
 };
 
 // ============================================================

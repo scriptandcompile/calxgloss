@@ -9,8 +9,9 @@
 //! scan can still carry several records for one target — `strlen`'s
 //! argument stands read by the size detector and by the known-signature
 //! engine at once. Conflict resolution collapses each target — a
-//! parameter, a local variable, a call-site argument, or a function's
-//! return value — to its single strongest record: the highest confidence
+//! parameter, a local variable, a call-site argument, a function's
+//! return value, or a function's calling convention — to its single
+//! strongest record: the highest confidence
 //! wins, a tie keeps the record the scan showed first, and the survivor
 //! stands where its target first appeared, so the list keeps scan order
 //! and two scans of the same program diff cleanly.
@@ -22,13 +23,14 @@ use std::collections::HashMap;
 use crate::types::InferredType;
 
 /// What a set of competing inferences is keyed on: one parameter, one
-/// local variable, one call-site argument, or one function's return.
+/// local variable, one call-site argument, one function's return, or one
+/// function's calling convention.
 ///
-/// The four record kinds identify their targets differently — a
+/// The five record kinds identify their targets differently — a
 /// parameter by position, a local by its decompiled name, a call-site
-/// argument by the callee and position, a return by the function alone —
-/// so one key shape names all four and records of different kinds never
-/// collide.
+/// argument by the callee and position, a return and a convention by the
+/// function alone — so one key shape names all five and records of
+/// different kinds never collide.
 #[derive(Debug, PartialEq, Eq, Hash)]
 enum Target {
     /// One parameter of one function, by position.
@@ -50,6 +52,9 @@ enum Target {
     /// One function's return value — the function alone, since a
     /// function has exactly one return type.
     Return { function: String },
+    /// One function's calling convention — the function alone, since a
+    /// function is called one way.
+    Convention { function: String },
 }
 
 impl Target {
@@ -70,6 +75,9 @@ impl Target {
                 arg_index: record.arg_index,
             },
             InferredType::Return(record) => Target::Return {
+                function: record.function.clone(),
+            },
+            InferredType::Convention(record) => Target::Convention {
                 function: record.function.clone(),
             },
         }
@@ -111,8 +119,8 @@ pub fn resolve_conflicts(inferences: Vec<InferredType>) -> Vec<InferredType> {
 mod tests {
     use super::*;
     use crate::types::{
-        Confidence, InferenceMethod, InferenceScope, InferredCallType, InferredLocalType,
-        InferredParamType, InferredReturnType,
+        CallingConvention, Confidence, InferenceMethod, InferenceScope, InferredCallType,
+        InferredConvention, InferredLocalType, InferredParamType, InferredReturnType,
     };
 
     fn param(
@@ -174,6 +182,16 @@ mod tests {
             scope: InferenceScope::Function,
             confidence: Confidence::new(confidence),
             evidence: format!("local_8 = {function}();"),
+        })
+    }
+
+    fn convention(function: &str, convention: CallingConvention, confidence: u8) -> InferredType {
+        InferredType::Convention(InferredConvention {
+            function: function.into(),
+            convention,
+            method: InferenceMethod::MangledConvention,
+            confidence: Confidence::new(confidence),
+            evidence: function.into(),
         })
     }
 
@@ -350,6 +368,54 @@ mod tests {
         let winners = resolve_conflicts(vec![
             ret("FUN_180051c00", "char *", 60),
             ret("FUN_18004b210", "void *", 60),
+        ]);
+        assert_eq!(winners.len(), 2);
+    }
+
+    #[test]
+    fn one_function_never_keeps_two_conventions() {
+        // A mangled letter says thiscall at 90 and an `@N`-style reading
+        // says stdcall at 85 for one symbol — the stronger spelling wins.
+        let winners = resolve_conflicts(vec![
+            convention("CreateFileA@28", CallingConvention::Stdcall, 85),
+            convention("CreateFileA@28", CallingConvention::Thiscall, 90),
+        ]);
+        assert_eq!(winners.len(), 1);
+        let InferredType::Convention(record) = &winners[0] else {
+            unreachable!("convention records stay convention records");
+        };
+        assert_eq!(record.convention, CallingConvention::Thiscall);
+    }
+
+    #[test]
+    fn a_convention_tie_keeps_the_reading_the_scan_showed_first() {
+        let winners = resolve_conflicts(vec![
+            convention("?paint@Widget@@QAEXXZ", CallingConvention::Thiscall, 90),
+            convention("?paint@Widget@@QAEXXZ", CallingConvention::Cdecl, 90),
+        ]);
+        assert_eq!(winners.len(), 1);
+        let InferredType::Convention(record) = &winners[0] else {
+            unreachable!("convention records stay convention records");
+        };
+        assert_eq!(record.convention, CallingConvention::Thiscall);
+    }
+
+    #[test]
+    fn conventions_of_two_functions_do_not_conflict() {
+        let winners = resolve_conflicts(vec![
+            convention("?paint@Widget@@QAEXXZ", CallingConvention::Thiscall, 90),
+            convention("CreateFileA@28", CallingConvention::Stdcall, 85),
+        ]);
+        assert_eq!(winners.len(), 2);
+    }
+
+    #[test]
+    fn a_convention_does_not_compete_with_the_same_function_s_return() {
+        // Keyed differently on purpose: a function's return reading and its
+        // convention reading are separate facts and both survive.
+        let winners = resolve_conflicts(vec![
+            ret("?paint@Widget@@QAEXXZ", "char *", 60),
+            convention("?paint@Widget@@QAEXXZ", CallingConvention::Thiscall, 90),
         ]);
         assert_eq!(winners.len(), 2);
     }

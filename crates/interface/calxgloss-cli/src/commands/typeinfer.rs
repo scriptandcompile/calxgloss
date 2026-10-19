@@ -2,7 +2,8 @@
 //!
 //! Runs the inference detectors — C++ this-pointer detection,
 //! parameter-size detection, known-type propagation, cross-function
-//! propagation, assignment chains, caller return usage, and name mangling —
+//! propagation, assignment chains, caller return usage, name mangling,
+//! and name-borne calling conventions —
 //! against the loaded program and saves the result to
 //! `re/analysis/typeinfer/{binary}.json` in the workspace. Batch translation
 //! runs the same scan before its first batch when no result is cached;
@@ -120,16 +121,7 @@ fn print_type_inference_report(result: &TypeInferenceResult, path: &Path) {
     println!();
 
     // Inferences, broken down by the record kind the union carries.
-    let kind_breakdown: Vec<String> = [
-        ("param", count_kind(result, InferenceKind::Param)),
-        ("local", count_kind(result, InferenceKind::Local)),
-        ("call_site", count_kind(result, InferenceKind::CallSite)),
-        ("return", count_kind(result, InferenceKind::Return)),
-    ]
-    .into_iter()
-    .filter(|(_, count)| *count > 0)
-    .map(|(kind, count)| format!("{kind} {count}"))
-    .collect();
+    let kind_breakdown: Vec<String> = kind_breakdown(result);
     println_content(format!(
         "  {}{:<5}{}",
         white_bold("Inferences:"),
@@ -138,33 +130,7 @@ fn print_type_inference_report(result: &TypeInferenceResult, path: &Path) {
     ));
 
     // And by the detector method that produced each one.
-    let method_breakdown: Vec<String> = [
-        InferenceMethod::VtableCall,
-        InferenceMethod::FirstParamUsage,
-        InferenceMethod::ComInterface,
-        InferenceMethod::StringFunction,
-        InferenceMethod::IntegerBitPattern,
-        InferenceMethod::PointerArithmetic,
-        InferenceMethod::KnownSignature,
-        InferenceMethod::CrossFunction,
-        InferenceMethod::AssignmentChain,
-        InferenceMethod::ReturnUsage,
-        InferenceMethod::Mangling,
-    ]
-    .into_iter()
-    .map(|method| {
-        (
-            method,
-            result
-                .inferences
-                .iter()
-                .filter(|inference| inference_method(inference) == method)
-                .count(),
-        )
-    })
-    .filter(|(_, count)| *count > 0)
-    .map(|(method, count)| format!("{method} {count}"))
-    .collect();
+    let method_breakdown: Vec<String> = method_breakdown(result);
     print_method_breakdown(&method_breakdown);
 
     let top_confidence = result.inferences.iter().map(|i| i.confidence()).max();
@@ -320,13 +286,14 @@ fn print_method_breakdown(items: &[String]) {
     println_content(&line);
 }
 
-/// Which record kind an inference is — the union's four variants.
+/// Which record kind an inference is — the union's five variants.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum InferenceKind {
     Param,
     Local,
     CallSite,
     Return,
+    Convention,
 }
 
 /// How many inferences of one record kind the result carries.
@@ -341,9 +308,62 @@ fn count_kind(result: &TypeInferenceResult, kind: InferenceKind) -> usize {
                     | (InferenceKind::Local, InferredType::Local(_))
                     | (InferenceKind::CallSite, InferredType::CallSite(_))
                     | (InferenceKind::Return, InferredType::Return(_))
+                    | (InferenceKind::Convention, InferredType::Convention(_))
             )
         })
         .count()
+}
+
+/// The kind breakdown the report prints: every record kind carrying at
+/// least one inference, with its count, in report order.
+fn kind_breakdown(result: &TypeInferenceResult) -> Vec<String> {
+    [
+        ("param", count_kind(result, InferenceKind::Param)),
+        ("local", count_kind(result, InferenceKind::Local)),
+        ("call_site", count_kind(result, InferenceKind::CallSite)),
+        ("return", count_kind(result, InferenceKind::Return)),
+        ("convention", count_kind(result, InferenceKind::Convention)),
+    ]
+    .into_iter()
+    .filter(|(_, count)| *count > 0)
+    .map(|(kind, count)| format!("{kind} {count}"))
+    .collect()
+}
+
+/// The method breakdown the report prints: every detector method that
+/// produced at least one inference, with its count. The list names
+/// every variant of the closed method set — a new detector whose method
+/// is missing here is what the completeness test catches.
+fn method_breakdown(result: &TypeInferenceResult) -> Vec<String> {
+    [
+        InferenceMethod::VtableCall,
+        InferenceMethod::FirstParamUsage,
+        InferenceMethod::ComInterface,
+        InferenceMethod::StringFunction,
+        InferenceMethod::IntegerBitPattern,
+        InferenceMethod::PointerArithmetic,
+        InferenceMethod::KnownSignature,
+        InferenceMethod::CrossFunction,
+        InferenceMethod::AssignmentChain,
+        InferenceMethod::ReturnUsage,
+        InferenceMethod::Mangling,
+        InferenceMethod::MangledConvention,
+        InferenceMethod::ImportDecoration,
+    ]
+    .into_iter()
+    .map(|method| {
+        (
+            method,
+            result
+                .inferences
+                .iter()
+                .filter(|inference| inference_method(inference) == method)
+                .count(),
+        )
+    })
+    .filter(|(_, count)| *count > 0)
+    .map(|(method, count)| format!("{method} {count}"))
+    .collect()
 }
 
 /// The detector method behind an inference — the union carries the
@@ -354,12 +374,14 @@ fn inference_method(inference: &InferredType) -> InferenceMethod {
         InferredType::Local(record) => record.method,
         InferredType::CallSite(record) => record.method,
         InferredType::Return(record) => record.method,
+        InferredType::Convention(record) => record.method,
     }
 }
 
 /// The name of what an inference types: a parameter (its decompiled name,
 /// falling back to its position), a local variable, a call-site argument
-/// spelled as the site that produced it, or a function's return.
+/// spelled as the site that produced it, a function's return, or a
+/// function's calling convention.
 fn inference_target(inference: &InferredType) -> String {
     match inference {
         InferredType::Param(record) => record
@@ -372,6 +394,7 @@ fn inference_target(inference: &InferredType) -> String {
             None => format!("{} arg {}", record.callee, record.arg_index + 1),
         },
         InferredType::Return(_) => "return".to_string(),
+        InferredType::Convention(_) => "convention".to_string(),
     }
 }
 
@@ -394,5 +417,174 @@ fn print_hidden_count(noun: &str, total: usize) {
             dim("●"),
             total - DETAIL_LIMIT
         ));
+    }
+}
+
+// ============================================================
+// Tests
+// ============================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use calxgloss_typeinfer::types::{
+        CallingConvention, InferenceScope, InferredCallType, InferredConvention, InferredLocalType,
+        InferredParamType, InferredReturnType,
+    };
+
+    fn param(function: &str, method: InferenceMethod) -> InferredType {
+        InferredType::Param(InferredParamType {
+            function: function.into(),
+            param_index: 0,
+            param_name: Some("param_1".into()),
+            inferred_type: "Widget *".into(),
+            method,
+            scope: InferenceScope::Function,
+            confidence: Confidence::new(80),
+            evidence: "evidence".into(),
+        })
+    }
+
+    fn result_with(inferences: Vec<InferredType>) -> TypeInferenceResult {
+        TypeInferenceResult {
+            metadata: calxgloss_typeinfer::types::ScanMetadata::new("eqmain.dll"),
+            inferences,
+        }
+    }
+
+    #[test]
+    fn the_kind_breakdown_names_every_record_kind_the_union_carries() {
+        let result = result_with(vec![
+            param("FUN_18003ab00", InferenceMethod::VtableCall),
+            InferredType::Local(InferredLocalType {
+                function: "FUN_18003ab00".into(),
+                variable_name: "local_8".into(),
+                inferred_type: "char *".into(),
+                method: InferenceMethod::AssignmentChain,
+                scope: InferenceScope::Function,
+                confidence: Confidence::new(60),
+                evidence: "local_8 = param_1;".into(),
+            }),
+            InferredType::CallSite(InferredCallType {
+                function: "FUN_1800412a0".into(),
+                callee: "CloseHandle".into(),
+                arg_index: 0,
+                arg_name: Some("param_2".into()),
+                inferred_type: "void *".into(),
+                method: InferenceMethod::KnownSignature,
+                scope: InferenceScope::Program,
+                confidence: Confidence::new(75),
+                evidence: "CloseHandle(param_2);".into(),
+            }),
+            InferredType::Return(InferredReturnType {
+                function: "FUN_180051c00".into(),
+                inferred_type: "char *".into(),
+                method: InferenceMethod::ReturnUsage,
+                scope: InferenceScope::Function,
+                confidence: Confidence::new(60),
+                evidence: "local_8 = FUN_180051c00();".into(),
+            }),
+            InferredType::Convention(InferredConvention {
+                function: "?paint@Widget@@QAEXXZ".into(),
+                convention: CallingConvention::Thiscall,
+                method: InferenceMethod::MangledConvention,
+                confidence: Confidence::new(90),
+                evidence: "?paint@Widget@@QAEXXZ".into(),
+            }),
+        ]);
+        assert_eq!(
+            kind_breakdown(&result),
+            [
+                "param 1",
+                "local 1",
+                "call_site 1",
+                "return 1",
+                "convention 1",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_method_breakdown_names_every_detector_method_in_the_closed_set() {
+        // One record per method of the closed set: the breakdown must
+        // account for every channel, so a new method missing from the
+        // report list fails here rather than going unreported.
+        let result = result_with(vec![
+            param("FUN_1", InferenceMethod::VtableCall),
+            param("FUN_2", InferenceMethod::FirstParamUsage),
+            param("FUN_3", InferenceMethod::ComInterface),
+            param("FUN_4", InferenceMethod::StringFunction),
+            param("FUN_5", InferenceMethod::IntegerBitPattern),
+            param("FUN_6", InferenceMethod::PointerArithmetic),
+            param("FUN_7", InferenceMethod::KnownSignature),
+            param("FUN_8", InferenceMethod::CrossFunction),
+            InferredType::Local(InferredLocalType {
+                function: "FUN_9".into(),
+                variable_name: "local_8".into(),
+                inferred_type: "char *".into(),
+                method: InferenceMethod::AssignmentChain,
+                scope: InferenceScope::Function,
+                confidence: Confidence::new(60),
+                evidence: "local_8 = param_1;".into(),
+            }),
+            InferredType::Return(InferredReturnType {
+                function: "FUN_10".into(),
+                inferred_type: "char *".into(),
+                method: InferenceMethod::ReturnUsage,
+                scope: InferenceScope::Function,
+                confidence: Confidence::new(60),
+                evidence: "local_8 = FUN_10();".into(),
+            }),
+            param("FUN_11", InferenceMethod::Mangling),
+            InferredType::Convention(InferredConvention {
+                function: "?paint@Widget@@QAEXXZ".into(),
+                convention: CallingConvention::Thiscall,
+                method: InferenceMethod::MangledConvention,
+                confidence: Confidence::new(90),
+                evidence: "?paint@Widget@@QAEXXZ".into(),
+            }),
+            InferredType::Convention(InferredConvention {
+                function: "CreateFileA@28".into(),
+                convention: CallingConvention::Stdcall,
+                method: InferenceMethod::ImportDecoration,
+                confidence: Confidence::new(85),
+                evidence: "CreateFileA@28".into(),
+            }),
+        ]);
+        let breakdown = method_breakdown(&result);
+        for method in [
+            InferenceMethod::VtableCall,
+            InferenceMethod::FirstParamUsage,
+            InferenceMethod::ComInterface,
+            InferenceMethod::StringFunction,
+            InferenceMethod::IntegerBitPattern,
+            InferenceMethod::PointerArithmetic,
+            InferenceMethod::KnownSignature,
+            InferenceMethod::CrossFunction,
+            InferenceMethod::AssignmentChain,
+            InferenceMethod::ReturnUsage,
+            InferenceMethod::Mangling,
+            InferenceMethod::MangledConvention,
+            InferenceMethod::ImportDecoration,
+        ] {
+            assert!(
+                breakdown.contains(&format!("{method} 1")),
+                "{method} missing from {breakdown:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_convention_record_reports_as_convention() {
+        let record = InferredType::Convention(InferredConvention {
+            function: "CreateFileA@28".into(),
+            convention: CallingConvention::Stdcall,
+            method: InferenceMethod::ImportDecoration,
+            confidence: Confidence::new(85),
+            evidence: "CreateFileA@28".into(),
+        });
+        assert_eq!(inference_target(&record), "convention");
+        assert_eq!(inference_method(&record), InferenceMethod::ImportDecoration);
+        assert_eq!(record.inferred_type(), "stdcall");
     }
 }

@@ -1,8 +1,9 @@
 //! Type inference orchestration.
 //!
 //! [`TypeInferEngine`] runs the inline detectors — this-pointer
-//! detection, parameter-size detection, known-type propagation, and the
-//! name-borne readings of the mangling detector — over every function of
+//! detection, parameter-size detection, known-type propagation, the
+//! name-borne readings of the mangling detector, and the convention
+//! readings of the convention detector — over every function of
 //! one loaded program, then runs the post-inline passes over the
 //! same bodies: the assignment-chain pass types each
 //! function's locals from its surviving parameter readings and known
@@ -25,6 +26,7 @@
 use std::collections::HashMap;
 
 use crate::confidence::resolve_conflicts;
+use crate::convention::ConventionDetector;
 use crate::cross_function::{CalleeParams, CrossFunctionPropagator};
 use crate::error::Result;
 use crate::known_type::KnownTypePropagationEngine;
@@ -66,6 +68,7 @@ pub struct TypeInferEngine<S = KunaSource> {
     cross: CrossFunctionPropagator,
     return_usage: ReturnUsageDetector,
     mangling: ManglingDetector,
+    convention: ConventionDetector,
 }
 
 impl TypeInferEngine<KunaSource> {
@@ -80,6 +83,7 @@ impl TypeInferEngine<KunaSource> {
             cross: CrossFunctionPropagator::new(),
             return_usage: ReturnUsageDetector::new(),
             mangling: ManglingDetector::new(),
+            convention: ConventionDetector::new(),
         }
     }
 }
@@ -96,6 +100,7 @@ impl<S> TypeInferEngine<S> {
             cross: CrossFunctionPropagator::new(),
             return_usage: ReturnUsageDetector::new(),
             mangling: ManglingDetector::new(),
+            convention: ConventionDetector::new(),
         }
     }
 
@@ -107,10 +112,12 @@ impl<S> TypeInferEngine<S> {
     /// `binary` names the program the scan reads (e.g. `eqmain.dll`) and
     /// becomes the key a persisted result is filed under. The inferences
     /// follow the function listing — function by function, and within one
-    /// function the name-borne readings of its listing symbol, then the
-    /// this-pointer readings, then the size readings, then
+    /// function the name-borne readings of its listing symbol (its
+    /// mangling contract, then the convention its letter spells), then
+    /// the this-pointer readings, then the size readings, then
     /// the known-signature readings, then the readings carried in names
-    /// inside the body — with the local records and the
+    /// inside the body — with the import names' `@N` convention readings
+    /// after the listing, and the local records and the
     /// cross-function records appended after the inline ones, in listing
     /// order, so two scans of the same program diff cleanly.
     ///
@@ -167,6 +174,13 @@ impl<S> TypeInferEngine<S> {
             // listing name decodes without any body, so the reading
             // stands even when the decompile below fails.
             inferences.extend(self.mangling.detect_from_listing(&function.name));
+            // The convention the same symbol's letter spells, keyed by
+            // the same name: for a mangled member it lands beside the
+            // implicit `this` parameter record the mangling reading just
+            // pushed, together saying the function is a method.
+            if let Some(reading) = self.convention.from_listing_name(&function.name) {
+                inferences.push(reading);
+            }
 
             let decompiled = match self.source.decompile(&function.name).await {
                 Ok(decompiled) => decompiled,
@@ -206,6 +220,27 @@ impl<S> TypeInferEngine<S> {
             // list, and qualified calls whose callee spells one.
             inferences.extend(self.mangling.detect_from_body(&decompiled));
             bodies.push(decompiled);
+        }
+
+        // The convention an import name's `@N` decoration spells. Import
+        // names are not in the function listing, so this read runs after
+        // the loop; the readings join the inline set and compete in the
+        // same resolution. A failure to list imports costs only these
+        // readings — the scan keeps whatever the names already showed.
+        match self.source.imports().await {
+            Ok(imports) => {
+                for import in &imports {
+                    if let Some(reading) = self.convention.from_import_name(&import.name) {
+                        inferences.push(reading);
+                    }
+                }
+            }
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "Skipping @N convention readings: import listing failed"
+                );
+            }
         }
 
         // The detectors read each body independently, so one parameter can
@@ -397,7 +432,8 @@ fn surviving_param_readings(inferences: &[InferredType]) -> CalleeParams<'_> {
 mod tests {
     use super::*;
     use crate::types::{
-        Confidence, InferenceMethod, InferenceScope, InferredCallType, InferredLocalType,
+        CallingConvention, Confidence, InferenceMethod, InferenceScope, InferredCallType,
+        InferredConvention, InferredLocalType,
     };
     use calxgloss_decomp::{
         DataItem, DataTypeEntry, DecompiledFunction, EngineError, EnumDefinition, FunctionSummary,
@@ -446,6 +482,9 @@ mod tests {
         /// Which functions call which, keyed by the callee's address —
         /// what the caller→callee pass reads.
         callers: HashMap<u64, Vec<String>>,
+        /// The import names the program answers with — what the `@N`
+        /// convention reading runs over.
+        imports: Vec<Symbol>,
         fail_decompiles: Vec<String>,
         fail_listing: bool,
         stats: Arc<Stats>,
@@ -457,6 +496,7 @@ mod tests {
                 listing: Vec::new(),
                 bodies: HashMap::new(),
                 callers: HashMap::new(),
+                imports: Vec::new(),
                 fail_decompiles: Vec::new(),
                 fail_listing: false,
                 stats: Arc::new(Stats::default()),
@@ -532,7 +572,7 @@ mod tests {
         }
 
         async fn imports(&self) -> Result<Vec<Symbol>> {
-            Ok(Vec::new())
+            Ok(self.imports.clone())
         }
 
         async fn exports(&self) -> Result<Vec<Symbol>> {
@@ -1705,5 +1745,81 @@ mod tests {
         let result = scan(program).await;
 
         assert_eq!(mangling_count(&result), 0);
+    }
+
+    // ---- calling-convention analysis ----
+
+    /// The convention record for one function, for asserting against.
+    fn convention_finding<'a>(
+        result: &'a TypeInferenceResult,
+        function: &str,
+    ) -> &'a InferredConvention {
+        result
+            .inferences
+            .iter()
+            .find_map(|inference| match inference {
+                InferredType::Convention(record) if record.function == function => Some(record),
+                _ => None,
+            })
+            .expect("a convention record for the function")
+    }
+
+    #[tokio::test]
+    async fn a_mangled_listing_symbol_carries_its_convention_beside_its_this_pointer() {
+        // `char * Widget::copy(char *)` as an old-EVC thiscall member:
+        // the `G` letter reads the convention while the same symbol's
+        // member shape reads the implicit `this` — the pair together
+        // says the function is a method.
+        let result = scan(mangling_program()).await;
+
+        let record = convention_finding(&result, "?copy@Widget@@QAGPADPAD@Z");
+        assert_eq!(record.convention, CallingConvention::Thiscall);
+        assert_eq!(record.method, InferenceMethod::MangledConvention);
+        assert_eq!(record.confidence, Confidence::new(90));
+        assert_eq!(record.evidence, "?copy@Widget@@QAGPADPAD@Z");
+
+        // The this-pointer reading for the same symbol is still there.
+        let this_ptr = finding(
+            &result,
+            "?copy@Widget@@QAGPADPAD@Z",
+            InferenceMethod::Mangling,
+            0,
+        );
+        assert_eq!(this_ptr.inferred_type(), "Widget *");
+    }
+
+    #[tokio::test]
+    async fn a_decorated_import_reads_stdcall_and_a_plain_one_reads_nothing() {
+        // `CreateFileA@28` declares its argument bytes, so the import is
+        // called stdcall; a plain `CloseHandle` import spells no
+        // convention and yields no record rather than a guess.
+        let mut program = FakeProgram::empty();
+        program.imports = vec![
+            Symbol {
+                name: "CreateFileA@28".into(),
+                address: 0x1800_0100,
+                imported: true,
+            },
+            Symbol {
+                name: "CloseHandle".into(),
+                address: 0x1800_0108,
+                imported: true,
+            },
+        ];
+        let result = scan(program).await;
+
+        let record = convention_finding(&result, "CreateFileA@28");
+        assert_eq!(record.convention, CallingConvention::Stdcall);
+        assert_eq!(record.method, InferenceMethod::ImportDecoration);
+        assert_eq!(record.confidence, Confidence::new(85));
+        assert_eq!(record.evidence, "CreateFileA@28");
+
+        assert!(
+            result
+                .inferences
+                .iter()
+                .all(|inference| inference.function() != "CloseHandle"),
+            "an undecorated import carries no convention reading"
+        );
     }
 }

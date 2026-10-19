@@ -10,7 +10,9 @@
 //!   inferred local variables and call-site arguments.
 //! - `InferredReturnType`: the reading a function's *callers* give its
 //!   return value.
-//! - `InferredType`: the union over the four record kinds — one inference
+//! - `CallingConvention`, `InferredConvention`: the closed set of calling
+//!   conventions and the reading a function's *name* gives its convention.
+//! - `InferredType`: the union over the five record kinds — one inference
 //!   wherever it lands.
 //! - `TypeInferenceResult`, `ScanMetadata`: the persisted per-binary result
 //!   and its scan provenance.
@@ -73,6 +75,14 @@ pub enum InferenceMethod {
     /// with a spelled parameter list, types the parameters (and where
     /// the name spells one, the return) it names.
     Mangling,
+    /// The convention letter inside an MSVC-mangled name says how the
+    /// function is called — `@QAG...` is thiscall, `@QA...` cdecl, and
+    /// so on — naming the convention the name itself declares.
+    MangledConvention,
+    /// An import decorated `@N` — the declared argument byte count — is
+    /// called stdcall: the callee pops its own arguments, which is what
+    /// the decoration can only mean for a Windows API import.
+    ImportDecoration,
 }
 
 impl InferenceMethod {
@@ -100,6 +110,8 @@ calxgloss_types::display_serde_label!(InferenceMethod {
     AssignmentChain => "assignment_chain",
     ReturnUsage => "return_usage",
     Mangling => "mangling",
+    MangledConvention => "mangled_convention",
+    ImportDecoration => "import_decoration",
 });
 
 // ============================================================
@@ -131,6 +143,88 @@ calxgloss_types::display_serde_label!(InferenceScope {
     Class => "class",
     Program => "program",
 });
+
+// ============================================================
+// Calling conventions
+// ============================================================
+
+/// How a function is called — who pushes the arguments, and who cleans the
+/// stack afterwards.
+///
+/// The closed set of conventions the detectors read on x86/x64 Windows
+/// binaries. The set is deliberately small: these are the conventions a
+/// PE32/PE32+ binary can actually carry, and anything outside it is a
+/// reading the detectors do not attempt. The FFI binding and the shim
+/// signatures the translator synthesizes hang off this choice, so a
+/// misread convention mis-translates every call to the function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallingConvention {
+    /// Caller pushes arguments right-to-left and pops them after the call;
+    /// the C default, and what an undecorated MSVC C++ name means.
+    Cdecl,
+    /// Callee pops its own arguments, leaving a fixed stack delta; the
+    /// Windows API convention, spelled `@N` on imports and `I` on mangled
+    /// names.
+    Stdcall,
+    /// First two integer-sized arguments go in registers, the rest on the
+    /// stack; the callee pops. No MSVC name letter spells it on the
+    /// binaries in scope — the body-evidence channels read it.
+    Fastcall,
+    /// The `this` pointer rides in `ECX`, the rest of the arguments go on
+    /// the stack, and the callee pops; the MSVC C++ member convention,
+    /// spelled `C`, `E`, or `G` on mangled names.
+    Thiscall,
+    /// The x64 convention: the first four integer/pointer arguments go in
+    /// `RCX`/`RDX`/`R8`/`R9`, the caller keeps the stack — the only
+    /// convention a PE32+ binary can carry.
+    MicrosoftX64,
+}
+
+calxgloss_types::display_serde_label!(CallingConvention {
+    Cdecl => "cdecl",
+    Stdcall => "stdcall",
+    Fastcall => "fastcall",
+    Thiscall => "thiscall",
+    MicrosoftX64 => "microsoft_x64",
+});
+
+impl CallingConvention {
+    /// The serde label as a static string, for callers that need `&str`
+    /// where `Display` would only allocate — the same words the macro
+    /// above writes and serde persists.
+    pub const fn label(&self) -> &'static str {
+        match self {
+            CallingConvention::Cdecl => "cdecl",
+            CallingConvention::Stdcall => "stdcall",
+            CallingConvention::Fastcall => "fastcall",
+            CallingConvention::Thiscall => "thiscall",
+            CallingConvention::MicrosoftX64 => "microsoft_x64",
+        }
+    }
+}
+
+/// One function's inferred calling convention, with the evidence behind it.
+///
+/// The fifth place an inference can land: the convention is not a type, so
+/// it rides its own record — the function, the convention, the channel that
+/// read it, its confidence, and the name text that carried the reading.
+/// Like the return record it is keyed by function, so one function never
+/// shows two conventions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InferredConvention {
+    /// The function whose convention is read, e.g. `CreateFileA@28`.
+    pub function: String,
+    /// The convention the name declares.
+    pub convention: CallingConvention,
+    /// The channel that produced the reading.
+    pub method: InferenceMethod,
+    /// Confidence that the reading is right, 0–100.
+    pub confidence: Confidence,
+    /// The name text that carries the reading — the mangled letter or the
+    /// `@N` decoration — kept so a reviewer can check the reasoning.
+    pub evidence: String,
+}
 
 // ============================================================
 // Inferred parameter types
@@ -268,7 +362,8 @@ pub struct InferredReturnType {
 // ============================================================
 
 /// One inferred type wherever it lands — a parameter, a local variable,
-/// a call-site argument, or a function's return value.
+/// a call-site argument, a function's return value, or a function's
+/// calling convention.
 ///
 /// The detectors emit the concrete records; the union is what the
 /// persisted result carries, so one list can hold every inference for a
@@ -286,6 +381,8 @@ pub enum InferredType {
     CallSite(InferredCallType),
     /// A narrowed function return value.
     Return(InferredReturnType),
+    /// A function's calling convention.
+    Convention(InferredConvention),
 }
 
 impl InferredType {
@@ -296,16 +393,20 @@ impl InferredType {
             InferredType::Local(record) => &record.function,
             InferredType::CallSite(record) => &record.function,
             InferredType::Return(record) => &record.function,
+            InferredType::Convention(record) => &record.function,
         }
     }
 
-    /// The narrowed type as C text.
+    /// The narrowed type as C text. For a convention record this is the
+    /// convention's label — the reading's "what", spelled the same way the
+    /// persisted JSON spells it.
     pub fn inferred_type(&self) -> &str {
         match self {
             InferredType::Param(record) => &record.inferred_type,
             InferredType::Local(record) => &record.inferred_type,
             InferredType::CallSite(record) => &record.inferred_type,
             InferredType::Return(record) => &record.inferred_type,
+            InferredType::Convention(record) => record.convention.label(),
         }
     }
 
@@ -316,6 +417,7 @@ impl InferredType {
             InferredType::Local(record) => record.confidence,
             InferredType::CallSite(record) => record.confidence,
             InferredType::Return(record) => record.confidence,
+            InferredType::Convention(record) => record.confidence,
         }
     }
 }
@@ -325,10 +427,11 @@ impl InferredType {
 // ============================================================
 
 /// Render an inference as prompt data. The name is what the inference
-/// types — a parameter, a local variable, a call-site argument, or the
-/// function's return value — and the description carries the narrowed
-/// type with the method and confidence behind it, so the prompt shows
-/// the reading and the evidence class that produced it.
+/// types — a parameter, a local variable, a call-site argument, the
+/// function's return value, or the function's calling convention — and
+/// the description carries the narrowed type with the method and
+/// confidence behind it, so the prompt shows the reading and the evidence
+/// class that produced it.
 impl From<&InferredType> for calxgloss_prompts::TypeInfo {
     fn from(inference: &InferredType) -> Self {
         let name = match inference {
@@ -342,12 +445,14 @@ impl From<&InferredType> for calxgloss_prompts::TypeInfo {
                 None => format!("{} arg {}", record.callee, record.arg_index + 1),
             },
             InferredType::Return(_) => "return".to_string(),
+            InferredType::Convention(_) => "convention".to_string(),
         };
         let (method, confidence) = match inference {
             InferredType::Param(record) => (record.method, record.confidence),
             InferredType::Local(record) => (record.method, record.confidence),
             InferredType::CallSite(record) => (record.method, record.confidence),
             InferredType::Return(record) => (record.method, record.confidence),
+            InferredType::Convention(record) => (record.method, record.confidence),
         };
         Self {
             name,
@@ -487,8 +592,33 @@ mod tests {
             "integer_bit_pattern"
         );
         assert_eq!(InferenceMethod::Mangling.to_string(), "mangling");
+        assert_eq!(
+            InferenceMethod::MangledConvention.to_string(),
+            "mangled_convention"
+        );
+        assert_eq!(
+            InferenceMethod::ImportDecoration.to_string(),
+            "import_decoration"
+        );
         assert_eq!(InferenceScope::Function.to_string(), "function");
         assert_eq!(InferenceScope::Program.to_string(), "program");
+    }
+
+    #[test]
+    fn conventions_display_their_serde_labels() {
+        // Display, `label()`, and serde say the same word — the labels the
+        // persisted JSON and the CLI breakdowns speak.
+        for convention in [
+            CallingConvention::Cdecl,
+            CallingConvention::Stdcall,
+            CallingConvention::Fastcall,
+            CallingConvention::Thiscall,
+            CallingConvention::MicrosoftX64,
+        ] {
+            let label = serde_json::to_value(convention).unwrap();
+            assert_eq!(convention.to_string(), label.as_str().unwrap());
+            assert_eq!(convention.label(), label.as_str().unwrap());
+        }
     }
 
     fn param_record() -> InferredParamType {
@@ -541,6 +671,16 @@ mod tests {
         }
     }
 
+    fn convention_record() -> InferredConvention {
+        InferredConvention {
+            function: "?paint@Widget@@QAEXXZ".into(),
+            convention: CallingConvention::Thiscall,
+            method: InferenceMethod::MangledConvention,
+            confidence: Confidence::new(90),
+            evidence: "?paint@Widget@@QAEXXZ".into(),
+        }
+    }
+
     fn metadata() -> ScanMetadata {
         ScanMetadata {
             binary: "eqmain.dll".into(),
@@ -590,12 +730,14 @@ mod tests {
             InferredType::Local(local_record()),
             InferredType::CallSite(call_record()),
             InferredType::Return(return_record()),
+            InferredType::Convention(convention_record()),
         ];
         let json = serde_json::to_string(&inferences).unwrap();
         assert!(json.contains("\"kind\":\"param\""));
         assert!(json.contains("\"kind\":\"local\""));
         assert!(json.contains("\"kind\":\"call_site\""));
         assert!(json.contains("\"kind\":\"return\""));
+        assert!(json.contains("\"kind\":\"convention\""));
         let back: Vec<InferredType> = serde_json::from_str(&json).unwrap();
         assert_eq!(back, inferences);
     }
@@ -631,24 +773,54 @@ mod tests {
     }
 
     #[test]
+    fn a_document_written_before_the_convention_kind_still_loads() {
+        // The union stays additive: a persisted list carrying only the
+        // four kinds that existed before the convention record reads back
+        // exactly, and a document with no convention records at all is
+        // unaffected by the new tag.
+        let json = r#"[
+            {"kind": "param", "function": "FUN_18003ab00", "param_index": 0,
+             "param_name": "param_1", "inferred_type": "Widget *",
+             "method": "vtable_call", "scope": "class", "confidence": 85,
+             "evidence": "(*(code *)(**param_1))[3](param_1)"},
+            {"kind": "return", "function": "FUN_180051c00",
+             "inferred_type": "char *", "method": "return_usage",
+             "scope": "function", "confidence": 60,
+             "evidence": "local_8 = FUN_180051c00();"}
+        ]"#;
+        let back: Vec<InferredType> = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            back,
+            vec![
+                InferredType::Param(param_record()),
+                InferredType::Return(return_record()),
+            ]
+        );
+    }
+
+    #[test]
     fn union_accessors_reach_through_every_variant() {
         let inferences = [
             InferredType::Param(param_record()),
             InferredType::Local(local_record()),
             InferredType::CallSite(call_record()),
             InferredType::Return(return_record()),
+            InferredType::Convention(convention_record()),
         ];
         assert_eq!(inferences[0].function(), "FUN_18003ab00");
         assert_eq!(inferences[1].function(), "FUN_18003ab00");
         assert_eq!(inferences[2].function(), "FUN_1800412a0");
         assert_eq!(inferences[3].function(), "FUN_180051c00");
+        assert_eq!(inferences[4].function(), "?paint@Widget@@QAEXXZ");
         assert_eq!(inferences[0].inferred_type(), "Widget *");
         assert_eq!(inferences[1].inferred_type(), "char *");
         assert_eq!(inferences[2].inferred_type(), "void *");
         assert_eq!(inferences[3].inferred_type(), "char *");
+        assert_eq!(inferences[4].inferred_type(), "thiscall");
         assert_eq!(inferences[0].confidence(), Confidence::new(85));
         assert_eq!(inferences[2].confidence(), Confidence::new(75));
         assert_eq!(inferences[3].confidence(), Confidence::new(60));
+        assert_eq!(inferences[4].confidence(), Confidence::new(90));
     }
 
     #[test]
@@ -707,7 +879,18 @@ mod tests {
     }
 
     #[test]
-    fn type_inference_result_serde_round_trips_all_four_kinds() {
+    fn a_convention_reading_renders_under_the_name_convention() {
+        let info =
+            calxgloss_prompts::TypeInfo::from(&InferredType::Convention(convention_record()));
+        assert_eq!(info.name, "convention");
+        assert_eq!(
+            info.description,
+            "thiscall (via mangled_convention, confidence 90)"
+        );
+    }
+
+    #[test]
+    fn type_inference_result_serde_round_trips_all_five_kinds() {
         let result = TypeInferenceResult {
             metadata: metadata(),
             inferences: vec![
@@ -715,6 +898,7 @@ mod tests {
                 InferredType::Local(local_record()),
                 InferredType::CallSite(call_record()),
                 InferredType::Return(return_record()),
+                InferredType::Convention(convention_record()),
             ],
         };
         let json = serde_json::to_string(&result).unwrap();

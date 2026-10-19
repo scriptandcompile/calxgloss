@@ -7,18 +7,21 @@
 //!
 //! # Architecture
 //!
-//! The crate is organized into fourteen modules:
+//! The crate is organized into fifteen modules:
 //!
 //! - [`types`] - Core data types: `InferredParamType`, `InferenceMethod`,
 //!   `InferenceScope` for per-parameter inference records; `InferredLocalType`,
 //!   `InferredCallType`, and `InferredReturnType` for inferred local
 //!   variables, call-site arguments, and function return values;
-//!   `InferredType` as the union over the four record kinds;
+//!   `CallingConvention` and `InferredConvention` for the closed set of
+//!   calling conventions and the reading a name gives one;
+//!   `InferredType` as the union over the five record kinds;
 //!   `TypeInferenceResult`, `ScanMetadata` for the persisted per-binary
 //!   results.
 //! - [`engine`] - Scan orchestration: `TypeInferEngine` decompiles each
 //!   function of a program exactly once, reads it with the inline
-//!   detectors and its listing name with the mangling detector, and
+//!   detectors, reads its listing name with the mangling and convention
+//!   detectors and its import names with the convention detector, and
 //!   propagates the surviving readings across function boundaries, and
 //!   assembles everything into one `TypeInferenceResult`;
 //!   the shared `ScanSource` trait abstracts the decompiler reads so tests
@@ -52,12 +55,18 @@
 //!   for convention, argument count, and rough argument types, and a
 //!   demangled qualified name with a spelled parameter list — typing the
 //!   parameters (and where the name spells one, the return) it names.
+//! - [`convention`] - Calling-convention detection: `ConventionDetector`
+//!   reads how a function is called off its name — the convention letter
+//!   of an MSVC-mangled listing symbol and the `@N` decoration of an
+//!   import — each in its own confidence band, as the convention record
+//!   kind.
 //! - [`reading`] - Detector-internal accumulator: the single `Reading`
 //!   shape every detector feeds, with highest-confidence-wins resolution
 //!   and shared record assembly.
 //! - [`confidence`] - Shared confidence model: `resolve_conflicts` —
 //!   highest-confidence-wins resolution when several detectors read one
-//!   parameter, local, call-site argument, or return differently.
+//!   parameter, local, call-site argument, return, or convention
+//!   differently.
 //! - [`persist`] - JSON persistence: `TypeInferPersistor` saves and loads
 //!   the per-binary inference results under `re/analysis/typeinfer/`.
 //! - [`write_back`] - Writing the surviving inferences into the open
@@ -69,6 +78,7 @@
 //! - [`error`] - [`TypeInferError`] and the crate-wide [`Result`] alias.
 
 pub mod confidence;
+pub mod convention;
 pub mod cross_function;
 pub mod engine;
 pub mod error;

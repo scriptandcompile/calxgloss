@@ -100,6 +100,9 @@ pub enum SkipReason {
     /// A call-site record types an argument at a call site, not a program
     /// slot — the parameter and local record kinds carry what a slot gets.
     CallSiteArgument,
+    /// A convention record says how a function is called, not a type the
+    /// program can hold in a slot — the setters speak types.
+    Convention,
 }
 
 impl std::fmt::Display for SkipReason {
@@ -112,6 +115,7 @@ impl std::fmt::Display for SkipReason {
             Self::FunctionNotFound => write!(f, "function not in the program"),
             Self::SlotNotFound => write!(f, "slot not in the current body"),
             Self::CallSiteArgument => write!(f, "call-site reading, not a program slot"),
+            Self::Convention => write!(f, "not a program type"),
         }
     }
 }
@@ -186,8 +190,10 @@ impl<'a, S: ScanSource, W: TypeWriteSource> WriteBack<'a, S, W> {
     pub async fn apply(&self, result: &TypeInferenceResult) -> Result<WriteBackReport> {
         let mut report = WriteBackReport::default();
 
-        // Floor gate first, and call-site records aside: they type an
-        // argument at a site, not a slot the program can hold a type in.
+        // Floor gate first, and the records that type no program slot —
+        // call-site readings and convention readings — aside: the
+        // setters hold types in parameters and locals, not arguments at
+        // a site or a calling convention.
         let mut surviving: Vec<&InferredType> = Vec::new();
         for record in &result.inferences {
             if record.confidence() < self.floor {
@@ -202,6 +208,11 @@ impl<'a, S: ScanSource, W: TypeWriteSource> WriteBack<'a, S, W> {
                 report.skipped.push(SkippedRecord {
                     target: target_of(record),
                     reason: SkipReason::CallSiteArgument,
+                });
+            } else if matches!(record, InferredType::Convention(_)) {
+                report.skipped.push(SkippedRecord {
+                    target: target_of(record),
+                    reason: SkipReason::Convention,
                 });
             } else {
                 surviving.push(record);
@@ -521,8 +532,8 @@ fn is_undefined_type(type_text: &str) -> bool {
 }
 
 /// The report name of a record's target: the function plus what it types —
-/// a parameter's decompiled name (or position), a local's name, `return`, or
-/// the call site a call-site record read.
+/// a parameter's decompiled name (or position), a local's name, `return`,
+/// `convention`, or the call site a call-site record read.
 fn target_of(record: &InferredType) -> String {
     let subject = match record {
         InferredType::Param(record) => return param_target(record),
@@ -532,6 +543,7 @@ fn target_of(record: &InferredType) -> String {
             None => format!("{} arg {}", record.callee, record.arg_index + 1),
         },
         InferredType::Return(_) => "return".to_string(),
+        InferredType::Convention(_) => "convention".to_string(),
     };
     format!("{} {subject}", record.function())
 }
@@ -728,7 +740,8 @@ mod tests {
 
     use super::*;
     use crate::types::{
-        InferredCallType, InferredLocalType, InferredParamType, InferredReturnType, ScanMetadata,
+        CallingConvention, InferredCallType, InferredConvention, InferredLocalType,
+        InferredParamType, InferredReturnType, ScanMetadata,
     };
 
     // ------------------------------------------------------------
@@ -984,6 +997,16 @@ mod tests {
             scope: crate::types::InferenceScope::Function,
             confidence: Confidence::new(confidence),
             evidence: "local_8 = FUN_1();".to_string(),
+        })
+    }
+
+    fn convention(function: &str, convention: CallingConvention, confidence: u8) -> InferredType {
+        InferredType::Convention(InferredConvention {
+            function: function.to_string(),
+            convention,
+            method: crate::types::InferenceMethod::ImportDecoration,
+            confidence: Confidence::new(confidence),
+            evidence: function.to_string(),
         })
     }
 
@@ -1327,27 +1350,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn call_site_records_are_skipped_as_site_readings_not_slots() {
+    async fn site_and_convention_records_are_skipped_as_readings_not_slots() {
         let writer = RecordingWriter::default();
         let report = apply(
             program(),
             &writer,
-            vec![call_site(
-                "FUN_18003ab00",
-                "CloseHandle",
-                "param_2",
-                "void *",
-            )],
+            vec![
+                call_site("FUN_18003ab00", "CloseHandle", "param_2", "void *"),
+                convention("CreateFileA@28", CallingConvention::Stdcall, 85),
+            ],
             0,
         )
         .await;
         assert!(writer.log().is_empty());
         assert_eq!(
             report.skipped,
-            [SkippedRecord {
-                target: "FUN_18003ab00 CloseHandle(param_2)".to_string(),
-                reason: SkipReason::CallSiteArgument,
-            }]
+            [
+                SkippedRecord {
+                    target: "FUN_18003ab00 CloseHandle(param_2)".to_string(),
+                    reason: SkipReason::CallSiteArgument,
+                },
+                SkippedRecord {
+                    target: "CreateFileA@28 convention".to_string(),
+                    reason: SkipReason::Convention,
+                },
+            ]
         );
     }
 

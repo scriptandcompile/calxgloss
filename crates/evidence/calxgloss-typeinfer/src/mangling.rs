@@ -36,7 +36,8 @@
 //! records at all rather than a partial guess.
 
 use crate::types::{
-    InferenceMethod, InferenceScope, InferredParamType, InferredReturnType, InferredType,
+    CallingConvention, InferenceMethod, InferenceScope, InferredParamType, InferredReturnType,
+    InferredType,
 };
 use calxgloss_decomp::DecompiledFunction;
 
@@ -55,6 +56,15 @@ const MANGLING_CONFIDENCE: u8 = 80;
 /// in [`crate::this_ptr`]): a `std::` library member or an `operator`
 /// spelling names no member contract for a parameter.
 const NAMESPACE_NOISE: [&str; 2] = ["std", "operator"];
+
+/// Whether a decoded class chain is namespace noise rather than a class of
+/// the analyzed program — any whole segment named `std` or `operator`.
+/// Shared with [`crate::convention`]: a mangled `std::` member names
+/// library plumbing, so neither the parameter readings nor the convention
+/// reading should come from it.
+pub(crate) fn is_namespace_noise(class: Option<&str>) -> bool {
+    class.is_some_and(|class| class.split("::").any(|s| NAMESPACE_NOISE.contains(&s)))
+}
 
 /// Assemble one name-borne parameter reading into its record: the
 /// mangling method, function scope — the contract belongs to the named
@@ -95,13 +105,16 @@ fn return_record(function: &str, inferred_type: &str, evidence: &str) -> Inferre
 // ============================================================
 
 /// The signature an MSVC-mangled function symbol decodes to.
-struct MsvcSignature {
+pub(crate) struct MsvcSignature {
     /// The qualified class chain, outermost first (`Outer::Inner`), when
     /// the symbol names a member.
-    class: Option<String>,
-    /// Whether the convention passes an implicit `this` as argument zero
-    /// — any non-static member.
-    thiscall: bool,
+    pub(crate) class: Option<String>,
+    /// Whether the encoding passes an implicit `this` as argument zero
+    /// — any non-static member, whatever the convention letter spells.
+    implicit_this: bool,
+    /// The calling convention the name's convention letter declares;
+    /// `None` for a letter outside the closed set (a Pascal-spelled `B`).
+    pub(crate) convention: Option<CallingConvention>,
     /// The return type as C text; `None` when the symbol spells `void`,
     /// which narrows nothing.
     return_type: Option<String>,
@@ -122,7 +135,7 @@ struct MsvcSignature {
 /// not static carries the implicit `this` at argument zero, whatever the
 /// convention letter spells — an x64 member decorates `A` and still
 /// takes one.
-fn parse_msvc(name: &str) -> Option<MsvcSignature> {
+pub(crate) fn parse_msvc(name: &str) -> Option<MsvcSignature> {
     let bytes = name.as_bytes();
     if bytes.first() != Some(&b'?') {
         return None;
@@ -179,14 +192,14 @@ fn parse_msvc(name: &str) -> Option<MsvcSignature> {
     // `this` at argument zero). Thunk classes (`G H O P W X`, each
     // followed by an adjustment count) and anything else carry no
     // readable contract.
-    let thiscall = match bytes.get(i)? {
+    let implicit_this = match bytes.get(i)? {
         b'Y' | b'Z' => false,
         b'C' | b'D' | b'K' | b'L' | b'S' | b'T' => false,
         b'A' | b'B' | b'E' | b'F' | b'I' | b'J' | b'M' | b'N' | b'Q' | b'R' | b'U' | b'V' => true,
         _ => return None,
     };
     i += 1;
-    if thiscall {
+    if implicit_this {
         // A non-static member's qualifiers: an optional `E` marking a
         // 64-bit `this`, optional restrict/unaligned and ref-qualifier
         // letters, and an optional const/volatile letter — none of
@@ -198,11 +211,17 @@ fn parse_msvc(name: &str) -> Option<MsvcSignature> {
             i += 1;
         }
     }
-    // The calling convention: cdecl, pascal, thiscall, stdcall, or
-    // fastcall.
-    if !matches!(bytes.get(i)?, b'A' | b'B' | b'C' | b'E' | b'G' | b'I') {
-        return None;
-    }
+    // The convention letter, decoded into the closed set: `A` is cdecl,
+    // `C`, `E`, and `G` thiscall (`G` the old EVC spelling), `I` stdcall.
+    // `B` spells Pascal — outside the closed set, so the name still
+    // decodes for types but carries no convention reading.
+    let convention = match bytes.get(i)? {
+        b'A' => Some(CallingConvention::Cdecl),
+        b'B' => None,
+        b'C' | b'E' | b'G' => Some(CallingConvention::Thiscall),
+        b'I' => Some(CallingConvention::Stdcall),
+        _ => return None,
+    };
     i += 1;
 
     // The return type, then the argument types until the `Z` (or `@Z`)
@@ -229,7 +248,8 @@ fn parse_msvc(name: &str) -> Option<MsvcSignature> {
     let return_type = (return_type != "void").then_some(return_type);
     Some(MsvcSignature {
         class,
-        thiscall,
+        implicit_this,
+        convention,
         return_type,
         args,
     })
@@ -561,16 +581,12 @@ impl ManglingDetector {
         // A mangled `std::` member names library plumbing, not a contract
         // of the analyzed program — the same whole-segment guard the
         // demangled path applies to qualified chains.
-        if signature
-            .class
-            .as_deref()
-            .is_some_and(|class| class.split("::").any(|s| NAMESPACE_NOISE.contains(&s)))
-        {
+        if is_namespace_noise(signature.class.as_deref()) {
             return Vec::new();
         }
         let mut records = Vec::new();
         let mut index = 0usize;
-        if signature.thiscall
+        if signature.implicit_this
             && let Some(class) = &signature.class
         {
             records.push(param_record(name, index, None, &format!("{class} *"), name));
