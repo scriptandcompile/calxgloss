@@ -1088,6 +1088,7 @@ pub async fn build_escalated_prompt<S: ScanSource>(
 
             let control_flow_findings = extract_control_flow_hints(workspace, binary, function);
             let convention_findings = extract_convention_hints(workspace, binary, function);
+            let global_state_findings = extract_global_state_hints(workspace, binary, function);
 
             let data = calxgloss_prompts::ModuleContextPromptData::from_request_with_context(
                 &request,
@@ -1097,7 +1098,7 @@ pub async fn build_escalated_prompt<S: ScanSource>(
                 translation.call_graph_context.clone(),
                 control_flow_findings,
                 convention_findings,
-                Vec::new(),
+                global_state_findings,
             );
             calxgloss_prompts::build_module_context_prompt(&data).map_err(|e| e.to_string())
         }

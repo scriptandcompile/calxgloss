@@ -89,6 +89,11 @@ async fn build_escalate_prompt_inner(
         &ctx.dll_name,
         &ctx.function_name,
     );
+    let global_state_findings = super::helpers::extract_global_state_hints(
+        ctx.workspace.as_deref(),
+        &ctx.dll_name,
+        &ctx.function_name,
+    );
     let string_findings = super::helpers::extract_string_context(
         ctx.workspace.as_deref(),
         &ctx.dll_name,
@@ -128,7 +133,7 @@ async fn build_escalate_prompt_inner(
         callback_findings,
         control_flow_findings,
         convention_findings,
-        Vec::new(),
+        global_state_findings,
         string_findings,
         api_findings,
         const_findings,

@@ -199,3 +199,77 @@ async fn the_shared_globals_index_names_the_functions_sharing_a_global() {
         "the exact DAT_* spellings behind the entry score the entry"
     );
 }
+
+#[tokio::test]
+async fn a_loaded_result_renders_into_the_escalate_prompt() {
+    // The whole escalate path, no external server needed: the persisted
+    // document on disk answers the by-function lookup, the records render
+    // into `GlobalStateInfo` prompt data, and the rendered escalate prompt
+    // carries the GLOBAL STATE section with each record's suggestion, kind,
+    // global, and evidence — the struct-vs-static steering included.
+    let mut bodies = HashMap::new();
+    bodies.insert(
+        "FUN_18003ab00".into(),
+        function(
+            "FUN_18003ab00",
+            "  DAT_180064e80 = param_1;\n  uVar1 = DAT_180064e80;\n",
+        ),
+    );
+    let program = CannedProgram {
+        listing: vec![summary("FUN_18003ab00", 0x1800_3ab00)],
+        bodies,
+    };
+
+    let workspace = tempfile::tempdir().expect("a workspace");
+    let result = GlobalStateEngine::with_source(program)
+        .scan("eqmain.dll")
+        .await
+        .expect("scan");
+    let persistor = GlobalStatePersistor::new(workspace.path());
+    persistor.save(&result).expect("save");
+
+    let loaded = persistor.load("eqmain.dll").expect("load");
+    let findings: Vec<calxgloss_prompts::GlobalStateInfo> = loaded
+        .for_function("FUN_18003ab00")
+        .map(calxgloss_prompts::GlobalStateInfo::from)
+        .collect();
+    assert_eq!(findings.len(), 2, "the write and the read, not the rollup");
+
+    let prompt = calxgloss_prompts::build_escalate_prompt_with_context(
+        "FUN_18003ab00".into(),
+        "eqmain.dll".into(),
+        "fn fun_18003ab00(param_1: i32) { /* DAT store */ }".into(),
+        "Wrong result".into(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        findings,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("the escalate prompt should render");
+
+    assert!(prompt.contains("GLOBAL STATE"));
+    assert!(
+        prompt.contains("model the program global as shared struct state, not a Rust static"),
+        "the write record steers the struct-vs-static choice"
+    );
+    assert!(prompt.contains("global_write of `DAT_180064e80`"));
+    assert!(prompt.contains("global_read of `DAT_180064e80`"));
+    assert!(prompt.contains("read the program global through shared state, not an invented local"));
+    assert!(
+        prompt.contains("rather than in a Rust `static`"),
+        "the purity flag renders as the section's steering"
+    );
+}
