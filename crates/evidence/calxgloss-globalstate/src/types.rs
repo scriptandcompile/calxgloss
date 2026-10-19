@@ -5,11 +5,13 @@
 //! body, naming the global, the evidence statement that carried the
 //! reading, and the confidence band it scored on the Evidence scale.
 //! [`GlobalStateFinding`] is the tagged union over the two access
-//! kinds — the serde `kind` tag spells the read/write distinction in
-//! the persisted JSON — and [`GlobalStateResult`] is the whole per-
-//! binary document: the findings in scan order plus the derived
-//! per-function [`FunctionPurity`] summary, so consumers never
-//! recompute whether a function touches globals.
+//! kinds and the cross-function rollup's index record — the serde
+//! `kind` tag spells the distinction in the persisted JSON — and
+//! [`GlobalStateResult`] is the whole per-binary document: the
+//! findings in scan order (per-function records grouped by function
+//! in listing order, the shared-globals index records last) plus the
+//! derived per-function [`FunctionPurity`] summary, so consumers
+//! never recompute whether a function touches globals.
 
 use calxgloss_types::{Confidence, ScanMetadata};
 use serde::{Deserialize, Serialize};
@@ -81,13 +83,14 @@ pub struct GlobalAccess {
 // The finding union
 // ============================================================
 
-/// One global-state finding, whichever access kind it records.
+/// One global-state finding, whichever kind it records.
 ///
 /// The union is what the persisted document carries, so one list holds
 /// every access for a binary and a consumer reads the shared shape —
 /// function, global, evidence, confidence — through the accessors
 /// without naming the access kind first. The serde `kind` tag names the
-/// kind in the persisted JSON: `global_read` or `global_write`.
+/// kind in the persisted JSON: `global_read`, `global_write`, or
+/// `shared_global` for the rollup's index record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GlobalStateFinding {
@@ -95,14 +98,56 @@ pub enum GlobalStateFinding {
     GlobalRead(GlobalAccess),
     /// The function stores through the global.
     GlobalWrite(GlobalAccess),
+    /// One entry of the shared-globals index: every function that
+    /// reads or writes one global, appended after the per-function
+    /// records the rollup grouped them from.
+    SharedGlobal(SharedGlobalRecord),
+}
+
+// ============================================================
+// The shared-globals index record
+// ============================================================
+
+/// One entry of the shared-globals index: one global, and the
+/// functions that read it and write it, separated by access kind.
+///
+/// The record is the rollup's atom — a cross-function reading derived
+/// from the per-function access records over the same kept bodies
+/// (the ADR-0027 precedent), not a sighting of its own. It is what
+/// the reviewer and the DAG consumer see: who mutates one piece of
+/// shared state, and which units touch the same global so ordering
+/// can tie them. A global only one function touches still gets an
+/// entry — the index is the per-global picture of the binary's
+/// shared state; consumers that pair functions skip the degenerate
+/// entries themselves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedGlobalRecord {
+    /// The global the entry indexes, spelled as the decompiler names it.
+    pub global: String,
+    /// The functions whose bodies read the global, in listing order,
+    /// each named once however often it loaded the value.
+    pub readers: Vec<String>,
+    /// The functions whose bodies stored through the global, in
+    /// listing order, each named once however often it wrote.
+    pub writers: Vec<String>,
+    /// The highest confidence among the accesses behind the entry —
+    /// the rollup adds no reading of its own, so it never scores
+    /// above the best access it groups.
+    pub confidence: Confidence,
 }
 
 impl GlobalStateFinding {
     /// The function the finding is about.
+    ///
+    /// A rollup record is about a global, not a function, so it names
+    /// no single function and answers with the empty string — which
+    /// no listing entry ever spells, keeping rollup records out of
+    /// every by-function lookup.
     pub fn function(&self) -> &str {
         match self {
             GlobalStateFinding::GlobalRead(record) => &record.function,
             GlobalStateFinding::GlobalWrite(record) => &record.function,
+            GlobalStateFinding::SharedGlobal(_) => "",
         }
     }
 
@@ -111,14 +156,20 @@ impl GlobalStateFinding {
         match self {
             GlobalStateFinding::GlobalRead(record) => &record.global,
             GlobalStateFinding::GlobalWrite(record) => &record.global,
+            GlobalStateFinding::SharedGlobal(record) => &record.global,
         }
     }
 
     /// The access statement quoted from the body.
+    ///
+    /// A rollup record quotes no single statement — its evidence is
+    /// the per-function records it groups, which ride in the same
+    /// document — so it answers with the empty string.
     pub fn evidence(&self) -> &str {
         match self {
             GlobalStateFinding::GlobalRead(record) => &record.evidence,
             GlobalStateFinding::GlobalWrite(record) => &record.evidence,
+            GlobalStateFinding::SharedGlobal(_) => "",
         }
     }
 
@@ -127,31 +178,55 @@ impl GlobalStateFinding {
         match self {
             GlobalStateFinding::GlobalRead(record) => record.confidence,
             GlobalStateFinding::GlobalWrite(record) => record.confidence,
+            GlobalStateFinding::SharedGlobal(record) => record.confidence,
         }
     }
 
     /// The Rust pattern the access suggests.
+    ///
+    /// A rollup record suggests no pattern of its own — the steering
+    /// rides on the access records — so it answers with the empty
+    /// string.
     pub fn suggestion(&self) -> &str {
         match self {
             GlobalStateFinding::GlobalRead(record) => &record.suggestion,
             GlobalStateFinding::GlobalWrite(record) => &record.suggestion,
+            GlobalStateFinding::SharedGlobal(_) => "",
         }
     }
 
-    /// The serde `kind` tag — `global_read` or `global_write` — naming
-    /// the access kind the finding records.
+    /// The serde `kind` tag — `global_read`, `global_write`, or
+    /// `shared_global` — naming the kind the finding records.
     pub fn kind(&self) -> &'static str {
         match self {
             GlobalStateFinding::GlobalRead(_) => "global_read",
             GlobalStateFinding::GlobalWrite(_) => "global_write",
+            GlobalStateFinding::SharedGlobal(_) => "shared_global",
         }
     }
 
     /// The access kind the finding records, as the domain enum.
-    pub fn access_kind(&self) -> AccessKind {
+    ///
+    /// `None` for a rollup record: the entry spans both kinds — its
+    /// readers read and its writers write — so it names no single
+    /// access kind.
+    pub fn access_kind(&self) -> Option<AccessKind> {
         match self {
-            GlobalStateFinding::GlobalRead(_) => AccessKind::Read,
-            GlobalStateFinding::GlobalWrite(_) => AccessKind::Write,
+            GlobalStateFinding::GlobalRead(_) => Some(AccessKind::Read),
+            GlobalStateFinding::GlobalWrite(_) => Some(AccessKind::Write),
+            GlobalStateFinding::SharedGlobal(_) => None,
+        }
+    }
+
+    /// The shared-globals index record, when this finding is one.
+    ///
+    /// The seam for consumers of the rollup — the reviewer's index
+    /// section and the DAG's state-sharing edges — who reach the
+    /// readers and writers without matching the union by hand.
+    pub fn shared_global(&self) -> Option<&SharedGlobalRecord> {
+        match self {
+            GlobalStateFinding::SharedGlobal(record) => Some(record),
+            _ => None,
         }
     }
 
@@ -194,17 +269,19 @@ pub struct FunctionPurity {
 /// persisted to `re/analysis/globalstate/{binary}.json`.
 ///
 /// The findings follow the function listing — grouped by function in
-/// listing order, and within one function in body order — so two scans
-/// of the same program diff cleanly. The purity summary covers every
-/// function whose body the scan kept, in listing order; a function the
-/// decompiler never produced stays absent, because absence of a body
-/// is not evidence of purity.
+/// listing order, and within one function in body order — with the
+/// shared-globals index records appended after them, in first-sighting
+/// order, so two scans of the same program diff cleanly. The purity
+/// summary covers every function whose body the scan kept, in listing
+/// order; a function the decompiler never produced stays absent,
+/// because absence of a body is not evidence of purity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GlobalStateResult {
     /// Provenance of the scan that produced these records.
     pub metadata: ScanMetadata,
     /// Every access record the scan made, grouped by function in
-    /// listing order.
+    /// listing order, followed by the shared-globals index records
+    /// the rollup derived from them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub findings: Vec<GlobalStateFinding>,
     /// The derived per-function purity summary, in listing order.
@@ -223,6 +300,10 @@ impl GlobalStateResult {
     }
 
     /// The access records made for one function, e.g. `FUN_18003ab00`.
+    ///
+    /// The shared-globals index records name no single function, so
+    /// they never answer a by-function lookup — a prompt consumer
+    /// asking for one function's records reads only its own accesses.
     pub fn for_function(&self, function: &str) -> impl Iterator<Item = &GlobalStateFinding> {
         self.findings
             .iter()
@@ -253,6 +334,15 @@ mod tests {
         }
     }
 
+    fn shared_index(global: &str, readers: &[&str], writers: &[&str]) -> GlobalStateFinding {
+        GlobalStateFinding::SharedGlobal(SharedGlobalRecord {
+            global: global.to_string(),
+            readers: readers.iter().map(|f| f.to_string()).collect(),
+            writers: writers.iter().map(|f| f.to_string()).collect(),
+            confidence: 85.into(),
+        })
+    }
+
     #[test]
     fn a_global_read_finding_serde_round_trips_under_its_kind_tag() {
         let finding = GlobalStateFinding::GlobalRead(access("FUN_18003ab00", "DAT_180064e80"));
@@ -278,6 +368,23 @@ mod tests {
     }
 
     #[test]
+    fn a_shared_global_record_serde_round_trips_under_its_kind_tag() {
+        let finding = GlobalStateFinding::SharedGlobal(SharedGlobalRecord {
+            global: "DAT_180064e80".to_string(),
+            readers: vec!["FUN_18003ab00".to_string()],
+            writers: vec!["FUN_18003e750".to_string()],
+            confidence: 85.into(),
+        });
+        let json = serde_json::to_string(&finding).expect("an index record serializes");
+        assert!(
+            json.contains("\"kind\":\"shared_global\""),
+            "the rollup tag is spelled in the document: {json}"
+        );
+        let back: GlobalStateFinding = serde_json::from_str(&json).expect("the tag reads back");
+        assert_eq!(back, finding);
+    }
+
+    #[test]
     fn the_union_accessors_reach_through_every_variant() {
         for finding in [
             GlobalStateFinding::GlobalRead(access("FUN_18003ab00", "DAT_180064e80")),
@@ -294,8 +401,34 @@ mod tests {
         let write = GlobalStateFinding::GlobalWrite(access("FUN_1", "g"));
         assert_eq!(read.kind(), "global_read");
         assert_eq!(write.kind(), "global_write");
-        assert_eq!(read.access_kind(), AccessKind::Read);
-        assert_eq!(write.access_kind(), AccessKind::Write);
+        assert_eq!(read.access_kind(), Some(AccessKind::Read));
+        assert_eq!(write.access_kind(), Some(AccessKind::Write));
+    }
+
+    #[test]
+    fn the_rollup_variant_answers_as_an_index_record_not_an_access() {
+        // The rollup record is about a global, not a function: it
+        // names no single function, quotes no single statement,
+        // suggests no single pattern, and spans both access kinds —
+        // so it claims no one kind. The seam accessor hands the entry
+        // itself to the consumers that read readers and writers.
+        let finding = shared_index("DAT_180064e80", &["FUN_18003ab00"], &["FUN_18003e750"]);
+        assert_eq!(finding.function(), "");
+        assert_eq!(finding.global(), "DAT_180064e80");
+        assert_eq!(finding.evidence(), "");
+        assert_eq!(finding.suggestion(), "");
+        assert_eq!(finding.confidence().value(), 85);
+        assert_eq!(finding.target(), "DAT_180064e80");
+        assert_eq!(finding.kind(), "shared_global");
+        assert_eq!(finding.access_kind(), None);
+        let record = finding.shared_global().expect("the seam reaches the entry");
+        assert_eq!(record.readers, vec!["FUN_18003ab00"]);
+        assert_eq!(record.writers, vec!["FUN_18003e750"]);
+        assert!(
+            GlobalStateFinding::GlobalRead(access("FUN_1", "g"))
+                .shared_global()
+                .is_none()
+        );
     }
 
     #[test]
@@ -328,6 +461,11 @@ mod tests {
             "FUN_18003e750",
             "g_counter",
         )));
+        result.findings.push(shared_index(
+            "g_counter",
+            &["FUN_18003ab00"],
+            &["FUN_18003e750"],
+        ));
         result.purity.push(FunctionPurity {
             function: "FUN_18003ab00".to_string(),
             is_pure: false,
@@ -373,6 +511,11 @@ mod tests {
             "FUN_18003ab00",
             "g_counter",
         )));
+        result.findings.push(shared_index(
+            "g_counter",
+            &["FUN_18003ab00"],
+            &["FUN_18003e750"],
+        ));
         let globals: Vec<&str> = result
             .for_function("FUN_18003ab00")
             .map(|finding| finding.global())
@@ -381,6 +524,12 @@ mod tests {
             globals,
             vec!["DAT_180064e80", "g_counter"],
             "only the function's own records, in document order"
+        );
+        assert!(
+            result
+                .for_function("FUN_18003ab00")
+                .all(|finding| finding.shared_global().is_none()),
+            "the rollup record names no single function, so no by-function lookup answers it"
         );
     }
 }

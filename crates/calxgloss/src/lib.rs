@@ -189,6 +189,7 @@ pub use calxgloss_sync::types::{
 pub use calxgloss_globalstate::GlobalStateError;
 pub use calxgloss_globalstate::types::{
     AccessKind, FunctionPurity, GlobalAccess, GlobalStateFinding, GlobalStateResult,
+    SharedGlobalRecord,
 };
 
 // ============================================================

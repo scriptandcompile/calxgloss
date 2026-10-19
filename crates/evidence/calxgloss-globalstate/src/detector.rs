@@ -385,7 +385,9 @@ mod tests {
             .map(|finding| {
                 (
                     finding.global().to_string(),
-                    finding.access_kind(),
+                    finding
+                        .access_kind()
+                        .expect("a detector reading always names its access kind"),
                     finding.confidence().value(),
                 )
             })
