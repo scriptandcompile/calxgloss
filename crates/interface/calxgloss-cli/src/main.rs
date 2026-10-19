@@ -16,6 +16,7 @@
 //! - `algorithm` — Recognize algorithms (control flow shapes, string markers, callback contracts) in a binary
 //! - `memory` — Detect memory lifecycles (allocation/release pairs, handle lifetimes, reference counting) for the open binary and cache the result
 //! - `sync` — Detect concurrency constructs (mutex pairings, atomic operations, thread spawns) for the open binary and cache the result
+//! - `globalstate` — Record the global-state reference sets (which functions read and write which program globals) for the open binary and cache the result
 //! - `stringctx` — Map program strings to functions (classification, format-string types) for the open binary and cache the result
 //! - `apidetect` — Identify the libraries and APIs of the open binary (import table, per-function API summaries) and cache the result
 //! - `verify` — Verify a previously translated function
@@ -71,6 +72,7 @@ use commands::dashboard::{
 };
 use commands::doctor::handle_doctor;
 use commands::gc::handle_gc;
+use commands::globalstate::handle_global_state;
 use commands::init::handle_init;
 use commands::live::handle_live;
 use commands::memory::handle_memory;
@@ -143,10 +145,10 @@ fn main() -> Result<()> {
     // target_dir is required for all commands that do real work: the Kuna
     // engine loads `target_dir/<binary>` in-process, so even the analysis
     // scans (`typesdb`, `typeinfer`, `algorithm`, `memory`, `sync`,
-    // `consts`, `callback`, `controlflow`, `stringctx`, `apidetect`,
-    // `serialize`) need it. `config`, `doctor`, and `gc` don't — doctor
-    // takes its target as `--binary` directly — so we check here and fail
-    // fast with a helpful message.
+    // `globalstate`, `consts`, `callback`, `controlflow`, `stringctx`,
+    // `apidetect`, `serialize`) need it. `config`, `doctor`, and `gc`
+    // don't — doctor takes its target as `--binary` directly — so we
+    // check here and fail fast with a helpful message.
     if let Some(ref target) = cli.command {
         match target {
             Command::Config | Command::Doctor { .. } | Command::Gc { .. } => {}
@@ -298,6 +300,14 @@ fn main() -> Result<()> {
                 .build()
                 .context("Failed to create tokio runtime")?
                 .block_on(handle_sync(&binary, &workspace, show, &settings))
+        }
+        Command::GlobalState { binary, show } => {
+            let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .context("Failed to create tokio runtime")?
+                .block_on(handle_global_state(&binary, &workspace, show, &settings))
         }
         Command::Consts { binary, show } => {
             let workspace = resolve_workspace(cli.workspace.as_ref(), &settings);

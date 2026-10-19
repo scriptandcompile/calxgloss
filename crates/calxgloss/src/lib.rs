@@ -178,6 +178,20 @@ pub use calxgloss_sync::types::{
 };
 
 // ============================================================
+// calxgloss-globalstate — global-state reference sets
+// ============================================================
+
+// The crate's `Result` alias is deliberately not re-exported:
+// `GlobalStateResult` already names the per-binary document, and a
+// second alias spelled like it would read as the same thing. The
+// crate's `ScanMetadata` is the shared one from calxgloss-types,
+// already named here.
+pub use calxgloss_globalstate::GlobalStateError;
+pub use calxgloss_globalstate::types::{
+    AccessKind, FunctionPurity, GlobalAccess, GlobalStateFinding, GlobalStateResult,
+};
+
+// ============================================================
 // calxgloss-consts — constant & enum recovery
 // ============================================================
 

@@ -422,6 +422,36 @@ pub(super) enum Command {
         show: bool,
     },
 
+    /// Record the global-state reference sets (which functions read and
+    /// write which program globals) for a binary.
+    ///
+    /// The access records and the derived purity summary are persisted
+    /// per binary to `re/analysis/globalstate/<binary>.json` in the
+    /// workspace — the same file batch translation will read as prompt
+    /// context. `--show` prints a cached result without running the
+    /// scan.
+    ///
+    /// # Arguments
+    ///
+    /// * `--binary` — Binary to scan, e.g. `eqmain.dll`. Names the
+    ///   persisted file.
+    /// * `--show` — Print a summary of the cached result.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// calxgloss globalstate --binary eqmain.dll --show
+    /// ```
+    GlobalState {
+        /// Binary to scan, e.g. `eqmain.dll`
+        #[arg(long, required = true)]
+        binary: String,
+
+        /// Show the cached result instead of running the scan
+        #[arg(long)]
+        show: bool,
+    },
+
     /// Detect constant structures (bitflag groups, enum candidates,
     /// repeated magic numbers) for a binary.
     ///

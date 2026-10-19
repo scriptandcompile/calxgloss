@@ -20,6 +20,7 @@ calxgloss-typeinfer = { path = "../evidence/calxgloss-typeinfer" }
 calxgloss-algorithm = { path = "../evidence/calxgloss-algorithm" }
 calxgloss-memory = { path = "../evidence/calxgloss-memory" }
 calxgloss-sync = { path = "../evidence/calxgloss-sync" }
+calxgloss-globalstate = { path = "../evidence/calxgloss-globalstate" }
 calxgloss-consts = { path = "../evidence/calxgloss-consts" }
 calxgloss-stringctx = { path = "../evidence/calxgloss-stringctx" }
 calxgloss-apidetect = { path = "../evidence/calxgloss-apidetect" }
