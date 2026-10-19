@@ -1,16 +1,22 @@
 //! Live translation progress and pipeline progress endpoints.
 
 use super::super::{
-    BatchInfo, ClassificationInfo, CombinedState, PipelineControl, PipelineDllProgress,
-    PipelineLifecycleResponse, PipelineProgressResponse, PipelineTimeEstimate, ProgressEntry,
-    ProgressInfo, ProgressResponse, ServerError, UnitCancelResponse,
+    BatchInfo, BinaryPauseResponse, ClassificationInfo, CombinedState, PipelineControl,
+    PipelineDllProgress, PipelineLifecycleResponse, PipelineProgressResponse, PipelineTimeEstimate,
+    ProgressEntry, ProgressInfo, ProgressResponse, ServerError, UnitCancelResponse,
 };
 
-use axum::{Json, extract::State};
+use super::process::binary_matches;
+use super::scope::{persist_error, scope_handle};
+
+use axum::{
+    Json,
+    extract::{Path as PathExtractor, State},
+};
 use calxgloss_types::{
     BinaryIdentity, BinaryProgress, LiveTranslationState, LiveUnitProgress, PassStatus,
-    PhaseProgress, PhaseState, PipelinePhase, PipelineRunRequest, RunRequestSignal, TokenUsageLog,
-    TranslationPhase, derive_unit_confidence,
+    PhaseProgress, PhaseState, PipelinePhase, PipelineRunRequest, RunRequestSignal, ScopeControl,
+    TokenUsageLog, TranslationPhase, derive_unit_confidence,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -264,6 +270,7 @@ pub async fn api_get_pipeline(
         &entries_snapshot,
         processing.as_ref(),
         activity.as_ref(),
+        combined.server.scope_control().as_ref(),
     );
     let phases = derive_phases(
         total_dlls,
@@ -579,6 +586,7 @@ fn derive_binaries(
     entries: &HashMap<String, ProgressEntry>,
     processing: Option<&BinaryIdentity>,
     activity: Option<&(BinaryIdentity, calxgloss_types::BinaryActivity)>,
+    scope: Option<&ScopeControl>,
 ) -> Vec<BinaryProgress> {
     dll_names
         .iter()
@@ -619,6 +627,11 @@ fn derive_binaries(
                 activity: activity
                     .filter(|(d, _)| d == binary)
                     .map(|(_, a)| a.clone()),
+                // The paused set is operator steering, not run telemetry —
+                // the scope handle is its source of truth (issue #218), so
+                // the row reads it directly and a plain GET is honest
+                // without waiting for a BinaryPauseChanged event (issue #221).
+                paused: scope.is_some_and(|s| s.is_paused(binary.as_str())),
             }
         })
         .collect()
@@ -676,6 +689,112 @@ pub async fn api_stop_pipeline(
     State(combined): State<CombinedState>,
 ) -> Result<Json<PipelineLifecycleResponse>, ServerError> {
     control_pipeline(&combined, "stop", |c| c.stop())
+}
+
+// ─── POST /api/pipeline/binaries/{binary}/{pause,resume} ─────────────
+
+/// The binaries the workspace has discovered — the same set `GET
+/// /api/pipeline` builds its rows from: live progress (entries,
+/// classifications, batch summaries, the binary in flight, a beating pass,
+/// the queue plan, ingested analysis) plus the persisted classification
+/// records, plus the persisted paused set. A binary paused in an earlier run
+/// is known to the workspace even before this run rediscovers it, and
+/// resume must never lock the operator out of clearing that pause.
+async fn discovered_binaries(
+    combined: &CombinedState,
+    scope: &ScopeControl,
+) -> std::collections::HashSet<BinaryIdentity> {
+    let mut names: std::collections::HashSet<BinaryIdentity> =
+        scope.paused_binaries().into_iter().collect();
+    if let Some(progress) = &combined.progress {
+        for entry in progress.read().await.snapshot().await.values() {
+            names.insert(entry.binary.clone());
+        }
+        for classification in progress.read().await.classifications().await {
+            names.insert(classification.binary);
+        }
+        for summary in progress.read().await.batch_summaries().await {
+            names.insert(summary.binary);
+        }
+        if let Some(binary) = progress.read().await.processing_binary().await {
+            names.insert(binary);
+        }
+        if let Some((binary, _)) = progress.read().await.activity().await {
+            names.insert(binary);
+        }
+        for binary in progress.read().await.queue().await {
+            names.insert(BinaryIdentity::new(binary.as_str()));
+        }
+        names.extend(progress.read().await.ingestion().await.analyzed);
+    }
+    for (binary, _) in disk_classifications(combined.server.repo_path()) {
+        names.insert(binary);
+    }
+    names
+}
+
+/// The two per-binary pause endpoints (issue #221, X6) share this: the
+/// scope handle must be attached — 503 otherwise, the lifecycle endpoints'
+/// honesty rule — and the binary must be one the workspace has discovered.
+/// A request naming an undiscovered binary is a 409 carrying the server's
+/// own reason, so a stale click is never a silent no-op. A successful call
+/// re-persists the scope record (the pause survives a restart, issue #218)
+/// and, on a handle built `with_events`, fans a `BinaryPauseChanged` out to
+/// WS clients. Pausing one binary never touches the run-level machine —
+/// steering, not lifecycle.
+async fn control_binary_pause(
+    combined: &CombinedState,
+    binary: &str,
+    pause: bool,
+) -> Result<Json<BinaryPauseResponse>, ServerError> {
+    let scope = scope_handle(combined)?;
+    let discovered = discovered_binaries(combined, &scope).await;
+    if !discovered
+        .iter()
+        .any(|b| binary_matches(b.as_str(), binary))
+    {
+        return Err(ServerError::conflict(&format!(
+            "this workspace has not discovered the binary '{binary}' — nothing to {}",
+            if pause { "pause" } else { "resume" }
+        )));
+    }
+    if pause {
+        scope.pause_binary(binary).map_err(persist_error)?;
+    } else {
+        scope.resume_binary(binary).map_err(persist_error)?;
+    }
+    let paused = scope.is_paused(binary);
+    info!(binary, paused, "scope: binary pause state changed via API");
+    Ok(Json(BinaryPauseResponse {
+        binary: binary.to_string(),
+        paused,
+        message: if paused {
+            format!("Binary {binary} paused — held out of the queue until resumed.")
+        } else {
+            format!("Binary {binary} resumed — admitted to the queue again.")
+        },
+    }))
+}
+
+/// Hold one target binary out of the run's queue while the run keeps going
+/// (issue #221, X6): a pass in flight ends at the next unit boundary, a
+/// pass not yet started never begins. Distinct from `POST /api/pipeline/pause`,
+/// which pauses the whole run. Live router only.
+pub async fn api_pause_binary(
+    State(combined): State<CombinedState>,
+    PathExtractor(binary): PathExtractor<String>,
+) -> Result<Json<BinaryPauseResponse>, ServerError> {
+    control_binary_pause(&combined, &binary, true).await
+}
+
+/// Re-admit a paused target binary to the run's queue (issue #221, X6): the
+/// pass that comes back around translates it, or the next run does. Live
+/// router only.
+pub async fn api_resume_binary(
+    State(combined): State<CombinedState>,
+    PathExtractor(binary): PathExtractor<String>,
+) -> Result<Json<BinaryPauseResponse>, ServerError> {
+    control_binary_pause(&combined, &binary, false).await
 }
 
 // ─── POST /api/pipeline/{start,restart} ──────────────────────────────

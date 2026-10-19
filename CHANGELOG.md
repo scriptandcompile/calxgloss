@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Per-binary pause: the web server's pause and resume endpoints, and the event that carries them (issue #221, part of #217).**
+  `POST /api/pipeline/binaries/{binary}/pause` and `.../resume` drive the scope handle attached by
+  `calxgloss live` — bodyless, answering the same shape as the run-level lifecycle controls and
+  echoing the binary and the pause state the server now holds — registered on the live router only,
+  where the pipeline actually runs: a plain `serve` process has no queue to hold a binary out of, so
+  the routes are absent there and the handler answers 503 when no scope handle is attached. A binary
+  the workspace has not discovered is refused with 409 naming the binary — the server's own reason,
+  not the control's — pointing the operator at the dashboard's binary list; discovered means the
+  binary appears in the pipeline-status rows, and the persisted paused set counts as discovered too,
+  so a pause carried over from a previous run can always be lifted before the new run finds the
+  binary. Every pause and resume through the handle now publishes a `BinaryPauseChanged` progress
+  event (serde tag `binary_pause_changed`) — `ScopeControl::with_events` gives the handle the
+  `TranslationEvents` bus, `live` wires it, and the fan-out reaches every connected WS client,
+  including pauses made by editing the scope file through `PUT /api/scope/paused`; the pipeline-status
+  GET reports the flag per row (`BinaryProgress.paused`), read from the handle, so a fresh client sees
+  which binaries are held out before the first event arrives. The run-level pause/resume/stop controls
+  are untouched, and the dashboard's binary rows and buttons follow in #222.
 - **Per-binary pause: the auto run's binary queue becomes a worklist (issue #220, part of #217).**
   In a headless `auto` run, a target binary the operator has paused is held out of the queue when
   the queue reaches it — no scan, no translation pass — and the run moves straight to the next

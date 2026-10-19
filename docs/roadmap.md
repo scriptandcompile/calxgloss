@@ -31,7 +31,7 @@ Test counts in the archive are indicative targets, not exact requirements.
 
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
-| X6 | Per-binary pause — hold one target binary out of the queue and move on to the next | shared (`calxgloss-types` scope) + pipeline + interface (`calxgloss-cli`, `calxgloss-web`) | — | 🔶 in progress | #221 (endpoints) next | [#217](https://github.com/scriptandcompile/calxgloss/issues/217) |
+| X6 | Per-binary pause — hold one target binary out of the queue and move on to the next | shared (`calxgloss-types` scope) + pipeline + interface (`calxgloss-cli`, `calxgloss-web`) | — | 🔶 in progress | #222 (dashboard rows) next | [#217](https://github.com/scriptandcompile/calxgloss/issues/217) |
 | P12.5 | Branch-targeted baseline tests — Verification must pin every branch the CFG reveals, not just the happy path | evidence (`calxgloss-controlflow`) + pipeline (`calxgloss-testgen`, `calxgloss-translator`) | — | ⬜ not started | `/to-tickets` from #224 | [#224](https://github.com/scriptandcompile/calxgloss/issues/224) |
 | P12.6 | Calling-convention detection — classify cdecl/stdcall/fastcall/thiscall/x64 per function so the FFI binding and the ground truth behind it are right | evidence (`calxgloss-typeinfer`) + integrations (`calxgloss-decomp`, `calxgloss-kuna`, `calxgloss-prompts`) + pipeline (`calxgloss-translator`, `calxgloss-testgen`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #226 | [#226](https://github.com/scriptandcompile/calxgloss/issues/226) |
 | P13 | Global-state reference sets — per-function global read/write sets, produced once and consumed by prompt, sync gate, DAG order, and side-effect kinds | evidence (`calxgloss-globalstate` (new), `calxgloss-sync`, `calxgloss-callgraph`) + pipeline (`calxgloss-translator`) + shared (`calxgloss-types`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #225 | [#225](https://github.com/scriptandcompile/calxgloss/issues/225) |
@@ -59,8 +59,8 @@ no LLM call wasted) and pushes it to the back marked incomplete; a paused
 binary reached again is held out. Web: per-binary pause/resume endpoints, a
 pause-changed progress event, `paused` on the row data, and real Pause/Resume
 buttons on the dashboard rows. Spec: #217. Tickets: #218 (scope record)
-unblocks #219 (batch unit boundary), #220 (auto-run worklist), and #221
-(endpoints, event, row data); #222 (dashboard rows) follows #221.
+unblocked #219 (batch unit boundary), #220 (auto-run worklist), and #221
+(endpoints, event, row data), all landed; #222 (dashboard rows) is next.
 
 ## P12.5 — Branch-targeted baseline tests (evidence + pipeline)
 

@@ -754,6 +754,187 @@ async fn test_pipeline_lifecycle_endpoints_503_without_control() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Per-binary pause (issue #221, X6)
+// ─────────────────────────────────────────────────────────────
+
+/// The per-binary pause/resume endpoints (issue #221) drive the shared
+/// scope handle: 200 with the binary and the paused flag in the body, 409
+/// with the server's own reason for a binary the workspace has not
+/// discovered, and `GET /api/pipeline` reporting the row's `paused` flag
+/// from the handle — a plain GET is honest without waiting for an event.
+#[tokio::test]
+async fn test_pipeline_binary_pause_resume_endpoints() {
+    let fixture = TestFixture::new();
+    let events = TranslationEvents::new(128);
+    let scope =
+        calxgloss_types::ScopeControl::open(fixture.repo_path()).with_events(events.clone());
+    let state = ServerState::new(fixture.repo_path()).with_scope_control(scope);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // The run's queue plan discovers game_logic.dll — the row exists before
+    // anything has started working on it.
+    events.emit(ProgressEvent::QueuePlanned {
+        binaries: vec!["game_logic.dll".to_string()],
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let get_row_paused = |port: u16| async move {
+        let resp = reqwest::get(format!("http://127.0.0.1:{port}/api/pipeline"))
+            .await
+            .expect("pipeline status request succeeds");
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().await.expect("pipeline body is JSON");
+        body["binaries"]
+            .as_array()
+            .expect("binaries is an array")
+            .iter()
+            .find(|b| b["binary"] == "game_logic.dll")
+            .expect("the planned binary has a row")
+            .get("paused")
+            .and_then(|p| p.as_bool())
+    };
+    assert_eq!(
+        get_row_paused(fixture.port()).await,
+        Some(false),
+        "a freshly discovered row is not paused"
+    );
+
+    // Pause: 200, body echoes the binary and the flag now in force.
+    let (status, body) = post_lifecycle(
+        fixture.port(),
+        "/api/pipeline/binaries/game_logic.dll/pause",
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["binary"], "game_logic.dll");
+    assert_eq!(body["paused"], true);
+
+    // The row data follows the handle — a plain GET is honest without
+    // waiting for a BinaryPauseChanged event.
+    assert_eq!(
+        get_row_paused(fixture.port()).await,
+        Some(true),
+        "GET /api/pipeline reports the pause"
+    );
+
+    // A binary the workspace has not discovered: 409 with the server's own
+    // reason — a stale click is never a silent no-op.
+    let (status, body) =
+        post_lifecycle(fixture.port(), "/api/pipeline/binaries/nope.dll/pause").await;
+    assert_eq!(status, 409);
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("has not discovered"),
+        "409 carries the server's own reason, got: {body}"
+    );
+
+    // The pause rode the scope record — a handle re-opened over the same
+    // workspace (a restarted run) honors it, on the #107 match rule.
+    assert!(
+        calxgloss_types::ScopeControl::open(fixture.repo_path()).is_paused("GAME_LOGIC.DLL"),
+        "the endpoint wrote through to the persisted scope record"
+    );
+
+    // Resume: back to unpaused, and the row follows.
+    let (status, body) = post_lifecycle(
+        fixture.port(),
+        "/api/pipeline/binaries/game_logic.dll/resume",
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["binary"], "game_logic.dll");
+    assert_eq!(body["paused"], false);
+    assert_eq!(
+        get_row_paused(fixture.port()).await,
+        Some(false),
+        "GET /api/pipeline reports the resume"
+    );
+}
+
+/// A pause and a resume reach WS clients as raw `binary_pause_changed`
+/// events on the shared broadcast (issue #221) — the dashboard re-renders
+/// the row from the pushed event, not a refetch, following the
+/// state-changed and unit-cancelled event precedents.
+#[tokio::test]
+async fn test_binary_pause_changed_reaches_ws_clients() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let fixture = TestFixture::new();
+    let events = TranslationEvents::new(128);
+    let scope =
+        calxgloss_types::ScopeControl::open(fixture.repo_path()).with_events(events.clone());
+    let state = ServerState::new(fixture.repo_path()).with_scope_control(scope);
+    let manager = SessionManager::new_with_broadcast(events.subscribe());
+    let progress = ProgressState::new();
+    let router = build_router_with_ws(state, manager, progress);
+    let _server = spawn_server(router, fixture.port()).await;
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!(
+        "ws://127.0.0.1:{}/api/events/upgrade",
+        fixture.port()
+    ))
+    .await
+    .expect("websocket upgrade succeeds");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Discover the binary first — an undiscovered name is a 409 and emits
+    // no event.
+    events.emit(ProgressEvent::QueuePlanned {
+        binaries: vec!["game_logic.dll".to_string()],
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    for path in [
+        "/api/pipeline/binaries/game_logic.dll/pause",
+        "/api/pipeline/binaries/game_logic.dll/resume",
+    ] {
+        let (status, _) = post_lifecycle(fixture.port(), path).await;
+        assert_eq!(status, 200, "{path} should succeed");
+    }
+
+    // Collect wire messages and pull out the pause changes with their
+    // binary/paused payloads.
+    let mut changes: Vec<(String, bool)> = Vec::new();
+    for _ in 0..20 {
+        if changes.len() >= 2 {
+            break;
+        }
+        let msg = match tokio::time::timeout(Duration::from_millis(500), ws.next()).await {
+            Ok(Some(Ok(m))) => m,
+            _ => continue,
+        };
+        if let Message::Text(text) = msg {
+            let v: serde_json::Value =
+                serde_json::from_str(text.as_str()).expect("wire message is JSON");
+            if v["event"].as_str() == Some("binary_pause_changed") {
+                changes.push((
+                    v["binary"].as_str().unwrap_or_default().to_string(),
+                    v["paused"].as_bool().unwrap_or(false),
+                ));
+            }
+        }
+    }
+    assert_eq!(
+        changes,
+        vec![
+            ("game_logic.dll".to_string(), true),
+            ("game_logic.dll".to_string(), false),
+        ],
+        "WS clients should see each pause change in order"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────
 // Translation scope controls (issue #93, W2.5)
 // ─────────────────────────────────────────────────────────────
 
@@ -799,6 +980,29 @@ async fn test_scope_endpoints_503_without_control() {
         let resp = client
             .post(format!("http://127.0.0.1:{}{path}", fixture.port()))
             .json(&body)
+            .send()
+            .await
+            .expect("request reaches server");
+        let status = resp.status();
+        let resp_body: serde_json::Value = resp.json().await.expect("body is JSON");
+        assert_eq!(status, 503, "{path} without a handle should be 503");
+        assert!(
+            resp_body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("no scope control"),
+            "503 explains why, got: {resp_body}"
+        );
+    }
+
+    // Issue #221: the per-binary pause endpoints are honest the same way —
+    // with no scope handle attached there is no paused set to change.
+    for path in [
+        "/api/pipeline/binaries/game_logic.dll/pause",
+        "/api/pipeline/binaries/game_logic.dll/resume",
+    ] {
+        let resp = client
+            .post(format!("http://127.0.0.1:{}{path}", fixture.port()))
             .send()
             .await
             .expect("request reaches server");
@@ -4836,6 +5040,9 @@ async fn test_live_only_endpoints_absent_from_non_live_routers() {
             "/api/units/game_logic.dll%2FDrawPrimitive%2Fv1/override",
             // Issue #97: the classification override endpoints are live-only too.
             "/api/binaries/fmod.dll/classification",
+            // Issue #221: the per-binary pause endpoints are live-only too.
+            "/api/pipeline/binaries/game_logic.dll/pause",
+            "/api/pipeline/binaries/game_logic.dll/resume",
         ] {
             let resp = reqwest::Client::new()
                 .post(format!("http://127.0.0.1:{}{}", fixture.port(), path))

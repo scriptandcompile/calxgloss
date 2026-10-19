@@ -186,6 +186,12 @@ pub struct BinaryProgress {
     /// function-by-function before any unit event exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity: Option<BinaryActivity>,
+    /// True while the operator has paused this target binary (issue #221) —
+    /// held out of the run's queue while the run itself keeps going. Filled
+    /// from the scope handle, so a plain pipeline-status GET is honest
+    /// without waiting for a `BinaryPauseChanged` event.
+    #[serde(default)]
+    pub paused: bool,
 }
 
 // ============================================================
@@ -298,6 +304,7 @@ mod tests {
                 index: Some(1),
                 total: Some(22143),
             }),
+            paused: true,
         };
         let json = serde_json::to_value(&full).expect("serializes");
         assert_eq!(json["binary"], "game_logic.dll");
@@ -309,12 +316,14 @@ mod tests {
         assert_eq!(json["activity"]["function"], "FUN_1929282");
         assert_eq!(json["activity"]["index"], 1);
         assert_eq!(json["activity"]["total"], 22143);
+        assert_eq!(json["paused"], true);
         let back: BinaryProgress = serde_json::from_value(json).expect("deserializes");
         assert_eq!(back, full);
 
         // A binary only discovered (no classification, no batch summary yet)
-        // serializes with just the honest zeros. `processing` is always
-        // present — a false flag is a real observation, not a fabrication.
+        // serializes with just the honest zeros. `processing` and `paused`
+        // are always present — a false flag is a real observation, not a
+        // fabrication.
         let bare = BinaryProgress {
             binary: "unknown.dll".into(),
             category: None,
@@ -327,11 +336,12 @@ mod tests {
             tokens_used: None,
             processing: false,
             activity: None,
+            paused: false,
         };
         let json = serde_json::to_value(&bare).expect("serializes");
         assert_eq!(
             json.as_object().expect("object").len(),
-            5,
+            6,
             "unknown fields are omitted, not fabricated: {json}"
         );
     }

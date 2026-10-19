@@ -1872,6 +1872,20 @@ pub struct UnitCancelResponse {
     pub message: String,
 }
 
+/// Response body of the `POST /api/pipeline/binaries/{binary}/pause` and
+/// `.../resume` endpoints (issue #221, X6). Echoes the addressed binary and
+/// the paused flag now in force, so the dashboard reconciles the row without
+/// a second round-trip.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BinaryPauseResponse {
+    /// The binary the call addressed, echoed verbatim.
+    pub binary: String,
+    /// The paused flag now in force — `true` held out of the queue.
+    pub paused: bool,
+    /// Human-readable confirmation for the operator.
+    pub message: String,
+}
+
 /// Response body of `GET /api/llm-io` (issue #77) — the retained window of
 /// the server-side LLM I/O log, oldest first. A workspace that has never
 /// run live honestly reports an empty `entries`, never a 404.

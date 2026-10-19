@@ -17,8 +17,9 @@ use tracing::info;
 
 /// The scope handle every endpoint needs: 503 when this live router was
 /// built without one — honest rather than steering a pipeline that does
-/// not exist.
-fn scope_handle(combined: &CombinedState) -> Result<ScopeControl, ServerError> {
+/// not exist. Also the entry point for the per-binary pause endpoints
+/// (issue #221), which mutate the same handle.
+pub(crate) fn scope_handle(combined: &CombinedState) -> Result<ScopeControl, ServerError> {
     combined
         .server
         .scope_control()
@@ -40,7 +41,7 @@ fn status(scope: &ScopeControl) -> Json<ScopeStatusResponse> {
 /// Map a persistence failure — the record could not be written under the
 /// workspace's record tree — to an internal error the operator cannot fix
 /// by changing the request.
-fn persist_error(e: calxgloss_types::PersistError) -> ServerError {
+pub(crate) fn persist_error(e: calxgloss_types::PersistError) -> ServerError {
     ServerError::internal(&format!("failed to persist scope record: {e}"))
 }
 

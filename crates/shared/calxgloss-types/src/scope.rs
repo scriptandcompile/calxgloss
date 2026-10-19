@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 use crate::context_tier::ContextTier;
 use crate::identity::BinaryIdentity;
 use crate::persist::{PersistError, analysis_dir, load_json, save_json};
+use crate::progress::{ProgressEvent, TranslationEvents};
 
 /// A reference to one function in one target binary.
 ///
@@ -173,9 +174,17 @@ pub fn constraints_record_path(workspace: impl AsRef<Path>) -> PathBuf {
 /// [`new`](ScopeControl::new) (in-memory only, the plain CLI path) or
 /// [`open`](ScopeControl::open) (loads the workspace's persisted records and
 /// re-persists every mutation).
+///
+/// When built [`with_events`](ScopeControl::with_events), every successful
+/// binary pause/resume emits a
+/// [`ProgressEvent::BinaryPauseChanged`](crate::ProgressEvent::BinaryPauseChanged)
+/// on the shared event channel (issue #221) — the same pattern as
+/// [`PipelineControl::with_events`](crate::PipelineControl::with_events) —
+/// so WebSocket clients re-render the binary's row without a reload.
 #[derive(Debug, Clone)]
 pub struct ScopeControl {
     inner: Arc<Mutex<ScopeState>>,
+    events: Option<TranslationEvents>,
 }
 
 #[derive(Debug)]
@@ -198,6 +207,7 @@ impl ScopeControl {
                 tokens_spent: 0,
                 workspace: None,
             })),
+            events: None,
         }
     }
 
@@ -234,7 +244,18 @@ impl ScopeControl {
                 tokens_spent: 0,
                 workspace: Some(workspace),
             })),
+            events: None,
         }
+    }
+
+    /// Emit a [`ProgressEvent::BinaryPauseChanged`] on `events` for every
+    /// successful [`pause_binary`](Self::pause_binary) and
+    /// [`resume_binary`](Self::resume_binary) (issue #221) — the pattern
+    /// [`PipelineControl::with_events`](crate::PipelineControl::with_events)
+    /// sets for lifecycle transitions.
+    pub fn with_events(mut self, events: TranslationEvents) -> Self {
+        self.events = Some(events);
+        self
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, ScopeState> {
@@ -329,25 +350,45 @@ impl ScopeControl {
     /// Pause one target binary (issue #218): it is held out of the queue
     /// while the run keeps going. Idempotent — pausing an already-paused
     /// binary is not an error, and a differently-cased name dedupes onto the
-    /// existing entry rather than duplicating it.
+    /// existing entry rather than duplicating it. A successful pause emits
+    /// [`ProgressEvent::BinaryPauseChanged`] when the handle is built
+    /// [`with_events`](Self::with_events) (issue #221).
     pub fn pause_binary(&self, binary: &str) -> Result<(), PersistError> {
         let mut state = self.lock();
         if !state.scope.is_paused(binary) {
             state.scope.paused.push(binary.into());
         }
-        Self::persist(&state)
+        Self::persist(&state)?;
+        drop(state);
+        if let Some(events) = &self.events {
+            events.emit(ProgressEvent::BinaryPauseChanged {
+                binary: binary.into(),
+                paused: true,
+            });
+        }
+        Ok(())
     }
 
     /// Resume one paused target binary (issue #218): it is admitted to the
     /// queue again. Idempotent: resuming a binary that is not paused is not
-    /// an error, and a differently-cased name drops the entry it matches.
+    /// an error, and a differently-cased name drops the entry it matches. A
+    /// successful resume emits [`ProgressEvent::BinaryPauseChanged`] when the
+    /// handle is built [`with_events`](Self::with_events) (issue #221).
     pub fn resume_binary(&self, binary: &str) -> Result<(), PersistError> {
         let mut state = self.lock();
         state
             .scope
             .paused
             .retain(|b| !b.as_str().eq_ignore_ascii_case(binary));
-        Self::persist(&state)
+        Self::persist(&state)?;
+        drop(state);
+        if let Some(events) = &self.events {
+            events.emit(ProgressEvent::BinaryPauseChanged {
+                binary: binary.into(),
+                paused: false,
+            });
+        }
+        Ok(())
     }
 
     /// Whether the named target binary is currently paused.
@@ -598,6 +639,38 @@ mod tests {
             control.scope().admits_binary("a.dll"),
             "a paused binary is still in scope, just held"
         );
+    }
+
+    /// A handle built `with_events` emits a `BinaryPauseChanged` on every
+    /// successful pause and resume (issue #221) — the pattern
+    /// `PipelineControl::with_events` sets for lifecycle transitions — and a
+    /// handle without events stays silent rather than failing the mutation.
+    #[test]
+    fn pause_and_resume_emit_pause_changed_events() {
+        let events = TranslationEvents::new(16);
+        let mut rx = events.subscribe();
+        let control = ScopeControl::new().with_events(events);
+
+        control.pause_binary("a.dll").expect("pause");
+        let event = rx.try_recv().expect("the pause emits");
+        assert!(
+            matches!(&event, ProgressEvent::BinaryPauseChanged { binary, paused }
+                if binary.as_str() == "a.dll" && *paused),
+            "the pause emits BinaryPauseChanged paused=true, got: {event}"
+        );
+
+        control.resume_binary("a.dll").expect("resume");
+        let event = rx.try_recv().expect("the resume emits");
+        assert!(
+            matches!(&event, ProgressEvent::BinaryPauseChanged { binary, paused }
+                if binary.as_str() == "a.dll" && !*paused),
+            "the resume emits BinaryPauseChanged paused=false, got: {event}"
+        );
+
+        // An unpaused handle still mutates — the event channel is optional.
+        let plain = ScopeControl::new();
+        plain.pause_binary("b.dll").expect("pause without events");
+        assert!(plain.is_paused("b.dll"));
     }
 
     /// Removing a priority entry (issue #95, W2.6 — the panel's remove

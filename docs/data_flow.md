@@ -680,6 +680,7 @@ The `ProgressState` in the web server maps `"binary/function"` keys to `Progress
 | POST | `/api/pipeline/pause` / `resume` / `stop` / `start` | Drive the shared pipeline control |
 | POST | `/api/pipeline/cancel-current` | Abort the unit in flight at the next safe point |
 | POST | `/api/pipeline/restart` | Re-run a stopped pipeline in the same process |
+| POST | `/api/pipeline/binaries/{binary}/pause` / `resume` | Per-binary pause: hold a discovered binary out of the auto run's queue (live router only) |
 | GET/POST/DELETE | `/api/units/{id}/override` | Reviewer override for one unit's next attempt (forced tier/strategy, hints, skip) |
 | GET/POST | `/api/binaries/{name}/classification` | View/override a binary's classification (analyzer honors it before strategy dispatch) |
 | GET | `/api/units/{id}` | Single unit detail (justification, diff, tests, history, persisted analysis context: API mappings + call graph) |
@@ -719,6 +720,7 @@ The web UI can act on translation units:
 - **Request Patch** — queues a retry (increments version, creates new branch)
 - **Skip / Unskip** — keeps a unit out of (or back in) the translation queue
 - **Cancel current unit** — aborts the in-flight unit at the earliest safe point
+- **Pause/resume binary** — holds a discovered target binary out of the auto run's queue (an in-flight pass ends at the next unit boundary); the paused set rides the scope record and every change fans out to WS clients as a `binary_pause_changed` event
 - **Override** — per-unit forced context tier, retry strategy, or reviewer hints that ride into the next prompt (`re/analysis/unit_overrides.json`)
 
 ### 7.3 Dashboard States

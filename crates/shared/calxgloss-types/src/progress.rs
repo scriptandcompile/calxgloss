@@ -341,6 +341,20 @@ pub enum ProgressEvent {
         binary: BinaryIdentity,
         function: String,
     },
+    /// A target binary's paused flag changed (issue #221, X6).
+    ///
+    /// Emitted by [`ScopeControl::pause_binary`](crate::ScopeControl::pause_binary)
+    /// and [`ScopeControl::resume_binary`](crate::ScopeControl::resume_binary)
+    /// when the handle is built [`with_events`](crate::ScopeControl::with_events),
+    /// so the WebSocket broadcast re-renders the binary's row without a reload.
+    /// The paused set itself lives in the scope record (issue #218) — the event
+    /// only announces the change. Batch-level: it names no unit.
+    BinaryPauseChanged {
+        binary: BinaryIdentity,
+        /// `true` when the binary is now paused (held out of the queue),
+        /// `false` when it has been resumed (admitted again).
+        paused: bool,
+    },
 }
 
 impl ProgressEvent {
@@ -412,7 +426,8 @@ impl ProgressEvent {
             | ProgressEvent::QueuePlanned { .. }
             | ProgressEvent::BatchProgress { .. }
             | ProgressEvent::BatchSummary { .. }
-            | ProgressEvent::PipelineStateChanged { .. } => None,
+            | ProgressEvent::PipelineStateChanged { .. }
+            | ProgressEvent::BinaryPauseChanged { .. } => None,
         }
     }
 }
@@ -700,6 +715,13 @@ impl std::fmt::Display for ProgressEvent {
             }
             ProgressEvent::UnitCancelled { binary, function } => {
                 write!(f, "Cancelled in-flight unit {function} ({binary})")
+            }
+            ProgressEvent::BinaryPauseChanged { binary, paused } => {
+                if *paused {
+                    write!(f, "Binary {binary} paused — held out of the queue")
+                } else {
+                    write!(f, "Binary {binary} resumed — admitted to the queue again")
+                }
             }
         }
     }
@@ -2139,6 +2161,39 @@ mod tests {
         assert!(
             event.to_string().contains("DrawPrimitive"),
             "display names the cancelled unit: {event}"
+        );
+    }
+
+    #[test]
+    fn binary_pause_changed_event_serde_round_trip() {
+        let event = ProgressEvent::BinaryPauseChanged {
+            binary: "game_logic.dll".into(),
+            paused: true,
+        };
+        let json = serde_json::to_value(&event).expect("serializes");
+        assert_eq!(json["event"], "binary_pause_changed");
+        assert_eq!(json["binary"], "game_logic.dll");
+        assert_eq!(json["paused"], true);
+        assert!(
+            event.unit_key().is_none(),
+            "a pause change names no unit — it is batch-level"
+        );
+        assert!(
+            TranslationPhase::from_event(&event).is_none(),
+            "a pause change derives no unit phase"
+        );
+        assert!(
+            event.to_string().contains("paused"),
+            "display shows the pause: {event}"
+        );
+
+        let resumed = ProgressEvent::BinaryPauseChanged {
+            binary: "game_logic.dll".into(),
+            paused: false,
+        };
+        assert!(
+            resumed.to_string().contains("resumed"),
+            "display shows the resume: {resumed}"
         );
     }
 }

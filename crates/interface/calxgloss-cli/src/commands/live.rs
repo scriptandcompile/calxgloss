@@ -136,8 +136,11 @@ pub async fn handle_live(
     // Translation scope handle (issue #93, W2.5) — opened over the
     // workspace, so persisted scope/constraint records are honored from
     // the first queue selection and every endpoint mutation re-persists
-    // them for the next run.
-    let scope_control = calxgloss::ScopeControl::open(&workspace);
+    // them for the next run. Built with the shared event channel so a
+    // per-binary pause or resume (issue #221) emits BinaryPauseChanged on
+    // the same broadcast as every other lifecycle operation, and WS
+    // clients re-render the row without a reload.
+    let scope_control = calxgloss::ScopeControl::open(&workspace).with_events(events.clone());
 
     // Per-unit reviewer-override handle (issue #96, W2.7) — opened over the
     // workspace, so persisted override records are honored from the first

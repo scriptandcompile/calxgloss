@@ -584,6 +584,13 @@ impl ProgressState {
                 // by `/api/server/status` and echoed to WS clients by the
                 // broadcast. Nothing to fold into the per-unit view.
             }
+            ProgressEvent::BinaryPauseChanged { .. } => {
+                // Per-binary pause (issue #221). ProgressState does not
+                // mirror the paused set — the scope handle is the source of
+                // truth, and `GET /api/pipeline` fills each row's `paused`
+                // flag from it. WS clients take the raw event off the
+                // broadcast and re-render the row. Nothing to fold in.
+            }
         }
     }
 
@@ -1035,6 +1042,18 @@ fn live_only_routes() -> Router<CombinedState> {
         .route(
             "/api/pipeline/cancel-current",
             post(handlers::api_cancel_current_unit),
+        )
+        // Per-binary pause (issue #221, X6): hold one target binary out of
+        // the run's queue without touching the run-level machine. Live-only
+        // — a plain `serve` router has no run whose queue to hold a binary
+        // out of.
+        .route(
+            "/api/pipeline/binaries/{binary}/pause",
+            post(handlers::api_pause_binary),
+        )
+        .route(
+            "/api/pipeline/binaries/{binary}/resume",
+            post(handlers::api_resume_binary),
         )
         // Start & restart (issue #92, W2.3): begin translation in a session
         // that has not translated yet, or re-run a stopped pipeline in the
