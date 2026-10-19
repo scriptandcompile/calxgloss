@@ -1,11 +1,12 @@
 //! Translation scope controls — what a run is allowed to touch (issue #93, W2.5).
 //!
 //! An operator steers a live run over REST: which target binaries to
-//! translate, which functions to skip (runtime entry points, hooks, callback
-//! stubs that never need translation), which functions to prioritize (entry
-//! points, the rendering path, core algorithms sort ahead of the rest of the
-//! queue), and constraints that bound consumption — max LLM attempt count,
-//! max context tier, token budget.
+//! translate, which target binaries to pause (held out of the queue without
+//! stopping the run — issue #218), which functions to skip (runtime entry
+//! points, hooks, callback stubs that never need translation), which
+//! functions to prioritize (entry points, the rendering path, core algorithms
+//! sort ahead of the rest of the queue), and constraints that bound
+//! consumption — max LLM attempt count, max context tier, token budget.
 //!
 //! Two layers live here:
 //!
@@ -87,16 +88,35 @@ pub struct TranslationScope {
     /// Functions that sort ahead of the rest of the queue.
     #[serde(default)]
     pub priority_functions: Vec<FunctionRef>,
+    /// Target binaries the operator has paused (issue #218). A paused binary
+    /// is still in scope — it is held out of the queue, not dropped.
+    #[serde(default)]
+    pub paused: Vec<BinaryIdentity>,
 }
 
 impl TranslationScope {
     /// Whether the named binary is in scope for translation.
+    ///
+    /// This is the "in scope" predicate only — it says nothing about pause.
+    /// A paused binary is still in scope, just held (issue #218); the two
+    /// predicates stay deliberately separate.
     pub fn admits_binary(&self, binary: &str) -> bool {
         self.binaries.is_empty()
             || self
                 .binaries
                 .iter()
                 .any(|b| b.as_str().eq_ignore_ascii_case(binary))
+    }
+
+    /// Whether the named binary is paused — held out of the queue.
+    ///
+    /// Binary names match ASCII case-insensitively, the same case policy as
+    /// the FunctionRef match rule (issue #107): Windows binary names are
+    /// case-insensitive, so one paused entry covers every spelling.
+    pub fn is_paused(&self, binary: &str) -> bool {
+        self.paused
+            .iter()
+            .any(|b| b.as_str().eq_ignore_ascii_case(binary))
     }
 
     /// Whether the named function is skipped in the named binary.
@@ -306,6 +326,40 @@ impl ScopeControl {
         Self::persist(&state)
     }
 
+    /// Pause one target binary (issue #218): it is held out of the queue
+    /// while the run keeps going. Idempotent — pausing an already-paused
+    /// binary is not an error, and a differently-cased name dedupes onto the
+    /// existing entry rather than duplicating it.
+    pub fn pause_binary(&self, binary: &str) -> Result<(), PersistError> {
+        let mut state = self.lock();
+        if !state.scope.is_paused(binary) {
+            state.scope.paused.push(binary.into());
+        }
+        Self::persist(&state)
+    }
+
+    /// Resume one paused target binary (issue #218): it is admitted to the
+    /// queue again. Idempotent: resuming a binary that is not paused is not
+    /// an error, and a differently-cased name drops the entry it matches.
+    pub fn resume_binary(&self, binary: &str) -> Result<(), PersistError> {
+        let mut state = self.lock();
+        state
+            .scope
+            .paused
+            .retain(|b| !b.as_str().eq_ignore_ascii_case(binary));
+        Self::persist(&state)
+    }
+
+    /// Whether the named target binary is currently paused.
+    pub fn is_paused(&self, binary: &str) -> bool {
+        self.lock().scope.is_paused(binary)
+    }
+
+    /// A snapshot of the paused binary identities.
+    pub fn paused_binaries(&self) -> Vec<BinaryIdentity> {
+        self.lock().scope.paused.clone()
+    }
+
     /// Replace the run's constraints.
     pub fn set_constraints(&self, constraints: TranslationConstraints) -> Result<(), PersistError> {
         let mut state = self.lock();
@@ -354,6 +408,7 @@ mod tests {
             binaries: vec!["game_logic.dll".into()],
             skipped_functions: vec![FunctionRef::new("game_logic.dll", "DllMain")],
             priority_functions: vec![FunctionRef::new("game_logic.dll", "DrawPrimitive")],
+            paused: vec!["eqgame.exe".into()],
         };
         let json = serde_json::to_string(&scope).expect("serializes");
         let back: TranslationScope = serde_json::from_str(&json).expect("deserializes");
@@ -378,6 +433,10 @@ mod tests {
         let scope: TranslationScope =
             serde_json::from_str(r#"{"binaries": ["a.dll"]}"#).expect("partial scope deserializes");
         assert_eq!(scope.skipped_functions.len(), 0);
+        assert!(
+            scope.paused.is_empty(),
+            "a record written before the paused field (issue #218) still loads"
+        );
         let constraints: TranslationConstraints =
             serde_json::from_str("{}").expect("empty constraints deserialize");
         assert_eq!(constraints.max_attempts, None);
@@ -389,6 +448,7 @@ mod tests {
             binaries: vec![],
             skipped_functions: vec![FunctionRef::new("game_logic.dll", "DllMain")],
             priority_functions: vec![FunctionRef::new("eqmain.dll", "DrawPrimitive")],
+            paused: vec!["eqgame.exe".into()],
         };
         assert!(scope.admits_binary("anything.dll"), "empty list admits all");
         assert!(scope.is_skipped("game_logic.dll", "DllMain"));
@@ -412,6 +472,15 @@ mod tests {
         assert!(
             !scope.is_skipped("game_logic.dll", "dllmain"),
             "a differently-cased function name is a different function"
+        );
+        assert!(scope.is_paused("eqgame.exe"));
+        assert!(
+            scope.is_paused("EQGAME.EXE"),
+            "a differently-cased binary spelling still matches the paused entry"
+        );
+        assert!(
+            !scope.is_paused("other.dll"),
+            "a pause is scoped to its binary"
         );
     }
 
@@ -486,6 +555,51 @@ mod tests {
         assert_eq!(control.scope().priority_functions.len(), 1);
     }
 
+    /// Pausing and resuming a binary (issue #218) follow the same
+    /// idempotence and one-match-rule dedupe as skip and priority — and a
+    /// paused binary stays in scope, the predicates are separate.
+    #[test]
+    fn pause_and_resume_are_idempotent_and_dedupe_case_insensitively() {
+        let control = ScopeControl::new();
+        control.pause_binary("a.dll").expect("first pause");
+        control
+            .pause_binary("A.DLL")
+            .expect("differently-cased pause is not an error");
+        control
+            .pause_binary("a.dll")
+            .expect("repeat pause is not an error");
+        assert_eq!(
+            control.paused_binaries().len(),
+            1,
+            "differently-cased pauses dedupe to one entry"
+        );
+        assert!(control.is_paused("a.dll"));
+        assert!(control.is_paused("A.DLL"));
+
+        control
+            .resume_binary("A.dll")
+            .expect("differently-cased resume is not an error");
+        assert!(
+            control.paused_binaries().is_empty(),
+            "a differently-cased resume drops the entry"
+        );
+        control
+            .resume_binary("a.dll")
+            .expect("resuming an unpaused binary is not an error");
+        assert!(!control.is_paused("a.dll"));
+
+        // "In scope" and "paused" stay separate predicates: pausing does
+        // not drop the binary from scope.
+        control
+            .set_binaries(vec!["a.dll".into()])
+            .expect("in-memory scope");
+        control.pause_binary("a.dll").expect("pause");
+        assert!(
+            control.scope().admits_binary("a.dll"),
+            "a paused binary is still in scope, just held"
+        );
+    }
+
     /// Removing a priority entry (issue #95, W2.6 — the panel's remove
     /// button) drops exactly that function, is idempotent, and persists.
     #[test]
@@ -538,6 +652,7 @@ mod tests {
         control
             .skip_function("game_logic.dll", "DllMain")
             .expect("skip persists");
+        control.pause_binary("eqgame.exe").expect("pause persists");
         control
             .set_constraints(TranslationConstraints {
                 max_attempts: Some(2),
@@ -556,9 +671,21 @@ mod tests {
                 .exists()
         );
 
+        // The paused field lands in the persisted scope record itself.
+        let raw = std::fs::read_to_string(ws.path().join("re/analysis/translation_scope.json"))
+            .expect("scope record is readable");
+        assert!(
+            raw.contains("\"paused\""),
+            "the persisted scope record carries the paused field"
+        );
+
         // A restarted run honors what was entered.
         let reopened = ScopeControl::open(ws.path());
         assert!(reopened.scope().is_skipped("game_logic.dll", "DllMain"));
+        assert!(
+            reopened.is_paused("eqgame.exe"),
+            "the paused set survives a restart"
+        );
         assert_eq!(reopened.constraints().max_attempts, Some(2));
     }
 
@@ -568,6 +695,7 @@ mod tests {
         let control = ScopeControl::open(ws.path());
         assert!(control.scope().binaries.is_empty());
         assert!(control.scope().skipped_functions.is_empty());
+        assert!(control.scope().paused.is_empty());
         assert_eq!(control.constraints().token_budget, None);
     }
 

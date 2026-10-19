@@ -31,6 +31,10 @@ _Avoid_: bare "target"
 A target binary's filename verbatim, extension included — `game_logic.dll`, `eqgame.exe`. The same string, with no normalization, names translation branches (`re/{file}/{function}v{N}`), unit keys, artifact directories (`re/baseline/{file}/…`), classification records (`re/classify/{file}.json`), and UI display. Deriving *Rust identifiers* from a binary name (crate and shim file names) takes the stem — that is naming, not identity.
 _Avoid_: stem, extension-stripped name (as an identity)
 
+**Paused target binary**:
+A target binary the operator has held out of the queue while the run keeps working on the rest — steering, not lifecycle. The binary stays in scope; its pass simply never starts (or ends at the next unit boundary if in flight). *Pause* on its own means the run-wide lifecycle control; a binary is *held* / *paused*.
+_Avoid_: stopped binary, suspended binary
+
 **Workspace**:
 The working directory of one reverse-engineering effort: it holds the translated Rust, the record of the effort (`re/`), scratch, and the git repo that makes every unit restorable.
 _Avoid_: repo_dir, workspace_root, output_dir
