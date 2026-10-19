@@ -32,7 +32,7 @@ Test counts in the archive are indicative targets, not exact requirements.
 | # | Track | Crate | Effort | Status | Next step | Epic |
 |---|-------|-------|--------|--------|-----------|------|
 | P12.5 | Branch-targeted baseline tests — Verification must pin every branch the CFG reveals, not just the happy path | evidence (`calxgloss-controlflow`) + pipeline (`calxgloss-testgen`, `calxgloss-translator`) | — | ⬜ not started | `/to-tickets` from #224 | [#224](https://github.com/scriptandcompile/calxgloss/issues/224) |
-| P13 | Global-state reference sets — per-function global read/write sets, produced once and consumed by prompt, sync gate, DAG order, and side-effect kinds | evidence (`calxgloss-globalstate` (new), `calxgloss-sync`, `calxgloss-callgraph`) + pipeline (`calxgloss-translator`) + shared (`calxgloss-types`) + interface (`calxgloss-cli`) | — | 🔶 in progress | Work frontier: #253 (#252 done; #253–#257 remain) | [#225](https://github.com/scriptandcompile/calxgloss/issues/225) |
+| P13 | Global-state reference sets — per-function global read/write sets, produced once and consumed by prompt, sync gate, DAG order, and side-effect kinds | evidence (`calxgloss-globalstate` (new), `calxgloss-sync`, `calxgloss-callgraph`) + pipeline (`calxgloss-translator`) + shared (`calxgloss-types`) + interface (`calxgloss-cli`) | — | 🔶 in progress | Work frontier: #254 (#252–#253 done; #254–#257 remain) | [#225](https://github.com/scriptandcompile/calxgloss/issues/225) |
 | P13.5 | Float/SIMD usage flagging — flag which functions do float/SIMD math and name the shape, so the LLM stops mistranslating mangled vector pseudo-C | evidence (`calxgloss-floatsimd` (new)) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #229 | [#229](https://github.com/scriptandcompile/calxgloss/issues/229) |
 | P14 | Known-library function identification — body-signature matching against statically-linked CRT/STL code so those functions become Skip nodes, not translation units | evidence (`calxgloss-libmatch` (new), `calxgloss-analysis`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #227 | [#227](https://github.com/scriptandcompile/calxgloss/issues/227) |
 | P12.7 | Parameter direction analysis — read each pointer parameter as in/out/inout from the body so the Rust signature shape stops guessing and out-param capture becomes possible | evidence (`calxgloss-typeinfer`) + integrations (`calxgloss-prompts`) + pipeline (`calxgloss-translator`) + interface (`calxgloss-cli`) | — | ⬜ not started | `/to-tickets` from #228 | [#228](https://github.com/scriptandcompile/calxgloss/issues/228) |
@@ -94,8 +94,9 @@ escalate prompts carrying a per-function purity flag (struct state, not a Rust
 naming the global, with `Other(String)` still the escape hatch; and the
 shared-globals index lands as a typed artifact for reviewers and later
 analyses. Spec: #225. Tickets: [#252](https://github.com/scriptandcompile/calxgloss/issues/252)
-done — the producer crate shipped (detector, engine, persistence, pipeline
-scan, CLI command) — and #253–#257 remain (frontier: #253).
+and [#253](https://github.com/scriptandcompile/calxgloss/issues/253) done — the producer
+crate shipped (detector, engine, shared-globals index rollup, persistence, pipeline
+scan, CLI command) — and #254–#257 remain (frontier: #254).
 
 ## P13.5 — Float/SIMD usage flagging (evidence + integrations + pipeline + interface)
 
